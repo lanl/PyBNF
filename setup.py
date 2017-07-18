@@ -5,4 +5,4 @@ setup(name='pybnf',
       description='Fits BioNetGen models using metaheuristics',
       author='Alex Ionkov, Eshan Mitra, Ryan Suderman',
       package=['pybnf'],
-      requires=['dask', 'distributed', 'numpy'])
+      requires=['dask', 'distributed', 'numpy', 'nose'])
