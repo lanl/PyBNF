@@ -10,3 +10,4 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 #     from .context import data
 
 import pybnf.pset as pset
+import pybnf.data as data
