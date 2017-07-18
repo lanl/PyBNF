@@ -1,2 +1,5 @@
 *~
 .idea/**
+dist/**
+pybnf.egg-info/**
+build/**
