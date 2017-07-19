@@ -17,10 +17,11 @@ def parse(str):
 def ploop(path): #parse loop
     with open(path, "r") as infile:
         for line in infile:
-            parse(line)
+            if not(len(line.strip())) == 0 and not(line.startswith("#")):
+                parse(line)
             
-                
-                
+
+
                 
                 
                 
