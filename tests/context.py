@@ -8,3 +8,4 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 #     import pybnf.data as data
 # will allow test files to import the data module:
 #     from .context import data
+
