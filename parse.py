@@ -20,4 +20,3 @@ def ploop(path): #parse loop
             if not(len(line.strip())) == 0 and not(line.startswith("#")):
                 parse(line)
                 
-                
