@@ -1,6 +1,5 @@
 import pyparsing as pp
 
-
 parameters = {} #define empty dict
 
 def separate(toks): #separate the key from the value
