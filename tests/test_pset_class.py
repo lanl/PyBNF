@@ -10,21 +10,15 @@ class TestPset:
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""
-        cls.dict2 = {'x':1.0,'y':2.0,'z':3.14}
-        cls.dict3 = {'xx':3.0, 'yy':700.3, 'ww':-5.2e6,'kk':5.2e-39}
-        cls.dict4 = {'kk': 5.2e-39, 'xx': 3.00, 'yy': 700.3, 'ww': -5.2e6}
-        cls.dict5 = {'x':1.0,'y':2.0,'z':3.141}
+        cls.dict2 = {'x': 1.0, 'y': 2.0, 'z': 3.14}
+        cls.dict3 = {'xx': 3.0, 'yy': 700.3, 'ww': -5.2e-4, 'kk': 5.2e-39}
+        cls.dict4 = {'kk': 5.2e-39, 'xx': 3.00, 'yy': 700.3, 'ww': -52e-5}
+        cls.dict5 = {'x': 1.0, 'y': 2.0, 'z': 3.141}
 
     def test_initialization(self):
         ps1 = pset.Pset(self.dict2)
-        assert ps1['x']==1.0
-        assert ps1['z']==3.14
-
-        ps2 = pset.Pset()
-        ps2['p1'] = 2.5
-        ps2['p2'] = 4.5
-        assert ps2['p1'] == 2.5
-        assert ps2['p2'] == 4.5
+        assert ps1['x'] == 1.0
+        assert ps1['z'] == 3.14
 
     def test_keys_to_string(self):
         ps1 = pset.Pset(self.dict2)
@@ -34,9 +28,9 @@ class TestPset:
 
     def test_values_to_string(self):
         ps1 = pset.Pset(self.dict2)
-        assert ps1.values_to_string == '1.0\t2.0\t3.14'
+        assert ps1.values_to_string() == '1.0\t2.0\t3.14'
         ps2 = pset.Pset(self.dict3)
-        assert ps2.values_to_string() == '5.2e-39\t-0.000052\t3.0\t700.3'
+        assert ps2.values_to_string() == '5.2e-39\t-0.00052\t3.0\t700.3'
 
     def test_get_id(self):
         ps1a = pset.Pset(self.dict2)
@@ -49,13 +43,9 @@ class TestPset:
         assert ps1a.get_id() != ps2a.get_id()
         assert ps3.get_id() != ps1a.get_id()
 
-    def test_nose(self):
-        assert 1==2 #Should fail, confirming that nose is working
 
 
 
-
-
-    #@raises(ValueError)
-    #def test_number_reader_failure(self):
-    #    data.Data.to_number(self.str4)
+        # @raises(ValueError)
+        # def test_number_reader_failure(self):
+        #    data.Data.to_number(self.str4)
