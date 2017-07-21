@@ -7,7 +7,8 @@ class Data(object):
     """Top level class for managing data"""
 
     def __init__(self):
-        self.cols = dict()  # dictionary with column header, column index pairs
+        # dict with both column header, column index pairs and index, header pairs
+        self.cols = dict()
         self.data = None  # Numpy array for data
 
     def __getitem__(self, col_header):
@@ -59,10 +60,62 @@ class Data(object):
         header = re.split(sep, lines[0].strip().strip('#').strip())
 
         for c in header:
-            self.cols[c] = len(self.cols)
+            l = len(self.cols)
+            self.cols[c] = l
+            self.cols[l] = c
 
         data = []
         for l in lines[1:]:
             data.append([self.to_number(x) for x in re.split(sep, l.strip())])
 
         return np.array(data)
+
+    def _dep_cols(self, idx):
+        """
+        Returns all data columns without independent variable
+
+        :param idx: Column index for independent variable (defaults to 0)
+        :type idx: int
+        :return: Numpy array of observable data
+        """
+        return np.delete(self.data, idx, axis=1)
+
+    def _ind_col(self, idx):
+        """
+        Returns data column corresponding to independent variable
+
+        :param idx: Column index for independent variable (defaults to 0)
+        :type idx: int
+        :return: 1-D Numpy array of independent variable values
+        """
+        return self.data[:, idx]
+
+    def normalize_to_peak(self, idx=0):
+        """
+        Normalizes all data columns (except the independent variable) to the peak
+        value in their respective columns
+
+        :param idx: Index of independent variable
+        :type idx: int
+        :return: Normalized Numpy array (including independent variable column)
+        """
+        ind = self._ind_col(idx)
+        l = ind.shape[0]
+        dep = self._dep_cols(idx)
+        dep_rel = dep / np.amax(dep, axis=0)
+        return np.hstack((ind.reshape((l, 1)), dep_rel))
+
+    def normalize_to_init(self, idx=0):
+        """
+        Normalizes all data columns (except the independent variable) to the initial
+        value in their respective columns
+
+        :param idx: Index of independent variable
+        :type idx: int
+        :return: Normalized Numpy array (including independent variable column)
+        """
+        ind = self._ind_col(idx)
+        l = ind.shape[0]
+        dep = self._dep_cols(idx)
+        dep_rel = dep / dep[0, :]
+        return np.hstack((ind.reshape((l, 1)), dep_rel))
