@@ -1,8 +1,22 @@
 import os
+from .context import parse
 
-def test_parse():
-    file = open("testfile.txt","w") 
-    file.write('hello =  world\n \n #derp = derp')
-    if p.ploop("testfile.txt") == {'hello': 'world'}:
+
+class TestParse:
+    def __init__(self):
         pass
-    os.remove("testfile.txt")
+
+    @classmethod
+    def setup_class(cls):
+        pass
+
+    @classmethod
+    def teardown_class(cls):
+        pass
+
+    def test_parse(self):
+        file = open("testfile.txt","w")
+        file.write('hello =  world\n \n #derp = derp')
+        file.close()
+        assert parse.ploop("testfile.txt") == {'hello': 'world'}
+        os.remove("testfile.txt")
