@@ -1,5 +1,5 @@
 import math
-from .context import pset
+from pybnf import pset
 from nose.tools import raises
 
 
@@ -48,6 +48,9 @@ class TestPset:
         assert ps2a.get_id() == ps2b.get_id()
         assert ps1a.get_id() != ps2a.get_id()
         assert ps3.get_id() != ps1a.get_id()
+
+    def test_nose(self):
+        assert 1==2 #Should fail, confirming that nose is working
 
 
 

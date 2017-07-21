@@ -1,8 +1,3 @@
-import math
-import numpy as np
-import re
-
-
 class Pset(dict):
     """
     Class representing a parameter set
@@ -17,20 +12,31 @@ class Pset(dict):
 
     """
 
-    def __init__(self,iterable,**kwargs):
+    # No separate constructor for Pset; use the dict constructor.
 
-        dict.__init__(self, iterable, **kwargs)
+    # def __init__(self,iterable=None,**kwargs):
+    #
+    #     if iterable==None:
+    #         iterable = dict()
+    #
+    #     dict.__init__(self, iterable, **kwargs)
 
 
     def get_id(self):
+
+        return self.__hash__()
+
+
+    def __hash__(self):
         """
         Returns a unique identifier for this parameter set
         Two Psets will have the same identifier if they have the same keys and corresponding values
 
         :return: int
         """
-        unique_str = ''.join([self.keys_to_string(),self.values_to_string()])
+        unique_str = ''.join([self.keys_to_string(), self.values_to_string()])
         return hash(unique_str)
+
 
     def keys_to_string(self):
         """
@@ -50,7 +56,5 @@ class Pset(dict):
         """
         keys = [str(k) for k in self.keys()]
         keys.sort()
-        values = [str(self[k]) for k in keys()] #Values are in alpha order by key name
-        return'\t'.join(values)
-
-
+        values = [str(self[k]) for k in self.keys()]  # Values are in alpha order by key name
+        return '\t'.join(values)
