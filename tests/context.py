@@ -9,3 +9,4 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # will allow test files to import the data module:
 #     from .context import data
 
+import pybnf.pset as pset

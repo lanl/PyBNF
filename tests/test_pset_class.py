@@ -1,5 +1,5 @@
 import math
-from pybnf import pset
+from .context import pset
 from nose.tools import raises
 
 
@@ -43,9 +43,7 @@ class TestPset:
         assert ps1a.get_id() != ps2a.get_id()
         assert ps3.get_id() != ps1a.get_id()
 
-
-
-
-        # @raises(ValueError)
-        # def test_number_reader_failure(self):
-        #    data.Data.to_number(self.str4)
+    @raises(TypeError)
+    def test_immutable(self):
+        ps1 = pset.Pset(self.dict2)
+        ps1['x']=1.5
