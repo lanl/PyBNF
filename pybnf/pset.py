@@ -1,4 +1,7 @@
-class Pset(object):
+import numpy as np
+
+
+class PSet(object):
     """
     Class representing a parameter set
 
@@ -11,7 +14,20 @@ class Pset(object):
         :param param_dict: A dictionary containing the parameters to initialize, in the form of str:float pairs,
             {"paramname1:paramvalue1, ...}
         """
-        self.param_dict = param_dict
+
+        # Check input values are the correct type
+        for key in param_dict:
+            value = param_dict[key]
+            if type(key) != str:
+                raise TypeError("Parameter key " + str(key) + " is not of type str")
+            if type(value) != float:
+                raise TypeError("Parameter value " + str(value) + " with key " + str(key) + " is not of type float")
+            if value < 0:
+                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
+            if np.isnan(value) or np.isinf(value):
+                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
+
+        self._param_dict = param_dict
 
     def __getitem__(self, item):
         """
@@ -23,7 +39,7 @@ class Pset(object):
         :param item: The str name of the parameter to look up
         :return: float
         """
-        return self.param_dict[item]
+        return self._param_dict[item]
 
     def get_id(self):
         return self.__hash__()
@@ -31,7 +47,7 @@ class Pset(object):
     def __hash__(self):
         """
         Returns a unique identifier for this parameter set
-        Two Psets will have the same identifier if they have the same keys and corresponding values
+        Two PSets will have the same identifier if they have the same keys and corresponding values
 
         :return: int
         """
@@ -44,7 +60,7 @@ class Pset(object):
 
         :return: str
         """
-        keys = [str(k) for k in self.param_dict.keys()]
+        keys = [str(k) for k in self._param_dict.keys()]
         keys.sort()
         return '\t'.join(keys)
 
@@ -54,7 +70,7 @@ class Pset(object):
         according to the parameter name
         :return: str
         """
-        keys = [str(k) for k in self.param_dict.keys()]
+        keys = [str(k) for k in self._param_dict.keys()]
         keys.sort()
         values = [str(self[k]) for k in keys]  # Values are in alpha order by key name
         return '\t'.join(values)
