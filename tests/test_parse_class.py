@@ -16,7 +16,7 @@ class TestParse:
 
     def test_parse(self):
         file = open("testfile.txt","w")
-        file.write('hello =  world\n \n #derp = derp')
+        file.write('fit_type =  world\n \n #derp = derp')
         file.close()
-        assert parse.ploop("testfile.txt") == {'hello': 'world'}
+        assert parse.ploop("testfile.txt") == {'fit_type': 'world'}
         os.remove("testfile.txt")

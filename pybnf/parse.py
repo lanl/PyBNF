@@ -1,20 +1,20 @@
-import pyparsing as pp
+from pyparsing import *
 import re
 
 parameters = {}  # define empty dict
 
-
-def separate(toks):  # separate the key from the value
-    l = toks.asList()
-    return l
-
-
 def parse(str):
-    linegrammar = pp.Word(pp.alphanums) + "=" + pp.Word(pp.alphanums)  # <-- grammar defined here
-    lineaction = linegrammar.setParseAction(separate)  # set lineaction equal to the result of parse action
-    #   print (str, "->", lineaction.parseString(str))
-    parameters[lineaction.parseString(str)[0]] = lineaction.parseString(str)[2]  # set the key to the value
-    # print(parameters)
+    
+    keys = oneOf('output_dir bng_command population_size fit_type cluster_software parallel_count')('key') 
+    equals = Suppress('=')
+    value = Word(alphanums)('value')
+    
+    linegrammar = keys + equals  + value  # <-- grammar defined here
+    
+    line = linegrammar.parseString(str) #parse string
+    
+    parameters[line.key] = line.value  # set the key to the value
+    #print(parameters)
 
 
 def ploop(path):  # parse loop
