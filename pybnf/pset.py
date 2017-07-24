@@ -1,4 +1,64 @@
 import numpy as np
+import re
+
+
+class Model(object):
+
+    """
+    Class representing a BNGL model
+
+    """
+
+    def __init__(self,bngl_file):
+        """
+        Loads the model from the given .bngl file
+
+        :param bngl_file: str address of the bngl file
+        """
+
+        # Read the file
+        with open(bngl_file) as file:
+            self.model_text = file.read()
+
+        # Scan the file for param names of type __FREE__
+        param_names_set = set()
+        for line in self.model_text.splitlines():
+            # Remove comment if present
+            commenti = line.find('#')
+            if commenti!=-1:
+                line = line[:commenti]
+
+            #Find every item matching [alphanumeric]__FREE__
+            params = re.findall('[A-Za-z_]\w*__FREE__',line)
+            for p in params:
+                param_names_set.add(p)
+
+        if len(param_names_set) == 0:
+            raise ParseError("No free parameters found")
+
+        # Save model_params as a sorted tuple
+        param_names_list = list(param_names_set)
+        param_names_list.sort()
+        self.param_names = tuple(param_names_list)
+
+        # Find the point in the file where we would eventually write in the values of the free paramters
+
+        split_index = self.model_text.find('\nbegin parameters\n') + 18 # Position after the "begin parameters" line
+        if split_index == 17:
+            raise ParseError("'begin parameters' not found in BNGL file")
+
+        # Two pieces of the model text. The full model with params should be written as _model_text_start + (free param definitions) + _model_text_end
+        self._model_text_start = self.model_text[:split_index]
+        self._model_text_end = self.model_text[split_index:]
+
+
+
+class ParseError(Exception):
+    pass
+
+class ParseWarning(Warning):
+    pass
+
 
 
 class PSet(object):
