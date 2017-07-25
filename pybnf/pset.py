@@ -80,7 +80,7 @@ class Model(object):
             raise ModelError('Must assign a PSet to the model before calling model_text()')
 
         # Generate the text associated with defining __FREE__ parameter values
-        param_text_lines = [k + ' ' + str(self.param_set[k]) for k in self.param_set]
+        param_text_lines = [k + ' ' + str(self.param_set[k]) for k in self.param_names]
         param_text = '\n'.join(param_text_lines)
 
         # Insert the generated text at the correct point within the text of the model
