@@ -23,7 +23,7 @@ class Data(object):
         return self.data[:, idx]
 
     @staticmethod
-    def to_number(x):
+    def _to_number(x):
         """
         Attempts to convert a string to a float
 
@@ -62,11 +62,10 @@ class Data(object):
         for c in header:
             l = len(self.cols)
             self.cols[c] = l
-            self.cols[l] = c
 
         data = []
         for l in lines[1:]:
-            data.append([self.to_number(x) for x in re.split(sep, l.strip())])
+            data.append([self._to_number(x) for x in re.split(sep, l.strip())])
 
         return np.array(data)
 
@@ -119,3 +118,27 @@ class Data(object):
         dep = self._dep_cols(idx)
         dep_rel = dep / dep[0, :]
         return np.hstack((ind.reshape((l, 1)), dep_rel))
+
+    def normalize_to_zero(self, idx=0, bc=True):
+        """
+        Normalizes data so that each column's mean is 0
+
+        :param idx: Index of independent variable
+        :type idx: int
+        :return: Normalized Numpy array (including independent variable column)
+        """
+        ind = self._ind_col(idx)
+        l = ind.shape[0]
+        dep = self._dep_cols(idx)
+        col_means = np.mean(dep, axis=0)
+        ddof = 0 if not bc else 1
+
+        def norm_by_std(col):
+            col_std = np.std(col, ddof=ddof)
+            if col_std == 0.:
+                return col
+            else:
+                return col / col_std
+
+        col_norm = np.apply_along_axis(norm_by_std, 0, (dep - col_means))
+        return np.hstack((ind.reshape((l, 1)), col_norm))

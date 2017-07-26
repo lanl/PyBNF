@@ -4,7 +4,6 @@ import numpy.testing as npt
 from .context import data
 from nose.tools import raises
 
-
 # Doesn't print warnings when dividing by zero
 np.seterr(invalid='ignore', divide='ignore')
 
@@ -39,26 +38,29 @@ class TestData:
         cls.d1.data = cls.d1._read_file_lines(cls.data1, '\s+')
 
     def test_number_reader(self):
-        assert data.Data.to_number(self.str0) == math.inf
-        assert not math.isfinite(data.Data.to_number(self.str1))
-        assert math.isnan(data.Data.to_number(self.str2))
-        assert data.Data.to_number(self.str3) == 6.022e-23
+        assert data.Data._to_number(self.str0) == math.inf
+        assert not math.isfinite(data.Data._to_number(self.str1))
+        assert math.isnan(data.Data._to_number(self.str2))
+        assert data.Data._to_number(self.str3) == 6.022e-23
 
     @raises(ValueError)
     def test_number_reader_failure(self):
-        data.Data.to_number(self.str4)
+        data.Data._to_number(self.str4)
 
     def test_read_file_lines(self):
         md = data.Data()
         loc_data = md._read_file_lines(self.data0, '\s+')
         md.data = loc_data
         assert md.cols['time'] == 0
-        assert len(md.cols.keys()) == 12
+        assert len(md.cols.keys()) == 6
         assert md.data.shape == (2, 6)
         assert md.data[0, 2] == 8
 
     def test_column_access(self):
-        assert np.array_equal(self.d0['time'], np.array([0, 1]))
+        assert self.d0.cols['time'] == 0
+        assert self.d1.cols['obs2'] == 2
+        npt.assert_allclose(self.d0['time'], self.d0.data[:, 0])
+        npt.assert_allclose(self.d1['obs1'], self.d1.data[:, 1])
 
     @raises(KeyError)
     def test_column_access_failure(self):
@@ -89,3 +91,18 @@ class TestData:
         norm1 = self.d1.normalize_to_peak()
         npt.assert_allclose(norm1, np.array(
             [[0., 3. / 4., 4. / 4., 5. / 10.], [1., 2. / 4., 3. / 4., 6. / 10.], [2., 4. / 4., 2. / 4., 10. / 10.]]))
+
+    def test_zero_normalization(self):
+        norm0 = self.d0.normalize_to_zero()
+        npt.assert_allclose(norm0, np.array([[0., 0., 0., 0., 0., 0.], [1., 0., 0., 0., 0., 0]]))
+        norm1 = self.d1.normalize_to_zero(bc=False)
+        npt.assert_allclose(norm1, np.array(
+            [[0., 0., 1. / np.std(self.d1.data[:, 2]), -2. / np.std(self.d1.data[:, 3])],
+             [1., -1. / np.std(self.d1.data[:, 1]), 0., -1. / np.std(self.d1.data[:, 3])],
+             [2., 1. / np.std(self.d1.data[:, 1]), -1. / np.std(self.d1.data[:, 2]), 3. / np.std(self.d1.data[:, 3])]]))
+        norm2 = self.d1.normalize_to_zero()
+        npt.assert_allclose(norm2, np.array(
+            [[0., 0., 1. / np.std(self.d1.data[:, 2], ddof=1), -2. / np.std(self.d1.data[:, 3], ddof=1)],
+             [1., -1. / np.std(self.d1.data[:, 1], ddof=1), 0., -1. / np.std(self.d1.data[:, 3], ddof=1)],
+             [2., 1. / np.std(self.d1.data[:, 1], ddof=1), -1. / np.std(self.d1.data[:, 2], ddof=1),
+              3. / np.std(self.d1.data[:, 3], ddof=1)]]))
