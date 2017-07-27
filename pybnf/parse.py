@@ -1,20 +1,25 @@
-from pyparsing import *
+import pyparsing as pp
 import re
+from collections import defaultdict
 
 parameters = {}  # define empty dict
+d = defaultdict(list)
+def parse(s):
+    
+    lkeys = pp.oneOf('model exp_files')
+    keys = pp.oneOf('output_dir bng_command population_size fit_type cluster_software parallel_count')('key') 
+    equals = pp.Suppress('=')
+    value = pp.Word(pp.alphanums)('value')
+    values = pp.OneOrMore(value)
 
-def parse(str):
+    linegrammar = keys + equals  + values  # <-- grammar defined here
     
-    keys = oneOf('output_dir bng_command population_size fit_type cluster_software parallel_count')('key') 
-    equals = Suppress('=')
-    value = Word(alphanums)('value')
+    line = linegrammar.parseString(s, parseAll=True) #parse string
     
-    linegrammar = keys + equals  + value  # <-- grammar defined here
-    
-    line = linegrammar.parseString(str) #parse string
-    
-    parameters[line.key] = line.value  # set the key to the value
-    #print(parameters)
+  #  print(line.values)
+    d[line.key] = line.values  # set the key to the values
+    #print(line.values)
+    print(d.items())
 
 
 def ploop(path):  # parse loop
@@ -25,3 +30,4 @@ def ploop(path):  # parse loop
             parse(line)
     return parameters
 
+ploop('con.txt')
