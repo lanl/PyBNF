@@ -7,21 +7,18 @@ d = defaultdict(list)
 def parse(s):
     
     lkeys = pp.oneOf('model exp_files')
-    keys = pp.oneOf('output_dir bng_command population_size fit_type cluster_software parallel_count')('key') 
+    keys = pp.oneOf('output_dir bng_command population_size fit_type cluster_software parallel_count')('key')
     equals = pp.Suppress('=')
     value = pp.Word(pp.alphanums)('value')
-    values = pp.OneOrMore(value)
+    values = pp.OneOrMore(value)('values')
 
     linegrammar = keys + equals  + values  # <-- grammar defined here
     
     line = linegrammar.parseString(s, parseAll=True) #parse string
     
-  #  print(line.values)
-    d[line.key] = line.values  # set the key to the values
-    #print(line.values)
-    print(d.items())
-
-
+    d[line.key] = line.values.asList() #set key to values
+     
+    
 def ploop(path):  # parse loop
     with open(path, "r") as infile:
         for line in infile:
@@ -30,4 +27,4 @@ def ploop(path):  # parse loop
             parse(line)
     return parameters
 
-ploop('con.txt')
+print (d.items())
