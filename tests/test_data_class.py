@@ -62,6 +62,11 @@ class TestData:
         npt.assert_allclose(self.d0['time'], self.d0.data[:, 0])
         npt.assert_allclose(self.d1['obs1'], self.d1.data[:, 1])
 
+    def test_row_access(self):
+        assert np.array_equal(self.d0.get_row('time',0.), np.array([0.00000000e+00,1.20000000e+01,8.00000000e+00,6.00000000e+00,0.00000000e+00,1.60000000e+01]))
+        assert np.array_equal(self.d1.get_row('obs3',10.), np.array([2., 4., 2., 10.]))
+        assert self.d1.get_row('x',3.) == None
+
     @raises(KeyError)
     def test_column_access_failure(self):
         self.d0['thing']

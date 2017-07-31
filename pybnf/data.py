@@ -22,6 +22,29 @@ class Data(object):
         idx = self.cols[col_header]
         return self.data[:, idx]
 
+    def get_row(self, col_header, value):
+        """
+        Returns the (first) data row in which field col_header is equal to value.
+        This should typically be used for col_header as the independent variable.
+
+        :param col_header: Data column name
+        :type col_header str
+        :param value:
+        :type value: str
+        :return: 1D numpy array consisting of the requested row
+        """
+
+        c_idx = self.cols[col_header]
+        rows = self.data[self.data[:,c_idx]==value,:]
+
+        if rows.size==0:
+            return None
+
+        return rows[0,:]
+
+
+
+
     @staticmethod
     def _to_number(x):
         """
