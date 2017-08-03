@@ -20,9 +20,8 @@ class PSet(object):
             value = param_dict[key]
             if type(key) != str:
                 raise TypeError("Parameter key " + str(key) + " is not of type str")
-            # Removed this check because it was throwing errors on numpy.float64; can't enumerate all valid types
-            # if type(value) != float:
-            #    raise TypeError("Parameter value " + str(value) + " with key " + str(key) + " is not of type float")
+            if not is_number(value):
+                raise TypeError("Parameter value " + str(value) + " with key " + str(key) + " is not a number type")
             if value < 0:
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
             if np.isnan(value) or np.isinf(value):
@@ -96,3 +95,17 @@ class PSet(object):
         keys.sort()
         values = [str(self[k]) for k in keys]  # Values are in alpha order by key name
         return '\t'.join(values)
+
+def is_number(n):
+    """
+    Determines whether an object is a number by attempting to cast it to float
+
+    :param n: Object to test
+    :return: bool
+    """
+    try:
+        float(n)
+    except (ValueError, AttributeError):
+        return False
+    else:
+        return True

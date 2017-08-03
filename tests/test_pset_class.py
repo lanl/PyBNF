@@ -16,10 +16,12 @@ class TestPSet:
         cls.dict5 = {'x': 1.0, 'y': 2.0, 'z': 3.141}
 
         cls.bad_dict1 = {'x': 1.0, 'y': -2.0, 'z': 3.14}
-        cls.bad_dict2 = {'x': 1.0, 'y': 2, 'z': 3.141}
+        cls.bad_dict2 = {'x': 1.0, 'y': 'non-numeric', 'z': 3.141}
         cls.bad_dict3 = {'x': 1.0, 42: 2.0, 'z': 3.141}
         cls.bad_dict4 = {'x': 1.0, 'y': np.nan, 'z': 3.14}
         cls.bad_dict5 = {'x': 1.0, 'y': np.inf, 'z': 3.14}
+
+        cls.dict6 = {'x':1, 'y':np.float64(2.1), 'z':np.long(57)}
 
 
     def test_initialization(self):
@@ -49,6 +51,12 @@ class TestPSet:
         assert ps2a.get_id() == ps2b.get_id()
         assert ps1a.get_id() != ps2a.get_id()
         assert ps3.get_id() != ps1a.get_id()
+
+    def test_init_types(self):
+        ps = pset.PSet(self.dict6)
+        assert ps['x']==1.0
+        assert ps['y']==2.1
+        assert ps['z']==57.0
 
     @raises(TypeError)
     def test_immutable(self):
