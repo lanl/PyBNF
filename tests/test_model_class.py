@@ -31,22 +31,39 @@ class TestModel:
         model3 = pset.Model(self.file3)
         assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__')
 
+    def test_init_with_pset(self):
+        ps1 = pset.PSet(self.dict1)
+        model1 = pset.Model(self.file1, ps1)
+        assert model1.param_set['kase__FREE__'] == 3.8
+
+    @raises(ValueError)
+    def test_init_with_pset_error(self):
+        ps1 = pset.PSet(self.dict2)
+        model1 = pset.Model(self.file1, ps1)
+        assert model1.param_set['kase__FREE__'] == 3.8
+
+
     def test_set_param_set(self):
         model1 = pset.Model(self.file1)
         ps1 = pset.PSet(self.dict1)
         model1.set_param_set(ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
+    def test_copy_with_param_set(self):
+        model1 = pset.Model(self.file1)
+        ps1 = pset.PSet(self.dict1)
+        model1b = model1.copy_with_param_set(ps1)
+        assert model1b.param_set['kase__FREE__'] == 3.8
+
     @raises(ValueError)
     def test_set_param_set_error(self):
         model1 = pset.Model(self.file1)
         ps2 = pset.PSet(self.dict2)
-        model1.set_param_set(ps2)
+        model1.copy_with_param_set(ps2)
 
     def test_model_text(self):
-        model1 = pset.Model(self.file1)
         ps1 = pset.PSet(self.dict1)
-        model1.set_param_set(ps1)
+        model1 = pset.Model(self.file1,ps1)
 
         f_answer = open(self.file1a)  # File containing the correct output for model_text()
         answer = f_answer.read()
@@ -54,9 +71,9 @@ class TestModel:
         assert model1.model_text() == answer
 
     def test_model_save(self):
-        model1 = pset.Model(self.file1)
         ps1 = pset.PSet(self.dict1)
-        model1.set_param_set(ps1)
+        model1 = pset.Model(self.file1, ps1)
+
         model1.save(self.savefile)
 
         f_myguess = open(self.savefile)

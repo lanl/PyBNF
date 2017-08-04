@@ -5,9 +5,13 @@
 # authors: Chylek LA, Hlavacek WS (Los Alamos National Laboratory)
 # software compatibility: RuleBender (version 2.1.0), BioNetGen (version 2.3)
 
+# begin parameters
+# your parser should ignore this
+# end parameters
+
 begin model
 
-begin parameters
+begin parameters # this comment might break your parser
 
 
 f 1 # cells per reaction compartment

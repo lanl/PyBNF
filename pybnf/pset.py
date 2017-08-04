@@ -1,5 +1,7 @@
 import numpy as np
 import re
+import copy
+import warnings
 
 
 class Model(object):
@@ -9,20 +11,25 @@ class Model(object):
 
     """
 
-    def __init__(self, bngl_file):
+    def __init__(self, bngl_file, pset=None):
         """
         Loads the model from the given .bngl file
 
         :param bngl_file: str address of the bngl file
+        :param pset: PSet to initialize the model with. Defaults to None
         """
 
         # Read the file
         with open(bngl_file) as file:
             self.bngl_file_text = file.read()
 
-        # Scan the file for param names of type __FREE__
+        # Scan the file's lines
+        # Find param names of type __FREE__, and also the 'begin parameters' declaration
         param_names_set = set()
-        for line in self.bngl_file_text.splitlines():
+        split_line = None
+        linelist = self.bngl_file_text.splitlines()
+        for linei in range(len(linelist)):
+            line = linelist[linei]
             # Remove comment if present
             commenti = line.find('#')
             if commenti != -1:
@@ -33,26 +40,33 @@ class Model(object):
             for p in params:
                 param_names_set.add(p)
 
+            # Check if this is the 'begin parameters' line
+            if re.match('begin parameters\s*', line):
+                if split_line is not None:
+                    raise ModelError("Found a second instance of 'begin parameters' at line " + str(linei))
+                split_line = linei + 1
+
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found")
+
+        if split_line is None:
+            raise ModelError("'begin parameters' not found in BNGL file")
+
+        # Two pieces of the model text. The full model with params should be written as _model_text_start + (free param definitions) + _model_text_end
+        self._model_text_start = '\n'.join(linelist[:split_line] + [''])
+        self._model_text_end = '\n'.join(linelist[split_line:])
 
         # Save model_params as a sorted tuple
         param_names_list = list(param_names_set)
         param_names_list.sort()
         self.param_names = tuple(param_names_list)
 
-        # Find the point in the file where we would eventually write in the values of the free paramters
+        if pset:
+            # If this model is to be initialized with a PSet, check that it has the correct parameter names
+            if pset.keys_to_string() != '\t'.join(self.param_names):
+                raise ValueError('Parameter names in the PSet do not match those in the Model')
 
-        split_index = self.bngl_file_text.find(
-            '\nbegin parameters\n') + 18  # Position after the "begin parameters" line
-        if split_index == 17:
-            raise ModelError("'begin parameters' not found in BNGL file")
-
-        # Two pieces of the model text. The full model with params should be written as _model_text_start + (free param definitions) + _model_text_end
-        self._model_text_start = self.bngl_file_text[:split_index]
-        self._model_text_end = self.bngl_file_text[split_index:]
-
-        self.param_set = None
+        self.param_set = pset
 
     def set_param_set(self, pset):
         """
@@ -61,11 +75,29 @@ class Model(object):
         :param pset: A PSet object containing the parameters to be set.
         """
 
+        warnings.warn('set_param_set() is deprecated. For work with the parallel scheduler, instead use '
+                      'copy_with_param_set() to create a new Model instance.', DeprecationWarning)
+
         # Check that the PSet has definitions for the right parameters for this model
         if pset.keys_to_string() != '\t'.join(self.param_names):
             raise ValueError('Parameter names in the PSet do not match those in the Model')
 
         self.param_set = pset
+
+    def copy_with_param_set(self, pset):
+        """
+        Returns a copy of this model containing the specified parameter set.
+
+        :param pset: A PSet object containing the parameters for the new instance
+        :return:
+        """
+        # Check that the PSet has definitions for the right parameters for this model
+        if pset.keys_to_string() != '\t'.join(self.param_names):
+            raise ValueError('Parameter names in the PSet do not match those in the Model')
+
+        newmodel = copy.deepcopy(self)
+        newmodel.param_set = pset
+        return newmodel
 
     def model_text(self):
         """
