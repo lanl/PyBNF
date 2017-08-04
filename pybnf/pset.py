@@ -20,8 +20,6 @@ class PSet(object):
             value = param_dict[key]
             if type(key) != str:
                 raise TypeError("Parameter key " + str(key) + " is not of type str")
-            if not is_number(value):
-                raise TypeError("Parameter value " + str(value) + " with key " + str(key) + " is not a number type")
             if value < 0:
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
             if np.isnan(value) or np.isinf(value):
@@ -59,7 +57,7 @@ class PSet(object):
         When a PSet is converted to a str, returns "PSet:" followed by the parameter dict.
         :return: str
         """
-        return "PSet:"+str(self._param_dict)
+        return "PSet:" + str(self._param_dict)
 
     def __repr__(self):
         """
@@ -95,17 +93,3 @@ class PSet(object):
         keys.sort()
         values = [str(self[k]) for k in keys]  # Values are in alpha order by key name
         return '\t'.join(values)
-
-def is_number(n):
-    """
-    Determines whether an object is a number by attempting to cast it to float
-
-    :param n: Object to test
-    :return: bool
-    """
-    try:
-        float(n)
-    except (ValueError, AttributeError):
-        return False
-    else:
-        return True

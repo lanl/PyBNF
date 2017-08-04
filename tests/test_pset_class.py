@@ -16,7 +16,6 @@ class TestPSet:
         cls.dict5 = {'x': 1.0, 'y': 2.0, 'z': 3.141}
 
         cls.bad_dict1 = {'x': 1.0, 'y': -2.0, 'z': 3.14}
-        cls.bad_dict2 = {'x': 1.0, 'y': 'non-numeric', 'z': 3.141}
         cls.bad_dict3 = {'x': 1.0, 42: 2.0, 'z': 3.141}
         cls.bad_dict4 = {'x': 1.0, 'y': np.nan, 'z': 3.14}
         cls.bad_dict5 = {'x': 1.0, 'y': np.inf, 'z': 3.14}
@@ -66,10 +65,6 @@ class TestPSet:
     @raises(ValueError)
     def test_keystr(self):
         ps1 = pset.PSet(self.bad_dict1)
-
-    @raises(TypeError)
-    def test_valtype(self):
-        ps1 = pset.PSet(self.bad_dict2)
 
     @raises(TypeError)
     def test_keytype(self):
