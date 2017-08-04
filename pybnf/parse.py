@@ -1,30 +1,65 @@
 import pyparsing as pp
 import re
-from collections import defaultdict
 
-parameters = {}  # define empty dict
-d = defaultdict(list)
 def parse(s):
-    
-    lkeys = pp.oneOf('model exp_files')
-    keys = pp.oneOf('output_dir bng_command population_size fit_type cluster_software parallel_count')('key')
-    equals = pp.Suppress('=')
-    value = pp.Word(pp.alphanums)('value')
-    values = pp.OneOrMore(value)('values')
 
-    linegrammar = keys + equals  + values  # <-- grammar defined here
+    equals = pp.Suppress('=')
+
+    #set up multiple grammars
+
+    #single str value 
+    strkeys = pp.oneOf('bng_command job_name')
+    string = pp.Word(pp.alphas)
+    strgram = strkeys + equals + string
     
-    line = linegrammar.parseString(s, parseAll=True) #parse string
+    #single num value
+    numkeys = pp.oneOf('verbosity parallel_count seed delete_old_files max_generations population_size smoothing min_objfunc_value objfunc extra_weight swap_rate max_parents force_different_parents keep_parents divide_by_init log_transform_sim_data standardize_sim_data standardize_exp_data')
+    num = pp.Word(pp.nums)
+    numgram = numkeys + equals + num
     
-    d[line.key] = line.values.asList() #set key to values
-     
+    #multiple str value
+    strskeys = pp.oneOf('output_dir model exp_file')
+    strings = pp.OneOrMore(pp.Word(pp.alphas))
+    strsgram = strskeys + equals + strings
+    
+    #multiple str and num value
+    strnumkeys = pp.oneOf('mutate')
+    nums = pp.OneOrMore(pp.Word(pp.nums))
+    strnumgram = strnumkeys + equals + strings + nums
+    
+    line = s 
+    try:
+        line = strgram.parseString(s, parseAll=True).asList()
+    except:    
+        try: 
+            line = numgram.parseString(s, parseAll=True).asList()
+        except:
+            try:
+                line = strsgram.parseString(s, parseAll=True).asList()
+            except:
+                try:
+                    line = strnumgram.parseString(s, parseAll=True).asList()
+                except pp.ParseException as x:
+                    print (x)
+
+    return line
+         
     
 def ploop(path):  # parse loop
+    d = {}
+    
     with open(path, "r") as infile:
         for line in infile:
             if re.match('\s*$', line) or re.match('\s*#', line):
                 continue
-            parse(line)
-    return parameters
+            l = parse(line)
+            print (l)
+            key = l[0]
+            values = l[1:]
+            d[key] = values #set key to values
+            
+    print (d)
+    return d
+    
+ploop("con.txt")
 
-print (d.items())
