@@ -20,8 +20,6 @@ class PSet(object):
             value = param_dict[key]
             if type(key) != str:
                 raise TypeError("Parameter key " + str(key) + " is not of type str")
-            if type(value) != float:
-                raise TypeError("Parameter value " + str(value) + " with key " + str(key) + " is not of type float")
             if value < 0:
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
             if np.isnan(value) or np.isinf(value):
@@ -53,6 +51,27 @@ class PSet(object):
         """
         unique_str = ''.join([self.keys_to_string(), self.values_to_string()])
         return hash(unique_str)
+
+    def __str__(self):
+        """
+        When a PSet is converted to a str, returns "PSet:" followed by the parameter dict.
+        :return: str
+        """
+        return "PSet:" + str(self._param_dict)
+
+    def __repr__(self):
+        """
+
+        :return: str
+        """
+        return self.__str__()
+
+    def keys(self):
+        """
+        Returns a list of the parameter keys
+        :return: list
+        """
+        return self._param_dict.keys()
 
     def keys_to_string(self):
         """
