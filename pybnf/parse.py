@@ -27,21 +27,8 @@ def parse(s):
     nums = pp.OneOrMore(pp.Word(pp.nums))
     strnumgram = strnumkeys + equals + strings + nums
     
-    line = s 
-    try:
-        line = strgram.parseString(s, parseAll=True).asList()
-    except:    
-        try: 
-            line = numgram.parseString(s, parseAll=True).asList()
-        except:
-            try:
-                line = strsgram.parseString(s, parseAll=True).asList()
-            except:
-                try:
-                    line = strnumgram.parseString(s, parseAll=True).asList()
-                except pp.ParseException as x:
-                    print (x)
-
+    line = (strgram | numgram | strsgram | strnumgram).parseString(s, parseAll=True).asList() 
+    
     return line
          
     
