@@ -47,6 +47,4 @@ def ploop(path):  # parse loop
             
     print (d)
     return d
-    
-ploop("con.txt")
 
