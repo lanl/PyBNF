@@ -14,9 +14,14 @@ class TestParse:
     def teardown_class(cls):
         pass
 
-    def test_parse(self):
-        file = open("testfile.txt","w")
-        file.write('fit_type =  world\n \n #derp = derp')
-        file.close()
-        assert parse.ploop("testfile.txt") == {'fit_type': 'world'}
-        os.remove("testfile.txt")
+    def test_grammar(self):
+        s = ['job_name =  world', 'verbosity = 3', 'model = strings strings', 'mutate = derp 1 3' ' #derp = derp']
+        assert parse.parse(s[0]) == ['job_name', 'world']
+        assert parse.parse(s[1]) == ['verbosity', '3']
+        assert parse.parse(s[2]) == ['model', 'strings', 'strings']
+        assert parse.parse(s[3]) == ['mutate', 'derp', '1', '3']
+    
+    def test_capital(self):
+        assert parse.parse('Model = string string') == ['model', 'string', 'string']
+        assert parse.parse('Job_name = string') == ['job_name', 'string']
+        assert parse.parse('vErbosity = 2') == ['verbosity', '2']
