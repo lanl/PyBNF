@@ -5,7 +5,7 @@ import re
 def parse(s):
 
     equals = pp.Suppress('=')
-    comment = pp.Suppress(pp.ZeroOrMore('#' - pp.Word(pp.alphanums)))
+    comment = pp.Suppress(pp.ZeroOrMore('#' - pp.ZeroOrMore(pp.Word(pp.alphanums))))
     #set up multiple grammars
 
     #single str value 
