@@ -15,7 +15,7 @@ class TestParse:
         pass
 
     def test_grammar(self):
-        s = ['job_name =  world #test test', 'verbosity = 3', 'model = strings strings', 'mutate = derp 1 3' ' #derp = derp']
+        s = ['job_name =  world #test test', 'verbosity = 3', 'model = strings strings', 'mutate = derp 1 3', ' #derp = derp']
         assert parse.parse(s[0]) == ['job_name', 'world']
         assert parse.parse(s[1]) == ['verbosity', '3']
         assert parse.parse(s[2]) == ['model', 'strings', 'strings']
