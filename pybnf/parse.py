@@ -1,4 +1,4 @@
-
+\
 import pyparsing as pp
 import re
 
@@ -25,7 +25,7 @@ def parse(s):
     
     #multiple str and num value
     strnumkeys = pp.oneOf('mutate random_var lognormrandom_var loguniform_var', caseless=True)
-    varnums = pp.OneOrMore(strings - pp.Word(pp.nums) - pp.Word(pp.nums))
+    varnums = strings - pp.Word(pp.nums) - pp.Word(pp.nums)
     strnumgram = strnumkeys - pp.ZeroOrMore(equals) - varnums -comment
     
     #static_list_var grammar
@@ -61,3 +61,5 @@ def ploop(path):  # parse loop
 class IllegalParamException(Exception):
     def __init__(self, value):
         print (self.message)
+        
+ploop('con.txt')
