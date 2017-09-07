@@ -22,7 +22,6 @@ class TestPSet:
 
         cls.dict6 = {'x':1, 'y':np.float64(2.1), 'z':np.long(57)}
 
-
     def test_initialization(self):
         ps1 = pset.PSet(self.dict2)
         assert ps1['x'] == 1.0

@@ -259,7 +259,7 @@ class Trajectory(object):
         """
         if len(self.trajectory) > 0:
             if not self._valid_pset(pset):
-                raise Exception("PSet %s has incompatible parameters" % pset)
+                raise ValueError("PSet %s has incompatible parameters" % pset)
         self.trajectory[pset] = obj
 
     def _write(self):
@@ -267,8 +267,8 @@ class Trajectory(object):
         s = ''
         header = next(iter(self.trajectory.keys())).keys_to_string()
         s += '#\t%s\tObj\n' % header
-        for (k, v) in self.trajectory.items():
-            s += '\t%s\t%s\n' % (k.values_to_string(), v)
+        for k in sorted(self.trajectory, key=self.trajectory.get):
+            s += '\t%s\t%s\n' % (k.values_to_string(), self.trajectory[k])
         return s
 
     def write_to_file(self, filename):
