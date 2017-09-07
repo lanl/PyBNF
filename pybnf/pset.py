@@ -261,3 +261,22 @@ class Trajectory(object):
             raise Exception("PSet %s has incompatible parameters" % pset)
         self.trajectory[pset] = obj
 
+    def _write(self):
+        """Writes the Trajectory in a tab-delimited format"""
+        s = ''
+        header = next(iter(self.trajectory.keys())).keys_to_string()
+        s += '#\t%s\tObj\n' % header
+        for (k, v) in self.trajectory.items():
+            s += '\t%s\t%.5f\n' % (k.values_to_string(), v)
+        return s
+
+    def write_to_file(self, filename):
+        """
+        Writes the Trajectory to a specified file
+
+        :param filename: File to store Trajectory
+        """
+        with open(filename, 'w') as f:
+            f.write(self._write())
+            f.close()
+
