@@ -229,3 +229,35 @@ class PSet(object):
         keys.sort()
         values = [str(self[k]) for k in keys]  # Values are in alpha order by key name
         return '\t'.join(values)
+
+
+class Trajectory(object):
+    """
+    Tracks the various PSet instances and the corresponding objective function values
+    """
+
+    def __init__(self):
+        self.trajectory = dict()
+
+    def _valid_pset(self, pset):
+        """
+        Checks to confirm that a PSet is compatible with this Trajectory
+
+        :param pset: A PSet instance
+        :return: bool
+        """
+        existing_pset = next(iter(self.trajectory.keys()))
+        return pset.keys() == existing_pset.keys()
+
+    def add(self, pset, obj):
+        """
+        Adds a PSet to the fitting trajectory
+
+        :param pset: A particular point in parameter space
+        :param obj: The objective function value upon executing the model at this point in parameter space
+        :raises: Exception
+        """
+        if not self._valid_pset(pset):
+            raise Exception("PSet %s has incompatible parameters" % pset)
+        self.trajectory[pset] = obj
+
