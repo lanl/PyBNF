@@ -280,3 +280,10 @@ class Trajectory(object):
             f.write(self._write())
             f.close()
 
+    def best_fit(self):
+        """
+        Finds the best fit parameter set
+
+        :return: PSet
+        """
+        return min(self.trajectory, key=self.trajectory.get)
