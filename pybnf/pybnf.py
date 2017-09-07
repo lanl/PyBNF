@@ -5,4 +5,4 @@ __version__ = "0.1"
 
 
 def main():
-    pass
+    print("PyBNF-- version %s" % __version__)
