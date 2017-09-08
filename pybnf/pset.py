@@ -229,3 +229,62 @@ class PSet(object):
         keys.sort()
         values = [str(self[k]) for k in keys]  # Values are in alpha order by key name
         return '\t'.join(values)
+
+
+class Trajectory(object):
+    """
+    Tracks the various PSet instances and the corresponding objective function values
+    """
+
+    def __init__(self):
+        self.trajectory = dict()
+
+    def _valid_pset(self, pset):
+        """
+        Checks to confirm that a PSet is compatible with this Trajectory
+
+        :param pset: A PSet instance
+        :return: bool
+        """
+        existing_pset = next(iter(self.trajectory.keys()))
+        return pset.keys() == existing_pset.keys()
+
+    def add(self, pset, obj):
+        """
+        Adds a PSet to the fitting trajectory
+
+        :param pset: A particular point in parameter space
+        :param obj: The objective function value upon executing the model at this point in parameter space
+        :raises: Exception
+        """
+        if len(self.trajectory) > 0:
+            if not self._valid_pset(pset):
+                raise ValueError("PSet %s has incompatible parameters" % pset)
+        self.trajectory[pset] = obj
+
+    def _write(self):
+        """Writes the Trajectory in a tab-delimited format"""
+        s = ''
+        header = next(iter(self.trajectory.keys())).keys_to_string()
+        s += '#\t%s\tObj\n' % header
+        for k in sorted(self.trajectory, key=self.trajectory.get):
+            s += '\t%s\t%s\n' % (k.values_to_string(), self.trajectory[k])
+        return s
+
+    def write_to_file(self, filename):
+        """
+        Writes the Trajectory to a specified file
+
+        :param filename: File to store Trajectory
+        """
+        with open(filename, 'w') as f:
+            f.write(self._write())
+            f.close()
+
+    def best_fit(self):
+        """
+        Finds the best fit parameter set
+
+        :return: PSet
+        """
+        return min(self.trajectory, key=self.trajectory.get)
