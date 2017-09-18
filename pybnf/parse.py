@@ -75,8 +75,20 @@ def ploop(ls):  # parse loop
             continue
         try:
             l = parse(line)
-            key = l[0]
-            values = l[1:]
+
+            # Find parameter assignments that reference distinct parameters
+            var_def_keys = set(['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var'])
+            if l[0] in var_def_keys:
+                key = 'def_' + l[1]
+                values = l[2:]
+            elif l[0] == 'mutate':
+                key = 'mut_' + l[1]
+                values = l[2:]
+            else:
+                key = l[0]
+                values = l[1:]
+
+            # Assign values to keys
             if len(values) == 1:
                 d[key] = values[0]
             else:

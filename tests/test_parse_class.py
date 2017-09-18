@@ -19,6 +19,7 @@ class TestParse:
         assert parse.parse(self.s[0]) == ['job_name', 'world']
         assert parse.parse(self.s[1]) == ['verbosity', '3']
         assert parse.parse(self.s[2]) == ['model', 'strings', 'strings']
+        print(parse.parse(self.s[3]))
         assert parse.parse(self.s[3]) == ['mutate', 'derp', '1', '3']
     
     def test_capital(self):
@@ -36,3 +37,4 @@ class TestParse:
         assert d['job_name'] == 'world'
         assert d['verbosity'] == '3'
         assert d['model'] == ['strings', 'strings']
+        assert d['mut_derp'] == ['1', '3']
