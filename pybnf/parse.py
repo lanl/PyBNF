@@ -75,10 +75,12 @@ def ploop(ls):  # parse loop
             continue
         try:
             l = parse(line)
-            print(l)
             key = l[0]
             values = l[1:]
-            d[key] = values  # set key to values
+            if len(values) == 1:
+                d[key] = values[0]
+            else:
+                d[key] = values  # set key to values
         except:
             message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
             #               print (message)
