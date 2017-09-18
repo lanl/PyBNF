@@ -14,20 +14,41 @@ def parse(s):
 
     # single num value
     numkeys = pp.oneOf(
-        'verbosity parallel_count seed delete_old_files max_generations population_size smoothing min_objfunc_value objfunc extra_weight swap_rate max_parents force_different_parents keep_parents divide_by_init log_transform_sim_data standardize_sim_data standardize_exp_data',
+        'verbosity\
+        parallel_count\
+        seed\
+        delete_old_files\
+        max_generations\
+        population_size\
+        smoothing\
+        min_objfunc_value\
+        objfunc\
+        extra_weight\
+        swap_rate\
+        max_parents\
+        force_different_parents\
+        keep_parents\
+        divide_by_init\
+        log_transform_sim_data\
+        standardize_sim_data\
+        standardize_exp_data',
         caseless=True)
-    num = pp.Word(pp.nums)
+    point = pp.Literal(".")
+    e = pp.CaselessLiteral("E")
+    num = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
+                         pp.Optional(point + pp.Optional(pp.Word(pp.nums))) +
+                         pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
     numgram = numkeys - equals - num - comment
 
     # multiple str value
     strskeys = pp.oneOf('output_dir model exp_file', caseless=True)
-    strings = pp.OneOrMore(pp.Word(pp.alphas))
+    strings = pp.OneOrMore(pp.Word(pp.printables))
     strsgram = strskeys - equals - strings - comment
 
     # multiple str and num value
     strnumkeys = pp.oneOf('mutate random_var lognormrandom_var loguniform_var', caseless=True)
-    varnums = strings - pp.Word(pp.nums) - pp.Word(pp.nums)
-    strnumgram = strnumkeys - pp.ZeroOrMore(equals) - varnums - comment
+    varnums = pp.Word(pp.printables) - pp.Word(pp.nums) - pp.Word(pp.nums)
+    strnumgram = strnumkeys - equals - varnums - comment
 
     # static_list_var grammar
     slvkey = pp.oneOf('static_list_var', caseless=True)
