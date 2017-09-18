@@ -60,23 +60,29 @@ def parse(s):
     return line
 
 
-def ploop(path):  # parse loop
+def load_config(path):
+    infile = open(path, 'r')
+    param_dict = ploop(infile.readlines())
+    infile.close()
+    return param_dict
+
+
+def ploop(ls):  # parse loop
     d = {}
 
-    with open(path, "r") as infile:
-        for i, line in enumerate(infile):
-            if re.match('\s*$', line) or re.match('\s*#', line):
-                continue
-            try:
-                l = parse(line)
-                print(l)
-                key = l[0]
-                values = l[1:]
-                d[key] = values  # set key to values
-            except:
-                message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
-                #               print (message)
-                raise Exception(message)
+    for i, line in enumerate(ls):
+        if re.match('\s*$', line) or re.match('\s*#', line):
+            continue
+        try:
+            l = parse(line)
+            print(l)
+            key = l[0]
+            values = l[1:]
+            d[key] = values  # set key to values
+        except:
+            message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
+            #               print (message)
+            raise Exception(message)
 
     return d
 
