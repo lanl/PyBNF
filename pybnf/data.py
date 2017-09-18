@@ -7,8 +7,7 @@ class Data(object):
     """Top level class for managing data"""
 
     def __init__(self):
-        # dict with both column header, column index pairs and index, header pairs
-        self.cols = dict()
+        self.cols = dict()  # dict of column headers to column indices
         self.data = None  # Numpy array for data
 
     def __getitem__(self, col_header):
@@ -35,15 +34,12 @@ class Data(object):
         """
 
         c_idx = self.cols[col_header]
-        rows = self.data[self.data[:,c_idx]==value,:]
+        rows = self.data[self.data[:, c_idx] == value, :]
 
-        if rows.size==0:
+        if rows.size == 0:
             return None
 
-        return rows[0,:]
-
-
-
+        return rows[0, :]
 
     @staticmethod
     def _to_number(x):
