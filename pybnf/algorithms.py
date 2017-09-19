@@ -8,7 +8,6 @@ from .pset import Model
 from .pset import PSet
 from .pset import Trajectory
 
-
 import logging
 
 
