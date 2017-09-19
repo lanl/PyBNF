@@ -18,6 +18,7 @@ class Model(object):
         :param bngl_file: str address of the bngl file
         :param pset: PSet to initialize the model with. Defaults to None
         """
+        self.name = re.sub(".bngl", "", bngl_file[bngl_file.rfind("/")+1:])
 
         # Read the file
         with open(bngl_file) as file:
