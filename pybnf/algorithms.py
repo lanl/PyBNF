@@ -7,6 +7,9 @@ from distributed import Client
 from .pset import Trajectory
 
 
+import logging
+
+
 class Result(object):
     def __init__(self, paramset, simdata):
         self.pset = paramset
@@ -44,7 +47,8 @@ class Algorithm(object):
 
         :return: list of PSets
         """
-        raise NotImplementedError("Subclasses must override start_run()")
+        logging.info("Initializing algorithm")
+        raise NotImplementedError("Subclasses must implement start_run()")
 
     def got_result(self, res):
         """
@@ -55,7 +59,8 @@ class Algorithm(object):
         :type res: Result
         :return: List of PSet(s) to be run next.
         """
-        raise NotImplementedError("Subclasses must override got_result()")
+        logging.info("Retrieved result")
+        raise NotImplementedError("Subclasses must implement got_result()")
 
     def add_to_trajectory(self, res):
         score = self.objective.evaluate(res.simdata, self.exp_data)
@@ -72,7 +77,9 @@ class Algorithm(object):
             self.add_to_trajectory(res)
             response = self.got_result(res)
             if response == 'STOP':
+                logging.info("Stop criterion satisfied")
                 break
             else:
                 pool.update([client.submit(j.run_simulation) for j in response])
+        logging.info("Fitting complete")
         client.close()
