@@ -4,12 +4,12 @@ import re
 
 def parse(s):
     equals = pp.Suppress('=')
-    comment = pp.Suppress(pp.ZeroOrMore('#' - pp.ZeroOrMore(pp.Word(pp.alphanums))))
+    comment = pp.Suppress(pp.Optional(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables))))
     # set up multiple grammars
 
     # single str value
     strkeys = pp.oneOf('bng_command job_name', caseless=True)
-    string = pp.Word(pp.alphas)
+    string = pp.Word(pp.alphanums + "_")
     strgram = strkeys - equals - string - comment
 
     # single num value
@@ -47,12 +47,13 @@ def parse(s):
 
     # multiple str and num value
     strnumkeys = pp.oneOf('mutate random_var lognormrandom_var loguniform_var', caseless=True)
-    varnums = pp.Word(pp.printables) - pp.Word(pp.nums) - pp.Word(pp.nums)
+    bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
+    varnums = bng_parameter - num - num
     strnumgram = strnumkeys - equals - varnums - comment
 
     # static_list_var grammar
     slvkey = pp.oneOf('static_list_var', caseless=True)
-    slvgram = slvkey - equals - string - pp.OneOrMore(pp.Word(pp.nums)) - comment
+    slvgram = slvkey - equals - bng_parameter - pp.OneOrMore(num) - comment
 
     # check each grammar and output somewhat legible error message
     line = (strgram | numgram | strsgram | strnumgram | slvgram).parseString(s, parseAll=True).asList()
@@ -77,12 +78,9 @@ def ploop(ls):  # parse loop
             l = parse(line)
 
             # Find parameter assignments that reference distinct parameters
-            var_def_keys = set(['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var'])
+            var_def_keys = set(['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var', 'mutate'])
             if l[0] in var_def_keys:
-                key = 'def_' + l[1]
-                values = l[2:]
-            elif l[0] == 'mutate':
-                key = 'mut_' + l[1]
+                key = (l[0], l[1])
                 values = l[2:]
             else:
                 key = l[0]
