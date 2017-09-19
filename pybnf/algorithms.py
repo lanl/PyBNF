@@ -1,6 +1,9 @@
 """pybnf.algorithms: contains the Algorithm class and subclasses as well as support classes and functions"""
 
 
+from distributed import as_completed
+from distributed import Client
+
 from .pset import Trajectory
 
 
@@ -57,3 +60,19 @@ class Algorithm(object):
     def add_to_trajectory(self, res):
         score = self.objective.evaluate(res.simdata, self.exp_data)
         self.trajectory.add(res.pset, score)
+
+    def run(self):
+        client = Client()
+        psets = self.start_run()
+        jobs = [Job(p) for p in psets]
+        futures = [client.submit(job.run_simulation) for job in jobs]
+        pool = as_completed(futures, with_results=True)
+        while True:
+            f, res = next(pool)
+            self.add_to_trajectory(res)
+            response = self.got_result(res)
+            if response == 'STOP':
+                break
+            else:
+                pool.update([client.submit(j.run_simulation) for j in response])
+        client.close()
