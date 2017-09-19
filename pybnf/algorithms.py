@@ -97,7 +97,6 @@ class Algorithm(object):
 
     def run(self):
         """Main loop for executing the algorithm"""
-
         client = Client()
         psets = self.start_run()
         jobs = [Job(p) for p in psets]
