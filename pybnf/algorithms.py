@@ -4,6 +4,8 @@
 from distributed import as_completed
 from distributed import Client
 
+from .pset import Model
+from .pset import PSet
 from .pset import Trajectory
 
 
@@ -11,17 +13,43 @@ import logging
 
 
 class Result(object):
+    """
+    Container for the results of a single evaluation in the fitting algorithm
+    """
+
     def __init__(self, paramset, simdata):
+        """
+        Instantiates a Result
+
+        :param paramset: The parameters corresponding to this evaluation
+        :type paramset: PSet
+        :param simdata: The simulation results corresponding to this evaluation
+        :type simdata: list of Data instances
+        """
         self.pset = paramset
         self.simdata = simdata
 
 
 class Job:
+    """
+    Container for information necessary to perform a single evaluation in the fitting algorithm
+    """
+
     def __init__(self, model, params):
+        """
+        Instantiates a Job
+
+        :param model: The model to evaluate
+        :type model: Model
+        :param params: The parameter set with which to evaluate the model
+        :type params: PSet
+        """
         self.model = model
         self.params = params
 
     def run_simulation(self):
+        """Runs the simulation and reads in the result"""
+        
         pass
 
 
@@ -63,10 +91,14 @@ class Algorithm(object):
         raise NotImplementedError("Subclasses must implement got_result()")
 
     def add_to_trajectory(self, res):
+        """Adds information from a Result to the Trajectory instance"""
+
         score = self.objective.evaluate(res.simdata, self.exp_data)
         self.trajectory.add(res.pset, score)
 
     def run(self):
+        """Main loop for executing the algorithm"""
+
         client = Client()
         psets = self.start_run()
         jobs = [Job(p) for p in psets]
