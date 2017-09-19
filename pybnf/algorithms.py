@@ -34,3 +34,26 @@ class Algorithm(object):
         self.objective = objective
         self.trajectory = Trajectory()
 
+    def start_run(self):
+        """
+        Called by the scheduler at the start of a fitting run.
+        Must return a list of PSets that the scheduler should run.
+
+        :return: list of PSets
+        """
+        raise NotImplementedError("Subclasses must override start_run()")
+
+    def got_result(self, res):
+        """
+        Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
+        data
+
+        :param res: result from the completed simulation
+        :type res: Result
+        :return: List of PSet(s) to be run next.
+        """
+        raise NotImplementedError("Subclasses must override got_result()")
+
+    def add_to_trajectory(self, res):
+        score = self.objective.evaluate(res.simdata, self.exp_data)
+        self.trajectory.add(res.pset, score)
