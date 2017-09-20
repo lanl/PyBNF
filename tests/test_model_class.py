@@ -34,7 +34,7 @@ class TestModel:
             'Ag_tot_1__FREE__', 'kase__FREE__', 'koff__FREE__', 'kon__FREE__', 'pase__FREE__', 't_end__FREE__')
 
         model3 = pset.Model(self.file3)
-        assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__')
+        assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__')
 
     def test_init_with_pset(self):
         ps1 = pset.PSet(self.dict1)

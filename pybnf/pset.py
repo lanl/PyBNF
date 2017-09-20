@@ -108,8 +108,8 @@ class Model(object):
         :return:
         """
         # Check that the PSet has definitions for the right parameters for this model
-        if pset.keys_to_string() != '\t'.join(self.param_names):
-            raise ValueError('Parameter names in the PSet do not match those in the Model')
+        if set(pset.keys()) != set(self.param_names):
+            raise ValueError('Parameter names in the PSet do not match those in the Model\n%s\n%s' % (pset.keys(), self.param_names))
 
         newmodel = copy.deepcopy(self)
         newmodel.param_set = pset

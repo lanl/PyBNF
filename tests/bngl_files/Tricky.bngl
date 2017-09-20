@@ -50,6 +50,7 @@ koff koff__FREE__+__koff2__FREE__*T # You should not parse commented__FREE__
 
 # rate constant for pseudo first-order phosphorylation of antigen-engaged receptor
 kase kase__FREE__*T # You should not parse commented__FREE__ 
+pase pase__FREE__
 
 H_tot 1e6 # cpc
 
@@ -161,8 +162,10 @@ generate_network({overwrite=>1})
 
 # first 5-min period of multivalent antigen stimulation
 setConcentration("Ag(DNP)","Ag_tot_1") 
-simulate({suffix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
-parameter_scan({suffix=>	"thing" ,method=>"ssa",t_end=>1,n_steps=>100}))
+saveConcentrations()
+simulate({suffix=>"p1_5",method=>"ode",t_start=>0,t_end=>5,n_steps=>50})
+resetConcentrations()
+parameter_scan({suffix=>"thing",method=>"ssa",t_start=>0,t_end=>1,n_steps=>100,parameter=>'kase',par_min=>'0.01',par_max=>'10',n_scan_pts=>4,log_scale=>1})
 
 
 end actions
