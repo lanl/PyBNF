@@ -7,7 +7,7 @@ from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import STDOUT
 
-from .pset import Model
+from .data import Data
 from .pset import PSet
 from .pset import Trajectory
 import numpy as np
@@ -43,7 +43,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, id, bngpath, prefixes):
+    def __init__(self, models, params, id, bngpath):
         """
         Instantiates a Job
 
@@ -53,19 +53,21 @@ class Job:
         :type params: PSet
         :param id: Job identification
         :type id: int
-        :param prefixes: prefixes corresponding to simulation results files
-        :type prefixes: str
         """
         self.models = models
         self.params = params
-        self.prefixes = prefixes
         self.id = id
         self.bng_program = bngpath + "/BNG2.pl"
 
+    def _name_with_id(self, model):
+        return '%s_%s' % (model.name, self.id)
+
     def _write_models(self):
+        """Writes models to file"""
+
         model_files = []
-        for model in self.models:
-            model_file_name = model.name + "_%s.bngl" % self.id
+        for i, model in enumerate(self.models):
+            model_file_name = self._name_with_id(model) + ".bngl"
             model_with_params = model.copy_with_param_set(self.params)
             model_with_params.save(model_file_name)
             model_files.append(model_file_name)
@@ -82,11 +84,31 @@ class Job:
             return FailedSimulation(self.id)
 
     def execute(self, models):
+        """Executes model simulations"""
         for model in models:
             run([self.bng_program, model], shell=True, check=True, stderr=STDOUT)
 
     def load_simdata(self):
-        pass
+        """
+        Function to load simulation data after executing all simulations for an evaluation
+
+        Returns a nested dictionary structure.  Top-level keys are model names and values are
+        dictionaries whose keys are action suffixes and values are Data instances
+
+        :return: dict of dict
+        """
+        ds = {}
+        for model in self.models:
+            ds[model.name] = {}
+            for suff in model.suffixes:
+                if suff[0] == 'simulate':
+                    data_file = '%s_%s.gdat' % (self._name_with_id(model), suff)
+                    data = Data(file_name=data_file)
+                else:  # suff[0] == 'parameter_scan'
+                    data_file = '%s_%s.scan' % (self._name_with_id(model), suff)
+                    data = Data(file_name=data_file)
+                ds[model.name][suff] = data
+        return ds
 
 
 class Algorithm(object):
