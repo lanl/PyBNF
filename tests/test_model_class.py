@@ -1,5 +1,6 @@
 from .context import pset
 from nose.tools import raises
+from os import remove
 
 
 class TestModel:
@@ -19,6 +20,10 @@ class TestModel:
 
         cls.dict1 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'koff__FREE__': 4.4e-3}
         cls.dict2 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'wrongname__FREE__': 4.4e-3}
+
+    @classmethod
+    def teardown_class(cls):
+        remove(cls.savefile)
 
     def test_initialize(self):
         model1 = pset.Model(self.file1)
