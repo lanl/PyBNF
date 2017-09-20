@@ -57,19 +57,29 @@ class Job:
 
 
 class Algorithm(object):
-    def __init__(self, exp_data, objective):
+    def __init__(self, exp_data, objective, config):
         """
         Instantiates an Algorithm with a set of experimental data and an objective function.  Also
-        initializes a Trajectory instance to track the fitting progress
+        initializes a Trajectory instance to track the fitting progress, and performs various additional
+        configuration that is consistent for all algorithms
 
         :param exp_data: List of experimental Data objects to be fit
         :type exp_data: iterable
         :param objective: The objective function
         :type objective: ObjectiveFunction
+        :param config: Configuration dictionary
+        :type config: dict
         """
         self.exp_data = exp_data
         self.objective = objective
+        self.config = config
         self.trajectory = Trajectory()
+
+        # Generate a list of variable names
+        self.variable_list = []
+        for key in config:
+            if type(key) == tuple:
+                self.variable_list.append(key[1])
 
     def start_run(self):
         """
@@ -129,46 +139,74 @@ class ParticleSwarm(Algorithm):
 
     """
 
-    def __init__(self, expdata, objective, variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
-                 wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.):
+    def __init__(self, expdata, objective, config):
+
+        # Former params that are now part of the config
+        #variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
+        #wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.)
         """
         Initial configuration of particle swarm optimizer
 
         :param expdata: Data object
         :param objective: ObjectiveFunction object
-        :param max_evals: Halt after this many simulations are run.
-        :param cognitive: Parameter c1 - how much is a particle accelerated toward its own previous best
-        :param social: Parameter c2 - how much is a particle accelerated toward the global best.
+        :param config: Configuration dictionary
+        :type config: dict
 
-        The remaining parameters relate to the complicated method presented is Moraes et al for adjusting the inertia
-        weight as you go. These features have not been directly unit tested. It remains to be seen whether they are
-        helpful for our application.
-        To disable this option, set w0 and wf to the same value, and set n_stop to infinity (the default)
-        :param w0: Inertia weight at the start of the simulation
-        :param wf: Inertia weight at the end of the simulation
-        :param nmax: Controls how quickly we approach wf - After nmax "unproductive" iterations, we are halfway from
+        The config should contain the following definitions:
+
+        population_size - Number of particles in the swarm
+        max_iterations - Maximum number of iterations. More precisely, the max number of simulations run is this times
+        the population size.
+        cognitive - Acceleration toward the particle's own best
+        social - Acceleration toward the global best
+        particle_weight - Inertia weight of the particle (default 1)
+
+        The following config parameters relate to the complicated method presented is Moraes et al for adjusting the
+        inertia weight as you go. These are optional, and this feature will be disabled (by setting
+        particle_weight_final = particle_weight) if these are not included.
+        It remains to be seen whether this method is at all useful for our applications. 
+
+        particle_weight_final -  Inertia weight at the end of the simulation
+        adaptive_n_max - Controls how quickly we approach wf - After nmax "unproductive" iterations, we are halfway from
         w0 to wf
-        :param n_stop: End the entire run if we have had this many "unproductive" iterations (should be more than nmax)
-        :param absolute_tol: Tolerance for determining if an iteration was "unproductive". A run is unproductive if the
+        adaptive_n_stop - nd the entire run if we have had this many "unproductive" iterations (should be more than
+        adaptive_n_max)
+        adaptive_abs_tol - Tolerance for determining if an iteration was "unproductive". A run is unproductive if the
         change in global_best is less than absolute_tol + relative_tol * global_best
-        :param relative_tol: Tolerance 2 for determining if an iteration was "unproductive" (see above)
+        adaptive_rel_tol - Tolerance 2 for determining if an iteration was "unproductive" (see above)
+
         """
 
-        super(ParticleSwarm, self).__init__(expdata, objective)
+        super(ParticleSwarm, self).__init__(expdata, objective, config)
+
+        # Set default values for non-essential parameters.
+        defaults = {'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
+                    'adaptive_rel_tol': 0.0}
+        for d in defaults:
+            if d not in config:
+                config[d] = defaults[d]
+
+        # This default value gets special treatment because if missing, it should take the value of particle_weight,
+        # disabling the adaptive weight change entirely.
+        if 'particle_weight_final' not in config:
+            config['particle_weight_final'] = config['particle_weight']
 
         # Save config parameters
-        self.c1 = cognitive
-        self.c2 = social
-        self.max_evals = max_evals
-        self.w0 = w0
-        self.wf = wf
-        self.nmax = nmax
-        self.n_stop = n_stop
-        self.absolute_tol = absolute_tol
-        self.relative_tol = relative_tol
+        self.c1 = config['cognitive']
+        self.c2 = config['social']
+        self.max_evals = config['population_size'] * config['max_iterations']
 
-        self.num_particles = num_particles
-        self.variable_list = variable_list
+        self.num_particles = config['population_size']
+        # Todo: Nice error message if a required key is missing
+
+        self.w0 = config['particle_weight']
+
+
+        self.wf = config['particle_weight_final']
+        self.nmax = config['adaptive_n_max']
+        self.n_stop = config['adaptive_n_stop']
+        self.absolute_tol = config['adaptive_abs_tol']
+        self.relative_tol = config['adaptive_rel_tol']
 
         self.nv = 0  # Counter that controls the current weight. Counts number of "unproductive" iterations.
         self.num_evals = 0  # Counter for the total number of results received
@@ -177,7 +215,7 @@ class ParticleSwarm(Algorithm):
         self.swarm = []  # List of lists of the form [PSet, velocity]. Velocity is stored as a dict with the same keys
         # as PSet
         self.pset_map = dict()  # Maps each PSet to it s particle number, for easy lookup.
-        self.bests = [[None, np.inf]] * num_particles  # The best result for each particle: list of the
+        self.bests = [[None, np.inf]] * self.num_particles  # The best result for each particle: list of the
         # form [PSet, objective]
         self.global_best = [None, np.inf]  # The best result for the whole swarm
         self.last_best = np.inf

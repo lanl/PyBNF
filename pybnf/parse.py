@@ -31,7 +31,16 @@ def parse(s):
         divide_by_init\
         log_transform_sim_data\
         standardize_sim_data\
-        standardize_exp_data',
+        standardize_exp_data\
+        max_iterations\
+        cognitive\
+        social\
+        particle_weight\
+        particle_weight_final\
+        adaptive_n_max\
+        adaptive_n_stop\
+        adaptive_abs_tol\
+        adaptive_rel_tol',
         caseless=True)
     point = pp.Literal(".")
     e = pp.CaselessLiteral("E")
