@@ -19,6 +19,7 @@ class Model(object):
         :param pset: PSet to initialize the model with. Defaults to None
         """
         self.name = re.sub(".bngl", "", bngl_file[bngl_file.rfind("/")+1:])
+        self.prefixes = []
 
         # Read the file
         with open(bngl_file) as file:
@@ -42,10 +43,14 @@ class Model(object):
                 param_names_set.add(p)
 
             # Check if this is the 'begin parameters' line
-            if re.match('begin parameters\s*', line):
+            if re.match('begin\s+parameters', line.strip()):
                 if split_line is not None:
                     raise ModelError("Found a second instance of 'begin parameters' at line " + str(linei))
                 split_line = linei + 1
+
+            action_prefix = self._get_action_prefix(line)
+            if action_prefix is not None:
+                self.prefixes.append(action_prefix)
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found")
@@ -68,6 +73,14 @@ class Model(object):
                 raise ValueError('Parameter names in the PSet do not match those in the Model')
 
         self.param_set = pset
+
+    @staticmethod
+    def _get_action_prefix(line):
+        if re.match("simulate|parameter_scan", line.strip()):
+            match = re.search("prefix\s*=>\s*['\"](.*?)['\"]\s*,", line)
+            if match is not None:
+                return match.group(1)
+        return None
 
     def set_param_set(self, pset):
         """

@@ -160,7 +160,7 @@ generate_network({overwrite=>1})
 
 # first 5-min period of multivalent antigen stimulation
 setConcentration("Ag(DNP)","Ag_tot_1") 
-simulate({suffix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
+simulate({prefix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
 
 
 end actions

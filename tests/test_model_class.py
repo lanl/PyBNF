@@ -85,3 +85,12 @@ class TestModel:
         f_answer.close()
 
         assert myguess == answer
+
+    def test_action_prefixes(self):
+        m0 = pset.Model(self.file1)
+        assert len(m0.prefixes) == 1
+        assert m0.prefixes[0] == 'p1_5'
+
+        m1 = pset.Model(self.file3)
+        assert len(m1.prefixes) == 2
+        assert m1.prefixes[1] == 'thing'
