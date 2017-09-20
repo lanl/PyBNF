@@ -75,6 +75,9 @@ class Algorithm(object):
         self.config = config
         self.trajectory = Trajectory()
 
+        # Store a list of all Model objects. Change this as needed for compatibility with other parts
+        self.model = [Model(model_file) for model_file in config['model']]
+
         # Generate a list of variable names
         self.variable_list = []
         for key in config:
@@ -109,11 +112,22 @@ class Algorithm(object):
         score = self.objective.evaluate(res.simdata, self.exp_data)
         self.trajectory.add(res.pset, score)
 
+    def make_job(self, params):
+        """
+        Creates a new Job using the specified params, and additional specifications that are already saved in the
+        Algorithm object
+
+        :param params:
+        :type params: PSet
+        :return: Job
+        """
+        return Job(self.model, params)
+
     def run(self):
         """Main loop for executing the algorithm"""
         client = Client()
         psets = self.start_run()
-        jobs = [Job(p) for p in psets]
+        jobs = [self.make_job(p) for p in psets]
         futures = [client.submit(job.run_simulation) for job in jobs]
         pool = as_completed(futures, with_results=True)
         while True:
@@ -124,7 +138,8 @@ class Algorithm(object):
                 logging.info("Stop criterion satisfied")
                 break
             else:
-                pool.update([client.submit(j.run_simulation) for j in response])
+                new_jobs = [self.make_job(ps) for ps in response]
+                pool.update([client.submit(j.run_simulation) for j in new_jobs])
         logging.info("Fitting complete")
         client.close()
 
@@ -164,7 +179,7 @@ class ParticleSwarm(Algorithm):
         The following config parameters relate to the complicated method presented is Moraes et al for adjusting the
         inertia weight as you go. These are optional, and this feature will be disabled (by setting
         particle_weight_final = particle_weight) if these are not included.
-        It remains to be seen whether this method is at all useful for our applications. 
+        It remains to be seen whether this method is at all useful for our applications.
 
         particle_weight_final -  Inertia weight at the end of the simulation
         adaptive_n_max - Controls how quickly we approach wf - After nmax "unproductive" iterations, we are halfway from
@@ -200,7 +215,6 @@ class ParticleSwarm(Algorithm):
         # Todo: Nice error message if a required key is missing
 
         self.w0 = config['particle_weight']
-
 
         self.wf = config['particle_weight_final']
         self.nmax = config['adaptive_n_max']
