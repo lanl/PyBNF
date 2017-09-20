@@ -3,8 +3,11 @@
 
 from distributed import as_completed
 from distributed import Client
+from os import mkdir
+from os import chdir
 from subprocess import run
 from subprocess import CalledProcessError
+from subprocess import PIPE
 from subprocess import STDOUT
 
 from .data import Data
@@ -20,7 +23,7 @@ class Result(object):
     Container for the results of a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, paramset, simdata):
+    def __init__(self, paramset, simdata, log):
         """
         Instantiates a Result
 
@@ -28,9 +31,12 @@ class Result(object):
         :type paramset: PSet
         :param simdata: The simulation results corresponding to this evaluation
         :type simdata: list of Data instances
+        :param log: The stdout + stderr of the simulations
+        :type log: list of str
         """
         self.pset = paramset
         self.simdata = simdata
+        self.log = log
 
 
 class FailedSimulation(object):
@@ -64,7 +70,6 @@ class Job:
 
     def _write_models(self):
         """Writes models to file"""
-
         model_files = []
         for i, model in enumerate(self.models):
             model_file_name = self._name_with_id(model) + ".bngl"
@@ -75,18 +80,26 @@ class Job:
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
-        model_files = self._write_models()
+        folder = 'sim_%s' % self.id
+        mkdir(folder)
         try:
-            self.execute(model_files)
+            chdir(folder)
+            model_files = self._write_models()
+            log = self.execute(model_files)
             simdata = self.load_simdata()
-            return Result(self.params, simdata)
+            chdir('../')
+            return Result(self.params, simdata, log)
         except CalledProcessError:
             return FailedSimulation(self.id)
 
     def execute(self, models):
         """Executes model simulations"""
+        log = []
         for model in models:
-            run([self.bng_program, model], shell=True, check=True, stderr=STDOUT)
+            cmd = '%s %s' % (self.bng_program, model)
+            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE)
+            log.append(cp.stdout)
+        return log
 
     def load_simdata(self):
         """
@@ -102,12 +115,12 @@ class Job:
             ds[model.name] = {}
             for suff in model.suffixes:
                 if suff[0] == 'simulate':
-                    data_file = '%s_%s.gdat' % (self._name_with_id(model), suff)
+                    data_file = '%s_%s.gdat' % (self._name_with_id(model), suff[1])
                     data = Data(file_name=data_file)
                 else:  # suff[0] == 'parameter_scan'
-                    data_file = '%s_%s.scan' % (self._name_with_id(model), suff)
+                    data_file = '%s_%s.scan' % (self._name_with_id(model), suff[1])
                     data = Data(file_name=data_file)
-                ds[model.name][suff] = data
+                ds[model.name][suff[1]] = data
         return ds
 
 
