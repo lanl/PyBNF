@@ -1,0 +1,53 @@
+begin model
+
+begin parameters
+
+k_factor k_factor__FREE__
+kps=1e-6*k_factor__FREE__
+km=1e-2
+
+k_link 1e-5
+
+Abcpc=600
+Agcpc=6000
+
+end parameters
+
+begin molecule types
+
+Ag(ep,ep,ep)
+Ab(Fab,Fab)
+
+end molecule types
+
+begin seed species
+
+Ag(ep,ep,ep) Agcpc
+Ab(Fab,Fab) Abcpc
+
+end seed species
+
+begin observables
+
+Molecules bound_Fab Ab(Fab!+)
+Molecules fullyBoundAg Ag(ep!+,ep!+,ep!+)
+Molecules Bound2Ag Ag(ep!+,ep!+,ep)
+Molecules Bound1Ag Ag(ep!+,ep,ep)
+Molecules freeAg Ag(ep,ep,ep)
+Molecules fullyBoundAb Ab(Fab!+,Fab!+)
+
+end observables
+
+begin reaction rules
+
+Ag(ep,ep,ep) + Ab(Fab) -> Ag(ep!1,ep,ep).Ab(Fab!1) kps
+Ag(ep!1).Ab(Fab!1) -> Ag(ep) + Ab(Fab) km
+Ag(ep!+,ep) + Ab(Fab) -> Ag(ep!+,ep!1).Ab(Fab!1) k_link
+
+end reaction rules
+
+begin actions
+
+simulate({method=>"nf", t_start=>0, t_end=>1000, n_steps=>1000, gml=>2e8})
+
+end actions

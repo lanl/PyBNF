@@ -13,6 +13,7 @@ class TestModel:
         cls.file1 = 'bngl_files/Simple.bngl'
         cls.file2 = 'bngl_files/ParamsEverywhere.bngl'
         cls.file3 = 'bngl_files/Tricky.bngl'
+        cls.file4 = 'bngl_files/NFmodel.bngl'
 
         cls.file1a = 'bngl_files/Simple_Answer.bngl'
 
@@ -99,3 +100,9 @@ class TestModel:
         m1 = pset.Model(self.file3)
         assert len(m1.suffixes) == 2
         assert m1.suffixes[1] == ('parameter_scan', 'thing')
+
+    def test_network_check(self):
+        model0 = pset.Model(self.file1)
+        assert model0.generates_network
+        model1 = pset.Model(self.file4)
+        assert not model1.generates_network

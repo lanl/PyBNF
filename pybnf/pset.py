@@ -22,6 +22,8 @@ class Model(object):
         self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
 
+        self.generates_network = False
+
         # Read the file
         with open(self.file_path) as file:
             self.bngl_file_text = file.read()
@@ -48,6 +50,8 @@ class Model(object):
                 if split_line is not None:
                     raise ModelError("Found a second instance of 'begin parameters' at line " + str(linei))
                 split_line = linei + 1
+            elif re.search('generate_network', line):
+                self.generates_network = True
 
             action_suffix = self._get_action_suffix(line)
             if action_suffix is not None:
