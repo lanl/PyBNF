@@ -7,6 +7,7 @@ from distributed import Client
 from .pset import Model
 from .pset import PSet
 from .pset import Trajectory
+import numpy as np
 
 import logging
 
@@ -117,6 +118,7 @@ class Algorithm(object):
         logging.info("Fitting complete")
         client.close()
 
+
 class ParticleSwarm(Algorithm):
     """
     Implements particle swarm optimization.
@@ -187,7 +189,7 @@ class ParticleSwarm(Algorithm):
         """
 
         for i in range(self.num_particles):
-            new_params = pset.PSet({xi: np.random.uniform(0, 4) for xi in self.variable_list})
+            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variable_list})
             # Todo: Smart way to initialize velocity?
             new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variable_list}
             self.swarm.append([new_params, new_velocity])
@@ -195,14 +197,16 @@ class ParticleSwarm(Algorithm):
 
         return [particle[0] for particle in self.swarm]
 
-    def got_result(self, paramset, simdata):
+    def got_result(self, res):
         """
         Updates particle velocity and position after a simulation completes.
 
-        :param paramset: PSet simulated
-        :param simdata: Resulting Data object
+        :param res: Result object containing the run PSet and the resulting Data.
         :return:
         """
+
+        paramset = res.pset
+        simdata = res.simdata
 
         self.num_evals += 1
 
@@ -231,7 +235,7 @@ class ParticleSwarm(Algorithm):
                                 self.bests[p][0][v] - self.swarm[p][0][v]) +
                                 self.c2 * np.random.random() * (self.global_best[0][v] - self.swarm[p][0][v])
                             for v in self.variable_list}
-        new_pset = pset.PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variable_list},
+        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variable_list},
                              allow_negative=True)  # Todo: Smarter handling of negative values
         self.swarm[p][0] = new_pset
         self.pset_map[new_pset] = p
