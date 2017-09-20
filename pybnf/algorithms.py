@@ -3,6 +3,9 @@
 
 from distributed import as_completed
 from distributed import Client
+from subprocess import run
+from subprocess import CalledProcessError
+from subprocess import STDOUT
 
 from .pset import Model
 from .pset import PSet
@@ -30,26 +33,59 @@ class Result(object):
         self.simdata = simdata
 
 
+class FailedSimulation(object):
+    def __init__(self, i):
+        self.id = i
+
+
 class Job:
     """
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, model, params):
+    def __init__(self, models, params, id, bngpath, prefixes):
         """
         Instantiates a Job
 
-        :param model: The model to evaluate
-        :type model: Model
+        :param models: The models to evaluate
+        :type models: list of Model instances
         :param params: The parameter set with which to evaluate the model
         :type params: PSet
+        :param id: Job identification
+        :type id: int
+        :param prefixes: prefixes corresponding to simulation results files
+        :type prefixes: str
         """
-        self.model = model
+        self.models = models
         self.params = params
+        self.prefixes = prefixes
+        self.id = id
+        self.bng_program = bngpath + "/BNG2.pl"
+
+    def _write_models(self):
+        model_files = []
+        for model in self.models:
+            model_file_name = model.name + "_%s.bngl" % self.id
+            model_with_params = model.copy_with_param_set(self.params)
+            model_with_params.save(model_file_name)
+            model_files.append(model_file_name)
+        return model_files
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
-        
+        model_files = self._write_models()
+        try:
+            self.execute(model_files)
+            simdata = self.load_simdata()
+            return Result(self.params, simdata)
+        except CalledProcessError:
+            return FailedSimulation(self.id)
+
+    def execute(self, models):
+        for model in models:
+            run([self.bng_program, model], shell=True, check=True, stderr=STDOUT)
+
+    def load_simdata(self):
         pass
 
 
