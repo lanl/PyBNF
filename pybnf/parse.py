@@ -4,11 +4,12 @@ import re
 
 def parse(s):
     equals = pp.Suppress('=')
+    colon = pp.Suppress(':')
     comment = pp.Suppress(pp.Optional(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables))))
     # set up multiple grammars
 
     # single str value
-    strkeys = pp.oneOf('bng_command job_name', caseless=True)
+    strkeys = pp.oneOf('bng_command job_name output_dir', caseless=True)
     string = pp.Word(pp.alphanums + "_")
     strgram = strkeys - equals - string - comment
 
@@ -49,11 +50,6 @@ def parse(s):
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
     numgram = numkeys - equals - num - comment
 
-    # multiple str value
-    strskeys = pp.oneOf('output_dir model exp_file', caseless=True)
-    strings = pp.OneOrMore(pp.Word(pp.printables))
-    strsgram = strskeys - equals - strings - comment
-
     # multiple str and num value
     strnumkeys = pp.oneOf('mutate random_var lognormrandom_var loguniform_var', caseless=True)
     bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
@@ -64,8 +60,14 @@ def parse(s):
     slvkey = pp.oneOf('static_list_var', caseless=True)
     slvgram = slvkey - equals - bng_parameter - pp.OneOrMore(num) - comment
 
+    # model-data mapping grammar
+    mdmkey = pp.CaselessLiteral("model")
+    bngl_file = pp.Regex(".*?\.bngl")
+    exp_file = pp.Regex(".*?\.exp")
+    mdmgram = mdmkey - equals - bngl_file - colon - pp.delimitedList(exp_file) - comment
+
     # check each grammar and output somewhat legible error message
-    line = (strgram | numgram | strsgram | strnumgram | slvgram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | slvgram).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -77,7 +79,12 @@ def load_config(path):
     return param_dict
 
 
+def flatten(vs):
+    return vs[0] if len(vs) == 1 else vs
+
+
 def ploop(ls):  # parse loop
+
     d = {}
 
     for i, line in enumerate(ls):
@@ -95,11 +102,15 @@ def ploop(ls):  # parse loop
                 key = l[0]
                 values = l[1:]
 
-            # Assign values to keys
-            if len(values) == 1:
-                d[key] = values[0]
+            # Find parameter assignments defining model and experimental data
+            if l[0] == 'model':
+                print(l[2:])
+                key = l[1]
+                values = l[2:]
+                d[key] = values  # individual model files remain in list
             else:
-                d[key] = values  # set key to values
+                d[key] = flatten(values)
+
         except:
             message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
             #               print (message)
