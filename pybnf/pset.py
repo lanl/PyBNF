@@ -143,7 +143,7 @@ class PSet(object):
 
     """
 
-    def __init__(self, param_dict):
+    def __init__(self, param_dict, allow_negative=False):
         """
         Creates a Pset based on the given dictionary
 
@@ -156,7 +156,7 @@ class PSet(object):
             value = param_dict[key]
             if type(key) != str:
                 raise TypeError("Parameter key " + str(key) + " is not of type str")
-            if value < 0:
+            if not allow_negative and value < 0:
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
             if np.isnan(value) or np.isinf(value):
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
@@ -201,6 +201,16 @@ class PSet(object):
         :return: str
         """
         return self.__str__()
+
+    def __eq__(self, other):
+        """
+        Checks equality to another PSet by comparing the _param_dicts
+
+        :param other:
+        :return:
+        """
+
+        return self._param_dict == other._param_dict
 
     def keys(self):
         """
