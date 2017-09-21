@@ -69,11 +69,3 @@ class TestParticleSwarm:
             else:
                 assert ps.bests[i][0] in start_params
         assert count == 1
-
-
-    def test_example_run(self):
-
-        algorithms.Job.TESTING_MODE = True
-        ps = copy.deepcopy(self.ps)
-        ps.run()
-        print(ps.trajectory.best_fit()) # Validate by hand, expecting [1, 1.5, 3]

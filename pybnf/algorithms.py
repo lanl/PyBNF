@@ -51,10 +51,6 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    # This allows us to test the code without yet dealing with BNGL
-    # If set to True, Job.run_simulation does something simple instead of running a BNGL model
-    TESTING_MODE = True
-
     def __init__(self, models, params, id, bngpath):
         """
         Instantiates a Job
@@ -86,17 +82,6 @@ class Job:
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
-
-        if Job.TESTING_MODE:
-            # Creates a simple result object for testing purposes
-            time.sleep(np.random.random())
-            result_data = Data()
-            param_names = list(self.params.keys())
-            param_names.sort()
-            result_data.data = np.array([[1]+[2*self.params[p] for p in param_names]])
-            result_data.cols = {param_names[i]+'_result':i+1 for i in range(len(param_names))}
-            result_data.cols['time'] = 0
-            return Result(self.params, result_data, ['Example Result generated in TESTING_MODE', ''])
 
         folder = 'sim_%s' % self.id
         mkdir(folder)
