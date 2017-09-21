@@ -13,6 +13,7 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
+from .pset import Model
 import numpy as np
 
 import logging

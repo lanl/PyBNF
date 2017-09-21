@@ -124,7 +124,7 @@ class Model(object):
         """
 
         # Check that the model has an associated PSet
-        if self.param_set == None:
+        if self.param_set is None:
             raise ModelError('Must assign a PSet to the model before calling model_text()')
 
         # Generate the text associated with defining __FREE__ parameter values
