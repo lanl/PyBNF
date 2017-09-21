@@ -39,8 +39,8 @@ class TestParticleSwarm:
         cls.chi_sq = objective.ChiSquareObjective()
 
         cls.config = {'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-                      ('v1', 'random_var'): [0, 10], ('v2', 'random_var'): [0, 10], ('v2', 'random_var'): [0, 10],
-                      'model': ['bngl_files/Simple.bngl']}
+                      ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
+                      'model': ['bngl_files/Simple.bngl'], 'bng_command': 'For this test you don''t need this.'}
 
         cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, cls.config)
 
@@ -72,5 +72,8 @@ class TestParticleSwarm:
 
 
     def test_example_run(self):
-        # Requires complete rewrite with new organization scheme.
-        pass
+
+        algorithms.Job.TESTING_MODE = True
+        ps = copy.deepcopy(self.ps)
+        ps.run()
+        print(ps.trajectory.best_fit()) # Validate by hand, expecting [1, 1.5, 3]
