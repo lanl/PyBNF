@@ -1,3 +1,9 @@
+"""pybnf.config: classes and methods for configuring the fit"""
+
+
+from .pset import Model
+
+
 class Configuration(object):
     def __init__(self, d=dict()):
         """
@@ -20,12 +26,25 @@ class Configuration(object):
         for k, v in d.items():
             self.config[k] = v
 
+        self.models = self._load_models()
+
     def default_config(self):
-        pass
+        """Default configuration values"""
+        return dict()
 
     @staticmethod
     def _req_user_params():
-        return set('models' 'exp_data')
+        """Configuration keys that the user must specify"""
+        return {'models'}
+
+    def _load_models(self):
+        """Loads models specified in configuration file"""
+        md = {}
+        print(self.config['models'])
+        for mf in self.config['models']:
+            model = Model(mf)
+            md[model.name] = model
+        return md
 
 
 class UnspecifiedConfigurationKeyError(Exception):

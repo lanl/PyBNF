@@ -86,6 +86,7 @@ def flatten(vs):
 def ploop(ls):  # parse loop
 
     d = {}
+    models = []
 
     for i, line in enumerate(ls):
         if re.match('\s*$', line) or re.match('\s*#', line):
@@ -104,10 +105,10 @@ def ploop(ls):  # parse loop
 
             # Find parameter assignments defining model and experimental data
             if l[0] == 'model':
-                print(l[2:])
                 key = l[1]
                 values = l[2:]
-                d[key] = values  # individual model files remain in list
+                d[key] = values  # individual data files remain in list
+                models.append(key)
             else:
                 d[key] = flatten(values)
 
@@ -116,6 +117,7 @@ def ploop(ls):  # parse loop
             #               print (message)
             raise Exception(message)
 
+    d['models'] = models
     return d
 
 

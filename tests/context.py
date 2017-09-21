@@ -14,3 +14,4 @@ import pybnf.data as data
 import pybnf.parse as parse
 import pybnf.objective as objective
 import pybnf.algorithms as algorithms
+import pybnf.config as config
