@@ -11,8 +11,12 @@ class TestConfig(object):
 
     @classmethod
     def setup_class(cls):
-        cls.cf0 = {'models': ['bngl_files/Tricky.bngl'],
-                   'bngl_files/Tricky.bngl': ['bngl_files/Tricky_p1_5.exp', 'bngl_files/Tricky_thing.exp']}
+        cls.cf0 = {'models': {'bngl_files/Tricky.bngl'},
+                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}}
+        cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
+                   'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}}
 
     @classmethod
     def teardown_class(cls):
@@ -21,8 +25,14 @@ class TestConfig(object):
     def test_config_init(self):
         c = config.Configuration(self.cf0)
         assert isinstance(c.models['Tricky'], pset.Model)
-        assert isinstance(c.exp_data['Tricky'][0], data.Data)
+        assert isinstance(c.exp_data['p1_5'], data.Data)
+        assert 'p1_5' in c.mapping['Tricky']
+        assert 'thing' in c.mapping['Tricky']
 
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):
         config.Configuration(dict())
+
+    @raises(config.UnmatchedExperimentalDataError)
+    def test_unmatched_data(self):
+        config.Configuration(self.cf1)

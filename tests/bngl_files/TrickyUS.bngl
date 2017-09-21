@@ -1,0 +1,169 @@
+# An example from a real application
+# 
+#  filename: model.bngl
+# date of last edit: 07-Jul-2017
+# authors: Chylek LA, Hlavacek WS (Los Alamos National Laboratory)
+# software compatibility: RuleBender (version 2.1.0), BioNetGen (version 2.3)
+
+# begin parameters
+# your parser should ignore this
+# end parameters
+
+begin model
+
+begin parameters # this comment might break your parser
+
+
+f 1 # cells per reaction compartment
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# time unit conversion factor
+T 60 # s per min
+
+# channel volume in microfluidic device
+Vchannel 500e-9 # L per channel (500 nL)
+
+# number of cells per channel
+Nchannel 1000 # cells per channel
+
+# volume of extracellular fluid
+Vecf=f*(Vchannel/Nchannel) # L per cell (500 pL/cell)
+
+# cytosolic volume of an RBL-2H3 cell
+# This estimate corresponds to the volume of a sphere with a diameter of 17.9 microns.
+Vcyt f*3e-12 # L per cell (3 pL/cell)
+
+# multivalent antigen abundance in medium at condition 1 
+Ag_conc1 10e-9 # M (10 nM)
+Ag_tot_1=Ag_conc1*(NA*Vecf) # cpc
+
+# antigen receptor abundance
+R_tot f*3e5 # copies per cell (1 nM)
+
+# rate constant for antigen capture
+kon 1e7*T/(NA*Vecf) # /M/s (1.8e8 /M/min) converted to /cpc/min; Initial guess 3e6
+
+# rate constant for antigen release
+koff koff__FREE__+__koff2__FREE__*T # You should not parse commented__FREE__ 
+
+# rate constant for pseudo first-order phosphorylation of antigen-engaged receptor
+kase kase__FREE__*T # You should not parse commented__FREE__ 
+pase pase__FREE__
+
+H_tot 1e6 # cpc
+
+kdegran 6e4*T/(NA*Vcyt) # /M/s (3.6e6 /M/min) converted to /cpc/min (2e-6 /cpc/min); Initial guess 6e4
+
+
+end parameters
+
+begin molecule types
+
+# antigen (DNP-conjugated BSA)
+#  DNP: 2,4-dinitrophenyl groups
+Ag(DNP) 
+
+# antigen receptor (anti-DNP IgE bound to Fc&epsilon;RI)
+#  IgE: anti-DNP IgE
+#  Y: tyrosine residues (0, unmodified; P, phosphorylated) 
+#     in the &beta; and &gamma;-chain ITAMs of Fc&epsilon;RI    
+R(IgE,Yb~0~P) 
+
+
+# &beta;-hexosaminidase
+#  loc: location (in, inside granules; out, secreted/outside cell)
+H(loc~in~out)
+
+end molecule types
+
+begin seed species
+
+# initial conditions
+
+# initial abundance of free antigen (in medium) per cell
+Ag(DNP) Ag_tot_1
+
+# initial abundance of free antigen receptor
+R(IgE,Yb~0) R_tot
+
+# initial abundance of &beta;-hexosaminidase (stored in cellular granules)
+H(loc~in) H_tot
+
+end seed species
+
+begin observables
+
+# simulation outputs
+
+Molecules Ag_total Ag() # This quantity may accumulate because free Ag abundance is held fixed.
+Molecules Ag_free Ag(DNP) # This quantity is held constant, except for adjustments in the actions block.
+Molecules R_bound R(IgE!+) # number of antigen-bound receptors per cell
+Molecules R_free R(IgE) # number of antigen-free receptors per cell
+Molecules RP R(Yb~P!?) # number of phosphorylated receptors per cell
+Molecules R0 R(Yb~0) # number of unphosphorylated receptors per cell
+Molecules degranulation H(loc~out) # abundance of secreted &beta;-hexominadase (surrogate for secreted mediators of inflammation)
+
+end observables
+
+begin reaction rules
+
+# ligand-receptor binding
+# As a simplification, we consider a one-step binding mechanism.
+# Thus, the rate constants are effective parameters that reflect
+# capture and release of (multivalent) antigen as well as the effects 
+# of antigen-mediated receptor aggregation on the residence time of antigen
+# on the cell surface. Recall that the antigen receptor is a long-lived 1:1 complex 
+# of antigen-specific IgE and Fc&epsilon;RI, the high-affinity Fc receptor for IgE.
+Ag(DNP)+R(IgE)<->Ag(DNP!1).R(IgE!1) kon,koff
+
+# ligand-dependent receptor phosphorylation
+# We assume that bound receptors are competent for (Lyn-mediated) phosphorylation 
+# of the tyrosines in &beta; and &gamma; ITAMs. We expect a fraction of receptors
+# to be constitutively associated with receptors.
+# The effective rate constant for phosphorylation is assumed to capture associaton of
+# Lyn with receptors and the relationship between the abundance of cell-associated antigen
+# and the extent of antigen-mediated receptor crosslinking.
+R(IgE!+,Yb~0)->R(IgE!+,Yb~P) kase
+
+# receptor dephosphorylation
+# As a simplification, we consider a pseudo first-order mechanism. 
+# Thus, the effective rate constant for phosphorylation can be viewed 
+# as the Vmax/KM ratio for phosphatases. We expect phosphatase activity to be high.
+R(Yb~P)->R(Yb~0) pase
+ 
+
+# Degranulation due to the presence of phosphorylated receptor
+# PIP3 serves as a PLC&gamma; substrate, leading to the production of IP3, stimulating store-operated calcium release followed by degranulation
+# We assume this occurs as a pseudo second order process. 
+R(Yb~P)+H(loc~in)->R(Yb~P)+H(loc~out) kdegran
+
+end reaction rules
+
+end model
+
+begin actions
+
+# The command below instructs BioNetGen to derive a reaction network from the model's rules.
+# The output is sent to a file that has a .net filename extension.
+# The .net file can be further processed to generate the ordinary differential equations 
+# corresponding to the reaction network and the rate laws associated with the model's rules.
+generate_network({overwrite=>1})
+
+# The commands below illustrate how we simulated 
+# 1) an initial period of multivalent antigen-stimulated IgE receptor signaling,
+# 2) an intermediate period of monovalent antigen-induced IgE receptor signaling quiescence, and
+# 3) a second and final period of multivalent antigen-stimulated IgE receptor signaling.
+
+# For the purposes of fitting to experimental data, we repeat the series of 3 simulations for each time delay that was tested experimentally
+# For each one, a .exp file was saved containing the appropriate experimental data point from Fig. 4
+# BioNetFit will be used to fit the model to the .exp files.
+
+# first 5-min period of multivalent antigen stimulation
+setConcentration("Ag(DNP)","Ag_tot_1") 
+saveConcentrations()
+simulate({suffix=>"p1_5",method=>"ode",t_start=>0,t_end=>5,n_steps=>5})
+
+
+end actions
