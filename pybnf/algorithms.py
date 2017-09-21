@@ -142,9 +142,10 @@ class Algorithm(object):
         self.objective = objective
         self.config = config
         self.trajectory = Trajectory()
+        self.job_id_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model = [Model(model_file) for model_file in config['model']]
+        self.model_list = [Model(model_file) for model_file in config['model']]
 
         # Generate a list of variable names
         self.variable_list = []
@@ -189,7 +190,8 @@ class Algorithm(object):
         :type params: PSet
         :return: Job
         """
-        return Job(self.model, params)
+        self.job_id_counter += 1
+        return Job(self.model_list, params, self.job_id_counter, self.config['bng_command'])
 
     def run(self):
         """Main loop for executing the algorithm"""
