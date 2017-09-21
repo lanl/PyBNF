@@ -18,11 +18,12 @@ class Model(object):
         :param bngl_file: str address of the bngl file
         :param pset: PSet to initialize the model with. Defaults to None
         """
-        self.name = re.sub(".bngl", "", bngl_file[bngl_file.rfind("/")+1:])
+        self.file_path = bngl_file
+        self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
 
         # Read the file
-        with open(bngl_file) as file:
+        with open(self.file_path) as file:
             self.bngl_file_text = file.read()
 
         # Scan the file's lines
