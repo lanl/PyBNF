@@ -3,13 +3,21 @@
 
 from distributed import as_completed
 from distributed import Client
+from os import mkdir
+from os import chdir
+from subprocess import run
+from subprocess import CalledProcessError
+from subprocess import PIPE
+from subprocess import STDOUT
 
-from .pset import Model
+from .data import Data
 from .pset import PSet
 from .pset import Trajectory
+from .pset import Model
 import numpy as np
 
 import logging
+import time
 
 
 class Result(object):
@@ -17,7 +25,7 @@ class Result(object):
     Container for the results of a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, paramset, simdata):
+    def __init__(self, paramset, simdata, log):
         """
         Instantiates a Result
 
@@ -25,9 +33,17 @@ class Result(object):
         :type paramset: PSet
         :param simdata: The simulation results corresponding to this evaluation
         :type simdata: list of Data instances
+        :param log: The stdout + stderr of the simulations
+        :type log: list of str
         """
         self.pset = paramset
         self.simdata = simdata
+        self.log = log
+
+
+class FailedSimulation(object):
+    def __init__(self, i):
+        self.id = i
 
 
 class Job:
@@ -35,22 +51,80 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, model, params):
+    def __init__(self, models, params, id, bngpath):
         """
         Instantiates a Job
 
-        :param model: The model to evaluate
-        :type model: Model
+        :param models: The models to evaluate
+        :type models: list of Model instances
         :param params: The parameter set with which to evaluate the model
         :type params: PSet
+        :param id: Job identification
+        :type id: int
         """
-        self.model = model
+        self.models = models
         self.params = params
+        self.id = id
+        self.bng_program = bngpath + "/BNG2.pl"
+
+    def _name_with_id(self, model):
+        return '%s_%s' % (model.name, self.id)
+
+    def _write_models(self):
+        """Writes models to file"""
+        model_files = []
+        for i, model in enumerate(self.models):
+            model_file_name = self._name_with_id(model) + ".bngl"
+            model_with_params = model.copy_with_param_set(self.params)
+            model_with_params.save(model_file_name)
+            model_files.append(model_file_name)
+        return model_files
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
-        
-        pass
+
+        folder = 'sim_%s' % self.id
+        mkdir(folder)
+        try:
+            chdir(folder)
+            model_files = self._write_models()
+            log = self.execute(model_files)
+            simdata = self.load_simdata()
+            chdir('../')
+            return Result(self.params, simdata, log)
+        except CalledProcessError:
+            return FailedSimulation(self.id)
+
+    def execute(self, models):
+        """Executes model simulations"""
+        log = []
+        for model in models:
+            cmd = '%s %s' % (self.bng_program, model)
+            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE)
+            log.append(cp.stdout)
+        return log
+
+    def load_simdata(self):
+        """
+        Function to load simulation data after executing all simulations for an evaluation
+
+        Returns a nested dictionary structure.  Top-level keys are model names and values are
+        dictionaries whose keys are action suffixes and values are Data instances
+
+        :return: dict of dict
+        """
+        ds = {}
+        for model in self.models:
+            ds[model.name] = {}
+            for suff in model.suffixes:
+                if suff[0] == 'simulate':
+                    data_file = '%s_%s.gdat' % (self._name_with_id(model), suff[1])
+                    data = Data(file_name=data_file)
+                else:  # suff[0] == 'parameter_scan'
+                    data_file = '%s_%s.scan' % (self._name_with_id(model), suff[1])
+                    data = Data(file_name=data_file)
+                ds[model.name][suff[1]] = data
+        return ds
 
 
 class Algorithm(object):
@@ -71,9 +145,10 @@ class Algorithm(object):
         self.objective = objective
         self.config = config
         self.trajectory = Trajectory()
+        self.job_id_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model = [Model(model_file) for model_file in config['model']]
+        self.model_list = [Model(model_file) for model_file in config['model']]
 
         # Generate a list of variable names
         self.variable_list = []
@@ -118,7 +193,8 @@ class Algorithm(object):
         :type params: PSet
         :return: Job
         """
-        return Job(self.model, params)
+        self.job_id_counter += 1
+        return Job(self.model_list, params, self.job_id_counter, self.config['bng_command'])
 
     def run(self):
         """Main loop for executing the algorithm"""

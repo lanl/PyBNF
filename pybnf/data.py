@@ -6,9 +6,13 @@ import re
 class Data(object):
     """Top level class for managing data"""
 
-    def __init__(self):
+    def __init__(self, file_name=None, arr=None):
         self.cols = dict()  # dict of column headers to column indices
         self.data = None  # Numpy array for data
+        if file_name is not None:
+            self.load_data(file_name)
+        elif arr is not None:
+            self.data = arr
 
     def __getitem__(self, col_header):
         """
