@@ -12,9 +12,6 @@ import numpy as np
 import logging
 
 
-import logging
-
-
 class Result(object):
     """
     Container for the results of a single evaluation in the fitting algorithm

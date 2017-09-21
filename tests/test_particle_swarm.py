@@ -1,6 +1,4 @@
-from .context import data, algorithm, pset
-import numpy as np
-import numpy.testing as npt
+from .context import algorithms, data, objective
 import copy
 
 
@@ -36,11 +34,9 @@ class TestParticleSwarm:
 
         cls.variables = ['v1', 'v2', 'v3']
 
-        cls.chi_sq = algorithm.ChiSquareObjective()
+        cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.ps = algorithm.ParticleSwarm(cls.d1e, cls.chi_sq, cls.variables, num_particles=15, cognitive=1.5,
-                                         social=1.5, w0=1., wf=0.1, nmax=30, max_evals = 300, absolute_tol=5,
-                                         relative_tol=1)
+        cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, {})
 
     def test_start(self):
         ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.
