@@ -154,6 +154,39 @@ class Model(object):
         f.close()
 
 
+class NetModel(object):
+    def __init__(self, nf=None, ls=None):
+        if nf is not None:
+            self.file_name = nf
+            self.netfile_lines = self.load_netfile()
+        elif ls is not None:
+            self.netfile_lines = ls
+        else:
+            raise AttributeError("Must instantiate NetModel with file or list")
+
+    def load_netfile(self):
+        with open(self.file_name) as f:
+            ls = f.readlines()
+        return ls
+
+    def copy_with_param_set(self, pset):
+        lines_copy = copy.deepcopy(self.netfile_lines)
+        in_params_block = False
+        for i, l in enumerate(lines_copy):
+            if re.match('begin\s+parameters', l.strip()):
+                in_params_block = True
+            elif in_params_block:
+                m = re.match('\d+\s+([A-Za-z_]\w*)\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l.strip())
+                if m:
+                    if m.group(1) in pset.keys():
+                        lines_copy[i] = re.sub(m.group(2), str(pset[m.group(1)]), l)
+        return NetModel(ls=lines_copy)
+
+    def save(self, file_name):
+        with open(file_name, 'w') as wf:
+            wf.write(''.join(self.netfile_lines))
+
+
 class ModelError(Exception):
     pass
 
@@ -196,6 +229,9 @@ class PSet(object):
         :return: float
         """
         return self._param_dict[item]
+
+    def __len__(self):
+        return len(self._param_dict)
 
     def get_id(self):
         return self.__hash__()

@@ -2,6 +2,8 @@ from .context import pset
 from nose.tools import raises
 from os import remove
 
+import re
+
 
 class TestModel:
     def __init__(self):
@@ -14,6 +16,7 @@ class TestModel:
         cls.file2 = 'bngl_files/ParamsEverywhere.bngl'
         cls.file3 = 'bngl_files/Tricky.bngl'
         cls.file4 = 'bngl_files/NFmodel.bngl'
+        cls.file5 = 'bngl_files/TrickyWP_p1_5.net'
 
         cls.file1a = 'bngl_files/Simple_Answer.bngl'
 
@@ -106,3 +109,22 @@ class TestModel:
         assert model0.generates_network
         model1 = pset.Model(self.file4)
         assert not model1.generates_network
+
+    def test_netfile_read(self):
+        netmodel = pset.NetModel(self.file5)
+        assert len(netmodel.netfile_lines) == 48
+
+    def test_netfile_pcopy(self):
+        netmodel = pset.NetModel(self.file5)
+        ps = pset.PSet({'Vchannel': 1e-5, 'H_tot': 3.4})
+        new_netmodel = netmodel.copy_with_param_set(ps)
+        pl0 = new_netmodel.netfile_lines[5]
+        pl1 = new_netmodel.netfile_lines[16]
+        assert re.search('Vchannel.*1e-05', pl0)
+        assert re.search('H_tot.*3.4', pl1)
+        for i in range(len(new_netmodel.netfile_lines)):
+            if i == 5 or i == 16:
+                continue
+            else:
+                assert new_netmodel.netfile_lines[i] == netmodel.netfile_lines[i]
+
