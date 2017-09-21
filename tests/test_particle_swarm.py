@@ -1,4 +1,6 @@
-from .context import algorithms, data, objective
+from .context import data, algorithms, pset, objective
+import numpy as np
+import numpy.testing as npt
 import copy
 
 
@@ -36,7 +38,11 @@ class TestParticleSwarm:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, {})
+        cls.config = {'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
+                      ('v1', 'random_var'): [0, 10], ('v2', 'random_var'): [0, 10], ('v2', 'random_var'): [0, 10],
+                      'model': ['bngl_files/Simple.bngl']}
+
+        cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, cls.config)
 
     def test_start(self):
         ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.
@@ -48,11 +54,11 @@ class TestParticleSwarm:
         start_params = ps.start_run()
         next_params = []
         for p in start_params:
-            next_params += ps.got_result(p, self.d2s)
+            next_params += ps.got_result(algorithms.Result(p, self.d2s, ''))
 
         assert ps.global_best[0] in start_params
 
-        ps.got_result(next_params[7], self.d1s) # better than the previous ones
+        ps.got_result(algorithms.Result(next_params[7], self.d1s, '')) # better than the previous ones
         assert ps.global_best[0] == next_params[7]
 
         # Exactly 1 individual particle should have its best as that global best, the rest should be one of start_params
