@@ -20,6 +20,7 @@ class TestData:
         cls.str3 = "6.022e-23"
         cls.str4 = "abc"
 
+        cls.file0 = 'bngl_files/test.gdat'
         cls.data0 = [
             '#          time    fullyBoundAg        Bound2Ag        Bound1Ag          freeAg    fullyBoundAb\n',
             ' 0.00000000e+00  1.20000000e+01  8.00000000e+00  6.00000000e+00  0.00000000e+00  1.60000000e+01\n',
@@ -42,6 +43,10 @@ class TestData:
         assert not math.isfinite(data.Data._to_number(self.str1))
         assert math.isnan(data.Data._to_number(self.str2))
         assert data.Data._to_number(self.str3) == 6.022e-23
+
+    def test_file_reader(self):
+        loc_data = data.Data(file_name=self.file0)
+        npt.assert_allclose(loc_data.data, self.d0.data)
 
     @raises(ValueError)
     def test_number_reader_failure(self):

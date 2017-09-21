@@ -18,6 +18,8 @@ class Model(object):
         :param bngl_file: str address of the bngl file
         :param pset: PSet to initialize the model with. Defaults to None
         """
+        self.name = re.sub(".bngl", "", bngl_file[bngl_file.rfind("/")+1:])
+        self.suffixes = []  # list of 2-tuples (sim_type, prefix)
 
         # Read the file
         with open(bngl_file) as file:
@@ -41,10 +43,14 @@ class Model(object):
                 param_names_set.add(p)
 
             # Check if this is the 'begin parameters' line
-            if re.match('begin parameters\s*', line):
+            if re.match('begin\s+parameters', line.strip()):
                 if split_line is not None:
                     raise ModelError("Found a second instance of 'begin parameters' at line " + str(linei))
                 split_line = linei + 1
+
+            action_suffix = self._get_action_suffix(line)
+            if action_suffix is not None:
+                self.suffixes.append(action_suffix)
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found")
@@ -67,6 +73,16 @@ class Model(object):
                 raise ValueError('Parameter names in the PSet do not match those in the Model')
 
         self.param_set = pset
+
+    @staticmethod
+    def _get_action_suffix(line):
+        sim_match = re.match("(simulate|parameter_scan)", line.strip())
+        if sim_match:
+            act_type = sim_match.group(1)
+            match = re.search("suffix\s*=>\s*['\"](.*?)['\"]\s*,", line)
+            if match is not None:
+                return act_type, match.group(1)
+        return None
 
     def set_param_set(self, pset):
         """
@@ -92,8 +108,8 @@ class Model(object):
         :return:
         """
         # Check that the PSet has definitions for the right parameters for this model
-        if pset.keys_to_string() != '\t'.join(self.param_names):
-            raise ValueError('Parameter names in the PSet do not match those in the Model')
+        if set(pset.keys()) != set(self.param_names):
+            raise ValueError('Parameter names in the PSet do not match those in the Model\n%s\n%s' % (pset.keys(), self.param_names))
 
         newmodel = copy.deepcopy(self)
         newmodel.param_set = pset
@@ -108,7 +124,7 @@ class Model(object):
         """
 
         # Check that the model has an associated PSet
-        if self.param_set == None:
+        if self.param_set is None:
             raise ModelError('Must assign a PSet to the model before calling model_text()')
 
         # Generate the text associated with defining __FREE__ parameter values
@@ -143,7 +159,7 @@ class PSet(object):
 
     """
 
-    def __init__(self, param_dict):
+    def __init__(self, param_dict, allow_negative=False):
         """
         Creates a Pset based on the given dictionary
 
@@ -156,7 +172,7 @@ class PSet(object):
             value = param_dict[key]
             if type(key) != str:
                 raise TypeError("Parameter key " + str(key) + " is not of type str")
-            if value < 0:
+            if not allow_negative and value < 0:
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
             if np.isnan(value) or np.isinf(value):
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
@@ -201,6 +217,16 @@ class PSet(object):
         :return: str
         """
         return self.__str__()
+
+    def __eq__(self, other):
+        """
+        Checks equality to another PSet by comparing the _param_dicts
+
+        :param other:
+        :return:
+        """
+
+        return self._param_dict == other._param_dict
 
     def keys(self):
         """
