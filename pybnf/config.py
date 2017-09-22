@@ -69,7 +69,9 @@ class Configuration(object):
             suffs = {s[1] for s in model.suffixes}
             efs_per_m = {self._exp_file_prefix(ef) for ef in self.config[model.file_path]}
             if not efs_per_m <= suffs:
-                raise UnmatchedExperimentalDataError
+                for ef in efs_per_m:
+                    if ef not in suffs:
+                        raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef)
             mapping[model.name] = efs_per_m
         return mapping
 
