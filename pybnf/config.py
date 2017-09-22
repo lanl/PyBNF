@@ -84,9 +84,8 @@ class Configuration(object):
             mapping[model.name] = efs_per_m
         return mapping
 
-    # TODO add additional objectives and assign them to ints
     def _load_obj_func(self):
-        if self.config['objfunc'] == 0:
+        if self.config['objfunc'] == 'chi_sq':
             return ChiSquareObjective()
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'])
 

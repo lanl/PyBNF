@@ -128,27 +128,23 @@ class Job:
 
 
 class Algorithm(object):
-    def __init__(self, exp_data, objective, config):
+    def __init__(self, config):
         """
-        Instantiates an Algorithm with a set of experimental data and an objective function.  Also
-        initializes a Trajectory instance to track the fitting progress, and performs various additional
+        Instantiates an Algorithm with a Configuration object.  Also initializes a
+        Trajectory instance to track the fitting progress, and performs various additional
         configuration that is consistent for all algorithms
 
-        :param exp_data: List of experimental Data objects to be fit
-        :type exp_data: iterable
-        :param objective: The objective function
-        :type objective: ObjectiveFunction
-        :param config: Configuration dictionary
-        :type config: dict
+        :param config: The fitting configuration
+        :type config: Configuration
         """
-        self.exp_data = exp_data
-        self.objective = objective
         self.config = config
+        self.exp_data = self.config.exp_data
+        self.objective = self.config.obj
         self.trajectory = Trajectory()
         self.job_id_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model_list = [Model(model_file) for model_file in config['model']]
+        self.model_list = self.config.models.values()
 
         # Generate a list of variable names
         self.variable_list = []
