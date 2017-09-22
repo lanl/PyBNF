@@ -2,6 +2,7 @@
 
 
 from .data import Data
+from .objective import ChiSquareObjective
 from .pset import Model
 
 import re
@@ -32,10 +33,14 @@ class Configuration(object):
         self.models = self._load_models()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data = self._load_exp_data()
+        self.obj = self._load_obj_func()
 
     def default_config(self):
         """Default configuration values"""
-        return dict()
+        default = {
+            'objfunc': 0
+        }
+        return default
 
     @staticmethod
     def _req_user_params():
@@ -52,6 +57,10 @@ class Configuration(object):
             model = Model(mf)
             md[model.name] = model
         return md
+
+    @staticmethod
+    def _exp_file_prefix(ef):
+        return re.sub(".exp", "", re.split('/', ef)[-1])
 
     def _load_exp_data(self):
         """
@@ -75,9 +84,15 @@ class Configuration(object):
             mapping[model.name] = efs_per_m
         return mapping
 
-    @staticmethod
-    def _exp_file_prefix(ef):
-        return re.sub(".exp", "", re.split('/', ef)[-1])
+    # TODO add additional objectives and assign them to ints
+    def _load_obj_func(self):
+        if self.config['objfunc'] == 0:
+            return ChiSquareObjective()
+        raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'])
+
+
+class UnknownObjectiveFunctionError(Exception):
+    pass
 
 
 class UnspecifiedConfigurationKeyError(Exception):

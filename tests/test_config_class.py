@@ -1,5 +1,6 @@
 from .context import config
 from .context import data
+from .context import objective
 from .context import pset
 
 from nose.tools import raises
@@ -28,6 +29,7 @@ class TestConfig(object):
         assert isinstance(c.exp_data['p1_5'], data.Data)
         assert 'p1_5' in c.mapping['Tricky']
         assert 'thing' in c.mapping['Tricky']
+        assert isinstance(c.obj, objective.ChiSquareObjective)
 
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):
