@@ -1,5 +1,6 @@
 from .context import pset
 from nose.tools import raises
+from os import remove
 
 
 class TestModel:
@@ -20,6 +21,10 @@ class TestModel:
         cls.dict1 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'koff__FREE__': 4.4e-3}
         cls.dict2 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'wrongname__FREE__': 4.4e-3}
 
+    @classmethod
+    def teardown_class(cls):
+        remove(cls.savefile)
+
     def test_initialize(self):
         model1 = pset.Model(self.file1)
         assert model1.param_names == ('kase__FREE__', 'koff__FREE__', 'pase__FREE__')
@@ -29,7 +34,7 @@ class TestModel:
             'Ag_tot_1__FREE__', 'kase__FREE__', 'koff__FREE__', 'kon__FREE__', 'pase__FREE__', 't_end__FREE__')
 
         model3 = pset.Model(self.file3)
-        assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__')
+        assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__')
 
     def test_init_with_pset(self):
         ps1 = pset.PSet(self.dict1)
@@ -85,3 +90,12 @@ class TestModel:
         f_answer.close()
 
         assert myguess == answer
+
+    def test_action_suffixes(self):
+        m0 = pset.Model(self.file1)
+        assert len(m0.suffixes) == 1
+        assert m0.suffixes[0] == ('simulate', 'p1_5')
+
+        m1 = pset.Model(self.file3)
+        assert len(m1.suffixes) == 2
+        assert m1.suffixes[1] == ('parameter_scan', 'thing')
