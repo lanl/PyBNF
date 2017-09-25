@@ -34,11 +34,12 @@ class Configuration(object):
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data = self._load_exp_data()
         self.obj = self._load_obj_func()
+        self.variables = self._load_variables()
 
     def default_config(self):
         """Default configuration values"""
         default = {
-            'objfunc': 0
+            'objfunc': 'chi_sq'
         }
         return default
 
@@ -88,6 +89,14 @@ class Configuration(object):
         if self.config['objfunc'] == 'chi_sq':
             return ChiSquareObjective()
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'])
+
+    def _load_variables(self):
+        variables = []
+        for k in self.config.keys():
+            if isinstance(k, tuple):
+                if re.search('var$', k[0]):
+                    variables.append(k[1])
+        return variables
 
 
 class UnknownObjectiveFunctionError(Exception):

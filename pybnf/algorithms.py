@@ -147,10 +147,7 @@ class Algorithm(object):
         self.model_list = self.config.models.values()
 
         # Generate a list of variable names
-        self.variable_list = []
-        for key in config:
-            if type(key) == tuple:
-                self.variable_list.append(key[1])
+        self.variables = self.config.variables
 
     def start_run(self):
         """
@@ -310,9 +307,9 @@ class ParticleSwarm(Algorithm):
         """
 
         for i in range(self.num_particles):
-            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variable_list})
+            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variables})
             # Todo: Smart way to initialize velocity?
-            new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variable_list}
+            new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
             self.swarm.append([new_params, new_velocity])
             self.pset_map[new_params] = i
 
@@ -355,9 +352,9 @@ class ParticleSwarm(Algorithm):
                                 w * self.swarm[p][1][v] + self.c1 * np.random.random() * (
                                 self.bests[p][0][v] - self.swarm[p][0][v]) +
                                 self.c2 * np.random.random() * (self.global_best[0][v] - self.swarm[p][0][v])
-                            for v in self.variable_list}
-        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variable_list},
-                             allow_negative=True)  # Todo: Smarter handling of negative values
+                            for v in self.variables}
+        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variables},
+                        allow_negative=True)  # Todo: Smarter handling of negative values
         self.swarm[p][0] = new_pset
         self.pset_map[new_pset] = p
 

@@ -44,6 +44,6 @@ class TestParse:
         assert d['verbosity'] == '3'
         assert d['thing.bngl'] == ['data.exp']
         assert d[('mutate', 'derp')] == ['1', '3']
-        assert d[(('random_var', 'var3__FREE__'))] == ['4', '5']
+        assert d[('random_var', 'var3__FREE__')] == ['4', '5']
         assert d['another.bngl'] == ['d1.exp', 'd2.exp']
         assert d['models'] == {'thing.bngl', 'another.bngl'}
