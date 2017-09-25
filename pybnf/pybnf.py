@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser()
     
     parser.add_argument('-c', action='store', dest='conf_file',
-                         help='config file path')
+                         help='Path to the BioNetFit configuration file' metavar='config.txt')
     
     results = parser.parse_args()
    # print(results.conf_file)
