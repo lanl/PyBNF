@@ -40,9 +40,11 @@ class TestParticleSwarm:
 
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
-                      'models': ['bngl_files/Simple.bngl'], 'bng_command': 'For this test you don''t need this.'})
+                      'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
+                      'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
+                      'bng_command': 'For this test you don''t need this.'})
 
-        cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, cls.config)
+        cls.ps = algorithms.ParticleSwarm(cls.config)
 
     def test_start(self):
         ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.

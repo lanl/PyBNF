@@ -227,8 +227,8 @@ class ParticleSwarm(Algorithm):
         #wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.)
         """
         Initial configuration of particle swarm optimizer
-        :param config: The fitting configuration
-        :type config: Configuration
+        :param conf_dict: The fitting configuration
+        :type conf_dict: Configuration
 
         The config should contain the following definitions:
 
@@ -259,26 +259,28 @@ class ParticleSwarm(Algorithm):
 
         # Set default values for non-essential parameters - no longer here; now done in Config.
 
+        conf_dict = config.config  # Dictionary from the Configuration object
+
         # This default value gets special treatment because if missing, it should take the value of particle_weight,
         # disabling the adaptive weight change entirely.
-        if 'particle_weight_final' not in config:
-            config['particle_weight_final'] = config['particle_weight']
+        if 'particle_weight_final' not in conf_dict:
+            conf_dict['particle_weight_final'] = conf_dict['particle_weight']
 
         # Save config parameters
-        self.c1 = config['cognitive']
-        self.c2 = config['social']
-        self.max_evals = config['population_size'] * config['max_iterations']
+        self.c1 = conf_dict['cognitive']
+        self.c2 = conf_dict['social']
+        self.max_evals = conf_dict['population_size'] * conf_dict['max_iterations']
 
-        self.num_particles = config['population_size']
+        self.num_particles = conf_dict['population_size']
         # Todo: Nice error message if a required key is missing
 
-        self.w0 = config['particle_weight']
+        self.w0 = conf_dict['particle_weight']
 
-        self.wf = config['particle_weight_final']
-        self.nmax = config['adaptive_n_max']
-        self.n_stop = config['adaptive_n_stop']
-        self.absolute_tol = config['adaptive_abs_tol']
-        self.relative_tol = config['adaptive_rel_tol']
+        self.wf = conf_dict['particle_weight_final']
+        self.nmax = conf_dict['adaptive_n_max']
+        self.n_stop = conf_dict['adaptive_n_stop']
+        self.absolute_tol = conf_dict['adaptive_abs_tol']
+        self.relative_tol = conf_dict['adaptive_rel_tol']
 
         self.nv = 0  # Counter that controls the current weight. Counts number of "unproductive" iterations.
         self.num_evals = 0  # Counter for the total number of results received
