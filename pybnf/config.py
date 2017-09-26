@@ -4,7 +4,7 @@
 from .data import Data
 from .objective import ChiSquareObjective
 from .pset import Model
-
+import numpy as np
 import re
 
 
@@ -39,7 +39,10 @@ class Configuration(object):
     def default_config(self):
         """Default configuration values"""
         default = {
-            'objfunc': 'chi_sq'
+            'objfunc': 'chi_sq',
+
+            'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
+            'adaptive_rel_tol': 0.0
         }
         return default
 

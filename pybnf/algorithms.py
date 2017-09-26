@@ -220,18 +220,15 @@ class ParticleSwarm(Algorithm):
 
     """
 
-    def __init__(self, expdata, objective, config):
+    def __init__(self, config):
 
         # Former params that are now part of the config
         #variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
         #wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.)
         """
         Initial configuration of particle swarm optimizer
-
-        :param expdata: Data object
-        :param objective: ObjectiveFunction object
-        :param config: Configuration dictionary
-        :type config: dict
+        :param config: The fitting configuration
+        :type config: Configuration
 
         The config should contain the following definitions:
 
@@ -258,14 +255,9 @@ class ParticleSwarm(Algorithm):
 
         """
 
-        super(ParticleSwarm, self).__init__(expdata, objective, config)
+        super(ParticleSwarm, self).__init__(config)
 
-        # Set default values for non-essential parameters.
-        defaults = {'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
-                    'adaptive_rel_tol': 0.0}
-        for d in defaults:
-            if d not in config:
-                config[d] = defaults[d]
+        # Set default values for non-essential parameters - no longer here; now done in Config.
 
         # This default value gets special treatment because if missing, it should take the value of particle_weight,
         # disabling the adaptive weight change entirely.

@@ -1,4 +1,4 @@
-from .context import data, algorithms, pset, objective
+from .context import data, algorithms, pset, objective, config
 import numpy as np
 import numpy.testing as npt
 import copy
@@ -38,9 +38,9 @@ class TestParticleSwarm:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.config = {'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
+        cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
-                      'model': ['bngl_files/Simple.bngl'], 'bng_command': 'For this test you don''t need this.'}
+                      'models': ['bngl_files/Simple.bngl'], 'bng_command': 'For this test you don''t need this.'})
 
         cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, cls.config)
 
