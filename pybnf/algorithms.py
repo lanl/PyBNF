@@ -39,6 +39,7 @@ class Result(object):
         self.pset = paramset
         self.simdata = simdata
         self.log = log
+        self.score = None  # To be set later when the Result is scored.
 
 
 class FailedSimulation(object):
@@ -172,9 +173,12 @@ class Algorithm(object):
         raise NotImplementedError("Subclasses must implement got_result()")
 
     def add_to_trajectory(self, res):
-        """Adds information from a Result to the Trajectory instance"""
+        """
+        Evaluates the objective function for a Result, and adds the information from the Result to the Trajectory
+        instance"""
 
-        score = self.objective.evaluate(res.simdata, self.exp_data)
+        score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
+        res.score = score
         self.trajectory.add(res.pset, score)
 
     def make_job(self, params):
@@ -318,7 +322,7 @@ class ParticleSwarm(Algorithm):
         """
 
         paramset = res.pset
-        simdata = res.simdata
+        score = res.score
 
         self.num_evals += 1
 
@@ -330,7 +334,6 @@ class ParticleSwarm(Algorithm):
                 self.nv += 1
             self.last_best = self.global_best[1]
 
-        score = self.objective.evaluate(simdata, self.exp_data)
         p = self.pset_map.pop(paramset)  # Particle number
 
         # Update best scores if needed.
