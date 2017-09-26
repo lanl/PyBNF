@@ -1,7 +1,6 @@
 from .context import data, algorithms, pset, objective, config
 import numpy as np
 import numpy.testing as npt
-import copy
 
 
 class TestParticleSwarm:
@@ -44,23 +43,25 @@ class TestParticleSwarm:
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'bng_command': 'For this test you don''t need this.'})
 
-        cls.ps = algorithms.ParticleSwarm(cls.config)
-
     def test_start(self):
-        ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.
+        ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()
         assert len(start_params) == 15
 
     def test_updates(self):
-        ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.
+        ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()
         next_params = []
         for p in start_params:
-            next_params += ps.got_result(algorithms.Result(p, self.d2s, ''))
+            new_result = algorithms.Result(p, self.d2s, '')
+            new_result.score = ps.objective.evaluate(self.d2s, self.d1e)
+            next_params += ps.got_result(new_result)
 
         assert ps.global_best[0] in start_params
 
-        ps.got_result(algorithms.Result(next_params[7], self.d1s, '')) # better than the previous ones
+        new_result = algorithms.Result(next_params[7], self.d1s, '')
+        new_result.score = ps.objective.evaluate(self.d1s, self.d1e)
+        ps.got_result(new_result)  # better than the previous ones
         assert ps.global_best[0] == next_params[7]
 
         # Exactly 1 individual particle should have its best as that global best, the rest should be one of start_params
