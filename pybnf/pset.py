@@ -80,7 +80,7 @@ class Model(object):
         sim_match = re.match("(simulate|parameter_scan)", line.strip())
         if sim_match:
             act_type = sim_match.group(1)
-            match = re.search("suffix\s*=>\s*['\"](.*?)['\"]\s*,", line)
+            match = re.search("suffix\s*=>\s*['\"](.*?)['\"]\s*[,}]", line)
             if match is not None:
                 return act_type, match.group(1)
         return None
