@@ -96,7 +96,6 @@ class Job:
             chdir('../')
             return Result(self.params, simdata, log)
         except CalledProcessError:
-            raise # For debugging - delete when done.
             return FailedSimulation(self.id)
 
     def execute(self, models):

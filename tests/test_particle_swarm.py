@@ -49,8 +49,12 @@ class TestParticleSwarm:
 
     @classmethod
     def teardown_class(cls):
-        for n in range(1, 309):
-            rmtree('sim_'+str(n))
+        for n in range(1, 312):
+            try:
+                rmtree('sim_'+str(n))
+            except FileNotFoundError:
+                # Exactly how many sims were done depends on random run timing, so some might be missing.
+                pass
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
@@ -88,9 +92,10 @@ class TestParticleSwarm:
         myconfig.config['bng_command'] = environ['BNGPATH'] + '/BNG2.pl'
         ps = algorithms.ParticleSwarm(myconfig)
         ps.run()
-        print(ps.global_best)
+        # print(ps.global_best)
         best_fit = ps.global_best[0]
-        total_error = abs(best_fit['v1__FREE__'] - 0.5) + abs(best_fit['v2__FREE__'] - 1.) + abs(
-            best_fit['v3__FREE__'] - 3.)
-        # assert total_error < 4.  # A reasonable requirement for final accuracy.
+
+        # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
+        # Here's a reasonable test that the fitting went okay.
+        assert abs(best_fit['v1__FREE__'] - 0.5) < 0.3
 
