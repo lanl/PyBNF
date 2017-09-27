@@ -82,4 +82,4 @@ class TestParticleSwarm:
         myconfig.config['bng_path'] = environ['BNGPATH']
         ps = algorithms.ParticleSwarm(myconfig)
         ps.run()
-        print()
+        print(ps.global_best)
