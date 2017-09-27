@@ -2,7 +2,7 @@ import pyparsing as pp
 import re
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
-               'smoothing', 'objfunc', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
+               'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
                'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol']
@@ -104,8 +104,9 @@ def ploop(ls):  # parse loop
 
         except:
             message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
-            #               print (message)
-            raise Exception(message)
+            print(message)
+            raise  # Rethrow the error that was raised, for easier debugging.
+            #raise Exception(message)
 
     d['models'] = models
     d['exp_data'] = exp_data

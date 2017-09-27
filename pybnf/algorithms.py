@@ -52,7 +52,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, id, bngpath):
+    def __init__(self, models, params, id, bngcommand):
         """
         Instantiates a Job
 
@@ -62,11 +62,13 @@ class Job:
         :type params: PSet
         :param id: Job identification
         :type id: int
+        :param bngcommand: Command to run BioNetGen
+        :type bngcommand: str
         """
         self.models = models
         self.params = params
         self.id = id
-        self.bng_program = bngpath + "/BNG2.pl"
+        self.bng_program = bngcommand
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.id)
@@ -94,6 +96,7 @@ class Job:
             chdir('../')
             return Result(self.params, simdata, log)
         except CalledProcessError:
+            raise # For debugging - delete when done.
             return FailedSimulation(self.id)
 
     def execute(self, models):
@@ -145,7 +148,7 @@ class Algorithm(object):
         self.job_id_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model_list = self.config.models.values()
+        self.model_list = list(self.config.models.values())
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -191,7 +194,7 @@ class Algorithm(object):
         :return: Job
         """
         self.job_id_counter += 1
-        return Job(self.model_list, params, self.job_id_counter, self.config['bng_command'])
+        return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'])
 
     def run(self):
         """Main loop for executing the algorithm"""

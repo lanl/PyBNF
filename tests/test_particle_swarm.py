@@ -2,6 +2,7 @@ from .context import data, algorithms, pset, objective, config, parse
 import numpy as np
 import numpy.testing as npt
 from os import environ
+from shutil import rmtree
 
 
 class TestParticleSwarm:
@@ -46,6 +47,11 @@ class TestParticleSwarm:
 
         cls.config_path = 'bngl_files/parabola.conf'
 
+    @classmethod
+    def teardown_class(cls):
+        for n in range(1, 309):
+            rmtree('sim_'+str(n))
+
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()
@@ -79,7 +85,12 @@ class TestParticleSwarm:
     def test_full(self):
         conf_dict = parse.load_config(self.config_path)
         myconfig = config.Configuration(conf_dict)
-        myconfig.config['bng_path'] = environ['BNGPATH']
+        myconfig.config['bng_command'] = environ['BNGPATH'] + '/BNG2.pl'
         ps = algorithms.ParticleSwarm(myconfig)
         ps.run()
         print(ps.global_best)
+        best_fit = ps.global_best[0]
+        total_error = abs(best_fit['v1__FREE__'] - 0.5) + abs(best_fit['v2__FREE__'] - 1.) + abs(
+            best_fit['v3__FREE__'] - 3.)
+        # assert total_error < 4.  # A reasonable requirement for final accuracy.
+
