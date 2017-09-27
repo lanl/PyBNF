@@ -1,6 +1,12 @@
 import pyparsing as pp
 import re
 
+numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
+               'smoothing', 'objfunc', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
+               'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations']
+numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 'social', 'particle_weight',
+                 'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol']
+var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var', 'mutate']
 
 def parse(s):
     equals = pp.Suppress('=')
@@ -14,35 +20,7 @@ def parse(s):
     strgram = strkeys - equals - string - comment
 
     # single num value
-    numkeys = pp.oneOf(
-        'verbosity\
-        parallel_count\
-        seed\
-        delete_old_files\
-        max_generations\
-        population_size\
-        smoothing\
-        min_objfunc_value\
-        objfunc\
-        extra_weight\
-        swap_rate\
-        max_parents\
-        force_different_parents\
-        keep_parents\
-        divide_by_init\
-        log_transform_sim_data\
-        standardize_sim_data\
-        standardize_exp_data\
-        max_iterations\
-        cognitive\
-        social\
-        particle_weight\
-        particle_weight_final\
-        adaptive_n_max\
-        adaptive_n_stop\
-        adaptive_abs_tol\
-        adaptive_rel_tol',
-        caseless=True)
+    numkeys = pp.oneOf(' '.join(numkeys_int + numkeys_float), caseless=True)
     point = pp.Literal(".")
     e = pp.CaselessLiteral("E")
     num = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
@@ -51,7 +29,7 @@ def parse(s):
     numgram = numkeys - equals - num - comment
 
     # multiple str and num value
-    strnumkeys = pp.oneOf('mutate random_var lognormrandom_var loguniform_var', caseless=True)
+    strnumkeys = pp.oneOf(' '.join(var_def_keys), caseless=True)
     bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
     varnums = bng_parameter - num - num
     strnumgram = strnumkeys - equals - varnums - comment
@@ -95,10 +73,15 @@ def ploop(ls):  # parse loop
             l = parse(line)
 
             # Find parameter assignments that reference distinct parameters
-            var_def_keys = set(['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var', 'mutate'])
             if l[0] in var_def_keys:
                 key = (l[0], l[1])
-                values = l[2:]
+                values = [float(x) for x in l[2:]]
+            elif l[0] in numkeys_int:
+                key = l[0]
+                values = [int(x) for x in l[1:]]
+            elif l[0] in numkeys_float:
+                key = l[0]
+                values = [float(x) for x in l[1:]]
             else:
                 key = l[0]
                 values = l[1:]
