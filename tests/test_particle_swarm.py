@@ -1,6 +1,7 @@
-from .context import data, algorithms, pset, objective, config
+from .context import data, algorithms, pset, objective, config, parse
 import numpy as np
 import numpy.testing as npt
+from os import environ
 
 
 class TestParticleSwarm:
@@ -43,6 +44,8 @@ class TestParticleSwarm:
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'bng_command': 'For this test you don''t need this.'})
 
+        cls.config_path = 'bngl_files/parabola.conf'
+
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()
@@ -72,3 +75,11 @@ class TestParticleSwarm:
             else:
                 assert ps.bests[i][0] in start_params
         assert count == 1
+
+    def test_full(self):
+        conf_dict = parse.load_config(self.config_path)
+        myconfig = config.Configuration(conf_dict)
+        myconfig.config['bng_path'] = environ['BNGPATH']
+        ps = algorithms.ParticleSwarm(myconfig)
+        ps.run()
+        print()
