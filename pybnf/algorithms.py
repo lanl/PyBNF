@@ -128,33 +128,26 @@ class Job:
 
 
 class Algorithm(object):
-    def __init__(self, exp_data, objective, config):
+    def __init__(self, config):
         """
-        Instantiates an Algorithm with a set of experimental data and an objective function.  Also
-        initializes a Trajectory instance to track the fitting progress, and performs various additional
+        Instantiates an Algorithm with a Configuration object.  Also initializes a
+        Trajectory instance to track the fitting progress, and performs various additional
         configuration that is consistent for all algorithms
 
-        :param exp_data: List of experimental Data objects to be fit
-        :type exp_data: iterable
-        :param objective: The objective function
-        :type objective: ObjectiveFunction
-        :param config: Configuration dictionary
-        :type config: dict
+        :param config: The fitting configuration
+        :type config: Configuration
         """
-        self.exp_data = exp_data
-        self.objective = objective
         self.config = config
+        self.exp_data = self.config.exp_data
+        self.objective = self.config.obj
         self.trajectory = Trajectory()
         self.job_id_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model_list = [Model(model_file) for model_file in config['model']]
+        self.model_list = self.config.models.values()
 
         # Generate a list of variable names
-        self.variable_list = []
-        for key in config:
-            if type(key) == tuple:
-                self.variable_list.append(key[1])
+        self.variables = self.config.variables
 
     def start_run(self):
         """
@@ -314,9 +307,9 @@ class ParticleSwarm(Algorithm):
         """
 
         for i in range(self.num_particles):
-            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variable_list})
+            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variables})
             # Todo: Smart way to initialize velocity?
-            new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variable_list}
+            new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
             self.swarm.append([new_params, new_velocity])
             self.pset_map[new_params] = i
 
@@ -359,9 +352,9 @@ class ParticleSwarm(Algorithm):
                                 w * self.swarm[p][1][v] + self.c1 * np.random.random() * (
                                 self.bests[p][0][v] - self.swarm[p][0][v]) +
                                 self.c2 * np.random.random() * (self.global_best[0][v] - self.swarm[p][0][v])
-                            for v in self.variable_list}
-        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variable_list},
-                             allow_negative=True)  # Todo: Smarter handling of negative values
+                            for v in self.variables}
+        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variables},
+                        allow_negative=True)  # Todo: Smarter handling of negative values
         self.swarm[p][0] = new_pset
         self.pset_map[new_pset] = p
 
