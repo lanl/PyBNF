@@ -15,8 +15,14 @@ def parse(s):
     # set up multiple grammars
 
     # single str value
-    strkeys = pp.oneOf('bng_command job_name output_dir', caseless=True)
-    string = pp.Word(pp.alphanums + "_")
+    strkeys = pp.oneOf(
+        'bng_command\
+        job_name\
+        output_dir\
+        fit_type\
+        objfunc\
+        ', caseless=True)
+    string = pp.Word(pp.alphanums + "_/.")
     strgram = strkeys - equals - string - comment
 
     # single num value
