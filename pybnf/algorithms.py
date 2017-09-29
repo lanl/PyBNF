@@ -201,9 +201,11 @@ class Algorithm(object):
         psets = self.start_run()
         jobs = [self.make_job(p) for p in psets]
         futures = [client.submit(job.run_simulation) for job in jobs]
+        pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
             f, res = next(pool)
+            pending.remove(f)
             self.add_to_trajectory(res)
             response = self.got_result(res)
             if response == 'STOP':
@@ -211,9 +213,13 @@ class Algorithm(object):
                 break
             else:
                 new_jobs = [self.make_job(ps) for ps in response]
-                pool.update([client.submit(j.run_simulation) for j in new_jobs])
-        logging.info("Fitting complete")
+                new_futures = [client.submit(j.run_simulation) for j in new_jobs]
+                pending.update(new_futures)
+                pool.update(new_futures)
+        client.cancel(list(pending))
+        logging.debug("Pending jobs cancelled")
         client.close()
+        logging.info("Fitting complete!")
 
 
 class ParticleSwarm(Algorithm):
