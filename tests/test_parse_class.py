@@ -31,6 +31,10 @@ class TestParse:
         assert parse.parse('Job_name = string') == ['job_name', 'string']
         assert parse.parse('vErbosity = 2') == ['verbosity', '2']
 
+    def test_punctuation(self):
+        assert parse.parse('bng_command = some/crazy!!-folder$$=\\"/BNG2.pl') == ['bng_command',
+                                                                                  'some/crazy!!-folder$$=\\"/BNG2.pl']
+
     def test_ploop(self):
         d = parse.ploop(self.s)
         assert 'job_name' in d.keys()

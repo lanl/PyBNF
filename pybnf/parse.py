@@ -1,5 +1,6 @@
 import pyparsing as pp
 import re
+from string import punctuation
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
                'smoothing', 'objfunc', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
@@ -22,7 +23,7 @@ def parse(s):
         fit_type\
         objfunc\
         ', caseless=True)
-    string = pp.Word(pp.alphanums + "_/.")
+    string = pp.Word(pp.alphanums + punctuation)
     strgram = strkeys - equals - string - comment
 
     # single num value
