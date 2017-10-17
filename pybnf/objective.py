@@ -8,24 +8,27 @@ class ObjectiveFunction(object):
     Abstract class representing an objective function
     """
 
-    def evaluate_multiple(self, sim_data_list, exp_data_list):
+    def evaluate_multiple(self, sim_data_dict, exp_data_dict):
         """
         Compute the value of the objective function on several data sets, and return the total.
 
         You may also call this function with single Data objects instead of iterables.
 
-        :param sim_data_list: List of simulation Data objects
-        :type sim_data_list: iterable
-        :param exp_data_list: List of the corresponding experimental Data objects
-        :type exp_data_list: iterable
+        :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
+        :type sim_data_dict: dict
+        :param exp_data_dict: Dictionary mapping suffix strings to experimental Data objects
+        :type exp_data_dict: dict
         :return:
         """
-        if type(sim_data_list) == data.Data:
-            return self.evaluate(sim_data_list, exp_data_list)
-
         total = 0.
-        for (sim_data, exp_data) in zip(sim_data_list, exp_data_list):
-            total += self.evaluate(sim_data, exp_data)
+
+        # Dictionary mapping suffix strings to experimental Data objects
+        # exp_data_dict = self.conf.exp_data
+
+        for model in sim_data_dict:
+            for suffix in sim_data_dict[model]:
+                total += self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+
         return total
 
     def evaluate(self, sim_data, exp_data):

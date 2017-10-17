@@ -1,7 +1,8 @@
-from .context import data, algorithms, pset, objective
+from .context import data, algorithms, pset, objective, config, parse
 import numpy as np
 import numpy.testing as npt
-import copy
+from os import environ
+from shutil import rmtree
 
 
 class TestParticleSwarm:
@@ -38,27 +39,42 @@ class TestParticleSwarm:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.config = {'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
+        cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
-                      'model': ['bngl_files/Simple.bngl'], 'bng_command': 'For this test you don''t need this.'}
+                      'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
+                      'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
+                      'bng_command': 'For this test you don''t need this.'})
 
-        cls.ps = algorithms.ParticleSwarm(cls.d1e, cls.chi_sq, cls.config)
+        cls.config_path = 'bngl_files/parabola.conf'
+
+    @classmethod
+    def teardown_class(cls):
+        for n in range(1, 312):
+            try:
+                rmtree('sim_'+str(n))
+            except FileNotFoundError:
+                # Exactly how many sims were done depends on random run timing, so some might be missing.
+                pass
 
     def test_start(self):
-        ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.
+        ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()
         assert len(start_params) == 15
 
     def test_updates(self):
-        ps = copy.deepcopy(self.ps)  # Use a fresh copy of the algorithm for each test.
+        ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()
         next_params = []
         for p in start_params:
-            next_params += ps.got_result(algorithms.Result(p, self.d2s, ''))
+            new_result = algorithms.Result(p, self.d2s, '')
+            new_result.score = ps.objective.evaluate(self.d2s, self.d1e)
+            next_params += ps.got_result(new_result)
 
         assert ps.global_best[0] in start_params
 
-        ps.got_result(algorithms.Result(next_params[7], self.d1s, '')) # better than the previous ones
+        new_result = algorithms.Result(next_params[7], self.d1s, '')
+        new_result.score = ps.objective.evaluate(self.d1s, self.d1e)
+        ps.got_result(new_result)  # better than the previous ones
         assert ps.global_best[0] == next_params[7]
 
         # Exactly 1 individual particle should have its best as that global best, the rest should be one of start_params
@@ -69,3 +85,17 @@ class TestParticleSwarm:
             else:
                 assert ps.bests[i][0] in start_params
         assert count == 1
+
+    def test_full(self):
+        conf_dict = parse.load_config(self.config_path)
+        myconfig = config.Configuration(conf_dict)
+        myconfig.config['bng_command'] = environ['BNGPATH'] + '/BNG2.pl'
+        ps = algorithms.ParticleSwarm(myconfig)
+        ps.run()
+        # print(ps.global_best)
+        best_fit = ps.global_best[0]
+
+        # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
+        # Here's a reasonable test that the fitting went okay.
+        assert abs(best_fit['v1__FREE__'] - 0.5) < 0.3
+

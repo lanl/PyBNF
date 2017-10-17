@@ -23,7 +23,7 @@ class TestJob(object):
             'pase__FREE__': 1
         }
         cls.pset = pset.PSet(d)
-        cls.bngpath = environ['BNGPATH']
+        cls.bngpath = environ['BNGPATH'] + '/BNG2.pl'
         cls.job = algorithms.Job([cls.model], cls.pset, 1, cls.bngpath)
 
     @classmethod

@@ -39,6 +39,7 @@ class Result(object):
         self.pset = paramset
         self.simdata = simdata
         self.log = log
+        self.score = None  # To be set later when the Result is scored.
 
 
 class FailedSimulation(object):
@@ -51,7 +52,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, id, bngpath):
+    def __init__(self, models, params, id, bngcommand):
         """
         Instantiates a Job
 
@@ -61,11 +62,13 @@ class Job:
         :type params: PSet
         :param id: Job identification
         :type id: int
+        :param bngcommand: Command to run BioNetGen
+        :type bngcommand: str
         """
         self.models = models
         self.params = params
         self.id = id
-        self.bng_program = bngpath + "/BNG2.pl"
+        self.bng_program = bngcommand
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.id)
@@ -144,7 +147,7 @@ class Algorithm(object):
         self.job_id_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model_list = self.config.models.values()
+        self.model_list = list(self.config.models.values())
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -172,9 +175,12 @@ class Algorithm(object):
         raise NotImplementedError("Subclasses must implement got_result()")
 
     def add_to_trajectory(self, res):
-        """Adds information from a Result to the Trajectory instance"""
+        """
+        Evaluates the objective function for a Result, and adds the information from the Result to the Trajectory
+        instance"""
 
-        score = self.objective.evaluate(res.simdata, self.exp_data)
+        score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
+        res.score = score
         self.trajectory.add(res.pset, score)
 
     def make_job(self, params):
@@ -187,7 +193,7 @@ class Algorithm(object):
         :return: Job
         """
         self.job_id_counter += 1
-        return Job(self.model_list, params, self.job_id_counter, self.config['bng_command'])
+        return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'])
 
     def run(self):
         """Main loop for executing the algorithm"""
@@ -195,9 +201,11 @@ class Algorithm(object):
         psets = self.start_run()
         jobs = [self.make_job(p) for p in psets]
         futures = [client.submit(job.run_simulation) for job in jobs]
+        pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
             f, res = next(pool)
+            pending.remove(f)
             self.add_to_trajectory(res)
             response = self.got_result(res)
             if response == 'STOP':
@@ -205,9 +213,13 @@ class Algorithm(object):
                 break
             else:
                 new_jobs = [self.make_job(ps) for ps in response]
-                pool.update([client.submit(j.run_simulation) for j in new_jobs])
-        logging.info("Fitting complete")
+                new_futures = [client.submit(j.run_simulation) for j in new_jobs]
+                pending.update(new_futures)
+                pool.update(new_futures)
+        client.cancel(list(pending))
+        logging.debug("Pending jobs cancelled")
         client.close()
+        logging.info("Fitting complete!")
 
 
 class ParticleSwarm(Algorithm):
@@ -220,18 +232,15 @@ class ParticleSwarm(Algorithm):
 
     """
 
-    def __init__(self, expdata, objective, config):
+    def __init__(self, config):
 
         # Former params that are now part of the config
         #variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
         #wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.)
         """
         Initial configuration of particle swarm optimizer
-
-        :param expdata: Data object
-        :param objective: ObjectiveFunction object
-        :param config: Configuration dictionary
-        :type config: dict
+        :param conf_dict: The fitting configuration
+        :type conf_dict: Configuration
 
         The config should contain the following definitions:
 
@@ -258,35 +267,32 @@ class ParticleSwarm(Algorithm):
 
         """
 
-        super(ParticleSwarm, self).__init__(expdata, objective, config)
+        super(ParticleSwarm, self).__init__(config)
 
-        # Set default values for non-essential parameters.
-        defaults = {'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
-                    'adaptive_rel_tol': 0.0}
-        for d in defaults:
-            if d not in config:
-                config[d] = defaults[d]
+        # Set default values for non-essential parameters - no longer here; now done in Config.
+
+        conf_dict = config.config  # Dictionary from the Configuration object
 
         # This default value gets special treatment because if missing, it should take the value of particle_weight,
         # disabling the adaptive weight change entirely.
-        if 'particle_weight_final' not in config:
-            config['particle_weight_final'] = config['particle_weight']
+        if 'particle_weight_final' not in conf_dict:
+            conf_dict['particle_weight_final'] = conf_dict['particle_weight']
 
         # Save config parameters
-        self.c1 = config['cognitive']
-        self.c2 = config['social']
-        self.max_evals = config['population_size'] * config['max_iterations']
+        self.c1 = conf_dict['cognitive']
+        self.c2 = conf_dict['social']
+        self.max_evals = conf_dict['population_size'] * conf_dict['max_iterations']
 
-        self.num_particles = config['population_size']
+        self.num_particles = conf_dict['population_size']
         # Todo: Nice error message if a required key is missing
 
-        self.w0 = config['particle_weight']
+        self.w0 = conf_dict['particle_weight']
 
-        self.wf = config['particle_weight_final']
-        self.nmax = config['adaptive_n_max']
-        self.n_stop = config['adaptive_n_stop']
-        self.absolute_tol = config['adaptive_abs_tol']
-        self.relative_tol = config['adaptive_rel_tol']
+        self.wf = conf_dict['particle_weight_final']
+        self.nmax = conf_dict['adaptive_n_max']
+        self.n_stop = conf_dict['adaptive_n_stop']
+        self.absolute_tol = conf_dict['adaptive_abs_tol']
+        self.relative_tol = conf_dict['adaptive_rel_tol']
 
         self.nv = 0  # Counter that controls the current weight. Counts number of "unproductive" iterations.
         self.num_evals = 0  # Counter for the total number of results received
@@ -324,7 +330,7 @@ class ParticleSwarm(Algorithm):
         """
 
         paramset = res.pset
-        simdata = res.simdata
+        score = res.score
 
         self.num_evals += 1
 
@@ -336,7 +342,6 @@ class ParticleSwarm(Algorithm):
                 self.nv += 1
             self.last_best = self.global_best[1]
 
-        score = self.objective.evaluate(simdata, self.exp_data)
         p = self.pset_map.pop(paramset)  # Particle number
 
         # Update best scores if needed.
