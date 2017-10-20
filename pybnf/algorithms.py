@@ -183,6 +183,27 @@ class Algorithm(object):
         res.score = score
         self.trajectory.add(res.pset, score)
 
+    def random_pset(self):
+        """
+        Generates a random PSet based on the distributions and bounds for each parameter specified in the configuration
+
+        :return:
+        """
+        param_dict = dict()
+        for (name, type, val1, val2) in self.config.variables_specs:
+            if type == 'random_var':
+                param_dict[name] = np.random.uniform(val1, val2)
+            elif type == 'loguniform_var':
+                param_dict[name] = 10.**np.random.uniform(np.log10(val1), np.log10(val2))
+            elif type == 'lognormrandom_var':
+                param_dict[name] = np.random.lognormal(val1, val2)
+            elif type == 'static_list_var':
+                raise NotImplementedError('static_list_var option is not implemented')  # Todo
+            else:
+                raise RuntimeError('Unrecognized variable type: %s' % type)
+        return PSet(param_dict)
+
+
     def make_job(self, params):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
@@ -313,7 +334,7 @@ class ParticleSwarm(Algorithm):
         """
 
         for i in range(self.num_particles):
-            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variables})
+            new_params = self.random_pset()
             # Todo: Smart way to initialize velocity?
             new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
             self.swarm.append([new_params, new_velocity])

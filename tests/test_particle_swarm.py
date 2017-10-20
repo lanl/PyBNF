@@ -45,6 +45,13 @@ class TestParticleSwarm:
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'bng_command': 'For this test you don''t need this.'})
 
+        cls.config2 = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
+                           ('random_var', 'v1'): [0, 10], ('loguniform_var', 'v2'): [0.01, 1e5],
+                           ('lognormrandom_var', 'v3'): [0, 1],
+                           'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
+                           'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
+                           'bng_command': 'For this test you don''t need this.'})
+
         cls.config_path = 'bngl_files/parabola.conf'
 
     @classmethod
@@ -55,6 +62,14 @@ class TestParticleSwarm:
             except FileNotFoundError:
                 # Exactly how many sims were done depends on random run timing, so some might be missing.
                 pass
+
+    def test_random_pset(self):
+        ps = algorithms.ParticleSwarm(self.config2)
+        params = ps.random_pset()
+        # Necessary but not sufficient check that this is working correctly.
+        assert 0 < params['v1'] < 10
+        assert 0.01 < params['v2'] < 1e5
+        assert 1e-4 < params['v3'] < 1e4
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
