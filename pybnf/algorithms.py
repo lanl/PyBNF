@@ -152,6 +152,22 @@ class Algorithm(object):
         # Generate a list of variable names
         self.variables = self.config.variables
 
+        # Set the space (log or regular) in which each variable moves, as well as the box constraints on the variable.
+        # Currently, this is set based on what distribution the variable is initialized with, but these could be made
+        # into a separate, custom options
+        self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
+        for v in self.config.variables_specs:
+            if v[1] == 'random_var':
+                self.variable_space[v[0]] = ('regular', v[2], v[3])
+            elif v[1] == 'lognormrandom_var':
+                self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
+            elif v[1] == 'loguniform_var':
+                self.variable_space[v[0]] = ('log', v[2], v[3])
+            elif v[1] == 'static_list_var':
+                self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
+            else:
+                raise RuntimeError('Unrecognized variable type: %s' % v[1])
+
     def start_run(self):
         """
         Called by the scheduler at the start of a fitting run.
@@ -202,6 +218,30 @@ class Algorithm(object):
             else:
                 raise RuntimeError('Unrecognized variable type: %s' % type)
         return PSet(param_dict)
+
+    def add(self, paramset, param, value):
+        """
+        Helper function to add a value to a param in a parameter set,
+        taking into account
+        1) Whether this parameter is to be moved in regular or log space
+        2) Box constraints on the parameter
+        :param paramset:
+        :type paramset: PSet
+        :param param: name of the parameter
+        :type param: str
+        :param value: value to be added
+        :type value: float
+        :return: The result of the addition
+        """
+        if self.variable_space[param][0] == 'regular':
+            return max(self.variable_space[param][1], min(self.variable_space[param][2], paramset[param] + value))
+        elif self.variable_space[param][0] == 'log':
+            return max(self.variable_space[param][1], min(self.variable_space[param][2],
+                                                          10.**(np.log10(paramset[param]) + value)))
+        elif self.variable_space[param][0] == 'static':
+            return paramset[param]
+        else:
+            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
 
     def make_job(self, params):

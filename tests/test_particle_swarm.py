@@ -39,6 +39,8 @@ class TestParticleSwarm:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
+        cls.params = pset.PSet({'v1': 3.14,'v2': 1.0, 'v3': 0.1})
+
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
@@ -70,6 +72,18 @@ class TestParticleSwarm:
         assert params['v1'] in [17., 42., 3.14]
         assert 0.01 < params['v2'] < 1e5
         assert 1e-4 < params['v3'] < 1e4
+
+    def test_add(self):
+        ps = algorithms.ParticleSwarm(self.config)
+        npt.assert_almost_equal(ps.add(self.params, 'v1', 1.), 4.14)
+        npt.assert_almost_equal(ps.add(self.params, 'v1', -4.), 0.)
+        ps2 = algorithms.ParticleSwarm(self.config2)
+        npt.assert_almost_equal(ps2.add(self.params, 'v1', 1.), 3.14)
+        npt.assert_almost_equal(ps2.add(self.params, 'v2', -1.), 0.1)
+        npt.assert_almost_equal(ps2.add(self.params, 'v3', 2.), 10.)
+        npt.assert_almost_equal(ps2.add(self.params, 'v2', 30.), 1e5)
+        npt.assert_almost_equal(ps2.add(self.params, 'v3', 30.), 1e29)
+
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
