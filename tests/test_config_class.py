@@ -16,7 +16,8 @@ class TestConfig(object):
                    'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
                    ('random_var', 'avar__FREE__'): [4., 5.],
-                   ('loguniform_var', 'bvar__FREE__'): [0.01, 1e5]}
+                   ('loguniform_var', 'bvar__FREE__'): [0.01, 1e5],
+                   ('static_list_var', 'cvar__FREE__'): [17., 23., 37., 42.]}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}}
@@ -32,9 +33,10 @@ class TestConfig(object):
         assert 'p1_5' in c.mapping['Tricky']
         assert 'thing' in c.mapping['Tricky']
         assert isinstance(c.obj, objective.ChiSquareObjective)
-        assert sorted(c.variables) == ['avar__FREE__', 'bvar__FREE__']
+        assert sorted(c.variables) == ['avar__FREE__', 'bvar__FREE__', 'cvar__FREE__']
         assert sorted(c.variables_specs) == [('avar__FREE__', 'random_var', 4., 5.),
-                                             ('bvar__FREE__', 'loguniform_var', 0.01, 1e5)]
+                                             ('bvar__FREE__', 'loguniform_var', 0.01, 1e5),
+                                             ('cvar__FREE__', 'static_list_var', [17., 23., 37., 42.], None)]
 
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):

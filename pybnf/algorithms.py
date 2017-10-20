@@ -198,7 +198,7 @@ class Algorithm(object):
             elif type == 'lognormrandom_var':
                 param_dict[name] = np.random.lognormal(val1, val2)
             elif type == 'static_list_var':
-                raise NotImplementedError('static_list_var option is not implemented')  # Todo
+                param_dict[name] = np.random.choice(val1)
             else:
                 raise RuntimeError('Unrecognized variable type: %s' % type)
         return PSet(param_dict)
