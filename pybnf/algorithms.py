@@ -243,6 +243,20 @@ class Algorithm(object):
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
+    def diff(self, paramset1, paramset2, param):
+        """
+        Helper function to calculate paramset1[param] - paramset2[param], taking into account whether
+        param is in regular or log space
+        """
+        if self.variable_space[param][0] == 'regular':
+            return paramset1[param] - paramset2[param]
+        elif self.variable_space[param][0] == 'log':
+            return np.log10(paramset1[param] / paramset2[param])
+        elif self.variable_space[param][0] == 'static':
+            return 0.  # Don't know what to do here...
+        else:
+            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
+
 
     def make_job(self, params):
         """
@@ -416,11 +430,10 @@ class ParticleSwarm(Algorithm):
         w = self.w0 + (self.wf - self.w0) * self.nv / (self.nv + self.nmax)
         self.swarm[p][1] = {v:
                                 w * self.swarm[p][1][v] + self.c1 * np.random.random() * (
-                                self.bests[p][0][v] - self.swarm[p][0][v]) +
-                                self.c2 * np.random.random() * (self.global_best[0][v] - self.swarm[p][0][v])
+                                self.diff(self.bests[p][0], self.swarm[p][0], v)) +
+                                self.c2 * np.random.random() * self.diff(self.global_best[0], self.swarm[p][0], v)
                             for v in self.variables}
-        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variables},
-                        allow_negative=True)  # Todo: Smarter handling of negative values
+        new_pset = PSet({v: self.add(self.swarm[p][0], v, self.swarm[p][1][v]) for v in self.variables})
         self.swarm[p][0] = new_pset
         self.pset_map[new_pset] = p
 

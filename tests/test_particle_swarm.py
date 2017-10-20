@@ -40,6 +40,7 @@ class TestParticleSwarm:
         cls.chi_sq = objective.ChiSquareObjective()
 
         cls.params = pset.PSet({'v1': 3.14,'v2': 1.0, 'v3': 0.1})
+        cls.params2 = pset.PSet({'v1': 4.14, 'v2': 10.0, 'v3': 1.0})
 
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
@@ -83,6 +84,13 @@ class TestParticleSwarm:
         npt.assert_almost_equal(ps2.add(self.params, 'v3', 2.), 10.)
         npt.assert_almost_equal(ps2.add(self.params, 'v2', 30.), 1e5)
         npt.assert_almost_equal(ps2.add(self.params, 'v3', 30.), 1e29)
+
+    def test_diff(self):
+        ps = algorithms.ParticleSwarm(self.config)
+        npt.assert_almost_equal(ps.diff(self.params, self.params2, 'v1'), -1.)
+        ps2 = algorithms.ParticleSwarm(self.config2)
+        npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v2'), -1.)
+        npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v3'), -1.)
 
 
     def test_start(self):
