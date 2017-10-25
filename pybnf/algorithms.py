@@ -435,6 +435,14 @@ class ParticleSwarm(Algorithm):
                             for v in self.variables}
         new_pset = PSet({v: self.add(self.swarm[p][0], v, self.swarm[p][1][v]) for v in self.variables})
         self.swarm[p][0] = new_pset
+
+        # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
+        # This could come up in practice if all parameters have hit a box constraint.
+        # As a simple workaround, perturb the parameters slightly
+        while new_pset in self.pset_map:
+            retry_dict = {v: self.add(new_pset, v, np.random.uniform(-1e-6, 1e-6)) for v in self.variables}
+            new_pset = PSet(retry_dict)
+
         self.pset_map[new_pset] = p
 
         # Check for stopping criteria
