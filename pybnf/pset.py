@@ -323,3 +323,12 @@ class Trajectory(object):
         :return: PSet
         """
         return min(self.trajectory, key=self.trajectory.get)
+
+    def best_fit_name(self):
+        """
+        Finds the name of the best fit parameter set (which is also the folder
+        where that result is stored)
+
+        :return: str
+        """
+        return self.names[self.best_fit()]

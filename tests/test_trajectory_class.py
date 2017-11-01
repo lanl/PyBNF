@@ -59,6 +59,7 @@ class TestTrajectory:
         traj.add(self.ps2, self.obj2, 'p2')
         traj.add(self.ps3, self.obj3, 'p3')
         assert traj.best_fit() == self.ps0
+        assert traj.best_fit_name() == 'p0'
 
     def test_max_output(self):
         traj = pset.Trajectory(max_output=2)

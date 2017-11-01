@@ -7,6 +7,7 @@ import os
 from os import mkdir
 from os import chdir
 from os import getcwd
+import shutil
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import PIPE
@@ -338,6 +339,19 @@ class Algorithm(object):
         logging.debug("Pending jobs cancelled")
         client.close()
         self.output_results('final')
+
+        # Copy the best simulations into the results folder
+        best_name = self.trajectory.best_fit_name()
+        for m in self.config.models:
+            shutil.copy('%s/Simulations/%s/%s_%s.bngl' %
+                        (self.config.config['output_dir'], best_name, m, best_name),
+                        '%s/Results' % self.config.config['output_dir'])
+            for suf in self.config.mapping[m]:
+                shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
+                            (self.config.config['output_dir'], best_name, m, best_name, suf),
+                            '%s/Results' % self.config.config['output_dir'])
+
+
         logging.info("Fitting complete!")
 
 
