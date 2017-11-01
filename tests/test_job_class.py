@@ -24,7 +24,7 @@ class TestJob(object):
         }
         cls.pset = pset.PSet(d)
         cls.bngpath = environ['BNGPATH'] + '/BNG2.pl'
-        cls.job = algorithms.Job([cls.model], cls.pset, 1, cls.bngpath)
+        cls.job = algorithms.Job([cls.model], cls.pset, 1, cls.bngpath, '.')
 
     @classmethod
     def teardown_class(cls):
