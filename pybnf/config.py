@@ -34,7 +34,7 @@ class Configuration(object):
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data = self._load_exp_data()
         self.obj = self._load_obj_func()
-        self.variables = self._load_variables()
+        self.variables, self.variables_specs = self._load_variables()
 
     def default_config(self):
         """Default configuration values"""
@@ -94,12 +94,24 @@ class Configuration(object):
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'])
 
     def _load_variables(self):
+        """
+        Loads the variable names from the config dict, and stores them in more easily accessible data structures.
+        :return: 2-tuple (variables, variables_specs), where variables in a list of the variable names, and
+         variables_specs is a list of 4-tuples (variable_name, variable_type, min_value, max_value).
+         For static_list_var variables, variables_specs instead takes the form (variable_name, static_list_var,
+         [list of possible values], None)
+        """
         variables = []
+        variables_specs = []
         for k in self.config.keys():
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
                     variables.append(k[1])
-        return variables
+                    if k[0] == 'static_list_var':
+                        variables_specs.append((k[1], k[0], self.config[k], None))
+                    else:
+                        variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
+        return variables, variables_specs
 
 
 class UnknownObjectiveFunctionError(Exception):

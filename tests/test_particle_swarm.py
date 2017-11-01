@@ -39,11 +39,21 @@ class TestParticleSwarm:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
+        cls.params = pset.PSet({'v1': 3.14,'v2': 1.0, 'v3': 0.1})
+        cls.params2 = pset.PSet({'v1': 4.14, 'v2': 10.0, 'v3': 1.0})
+
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'bng_command': 'For this test you don''t need this.'})
+
+        cls.config2 = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
+                           ('static_list_var', 'v1'): [17., 42., 3.14], ('loguniform_var', 'v2'): [0.01, 1e5],
+                           ('lognormrandom_var', 'v3'): [0, 1],
+                           'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
+                           'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
+                           'bng_command': 'For this test you don''t need this.'})
 
         cls.config_path = 'bngl_files/parabola.conf'
 
@@ -55,6 +65,33 @@ class TestParticleSwarm:
             except FileNotFoundError:
                 # Exactly how many sims were done depends on random run timing, so some might be missing.
                 pass
+
+    def test_random_pset(self):
+        ps = algorithms.ParticleSwarm(self.config2)
+        params = ps.random_pset()
+        # Necessary but not sufficient check that this is working correctly.
+        assert params['v1'] in [17., 42., 3.14]
+        assert 0.01 < params['v2'] < 1e5
+        assert 1e-4 < params['v3'] < 1e4
+
+    def test_add(self):
+        ps = algorithms.ParticleSwarm(self.config)
+        npt.assert_almost_equal(ps.add(self.params, 'v1', 1.), 4.14)
+        npt.assert_almost_equal(ps.add(self.params, 'v1', -4.), 0.)
+        ps2 = algorithms.ParticleSwarm(self.config2)
+        npt.assert_almost_equal(ps2.add(self.params, 'v1', 1.), 3.14)
+        npt.assert_almost_equal(ps2.add(self.params, 'v2', -1.), 0.1)
+        npt.assert_almost_equal(ps2.add(self.params, 'v3', 2.), 10.)
+        npt.assert_almost_equal(ps2.add(self.params, 'v2', 30.), 1e5)
+        npt.assert_almost_equal(ps2.add(self.params, 'v3', 30.), 1e29)
+
+    def test_diff(self):
+        ps = algorithms.ParticleSwarm(self.config)
+        npt.assert_almost_equal(ps.diff(self.params, self.params2, 'v1'), -1.)
+        ps2 = algorithms.ParticleSwarm(self.config2)
+        npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v2'), -1.)
+        npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v3'), -1.)
+
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)

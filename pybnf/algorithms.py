@@ -152,6 +152,22 @@ class Algorithm(object):
         # Generate a list of variable names
         self.variables = self.config.variables
 
+        # Set the space (log or regular) in which each variable moves, as well as the box constraints on the variable.
+        # Currently, this is set based on what distribution the variable is initialized with, but these could be made
+        # into a separate, custom options
+        self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
+        for v in self.config.variables_specs:
+            if v[1] == 'random_var':
+                self.variable_space[v[0]] = ('regular', v[2], v[3])
+            elif v[1] == 'lognormrandom_var':
+                self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
+            elif v[1] == 'loguniform_var':
+                self.variable_space[v[0]] = ('log', v[2], v[3])
+            elif v[1] == 'static_list_var':
+                self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
+            else:
+                raise RuntimeError('Unrecognized variable type: %s' % v[1])
+
     def start_run(self):
         """
         Called by the scheduler at the start of a fitting run.
@@ -182,6 +198,65 @@ class Algorithm(object):
         score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
         res.score = score
         self.trajectory.add(res.pset, score)
+
+    def random_pset(self):
+        """
+        Generates a random PSet based on the distributions and bounds for each parameter specified in the configuration
+
+        :return:
+        """
+        param_dict = dict()
+        for (name, type, val1, val2) in self.config.variables_specs:
+            if type == 'random_var':
+                param_dict[name] = np.random.uniform(val1, val2)
+            elif type == 'loguniform_var':
+                param_dict[name] = 10.**np.random.uniform(np.log10(val1), np.log10(val2))
+            elif type == 'lognormrandom_var':
+                param_dict[name] = 10.**np.random.normal(val1, val2)
+            elif type == 'static_list_var':
+                param_dict[name] = np.random.choice(val1)
+            else:
+                raise RuntimeError('Unrecognized variable type: %s' % type)
+        return PSet(param_dict)
+
+    def add(self, paramset, param, value):
+        """
+        Helper function to add a value to a param in a parameter set,
+        taking into account
+        1) Whether this parameter is to be moved in regular or log space
+        2) Box constraints on the parameter
+        :param paramset:
+        :type paramset: PSet
+        :param param: name of the parameter
+        :type param: str
+        :param value: value to be added
+        :type value: float
+        :return: The result of the addition
+        """
+        if self.variable_space[param][0] == 'regular':
+            return max(self.variable_space[param][1], min(self.variable_space[param][2], paramset[param] + value))
+        elif self.variable_space[param][0] == 'log':
+            return max(self.variable_space[param][1], min(self.variable_space[param][2],
+                                                          10.**(np.log10(paramset[param]) + value)))
+        elif self.variable_space[param][0] == 'static':
+            return paramset[param]
+        else:
+            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
+
+    def diff(self, paramset1, paramset2, param):
+        """
+        Helper function to calculate paramset1[param] - paramset2[param], taking into account whether
+        param is in regular or log space
+        """
+        if self.variable_space[param][0] == 'regular':
+            return paramset1[param] - paramset2[param]
+        elif self.variable_space[param][0] == 'log':
+            return np.log10(paramset1[param] / paramset2[param])
+        elif self.variable_space[param][0] == 'static':
+            return 0.  # Don't know what to do here...
+        else:
+            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
+
 
     def make_job(self, params):
         """
@@ -313,7 +388,7 @@ class ParticleSwarm(Algorithm):
         """
 
         for i in range(self.num_particles):
-            new_params = PSet({xi: np.random.uniform(0, 4) for xi in self.variables})
+            new_params = self.random_pset()
             # Todo: Smart way to initialize velocity?
             new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
             self.swarm.append([new_params, new_velocity])
@@ -355,12 +430,19 @@ class ParticleSwarm(Algorithm):
         w = self.w0 + (self.wf - self.w0) * self.nv / (self.nv + self.nmax)
         self.swarm[p][1] = {v:
                                 w * self.swarm[p][1][v] + self.c1 * np.random.random() * (
-                                self.bests[p][0][v] - self.swarm[p][0][v]) +
-                                self.c2 * np.random.random() * (self.global_best[0][v] - self.swarm[p][0][v])
+                                self.diff(self.bests[p][0], self.swarm[p][0], v)) +
+                                self.c2 * np.random.random() * self.diff(self.global_best[0], self.swarm[p][0], v)
                             for v in self.variables}
-        new_pset = PSet({v: self.swarm[p][0][v] + self.swarm[p][1][v] for v in self.variables},
-                        allow_negative=True)  # Todo: Smarter handling of negative values
+        new_pset = PSet({v: self.add(self.swarm[p][0], v, self.swarm[p][1][v]) for v in self.variables})
         self.swarm[p][0] = new_pset
+
+        # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
+        # This could come up in practice if all parameters have hit a box constraint.
+        # As a simple workaround, perturb the parameters slightly
+        while new_pset in self.pset_map:
+            retry_dict = {v: self.add(new_pset, v, np.random.uniform(-1e-6, 1e-6)) for v in self.variables}
+            new_pset = PSet(retry_dict)
+
         self.pset_map[new_pset] = p
 
         # Check for stopping criteria
