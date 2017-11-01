@@ -212,7 +212,7 @@ class Algorithm(object):
             elif type == 'loguniform_var':
                 param_dict[name] = 10.**np.random.uniform(np.log10(val1), np.log10(val2))
             elif type == 'lognormrandom_var':
-                param_dict[name] = np.random.lognormal(val1, val2)
+                param_dict[name] = 10.**np.random.normal(val1, val2)
             elif type == 'static_list_var':
                 param_dict[name] = np.random.choice(val1)
             else:
