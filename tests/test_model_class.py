@@ -30,49 +30,49 @@ class TestModel:
         remove(cls.savefile)
 
     def test_initialize(self):
-        model1 = pset.Model(self.file1)
+        model1 = pset.BNGLModel(self.file1)
         assert model1.param_names == ('kase__FREE__', 'koff__FREE__', 'pase__FREE__')
 
-        model2 = pset.Model(self.file2)
+        model2 = pset.BNGLModel(self.file2)
         assert model2.param_names == (
             'Ag_tot_1__FREE__', 'kase__FREE__', 'koff__FREE__', 'kon__FREE__', 'pase__FREE__', 't_end__FREE__')
 
-        model3 = pset.Model(self.file3)
+        model3 = pset.BNGLModel(self.file3)
         assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__')
 
     def test_init_with_pset(self):
         ps1 = pset.PSet(self.dict1)
-        model1 = pset.Model(self.file1, ps1)
+        model1 = pset.BNGLModel(self.file1, ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
     @raises(ValueError)
     def test_init_with_pset_error(self):
         ps1 = pset.PSet(self.dict2)
-        model1 = pset.Model(self.file1, ps1)
+        model1 = pset.BNGLModel(self.file1, ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
 
     def test_set_param_set(self):
-        model1 = pset.Model(self.file1)
+        model1 = pset.BNGLModel(self.file1)
         ps1 = pset.PSet(self.dict1)
         model1.set_param_set(ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
     def test_copy_with_param_set(self):
-        model1 = pset.Model(self.file1)
+        model1 = pset.BNGLModel(self.file1)
         ps1 = pset.PSet(self.dict1)
         model1b = model1.copy_with_param_set(ps1)
         assert model1b.param_set['kase__FREE__'] == 3.8
 
     @raises(ValueError)
     def test_set_param_set_error(self):
-        model1 = pset.Model(self.file1)
+        model1 = pset.BNGLModel(self.file1)
         ps2 = pset.PSet(self.dict2)
         model1.copy_with_param_set(ps2)
 
     def test_model_text(self):
         ps1 = pset.PSet(self.dict1)
-        model1 = pset.Model(self.file1,ps1)
+        model1 = pset.BNGLModel(self.file1, ps1)
 
         f_answer = open(self.file1a)  # File containing the correct output for model_text()
         answer = f_answer.read()
@@ -81,7 +81,7 @@ class TestModel:
 
     def test_model_save(self):
         ps1 = pset.PSet(self.dict1)
-        model1 = pset.Model(self.file1, ps1)
+        model1 = pset.BNGLModel(self.file1, ps1)
 
         model1.save(self.savefile)
 
@@ -96,18 +96,18 @@ class TestModel:
         assert myguess == answer
 
     def test_action_suffixes(self):
-        m0 = pset.Model(self.file1)
+        m0 = pset.BNGLModel(self.file1)
         assert len(m0.suffixes) == 1
         assert m0.suffixes[0] == ('simulate', 'p1_5')
 
-        m1 = pset.Model(self.file3)
+        m1 = pset.BNGLModel(self.file3)
         assert len(m1.suffixes) == 2
         assert m1.suffixes[1] == ('parameter_scan', 'thing')
 
     def test_network_check(self):
-        model0 = pset.Model(self.file1)
+        model0 = pset.BNGLModel(self.file1)
         assert model0.generates_network
-        model1 = pset.Model(self.file4)
+        model1 = pset.BNGLModel(self.file4)
         assert not model1.generates_network
 
     def test_netfile_read(self):

@@ -15,7 +15,7 @@ class TestJob(object):
 
     @classmethod
     def setup_class(cls):
-        cls.model = pset.Model('bngl_files/Tricky.bngl')
+        cls.model = pset.BNGLModel('bngl_files/Tricky.bngl')
         d = {
             'koff__FREE__': 0.1,
             '__koff2__FREE__': 0.1,

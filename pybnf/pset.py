@@ -4,7 +4,7 @@ import copy
 import warnings
 
 
-class Model(object):
+class BNGLModel(object):
     """
     Class representing a BNGL model
 
@@ -170,6 +170,13 @@ class NetModel(object):
         return ls
 
     def copy_with_param_set(self, pset):
+        """
+        Returns a copy of the model in .net format, but with a new parameter set
+
+        :param pset: A set of new parameters for the model
+        :type pset: PSet
+        :return: NetModel
+        """
         lines_copy = copy.deepcopy(self.netfile_lines)
         in_params_block = False
         for i, l in enumerate(lines_copy):

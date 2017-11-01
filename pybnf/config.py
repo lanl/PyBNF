@@ -3,7 +3,7 @@
 
 from .data import Data
 from .objective import ChiSquareObjective
-from .pset import Model
+from .pset import BNGLModel
 import numpy as np
 import re
 import logging
@@ -97,7 +97,7 @@ class Configuration(object):
         """
         md = {}
         for mf in self.config['models']:
-            model = Model(mf)
+            model = BNGLModel(mf)
             md[model.name] = model
         return md
 

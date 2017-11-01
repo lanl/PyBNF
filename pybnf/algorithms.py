@@ -11,6 +11,8 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
+from .pset import BNGLModel
+import numpy as np
 
 import logging
 import numpy as np

@@ -29,7 +29,7 @@ class TestConfig(object):
 
     def test_config_init(self):
         c = config.Configuration(self.cf0)
-        assert isinstance(c.models['Tricky'], pset.Model)
+        assert isinstance(c.models['Tricky'], pset.BNGLModel)
         assert isinstance(c.exp_data['p1_5'], data.Data)
         assert 'p1_5' in c.mapping['Tricky']
         assert 'thing' in c.mapping['Tricky']
