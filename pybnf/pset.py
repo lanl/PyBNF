@@ -4,7 +4,22 @@ import copy
 import warnings
 
 
-class BNGLModel(object):
+class Model(object):
+    """
+    An abstract class representing an executable model
+    """
+
+    def copy_with_param_set(self, pset):
+        """Returns a copy of the model with a new parameter set
+
+        :param pset: A new parameter set
+        :type pset: PSet
+        :return: Model
+        """
+        NotImplementedError("copy_with_param_set is not implemented")
+
+
+class BNGLModel(Model):
     """
     Class representing a BNGL model
 
@@ -154,7 +169,7 @@ class BNGLModel(object):
         f.close()
 
 
-class NetModel(object):
+class NetModel(Model):
     def __init__(self, nf=None, ls=None):
         if nf is not None:
             self.file_name = nf
