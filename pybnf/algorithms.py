@@ -20,6 +20,7 @@ import numpy as np
 
 import logging
 import time
+import re
 
 
 class Result(object):
@@ -432,6 +433,7 @@ class ParticleSwarm(Algorithm):
 
         for i in range(self.num_particles):
             new_params = self.random_pset()
+            new_params.name = 'iter0p%i' % i
             # Todo: Smart way to initialize velocity?
             new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
             self.swarm.append([new_params, new_velocity])
@@ -487,6 +489,11 @@ class ParticleSwarm(Algorithm):
             new_pset = PSet(retry_dict)
 
         self.pset_map[new_pset] = p
+
+        # Set the new name: the old pset name is iter##p##
+        # Extract the iter number
+        iternum = int(re.search('iter([0-9]+)', paramset.name).groups()[0])
+        new_pset.name = 'iter%ip%i' % (iternum+1, p)
 
         # Check for stopping criteria
         if self.num_evals >= self.max_evals or self.nv >= self.n_stop:
