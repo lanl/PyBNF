@@ -7,7 +7,7 @@ from .parse import load_config
 from .config import Configuration
 import pybnf.algorithms as algs
 import os
-from shutil import rmtree
+import shutil
 __version__ = "0.1"
 
 
@@ -45,9 +45,9 @@ def main():
                                 'from a previous run. Overwrite them with the current run? [y/n] (n) ')
                 if ans.lower() == 'y' or ans.lower == 'yes':
                     if os.path.exists(config.config['output_dir'] + '/Results'):
-                        rmtree(config.config['output_dir'] + '/Results')
+                        shutil.rmtree(config.config['output_dir'] + '/Results')
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                        rmtree(config.config['output_dir'] + '/Simulations')
+                        shutil.rmtree(config.config['output_dir'] + '/Simulations')
                 else:
                     print('Quitting')
                     return
@@ -58,6 +58,7 @@ def main():
             return
     os.makedirs(config.config['output_dir']+'/Results')
     os.mkdir(config.config['output_dir']+'/Simulations')
+    shutil.copy(results.conf_file, config.config['output_dir']+'/Results')
 
     # Run the algorithm!
     alg.run()
