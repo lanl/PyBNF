@@ -401,6 +401,7 @@ class ParticleSwarm(Algorithm):
         self.c1 = conf_dict['cognitive']
         self.c2 = conf_dict['social']
         self.max_evals = conf_dict['population_size'] * conf_dict['max_iterations']
+        self.output_every = conf_dict['population_size'] * conf_dict['output_every']
 
         self.num_particles = conf_dict['population_size']
         # Todo: Nice error message if a required key is missing
@@ -461,6 +462,9 @@ class ParticleSwarm(Algorithm):
                     self.absolute_tol + self.relative_tol * self.last_best):
                 self.nv += 1
             self.last_best = self.global_best[1]
+
+        if self.num_evals % self.output_every == 0:
+            self.output_results()
 
         p = self.pset_map.pop(paramset)  # Particle number
 
