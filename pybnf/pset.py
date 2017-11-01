@@ -179,6 +179,7 @@ class PSet(object):
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
 
         self._param_dict = param_dict
+        self.name = None  # Can be set by Algorithms to give it a meaningful label in output file.
 
     def __getitem__(self, item):
         """
@@ -265,6 +266,7 @@ class Trajectory(object):
 
     def __init__(self, max_output=1000000):
         self.trajectory = dict()
+        self.names = dict()
         self.max_output = max_output
 
     def _valid_pset(self, pset):
@@ -277,7 +279,7 @@ class Trajectory(object):
         existing_pset = next(iter(self.trajectory.keys()))
         return pset.keys() == existing_pset.keys()
 
-    def add(self, pset, obj):
+    def add(self, pset, obj, name):
         """
         Adds a PSet to the fitting trajectory
 
@@ -289,15 +291,16 @@ class Trajectory(object):
             if not self._valid_pset(pset):
                 raise ValueError("PSet %s has incompatible parameters" % pset)
         self.trajectory[pset] = obj
+        self.names[pset] = name
 
     def _write(self):
         """Writes the Trajectory in a tab-delimited format"""
         s = ''
         header = next(iter(self.trajectory.keys())).keys_to_string()
-        s += '#\t%s\tObj\n' % header
+        s += '#\tSimulation\tObj\t%s\n' % header
         num_output = 0
         for k in sorted(self.trajectory, key=self.trajectory.get):
-            s += '\t%s\t%s\n' % (k.values_to_string(), self.trajectory[k])
+            s += '\t%s\t%s\t%s\n' % (self.names[k], self.trajectory[k], k.values_to_string())
             num_output += 1
             if num_output == self.max_output:
                 break

@@ -26,45 +26,45 @@ class TestTrajectory:
 
     def test_build(self):
         traj = pset.Trajectory()
-        traj.add(self.ps0, self.obj0)
+        traj.add(self.ps0, self.obj0, 'p0')
         assert len(traj.trajectory) == 1
-        traj.add(self.ps1, self.obj1)
+        traj.add(self.ps1, self.obj1, 'p1')
         assert len(traj.trajectory) == 2
-        traj.add(self.ps2, self.obj2)
+        traj.add(self.ps2, self.obj2, 'p2')
         assert len(traj.trajectory) == 3
-        traj.add(self.ps3, self.obj3)
+        traj.add(self.ps3, self.obj3, 'p3')
         assert len(traj.trajectory) == 4
 
     @raises(Exception)
     def test_incompatible_psets(self):
         traj = pset.Trajectory()
-        traj.add(self.ps0, self.obj0)
-        traj.add(self.ps4, self.obj2)
+        traj.add(self.ps0, self.obj0, 'p0')
+        traj.add(self.ps4, self.obj2, 'p4')
 
     def test_write(self):
         traj = pset.Trajectory()
-        traj.add(self.ps0, self.obj0)
-        traj.add(self.ps1, self.obj1)
-        traj.add(self.ps2, self.obj2)
-        traj.add(self.ps3, self.obj3)
+        traj.add(self.ps0, self.obj0, 'p0')
+        traj.add(self.ps1, self.obj1, 'p1')
+        traj.add(self.ps2, self.obj2, 'p2')
+        traj.add(self.ps3, self.obj3, 'p3')
         s = traj._write()
         print(s)
-        assert re.match('#\tx\ty\tz\tObj\n', s)
-        assert re.search('\t3.0\t700.3\t0.00052\t1.0\n', s)
+        assert re.match('#\tSimulation\tObj\tx\ty\tz\n', s)
+        assert re.search('\t1.0\t3.0\t700.3\t0.00052\n', s)
 
     def test_best_fit(self):
         traj = pset.Trajectory()
-        traj.add(self.ps0, self.obj0)
-        traj.add(self.ps1, self.obj1)
-        traj.add(self.ps2, self.obj2)
-        traj.add(self.ps3, self.obj3)
+        traj.add(self.ps0, self.obj0, 'p0')
+        traj.add(self.ps1, self.obj1, 'p1')
+        traj.add(self.ps2, self.obj2, 'p2')
+        traj.add(self.ps3, self.obj3, 'p3')
         assert traj.best_fit() == self.ps0
 
     def test_max_output(self):
         traj = pset.Trajectory(max_output=2)
-        traj.add(self.ps0, self.obj0)
-        traj.add(self.ps1, self.obj1)
-        traj.add(self.ps2, self.obj2)
-        traj.add(self.ps3, self.obj3)
+        traj.add(self.ps0, self.obj0, 'p0')
+        traj.add(self.ps1, self.obj1, 'p1')
+        traj.add(self.ps2, self.obj2, 'p2')
+        traj.add(self.ps3, self.obj3, 'p3')
         s = traj._write()
-        assert s == '#\tx\ty\tz\tObj\n\t1.0\t2.0\t3.14\t0.0\n\t3.0\t700.3\t0.00052\t1.0\n'
+        assert s == '#\tSimulation\tObj\tx\ty\tz\n\tp0\t0.0\t1.0\t2.0\t3.14\n\tp1\t1.0\t3.0\t700.3\t0.00052\n'

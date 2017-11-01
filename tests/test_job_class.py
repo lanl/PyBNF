@@ -24,7 +24,7 @@ class TestJob(object):
         }
         cls.pset = pset.PSet(d)
         cls.bngpath = environ['BNGPATH'] + '/BNG2.pl'
-        cls.job = algorithms.Job([cls.model], cls.pset, 1, cls.bngpath, '.')
+        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', cls.bngpath, '.')
 
     @classmethod
     def teardown_class(cls):
@@ -42,8 +42,8 @@ class TestJob(object):
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
         assert isinstance(list(sim_data['Tricky'].values())[0], data.Data)
         chdir('../')
-        assert isfile('sim_x/Tricky_1.bngl')
-        assert isdir('sim_x/Tricky_1_thing')
+        assert isfile('sim_x/Tricky_sim_1.bngl')
+        assert isdir('sim_x/Tricky_sim_1_thing')
 
     def test_job_run(self):
         res = self.job.run_simulation()
@@ -53,5 +53,5 @@ class TestJob(object):
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
         assert isinstance(list(sim_data['Tricky'].values())[0], data.Data)
-        assert isfile('sim_1/Tricky_1.bngl')
-        assert isdir('sim_1/Tricky_1_thing')
+        assert isfile('sim_1/Tricky_sim_1.bngl')
+        assert isdir('sim_1/Tricky_sim_1_thing')

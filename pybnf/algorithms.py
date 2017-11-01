@@ -27,7 +27,7 @@ class Result(object):
     Container for the results of a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, paramset, simdata, log):
+    def __init__(self, paramset, simdata, log, name):
         """
         Instantiates a Result
 
@@ -41,6 +41,7 @@ class Result(object):
         self.pset = paramset
         self.simdata = simdata
         self.log = log
+        self.name = name
         self.score = None  # To be set later when the Result is scored.
 
 
@@ -62,8 +63,8 @@ class Job:
         :type models: list of Model instances
         :param params: The parameter set with which to evaluate the model
         :type params: PSet
-        :param id: Job identification
-        :type id: int
+        :param id: Job identification; also the folder name that the job gets saved to
+        :type id: str
         :param bngcommand: Command to run BioNetGen
         :type bngcommand: str
         :param output_dir path to the directory where I should create my simulation folder
@@ -92,7 +93,7 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        folder = '%s/sim_%s' % (self.output_dir, self.id)
+        folder = '%s/%s' % (self.output_dir, self.id)
         mkdir(folder)
         try:
             chdir(folder)
@@ -100,7 +101,7 @@ class Job:
             log = self.execute(model_files)
             simdata = self.load_simdata()
             chdir(self.home_dir)
-            return Result(self.params, simdata, log)
+            return Result(self.params, simdata, log, self.id)
         except CalledProcessError:
             return FailedSimulation(self.id)
 
@@ -180,6 +181,10 @@ class Algorithm(object):
         Called by the scheduler at the start of a fitting run.
         Must return a list of PSets that the scheduler should run.
 
+        Algorithm subclasses optionally may set the .name field of the PSet objects to give a meaningful unique
+        identifier such as 'gen0ind42'. If so, they MUST BE UNIQUE, as this determines the folder name.
+        Uniqueness will not be checked elsewhere.
+
         :return: list of PSets
         """
         logging.info("Initializing algorithm")
@@ -204,7 +209,7 @@ class Algorithm(object):
 
         score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
         res.score = score
-        self.trajectory.add(res.pset, score)
+        self.trajectory.add(res.pset, score, res.name)
 
     def random_pset(self):
         """
@@ -274,8 +279,12 @@ class Algorithm(object):
         :type params: PSet
         :return: Job
         """
-        self.job_id_counter += 1
-        return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'],
+        if params.name:
+            job_id = params.name
+        else:
+            self.job_id_counter += 1
+            job_id = 'sim_%i' % self.job_id_counter
+        return Job(self.model_list, params, job_id, self.config.config['bng_command'],
                    self.config.config['output_dir']+'/Simulations/')
 
     def output_results(self, name=''):
