@@ -39,7 +39,7 @@ class Configuration(object):
     def default_config(self):
         """Default configuration values"""
         default = {
-            'objfunc': 'chi_sq', 'output_dir': '.',
+            'objfunc': 'chi_sq', 'output_dir': '.', 'delete_old_files': 0,
 
             'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
             'adaptive_rel_tol': 0.0

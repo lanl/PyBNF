@@ -3,6 +3,7 @@
 
 from distributed import as_completed
 from distributed import Client
+import os
 from os import mkdir
 from os import chdir
 from os import getcwd
@@ -150,6 +151,7 @@ class Algorithm(object):
         self.objective = self.config.obj
         self.trajectory = Trajectory()
         self.job_id_counter = 0
+        self.output_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
         self.model_list = list(self.config.models.values())
@@ -276,6 +278,31 @@ class Algorithm(object):
         return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'],
                    self.config.config['output_dir']+'/Simulations/')
 
+    def output_results(self, name=''):
+        """
+        Tells the Trajectory to output a log file now with the current best fits.
+
+        This should be called periodically by each Algorithm subclass, and is called by the Algorithm class at the end
+        of the simulation.
+        :return:
+        :param name: Custom string to add to the saved filename. If omitted, we just use a running counter of the
+        number of times we've outputted.
+        :type name: str
+        """
+        if name == '':
+            name = str(self.output_counter)
+        self.output_counter += 1
+        filepath = '%s/Results/sorted_params_%s.txt' % (self.config.config['output_dir'], name)
+        self.trajectory.write_to_file(filepath)
+
+        # If the user has asked for fewer output files, each time we're here, move the new file to
+        # Results/sorted_params.txt, overwriting the previous one.
+        if self.config.config['delete_old_files'] == 1:
+            noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
+            if os.path.isfile(noname_filepath):
+                os.remove(noname_filepath)
+            os.rename(filepath, noname_filepath)
+
     def run(self):
         """Main loop for executing the algorithm"""
         client = Client()
@@ -300,6 +327,7 @@ class Algorithm(object):
         client.cancel(list(pending))
         logging.debug("Pending jobs cancelled")
         client.close()
+        self.output_results('final')
         logging.info("Fitting complete!")
 
 
