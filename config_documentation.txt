@@ -22,6 +22,7 @@ static_list_var = name__FREE__ a1 a2 a3... - must take one of the values a1, a2,
 ***General options***
 
 delete_old_files: If 1, only save the latest copy of sorted_params.txt, delete older ones. Default: 0
+num_to_output: The maximum number of PSets to write when writing the trajectory. Default: 1000000
 
 
 ***Settings that apply to multiple Algorithms***

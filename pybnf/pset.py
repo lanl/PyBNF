@@ -263,8 +263,9 @@ class Trajectory(object):
     Tracks the various PSet instances and the corresponding objective function values
     """
 
-    def __init__(self):
+    def __init__(self, max_output=1000000):
         self.trajectory = dict()
+        self.max_output = max_output
 
     def _valid_pset(self, pset):
         """
@@ -294,8 +295,12 @@ class Trajectory(object):
         s = ''
         header = next(iter(self.trajectory.keys())).keys_to_string()
         s += '#\t%s\tObj\n' % header
+        num_output = 0
         for k in sorted(self.trajectory, key=self.trajectory.get):
             s += '\t%s\t%s\n' % (k.values_to_string(), self.trajectory[k])
+            num_output += 1
+            if num_output == self.max_output:
+                break
         return s
 
     def write_to_file(self, filename):

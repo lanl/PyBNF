@@ -149,7 +149,7 @@ class Algorithm(object):
         self.config = config
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
-        self.trajectory = Trajectory()
+        self.trajectory = Trajectory(max_output=config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
 
