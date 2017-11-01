@@ -38,6 +38,7 @@ class BNGLModel(Model):
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
 
         self.generates_network = False
+        self.action_line_indices = []
 
         # Read the file
         with open(self.file_path) as file:
@@ -48,6 +49,7 @@ class BNGLModel(Model):
         param_names_set = set()
         split_line = None
         linelist = self.bngl_file_text.splitlines()
+        in_action_block = False
         for linei in range(len(linelist)):
             line = linelist[linei]
             # Remove comment if present
@@ -72,11 +74,26 @@ class BNGLModel(Model):
             if action_suffix is not None:
                 self.suffixes.append(action_suffix)
 
+            if re.match('begin\s+action', line.strip()):
+                in_action_block = True
+                self.action_line_indices.append(linei)
+                continue
+            elif re.match('end\s+action', line.strip()):
+                in_action_block = False
+                self.action_line_indices.append(linei)
+                continue
+
+            if in_action_block:
+                self.action_line_indices.append(linei)
+
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found")
 
         if split_line is None:
             raise ModelError("'begin parameters' not found in BNGL file")
+
+        if not self.action_line_indices:
+            raise ModelError("Model has no actions block")
 
         # Two pieces of the model text. The full model with params should be written as _model_text_start + (free param definitions) + _model_text_end
         self._model_text_start = '\n'.join(linelist[:split_line] + [''])
@@ -125,7 +142,8 @@ class BNGLModel(Model):
         Returns a copy of this model containing the specified parameter set.
 
         :param pset: A PSet object containing the parameters for the new instance
-        :return:
+        :type pset: PSet
+        :return: BNGLModel
         """
         # Check that the PSet has definitions for the right parameters for this model
         if set(pset.keys()) != set(self.param_names):
@@ -154,7 +172,7 @@ class BNGLModel(Model):
         # Insert the generated text at the correct point within the text of the model
         return ''.join([self._model_text_start, param_text, self._model_text_end])
 
-    def save(self, filename):
+    def save(self, filename, gen_only=False):
         """
         Saves a runnable BNGL file of the model, including definitions of the __FREE__ parameter values that are defined
         by this model's pset, to the specified location.
@@ -163,7 +181,12 @@ class BNGLModel(Model):
         """
 
         # Call model_text(), then write the output to the file.
-        text = self.model_text()
+        if gen_only:
+            text_lines = [l.strip() for i, l in enumerate(self.bngl_file_text.splitlines()) if i not in self.action_line_indices]
+            text_lines.append('begin actions\n\ngenerate_network({overwrite=>1})\n\nend actions\n')
+            text = '\n'.join(text_lines)
+        else:
+            text = self.model_text()
         f = open(filename, 'w')
         f.write(text)
         f.close()

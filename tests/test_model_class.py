@@ -19,8 +19,10 @@ class TestModel:
         cls.file5 = 'bngl_files/TrickyWP_p1_5.net'
 
         cls.file1a = 'bngl_files/Simple_Answer.bngl'
+        cls.file1b = 'bngl_files/Simple_GenOnly.bngl'
 
         cls.savefile = 'bngl_files/NoseTest_Save.bngl'
+        cls.savefile2 = 'bngl_files/NoseTest_Save2.bngl'
 
         cls.dict1 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'koff__FREE__': 4.4e-3}
         cls.dict2 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'wrongname__FREE__': 4.4e-3}
@@ -28,6 +30,7 @@ class TestModel:
     @classmethod
     def teardown_class(cls):
         remove(cls.savefile)
+        remove(cls.savefile2)
 
     def test_initialize(self):
         model1 = pset.BNGLModel(self.file1)
@@ -50,7 +53,6 @@ class TestModel:
         ps1 = pset.PSet(self.dict2)
         model1 = pset.BNGLModel(self.file1, ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
-
 
     def test_set_param_set(self):
         model1 = pset.BNGLModel(self.file1)
@@ -94,6 +96,17 @@ class TestModel:
         f_answer.close()
 
         assert myguess == answer
+
+        model1.save(self.savefile2, True)
+        f_myguess2 = open(self.savefile2)
+        myguess2 = f_myguess2.read()
+        f_myguess2.close()
+
+        f_answer2 = open(self.file1b)
+        answer2 = f_answer2.read()
+        f_answer2.close()
+
+        assert myguess2 == answer2
 
     def test_action_suffixes(self):
         m0 = pset.BNGLModel(self.file1)
