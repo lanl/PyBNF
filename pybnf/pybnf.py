@@ -6,7 +6,8 @@ import argparse
 from .parse import load_config
 from .config import Configuration
 import pybnf.algorithms as algs
-
+import os
+from shutil import rmtree
 __version__ = "0.1"
 
 
@@ -31,6 +32,32 @@ def main():
         raise NotImplementedError('Differential evolution is not written yet')
     else:
         raise ValueError('Invalid fit_type %s. Options are: pso, de' % conf_dict['fit_type'])
+
+    # Create output folders, checking for overwrites.
+    if os.path.exists(config.config['output_dir']):
+        if os.path.isdir(config.config['output_dir']):
+            if os.path.exists(config.config['output_dir']+'/Results') or os.path.exists(
+                            config.config['output_dir']+'/Simulations'):
+
+                ans = 'x'
+                while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                    ans = input('It looks like your output_dir already contains Results/ and/or Simulations/ folders '
+                                'from a previous run. Overwrite them with the current run? [y/n] (n) ')
+                if ans.lower() == 'y' or ans.lower == 'yes':
+                    if os.path.exists(config.config['output_dir'] + '/Results'):
+                        rmtree(config.config['output_dir'] + '/Results')
+                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                        rmtree(config.config['output_dir'] + '/Simulations')
+                else:
+                    print('Quitting')
+                    return
+
+        else:
+            logging.error('Your specified output_dir already exists as an ordinary file. Please choose a different '
+                          'name.')
+            return
+    os.makedirs(config.config['output_dir']+'/Results')
+    os.mkdir(config.config['output_dir']+'/Simulations')
 
     # Run the algorithm!
     alg.run()

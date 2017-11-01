@@ -1,7 +1,7 @@
 from .context import data, algorithms, pset, objective, config, parse
 import numpy as np
 import numpy.testing as npt
-from os import environ
+from os import environ, mkdir
 from shutil import rmtree
 
 
@@ -47,6 +47,9 @@ class TestParticleSwarm:
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'bng_command': 'For this test you don''t need this.'})
+        mkdir('test_pswarm_output')
+        mkdir('test_pswarm_output/Simulations')
+        mkdir('test_pswarm_output/Results')
 
         cls.config2 = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                            ('static_list_var', 'v1'): [17., 42., 3.14], ('loguniform_var', 'v2'): [0.01, 1e5],
@@ -59,12 +62,7 @@ class TestParticleSwarm:
 
     @classmethod
     def teardown_class(cls):
-        for n in range(1, 312):
-            try:
-                rmtree('sim_'+str(n))
-            except FileNotFoundError:
-                # Exactly how many sims were done depends on random run timing, so some might be missing.
-                pass
+        rmtree('test_pswarm_output')
 
     def test_random_pset(self):
         ps = algorithms.ParticleSwarm(self.config2)

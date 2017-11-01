@@ -5,6 +5,7 @@ from distributed import as_completed
 from distributed import Client
 from os import mkdir
 from os import chdir
+from os import getcwd
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import PIPE
@@ -52,7 +53,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, id, bngcommand):
+    def __init__(self, models, params, id, bngcommand, output_dir):
         """
         Instantiates a Job
 
@@ -64,11 +65,15 @@ class Job:
         :type id: int
         :param bngcommand: Command to run BioNetGen
         :type bngcommand: str
+        :param output_dir path to the directory where I should create my simulation folder
+        :type output_dir: str
         """
         self.models = models
         self.params = params
         self.id = id
         self.bng_program = bngcommand
+        self.output_dir = output_dir
+        self.home_dir = getcwd()
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.id)
@@ -86,14 +91,14 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        folder = 'sim_%s' % self.id
+        folder = '%s/sim_%s' % (self.output_dir, self.id)
         mkdir(folder)
         try:
             chdir(folder)
             model_files = self._write_models()
             log = self.execute(model_files)
             simdata = self.load_simdata()
-            chdir('../')
+            chdir(self.home_dir)
             return Result(self.params, simdata, log)
         except CalledProcessError:
             return FailedSimulation(self.id)
@@ -268,7 +273,8 @@ class Algorithm(object):
         :return: Job
         """
         self.job_id_counter += 1
-        return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'])
+        return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'],
+                   self.config.config['output_dir']+'/Simulations/')
 
     def run(self):
         """Main loop for executing the algorithm"""
