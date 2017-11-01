@@ -193,14 +193,10 @@ class BNGLModel(Model):
 
 
 class NetModel(Model):
-    def __init__(self, nf=None, ls=None):
-        if nf is not None:
-            self.file_name = nf
-            self.netfile_lines = self.load_netfile()
-        elif ls is not None:
-            self.netfile_lines = ls
-        else:
-            raise AttributeError("Must instantiate NetModel with file or list")
+    def __init__(self, nf, acts):
+        self.file_name = nf
+        self.action_list = acts
+        self.netfile_lines = self.load_netfile()
 
     def load_netfile(self):
         with open(self.file_name) as f:
@@ -227,9 +223,12 @@ class NetModel(Model):
                         lines_copy[i] = re.sub(m.group(2), str(pset[m.group(1)]), l)
         return NetModel(ls=lines_copy)
 
-    def save(self, file_name):
-        with open(file_name, 'w') as wf:
+    def save(self, file_prefix):
+        with open(file_prefix + '.net', 'w') as wf:
             wf.write(''.join(self.netfile_lines))
+        with open(file_prefix + '.bngl') as wf:
+            wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
+            wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.action_list))
 
 
 class ModelError(Exception):
