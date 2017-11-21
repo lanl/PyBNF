@@ -31,6 +31,17 @@ output_every: Write the Trajectory to file every x iterations. Default: 20
 population_size: How many individuals to have in the population. 
 max_iterations: Max number of iterations
 
+***Differential Evolution Settings***
+
+mutation_rate - When generating a new individual, mutate each parameter with this probability. Default: 0.5
+mutation_factor - When mutating a parameter x, change it by mutation_factor*(PS1[x] - PS2[x]) where PS1 and PS2 are random other PSets in the population.  Default: 1.0
+
+# These are related to the more parallel-friendly "island-based" differential evolution. If all omitted, uses regular differential evolution, which is still parallelizable, but has to wait until a whole generation finishes before moving on to the next. 
+islands: Number of separate populations to evolve. Default: 1
+migrate_every: After this number of generations, migrate some individuals between islands. Default: 10 (but Inf if islands = 1)
+num_to_migrate: How many individuals to migrate off of each island during migration? Default: 3
+
+
 
 ***Particle Swarm settings***
 

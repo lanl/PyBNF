@@ -511,3 +511,284 @@ class ParticleSwarm(Algorithm):
             return 'STOP'
 
         return [new_pset]
+
+
+class DifferentialEvolution(Algorithm):
+    """
+    Implements the parallelized, island-based differential evolution algorithm
+    described in Penas et al 2015.
+
+    In some cases, I had to make my own decisions for specifics I couldn't find in the original paper. Namely:
+    At each migration, a user-defined number of individuals are migrated from each island. For each individual, a
+    random index is chosen; the same index for all islands. A random permutation is used to redistribute individuals
+    with that index to different islands.
+
+    Each island performs its migration individually, on the first callback when all islands are ready for that
+    migration. It receives individuals from the migration iteration, regardless of what the current iteration is.
+    This can sometimes lead to wasted effort.
+    For example, suppose migration is set to occur at iteration 40, but island 1 has reached iteration 42 by the time
+    all islands reach 40. Individual j on island 1 after iteration 42 gets replaced with individual j on island X
+    after iteration 40. Some other island Y receives individual j on island 1 after iteration 40.
+
+    """
+
+    def __init__(self, config):
+        #variables, num_per_island, num_islands, migrate_every, mutation_rate, mutation_factor,
+        #             max_iterations, num_to_migrate, save_every=100):
+        """
+        Initializes algorithm based on the config object.
+
+        The following config keys specify algorithm parameters. For move information, see config_documentation.txt
+        population_size
+        num_islands
+        max_iterations
+        mutation_rate
+        mutation_factor
+        migrate_every
+        num_to_migrate
+
+        """
+        super(DifferentialEvolution, self).__init__(config)
+
+        self.num_islands = config.config['islands']
+        self.num_per_island = int(config.config['population_size'] / self.num_islands)
+        if config.config['population_size'] % config.config['islands'] != 0:
+            logging.warning('Reduced population_size to %i to evenly distribute it over %i islands' %
+                            (self.num_islands * self.num_per_island, self.num_islands))
+        self.migrate_every = config.config['migrate_every']
+        if self.num_islands == 1:
+            self.migrate_every = np.inf
+        self.mutation_rate = config.config['mutation_rate']
+        self.mutation_factor = config.config['mutation_factor']
+        self.max_iterations = config.config['max_iterations']
+        self.num_to_migrate = config.config['num_to_migrate']
+
+        self.island_map = dict()  # Maps each proposed PSet to its location (island, individual_i)
+        self.iter_num = [0] * self.num_islands  # Count the number of completed iterations on each island
+        self.waiting_count = []  # Count of the number of PSets that are pending evaluation on the current iteration of each island.
+        self.individuals = []  # Nested list; individuals[i][j] gives individual j on island i.
+        self.proposed_individuals = []  # Nested list of the same shape, gives individuals proposed for replacement in next generation
+        self.fitnesses = []  # Nested list of same shape, gives fitness of each individual
+        self.migration_ready = [0] * self.num_islands  # What migration number is each island ready for
+        self.migration_done = [0] * self.num_islands  # What migration number has each island completed
+
+        # These variables store data related to individual migrations.
+        # Each one has migration number as keys. When the first island starts migration, the required entries are
+        # created. When the last island completes migration, they are deleted to keep these structures small.
+        self.migration_transit = dict()  # Store (PSet, fitness) tuples here that are getting migrated - one list per island
+        self.migration_indices = dict()  # Which individual numbers are migrating in migration i - a single tuple for
+        # each migration, used for all islands
+        self.migration_perms = dict()  # How do we rearrange between islands on migration i?
+        # For each migration, a list of num_to_migrate permutations of range(num_islands)
+
+        self.strategy = 'rand1'  # Customizable later
+
+    def start_run(self):
+
+        # Initialize random individuals
+        self.proposed_individuals = [[self.random_pset() for i in range(self.num_per_island)]
+                                     for j in range(self.num_islands)]
+
+        # Todo: Incorporate latin hypercube initialization as an option in the base Algorithm class.
+        # Initialize the individuals on a latin hypercube
+        # rands = latin_hypercube(self.num_per_island * self.num_islands, len(self.variables))
+        # # rands = latin_hypercube(30, len(self.variables)) # For testing
+        # psets = []
+        # for row in rands:
+        #     # Convert the 0 to 1 random numbers to the specified variable range variables[i][1] to variables[i][2]
+        #     d = {self.variables[i][0]: self.variables[i][1] + row[i] * (self.variables[i][2] - self.variables[i][1])
+        #          for i in range(len(row))}
+        #     psets.append(pset.PSet(d, allow_negative=True))
+        # self.proposed_individuals = [psets[i*self.num_per_island: (i+1)*self.num_per_island]
+        #                              for i in range(self.num_islands)]
+
+        # Initialize the individual list to empty, will be filled with the proposed_individuals once their fitnesses
+        # are computed.
+        self.individuals = [[None
+                             for i in range(self.num_per_island)]
+                            for j in range(self.num_islands)]
+
+        # Set all fitnesses to Inf, guaraneeting a replacement by the first proposed individual
+        self.fitnesses = [[np.Inf
+                           for i in range(self.num_per_island)]
+                          for j in range(self.num_islands)]
+
+        for i in range(len(self.proposed_individuals)):
+            for j in range(len(self.proposed_individuals[i])):
+                self.island_map[self.proposed_individuals[i][j]] = (i, j)
+
+        self.waiting_count = [self.num_per_island] * self.num_islands
+
+        return [ind for island in self.proposed_individuals for ind in island]
+
+    def got_result(self, res):
+        """
+        Called when a simulation run finishes
+
+        This is not thread safe - the Scheduler must ensure only one process at a time enters
+        this function.
+        (or, I should rewrite this function to make it thread safe)
+
+        :param res: Result object
+        :return:
+        """
+
+        pset = res.pset
+        score = res.score
+
+        # Calculate the fitness of this individual, and replace if it is better than the previous one.
+        island, j = self.island_map.pop(pset)
+        fitness = score
+        if fitness < self.fitnesses[island][j]:
+            self.individuals[island][j] = pset
+            self.fitnesses[island][j] = fitness
+        self.waiting_count[island] -= 1
+
+        # Determine if the current iteration is over for the current island
+        if self.waiting_count[island] == 0:
+
+            self.iter_num[island] += 1
+            if self.iter_num[island] == self.max_iterations:
+                # Submit no more jobs for this island
+                # Once all islands reach this, simulation is over.
+                if min(self.iter_num) == self.max_iterations:
+                    return 'STOP'
+                else:
+                    return []
+
+            if self.iter_num[island] % self.migrate_every == 0:
+                # This island prepares for migration
+                migration_num = int(self.iter_num[island] / self.migrate_every)
+                if max(self.migration_ready) < migration_num:
+                    # This is the first island to reach this migration.
+                    # Need to set global parameters for this migration.
+                    self.migration_transit[migration_num] = [list() for i in range(self.num_islands)]
+                    self.migration_indices[migration_num] = np.random.choice(range(self.num_per_island),
+                                                                             size=self.num_to_migrate, replace=False)
+                    self.migration_perms[migration_num] = [np.random.permutation(self.num_islands)
+                                                           for i in range(self.num_to_migrate)]
+                    print('Island %i just set up the migration with the following specs')
+                    print(self.migration_transit)
+                    print(self.migration_indices)
+                    print(self.migration_perms)
+
+                # Send the required PSets to migration_transit
+                for j in self.migration_indices[migration_num]:
+                    self.migration_transit[migration_num][island].append((self.individuals[island][j],
+                                                                          self.fitnesses[island][j]))
+                # Tell other islands that this one is ready for this migration.
+                self.migration_ready[island] = migration_num
+
+            if self.migration_done[island] < min(self.migration_ready):
+                # This island performs a migration
+                print('Island %i is migrating! The migration specs are as follows' % island)
+                print(self.migration_transit)
+                print(self.migration_indices)
+                print(self.migration_perms)
+                migration_num = self.migration_done[island] + 1
+
+                # Fetch the appropriate new individuals from migration_transit
+                for migrater_index in range(self.num_to_migrate):
+                    j = self.migration_indices[migration_num][migrater_index]  # Index of the individual
+                    newisland = self.migration_perms[migration_num][migrater_index][island]
+                    self.individuals[island][j], self.fitnesses[island][j] = \
+                        self.migration_transit[migration_num][newisland][migrater_index]
+
+                    print('Island %i gained new individual with fitness %f' % (island, self.fitnesses[island][j]))
+
+                self.migration_done[island] = migration_num
+                if min(self.migration_done) == migration_num:
+                    # This is the last island to complete this migration
+                    # Delete the migration data to free space.
+                    del self.migration_transit[migration_num]
+                    del self.migration_perms[migration_num]
+                    del self.migration_indices[migration_num]
+
+            # Set up the next generation
+            for jj in range(self.num_per_island):
+                self.proposed_individuals[island][jj] = self.new_individual(island)
+                self.island_map[self.proposed_individuals[island][jj]] = (island, jj)
+
+            self.waiting_count[island] = self.num_per_island
+
+            if self.iter_num[island] % 20 == 0:
+                logging.info('Completed %i iterations' % self.iter_num[island])
+                # print(sorted(self.fitnesses[island]))
+
+            # Convergence check
+            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1.002:
+                return 'STOP'
+
+            return self.proposed_individuals[island]
+
+        else:
+            # Add no new jobs, wait for this generation to complete.
+            return []
+
+    def new_individual(self, island):
+        """
+        Create a new individual for the specified island, according to the set strategy
+
+        :param island:
+        :return:
+        """
+
+        # Choose a starting parameter set (either the best one, or a random one)
+        if self.strategy in ['rand1']:
+            base = np.random.choice(self.individuals[island])
+        else:
+            raise NotImplementedError('Please select one of the strategies from our extensive list of options: rand1')
+
+        # Choose other parameter sets to cross over
+        others = np.random.choice(self.individuals[island], 2, replace=False)
+
+        # Iterate through parameters; decide whether to mutate or leave the same.
+        new_pset_dict = dict()
+        for p in base.keys():
+            if np.random.random() < self.mutation_rate:
+                new_pset_dict[p] = self.add(base, p, self.mutation_rate * self.diff(others[0], others[1], p))
+            else:
+                new_pset_dict[p] = base[p]
+
+        return PSet(new_pset_dict)
+
+
+def latin_hypercube(nsamples, ndims):
+    """
+    Latin hypercube sampling.
+    This code was dug out of the scipy.optimize.differentialevolution source code, and converted to work in the
+    general case (which surprisingly, does not exist within scipy)
+
+    Initializes the population with Latin Hypercube Sampling.
+    Latin Hypercube Sampling ensures that each parameter is uniformly
+    sampled over its range.
+
+    Returns a nsamples by ndims array, with entries in the range [0,1]
+    You'll have to rescale them to your actual param ranges.
+    """
+    rng = np.random
+
+    # Each parameter range needs to be sampled uniformly. The scaled
+    # parameter range ([0, 1)) needs to be split into
+    # `self.num_population_members` segments, each of which has the following
+    # size:
+    segsize = 1.0 / nsamples
+
+    # Within each segment we sample from a uniform random distribution.
+    # We need to do this sampling for each parameter.
+    samples = (segsize * rng.random_sample((nsamples, ndims))
+
+    # Offset each segment to cover the entire parameter range [0, 1)
+               + np.linspace(0., 1., nsamples,
+                             endpoint=False)[:, np.newaxis])
+
+    # Create an array for population of candidate solutions.
+    population = np.zeros_like(samples)
+
+    # Initialize population of candidate solutions by permutation of the
+    # random samples.
+    for j in range(ndims):
+        order = rng.permutation(range(nsamples))
+        population[:, j] = samples[order, j]
+
+    return population

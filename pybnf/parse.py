@@ -5,9 +5,10 @@ from string import punctuation
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
                'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
                'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations',
-               'num_to_output', 'output_every']
+               'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 'social', 'particle_weight',
-                 'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol']
+                 'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
+                 'mutation_rate', 'mutation_factor']
 var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var', 'mutate']
 
 def parse(s):
