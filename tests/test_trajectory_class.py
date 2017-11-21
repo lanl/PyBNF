@@ -25,7 +25,7 @@ class TestTrajectory:
         pass
 
     def test_build(self):
-        traj = pset.Trajectory()
+        traj = pset.Trajectory(1000000)
         traj.add(self.ps0, self.obj0, 'p0')
         assert len(traj.trajectory) == 1
         traj.add(self.ps1, self.obj1, 'p1')
@@ -37,12 +37,12 @@ class TestTrajectory:
 
     @raises(Exception)
     def test_incompatible_psets(self):
-        traj = pset.Trajectory()
+        traj = pset.Trajectory(1000000)
         traj.add(self.ps0, self.obj0, 'p0')
         traj.add(self.ps4, self.obj2, 'p4')
 
     def test_write(self):
-        traj = pset.Trajectory()
+        traj = pset.Trajectory(1000000)
         traj.add(self.ps0, self.obj0, 'p0')
         traj.add(self.ps1, self.obj1, 'p1')
         traj.add(self.ps2, self.obj2, 'p2')
@@ -53,7 +53,7 @@ class TestTrajectory:
         assert re.search('\t1.0\t3.0\t700.3\t0.00052\n', s)
 
     def test_best_fit(self):
-        traj = pset.Trajectory()
+        traj = pset.Trajectory(1000000)
         traj.add(self.ps0, self.obj0, 'p0')
         traj.add(self.ps1, self.obj1, 'p1')
         traj.add(self.ps2, self.obj2, 'p2')
@@ -62,7 +62,7 @@ class TestTrajectory:
         assert traj.best_fit_name() == 'p0'
 
     def test_max_output(self):
-        traj = pset.Trajectory(max_output=2)
+        traj = pset.Trajectory(2)
         traj.add(self.ps0, self.obj0, 'p0')
         traj.add(self.ps1, self.obj1, 'p1')
         traj.add(self.ps2, self.obj2, 'p2')
