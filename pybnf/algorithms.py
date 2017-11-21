@@ -228,6 +228,40 @@ class Algorithm(object):
                 raise RuntimeError('Unrecognized variable type: %s' % type)
         return PSet(param_dict)
 
+    def random_latin_hypercube_psets(self, n):
+        """
+        Generates n random PSets with a latin hypercube distribution
+        More specifically, the random_var and loguniform_var variables follow the latin hypercube distribution,
+        while lognorm and static_list variables are randomized normally.
+
+        :param n: Number of psets to generate
+        :return:
+        """
+        # Generate latin hypercube of dimension = number of uniformly distributed variables.
+        num_uniform_vars = len([x for x in self.config.variables_specs
+                               if x[1] == 'random_var' or x[1] == 'lognormrandom_var'])
+        rands = latin_hypercube(n, num_uniform_vars)
+        psets = []
+        for row in rands:
+            # Initialize the variables
+            # Convert the 0 to 1 random numbers to the required variable range
+            param_dict = dict()
+            rowindex = 0
+            for (name, type, val1, val2) in self.config.variables_specs:
+                if type == 'random_var':
+                    param_dict[name] = val1 + row[rowindex]*(val2-val1)
+                    rowindex += 1
+                elif type == 'loguniform_var':
+                    param_dict[name] = 10. ** (val1 + row[rowindex]*(val2-val1))
+                    rowindex += 1
+                elif type == 'lognormrandom_var':
+                    param_dict[name] = 10. ** np.random.normal(val1, val2)
+                elif type == 'static_list_var':
+                    param_dict[name] = np.random.choice(val1)
+                else:
+                    raise RuntimeError('Unrecognized variable type: %s' % type)
+            psets.append(PSet(param_dict))
+
     def add(self, paramset, param, value):
         """
         Helper function to add a value to a param in a parameter set,
@@ -439,13 +473,18 @@ class ParticleSwarm(Algorithm):
         :return:
         """
 
-        for i in range(self.num_particles):
-            new_params = self.random_pset()
-            new_params.name = 'iter0p%i' % i
+        if self.config.config['initialization'] == 'lh':
+            new_params_list = self.random_latin_hypercube_psets(self.num_particles)
+        else:
+            new_params_list = [self.random_pset() for i in range(self.num_particles)]
+
+        for i in range(len(new_params_list)):
+            p = new_params_list[i]
+            p.name = 'iter0p%i' % i
             # Todo: Smart way to initialize velocity?
             new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
-            self.swarm.append([new_params, new_velocity])
-            self.pset_map[new_params] = i
+            self.swarm.append([p, new_velocity])
+            self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
 
         return [particle[0] for particle in self.swarm]
 
@@ -584,21 +623,14 @@ class DifferentialEvolution(Algorithm):
     def start_run(self):
 
         # Initialize random individuals
-        self.proposed_individuals = [[self.random_pset() for i in range(self.num_per_island)]
-                                     for j in range(self.num_islands)]
+        if self.config.config['initialization'] == 'lh':
+            psets = self.random_latin_hypercube_psets(self.num_islands*self.num_per_island)
+            self.proposed_individuals = [psets[i * self.num_per_island: (i + 1) * self.num_per_island]
+                                         for i in range(self.num_islands)]
+        else:
+            self.proposed_individuals = [[self.random_pset() for i in range(self.num_per_island)]
+                                         for j in range(self.num_islands)]
 
-        # Todo: Incorporate latin hypercube initialization as an option in the base Algorithm class.
-        # Initialize the individuals on a latin hypercube
-        # rands = latin_hypercube(self.num_per_island * self.num_islands, len(self.variables))
-        # # rands = latin_hypercube(30, len(self.variables)) # For testing
-        # psets = []
-        # for row in rands:
-        #     # Convert the 0 to 1 random numbers to the specified variable range variables[i][1] to variables[i][2]
-        #     d = {self.variables[i][0]: self.variables[i][1] + row[i] * (self.variables[i][2] - self.variables[i][1])
-        #          for i in range(len(row))}
-        #     psets.append(pset.PSet(d, allow_negative=True))
-        # self.proposed_individuals = [psets[i*self.num_per_island: (i+1)*self.num_per_island]
-        #                              for i in range(self.num_islands)]
 
         # Initialize the individual list to empty, will be filled with the proposed_individuals once their fitnesses
         # are computed.

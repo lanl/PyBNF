@@ -40,6 +40,7 @@ class Configuration(object):
         """Default configuration values"""
         default = {
             'objfunc': 'chi_sq', 'output_dir': '.', 'delete_old_files': 0, 'num_to_output': 1000000, 'output_every': 20,
+            'initialization': 'rand',
 
             'mutation_rate': 0.5, 'mutation_factor': 1.0, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
 

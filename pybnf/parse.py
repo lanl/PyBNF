@@ -24,6 +24,7 @@ def parse(s):
         output_dir\
         fit_type\
         objfunc\
+        initialization\
         ', caseless=True)
     string = pp.Word(pp.alphanums + punctuation)
     strgram = strkeys - equals - string - comment

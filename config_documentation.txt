@@ -30,6 +30,7 @@ output_every: Write the Trajectory to file every x iterations. Default: 20
 
 population_size: How many individuals to have in the population. 
 max_iterations: Max number of iterations
+initialization: 'rand' - initialize params randomly according to the distributions. 'lh' - For random_var's and loguniform_var's, initialize with a latin hypercube distribution, to more uniformly cover the search space.
 
 ***Differential Evolution Settings***
 
