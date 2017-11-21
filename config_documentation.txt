@@ -38,7 +38,7 @@ mutation_factor - When mutating a parameter x, change it by mutation_factor*(PS1
 
 # These are related to the more parallel-friendly "island-based" differential evolution. If all omitted, uses regular differential evolution, which is still parallelizable, but has to wait until a whole generation finishes before moving on to the next. 
 islands: Number of separate populations to evolve. Default: 1
-migrate_every: After this number of generations, migrate some individuals between islands. Default: 10 (but Inf if islands = 1)
+migrate_every: After this number of generations, migrate some individuals between islands. Default: 20 (but Inf if islands = 1)
 num_to_migrate: How many individuals to migrate off of each island during migration? Default: 3
 
 

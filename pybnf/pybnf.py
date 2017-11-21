@@ -29,7 +29,7 @@ def main():
     if conf_dict['fit_type'] == 'pso':
         alg = algs.ParticleSwarm(config)
     elif conf_dict['fit_type'] == 'de':
-        raise NotImplementedError('Differential evolution is not written yet')
+        alg = algs.DifferentialEvolution(config)
     else:
         raise ValueError('Invalid fit_type %s. Options are: pso, de' % conf_dict['fit_type'])
 

@@ -533,8 +533,6 @@ class DifferentialEvolution(Algorithm):
     """
 
     def __init__(self, config):
-        #variables, num_per_island, num_islands, migrate_every, mutation_rate, mutation_factor,
-        #             max_iterations, num_to_migrate, save_every=100):
         """
         Initializes algorithm based on the config object.
 
