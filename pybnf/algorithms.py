@@ -3,8 +3,6 @@
 
 from distributed import as_completed
 from distributed import Client
-from os import mkdir
-from os import chdir
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import PIPE
@@ -13,11 +11,12 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-from .pset import Model
-import numpy as np
 
 import logging
-import time
+import numpy as np
+import os
+import re
+import shutil
 
 
 class Result(object):
@@ -25,7 +24,7 @@ class Result(object):
     Container for the results of a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, paramset, simdata, log):
+    def __init__(self, paramset, simdata, log, name):
         """
         Instantiates a Result
 
@@ -39,6 +38,7 @@ class Result(object):
         self.pset = paramset
         self.simdata = simdata
         self.log = log
+        self.name = name
         self.score = None  # To be set later when the Result is scored.
 
 
@@ -52,7 +52,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, id, bngcommand):
+    def __init__(self, models, params, job_id, bngcommand, output_dir):
         """
         Instantiates a Job
 
@@ -60,18 +60,22 @@ class Job:
         :type models: list of Model instances
         :param params: The parameter set with which to evaluate the model
         :type params: PSet
-        :param id: Job identification
-        :type id: int
+        :param job_id: Job identification; also the folder name that the job gets saved to
+        :type job_id: str
         :param bngcommand: Command to run BioNetGen
         :type bngcommand: str
+        :param output_dir path to the directory where I should create my simulation folder
+        :type output_dir: str
         """
         self.models = models
         self.params = params
-        self.id = id
+        self.job_id = job_id
         self.bng_program = bngcommand
+        self.output_dir = output_dir
+        self.home_dir = os.getcwd()
 
     def _name_with_id(self, model):
-        return '%s_%s' % (model.name, self.id)
+        return '%s_%s' % (model.name, self.job_id)
 
     def _write_models(self):
         """Writes models to file"""
@@ -86,17 +90,17 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        folder = 'sim_%s' % self.id
-        mkdir(folder)
+        folder = '%s/%s' % (self.output_dir, self.job_id)
+        os.mkdir(folder)
         try:
-            chdir(folder)
+            os.chdir(folder)
             model_files = self._write_models()
             log = self.execute(model_files)
             simdata = self.load_simdata()
-            chdir('../')
-            return Result(self.params, simdata, log)
+            os.chdir(self.home_dir)
+            return Result(self.params, simdata, log, self.job_id)
         except CalledProcessError:
-            return FailedSimulation(self.id)
+            return FailedSimulation(self.job_id)
 
     def execute(self, models):
         """Executes model simulations"""
@@ -143,8 +147,9 @@ class Algorithm(object):
         self.config = config
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
-        self.trajectory = Trajectory()
+        self.trajectory = Trajectory(config.config['num_to_output'])
         self.job_id_counter = 0
+        self.output_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
         self.model_list = list(self.config.models.values())
@@ -173,6 +178,10 @@ class Algorithm(object):
         Called by the scheduler at the start of a fitting run.
         Must return a list of PSets that the scheduler should run.
 
+        Algorithm subclasses optionally may set the .name field of the PSet objects to give a meaningful unique
+        identifier such as 'gen0ind42'. If so, they MUST BE UNIQUE, as this determines the folder name.
+        Uniqueness will not be checked elsewhere.
+
         :return: list of PSets
         """
         logging.info("Initializing algorithm")
@@ -197,7 +206,7 @@ class Algorithm(object):
 
         score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
         res.score = score
-        self.trajectory.add(res.pset, score)
+        self.trajectory.add(res.pset, score, res.name)
 
     def random_pset(self):
         """
@@ -257,7 +266,6 @@ class Algorithm(object):
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
-
     def make_job(self, params):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
@@ -267,8 +275,38 @@ class Algorithm(object):
         :type params: PSet
         :return: Job
         """
-        self.job_id_counter += 1
-        return Job(self.model_list, params, self.job_id_counter, self.config.config['bng_command'])
+        if params.name:
+            job_id = params.name
+        else:
+            self.job_id_counter += 1
+            job_id = 'sim_%i' % self.job_id_counter
+        return Job(self.model_list, params, job_id, self.config.config['bng_command'],
+                   self.config.config['output_dir']+'/Simulations/')
+
+    def output_results(self, name=''):
+        """
+        Tells the Trajectory to output a log file now with the current best fits.
+
+        This should be called periodically by each Algorithm subclass, and is called by the Algorithm class at the end
+        of the simulation.
+        :return:
+        :param name: Custom string to add to the saved filename. If omitted, we just use a running counter of the
+        number of times we've outputted.
+        :type name: str
+        """
+        if name == '':
+            name = str(self.output_counter)
+        self.output_counter += 1
+        filepath = '%s/Results/sorted_params_%s.txt' % (self.config.config['output_dir'], name)
+        self.trajectory.write_to_file(filepath)
+
+        # If the user has asked for fewer output files, each time we're here, move the new file to
+        # Results/sorted_params.txt, overwriting the previous one.
+        if self.config.config['delete_old_files'] == 1:
+            noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
+            if os.path.isfile(noname_filepath):
+                os.remove(noname_filepath)
+            os.rename(filepath, noname_filepath)
 
     def run(self):
         """Main loop for executing the algorithm"""
@@ -294,6 +332,19 @@ class Algorithm(object):
         client.cancel(list(pending))
         logging.debug("Pending jobs cancelled")
         client.close()
+        self.output_results('final')
+
+        # Copy the best simulations into the results folder
+        best_name = self.trajectory.best_fit_name()
+        for m in self.config.models:
+            shutil.copy('%s/Simulations/%s/%s_%s.bngl' %
+                        (self.config.config['output_dir'], best_name, m, best_name),
+                        '%s/Results' % self.config.config['output_dir'])
+            for suf in self.config.mapping[m]:
+                shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
+                            (self.config.config['output_dir'], best_name, m, best_name, suf),
+                            '%s/Results' % self.config.config['output_dir'])
+
         logging.info("Fitting complete!")
 
 
@@ -357,6 +408,7 @@ class ParticleSwarm(Algorithm):
         self.c1 = conf_dict['cognitive']
         self.c2 = conf_dict['social']
         self.max_evals = conf_dict['population_size'] * conf_dict['max_iterations']
+        self.output_every = conf_dict['population_size'] * conf_dict['output_every']
 
         self.num_particles = conf_dict['population_size']
         # Todo: Nice error message if a required key is missing
@@ -389,6 +441,7 @@ class ParticleSwarm(Algorithm):
 
         for i in range(self.num_particles):
             new_params = self.random_pset()
+            new_params.name = 'iter0p%i' % i
             # Todo: Smart way to initialize velocity?
             new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
             self.swarm.append([new_params, new_velocity])
@@ -417,6 +470,9 @@ class ParticleSwarm(Algorithm):
                 self.nv += 1
             self.last_best = self.global_best[1]
 
+        if self.num_evals % self.output_every == 0:
+            self.output_results()
+
         p = self.pset_map.pop(paramset)  # Particle number
 
         # Update best scores if needed.
@@ -444,6 +500,11 @@ class ParticleSwarm(Algorithm):
             new_pset = PSet(retry_dict)
 
         self.pset_map[new_pset] = p
+
+        # Set the new name: the old pset name is iter##p##
+        # Extract the iter number
+        iternum = int(re.search('iter([0-9]+)', paramset.name).groups()[0])
+        new_pset.name = 'iter%ip%i' % (iternum+1, p)
 
         # Check for stopping criteria
         if self.num_evals >= self.max_evals or self.nv >= self.n_stop:
