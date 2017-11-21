@@ -264,7 +264,7 @@ class Trajectory(object):
     Tracks the various PSet instances and the corresponding objective function values
     """
 
-    def __init__(self, max_output=1000000):
+    def __init__(self, max_output):
         self.trajectory = dict()
         self.names = dict()
         self.max_output = max_output

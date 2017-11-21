@@ -52,7 +52,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, id, bngcommand, output_dir):
+    def __init__(self, models, params, job_id, bngcommand, output_dir):
         """
         Instantiates a Job
 
@@ -60,8 +60,8 @@ class Job:
         :type models: list of Model instances
         :param params: The parameter set with which to evaluate the model
         :type params: PSet
-        :param id: Job identification; also the folder name that the job gets saved to
-        :type id: str
+        :param job_id: Job identification; also the folder name that the job gets saved to
+        :type job_id: str
         :param bngcommand: Command to run BioNetGen
         :type bngcommand: str
         :param output_dir path to the directory where I should create my simulation folder
@@ -69,13 +69,13 @@ class Job:
         """
         self.models = models
         self.params = params
-        self.id = id
+        self.job_id = job_id
         self.bng_program = bngcommand
         self.output_dir = output_dir
         self.home_dir = os.getcwd()
 
     def _name_with_id(self, model):
-        return '%s_%s' % (model.name, self.id)
+        return '%s_%s' % (model.name, self.job_id)
 
     def _write_models(self):
         """Writes models to file"""
@@ -90,7 +90,7 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        folder = '%s/%s' % (self.output_dir, self.id)
+        folder = '%s/%s' % (self.output_dir, self.job_id)
         os.mkdir(folder)
         try:
             os.chdir(folder)
@@ -98,9 +98,9 @@ class Job:
             log = self.execute(model_files)
             simdata = self.load_simdata()
             os.chdir(self.home_dir)
-            return Result(self.params, simdata, log, self.id)
+            return Result(self.params, simdata, log, self.job_id)
         except CalledProcessError:
-            return FailedSimulation(self.id)
+            return FailedSimulation(self.job_id)
 
     def execute(self, models):
         """Executes model simulations"""
@@ -147,7 +147,7 @@ class Algorithm(object):
         self.config = config
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
-        self.trajectory = Trajectory(max_output=config.config['num_to_output'])
+        self.trajectory = Trajectory(config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
 
@@ -266,7 +266,6 @@ class Algorithm(object):
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
-
     def make_job(self, params):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
@@ -345,7 +344,6 @@ class Algorithm(object):
                 shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
                             (self.config.config['output_dir'], best_name, m, best_name, suf),
                             '%s/Results' % self.config.config['output_dir'])
-
 
         logging.info("Fitting complete!")
 
