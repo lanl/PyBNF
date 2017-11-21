@@ -3,11 +3,6 @@
 
 from distributed import as_completed
 from distributed import Client
-import os
-from os import mkdir
-from os import chdir
-from os import getcwd
-import shutil
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import PIPE
@@ -16,12 +11,12 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-from .pset import Model
-import numpy as np
 
 import logging
-import time
+import numpy as np
+import os
 import re
+import shutil
 
 
 class Result(object):
@@ -77,7 +72,7 @@ class Job:
         self.id = id
         self.bng_program = bngcommand
         self.output_dir = output_dir
-        self.home_dir = getcwd()
+        self.home_dir = os.getcwd()
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.id)
@@ -96,13 +91,13 @@ class Job:
         """Runs the simulation and reads in the result"""
 
         folder = '%s/%s' % (self.output_dir, self.id)
-        mkdir(folder)
+        os.mkdir(folder)
         try:
-            chdir(folder)
+            os.chdir(folder)
             model_files = self._write_models()
             log = self.execute(model_files)
             simdata = self.load_simdata()
-            chdir(self.home_dir)
+            os.chdir(self.home_dir)
             return Result(self.params, simdata, log, self.id)
         except CalledProcessError:
             return FailedSimulation(self.id)
