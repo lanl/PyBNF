@@ -740,17 +740,23 @@ class DifferentialEvolution(Algorithm):
 
             # Set up the next generation
             for jj in range(self.num_per_island):
-                self.proposed_individuals[island][jj] = self.new_individual(island)
-                self.island_map[self.proposed_individuals[island][jj]] = (island, jj)
+                new_pset = self.new_individual(island)
+                # If the new pset is a duplicate of one already in the island_map, it will cause problems.
+                # As a workaround, perturb it slightly.
+                while new_pset in self.island_map:
+                    retry_dict = {v: self.add(new_pset, v, np.random.uniform(-1e-6, 1e-6)) for v in self.variables}
+                    new_pset = PSet(retry_dict)
+                self.proposed_individuals[island][jj] = new_pset
+                self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:
-                    self.proposed_individuals[island][jj].name = 'gen%iind%i' % (self.iter_num[island], jj)
+                    new_pset.name = 'gen%iind%i' % (self.iter_num[island], jj)
                 else:
-                    self.proposed_individuals[island][jj].name = 'gen%iisl%iind%i' % (self.iter_num[island], island, jj)
+                    new_pset.name = 'gen%iisl%iind%i' % (self.iter_num[island], island, jj)
 
             self.waiting_count[island] = self.num_per_island
 
             if self.iter_num[island] % 20 == 0:
-                logging.info('Completed %i iterations' % self.iter_num[island])
+                logging.info('Island %i completed %i iterations' % (island, self.iter_num[island]))
                 # print(sorted(self.fitnesses[island]))
 
             # Convergence check
