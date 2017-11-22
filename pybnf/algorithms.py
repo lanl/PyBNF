@@ -261,6 +261,7 @@ class Algorithm(object):
                 else:
                     raise RuntimeError('Unrecognized variable type: %s' % type)
             psets.append(PSet(param_dict))
+        return psets
 
     def add(self, paramset, param, value):
         """
