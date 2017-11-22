@@ -646,6 +646,10 @@ class DifferentialEvolution(Algorithm):
         for i in range(len(self.proposed_individuals)):
             for j in range(len(self.proposed_individuals[i])):
                 self.island_map[self.proposed_individuals[i][j]] = (i, j)
+                if self.num_islands == 1:
+                    self.proposed_individuals[i][j].name = 'gen0ind%i' % j
+                else:
+                    self.proposed_individuals[i][j].name = 'gen0isl%iind%i' % (i, j)
 
         self.waiting_count = [self.num_per_island] * self.num_islands
 
@@ -697,10 +701,10 @@ class DifferentialEvolution(Algorithm):
                                                                              size=self.num_to_migrate, replace=False)
                     self.migration_perms[migration_num] = [np.random.permutation(self.num_islands)
                                                            for i in range(self.num_to_migrate)]
-                    print('Island %i just set up the migration with the following specs')
-                    print(self.migration_transit)
-                    print(self.migration_indices)
-                    print(self.migration_perms)
+                    logging.debug('Island %i just set up the migration.' % island)
+                    # logging.debug(str(self.migration_transit))
+                    # logging.debug(str(self.migration_indices))
+                    # logging.debug(str(self.migration_perms))
 
                 # Send the required PSets to migration_transit
                 for j in self.migration_indices[migration_num]:
@@ -711,10 +715,10 @@ class DifferentialEvolution(Algorithm):
 
             if self.migration_done[island] < min(self.migration_ready):
                 # This island performs a migration
-                print('Island %i is migrating! The migration specs are as follows' % island)
-                print(self.migration_transit)
-                print(self.migration_indices)
-                print(self.migration_perms)
+                logging.debug('Island %i is migrating!' % island)
+                # logging.debug(str(self.migration_transit))
+                # logging.debug(str(self.migration_indices))
+                # logging.debug(str(self.migration_perms))
                 migration_num = self.migration_done[island] + 1
 
                 # Fetch the appropriate new individuals from migration_transit
@@ -724,7 +728,7 @@ class DifferentialEvolution(Algorithm):
                     self.individuals[island][j], self.fitnesses[island][j] = \
                         self.migration_transit[migration_num][newisland][migrater_index]
 
-                    print('Island %i gained new individual with fitness %f' % (island, self.fitnesses[island][j]))
+                    logging.debug('Island %i gained new individual with fitness %f' % (island, self.fitnesses[island][j]))
 
                 self.migration_done[island] = migration_num
                 if min(self.migration_done) == migration_num:
@@ -738,6 +742,10 @@ class DifferentialEvolution(Algorithm):
             for jj in range(self.num_per_island):
                 self.proposed_individuals[island][jj] = self.new_individual(island)
                 self.island_map[self.proposed_individuals[island][jj]] = (island, jj)
+                if self.num_islands == 1:
+                    self.proposed_individuals[island][jj].name = 'gen%iind%i' % (self.iter_num[island], jj)
+                else:
+                    self.proposed_individuals[island][jj].name = 'gen%iisl%iind%i' % (self.iter_num[island], island, jj)
 
             self.waiting_count[island] = self.num_per_island
 
