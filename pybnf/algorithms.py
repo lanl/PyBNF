@@ -676,12 +676,8 @@ class DifferentialEvolution(Algorithm):
         island, j = self.island_map.pop(pset)
         fitness = score
         if fitness < self.fitnesses[island][j]:
-            print('Replaced at %i,%i; old score %f new score %f' % (island, j, self.fitnesses[island][j], fitness))
             self.individuals[island][j] = pset
             self.fitnesses[island][j] = fitness
-        else:
-            print(
-                'Didn\'t replace at %i,%i; old score %f new score %f' % (island, j, self.fitnesses[island][j], fitness))
 
         self.waiting_count[island] -= 1
 
@@ -794,10 +790,6 @@ class DifferentialEvolution(Algorithm):
         else:
             raise NotImplementedError('Please select one of the strategies from our extensive list of options: rand1')
 
-        print('Base: ' + str(base))
-
-        print('Others: ' + str(others))
-
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_dict = dict()
         for p in base.keys():
@@ -805,15 +797,6 @@ class DifferentialEvolution(Algorithm):
                 new_pset_dict[p] = self.add(base, p, self.mutation_rate * self.diff(others[0], others[1], p))
             else:
                 new_pset_dict[p] = base[p]
-
-        # proposed = PSet(new_pset_dict)
-        # for isl in self.individuals:
-        #     for ind in isl:
-        #         if ind is None:
-        #             continue
-        #         if ind == proposed:
-        #             print(str(proposed))
-        #             raise RuntimeError('Outrageous! You proposed a pset that we already have!')
 
         return PSet(new_pset_dict)
 
