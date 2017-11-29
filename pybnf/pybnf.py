@@ -30,8 +30,10 @@ def main():
         alg = algs.ParticleSwarm(config)
     elif conf_dict['fit_type'] == 'de':
         alg = algs.DifferentialEvolution(config)
+    elif conf_dict['fit_type'] == 'ss':
+        alg = algs.ScatterSearch(config)
     else:
-        raise ValueError('Invalid fit_type %s. Options are: pso, de' % conf_dict['fit_type'])
+        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss' % conf_dict['fit_type'])
 
     # Create output folders, checking for overwrites.
     if os.path.exists(config.config['output_dir']):
