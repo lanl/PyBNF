@@ -101,17 +101,13 @@ class TestDiffEvolution:
             print(de.individuals)
             # Replace if i**2 is better than previous value
             if i <= 6:
-                assert next_params[i] in de.individuals[0]
-                assert start_params[i] not in de.individuals[0]
+                assert next_params[i] == de.individuals[0][i]
             elif 7 <= i <= 9:
-                assert start_params[i] in de.individuals[0]
-                assert next_params[i] not in de.individuals[0]
+                assert start_params[i] == de.individuals[0][i]
             elif 10 <= i <= 12:
-                assert next_params[i] in de.individuals[1]
-                assert start_params[i] not in de.individuals[1]
+                assert next_params[i] == de.individuals[1][i-10]
             elif 12 < i:
-                assert start_params[i] in de.individuals[1]
-                assert next_params[i] not in de.individuals[1]
+                assert start_params[i] == de.individuals[1][i-10]
             if i == 9 or i == 19:
                 assert len(torun) == 10
             else:

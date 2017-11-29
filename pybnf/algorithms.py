@@ -806,14 +806,14 @@ class DifferentialEvolution(Algorithm):
             else:
                 new_pset_dict[p] = base[p]
 
-        proposed = PSet(new_pset_dict)
-        for isl in self.individuals:
-            for ind in isl:
-                if ind is None:
-                    continue
-                if ind == proposed:
-                    print(str(proposed))
-                    raise RuntimeError('Outrageous! You proposed a pset that we already have!')
+        # proposed = PSet(new_pset_dict)
+        # for isl in self.individuals:
+        #     for ind in isl:
+        #         if ind is None:
+        #             continue
+        #         if ind == proposed:
+        #             print(str(proposed))
+        #             raise RuntimeError('Outrageous! You proposed a pset that we already have!')
 
         return PSet(new_pset_dict)
 
