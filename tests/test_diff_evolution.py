@@ -89,7 +89,16 @@ class TestDiffEvolution:
         for i in range(20):
             res = algorithms.Result(next_params[i], self.data1s, [''], next_params[i].name)
             res.score = max(1., i ** 2)
+            print(i)
+            print(start_params[i])
+            print(next_params[i])
+            print(de.individuals)
+            if i < 10:
+                assert de.island_map[next_params[i]] == (0, i)
+            else:
+                assert de.island_map[next_params[i]] == (1, i-10)
             torun = de.got_result(res)
+            print(de.individuals)
             # Replace if i**2 is better than previous value
             if i <= 6:
                 assert next_params[i] in de.individuals[0]
@@ -103,11 +112,12 @@ class TestDiffEvolution:
             elif 12 < i:
                 assert start_params[i] in de.individuals[1]
                 assert next_params[i] not in de.individuals[1]
-            if i == 9 or i==19:
+            if i == 9 or i == 19:
                 assert len(torun) == 10
             else:
                 assert len(torun) == 0
             params_gen2 += torun
+            print('okay')
         # End of iteration 1
         assert de.iter_num == [2, 2]
 
