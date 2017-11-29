@@ -695,6 +695,10 @@ class DifferentialEvolution(Algorithm):
         if self.waiting_count[island] == 0:
 
             self.iter_num[island] += 1
+            if self.iter_num[island] % self.config.config['output_every'] == 0:
+                if min(self.iter_num) == self.iter_num[island]:
+                    self.output_results()
+
             if self.iter_num[island] == self.max_iterations:
                 # Submit no more jobs for this island
                 # Once all islands reach this, simulation is over.
@@ -841,6 +845,8 @@ class ScatterSearch(Algorithm):
             psets = self.random_latin_hypercube_psets(10*len(self.variables))
         else:
             psets = [self.random_pset() for i in range(10*len(self.variables))]
+        for i in range(len(psets)):
+            psets[i].name = 'init%i' % i
 
         # Generate a latin hypercube distributed "reserve". When we need a random new individual, pop one from here
         # so we aren't repeating ground. Size of this could be customizable.
@@ -917,6 +923,9 @@ class ScatterSearch(Algorithm):
             logging.info('Current scores: ' + str([x[1] for x in self.refs]))
             logging.info('Best scores: ' + str([x[1] for x in self.local_mins]))
 
+            if self.iteration % self.config.config['output_every'] == 0:
+                self.output_results()
+
             self.iteration += 1
             if self.iteration == self.maxiters:
                 return 'STOP'
@@ -940,8 +949,12 @@ class ScatterSearch(Algorithm):
                         newdict[v] = self.rand_uniform_offset(
                             self.refs[pi][0], v, -d*(1 + alpha*beta), d*(1 - alpha * beta))
                     newpset = PSet(newdict, allow_negative=True)
-                    query_psets.append(newpset)
-                    self.pending[newpset] = self.refs[pi][0]
+                    # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really
+                    # care about the number of PSets queried.
+                    if newpset not in self.pending:
+                        newpset.name = 'iter%ip%ih%i' % (self.iteration, pi, hi)
+                        query_psets.append(newpset)
+                        self.pending[newpset] = self.refs[pi][0]
             self.received = {r[0]: [] for r in self.refs}
             return query_psets
 
