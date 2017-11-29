@@ -60,6 +60,13 @@ class TestParticleSwarm:
 
         cls.config_path = 'bngl_files/parabola.conf'
 
+        cls.lh_config = config.Configuration(
+            {'population_size': 10, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
+            ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
+            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'bng_command': 'For this test you don''t need this.',
+            'initialization': 'lh'})
+
     @classmethod
     def teardown_class(cls):
         rmtree('test_pswarm_output')
@@ -133,4 +140,12 @@ class TestParticleSwarm:
         # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
         # Here's a reasonable test that the fitting went okay.
         assert abs(best_fit['v1__FREE__'] - 0.5) < 0.3
+
+    def test_latin_hypercube(self):
+        ps = algorithms.ParticleSwarm(self.lh_config)
+        ps.start_run()
+        for i in range(10):
+            # Latin hypercube should distribute starting values evenly (one in each bin) in each dimension.
+            assert len([x for x in ps.swarm if i < x[0]['v1'] < i+1]) == 1
+
 

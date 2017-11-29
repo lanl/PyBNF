@@ -1,0 +1,3 @@
+#!/bin/bash
+
+python -m pybnf -c tests/bngl_files/parabola_cmdline_de.conf
