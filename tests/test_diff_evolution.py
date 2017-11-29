@@ -1,4 +1,4 @@
-from .context import data, algorithms, pset, objective, config, parse
+from .context import data, algorithms, pset, objective, config
 
 
 class TestDiffEvolution:
@@ -126,7 +126,6 @@ class TestDiffEvolution:
         assert len(de.migration_transit[1][1]) == 0
 
         for i in range(10, 20):
-            print(i)
             res = algorithms.Result(params_gen2[i], self.data1s, [''], params_gen2[i].name)
             res.score = 9999.
             torun = de.got_result(res)

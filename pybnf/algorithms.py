@@ -675,13 +675,9 @@ class DifferentialEvolution(Algorithm):
         # Calculate the fitness of this individual, and replace if it is better than the previous one.
         island, j = self.island_map.pop(pset)
         fitness = score
-        # logging.debug('Targeting slot %i, the score is new %f, old %f' % (j, fitness, self.fitnesses[island][j]))
         if fitness < self.fitnesses[island][j]:
-            # logging.debug('Pset replaced!')
             self.individuals[island][j] = pset
             self.fitnesses[island][j] = fitness
-        # else:
-        #    logging.debug('Pset not replaced')
         self.waiting_count[island] -= 1
 
         # Determine if the current iteration is over for the current island
@@ -758,15 +754,8 @@ class DifferentialEvolution(Algorithm):
                     new_pset.name = 'gen%iind%i' % (self.iter_num[island], jj)
                 else:
                     new_pset.name = 'gen%iisl%iind%i' % (self.iter_num[island], island, jj)
-                if len(self.proposed_individuals[0]) > 10:
-                    logging.warning('(1) aaah what are you doing?! proposed_individuals[0] has size %i' % len(
-                        self.proposed_individuals[0]))
 
             self.waiting_count[island] = self.num_per_island
-
-            if len(self.proposed_individuals[0]) > 10:
-                logging.warning('(2) aaah what are you doing?! proposed_individuals[0] has size %i' % len(
-                    self.proposed_individuals[0]))
 
             if self.iter_num[island] % 20 == 0:
                 logging.info('Island %i completed %i iterations' % (island, self.iter_num[island]))
@@ -775,9 +764,6 @@ class DifferentialEvolution(Algorithm):
             # Convergence check
             if np.max(self.fitnesses) / np.min(self.fitnesses) < 1.002:
                 return 'STOP'
-
-            logging.debug('Now returning %i proposed individuals coming from island %i' %
-                          (len(self.proposed_individuals[island]), island))
 
             # Return a copy, so our internal data structure is not tampered with.
             return copy.copy(self.proposed_individuals[island])
@@ -810,10 +796,6 @@ class DifferentialEvolution(Algorithm):
                 new_pset_dict[p] = self.add(base, p, self.mutation_rate * self.diff(others[0], others[1], p))
             else:
                 new_pset_dict[p] = base[p]
-
-        if len(self.proposed_individuals[0]) > 10:
-            logging.warning('(3) aaah what are you doing?! proposed_individuals[0] has size %i' % len(
-                self.proposed_individuals[0]))
 
         return PSet(new_pset_dict)
 
