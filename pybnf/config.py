@@ -27,6 +27,10 @@ class Configuration(object):
             raise UnspecifiedConfigurationKeyError(
                 "The following configuration keys must be specified:\n\t"",".join(unspecified_keys))
 
+        if 'fit_type' not in d:
+            d['fit_type'] = 'de'
+            logging.warning('fit_type was not specified. Defaulting to de (Differential Evolution).')
+
         if logging.getLogger().getEffectiveLevel() <= logging.WARNING:
             self.check_unused_keys(d)
 
@@ -79,7 +83,7 @@ class Configuration(object):
     @staticmethod
     def _req_user_params():
         """Configuration keys that the user must specify"""
-        return {'models', 'fit_type'}
+        return {'models'}
 
     def _load_models(self):
         """
