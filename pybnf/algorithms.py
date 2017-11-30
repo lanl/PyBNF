@@ -92,7 +92,17 @@ class Job:
         """Runs the simulation and reads in the result"""
 
         folder = '%s/%s' % (self.output_dir, self.job_id)
-        os.mkdir(folder)
+
+        # The check here is in case dask decides to run the same job twice, both of them can complete.
+        made_folder = False
+        failures = 0
+        while not made_folder:
+            try:
+                os.mkdir(folder)
+                made_folder = True
+            except OSError:
+                failures += 1
+                folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
         try:
             os.chdir(folder)
             model_files = self._write_models()
