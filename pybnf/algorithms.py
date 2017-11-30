@@ -611,6 +611,7 @@ class DifferentialEvolution(Algorithm):
         self.mutation_factor = config.config['mutation_factor']
         self.max_iterations = config.config['max_iterations']
         self.num_to_migrate = config.config['num_to_migrate']
+        self.stop_tolerance = config.config['stop_tolerance']
 
         self.island_map = dict()  # Maps each proposed PSet to its location (island, individual_i)
         self.iter_num = [0] * self.num_islands  # Count the number of completed iterations on each island
@@ -777,7 +778,7 @@ class DifferentialEvolution(Algorithm):
                 # print(sorted(self.fitnesses[island]))
 
             # Convergence check
-            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1.002:
+            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance:
                 return 'STOP'
 
             # Return a copy, so our internal data structure is not tampered with.
@@ -829,6 +830,18 @@ class ScatterSearch(Algorithm):
 
         self.popsize = config.config['population_size']
         self.maxiters = config.config['max_iterations']
+        if 'reserve_size' in config.config:
+            self.reserve_size = config.config['reserve_size']
+        else:
+            self.reserve_size = self.maxiters
+        if 'init_size' in config.config:
+            self.init_size = config.config['init_size']
+            if self.init_size < self.popsize:
+                logging.warning('init_size cannot be less than population_size. Setting it equal to population_size.')
+                self.init_size = self.popsize
+        else:
+            self.init_size = 10*len(self.variables)
+        self.local_min_limit = config.config['local_min_limit']
 
         self.pending = dict() # {pendingPSet: parentPSet}
         self.received = dict() # {parentPSet: [(donependingPSet, score)]
@@ -840,11 +853,11 @@ class ScatterSearch(Algorithm):
 
 
     def start_run(self):
-        # Generate big number = 10 * variable_count initial individuals. (could be customizable)
+        # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
         if self.config.config['initialization'] == 'lh':
-            psets = self.random_latin_hypercube_psets(10*len(self.variables))
+            psets = self.random_latin_hypercube_psets(self.init_size)
         else:
-            psets = [self.random_pset() for i in range(10*len(self.variables))]
+            psets = [self.random_pset() for i in range(self.init_size)]
         for i in range(len(psets)):
             psets[i].name = 'init%i' % i
 
@@ -852,7 +865,10 @@ class ScatterSearch(Algorithm):
         # so we aren't repeating ground. Size of this could be customizable.
         # Note that this is not part of the original algorithm description, Eshan made it up
         # because otherwise, the "choose a new random point" step of the algorithm can cause useless repetition.
-        self.reserve = self.random_latin_hypercube_psets(self.maxiters)
+        if self.reserve_size > 0:
+            self.reserve = self.random_latin_hypercube_psets(self.reserve_size)
+        else:
+            self.reserve = []
 
         self.pending = {p: None for p in psets}
         self.received = {None: []}
@@ -901,7 +917,7 @@ class ScatterSearch(Algorithm):
                         self.refs[i] = best_child
                     else:
                         self.stuckcounter[self.refs[i][0]] += 1
-                        if self.stuckcounter[self.refs[i][0]] >= 5:
+                        if self.stuckcounter[self.refs[i][0]] >= self.local_min_limit:
                             del self.stuckcounter[self.refs[i][0]]
                             self.local_mins.append(self.refs[i])
                             # For output. Not the most efficient, but not in a performance-critical section
@@ -921,7 +937,7 @@ class ScatterSearch(Algorithm):
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logging.info('Iteration %i' % self.iteration)
             logging.info('Current scores: ' + str([x[1] for x in self.refs]))
-            logging.info('Best scores: ' + str([x[1] for x in self.local_mins]))
+            logging.info('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
