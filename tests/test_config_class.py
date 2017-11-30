@@ -17,10 +17,11 @@ class TestConfig(object):
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
                    ('random_var', 'avar__FREE__'): [4., 5.],
                    ('loguniform_var', 'bvar__FREE__'): [0.01, 1e5],
-                   ('static_list_var', 'cvar__FREE__'): [17., 23., 37., 42.]}
+                   ('static_list_var', 'cvar__FREE__'): [17., 23., 37., 42.],
+                   'fit_type': 'de'}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
-                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}}
+                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de'}
 
     @classmethod
     def teardown_class(cls):

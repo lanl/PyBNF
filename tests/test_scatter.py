@@ -41,7 +41,7 @@ class TestScatter:
         # Note mutation_rate is set to 1.0 because for tests with few params, with a lower mutation_rate might randomly
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.
         cls.config = config.Configuration({
-            'population_size': 7, 'max_iterations': 20,
+            'population_size': 7, 'max_iterations': 20, 'fit_type': 'ss',
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
