@@ -6,6 +6,7 @@ from .objective import ChiSquareObjective
 from .pset import Model
 import numpy as np
 import re
+import logging
 
 
 class Configuration(object):
@@ -25,6 +26,9 @@ class Configuration(object):
                     unspecified_keys.append(k)
             raise UnspecifiedConfigurationKeyError(
                 "The following configuration keys must be specified:\n\t"",".join(unspecified_keys))
+
+        if logging.getLogger().getEffectiveLevel() <= logging.WARNING:
+            self.check_unused_keys(d)
 
         self.config = self.default_config()
         for k, v in d.items():
@@ -53,9 +57,29 @@ class Configuration(object):
         return default
 
     @staticmethod
+    def check_unused_keys(conf_dict):
+        """
+        Gives warnings if the user has specified parameters that will be ignored by the chosen algorithm.
+        :param conf_dict: The config dictionary
+        :return:
+        """
+        alg_specific = {'de': {'mutation_rate', 'mutation_factor', 'stop_tolerance', 'islands', 'migrate_every',
+                               'num_to_migrate'},
+                        'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
+                                'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
+                        'ss': {'init_size', 'local_min_limit', 'reserve_size'}}
+        ignored_params = set()
+        for alg in alg_specific:
+            if conf_dict['fit_type'] != alg:
+                ignored_params = ignored_params.union(alg_specific[alg])
+        for k in ignored_params.intersection(set(conf_dict.keys())):
+            logging.warning('Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                            % (k, conf_dict['fit_type']))
+
+    @staticmethod
     def _req_user_params():
         """Configuration keys that the user must specify"""
-        return {'models'}
+        return {'models', 'fit_type'}
 
     def _load_models(self):
         """
