@@ -1012,6 +1012,132 @@ class ScatterSearch(Algorithm):
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
 
+class BayesAlgorithm(Algorithm):
+    def __init__(self, expdata, objective, priorfile, gamma=0.1):
+        super(BayesAlgorithm, self).__init__(expdata, objective)
+        self.gamma = gamma
+        self._read_prior_file(priorfile)
+        self.current_pset = None
+        self.ln_current_P = None
+
+    def _read_prior_file(self, priorfile):
+        """
+        Reads the algorithm priors from the given file.
+        File should contain lines "prior_name prior_mean_value prior_sigma", separated by any whitespace. (In the
+        production version, this will instead be part of config)
+
+        Here, prior_sigma must be given in log10 space.
+
+        :param priorfile:
+        :type priorfile: str
+        :return:
+        """
+        self.priors = dict()
+        self.prior_sigma = dict()
+
+        with open(priorfile) as f:
+            lines = f.readlines()
+
+        for l in lines:
+            items = re.split('\s+', l)
+            # TODO: Checks for bad input
+            self.priors[items[0]] = float(items[1])
+            try:
+                self.prior_sigma[items[0]] = float(items[2])
+            except ValueError:
+                # No sigma specified, default to 1.
+                self.prior_sigma[items[0]] = 1.
+
+    def start_run(self):
+        """
+        Called by the scheduler at the start of a fitting run.
+        Must return a list of PSets that the scheduler should run.
+
+        :return: list of PSets
+        """
+
+        # In production version, may want to look to the config instead of doing this:
+        # Initialize each value by a log-uniform distribution based on the prior.
+
+        start_points = {k: 10 ** (np.log10(self.priors[k]) + 1. - 2. * np.random.rand()) for k in self.priors}
+        first_pset = pset.PSet(start_points)
+
+        self.current_pset = first_pset
+        self.ln_current_P = np.nan  # Forces accept on the first run
+
+        return [first_pset]
+
+    def got_result(self, pset, simdata):
+        """
+        Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
+        data
+
+        :param pset: PSet that was run in this simulation
+        :type pset: PSet
+        :param simdata: list of Data from the completed simulation
+        :type simdata: list
+        :return: List of PSet(s) to be run next.
+        """
+
+        # Calculate the acceptance probability
+        lnprior = self.ln_prior(pset)
+        lnlikelihood = -self.objective.evaluate_multiple(simdata, self.exp_data)
+
+        # Because the P's are so small to start, we express posterior, p_accept, and current_P in ln space
+        lnposterior = lnprior + lnlikelihood
+
+        ln_p_accept = lnposterior - self.ln_current_P
+        # print("lnprior:"+str(lnprior))
+        # print("lnlikelihood:" + str(lnlikelihood))
+        # print("lnposterior:" + str(lnposterior))
+        # print("current_P" + str(self.current_P))
+        # print("ln_p_accept:"+str(ln_p_accept))
+
+        # Decide whether to accept move.
+
+        if np.random.rand() < np.exp(ln_p_accept) or np.isnan(self.ln_current_P):
+            # Accept the move, so update our current PSet and P
+            self.current_pset = pset
+            self.ln_current_P = lnposterior
+
+        # Record the current PSet (clarification: what if failed? Sample old again?)
+
+        # Using either the newly accepted PSet or the old PSet, propose the next PSet.
+        self.proposed_pset = self.choose_new_pset(self.current_pset)
+
+        return [self.proposed_pset]
+
+    def choose_new_pset(self, oldpset):
+        """
+        Helper function to perturb the old PSet, generating a new proposed PSet
+
+        :param oldpset: The PSet to be changed
+        :type oldpset: PSet
+        :return: the new PSet
+        """
+
+        keys = oldpset.keys()
+        delta_vector = {k: np.random.normal() for k in keys}
+        delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
+        delta_vector_normalized = {k: self.gamma * delta_vector[k] / delta_vector_magnitude for k in keys}
+        new_dict = {k: 10 ** (np.log10(oldpset[k]) + delta_vector_normalized[k]) for k in keys}
+
+        return pset.PSet(new_dict)
+
+    def ln_prior(self, pset):
+        """
+        Returns the value of the prior distribution for the given parameter set
+
+        :param pset:
+        :type pset: PSet
+        :return: float value of ln times the prior distribution
+        """
+
+        terms = [-1. / (2. * self.prior_sigma[k] ** 2) * (np.log10(self.priors[k]) - np.log10(pset[k])) ** 2 for k
+                 in self.priors]
+
+        return sum(terms)
+
 def latin_hypercube(nsamples, ndims):
     """
     Latin hypercube sampling.
