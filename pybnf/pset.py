@@ -18,6 +18,14 @@ class Model(object):
         """
         NotImplementedError("copy_with_param_set is not implemented")
 
+    def save(self, *args, **kwargs):
+        """
+        Saves the model to file
+
+        :return:
+        """
+        NotImplementedError("save is not implemented")
+
 
 class BNGLModel(Model):
     """
@@ -108,8 +116,10 @@ class BNGLModel(Model):
             # If this model is to be initialized with a PSet, check that it has the correct parameter names
             if pset.keys_to_string() != '\t'.join(self.param_names):
                 raise ValueError('Parameter names in the PSet do not match those in the Model')
+            self.param_set = pset
+        else:
+            self.param_set = {k: 1.0 for k in self.param_names} # default parameters are all 1
 
-        self.param_set = pset
 
     @staticmethod
     def _get_action_suffix(line):
@@ -178,6 +188,7 @@ class BNGLModel(Model):
         by this model's pset, to the specified location.
 
         :param filename: str, path where the file should be saved
+        :param gen_only: bool, output model with only generate_network action if True
         """
 
         # Call model_text(), then write the output to the file.

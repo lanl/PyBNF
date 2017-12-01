@@ -11,8 +11,7 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-from .pset import BNGLModel
-import numpy as np
+from .pset import NetModel
 
 import logging
 import numpy as np
@@ -165,7 +164,7 @@ class Algorithm(object):
         self.output_counter = 0
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model_list = list(self.config.models.values())
+        self.model_list = self._initialize_models()
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -187,6 +186,32 @@ class Algorithm(object):
                 self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
             else:
                 raise RuntimeError('Unrecognized variable type: %s' % v[1])
+
+    def _initialize_models(self):
+        """
+        Checks initial BNGLModel instances from the Configuration object for models that
+        can be reinstantiated as NetModel instances
+
+        :return: list of Model instances
+        """
+        init_model_list = list(self.config.models.values())
+        final_model_list = []
+        initDirMade = False
+        for m in init_model_list:
+            if m.generates_network:
+                if not initDirMade:
+                    initDir = '%s/Initialize' % self.config.config['output_dir']
+                    os.mkdir(initDir)
+                    initDirMade = True
+                gnm_name = '%s_gen_net.bngl' % m.name
+                m.save(gnm_name, gen_only=True)
+                gn_cmd = "%s %s" % (self.config.config['bng_command'], gnm_name)
+                res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE)
+                logging.info(res.stdout)
+                final_model_list.append(NetModel(nf=gnm_name))
+            else:
+                final_model_list.append(m)
+        return final_model_list
 
     def start_run(self):
         """
