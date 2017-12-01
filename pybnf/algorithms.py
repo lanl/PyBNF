@@ -611,6 +611,7 @@ class DifferentialEvolution(Algorithm):
         self.mutation_factor = config.config['mutation_factor']
         self.max_iterations = config.config['max_iterations']
         self.num_to_migrate = config.config['num_to_migrate']
+        self.stop_tolerance = config.config['stop_tolerance']
 
         self.island_map = dict()  # Maps each proposed PSet to its location (island, individual_i)
         self.iter_num = [0] * self.num_islands  # Count the number of completed iterations on each island
@@ -695,6 +696,10 @@ class DifferentialEvolution(Algorithm):
         if self.waiting_count[island] == 0:
 
             self.iter_num[island] += 1
+            if self.iter_num[island] % self.config.config['output_every'] == 0:
+                if min(self.iter_num) == self.iter_num[island]:
+                    self.output_results()
+
             if self.iter_num[island] == self.max_iterations:
                 # Submit no more jobs for this island
                 # Once all islands reach this, simulation is over.
@@ -773,7 +778,7 @@ class DifferentialEvolution(Algorithm):
                 # print(sorted(self.fitnesses[island]))
 
             # Convergence check
-            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1.002:
+            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance:
                 return 'STOP'
 
             # Return a copy, so our internal data structure is not tampered with.
@@ -809,6 +814,202 @@ class DifferentialEvolution(Algorithm):
                 new_pset_dict[p] = base[p]
 
         return PSet(new_pset_dict)
+
+
+class ScatterSearch(Algorithm):
+    """
+    Implements ScatterSearch as described in the introduction of Penas et al 2017 (but not the fancy parallelized
+    version from that paper).
+    Uses the individual combination method described in Egea et al 2009
+
+    """
+
+    def __init__(self, config): #variables, popsize, maxiters, saveevery):
+
+        super(ScatterSearch, self).__init__(config)
+
+        self.popsize = config.config['population_size']
+        self.maxiters = config.config['max_iterations']
+        if 'reserve_size' in config.config:
+            self.reserve_size = config.config['reserve_size']
+        else:
+            self.reserve_size = self.maxiters
+        if 'init_size' in config.config:
+            self.init_size = config.config['init_size']
+            if self.init_size < self.popsize:
+                logging.warning('init_size cannot be less than population_size. Setting it equal to population_size.')
+                self.init_size = self.popsize
+        else:
+            self.init_size = 10*len(self.variables)
+        self.local_min_limit = config.config['local_min_limit']
+
+        self.pending = dict() # {pendingPSet: parentPSet}
+        self.received = dict() # {parentPSet: [(donependingPSet, score)]
+        self.refs = [] # (refPset, score)
+        self.stuckcounter = dict()
+        self.iteration = 0
+        self.local_mins = [] # (Pset, score) pairs that were stuck for 5 gens, and so replaced.
+        self.reserve = []
+
+
+    def start_run(self):
+        # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
+        if self.config.config['initialization'] == 'lh':
+            psets = self.random_latin_hypercube_psets(self.init_size)
+        else:
+            psets = [self.random_pset() for i in range(self.init_size)]
+        for i in range(len(psets)):
+            psets[i].name = 'init%i' % i
+
+        # Generate a latin hypercube distributed "reserve". When we need a random new individual, pop one from here
+        # so we aren't repeating ground. Size of this could be customizable.
+        # Note that this is not part of the original algorithm description, Eshan made it up
+        # because otherwise, the "choose a new random point" step of the algorithm can cause useless repetition.
+        if self.reserve_size > 0:
+            self.reserve = self.random_latin_hypercube_psets(self.reserve_size)
+        else:
+            self.reserve = []
+
+        self.pending = {p: None for p in psets}
+        self.received = {None: []}
+        return psets
+
+    def round_1_init(self):
+        start_psets = sorted(self.received[None], key=lambda x: x[1])
+        # Half is the top of the list, half is random.
+        topcount = int(np.ceil(self.popsize / 2.))
+        randcount = int(np.floor(self.popsize / 2.))
+        self.refs = start_psets[:topcount]
+        randindices = np.random.choice(range(topcount, len(start_psets)), randcount, replace=False)
+        for i in randindices:
+            self.refs.append(start_psets[i])
+        self.stuckcounter = {r[0]: 0 for r in self.refs}
+
+    def got_result(self, res):
+        """
+        Called when a simulation run finishes
+
+        :param res:
+        :type res Result
+        :return:
+        """
+
+        ps = res.pset
+        score = res.score
+
+        parent = self.pending[ps]
+        self.received[parent].append((ps, score))
+        del self.pending[ps]
+
+        if len(self.pending) == 0:
+            # All of this generation done, make the next list of psets
+
+            if None in self.received:
+                # This is the initialization round, special case
+                self.round_1_init()
+            else:
+                # 1) Replace parent with highest scoring child
+                for i in range(len(self.refs)):
+                    best_child = min(self.received[self.refs[i][0]], key=lambda x: x[1])
+                    if best_child[1] < self.refs[i][1]:
+                        del self.stuckcounter[self.refs[i][0]]
+                        self.stuckcounter[best_child[0]] = 0
+                        self.refs[i] = best_child
+                    else:
+                        self.stuckcounter[self.refs[i][0]] += 1
+                        if self.stuckcounter[self.refs[i][0]] >= self.local_min_limit:
+                            del self.stuckcounter[self.refs[i][0]]
+                            self.local_mins.append(self.refs[i])
+                            # For output. Not the most efficient, but not in a performance-critical section
+                            self.local_mins = sorted(self.local_mins, key=lambda x: x[1])
+                            self.local_mins = self.local_mins[:self.popsize] # So this doesn't get huge
+
+                            # Pick a new random pset
+                            if len(self.reserve) > 0:
+                                new_pset = self.reserve.pop()
+                            else:
+                                new_pset = PSet({v[0]: np.random.uniform(v[1], v[2]) for v in self.variables}, allow_negative=True)
+                            self.refs[i] = (new_pset, np.inf)  # For simplicity, assume its score is awful
+                            self.stuckcounter[new_pset] = 0
+
+
+            # 2) Sort the refs list by quality.
+            self.refs = sorted(self.refs, key=lambda x: x[1])
+            logging.info('Iteration %i' % self.iteration)
+            logging.info('Current scores: ' + str([x[1] for x in self.refs]))
+            logging.info('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+
+            if self.iteration % self.config.config['output_every'] == 0:
+                self.output_results()
+
+            self.iteration += 1
+            if self.iteration == self.maxiters:
+                return 'STOP'
+
+            # 3) Do the combination antics to generate new candidates
+            query_psets = []
+            for pi in range(self.popsize): # parent index
+                for hi in range(self.popsize): # helper index
+                    if pi == hi:
+                        continue
+                    newdict = dict()
+                    for v in self.variables:
+                        # d = (self.refs[hi][0][v] - self.refs[pi][0][v]) / 2.
+                        d = self.diff(self.refs[hi][0], self.refs[pi][0], v)
+                        alpha = np.sign(hi-pi)
+                        beta = (abs(hi-pi) - 1) / (self.popsize - 2)
+                        # c1 = self.refs[pi][0][v] - d*(1 + alpha*beta)
+                        # c2 = self.refs[pi][0][v] + d*(1 - alpha*beta)
+                        # newval = np.random.uniform(c1, c2)
+                        # newdict[v] = max(min(newval, var[2]), var[1])
+                        newdict[v] = self.rand_uniform_offset(
+                            self.refs[pi][0], v, -d*(1 + alpha*beta), d*(1 - alpha * beta))
+                    newpset = PSet(newdict, allow_negative=True)
+                    # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really
+                    # care about the number of PSets queried.
+                    if newpset not in self.pending:
+                        newpset.name = 'iter%ip%ih%i' % (self.iteration, pi, hi)
+                        query_psets.append(newpset)
+                        self.pending[newpset] = self.refs[pi][0]
+            self.received = {r[0]: [] for r in self.refs}
+            return query_psets
+
+        else:
+            return []
+
+    def rand_uniform_offset(self, paramset, param, lower, upper):
+        """
+        Performs a particular random sampling required for scatter search,
+        taking into account
+        1) Whether this parameter is to be moved in regular or log space
+        2) Box constraints on the parameter
+        This could not be achieved with the Algorithm add and diff methods.
+
+        :param paramset: PSet containing the initial value of the target param
+        :type paramset: PSet
+        :param param: name of the parameter
+        :type param: str
+        :param lower: The lower bound for the random pick is this + the current value of the param. You probably want to
+        pass a negative value here. This is assumed to be in log space if the param is in log space
+        :type lower: float
+        :param upper: The upper bound for the random pick is this + the current value of the param.
+        This is assumed to be in log space if the param is in log space
+        :return: The chosen random value
+        """
+        if self.variable_space[param][0] == 'regular':
+            lb = paramset[param] + lower
+            ub = paramset[param] + upper
+            pick = np.random.uniform(lb, ub)
+            return max(self.variable_space[param][1], min(self.variable_space[param][2], pick))
+        elif self.variable_space[param][0] == 'log':
+            lb = np.log10(paramset[param]) + lower
+            ub = np.log10(paramset[param]) + upper
+            pick = np.random.uniform(lb, ub)
+            return max(self.variable_space[param][1], min(self.variable_space[param][2], 10. ** pick))
+        elif self.variable_space[param][0] == 'static':
+            return paramset[param]
+        else:
+            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
 
 def latin_hypercube(nsamples, ndims):

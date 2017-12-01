@@ -46,7 +46,7 @@ class TestParticleSwarm:
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
-                      'bng_command': 'For this test you don''t need this.'})
+                      'bng_command': 'For this test you don''t need this.', 'fit_type': 'pso'})
         mkdir('test_pswarm_output')
         mkdir('test_pswarm_output/Simulations')
         mkdir('test_pswarm_output/Results')
@@ -56,7 +56,7 @@ class TestParticleSwarm:
                            ('lognormrandom_var', 'v3'): [0, 1],
                            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-                           'bng_command': 'For this test you don''t need this.'})
+                           'bng_command': 'For this test you don''t need this.', 'fit_type': 'pso'})
 
         cls.config_path = 'bngl_files/parabola.conf'
 
@@ -65,7 +65,7 @@ class TestParticleSwarm:
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'bng_command': 'For this test you don''t need this.',
-            'initialization': 'lh'})
+            'initialization': 'lh', 'fit_type': 'pso',})
 
     @classmethod
     def teardown_class(cls):

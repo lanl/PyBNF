@@ -6,6 +6,7 @@ from .objective import ChiSquareObjective
 from .pset import Model
 import numpy as np
 import re
+import logging
 
 
 class Configuration(object):
@@ -26,6 +27,13 @@ class Configuration(object):
             raise UnspecifiedConfigurationKeyError(
                 "The following configuration keys must be specified:\n\t"",".join(unspecified_keys))
 
+        if 'fit_type' not in d:
+            d['fit_type'] = 'de'
+            logging.warning('fit_type was not specified. Defaulting to de (Differential Evolution).')
+
+        if logging.getLogger().getEffectiveLevel() <= logging.WARNING:
+            self.check_unused_keys(d)
+
         self.config = self.default_config()
         for k, v in d.items():
             self.config[k] = v
@@ -40,14 +48,37 @@ class Configuration(object):
         """Default configuration values"""
         default = {
             'objfunc': 'chi_sq', 'output_dir': '.', 'delete_old_files': 0, 'num_to_output': 1000000, 'output_every': 20,
-            'initialization': 'rand',
+            'initialization': 'lh',
 
             'mutation_rate': 0.5, 'mutation_factor': 1.0, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
+            'stop_tolerance': 0.002,
 
             'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
-            'adaptive_rel_tol': 0.0
+            'adaptive_rel_tol': 0.0,
+
+            'local_min_limit': 5
         }
         return default
+
+    @staticmethod
+    def check_unused_keys(conf_dict):
+        """
+        Gives warnings if the user has specified parameters that will be ignored by the chosen algorithm.
+        :param conf_dict: The config dictionary
+        :return:
+        """
+        alg_specific = {'de': {'mutation_rate', 'mutation_factor', 'stop_tolerance', 'islands', 'migrate_every',
+                               'num_to_migrate'},
+                        'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
+                                'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
+                        'ss': {'init_size', 'local_min_limit', 'reserve_size'}}
+        ignored_params = set()
+        for alg in alg_specific:
+            if conf_dict['fit_type'] != alg:
+                ignored_params = ignored_params.union(alg_specific[alg])
+        for k in ignored_params.intersection(set(conf_dict.keys())):
+            logging.warning('Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                            % (k, conf_dict['fit_type']))
 
     @staticmethod
     def _req_user_params():
