@@ -8,7 +8,9 @@
 begin model
 
 begin parameters
-
+kase__FREE__ 3.8
+koff__FREE__ 0.0044
+pase__FREE__ 0.16
 
 f 1 # cells per reaction compartment
 

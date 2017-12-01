@@ -1,5 +1,5 @@
 # An example from a real application
-# 
+#
 #  filename: model.bngl
 # date of last edit: 07-Jul-2017
 # authors: Chylek LA, Hlavacek WS (Los Alamos National Laboratory)
@@ -33,7 +33,7 @@ Vecf=f*(Vchannel/Nchannel) # L per cell (500 pL/cell)
 # This estimate corresponds to the volume of a sphere with a diameter of 17.9 microns.
 Vcyt f*3e-12 # L per cell (3 pL/cell)
 
-# multivalent antigen abundance in medium at condition 1 
+# multivalent antigen abundance in medium at condition 1
 Ag_conc1 10e-9 # M (10 nM)
 Ag_tot_1=Ag_conc1*(NA*Vecf) # cpc
 
@@ -63,13 +63,13 @@ begin molecule types
 
 # antigen (DNP-conjugated BSA)
 #  DNP: 2,4-dinitrophenyl groups
-Ag(DNP) 
+Ag(DNP)
 
 # antigen receptor (anti-DNP IgE bound to Fc&epsilon;RI)
 #  IgE: anti-DNP IgE
-#  Y: tyrosine residues (0, unmodified; P, phosphorylated) 
-#     in the &beta; and &gamma;-chain ITAMs of Fc&epsilon;RI    
-R(IgE,Yb~0~P) 
+#  Y: tyrosine residues (0, unmodified; P, phosphorylated)
+#     in the &beta; and &gamma;-chain ITAMs of Fc&epsilon;RI
+R(IgE,Yb~0~P)
 
 
 # &beta;-hexosaminidase
@@ -112,14 +112,14 @@ begin reaction rules
 # ligand-receptor binding
 # As a simplification, we consider a one-step binding mechanism.
 # Thus, the rate constants are effective parameters that reflect
-# capture and release of (multivalent) antigen as well as the effects 
+# capture and release of (multivalent) antigen as well as the effects
 # of antigen-mediated receptor aggregation on the residence time of antigen
-# on the cell surface. Recall that the antigen receptor is a long-lived 1:1 complex 
+# on the cell surface. Recall that the antigen receptor is a long-lived 1:1 complex
 # of antigen-specific IgE and Fc&epsilon;RI, the high-affinity Fc receptor for IgE.
 Ag(DNP)+R(IgE)<->Ag(DNP!1).R(IgE!1) kon,koff
 
 # ligand-dependent receptor phosphorylation
-# We assume that bound receptors are competent for (Lyn-mediated) phosphorylation 
+# We assume that bound receptors are competent for (Lyn-mediated) phosphorylation
 # of the tyrosines in &beta; and &gamma; ITAMs. We expect a fraction of receptors
 # to be constitutively associated with receptors.
 # The effective rate constant for phosphorylation is assumed to capture associaton of
@@ -128,15 +128,15 @@ Ag(DNP)+R(IgE)<->Ag(DNP!1).R(IgE!1) kon,koff
 R(IgE!+,Yb~0)->R(IgE!+,Yb~P) kase
 
 # receptor dephosphorylation
-# As a simplification, we consider a pseudo first-order mechanism. 
-# Thus, the effective rate constant for phosphorylation can be viewed 
+# As a simplification, we consider a pseudo first-order mechanism.
+# Thus, the effective rate constant for phosphorylation can be viewed
 # as the Vmax/KM ratio for phosphatases. We expect phosphatase activity to be high.
 R(Yb~P)->R(Yb~0) pase
- 
+
 
 # Degranulation due to the presence of phosphorylated receptor
 # PIP3 serves as a PLC&gamma; substrate, leading to the production of IP3, stimulating store-operated calcium release followed by degranulation
-# We assume this occurs as a pseudo second order process. 
+# We assume this occurs as a pseudo second order process.
 R(Yb~P)+H(loc~in)->R(Yb~P)+H(loc~out) kdegran
 
 end reaction rules
@@ -147,11 +147,11 @@ begin actions
 
 # The command below instructs BioNetGen to derive a reaction network from the model's rules.
 # The output is sent to a file that has a .net filename extension.
-# The .net file can be further processed to generate the ordinary differential equations 
+# The .net file can be further processed to generate the ordinary differential equations
 # corresponding to the reaction network and the rate laws associated with the model's rules.
 generate_network({overwrite=>1})
 
-# The commands below illustrate how we simulated 
+# The commands below illustrate how we simulated
 # 1) an initial period of multivalent antigen-stimulated IgE receptor signaling,
 # 2) an intermediate period of monovalent antigen-induced IgE receptor signaling quiescence, and
 # 3) a second and final period of multivalent antigen-stimulated IgE receptor signaling.
@@ -161,7 +161,7 @@ generate_network({overwrite=>1})
 # BioNetFit will be used to fit the model to the .exp files.
 
 # first 5-min period of multivalent antigen stimulation
-setConcentration("Ag(DNP)","Ag_tot_1") 
+setConcentration("Ag(DNP)","Ag_tot_1")
 simulate({suffix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
 
 
