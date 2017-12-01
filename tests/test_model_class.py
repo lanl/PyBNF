@@ -1,6 +1,7 @@
 from .context import pset
 from nose.tools import raises
 from os import remove
+from os.path import exists
 
 import re
 
@@ -23,14 +24,20 @@ class TestModel:
 
         cls.savefile = 'bngl_files/NoseTest_Save.bngl'
         cls.savefile2 = 'bngl_files/NoseTest_Save2.bngl'
+        cls.savefile3n = 'bngl_files/NoseTest_Save3.net'
+        cls.savefile3b = 'bngl_files/NoseTest_Save3.bngl'
 
         cls.dict1 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'koff__FREE__': 4.4e-3}
         cls.dict2 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'wrongname__FREE__': 4.4e-3}
+
+
 
     @classmethod
     def teardown_class(cls):
         remove(cls.savefile)
         remove(cls.savefile2)
+        remove(cls.savefile3b)
+        remove(cls.savefile3n)
 
     def test_initialize(self):
         model1 = pset.BNGLModel(self.file1)
@@ -81,7 +88,7 @@ class TestModel:
         f_answer.close()
         assert model1.model_text() == answer
 
-    def test_model_save(self):
+    def test_bnglmodel_save(self):
         ps1 = pset.PSet(self.dict1)
         model1 = pset.BNGLModel(self.file1, ps1)
 
@@ -124,11 +131,11 @@ class TestModel:
         assert not model1.generates_network
 
     def test_netfile_read(self):
-        netmodel = pset.NetModel(self.file5)
+        netmodel = pset.NetModel(nf=self.file5)
         assert len(netmodel.netfile_lines) == 48
 
-    def test_netfile_pcopy(self):
-        netmodel = pset.NetModel(self.file5)
+    def test_netfile_pcopy_and_save(self):
+        netmodel = pset.NetModel(nf=self.file5)
         ps = pset.PSet({'Vchannel': 1e-5, 'H_tot': 3.4})
         new_netmodel = netmodel.copy_with_param_set(ps)
         pl0 = new_netmodel.netfile_lines[5]
@@ -140,4 +147,14 @@ class TestModel:
                 continue
             else:
                 assert new_netmodel.netfile_lines[i] == netmodel.netfile_lines[i]
+        new_netmodel.save('bngl_files/NoseTest_Save3', ['simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100})'])
+        assert exists(self.savefile3n)
+        assert exists(self.savefile3b)
+
+        with open(self.savefile3b) as bf:
+            bf_lines = bf.readlines()
+
+        assert re.match('readFile', bf_lines[0])
+
+
 

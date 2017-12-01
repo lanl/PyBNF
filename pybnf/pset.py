@@ -193,15 +193,15 @@ class BNGLModel(Model):
 
 
 class NetModel(Model):
-    def __init__(self, nf, acts):
-        self.file_name = nf
-        self.action_list = acts
-        self.netfile_lines = self.load_netfile()
-
-    def load_netfile(self):
-        with open(self.file_name) as f:
-            ls = f.readlines()
-        return ls
+    def __init__(self, ls=None, nf=None):
+        if not (ls or nf):
+            raise ModelError("Must specify a file name or a list of strings corresponding to the .net file's lines")
+        elif ls:
+            self.netfile_lines = ls
+        else:
+            self.file_name = nf
+            with open(self.file_name) as f:
+                self.netfile_lines = f.readlines()
 
     def copy_with_param_set(self, pset):
         """
@@ -223,12 +223,12 @@ class NetModel(Model):
                         lines_copy[i] = re.sub(m.group(2), str(pset[m.group(1)]), l)
         return NetModel(ls=lines_copy)
 
-    def save(self, file_prefix):
+    def save(self, file_prefix, acts):
         with open(file_prefix + '.net', 'w') as wf:
             wf.write(''.join(self.netfile_lines))
-        with open(file_prefix + '.bngl') as wf:
+        with open(file_prefix + '.bngl', 'w') as wf:
             wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
-            wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.action_list))
+            wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(acts))
 
 
 class ModelError(Exception):
