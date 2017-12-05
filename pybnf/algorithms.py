@@ -1013,40 +1013,44 @@ class ScatterSearch(Algorithm):
 
 
 class BayesAlgorithm(Algorithm):
-    def __init__(self, expdata, objective, priorfile, gamma=0.1):
-        super(BayesAlgorithm, self).__init__(expdata, objective)
-        self.gamma = gamma
-        self._read_prior_file(priorfile)
-        self.current_pset = None
-        self.ln_current_P = None
 
-    def _read_prior_file(self, priorfile):
-        """
-        Reads the algorithm priors from the given file.
-        File should contain lines "prior_name prior_mean_value prior_sigma", separated by any whitespace. (In the
-        production version, this will instead be part of config)
+    """
+    Implements a Bayesian Markov chain Monte Carlo simulation.
 
-        Here, prior_sigma must be given in log10 space.
+    This is essentially a non-parallel algorithm, but here, we run n instances in parallel, and pool all results.
+    This will give you a best fit (which is maybe not great), but more importantly, generates an extra result file
+    that gives the probability distribution of each variable.
+    This distribution depends on the prior, which is specified according to the variable initialization rules.
 
-        :param priorfile:
-        :type priorfile: str
-        :return:
-        """
-        self.priors = dict()
-        self.prior_sigma = dict()
+    """
 
-        with open(priorfile) as f:
-            lines = f.readlines()
+    def __init__(self, config) #expdata, objective, priorfile, gamma=0.1):
+        super(BayesAlgorithm, self).__init__(config)
+        self.step_size = config.config['step_size']
+        self.num_parallel = config.conig['population_size']
+        self.burn_in = config.config['burn_in'] # todo: 'auto' option
 
-        for l in lines:
-            items = re.split('\s+', l)
-            # TODO: Checks for bad input
-            self.priors[items[0]] = float(items[1])
-            try:
-                self.prior_sigma[items[0]] = float(items[2])
-            except ValueError:
-                # No sigma specified, default to 1.
-                self.prior_sigma[items[0]] = 1.
+        self.prior = None
+        self.load_priors()
+
+        self.current_pset = None # List of n PSets corresponding to the n independent runs
+        self.ln_current_P = None # List of n probabilities of those n PSets.
+        self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
+
+    def load_priors(self):
+        """Builds the data structures for the priors, based on the variables specified in the config."""
+        self.prior = dict()  # {variable: ('n', mean, sigma), variable2: ('b', min, max)}
+        # n for normally distributed priors, b for box priors (which are weird, but should be allowed)
+        for (name, type, val1, val2) in self.config.variables_specs:
+            if type in ('lognormrandom_var', 'normrandom_var'):
+                self.prior[name] = ('n', val1, val2)
+            elif type in ('random_var', 'loguniform_var'):
+                self.prior[name] = ('b', val1, val2)
+            elif type in ('loguniform_var'):
+                self.prior[name] = ('b', np.log10(val1), np.log10(val2))
+            else:
+                raise NotImplementedError('Bayesian MCMC cannot handle variable type %s' % type)
+
 
     def start_run(self):
         """
@@ -1055,33 +1059,38 @@ class BayesAlgorithm(Algorithm):
 
         :return: list of PSets
         """
+        if self.config.config['initalization'] == 'lh':
+            first_pset = self.random_latin_hypercube_psets(self.num_parallel)
+        else:
+            first_pset = [self.random_pset() for i in range(self.num_parallel)]
 
-        # In production version, may want to look to the config instead of doing this:
-        # Initialize each value by a log-uniform distribution based on the prior.
+        self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
+        for i in range(len(first_pset)):
+            first_pset[i].name = 'iter0run%i' % i
 
-        start_points = {k: 10 ** (np.log10(self.priors[k]) + 1. - 2. * np.random.rand()) for k in self.priors}
-        first_pset = pset.PSet(start_points)
+        return first_pset
 
-        self.current_pset = first_pset
-        self.ln_current_P = np.nan  # Forces accept on the first run
-
-        return [first_pset]
-
-    def got_result(self, pset, simdata):
+    def got_result(self, res):
         """
         Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
         data
 
-        :param pset: PSet that was run in this simulation
-        :type pset: PSet
-        :param simdata: list of Data from the completed simulation
-        :type simdata: list
+        :param res: PSet that was run in this simulation
+        :type res: Result
         :return: List of PSet(s) to be run next.
         """
 
+        pset = res.pset
+        score = res.score
+
+        # Figure out which parallel run this is from based on the .name field.
+        m = re.search('(?<=run)\d+',pset.name)
+        index = int(m.group(0))
+
         # Calculate the acceptance probability
-        lnprior = self.ln_prior(pset)
-        lnlikelihood = -self.objective.evaluate_multiple(simdata, self.exp_data)
+        lnprior = self.ln_prior(pset) # Need something clever for box constraints
+        lnlikelihood = -score
+        # lnlikelihood = -self.objective.evaluate_multiple(simdata, self.exp_data)
 
         # Because the P's are so small to start, we express posterior, p_accept, and current_P in ln space
         lnposterior = lnprior + lnlikelihood
@@ -1097,15 +1106,17 @@ class BayesAlgorithm(Algorithm):
 
         if np.random.rand() < np.exp(ln_p_accept) or np.isnan(self.ln_current_P):
             # Accept the move, so update our current PSet and P
-            self.current_pset = pset
-            self.ln_current_P = lnposterior
+            self.current_pset[index] = pset
+            self.ln_current_P[index] = lnposterior
 
         # Record the current PSet (clarification: what if failed? Sample old again?)
 
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
-        self.proposed_pset = self.choose_new_pset(self.current_pset)
+        proposed_pset = self.choose_new_pset(self.current_pset[index])
+        self.iteration[index] += 1
+        proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
 
-        return [self.proposed_pset]
+        return [proposed_pset]
 
     def choose_new_pset(self, oldpset):
         """
@@ -1119,10 +1130,13 @@ class BayesAlgorithm(Algorithm):
         keys = oldpset.keys()
         delta_vector = {k: np.random.normal() for k in keys}
         delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
-        delta_vector_normalized = {k: self.gamma * delta_vector[k] / delta_vector_magnitude for k in keys}
-        new_dict = {k: 10 ** (np.log10(oldpset[k]) + delta_vector_normalized[k]) for k in keys}
+        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in keys}
+        # new_dict = {k: 10 ** (np.log10(oldpset[k]) + delta_vector_normalized[k]) for k in keys}
+        new_dict = {k: self.add(oldpset, k, delta_vector_normalized[k]) for k in keys}
+        # Todo: For box constraints, sticking to the edge is not statistically correct.
+        # Correct answer is to automatically fail the step, sample the current pset again.
 
-        return pset.PSet(new_dict)
+        return PSet(new_dict)
 
     def ln_prior(self, pset):
         """
@@ -1132,11 +1146,21 @@ class BayesAlgorithm(Algorithm):
         :type pset: PSet
         :return: float value of ln times the prior distribution
         """
+        total = 0.
+        for v in self.prior:
+            (typ, x1, x2) = self.prior[v]
+            if typ == 'n':
+                # Normal with mean x1 and value x2
+                total += -1. / (2. * x2 ** 2.) * (x1 - pset[v])**2.
+            else:
+                # Uniform from x1 to x2
+                if x1 <= pset[v] <= x2:
+                    total += -np.log(x2-x1)
+                else:
+                    logging.warning('Box-constrained parameter %s reached a value outside the box.')
+                    total += -np.inf
+        return total
 
-        terms = [-1. / (2. * self.prior_sigma[k] ** 2) * (np.log10(self.priors[k]) - np.log10(pset[k])) ** 2 for k
-                 in self.priors]
-
-        return sum(terms)
 
 def latin_hypercube(nsamples, ndims):
     """
