@@ -1042,13 +1042,14 @@ class BayesAlgorithm(Algorithm):
         self.ln_current_P = None # List of n probabilities of those n PSets.
         self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
 
-        # Set up the output file
+        # Set up the output files
         self.samples_file = config.config['output_dir'] + '/Results/samples.txt'
         with open(self.samples_file, 'w') as f:
             f.write('Name\tLn_probability\t')
             for v in self.variables:
                 f.write(v+'\t')
             f.write('\n')
+        os.makedirs(config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
 
 
     def load_priors(self):
@@ -1110,7 +1111,7 @@ class BayesAlgorithm(Algorithm):
         # Because the P's are so small to start, we express posterior, p_accept, and current_P in ln space
         lnposterior = lnprior + lnlikelihood
 
-        ln_p_accept = lnposterior - self.ln_current_P
+        ln_p_accept = lnposterior - self.ln_current_P[index]
         # print("lnprior:"+str(lnprior))
         # print("lnlikelihood:" + str(lnlikelihood))
         # print("lnposterior:" + str(lnposterior))
@@ -1119,7 +1120,7 @@ class BayesAlgorithm(Algorithm):
 
         # Decide whether to accept move.
 
-        if np.random.rand() < np.exp(ln_p_accept[index]) or np.isnan(self.ln_current_P[index]):
+        if np.random.rand() < np.exp(ln_p_accept) or np.isnan(self.ln_current_P[index]):
             # Accept the move, so update our current PSet and P
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
@@ -1210,13 +1211,13 @@ class BayesAlgorithm(Algorithm):
         # Open the file(s) to save the credible intervals
         cred_files = []
         for i in self.credible_intervals:
-            f = open(self.config.output_dir+'/Results/credible%i%s.txt' % (i, file_ext))
+            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
             f.write('param\tlower_bound\tupper_bound\n')
             cred_files.append(f)
 
         for i in range(len(self.variables)):
             v = self.variables[i]
-            fname = self.config.output_dir+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
             hist, bin_edges = np.histogram(dat_array[:, i], bins=self.num_bins)
             result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
             np.savetxt(fname, result_array, delimiter='\t', header='lower_bound\tupper_bound\tcount\n')
