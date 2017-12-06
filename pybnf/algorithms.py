@@ -1024,11 +1024,16 @@ class BayesAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config) #expdata, objective, priorfile, gamma=0.1):
+    def __init__(self, config): #expdata, objective, priorfile, gamma=0.1):
         super(BayesAlgorithm, self).__init__(config)
         self.step_size = config.config['step_size']
-        self.num_parallel = config.conig['population_size']
+        self.num_parallel = config.config['population_size']
         self.burn_in = config.config['burn_in'] # todo: 'auto' option
+        self.sample_every = config.config['sample_every']
+        self.output_hist_every = config.config['output_hist_every']
+        # A list of the % credible intervals to save, eg [68. 95]
+        self.credible_intervals = config.config['credible_intervals']
+        self.num_bins = config.config['num_bins']
 
         self.prior = None
         self.load_priors()
@@ -1036,6 +1041,15 @@ class BayesAlgorithm(Algorithm):
         self.current_pset = None # List of n PSets corresponding to the n independent runs
         self.ln_current_P = None # List of n probabilities of those n PSets.
         self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
+
+        # Set up the output file
+        self.samples_file = config.config['output_dir'] + '/Results/samples.txt'
+        with open(self.samples_file, 'w') as f:
+            f.write('Name\tLn_probability\t')
+            for v in self.variables:
+                f.write(v+'\t')
+            f.write('\n')
+
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1059,12 +1073,13 @@ class BayesAlgorithm(Algorithm):
 
         :return: list of PSets
         """
-        if self.config.config['initalization'] == 'lh':
+        if self.config.config['initialization'] == 'lh':
             first_pset = self.random_latin_hypercube_psets(self.num_parallel)
         else:
             first_pset = [self.random_pset() for i in range(self.num_parallel)]
 
         self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
+        self.current_pset = [None]*self.num_parallel
         for i in range(len(first_pset)):
             first_pset[i].name = 'iter0run%i' % i
 
@@ -1104,7 +1119,7 @@ class BayesAlgorithm(Algorithm):
 
         # Decide whether to accept move.
 
-        if np.random.rand() < np.exp(ln_p_accept) or np.isnan(self.ln_current_P):
+        if np.random.rand() < np.exp(ln_p_accept[index]) or np.isnan(self.ln_current_P[index]):
             # Accept the move, so update our current PSet and P
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
@@ -1114,6 +1129,11 @@ class BayesAlgorithm(Algorithm):
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
         proposed_pset = self.choose_new_pset(self.current_pset[index])
         self.iteration[index] += 1
+        if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
+            self.sample_pset(self.current_pset[index], lnposterior)
+        if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
+           and self.iteration[index] == min(self.iteration)):
+            self.update_historgrams('_%i' % self.iteration[index])
         proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
 
         return [proposed_pset]
@@ -1160,6 +1180,53 @@ class BayesAlgorithm(Algorithm):
                     logging.warning('Box-constrained parameter %s reached a value outside the box.')
                     total += -np.inf
         return total
+
+    def sample_pset(self, pset, ln_prob):
+        """
+        Adds this pset to the set of sampled psets for the final distribution.
+        :param pset:
+        :type pset: PSet
+        :param ln_prob - The probability of this PSet to record in the samples file.
+        :type ln_prob: float
+        """
+        with open(self.samples_file, 'a') as f:
+            f.write(pset.name+'\t'+str(ln_prob)+'\t')
+            for v in self.variables:
+                f.write('%f\t' % pset[v])
+            f.write('\n')
+
+    def update_historgrams(self, file_ext):
+        """
+        Updates the files that contain histogram points for each variable
+        :param file_ext: String to append to the save file names
+        :type file_ext: str
+        :return:
+        """
+        # Todo: debug this!!
+        # Read the samples file into an array, ignoring the first row (header) and first column (pset names)
+        dat_array = np.genfromtxt(self.samples_file, skip_header=1, delimiter='\t', dtype=float,
+                                  usecols=range(1, len(self.variables)+1))
+
+        # Open the file(s) to save the credible intervals
+        cred_files = []
+        for i in self.credible_intervals:
+            f = open(self.config.output_dir+'/Results/credible%i%s.txt' % (i, file_ext))
+            f.write('param\tlower_bound\tupper_bound\n')
+            cred_files.append(f)
+
+        for i in range(len(self.variables)):
+            v = self.variables[i]
+            fname = self.config.output_dir+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            hist, bin_edges = np.histogram(dat_array[:, i], bins=self.num_bins)
+            result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
+            np.savetxt(fname, result_array, delimiter='\t', header='lower_bound\tupper_bound\tcount\n')
+
+            sorted_data = sorted(dat_array[:, i])
+            for interval, file in zip(self.credible_intervals, cred_files):
+                min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
+                max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
+                file.write('%s\t%f\t%f\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+
 
 
 def latin_hypercube(nsamples, ndims):
