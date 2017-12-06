@@ -175,6 +175,8 @@ class Algorithm(object):
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
+            elif v[1] == 'normrandom_var':
+                self.variable_space[v[0]] = ('regular', 0., np.inf)
             elif v[1] == 'lognormrandom_var':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
             elif v[1] == 'loguniform_var':
@@ -229,6 +231,8 @@ class Algorithm(object):
         for (name, type, val1, val2) in self.config.variables_specs:
             if type == 'random_var':
                 param_dict[name] = np.random.uniform(val1, val2)
+            elif type == 'normrandom_var':
+                param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
             elif type == 'loguniform_var':
                 param_dict[name] = 10.**np.random.uniform(np.log10(val1), np.log10(val2))
             elif type == 'lognormrandom_var':
@@ -250,7 +254,7 @@ class Algorithm(object):
         """
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         num_uniform_vars = len([x for x in self.config.variables_specs
-                               if x[1] == 'random_var' or x[1] == 'lognormrandom_var'])
+                               if x[1] == 'random_var' or x[1] == 'loguniform_var'])
         rands = latin_hypercube(n, num_uniform_vars)
         psets = []
         for row in rands:
@@ -267,6 +271,8 @@ class Algorithm(object):
                     rowindex += 1
                 elif type == 'lognormrandom_var':
                     param_dict[name] = 10. ** np.random.normal(val1, val2)
+                elif type == 'normrandom_var':
+                    param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
                 elif type == 'static_list_var':
                     param_dict[name] = np.random.choice(val1)
                 else:
@@ -1192,8 +1198,9 @@ class BayesAlgorithm(Algorithm):
             # For box constraints, need special treatment to keep correct statistics
             # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
             # and retry.
+            # The same could happen if normrandom_var's try to go below 0
             new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
-            if self.prior[k][0] == 'b' and (new_dict[k] == self.prior[k][1] or new_dict[k] == self.prior[k][2]):
+            if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
                 logging.debug('Rejected a move because %s moved outside the box constraint' % k)
                 return None
 

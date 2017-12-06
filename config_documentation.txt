@@ -14,6 +14,7 @@ objfunc - Which objective function to use. Options: chisq - Chi Squared. Default
 ***Parameter specification***
 
 random_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]
+normrandom_var = name__FREE___ mu sigma - a normal-distributed variable in regular space with mean mu, std dev sigma. A box constraint to keep >= 0 is also assumed. 
 loguniform_var = name__FREE___ min max - a log-uniform distributed variable with bounds [min, max]. Bounds should be in regular space, eg [0.01, 100]
 lognormrandom_var = name__FREE__ mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space. 
 static_list_var = name__FREE__ a1 a2 a3... - must take one of the values a1, a2, a3, ... , This is only partially implemented. 

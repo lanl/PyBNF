@@ -12,7 +12,7 @@ numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size']
 multnumkeys = ['credible_intervals']
-var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'static_list_var', 'mutate']
+var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'normrandom_var', 'static_list_var', 'mutate']
 
 def parse(s):
     equals = pp.Suppress('=')
