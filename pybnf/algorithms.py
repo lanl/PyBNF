@@ -1045,7 +1045,7 @@ class BayesAlgorithm(Algorithm):
         # Set up the output files
         self.samples_file = config.config['output_dir'] + '/Results/samples.txt'
         with open(self.samples_file, 'w') as f:
-            f.write('Name\tLn_probability\t')
+            f.write('# Name\tLn_probability\t')
             for v in self.variables:
                 f.write(v+'\t')
             f.write('\n')
@@ -1203,24 +1203,31 @@ class BayesAlgorithm(Algorithm):
         :type file_ext: str
         :return:
         """
-        # Todo: debug this!!
-        # Read the samples file into an array, ignoring the first row (header) and first column (pset names)
-        dat_array = np.genfromtxt(self.samples_file, skip_header=1, delimiter='\t', dtype=float,
-                                  usecols=range(1, len(self.variables)+1))
+        # Read the samples file into an array, ignoring the first row (header)
+        # and first 2 columns (pset names, probabilities)
+        dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
+                                  usecols=range(2, len(self.variables)+2))
 
         # Open the file(s) to save the credible intervals
         cred_files = []
         for i in self.credible_intervals:
             f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
-            f.write('param\tlower_bound\tupper_bound\n')
+            f.write('# param\tlower_bound\tupper_bound\n')
             cred_files.append(f)
 
         for i in range(len(self.variables)):
             v = self.variables[i]
             fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
-            hist, bin_edges = np.histogram(dat_array[:, i], bins=self.num_bins)
+            # For log-space variables, we want the histogram in log space
+            if self.variable_space[v][0] == 'log':
+                histdata = np.log10(dat_array[:, i])
+                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
+            else:
+                histdata = dat_array[:, i]
+                header = 'lower_bound\tupper_bound\tcount'
+            hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
             result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
-            np.savetxt(fname, result_array, delimiter='\t', header='lower_bound\tupper_bound\tcount\n')
+            np.savetxt(fname, result_array, delimiter='\t', header=header)
 
             sorted_data = sorted(dat_array[:, i])
             for interval, file in zip(self.credible_intervals, cred_files):

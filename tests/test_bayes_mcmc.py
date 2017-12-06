@@ -1,6 +1,7 @@
 from .context import data, algorithms, pset, objective, config
 import os
 import shutil
+import numpy as np
 
 
 class TestBayes:
@@ -58,6 +59,7 @@ class TestBayes:
     @classmethod
     def teardown_class(cls):
         shutil.rmtree('noseoutput1')
+        shutil.rmtree('noseoutput2')
 
     def test_start(self):
         ba = algorithms.BayesAlgorithm(self.config)
@@ -121,4 +123,24 @@ class TestBayes:
                 res.score = 42.
                 next_params += ba.got_result(res)
             curr_params = next_params
+
+        # Check the files came out looking reasonable
+        a = np.genfromtxt('noseoutput2/Results/Histograms/v1_10.txt')
+        assert a.shape == (10, 3)
+        assert sum(a[:, 2]) == 80  # 20 saves on iters 4, 6, 8, and 10
+
+        s = np.genfromtxt('noseoutput2/Results/samples.txt', usecols=(1, 2, 3, 4))
+        assert s.shape[0] == 80
+        # Don't know what the Names in s should be; depends what PSets got randomly kept in the population.
+
+        with open('noseoutput2/Results/credible68_10.txt') as f:
+            first = True
+            for line in f:
+                if first:
+                    first = False
+                    assert line == '# param\tlower_bound\tupper_bound\n'
+                else:
+                    parts = line.split('\t')
+                    assert parts[0] in ba.variables
+                    assert float(parts[1]) < float(parts[2])
 
