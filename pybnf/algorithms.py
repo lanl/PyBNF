@@ -1075,9 +1075,7 @@ class BayesAlgorithm(Algorithm):
             for v in self.variables:
                 f.write(v + '\t')
             f.write('\n')
-        logging.info('Im making that folder that I skipped for some reason last time')
         os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
-        logging.info('Ok done')
 
 
         if self.config.config['initialization'] == 'lh':
@@ -1134,27 +1132,42 @@ class BayesAlgorithm(Algorithm):
         # Record the current PSet (clarification: what if failed? Sample old again?)
 
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
-        proposed_pset = self.choose_new_pset(self.current_pset[index])
-        self.iteration[index] += 1
-        # Check if it's time to do various things
-        if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
-            self.sample_pset(self.current_pset[index], lnposterior)
-        if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
-           and self.iteration[index] == min(self.iteration)):
-            self.update_historgrams('_%i' % self.iteration[index])
-        if (self.iteration[index] % self.config.config['output_every'] == 0
-           and self.iteration[index] == min(self.iteration)):
-            self.output_results()
-            logging.info('Completed %i iterations' % self.iteration[index])
-        if self.iteration[index] >= self.max_iterations:
-            logging.info('Instance %i finished' % index)
-            if self.iteration[index] == min(self.iteration):
-                self.update_historgrams('_final')
-                return 'STOP'
-            else:
-                # Others of the parallel runs are still going.
-                # Should *not* stop until they are all done, or we bias the distribution for fast-running simulations.
-                return []
+        proposed_pset = None
+        # This part is a loop in case a box constraint makes a move automatically rejected.
+        loop_count = 0
+        while proposed_pset is None:
+            loop_count += 1
+            if loop_count == 20:
+                logging.warning('One of your samples is stuck at the same point for 20+ iterations because it keeps '
+                                'hitting box constraints. Consider using looser box constraints or a smaller '
+                                'step_size.')
+            if loop_count == 1000:
+                logging.error('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
+                              'because it kept hitting box constraints. Consider using looser box constraints or a '
+                              'smaller step_size.' % index)
+                self.iteration[index] = self.max_iterations
+
+            proposed_pset = self.choose_new_pset(self.current_pset[index])
+            self.iteration[index] += 1
+            # Check if it's time to do various things
+            if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
+                self.sample_pset(self.current_pset[index], lnposterior)
+            if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
+               and self.iteration[index] == min(self.iteration)):
+                self.update_histograms('_%i' % self.iteration[index])
+            if (self.iteration[index] % self.config.config['output_every'] == 0
+               and self.iteration[index] == min(self.iteration)):
+                self.output_results()
+                logging.info('Completed %i iterations' % self.iteration[index])
+            if self.iteration[index] >= self.max_iterations:
+                logging.info('Instance %i finished' % index)
+                if self.iteration[index] == min(self.iteration):
+                    self.update_histograms('_final')
+                    return 'STOP'
+                else:
+                    # Others of the parallel runs are still going.
+                    # Should *not* stop until they are all done, or we bias the distribution for fast-running simulations.
+                    return []
 
         proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
 
@@ -1163,6 +1176,7 @@ class BayesAlgorithm(Algorithm):
     def choose_new_pset(self, oldpset):
         """
         Helper function to perturb the old PSet, generating a new proposed PSet
+        If the new PSet fails automatically because it violates box constraints, returns None.
 
         :param oldpset: The PSet to be changed
         :type oldpset: PSet
@@ -1173,10 +1187,15 @@ class BayesAlgorithm(Algorithm):
         delta_vector = {k: np.random.normal() for k in keys}
         delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
         delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in keys}
-        # new_dict = {k: 10 ** (np.log10(oldpset[k]) + delta_vector_normalized[k]) for k in keys}
-        new_dict = {k: self.add(oldpset, k, delta_vector_normalized[k]) for k in keys}
-        # Todo: For box constraints, sticking to the edge is not statistically correct.
-        # Correct answer is to automatically fail the step, sample the current pset again.
+        new_dict = dict()
+        for k in keys:
+            # For box constraints, need special treatment to keep correct statistics
+            # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
+            # and retry.
+            new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
+            if self.prior[k][0] == 'b' and (new_dict[k] == self.prior[k][1] or new_dict[k] == self.prior[k][2]):
+                logging.debug('Rejected a move because %s moved outside the box constraint' % k)
+                return None
 
         return PSet(new_dict)
 
@@ -1217,7 +1236,7 @@ class BayesAlgorithm(Algorithm):
                 f.write('%f\t' % pset[v])
             f.write('\n')
 
-    def update_historgrams(self, file_ext):
+    def update_histograms(self, file_ext):
         """
         Updates the files that contain histogram points for each variable
         :param file_ext: String to append to the save file names
