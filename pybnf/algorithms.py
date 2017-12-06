@@ -1028,12 +1028,13 @@ class BayesAlgorithm(Algorithm):
         super(BayesAlgorithm, self).__init__(config)
         self.step_size = config.config['step_size']
         self.num_parallel = config.config['population_size']
+        self.max_iterations = config.config['max_iterations']
         self.burn_in = config.config['burn_in'] # todo: 'auto' option
         self.sample_every = config.config['sample_every']
         self.output_hist_every = config.config['output_hist_every']
         # A list of the % credible intervals to save, eg [68. 95]
         self.credible_intervals = config.config['credible_intervals']
-        self.num_bins = config.config['num_bins']
+        self.num_bins = config.config['hist_bins']
 
         self.prior = None
         self.load_priors()
@@ -1042,15 +1043,7 @@ class BayesAlgorithm(Algorithm):
         self.ln_current_P = None # List of n probabilities of those n PSets.
         self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
 
-        # Set up the output files
-        self.samples_file = config.config['output_dir'] + '/Results/samples.txt'
-        with open(self.samples_file, 'w') as f:
-            f.write('# Name\tLn_probability\t')
-            for v in self.variables:
-                f.write(v+'\t')
-            f.write('\n')
-        os.makedirs(config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
-
+        self.samples_file = None # Initialize later.
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1074,6 +1067,19 @@ class BayesAlgorithm(Algorithm):
 
         :return: list of PSets
         """
+        # Set up the output files
+        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
+        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+        with open(self.samples_file, 'w') as f:
+            f.write('# Name\tLn_probability\t')
+            for v in self.variables:
+                f.write(v + '\t')
+            f.write('\n')
+        logging.info('Im making that folder that I skipped for some reason last time')
+        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+        logging.info('Ok done')
+
+
         if self.config.config['initialization'] == 'lh':
             first_pset = self.random_latin_hypercube_psets(self.num_parallel)
         else:
@@ -1130,11 +1136,26 @@ class BayesAlgorithm(Algorithm):
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
         proposed_pset = self.choose_new_pset(self.current_pset[index])
         self.iteration[index] += 1
+        # Check if it's time to do various things
         if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
             self.sample_pset(self.current_pset[index], lnposterior)
         if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
            and self.iteration[index] == min(self.iteration)):
             self.update_historgrams('_%i' % self.iteration[index])
+        if (self.iteration[index] % self.config.config['output_every'] == 0
+           and self.iteration[index] == min(self.iteration)):
+            self.output_results()
+            logging.info('Completed %i iterations' % self.iteration[index])
+        if self.iteration[index] >= self.max_iterations:
+            logging.info('Instance %i finished' % index)
+            if self.iteration[index] == min(self.iteration):
+                self.update_historgrams('_final')
+                return 'STOP'
+            else:
+                # Others of the parallel runs are still going.
+                # Should *not* stop until they are all done, or we bias the distribution for fast-running simulations.
+                return []
+
         proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
 
         return [proposed_pset]

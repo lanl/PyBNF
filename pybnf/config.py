@@ -56,7 +56,10 @@ class Configuration(object):
             'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
             'adaptive_rel_tol': 0.0,
 
-            'local_min_limit': 5
+            'local_min_limit': 5,
+
+            'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 10000, 'hist_bins': 10,
+            'credible_intervals': [68., 95.]
         }
         return default
 
@@ -71,7 +74,9 @@ class Configuration(object):
                                'num_to_migrate'},
                         'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
-                        'ss': {'init_size', 'local_min_limit', 'reserve_size'}}
+                        'ss': {'init_size', 'local_min_limit', 'reserve_size'},
+                        'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
+                                'credible_intervals'}}
         ignored_params = set()
         for alg in alg_specific:
             if conf_dict['fit_type'] != alg:

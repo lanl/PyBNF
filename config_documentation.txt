@@ -7,7 +7,7 @@ Please update this file whenever you add support for new .conf keys in the code
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp
 bng_command - path to BNG2.pl
 output_dir - Directory where to save the output. Default: .
-fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search. Future options: sa - Simulated Annealing
+fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo. Future options: sa - Simulated Annealing. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared. Default: chisq
 
 
@@ -64,3 +64,17 @@ adaptive_rel_tol: Parameter for checking if an iteration was "unproductive" Defa
 init_size: Number of PSets to test to generate the initial population. Default: 10 * number of variables
 local_min_limit: If a point is stuck for this many iterations without improvement, it is assumed to be a local min and replaced with a random parameter set. Default: 5
 reserve_size: Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from here, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. Default: max_iterations
+
+
+***Bayesian MCMC settings***
+
+step_size: When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. Default: 0.2
+burn_in: Ignore this many iterations at the start, to let the system equilibrate. Default: 10000
+sample_every: Every x iterations, save the current PSet into the sampled population. Default: 100
+
+output_hist_every: Every x iterations, save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Default: 10000 
+hist_bins: Number of bins used when writing the histogram files. Default: 10
+credible_intervals: Specify one or more numbers here. For each n, algorithm will save a file giving bounds for each variable such that in n% of the samples the variable lies within the bounds.  Default: 68 95
+
+
+

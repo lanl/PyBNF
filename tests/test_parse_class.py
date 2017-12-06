@@ -10,7 +10,8 @@ class TestParse:
     def setup_class(cls):
         cls.s = ['job_name =  world #test test', 'verbosity = 3', 'model = thing.bngl : data.exp', 'mutate = derp 1 3',
                  ' #derp = derp', 'random_var = var__FREE__ 1 5', 'lognormrandom_var= var2__FREE__ 0.01 1.0e5',
-                 'random_var = var3__FREE__ 4 5', 'model = another.bngl: d1.exp, d2.exp']
+                 'random_var = var3__FREE__ 4 5', 'model = another.bngl: d1.exp, d2.exp',
+                 'credible_intervals=68 95 99.7']
 
     @classmethod
     def teardown_class(cls):
@@ -25,6 +26,7 @@ class TestParse:
         assert parse.parse(self.s[6]) == ['lognormrandom_var', 'var2__FREE__', '0.01', '1.0E5']
         assert parse.parse(self.s[7]) == ['random_var', 'var3__FREE__', '4', '5']
         assert parse.parse(self.s[8]) == ['model', 'another.bngl', 'd1.exp', 'd2.exp']
+        assert parse.parse(self.s[9]) == ['credible_intervals', '68', '95', '99.7']
 
     def test_capital(self):
         assert parse.parse('Model = string.bngl: string.exp') == ['model', 'string.bngl', 'string.exp']
@@ -52,3 +54,7 @@ class TestParse:
         assert d[('random_var', 'var3__FREE__')] == [4., 5.]
         assert d['another.bngl'] == ['d1.exp', 'd2.exp']
         assert d['models'] == {'thing.bngl', 'another.bngl'}
+        assert d['credible_intervals'] == [68., 95., 99.7]
+
+        d2 = parse.ploop(['credible_intervals=68'])
+        assert d2['credible_intervals'] == [68.0]
