@@ -1332,14 +1332,14 @@ class SimplexAlgorithm(Algorithm):
 
     def __init__(self, config):
         super(SimplexAlgorithm, self).__init__(config)
-        self.start_point = config.config['start_point']
-        self.start_step = config.config['start_step']
-        self.parallel_count = min(config.config['num_individuals'], len(self.variables))
+        self.start_point = config.config['simplex_start_point']
+        self.start_step = config.config['simplex_start_step']
+        self.parallel_count = min(config.config['population_size'], len(self.variables))
         self.iteration = 0
-        self.alpha = config.config['reflection']
-        self.gamma = config.config['expansion']
-        self.beta = config.config['contraction']
-        self.tau = config.config['shrink']
+        self.alpha = config.config['simplex_reflection']
+        self.gamma = config.config['simplex_expansion']
+        self.beta = config.config['simplex_contraction']
+        self.tau = config.config['simplex_shrink']
 
         self.simplex = []  # (score, PSet) points making up the simplex. Sorted after each iteration.
 
@@ -1361,6 +1361,7 @@ class SimplexAlgorithm(Algorithm):
         # specified step size
         self.start_point.name = 'simplex_init0'
         init_psets = [self.start_point]
+        self.pending[self.start_point.name] = 0
         i = 1
         for v in self.start_point.keys():
             new_dict = dict()
@@ -1459,14 +1460,16 @@ class SimplexAlgorithm(Algorithm):
                            and self.second_points[i][0] < self.simplex[si][0]):
                             productive = True
                             self.simplex[si] = self.second_points[i]
-                        elif self.first_points[i][0] < self.simplex[i][0]:
+                        elif self.first_points[i][0] < self.simplex[si][0]:
                             self.simplex[si] = self.first_points[i]
                         # else don't edit the simplex, neither is an improvement
-                # Re-sort the simplex based on the updated objectives
-                self.simplex.sort()
+                    else:
+                        raise RuntimeError('Internal error in SimplexAlgorithm')
+
                 if not productive:
                     # None of the points in the last iteration improved the simplex.
                     # Now we have to contract the simplex
+                    self.simplex.sort()
                     new_simplex = []
                     for i in range(1, len(self.simplex)):
                         new_dict = dict()
@@ -1486,17 +1489,17 @@ class SimplexAlgorithm(Algorithm):
                     self.simplex = [self.simplex[0]] + ([None] * len(new_simplex))
                     return new_simplex
 
-
-
             ###
             # Set up the next iteration
+            # Re-sort the simplex based on the updated objectives
+            self.simplex.sort()
             # Find the reflection point for the n worst points
             reflections = []
             self.centroids = []
             # Sum of each param value, to help take the reflections
             sums = self.get_sums()
             for ai in range(self.parallel_count):
-                a = self.simplex[-ai-1]
+                a = self.simplex[-ai-1][1]
                 new_dict = dict()
                 this_centroid = dict()
                 for v in a.keys():
