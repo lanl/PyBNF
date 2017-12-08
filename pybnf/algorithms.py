@@ -1438,7 +1438,9 @@ class SimplexAlgorithm(Algorithm):
                 # We don't run a second point in this case.
                 self.cases[index] = 2
                 self.stages[index] = 3
-                return []
+                if min(self.stages) < 3:
+                    return []
+                # Otherwise have to jump to next iteration, below.
             else:
                 # Case 3: The point is not better than the next worst point.
                 # We calculate the contraction point
@@ -1496,7 +1498,7 @@ class SimplexAlgorithm(Algorithm):
                 if not productive:
                     # None of the points in the last iteration improved the simplex.
                     # Now we have to contract the simplex
-                    self.simplex.sort()
+                    self.simplex = sorted(self.simplex, key=lambda x: x[0])
                     new_simplex = []
                     for i in range(1, len(self.simplex)):
                         new_dict = dict()
@@ -1519,7 +1521,7 @@ class SimplexAlgorithm(Algorithm):
             ###
             # Set up the next iteration
             # Re-sort the simplex based on the updated objectives
-            self.simplex.sort()
+            self.simplex = sorted(self.simplex, key=lambda x: x[0])
             if self.iteration == self.config.config['max_iterations']:
                 return 'STOP' # Extra catch if finish on a rebuild the simplex iteration
             # Find the reflection point for the n worst points
