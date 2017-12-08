@@ -179,7 +179,7 @@ class Algorithm(object):
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normrandom_var':
+            elif v[1] == 'normrandom_var' or v[1] == 'logvar' or v[1]=='var':
                 self.variable_space[v[0]] = ('regular', 0., np.inf)
             elif v[1] == 'lognormrandom_var':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
@@ -1463,6 +1463,7 @@ class SimplexAlgorithm(Algorithm):
 
         if min(self.stages) == 3:
             # All points in current iteration completed
+            self.iteration += 1
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:
@@ -1488,6 +1489,9 @@ class SimplexAlgorithm(Algorithm):
                         # else don't edit the simplex, neither is an improvement
                     else:
                         raise RuntimeError('Internal error in SimplexAlgorithm')
+
+                if self.iteration == self.config.config['max_iterations']:
+                    return 'STOP'  # Quit after the final simplex update
 
                 if not productive:
                     # None of the points in the last iteration improved the simplex.
@@ -1516,6 +1520,8 @@ class SimplexAlgorithm(Algorithm):
             # Set up the next iteration
             # Re-sort the simplex based on the updated objectives
             self.simplex.sort()
+            if self.iteration == self.config.config['max_iterations']:
+                return 'STOP' # Extra catch if finish on a rebuild the simplex iteration
             # Find the reflection point for the n worst points
             reflections = []
             self.centroids = []
