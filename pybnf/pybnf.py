@@ -34,8 +34,10 @@ def main():
         alg = algs.ScatterSearch(config)
     elif conf_dict['fit_type'] == 'bmc':
         alg = algs.BayesAlgorithm(config)
+    elif conf_dict['fit_type'] == 'sim':
+        alg = algs.SimplexAlgorithm(config)
     else:
-        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc' % conf_dict['fit_type'])
+        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
     # Create output folders, checking for overwrites.
     if os.path.exists(config.config['output_dir']):

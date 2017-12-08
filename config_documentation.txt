@@ -7,7 +7,7 @@ Please update this file whenever you add support for new .conf keys in the code
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp
 bng_command - path to BNG2.pl
 output_dir - Directory where to save the output. Default: .
-fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo. Future options: sa - Simulated Annealing. Default: de
+fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search. Future options: sa - Simulated Annealing. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared. Default: chisq
 
 
@@ -19,9 +19,15 @@ loguniform_var = name__FREE___ min max - a log-uniform distributed variable with
 lognormrandom_var = name__FREE__ mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space. 
 static_list_var = name__FREE__ a1 a2 a3... - must take one of the values a1, a2, a3, ... , This is only partially implemented. 
 
+The following are to be used only with the simplex algorithm. Simplex should not use any of the other parameter specifications.
+If you are using another algorithm with the flag refine, you still should not use these, you must set step size with simplex_step or simplex_log_step.
+var = name__FREE__ init step - a variable that starts at init with an initial step size step. step is optional; defaults to simplex_step
+logvar = name__FREE__ init step - a variable that starts at init with an initial step size step, that moves in log space. init and step should be given in log base 10 space. step is optional; defaults to simplex_log_step.
+
 
 ***General options***
 
+refine: If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. Default: 0
 delete_old_files: If 1, only save the latest copy of sorted_params.txt, delete older ones. Default: 0
 num_to_output: The maximum number of PSets to write when writing the trajectory. Default: 1000000
 output_every: Write the Trajectory to file every x iterations. Default: 20
@@ -32,6 +38,17 @@ output_every: Write the Trajectory to file every x iterations. Default: 20
 population_size: How many individuals to have in the population. 
 max_iterations: Max number of iterations
 initialization: 'rand' - initialize params randomly according to the distributions. 'lh' - For random_var's and loguniform_var's, initialize with a latin hypercube distribution, to more uniformly cover the search space.
+
+
+***Simplex Settings***
+Note: You also might define these if you chose a different algorithm but set the refine flag to use Simplex to refine the final fit. 
+
+simplex_step - In initialization, we perturb each parameter by what step size? If you specify a step size for a specific variable via 'var' or 'logvar', it overrides this. Default: 1
+simplex_log_step - Equivalent of simplex_step, for variables that move in log space. Default: simplex_step
+simplex_reflection - When we reflect a point through the centroid, what is the ratio of dilation on the other side? Default: 1.0
+simplex_expansion - If the reflected point was the global min, how far do we keep moving in that direction? (as a ratio to the initial distance to centroid) Default: 1.0
+simplex_contraction - If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) Default: 0.5
+simplex_shrink - If a whole iteration was unproductive, shrink the simplex by setting simplex point s[i] to x*s[i-1] + (1-x)*s[i]. This key specifies x. Default: 0.5
 
 
 ***Differential Evolution Settings***

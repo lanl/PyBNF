@@ -1332,8 +1332,11 @@ class SimplexAlgorithm(Algorithm):
 
     def __init__(self, config):
         super(SimplexAlgorithm, self).__init__(config)
+        if 'simplex_start_point' not in config.config:
+            # We need to set up the initial point ourselfs
+            self._parse_start_point()
         self.start_point = config.config['simplex_start_point']
-        self.start_step = config.config['simplex_start_step']
+        self.start_steps = {v[0]: v[3] for v in config.variables_specs}
         self.parallel_count = min(config.config['population_size'], len(self.variables))
         self.iteration = 0
         self.alpha = config.config['simplex_reflection']
@@ -1355,6 +1358,26 @@ class SimplexAlgorithm(Algorithm):
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
 
+    def _parse_start_point(self):
+        """
+        Called when the start point is not passed in the config (which is when we're doing a pure simplex run,
+        as opposed to a refinement at the end of the run)
+        Parses the info out of the variable specs, and sets the appropriate PSet into the config.
+        """
+        start_dict = dict()
+        for vinfo in self.config.variables_specs:
+            if vinfo[1] == 'var':
+                start_dict[vinfo[0]] = vinfo[2]
+            elif vinfo[1] == 'logvar':
+                start_dict[vinfo[0]] = 10.**vinfo[2]
+            else:
+                raise RuntimeError('Internal error in SimplexAlgorithm: Encountered variable type %s while trying'
+                                   'to parse start point' % vinfo[1])
+        start_pset = PSet(start_dict)
+        self.config.config['simplex_start_point'] = start_pset
+
+
+
     def start_run(self):
 
         # Generate the initial  num_variables+1 points in the simplex by moving parameters, one at a time, by the
@@ -1367,7 +1390,7 @@ class SimplexAlgorithm(Algorithm):
             new_dict = dict()
             for p in self.start_point.keys():
                 if p == v:
-                    new_dict[p] = self.add(self.start_point, p, self.start_step)
+                    new_dict[p] = self.add(self.start_point, p, self.start_steps[p])
                 else:
                     new_dict[p] = self.start_point[p]
             new_pset = PSet(new_dict)
