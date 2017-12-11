@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import re
 import copy
@@ -18,7 +19,7 @@ class Model(object):
         """
         NotImplementedError("copy_with_param_set is not implemented")
 
-    def save(self, *args, **kwargs):
+    def save(self, file_prefix, **kwargs):
         """
         Saves the model to file
 
@@ -47,6 +48,7 @@ class BNGLModel(Model):
 
         self.generates_network = False
         self.action_line_indices = []
+        self.actions = []
 
         # Read the file
         with open(self.file_path) as file:
@@ -55,12 +57,11 @@ class BNGLModel(Model):
         # Scan the file's lines
         # Find param names of type __FREE__, and also the 'begin parameters' declaration
         param_names_set = set()
-        split_line = None
-        linelist = self.bngl_file_text.splitlines()
+        self.split_line_index = None # for insertion of free parameters
+        self.model_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
         in_action_block = False
-        for linei in range(len(linelist)):
-            line = linelist[linei]
-            # Remove comment if present
+
+        for i, line in enumerate(self.model_lines):
             commenti = line.find('#')
             if commenti != -1:
                 line = line[:commenti]
@@ -72,9 +73,7 @@ class BNGLModel(Model):
 
             # Check if this is the 'begin parameters' line
             if re.match('begin\s+parameters', line.strip()):
-                if split_line is not None:
-                    raise ModelError("Found a second instance of 'begin parameters' at line " + str(linei))
-                split_line = linei + 1
+                self.split_line_index = i + 1
             elif re.search('generate_network', line):
                 self.generates_network = True
 
@@ -82,30 +81,30 @@ class BNGLModel(Model):
             if action_suffix is not None:
                 self.suffixes.append(action_suffix)
 
-            if re.match('begin\s+action', line.strip()):
+            if re.match('begin\s+actions', line.strip()):
                 in_action_block = True
-                self.action_line_indices.append(linei)
+                self.action_line_indices.append(i)
                 continue
-            elif re.match('end\s+action', line.strip()):
+            elif re.match('end\s+actions', line.strip()):
                 in_action_block = False
-                self.action_line_indices.append(linei)
+                self.action_line_indices.append(i)
                 continue
 
             if in_action_block:
-                self.action_line_indices.append(linei)
+                if re.match('generate_network', line.strip()):
+                    continue
+                else:
+                    self.actions.append(line)
+                    self.action_line_indices.append(i)
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found")
 
-        if split_line is None:
+        if self.split_line_index is None:
             raise ModelError("'begin parameters' not found in BNGL file")
 
         if not self.action_line_indices:
             raise ModelError("Model has no actions block")
-
-        # Two pieces of the model text. The full model with params should be written as _model_text_start + (free param definitions) + _model_text_end
-        self._model_text_start = '\n'.join(linelist[:split_line] + [''])
-        self._model_text_end = '\n'.join(linelist[split_line:])
 
         # Save model_params as a sorted tuple
         param_names_list = list(param_names_set)
@@ -116,10 +115,8 @@ class BNGLModel(Model):
             # If this model is to be initialized with a PSet, check that it has the correct parameter names
             if pset.keys_to_string() != '\t'.join(self.param_names):
                 raise ValueError('Parameter names in the PSet do not match those in the Model')
-            self.param_set = pset
-        else:
-            self.param_set = {k: 1.0 for k in self.param_names} # default parameters are all 1
 
+        self.param_set = pset
 
     @staticmethod
     def _get_action_suffix(line):
@@ -163,7 +160,7 @@ class BNGLModel(Model):
         newmodel.param_set = pset
         return newmodel
 
-    def model_text(self):
+    def model_text(self, gen_only=False):
         """
         Returns the text of a runnable BNGL file, which includes the contents of the original BNGL file, and also values
         assigned to each __FREE__ parameter, as determined by this model's PSet
@@ -176,35 +173,54 @@ class BNGLModel(Model):
             raise ModelError('Must assign a PSet to the model before calling model_text()')
 
         # Generate the text associated with defining __FREE__ parameter values
-        param_text_lines = [k + ' ' + str(self.param_set[k]) for k in self.param_names]
-        param_text = '\n'.join(param_text_lines)
+        param_text_lines = ['%s %s' % (k, str(self.param_set[k])) for k in self.param_names]
 
         # Insert the generated text at the correct point within the text of the model
-        return ''.join([self._model_text_start, param_text, self._model_text_end])
+        if gen_only:
+            action_lines = [
+                'begin actions\n',
+                'generate_network({overwrite=>1})\n',
+                'end actions'
+            ]
+            self.model_lines = \
+                self.model_lines[:self.split_line_index] + \
+                param_text_lines + \
+                self.model_lines[self.split_line_index:self.action_line_indices[0]] + \
+                action_lines
+        else:
+            self.model_lines = \
+                self.model_lines[:self.split_line_index] + \
+                param_text_lines + \
+                self.model_lines[self.split_line_index:]
 
-    def save(self, filename, gen_only=False):
+        return '\n'.join(self.model_lines) + '\n'
+
+    def save(self, file_prefix, gen_only=False):
         """
         Saves a runnable BNGL file of the model, including definitions of the __FREE__ parameter values that are defined
         by this model's pset, to the specified location.
 
-        :param filename: str, path where the file should be saved
+        :param file_prefix: str, path where the file should be saved
         :param gen_only: bool, output model with only generate_network action if True
         """
 
         # Call model_text(), then write the output to the file.
-        if gen_only:
-            text_lines = [l.strip() for i, l in enumerate(self.bngl_file_text.splitlines()) if i not in self.action_line_indices]
-            text_lines.append('begin actions\n\ngenerate_network({overwrite=>1})\n\nend actions\n')
-            text = '\n'.join(text_lines)
-        else:
-            text = self.model_text()
-        f = open(filename, 'w')
+        if self.param_set is None:
+            self.param_set = PSet({k: 1.0 for k in self.param_names})
+
+        text = self.model_text(gen_only)
+        f = open(file_prefix + '.bngl', 'w')
         f.write(text)
         f.close()
 
 
 class NetModel(Model):
-    def __init__(self, ls=None, nf=None):
+    def __init__(self, name, acts, suffs, ls=None, nf=None):
+        self.name = name
+        self.actions = acts
+        self.suffixes = suffs
+        self.param_set = None
+
         if not (ls or nf):
             raise ModelError("Must specify a file name or a list of strings corresponding to the .net file's lines")
         elif ls:
@@ -222,24 +238,29 @@ class NetModel(Model):
         :type pset: PSet
         :return: NetModel
         """
+        self.param_set = pset
         lines_copy = copy.deepcopy(self.netfile_lines)
         in_params_block = False
         for i, l in enumerate(lines_copy):
             if re.match('begin\s+parameters', l.strip()):
                 in_params_block = True
+            elif re.match('end\s+parameters', l.strip()):
+                in_params_block = False
             elif in_params_block:
+                # m = re.match('\d+\s+([A-Za-z_]\w*)\s+', l.strip())
                 m = re.match('\d+\s+([A-Za-z_]\w*)\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l.strip())
                 if m:
-                    if m.group(1) in pset.keys():
-                        lines_copy[i] = re.sub(m.group(2), str(pset[m.group(1)]), l)
-        return NetModel(ls=lines_copy)
+                    if m.group(1) in self.param_set.keys():
+                        lines_copy[i] = re.sub(m.group(2), str(self.param_set[m.group(1)]), l)
 
-    def save(self, file_prefix, acts):
+        return NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+
+    def save(self, file_prefix):
         with open(file_prefix + '.net', 'w') as wf:
             wf.write(''.join(self.netfile_lines))
         with open(file_prefix + '.bngl', 'w') as wf:
             wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
-            wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(acts))
+            wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
 
 
 class ModelError(Exception):

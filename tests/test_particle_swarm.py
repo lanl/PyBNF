@@ -1,7 +1,6 @@
 from .context import data, algorithms, pset, objective, config, parse
-import numpy as np
 import numpy.testing as npt
-from os import environ, mkdir
+from os import mkdir
 from shutil import rmtree
 
 
@@ -46,7 +45,7 @@ class TestParticleSwarm:
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
-                      'bng_command': 'For this test you don''t need this.', 'fit_type': 'pso'})
+                      'fit_type': 'pso', 'output_dir': 'test_pso'})
         mkdir('test_pswarm_output')
         mkdir('test_pswarm_output/Simulations')
         mkdir('test_pswarm_output/Results')
@@ -56,7 +55,7 @@ class TestParticleSwarm:
                            ('lognormrandom_var', 'v3'): [0, 1],
                            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-                           'bng_command': 'For this test you don''t need this.', 'fit_type': 'pso'})
+                           'fit_type': 'pso', 'output_dir': 'test_pso'})
 
         cls.config_path = 'bngl_files/parabola.conf'
 
@@ -64,12 +63,13 @@ class TestParticleSwarm:
             {'population_size': 10, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'bng_command': 'For this test you don''t need this.',
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': 'test_pso',
             'initialization': 'lh', 'fit_type': 'pso',})
 
     @classmethod
     def teardown_class(cls):
         rmtree('test_pswarm_output')
+        rmtree('test_pso')
 
     def test_random_pset(self):
         ps = algorithms.ParticleSwarm(self.config2)
@@ -96,7 +96,6 @@ class TestParticleSwarm:
         ps2 = algorithms.ParticleSwarm(self.config2)
         npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v2'), -1.)
         npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v3'), -1.)
-
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
