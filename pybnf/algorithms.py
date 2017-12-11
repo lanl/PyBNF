@@ -199,7 +199,7 @@ class Algorithm(object):
         """
         home_dir = os.getcwd()
         os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
-        init_model_list = list(self.config.models.values())
+        init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
         final_model_list = []
         init_dir = os.getcwd() + '/Initialize'
         if not os.path.isdir(init_dir):
