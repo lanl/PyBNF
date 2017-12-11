@@ -49,6 +49,7 @@ simplex_reflection - When we reflect a point through the centroid, what is the r
 simplex_expansion - If the reflected point was the global min, how far do we keep moving in that direction? (as a ratio to the initial distance to centroid) Default: 1.0
 simplex_contraction - If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) Default: 0.5
 simplex_shrink - If a whole iteration was unproductive, shrink the simplex by setting simplex point s[i] to x*s[i-1] + (1-x)*s[i]. This key specifies x. Default: 0.5
+simplex_max_iterations - If specified, overrides the max_iterations setting. Useful if you are using the refine flag and want max_iterations to refer to your main algorithm. 
 
 
 ***Differential Evolution Settings***

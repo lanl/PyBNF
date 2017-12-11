@@ -68,3 +68,14 @@ def main():
 
     # Run the algorithm!
     alg.run()
+
+    if config.config['refine'] == 1:
+        if config.config['fit_type'] == 'sim':
+            logging.warning("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
+                            "\nSkipping refine.")
+        else:
+            logging.info("Refining the best fit by the Simplex algorithm")
+            config.config['simplex_start_point'] = alg.trajectory.best_fit()
+            simplex = algs.SimplexAlgorithm(config)
+            simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+            simplex.run()

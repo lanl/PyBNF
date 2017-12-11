@@ -89,7 +89,7 @@ class Configuration(object):
                         'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
                                 'credible_intervals'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
-                                'simplex_contraction', 'simplex_shrink'}}
+                                'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations'}}
         ignored_params = set()
         for alg in alg_specific:
             if (conf_dict['fit_type'] != alg

@@ -1335,6 +1335,10 @@ class SimplexAlgorithm(Algorithm):
         if 'simplex_start_point' not in config.config:
             # We need to set up the initial point ourselfs
             self._parse_start_point()
+        if 'simplex_max_iterations' in config.config:
+            self.max_iterations = config.config['simplex_max_iterations']
+        else:
+            self.max_iterations = config.config['max_iterations']
         self.start_point = config.config['simplex_start_point']
         self.start_steps = {v[0]: v[3] for v in config.variables_specs}
         self.parallel_count = min(config.config['population_size'], len(self.variables))
@@ -1492,7 +1496,7 @@ class SimplexAlgorithm(Algorithm):
                     else:
                         raise RuntimeError('Internal error in SimplexAlgorithm')
 
-                if self.iteration == self.config.config['max_iterations']:
+                if self.iteration == self.max_iterations:
                     return 'STOP'  # Quit after the final simplex update
 
                 if not productive:
@@ -1522,7 +1526,7 @@ class SimplexAlgorithm(Algorithm):
             # Set up the next iteration
             # Re-sort the simplex based on the updated objectives
             self.simplex = sorted(self.simplex, key=lambda x: x[0])
-            if self.iteration == self.config.config['max_iterations']:
+            if self.iteration == self.max_iterations:
                 return 'STOP' # Extra catch if finish on a rebuild the simplex iteration
             # Find the reflection point for the n worst points
             reflections = []
