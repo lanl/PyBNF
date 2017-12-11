@@ -1,5 +1,6 @@
 from .context import data, algorithms, pset, objective, config
 
+from shutil import rmtree
 
 class TestScatter:
     def __init__(self):
@@ -44,12 +45,11 @@ class TestScatter:
             'population_size': 7, 'max_iterations': 20, 'fit_type': 'ss',
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
     @classmethod
     def teardown_class(cls):
-        pass
+        rmtree('bnf_out')
 
     def test_start(self):
         ss = algorithms.ScatterSearch(self.config)
