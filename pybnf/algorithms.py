@@ -179,9 +179,9 @@ class Algorithm(object):
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normrandom_var' or v[1] == 'logvar' or v[1]=='var':
+            elif v[1] == 'normrandom_var' or v[1]=='var':
                 self.variable_space[v[0]] = ('regular', 0., np.inf)
-            elif v[1] == 'lognormrandom_var':
+            elif v[1] == 'lognormrandom_var' or v[1] == 'logvar':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
             elif v[1] == 'loguniform_var':
                 self.variable_space[v[0]] = ('log', v[2], v[3])
@@ -1430,7 +1430,9 @@ class SimplexAlgorithm(Algorithm):
                 self.cases[index] = 1
                 new_dict = dict()
                 for v in pset.keys():
-                    new_dict[v] = pset[v] + self.gamma * (pset[v] - self.centroids[index][v])
+                    # new_dict[v] = pset[v] + self.gamma * (pset[v] - self.centroids[index][v])
+                    new_dict[v] = self.a_plus_b_times_c_minus_d(pset[v], self.gamma, pset[v], self.centroids[index][v],
+                                                                v)
                 new_pset = PSet(new_dict)
                 new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
                 self.pending[new_pset.name] = index
@@ -1458,7 +1460,9 @@ class SimplexAlgorithm(Algorithm):
                 for v in a_hat.keys():
                     # I think the equation for this in Lee et al p. 178 is wrong; I am instead using the analog to the
                     # equation on p. 176
-                    new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])
+                    # new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])
+                    new_dict[v] = self.a_plus_b_times_c_minus_d(self.centroids[index][v], self.beta, a_hat[v],
+                                                                self.centroids[index][v], v)
                 new_pset = PSet(new_dict)
                 new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
                 self.pending[new_pset.name] = index
@@ -1507,8 +1511,9 @@ class SimplexAlgorithm(Algorithm):
                     for i in range(1, len(self.simplex)):
                         new_dict = dict()
                         for v in self.simplex[i][1].keys():
-                            # todo: not log safe
-                            new_dict[v] = self.tau * self.simplex[i-1][1][v] + (1 - self.tau) * self.simplex[i][1][v]
+                            # new_dict[v] = self.tau * self.simplex[i-1][1][v] + (1 - self.tau) * self.simplex[i][1][v]
+                            new_dict[v] = self.ab_plus_cd(self.tau, self.simplex[i-1][1][v], 1 - self.tau,
+                                                          self.simplex[i][1][v], v)
                         new_pset = PSet(new_dict)
                         new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, i)
                         self.pending[new_pset.name] = i - 1
@@ -1532,15 +1537,20 @@ class SimplexAlgorithm(Algorithm):
             reflections = []
             self.centroids = []
             # Sum of each param value, to help take the reflections
-            sums = self.get_sums()
+            sums = self.get_sums() # Returns in log space for log variables
             for ai in range(self.parallel_count):
                 a = self.simplex[-ai-1][1]
                 new_dict = dict()
                 this_centroid = dict()
                 for v in a.keys():
-                    centroid = (sums[v] - a[v]) / (len(self.simplex) - 1)
+                    if self.variable_space[v][0] == 'log':
+                        # Calc centroid in regular space.
+                        centroid = 10. ** ((sums[v] - np.log10(a[v])) / (len(self.simplex) - 1))
+                    else:
+                        centroid = (sums[v] - a[v]) / (len(self.simplex) - 1)
                     this_centroid[v] = centroid
-                    new_dict[v] = centroid + self.alpha * (centroid - a[v])
+                    # new_dict[v] = centroid + self.alpha * (centroid - a[v])
+                    new_dict[v] = self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v], v)
                 self.centroids.append(this_centroid)
                 new_pset = PSet(new_dict)
                 new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, ai)
@@ -1564,7 +1574,50 @@ class SimplexAlgorithm(Algorithm):
         Returns a dict mapping parameter name p to the sum of the parameter value over the entire current simplex
         :return: dict
         """
-        return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}  # Todo not log safe
+        # return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}
+        sums = dict()
+        for p in self.simplex[0][1].keys():
+            if self.variable_space[p][0] == 'regular':
+                sums[p] = sum(point[1][p] for point in self.simplex)
+            else:
+                sums[p] = sum(np.log10(point[1][p]) for point in self.simplex)
+        return sums
+
+    def a_plus_b_times_c_minus_d(self, a, b, c, d, v):
+        """
+        Performs the calculation a + b*(c-d), where a, c, and d are assumed to be in log space if v is in log space,
+        and the final result respects the box constraints on v.
+
+        :param a:
+        :param b:
+        :param c:
+        :param d:
+        :param v:
+        :return:
+        """
+
+        if self.variable_space[v][0] == 'log':
+            result = 10 ** (np.log10(a) + b*(np.log10(c) - np.log10(d)))
+        else:
+            result = a + b*(c-d)
+        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+
+    def ab_plus_cd(self, a, b, c, d, v):
+        """
+        Performs the calculation ab + cd where b and d are assumed to be in log space if v is in log space,
+        and the final result respects the box constraints on v
+        :param a:
+        :param b:
+        :param c:
+        :param d:
+        :param v:
+        :return:
+        """
+        if self.variable_space[v][0] == 'log':
+            result = 10 ** (a * np.log10(b) + c*np.log10(d))
+        else:
+            result = a * b + c * d
+        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
 
 
 
