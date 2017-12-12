@@ -247,11 +247,10 @@ class NetModel(Model):
             elif re.match('end\s+parameters', l.strip()):
                 in_params_block = False
             elif in_params_block:
-                # m = re.match('\d+\s+([A-Za-z_]\w*)\s+', l.strip())
-                m = re.match('\d+\s+([A-Za-z_]\w*)\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l.strip())
+                m = re.match('(\s+)(\d)+\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
-                    if m.group(1) in self.param_set.keys():
-                        lines_copy[i] = re.sub(m.group(2), str(self.param_set[m.group(1)]), l)
+                    if m.group(3) in self.param_set.keys():
+                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(self.param_set[m.group(3)]))
 
         return NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
 
