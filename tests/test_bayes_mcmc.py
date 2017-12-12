@@ -35,8 +35,7 @@ class TestBayes:
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
             ('lognormrandom_var', 'v1'): [0., 0.5], ('lognormrandom_var', 'v2'): [0., 0.5], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
         cls.config_box = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
@@ -44,8 +43,7 @@ class TestBayes:
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10],
             ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
         cls.config_normal = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
@@ -53,8 +51,7 @@ class TestBayes:
             ('lognormrandom_var', 'v1'): [0., 0.5], ('lognormrandom_var', 'v2'): [0., 0.5],
             ('lognormrandom_var', 'v3'): [0., 0.5],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
     @classmethod
     def teardown_class(cls):
