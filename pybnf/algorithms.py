@@ -1474,6 +1474,8 @@ class SimplexAlgorithm(Algorithm):
         if min(self.stages) == 3:
             # All points in current iteration completed
             self.iteration += 1
+            if self.iteration % self.config.config['output_every'] == 0:
+                self.output_results()
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:

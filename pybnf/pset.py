@@ -286,9 +286,7 @@ class PSet(object):
             if type(key) != str:
                 raise TypeError("Parameter key " + str(key) + " is not of type str")
             if not allow_negative and value < 0:
-                # raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
-                # Temporary change to warning so I can test the rest of the code. - EM
-                logging.warning("Parameter value " + str(value) + " with key " + str(key) + " is negative")
+                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
             if np.isnan(value) or np.isinf(value):
                 raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
 
