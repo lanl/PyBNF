@@ -15,7 +15,7 @@ class TestJob(object):
 
     @classmethod
     def setup_class(cls):
-        cls.model = pset.Model('bngl_files/Tricky.bngl')
+        cls.model = pset.BNGLModel('bngl_files/Tricky.bngl')
         d = {
             'koff__FREE__': 0.1,
             '__koff2__FREE__': 0.1,
@@ -28,6 +28,7 @@ class TestJob(object):
 
     @classmethod
     def teardown_class(cls):
+        rmtree('sim_net')
         rmtree('sim_x')
         rmtree('sim_1')
 
@@ -55,3 +56,15 @@ class TestJob(object):
         assert isinstance(list(sim_data['Tricky'].values())[0], data.Data)
         assert isfile('sim_1/Tricky_sim_1.bngl')
         assert isdir('sim_1/Tricky_sim_1_thing')
+
+    def test_net_job(self):
+        netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
+        mkdir('sim_net')
+        chdir('sim_net')
+        job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', self.bngpath, '.')
+        job.execute(job._write_models())
+        assert isfile('TrickyWP_p1_5_test.net')
+        assert isfile('TrickyWP_p1_5_test.bngl')
+        assert isfile('TrickyWP_p1_5_test.cdat')
+        assert isfile('TrickyWP_p1_5_test.gdat')
+        chdir('../')

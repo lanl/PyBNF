@@ -3,8 +3,10 @@
 
 from .data import Data
 from .objective import ChiSquareObjective
-from .pset import Model
+from .pset import BNGLModel
+
 import numpy as np
+import os
 import re
 import logging
 
@@ -44,8 +46,14 @@ class Configuration(object):
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
 
-    def default_config(self):
+    @staticmethod
+    def default_config():
         """Default configuration values"""
+        try:
+            bng_command = os.environ['BNGPATH'] + '/BNG2.pl'
+        except KeyError:
+            bng_command = ''
+
         default = {
             'objfunc': 'chi_sq', 'output_dir': '.', 'delete_old_files': 0, 'num_to_output': 1000000, 'output_every': 20,
             'initialization': 'lh',
@@ -59,7 +67,10 @@ class Configuration(object):
             'local_min_limit': 5,
 
             'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 10000, 'hist_bins': 10,
-            'credible_intervals': [68., 95.]
+            'credible_intervals': [68., 95.],
+
+            'bng_command': bng_command,
+            'output_dir': 'bnf_out'
         }
         return default
 
@@ -97,7 +108,7 @@ class Configuration(object):
         """
         md = {}
         for mf in self.config['models']:
-            model = Model(mf)
+            model = BNGLModel(mf)
             md[model.name] = model
         return md
 

@@ -11,6 +11,7 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
+from .pset import NetModel
 
 import logging
 import numpy as np
@@ -82,10 +83,10 @@ class Job:
         """Writes models to file"""
         model_files = []
         for i, model in enumerate(self.models):
-            model_file_name = self._name_with_id(model) + ".bngl"
+            model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
-            model_with_params.save(model_file_name)
-            model_files.append(model_file_name)
+            model_with_params.save(model_file_prefix)
+            model_files.append(model_file_prefix)
         return model_files
 
     def run_simulation(self):
@@ -117,8 +118,8 @@ class Job:
         """Executes model simulations"""
         log = []
         for model in models:
-            cmd = '%s %s' % (self.bng_program, model)
-            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE)
+            cmd = '%s %s.bngl' % (self.bng_program, model)
+            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8')
             log.append(cp.stdout)
         return log
 
@@ -162,8 +163,11 @@ class Algorithm(object):
         self.job_id_counter = 0
         self.output_counter = 0
 
+        if not os.path.isdir(self.config.config['output_dir']):
+            os.mkdir(self.config.config['output_dir'])
+
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        self.model_list = list(self.config.models.values())
+        self.model_list = self._initialize_models()
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -185,6 +189,41 @@ class Algorithm(object):
                 self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
             else:
                 raise RuntimeError('Unrecognized variable type: %s' % v[1])
+
+    def _initialize_models(self):
+        """
+        Checks initial BNGLModel instances from the Configuration object for models that
+        can be reinstantiated as NetModel instances
+
+        :return: list of Model instances
+        """
+        home_dir = os.getcwd()
+        os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
+        init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
+        final_model_list = []
+        init_dir = os.getcwd() + '/Initialize'
+        if not os.path.isdir(init_dir):
+            os.mkdir(init_dir)
+        os.chdir(init_dir)
+
+        for m in init_model_list:
+            if m.generates_network:
+                gnm_name = '%s_gen_net' % m.name
+                m.save(gnm_name, gen_only=True)
+                gn_cmd = "%s %s.bngl" % (self.config.config['bng_command'], gnm_name)
+                try:
+                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8')
+                except CalledProcessError as c:
+                    logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                    logging.debug(c.stdout)
+
+                    raise c
+                logging.info(res.stdout)
+                final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
+            else:
+                final_model_list.append(m)
+        os.chdir(home_dir)
+        return final_model_list
 
     def start_run(self):
         """

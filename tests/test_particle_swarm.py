@@ -1,8 +1,8 @@
 from .context import data, algorithms, pset, objective, config, parse
-import numpy as np
 import numpy.testing as npt
-from os import environ, mkdir
+from os import mkdir, path
 from shutil import rmtree
+from copy import deepcopy
 
 
 class TestParticleSwarm:
@@ -46,7 +46,7 @@ class TestParticleSwarm:
                       ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
-                      'bng_command': 'For this test you don''t need this.', 'fit_type': 'pso'})
+                      'fit_type': 'pso', 'output_dir': 'test_pso'})
         mkdir('test_pswarm_output')
         mkdir('test_pswarm_output/Simulations')
         mkdir('test_pswarm_output/Results')
@@ -56,7 +56,7 @@ class TestParticleSwarm:
                            ('lognormrandom_var', 'v3'): [0, 1],
                            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-                           'bng_command': 'For this test you don''t need this.', 'fit_type': 'pso'})
+                           'fit_type': 'pso', 'output_dir': 'test_pso2'})
 
         cls.config_path = 'bngl_files/parabola.conf'
 
@@ -64,15 +64,21 @@ class TestParticleSwarm:
             {'population_size': 10, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'bng_command': 'For this test you don''t need this.',
-            'initialization': 'lh', 'fit_type': 'pso',})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': 'test_pso_lh',
+            'initialization': 'lh', 'fit_type': 'pso'})
 
     @classmethod
     def teardown_class(cls):
         rmtree('test_pswarm_output')
+        if path.isdir('test_pso_lh'):
+            rmtree('test_pso_lh')
+        if path.isdir('test_pso2'):
+            rmtree('test_pso2')
+        if path.isdir('test_pso'):
+            rmtree('test_pso')
 
     def test_random_pset(self):
-        ps = algorithms.ParticleSwarm(self.config2)
+        ps = algorithms.ParticleSwarm(deepcopy(self.config2))
         params = ps.random_pset()
         # Necessary but not sufficient check that this is working correctly.
         assert params['v1'] in [17., 42., 3.14]
@@ -89,6 +95,8 @@ class TestParticleSwarm:
         npt.assert_almost_equal(ps2.add(self.params, 'v3', 2.), 10.)
         npt.assert_almost_equal(ps2.add(self.params, 'v2', 30.), 1e5)
         npt.assert_almost_equal(ps2.add(self.params, 'v3', 30.), 1e29)
+        rmtree('test_pso2')
+        rmtree('test_pso')
 
     def test_diff(self):
         ps = algorithms.ParticleSwarm(self.config)
@@ -96,7 +104,8 @@ class TestParticleSwarm:
         ps2 = algorithms.ParticleSwarm(self.config2)
         npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v2'), -1.)
         npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v3'), -1.)
-
+        rmtree('test_pso2')
+        rmtree('test_pso')
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
@@ -131,7 +140,6 @@ class TestParticleSwarm:
     def test_full(self):
         conf_dict = parse.load_config(self.config_path)
         myconfig = config.Configuration(conf_dict)
-        myconfig.config['bng_command'] = environ['BNGPATH'] + '/BNG2.pl'
         ps = algorithms.ParticleSwarm(myconfig)
         ps.run()
         # print(ps.global_best)

@@ -1,0 +1,48 @@
+# Created by BioNetGen 2.3.1
+begin parameters
+    1 f              1  # Constant
+    2 NA             6.02214e23  # Constant
+    3 T              60  # Constant
+    4 Vchannel       500e-9  # Constant
+    5 Nchannel       1000  # Constant
+    6 Vecf           f*(Vchannel/Nchannel)  # ConstantExpression
+    7 Vcyt           f*3e-12  # ConstantExpression
+    8 Ag_conc1       10e-9  # Constant
+    9 Ag_tot_1       Ag_conc1*(NA*Vecf)  # ConstantExpression
+   10 R_tot          f*3e5  # ConstantExpression
+   11 kon            (1e7*T)/(NA*Vecf)  # ConstantExpression
+   12 koff           0.1  # Constant
+   13 kase           1  # Constant
+   14 pase           1  # Constant
+   15 H_tot          1e6  # Constant
+   16 kdegran        (6e4*T)/(NA*Vcyt)  # ConstantExpression
+end parameters
+begin species
+    1 Ag(DNP) Ag_tot_1
+    2 R(IgE,Yb~0) R_tot
+    3 H(loc~in) H_tot
+    4 Ag(DNP!1).R(IgE!1,Yb~0) 0
+    5 Ag(DNP!1).R(IgE!1,Yb~P) 0
+    6 R(IgE,Yb~P) 0
+    7 H(loc~out) 0
+end species
+begin reactions
+    1 1,2 4 kon #_R1
+    2 4 1,2 koff #_reverse__R1
+    3 4 5 kase #_R2
+    4 5 1,6 koff #_reverse__R1
+    5 5 4 pase #_R3
+    6 3,5 5,7 kdegran #_R4
+    7 1,6 5 kon #_R1
+    8 6 2 pase #_R3
+    9 3,6 6,7 kdegran #_R4
+end reactions
+begin groups
+    1 Ag_total             1,4,5
+    2 Ag_free              1
+    3 R_bound              4,5
+    4 R_free               2,6
+    5 RP                   5,6
+    6 R0                   2,4
+    7 degranulation        7
+end groups

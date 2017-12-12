@@ -1,5 +1,7 @@
 from .context import data, algorithms, pset, objective, config
 
+import shutil
+
 
 class TestDiffEvolution:
     def __init__(self):
@@ -46,11 +48,11 @@ class TestDiffEvolution:
             ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'output_dir': 'test_init'})
 
     @classmethod
     def teardown_class(cls):
-        pass
+        shutil.rmtree('test_init')
 
     def test_start(self):
         de = algorithms.DifferentialEvolution(self.config)
