@@ -90,7 +90,7 @@ class TestBayes:
                 kept += 1
             if pp in next_params:
                 replaced += 1
-        print(kept, replaced)
+        # print(kept, replaced)
         # If accept is correctly 50%, these should pass with probability 1 - 4e-05
         assert 2 <= replaced <= 18
         assert 2 <= kept <= 18

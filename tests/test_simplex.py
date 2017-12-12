@@ -45,8 +45,7 @@ class TestSimplex:
             'simplex_reflection': 1., 'simplex_expansion': 1., 'simplex_contraction': 0.5, 'simplex_shrink': 0.5,
             ('var', 'v1'): [2.], ('var', 'v2'): [3.], ('var', 'v3'): [4.],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
         # cls.config.config['simplex_start_point'] = pset.PSet({'v1': 2., 'v2': 3., 'v3': 4.})
 
@@ -55,8 +54,7 @@ class TestSimplex:
             'simplex_reflection': 1., 'simplex_expansion': 1., 'simplex_contraction': 0.5, 'simplex_shrink': 0.5,
             ('logvar', 'v1'): [2.], ('logvar', 'v2'): [3.], ('logvar', 'v3'): [4.],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
-            'bng_command': 'For this test you don''t need this.'})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
         # cls.logconfig.config['simplex_start_point'] = pset.PSet({'v1': 10.**2., 'v2': 10.**3., 'v3': 10.**4.})
 
