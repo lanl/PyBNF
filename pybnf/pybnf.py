@@ -13,7 +13,7 @@ __version__ = "0.1"
 
 def main():
     log_format = "%(levelname)s\t%(message)s"
-    logging.basicConfig(format=log_format, level=logging.INFO)
+    logging.basicConfig(format=log_format, level=logging.DEBUG)
             
     logging.info("PyBNF v%s" % __version__)
     
@@ -32,8 +32,10 @@ def main():
         alg = algs.DifferentialEvolution(config)
     elif conf_dict['fit_type'] == 'ss':
         alg = algs.ScatterSearch(config)
+    elif conf_dict['fit_type'] == 'bmc':
+        alg = algs.BayesAlgorithm(config)
     else:
-        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss' % conf_dict['fit_type'])
+        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc' % conf_dict['fit_type'])
 
     # Create output folders, checking for overwrites.
     if os.path.exists(config.config['output_dir']):

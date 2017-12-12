@@ -175,6 +175,8 @@ class Algorithm(object):
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
+            elif v[1] == 'normrandom_var':
+                self.variable_space[v[0]] = ('regular', 0., np.inf)
             elif v[1] == 'lognormrandom_var':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
             elif v[1] == 'loguniform_var':
@@ -229,6 +231,8 @@ class Algorithm(object):
         for (name, type, val1, val2) in self.config.variables_specs:
             if type == 'random_var':
                 param_dict[name] = np.random.uniform(val1, val2)
+            elif type == 'normrandom_var':
+                param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
             elif type == 'loguniform_var':
                 param_dict[name] = 10.**np.random.uniform(np.log10(val1), np.log10(val2))
             elif type == 'lognormrandom_var':
@@ -250,7 +254,7 @@ class Algorithm(object):
         """
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         num_uniform_vars = len([x for x in self.config.variables_specs
-                               if x[1] == 'random_var' or x[1] == 'lognormrandom_var'])
+                               if x[1] == 'random_var' or x[1] == 'loguniform_var'])
         rands = latin_hypercube(n, num_uniform_vars)
         psets = []
         for row in rands:
@@ -267,6 +271,8 @@ class Algorithm(object):
                     rowindex += 1
                 elif type == 'lognormrandom_var':
                     param_dict[name] = 10. ** np.random.normal(val1, val2)
+                elif type == 'normrandom_var':
+                    param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
                 elif type == 'static_list_var':
                     param_dict[name] = np.random.choice(val1)
                 else:
@@ -1010,6 +1016,272 @@ class ScatterSearch(Algorithm):
             return paramset[param]
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
+
+
+class BayesAlgorithm(Algorithm):
+
+    """
+    Implements a Bayesian Markov chain Monte Carlo simulation.
+
+    This is essentially a non-parallel algorithm, but here, we run n instances in parallel, and pool all results.
+    This will give you a best fit (which is maybe not great), but more importantly, generates an extra result file
+    that gives the probability distribution of each variable.
+    This distribution depends on the prior, which is specified according to the variable initialization rules.
+
+    """
+
+    def __init__(self, config): #expdata, objective, priorfile, gamma=0.1):
+        super(BayesAlgorithm, self).__init__(config)
+        self.step_size = config.config['step_size']
+        self.num_parallel = config.config['population_size']
+        self.max_iterations = config.config['max_iterations']
+        self.burn_in = config.config['burn_in'] # todo: 'auto' option
+        self.sample_every = config.config['sample_every']
+        self.output_hist_every = config.config['output_hist_every']
+        # A list of the % credible intervals to save, eg [68. 95]
+        self.credible_intervals = config.config['credible_intervals']
+        self.num_bins = config.config['hist_bins']
+
+        self.prior = None
+        self.load_priors()
+
+        self.current_pset = None # List of n PSets corresponding to the n independent runs
+        self.ln_current_P = None # List of n probabilities of those n PSets.
+        self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
+
+        self.samples_file = None # Initialize later.
+
+    def load_priors(self):
+        """Builds the data structures for the priors, based on the variables specified in the config."""
+        self.prior = dict()  # {variable: ('n', mean, sigma), variable2: ('b', min, max)}
+        # n for normally distributed priors, b for box priors (which are weird, but should be allowed)
+        for (name, type, val1, val2) in self.config.variables_specs:
+            if type in ('lognormrandom_var', 'normrandom_var'):
+                self.prior[name] = ('n', val1, val2)
+            elif type in ('random_var', 'loguniform_var'):
+                self.prior[name] = ('b', val1, val2)
+            elif type in ('loguniform_var'):
+                self.prior[name] = ('b', np.log10(val1), np.log10(val2))
+            else:
+                raise NotImplementedError('Bayesian MCMC cannot handle variable type %s' % type)
+
+
+    def start_run(self):
+        """
+        Called by the scheduler at the start of a fitting run.
+        Must return a list of PSets that the scheduler should run.
+
+        :return: list of PSets
+        """
+        # Set up the output files
+        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
+        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+        with open(self.samples_file, 'w') as f:
+            f.write('# Name\tLn_probability\t')
+            for v in self.variables:
+                f.write(v + '\t')
+            f.write('\n')
+        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+
+
+        if self.config.config['initialization'] == 'lh':
+            first_pset = self.random_latin_hypercube_psets(self.num_parallel)
+        else:
+            first_pset = [self.random_pset() for i in range(self.num_parallel)]
+
+        self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
+        self.current_pset = [None]*self.num_parallel
+        for i in range(len(first_pset)):
+            first_pset[i].name = 'iter0run%i' % i
+
+        return first_pset
+
+    def got_result(self, res):
+        """
+        Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
+        data
+
+        :param res: PSet that was run in this simulation
+        :type res: Result
+        :return: List of PSet(s) to be run next.
+        """
+
+        pset = res.pset
+        score = res.score
+
+        # Figure out which parallel run this is from based on the .name field.
+        m = re.search('(?<=run)\d+',pset.name)
+        index = int(m.group(0))
+
+        # Calculate the acceptance probability
+        lnprior = self.ln_prior(pset) # Need something clever for box constraints
+        lnlikelihood = -score
+        # lnlikelihood = -self.objective.evaluate_multiple(simdata, self.exp_data)
+
+        # Because the P's are so small to start, we express posterior, p_accept, and current_P in ln space
+        lnposterior = lnprior + lnlikelihood
+
+        ln_p_accept = lnposterior - self.ln_current_P[index]
+        # print("lnprior:"+str(lnprior))
+        # print("lnlikelihood:" + str(lnlikelihood))
+        # print("lnposterior:" + str(lnposterior))
+        # print("current_P" + str(self.current_P))
+        # print("ln_p_accept:"+str(ln_p_accept))
+
+        # Decide whether to accept move.
+
+        if np.random.rand() < np.exp(ln_p_accept) or np.isnan(self.ln_current_P[index]):
+            # Accept the move, so update our current PSet and P
+            self.current_pset[index] = pset
+            self.ln_current_P[index] = lnposterior
+
+        # Record the current PSet (clarification: what if failed? Sample old again?)
+
+        # Using either the newly accepted PSet or the old PSet, propose the next PSet.
+        proposed_pset = None
+        # This part is a loop in case a box constraint makes a move automatically rejected.
+        loop_count = 0
+        while proposed_pset is None:
+            loop_count += 1
+            if loop_count == 20:
+                logging.warning('One of your samples is stuck at the same point for 20+ iterations because it keeps '
+                                'hitting box constraints. Consider using looser box constraints or a smaller '
+                                'step_size.')
+            if loop_count == 1000:
+                logging.error('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
+                              'because it kept hitting box constraints. Consider using looser box constraints or a '
+                              'smaller step_size.' % index)
+                self.iteration[index] = self.max_iterations
+
+            proposed_pset = self.choose_new_pset(self.current_pset[index])
+            self.iteration[index] += 1
+            # Check if it's time to do various things
+            if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
+                self.sample_pset(self.current_pset[index], lnposterior)
+            if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
+               and self.iteration[index] == min(self.iteration)):
+                self.update_histograms('_%i' % self.iteration[index])
+            if (self.iteration[index] % self.config.config['output_every'] == 0
+               and self.iteration[index] == min(self.iteration)):
+                self.output_results()
+                logging.info('Completed %i iterations' % self.iteration[index])
+            if self.iteration[index] >= self.max_iterations:
+                logging.info('Instance %i finished' % index)
+                if self.iteration[index] == min(self.iteration):
+                    self.update_histograms('_final')
+                    return 'STOP'
+                else:
+                    # Others of the parallel runs are still going.
+                    # Should *not* stop until they are all done, or we bias the distribution for fast-running simulations.
+                    return []
+
+        proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
+
+        return [proposed_pset]
+
+    def choose_new_pset(self, oldpset):
+        """
+        Helper function to perturb the old PSet, generating a new proposed PSet
+        If the new PSet fails automatically because it violates box constraints, returns None.
+
+        :param oldpset: The PSet to be changed
+        :type oldpset: PSet
+        :return: the new PSet
+        """
+
+        keys = oldpset.keys()
+        delta_vector = {k: np.random.normal() for k in keys}
+        delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
+        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in keys}
+        new_dict = dict()
+        for k in keys:
+            # For box constraints, need special treatment to keep correct statistics
+            # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
+            # and retry.
+            # The same could happen if normrandom_var's try to go below 0
+            new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
+            if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
+                logging.debug('Rejected a move because %s moved outside the box constraint' % k)
+                return None
+
+        return PSet(new_dict)
+
+    def ln_prior(self, pset):
+        """
+        Returns the value of the prior distribution for the given parameter set
+
+        :param pset:
+        :type pset: PSet
+        :return: float value of ln times the prior distribution
+        """
+        total = 0.
+        for v in self.prior:
+            (typ, x1, x2) = self.prior[v]
+            if typ == 'n':
+                # Normal with mean x1 and value x2
+                total += -1. / (2. * x2 ** 2.) * (x1 - pset[v])**2.
+            else:
+                # Uniform from x1 to x2
+                if x1 <= pset[v] <= x2:
+                    total += -np.log(x2-x1)
+                else:
+                    logging.warning('Box-constrained parameter %s reached a value outside the box.')
+                    total += -np.inf
+        return total
+
+    def sample_pset(self, pset, ln_prob):
+        """
+        Adds this pset to the set of sampled psets for the final distribution.
+        :param pset:
+        :type pset: PSet
+        :param ln_prob - The probability of this PSet to record in the samples file.
+        :type ln_prob: float
+        """
+        with open(self.samples_file, 'a') as f:
+            f.write(pset.name+'\t'+str(ln_prob)+'\t')
+            for v in self.variables:
+                f.write('%f\t' % pset[v])
+            f.write('\n')
+
+    def update_histograms(self, file_ext):
+        """
+        Updates the files that contain histogram points for each variable
+        :param file_ext: String to append to the save file names
+        :type file_ext: str
+        :return:
+        """
+        # Read the samples file into an array, ignoring the first row (header)
+        # and first 2 columns (pset names, probabilities)
+        dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
+                                  usecols=range(2, len(self.variables)+2))
+
+        # Open the file(s) to save the credible intervals
+        cred_files = []
+        for i in self.credible_intervals:
+            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
+            f.write('# param\tlower_bound\tupper_bound\n')
+            cred_files.append(f)
+
+        for i in range(len(self.variables)):
+            v = self.variables[i]
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            # For log-space variables, we want the histogram in log space
+            if self.variable_space[v][0] == 'log':
+                histdata = np.log10(dat_array[:, i])
+                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
+            else:
+                histdata = dat_array[:, i]
+                header = 'lower_bound\tupper_bound\tcount'
+            hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
+            result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
+            np.savetxt(fname, result_array, delimiter='\t', header=header)
+
+            sorted_data = sorted(dat_array[:, i])
+            for interval, file in zip(self.credible_intervals, cred_files):
+                min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
+                max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
+                file.write('%s\t%f\t%f\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+
 
 
 def latin_hypercube(nsamples, ndims):
