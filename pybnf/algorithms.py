@@ -45,9 +45,19 @@ class Result(object):
         self.score = None  # To be set later when the Result is scored.
 
 
-class FailedSimulation(object):
-    def __init__(self, i):
-        self.id = i
+class FailedSimulation(Result):
+    def __init__(self, paramset, name, fail_type):
+        """
+        Instantiates a FailedSimulation
+
+        :param paramset:
+        :param log:
+        :param name:
+        :param fail_type: 0 - Exceeded walltime, 1 - Other crash
+        :type fail_type: int
+        """
+        super(FailedSimulation, self).__init__(paramset, None, None, name)
+        self.fail_type = fail_type
 
 
 class Job:
@@ -113,9 +123,9 @@ class Job:
             simdata = self.load_simdata()
             res = Result(self.params, simdata, log, self.job_id)
         except CalledProcessError:
-            res = FailedSimulation(self.job_id)
+            res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
-            res = FailedSimulation(self.job_id)
+            res = FailedSimulation(self.params, self.job_id, 0)
         finally:
             os.chdir(self.home_dir)
 

@@ -1,12 +1,16 @@
 from .context import algorithms
 from .context import data
 from .context import pset
+from .context import config
 from os import chdir
 from os import mkdir
 from os import environ
 from os.path import isfile
 from os.path import isdir
 from shutil import rmtree
+
+
+import numpy as np
 
 
 class TestJob(object):
@@ -29,6 +33,7 @@ class TestJob(object):
 
     @classmethod
     def teardown_class(cls):
+        rmtree('bnf_out')
         rmtree('sim_net')
         rmtree('sim_x')
         rmtree('sim_1')
@@ -74,3 +79,11 @@ class TestJob(object):
     def test_timeout(self):
         res = self.job_to.run_simulation()
         assert isinstance(res, algorithms.FailedSimulation)
+
+    def test_add_failedsimulation(self):
+        a = algorithms.Algorithm(config.Configuration({"models": {"bngl_files/parabola.bngl"}, 'exp_data':{'bngl_files/par1.exp'},
+                      'bngl_files/parabola.bngl':['bngl_files/par1.exp']}))
+        res = self.job_to.run_simulation()
+        assert res.fail_type == 0
+        a.add_to_trajectory(res)
+        assert next(iter(a.trajectory.trajectory.values())) == np.inf

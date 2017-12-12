@@ -25,11 +25,14 @@ class ObjectiveFunction(object):
         # Dictionary mapping suffix strings to experimental Data objects
         # exp_data_dict = self.conf.exp_data
 
-        for model in sim_data_dict:
-            for suffix in sim_data_dict[model]:
-                total += self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+        if not sim_data_dict:
+            return np.inf
+        else:
+            for model in sim_data_dict:
+                for suffix in sim_data_dict[model]:
+                    total += self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
 
-        return total
+            return total
 
     def evaluate(self, sim_data, exp_data):
         """
