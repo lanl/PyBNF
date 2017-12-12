@@ -34,8 +34,10 @@ def main():
         alg = algs.ScatterSearch(config)
     elif conf_dict['fit_type'] == 'bmc':
         alg = algs.BayesAlgorithm(config)
+    elif conf_dict['fit_type'] == 'sim':
+        alg = algs.SimplexAlgorithm(config)
     else:
-        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc' % conf_dict['fit_type'])
+        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
     # Create output folders, checking for overwrites.
     if os.path.exists(config.config['output_dir']):
@@ -66,3 +68,14 @@ def main():
 
     # Run the algorithm!
     alg.run()
+
+    if config.config['refine'] == 1:
+        if config.config['fit_type'] == 'sim':
+            logging.warning("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
+                            "\nSkipping refine.")
+        else:
+            logging.info("Refining the best fit by the Simplex algorithm")
+            config.config['simplex_start_point'] = alg.trajectory.best_fit()
+            simplex = algs.SimplexAlgorithm(config)
+            simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+            simplex.run()

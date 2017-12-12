@@ -3,7 +3,7 @@ import numpy as np
 import re
 import copy
 import warnings
-
+import logging
 
 class Model(object):
     """

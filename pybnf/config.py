@@ -55,8 +55,8 @@ class Configuration(object):
             bng_command = ''
 
         default = {
-            'objfunc': 'chi_sq', 'output_dir': '.', 'delete_old_files': 0, 'num_to_output': 1000000, 'output_every': 20,
-            'initialization': 'lh',
+            'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
+            'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command,
 
             'mutation_rate': 0.5, 'mutation_factor': 1.0, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,
@@ -69,8 +69,8 @@ class Configuration(object):
             'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 10000, 'hist_bins': 10,
             'credible_intervals': [68., 95.],
 
-            'bng_command': bng_command,
-            'output_dir': 'bnf_out'
+            'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
+            'simplex_shrink': 0.5
         }
         return default
 
@@ -87,10 +87,13 @@ class Configuration(object):
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
                         'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
-                                'credible_intervals'}}
+                                'credible_intervals'},
+                        'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
+                                'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations'}}
         ignored_params = set()
         for alg in alg_specific:
-            if conf_dict['fit_type'] != alg:
+            if (conf_dict['fit_type'] != alg
+               and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)):
                 ignored_params = ignored_params.union(alg_specific[alg])
         for k in ignored_params.intersection(set(conf_dict.keys())):
             logging.warning('Configuration key %s is not used in fit_type %s, so I am ignoring it'
@@ -150,15 +153,38 @@ class Configuration(object):
          variables_specs is a list of 4-tuples (variable_name, variable_type, min_value, max_value).
          For static_list_var variables, variables_specs instead takes the form (variable_name, static_list_var,
          [list of possible values], None)
+         For var and logvar variables (for Simplex algorithm), variables_specs takes the form (variable_name,
+         variable_type, init_value, init_step) where init_step may be read from the global setting.
         """
         variables = []
         variables_specs = []
         for k in self.config.keys():
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
+                    if self.config['fit_type'] == 'sim' and k[0] not in ('var', 'logvar'):
+                        logging.error("You've specified the Simplex algorithm (fit_type = sim)\n "
+                                      "but defined variable %s with the %s keyword.\n"
+                                      "For Simplex, you must instead define a single initial value for each variable\n"
+                                      "using the var or logvar keyword (e.g. var=%s 42 )" % (k[1], k[0], k[1]))
+                        exit(1)
+                    if self.config['fit_type'] != 'sim' and k[0] in ('var', 'logvar'):
+                        logging.error("You've specified variable %s with keyword %s, but that keyword is \n"
+                                      "only to be used with the Simplex algorithm (fit_type = sim)\n"
+                                      "Valid keywords for other algorithms are: random_var, normrandom_var, \n"
+                                      "lognormrandom_var, loguniform_var." % (k[1], k[0]))
+                        exit(1)
                     variables.append(k[1])
                     if k[0] == 'static_list_var':
                         variables_specs.append((k[1], k[0], self.config[k], None))
+                    elif k[0] in ('var', 'logvar'):
+                        # 2nd number (step size) may be absent, must fill in appropriately
+                        if len(self.config[k]) >= 2:
+                            stepsize = self.config[k][1] # easy, it was right there
+                        elif k[0] == 'logvar' and 'simplex_log_step' in k:
+                            stepsize = self.config['simplex_log_step']  # This one is preferred if it's there
+                        else:
+                            stepsize = self.config['simplex_step']  # This is always there because it had a default set
+                        variables_specs.append((k[1], k[0], self.config[k][0], stepsize))
                     else:
                         variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
         return variables, variables_specs

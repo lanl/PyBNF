@@ -179,9 +179,9 @@ class Algorithm(object):
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normrandom_var':
+            elif v[1] == 'normrandom_var' or v[1]=='var':
                 self.variable_space[v[0]] = ('regular', 0., np.inf)
-            elif v[1] == 'lognormrandom_var':
+            elif v[1] == 'lognormrandom_var' or v[1] == 'logvar':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
             elif v[1] == 'loguniform_var':
                 self.variable_space[v[0]] = ('log', v[2], v[3])
@@ -1320,6 +1320,308 @@ class BayesAlgorithm(Algorithm):
                 min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
                 max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
                 file.write('%s\t%f\t%f\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+
+
+class SimplexAlgorithm(Algorithm):
+
+    """
+    Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
+    Computational Economics
+
+    """
+
+    def __init__(self, config):
+        super(SimplexAlgorithm, self).__init__(config)
+        if 'simplex_start_point' not in config.config:
+            # We need to set up the initial point ourselfs
+            self._parse_start_point()
+        if 'simplex_max_iterations' in config.config:
+            self.max_iterations = config.config['simplex_max_iterations']
+        else:
+            self.max_iterations = config.config['max_iterations']
+        self.start_point = config.config['simplex_start_point']
+        self.start_steps = {v[0]: v[3] for v in config.variables_specs}
+        self.parallel_count = min(config.config['population_size'], len(self.variables))
+        self.iteration = 0
+        self.alpha = config.config['simplex_reflection']
+        self.gamma = config.config['simplex_expansion']
+        self.beta = config.config['simplex_contraction']
+        self.tau = config.config['simplex_shrink']
+
+        self.simplex = []  # (score, PSet) points making up the simplex. Sorted after each iteration.
+
+        # Data structures to keep track of the progress of one iteration.
+        # In these, index 0 corresponds to the process from the worst point on the simplex, simplex[-1], index 1 to
+        # simplex[-2], etc.
+        self.stages = []  # Which stage of the iteration am I on? -1 initialization; 1 running first point; 2 running
+        # second point; 3 done
+        self.first_points = []  # Store (score, PSet) after the first run of the iteration completes
+        self.second_points = []  # Store (score, PSet) after the second run completes, if applicable
+        self.cases = []  # Which case number triggered after I got the score for the first point? (1, 2 or 3)
+        self.centroids = []  # Contains dicts containing the centroid of all simplex points except the one that I am
+        # working with
+        self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
+
+    def _parse_start_point(self):
+        """
+        Called when the start point is not passed in the config (which is when we're doing a pure simplex run,
+        as opposed to a refinement at the end of the run)
+        Parses the info out of the variable specs, and sets the appropriate PSet into the config.
+        """
+        start_dict = dict()
+        for vinfo in self.config.variables_specs:
+            if vinfo[1] == 'var':
+                start_dict[vinfo[0]] = vinfo[2]
+            elif vinfo[1] == 'logvar':
+                start_dict[vinfo[0]] = 10.**vinfo[2]
+            else:
+                raise RuntimeError('Internal error in SimplexAlgorithm: Encountered variable type %s while trying'
+                                   'to parse start point' % vinfo[1])
+        start_pset = PSet(start_dict)
+        self.config.config['simplex_start_point'] = start_pset
+
+
+
+    def start_run(self):
+
+        # Generate the initial  num_variables+1 points in the simplex by moving parameters, one at a time, by the
+        # specified step size
+        self.start_point.name = 'simplex_init0'
+        init_psets = [self.start_point]
+        self.pending[self.start_point.name] = 0
+        i = 1
+        for v in self.start_point.keys():
+            new_dict = dict()
+            for p in self.start_point.keys():
+                if p == v:
+                    new_dict[p] = self.add(self.start_point, p, self.start_steps[p])
+                else:
+                    new_dict[p] = self.start_point[p]
+            new_pset = PSet(new_dict)
+            new_pset.name = 'simplex_init%i' % i
+            self.pending[new_pset.name] = i
+            i += 1
+            init_psets.append(new_pset)
+        self.simplex = [None]*len(init_psets)
+        self.stages = [-1]*len(init_psets)
+        return init_psets
+
+    def got_result(self, res):
+
+        pset = res.pset
+        score = res.score
+        index = self.pending.pop(pset.name)
+
+        if self.stages[index] == -1:
+            # Point is part of initialization
+            self.simplex[index] = (score, pset)
+            self.stages[index] = 3
+        elif self.stages[index] == 2:
+            # Point is the 2nd point run within one iteration
+            self.second_points[index] = (score, pset)
+            self.stages[index] = 3
+        elif self.stages[index] == 1:
+            # Point is the 1st point run within one iteration
+            # We do the case-wise breakdown to pick the 2nd point, if any.
+            self.first_points[index] = (score, pset)
+            if score < self.simplex[0][0]:
+                # Case 1: The point is better than the current global min.
+                # We calculate the expansion point
+                self.cases[index] = 1
+                new_dict = dict()
+                for v in pset.keys():
+                    # new_dict[v] = pset[v] + self.gamma * (pset[v] - self.centroids[index][v])
+                    new_dict[v] = self.a_plus_b_times_c_minus_d(pset[v], self.gamma, pset[v], self.centroids[index][v],
+                                                                v)
+                new_pset = PSet(new_dict)
+                new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
+                self.pending[new_pset.name] = index
+                self.stages[index] = 2
+                return [new_pset]
+            elif score < self.simplex[-index-2][0]:
+                # Case 2: The point is worse than the current min, but better than the next worst point
+                # Note that simplex[-index-1] is the point that this one was built from, so we check [-index-2]
+                # We don't run a second point in this case.
+                self.cases[index] = 2
+                self.stages[index] = 3
+                if min(self.stages) < 3:
+                    return []
+                # Otherwise have to jump to next iteration, below.
+            else:
+                # Case 3: The point is not better than the next worst point.
+                # We calculate the contraction point
+                self.cases[index] = 3
+                # Work off the original or the reflection, whichever is better
+                if score < self.simplex[-index-1][0]:
+                    a_hat = pset
+                else:
+                    a_hat = self.simplex[-index-1][1]
+                new_dict = dict()
+                for v in a_hat.keys():
+                    # I think the equation for this in Lee et al p. 178 is wrong; I am instead using the analog to the
+                    # equation on p. 176
+                    # new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])
+                    new_dict[v] = self.a_plus_b_times_c_minus_d(self.centroids[index][v], self.beta, a_hat[v],
+                                                                self.centroids[index][v], v)
+                new_pset = PSet(new_dict)
+                new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
+                self.pending[new_pset.name] = index
+                self.stages[index] = 2
+                return [new_pset]
+        else:
+            raise RuntimeError('Internal error in SimplexAlgorithm')
+
+        if min(self.stages) == 3:
+            # All points in current iteration completed
+            self.iteration += 1
+            if self.iteration % self.config.config['output_every'] == 0:
+                self.output_results()
+
+            # If not an initialization iteration, update the simplex based on all the results
+            if len(self.first_points) > 0:
+                productive = False
+                for i in range(len(self.first_points)):
+                    si = -i-1  # Index into the simplex
+                    if self.cases[i] == 1:
+                        productive = True
+                        if self.first_points[i][0] < self.second_points[i][0]:
+                            self.simplex[si] = self.first_points[i]
+                        else:
+                            self.simplex[si] = self.second_points[i]
+                    elif self.cases[i] == 2:
+                        productive = True
+                        self.simplex[si] = self.first_points[i]
+                    elif self.cases[i] == 3:
+                        if (self.second_points[i][0] < self.first_points[i][0]
+                           and self.second_points[i][0] < self.simplex[si][0]):
+                            productive = True
+                            self.simplex[si] = self.second_points[i]
+                        elif self.first_points[i][0] < self.simplex[si][0]:
+                            self.simplex[si] = self.first_points[i]
+                        # else don't edit the simplex, neither is an improvement
+                    else:
+                        raise RuntimeError('Internal error in SimplexAlgorithm')
+
+                if self.iteration == self.max_iterations:
+                    return 'STOP'  # Quit after the final simplex update
+
+                if not productive:
+                    # None of the points in the last iteration improved the simplex.
+                    # Now we have to contract the simplex
+                    self.simplex = sorted(self.simplex, key=lambda x: x[0])
+                    new_simplex = []
+                    for i in range(1, len(self.simplex)):
+                        new_dict = dict()
+                        for v in self.simplex[i][1].keys():
+                            # new_dict[v] = self.tau * self.simplex[i-1][1][v] + (1 - self.tau) * self.simplex[i][1][v]
+                            new_dict[v] = self.ab_plus_cd(self.tau, self.simplex[i-1][1][v], 1 - self.tau,
+                                                          self.simplex[i][1][v], v)
+                        new_pset = PSet(new_dict)
+                        new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, i)
+                        self.pending[new_pset.name] = i - 1
+                        new_simplex.append(new_pset)
+
+                    # Prepare for new reinitialization run
+                    # We don't need to rescore simplex[0], but the rest of the PSets are new and we do.
+                    self.stages = [-1] * len(new_simplex)
+                    self.first_points = []
+                    self.second_points = []
+                    self.simplex = [self.simplex[0]] + ([None] * len(new_simplex))
+                    return new_simplex
+
+            ###
+            # Set up the next iteration
+            # Re-sort the simplex based on the updated objectives
+            self.simplex = sorted(self.simplex, key=lambda x: x[0])
+            if self.iteration == self.max_iterations:
+                return 'STOP' # Extra catch if finish on a rebuild the simplex iteration
+            # Find the reflection point for the n worst points
+            reflections = []
+            self.centroids = []
+            # Sum of each param value, to help take the reflections
+            sums = self.get_sums() # Returns in log space for log variables
+            for ai in range(self.parallel_count):
+                a = self.simplex[-ai-1][1]
+                new_dict = dict()
+                this_centroid = dict()
+                for v in a.keys():
+                    if self.variable_space[v][0] == 'log':
+                        # Calc centroid in regular space.
+                        centroid = 10. ** ((sums[v] - np.log10(a[v])) / (len(self.simplex) - 1))
+                    else:
+                        centroid = (sums[v] - a[v]) / (len(self.simplex) - 1)
+                    this_centroid[v] = centroid
+                    # new_dict[v] = centroid + self.alpha * (centroid - a[v])
+                    new_dict[v] = self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v], v)
+                self.centroids.append(this_centroid)
+                new_pset = PSet(new_dict)
+                new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, ai)
+                reflections.append(new_pset)
+                self.pending[new_pset.name] = ai
+
+            # Reset data structures to track this iteration
+            self.stages = [1] * len(reflections)
+            self.first_points = [None] * len(reflections)
+            self.second_points = [None] * len(reflections)
+            self.cases = [None] * len(reflections)
+
+            return reflections
+        else:
+            # Wait for the rest of the parallel jobs to finish this iteration
+            return []
+
+    def get_sums(self):
+        """
+        Simplex helper function
+        Returns a dict mapping parameter name p to the sum of the parameter value over the entire current simplex
+        :return: dict
+        """
+        # return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}
+        sums = dict()
+        for p in self.simplex[0][1].keys():
+            if self.variable_space[p][0] == 'regular':
+                sums[p] = sum(point[1][p] for point in self.simplex)
+            else:
+                sums[p] = sum(np.log10(point[1][p]) for point in self.simplex)
+        return sums
+
+    def a_plus_b_times_c_minus_d(self, a, b, c, d, v):
+        """
+        Performs the calculation a + b*(c-d), where a, c, and d are assumed to be in log space if v is in log space,
+        and the final result respects the box constraints on v.
+
+        :param a:
+        :param b:
+        :param c:
+        :param d:
+        :param v:
+        :return:
+        """
+
+        if self.variable_space[v][0] == 'log':
+            result = 10 ** (np.log10(a) + b*(np.log10(c) - np.log10(d)))
+        else:
+            result = a + b*(c-d)
+        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+
+    def ab_plus_cd(self, a, b, c, d, v):
+        """
+        Performs the calculation ab + cd where b and d are assumed to be in log space if v is in log space,
+        and the final result respects the box constraints on v
+        :param a:
+        :param b:
+        :param c:
+        :param d:
+        :param v:
+        :return:
+        """
+        if self.variable_space[v][0] == 'log':
+            result = 10 ** (a * np.log10(b) + c*np.log10(d))
+        else:
+            result = a * b + c * d
+        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+
+
 
 
 

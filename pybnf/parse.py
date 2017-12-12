@@ -7,12 +7,14 @@ numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_g
                'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations',
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
-               'hist_bins']
+               'hist_bins', 'refine', 'simplex_max_iterations']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
-                 'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size']
+                 'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
+                 'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink']
 multnumkeys = ['credible_intervals']
 var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'normrandom_var', 'static_list_var', 'mutate']
+var_def_keys_1or2nums = ['var', 'logvar']
 
 def parse(s):
     equals = pp.Suppress('=')
@@ -47,6 +49,10 @@ def parse(s):
     varnums = bng_parameter - num - num
     strnumgram = strnumkeys - equals - varnums - comment
 
+    # var and logvar alt grammar (only one number given)
+    varkeys = pp.oneOf(' '.join(var_def_keys_1or2nums), caseless=True)
+    vargram = varkeys - equals - bng_parameter - num - pp.Optional(num) - comment
+
     # static_list_var grammar
     slvkey = pp.oneOf('static_list_var', caseless=True)
     slvgram = slvkey - equals - bng_parameter - pp.OneOrMore(num) - comment
@@ -62,7 +68,7 @@ def parse(s):
     mdmgram = mdmkey - equals - bngl_file - colon - pp.delimitedList(exp_file) - comment
 
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | vargram).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -90,7 +96,7 @@ def ploop(ls):  # parse loop
             l = parse(line)
 
             # Find parameter assignments that reference distinct parameters
-            if l[0] in var_def_keys:
+            if l[0] in var_def_keys or l[0] in var_def_keys_1or2nums:
                 key = (l[0], l[1])
                 values = [float(x) for x in l[2:]]
             elif l[0] in numkeys_int:
