@@ -5,6 +5,7 @@ from distributed import as_completed
 from distributed import Client
 from subprocess import run
 from subprocess import CalledProcessError
+from subprocess import TimeoutExpired
 from subprocess import PIPE
 from subprocess import STDOUT
 
@@ -54,7 +55,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, job_id, bngcommand, output_dir):
+    def __init__(self, models, params, job_id, bngcommand, output_dir, timeout):
         """
         Instantiates a Job
 
@@ -75,6 +76,7 @@ class Job:
         self.bng_program = bngcommand
         self.output_dir = output_dir
         self.home_dir = os.getcwd()
+        self.timeout = timeout
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
@@ -109,17 +111,22 @@ class Job:
             model_files = self._write_models()
             log = self.execute(model_files)
             simdata = self.load_simdata()
-            os.chdir(self.home_dir)
-            return Result(self.params, simdata, log, self.job_id)
+            res = Result(self.params, simdata, log, self.job_id)
         except CalledProcessError:
-            return FailedSimulation(self.job_id)
+            res = FailedSimulation(self.job_id)
+        except TimeoutExpired:
+            res = FailedSimulation(self.job_id)
+        finally:
+            os.chdir(self.home_dir)
+
+        return res
 
     def execute(self, models):
         """Executes model simulations"""
         log = []
         for model in models:
             cmd = '%s %s.bngl' % (self.bng_program, model)
-            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8')
+            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8', timeout=self.timeout)
             log.append(cp.stdout)
         return log
 
@@ -212,12 +219,14 @@ class Algorithm(object):
                 m.save(gnm_name, gen_only=True)
                 gn_cmd = "%s %s.bngl" % (self.config.config['bng_command'], gnm_name)
                 try:
-                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8')
+                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8', timeout=self.config.config['wall_time'])
                 except CalledProcessError as c:
                     logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
                     logging.debug(c.stdout)
-
                     raise c
+                finally:
+                    os.chdir(home_dir)
+
                 logging.info(res.stdout)
                 final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
             else:
@@ -372,7 +381,7 @@ class Algorithm(object):
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
         return Job(self.model_list, params, job_id, self.config.config['bng_command'],
-                   self.config.config['output_dir']+'/Simulations/')
+                   self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time'])
 
     def output_results(self, name=''):
         """
