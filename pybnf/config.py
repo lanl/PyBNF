@@ -70,7 +70,12 @@ class Configuration(object):
             'credible_intervals': [68., 95.],
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
-            'simplex_shrink': 0.5
+            'simplex_shrink': 0.5,
+
+            'bng_command': bng_command,
+            'output_dir': 'bnf_out',
+
+            'wall_time': 3600
         }
         return default
 
