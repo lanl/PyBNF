@@ -432,9 +432,14 @@ class Algorithm(object):
                         (self.config.config['output_dir'], best_name, m, best_name),
                         '%s/Results' % self.config.config['output_dir'])
             for suf in self.config.mapping[m]:
-                shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
-                            (self.config.config['output_dir'], best_name, m, best_name, suf),
-                            '%s/Results' % self.config.config['output_dir'])
+                try:
+                    shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
+                                (self.config.config['output_dir'], best_name, m, best_name, suf),
+                                '%s/Results' % self.config.config['output_dir'])
+                except FileNotFoundError:
+                    logging.error('Best fit gdat file was not found')
+                    print('Could not find your best fit gdat file. This could happen if all of the simulations in your'
+                          '\nrun failed, or if that gdat file was somehow deleted during the run.')
 
         logging.info("Fitting complete!")
 
@@ -973,7 +978,7 @@ class ScatterSearch(Algorithm):
                             if len(self.reserve) > 0:
                                 new_pset = self.reserve.pop()
                             else:
-                                new_pset = PSet({v[0]: np.random.uniform(v[1], v[2]) for v in self.variables}, allow_negative=True)
+                                new_pset = self.random_pset()
                             self.refs[i] = (new_pset, np.inf)  # For simplicity, assume its score is awful
                             self.stuckcounter[new_pset] = 0
 
