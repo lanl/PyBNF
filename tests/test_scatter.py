@@ -1,6 +1,8 @@
-from .context import data, algorithms, pset, objective, config
-
+from .context import data, algorithms, pset, objective, config, parse
+from os import mkdir
 from shutil import rmtree
+from copy import deepcopy
+
 
 class TestScatter:
     def __init__(self):
@@ -47,19 +49,26 @@ class TestScatter:
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
+        cls.config_path = 'bngl_files/parabola.conf'
+        mkdir('test_ss_output')
+        mkdir('test_ss_output/Simulations')
+        mkdir('test_ss_output/Results')
+        mkdir('bnf_out')
+
     @classmethod
     def teardown_class(cls):
         rmtree('bnf_out')
+        rmtree('test_ss_output')
 
     def test_start(self):
-        ss = algorithms.ScatterSearch(self.config)
+        ss = algorithms.ScatterSearch(deepcopy(self.config))
         ss.start_run()
         assert len(ss.refs) == 0
         assert len(ss.pending) == 30
         assert len(ss.reserve) == 20
 
     def test_updates(self):
-        ss = algorithms.ScatterSearch(self.config)
+        ss = algorithms.ScatterSearch(deepcopy(self.config))
         start_params = ss.start_run()
         ss.iteration = 1  # Avoid triggering output on iter 0.
 
@@ -101,3 +110,17 @@ class TestScatter:
         assert newref in ss.refs
         assert ss.stuckcounter[notout[0]] == 1
         assert ss.stuckcounter[newref[0]] == 0
+
+    def test_full(self):
+        conf_dict = parse.load_config(self.config_path)
+        myconfig = config.Configuration(conf_dict)
+        ss = algorithms.ScatterSearch(myconfig)
+        ss.run()
+
+        best_fit = ss.trajectory.best_fit()
+        # print(best_fit)
+
+        # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
+        # Here's a reasonable test that the fitting went okay.
+        # Typically v1 fits to within 0.02, so the required margin of 0.1 should essentially never fail.
+        assert abs(best_fit['v1__FREE__'] - 0.5) < 0.1

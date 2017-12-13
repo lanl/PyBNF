@@ -47,9 +47,6 @@ class TestParticleSwarm:
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'fit_type': 'pso', 'output_dir': 'test_pso'})
-        mkdir('test_pswarm_output')
-        mkdir('test_pswarm_output/Simulations')
-        mkdir('test_pswarm_output/Results')
 
         cls.config2 = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                            ('static_list_var', 'v1'): [17., 42., 3.14], ('loguniform_var', 'v2'): [0.01, 1e5],
@@ -69,7 +66,6 @@ class TestParticleSwarm:
 
     @classmethod
     def teardown_class(cls):
-        rmtree('test_pswarm_output')
         if path.isdir('test_pso_lh'):
             rmtree('test_pso_lh')
         if path.isdir('test_pso2'):
@@ -136,18 +132,6 @@ class TestParticleSwarm:
             else:
                 assert ps.bests[i][0] in start_params
         assert count == 1
-
-    def test_full(self):
-        conf_dict = parse.load_config(self.config_path)
-        myconfig = config.Configuration(conf_dict)
-        ps = algorithms.ParticleSwarm(myconfig)
-        ps.run()
-        # print(ps.global_best)
-        best_fit = ps.global_best[0]
-
-        # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
-        # Here's a reasonable test that the fitting went okay.
-        assert abs(best_fit['v1__FREE__'] - 0.5) < 0.3
 
     def test_latin_hypercube(self):
         ps = algorithms.ParticleSwarm(self.lh_config)
