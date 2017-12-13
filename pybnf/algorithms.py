@@ -229,11 +229,15 @@ class Algorithm(object):
                 m.save(gnm_name, gen_only=True)
                 gn_cmd = "%s %s.bngl" % (self.config.config['bng_command'], gnm_name)
                 try:
-                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8', timeout=self.config.config['wall_time'])
+                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8', timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
                     logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
                     logging.debug(c.stdout)
                     raise c
+                except TimeoutExpired as t:
+                    logging.debug("Network generation exceeded %d seconds" % self.config.config['wall_time_gen'])
+                    logging.debug(t.stdout)
+                    raise t
                 finally:
                     os.chdir(home_dir)
 
@@ -391,7 +395,7 @@ class Algorithm(object):
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
         return Job(self.model_list, params, job_id, self.config.config['bng_command'],
-                   self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time'])
+                   self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'])
 
     def output_results(self, name=''):
         """
