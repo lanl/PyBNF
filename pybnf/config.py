@@ -75,7 +75,8 @@ class Configuration(object):
             'bng_command': bng_command,
             'output_dir': 'bnf_out',
 
-            'wall_time': 3600
+            'wall_time_gen': 3600,
+            'wall_time_sim': 3600
         }
         return default
 
