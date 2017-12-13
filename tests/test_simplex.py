@@ -2,6 +2,8 @@ from .context import data, algorithms, pset, objective, config
 import numpy as np
 from copy import deepcopy
 
+from shutil import rmtree
+
 
 class TestSimplex:
     def __init__(self):
@@ -60,7 +62,7 @@ class TestSimplex:
 
     @classmethod
     def teardown_class(cls):
-        pass
+        rmtree('bnf_out')
 
     def test_start(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.config))

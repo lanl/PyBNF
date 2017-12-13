@@ -1,12 +1,16 @@
 from .context import algorithms
 from .context import data
 from .context import pset
+from .context import config
 from os import chdir
 from os import mkdir
 from os import environ
 from os.path import isfile
 from os.path import isdir
 from shutil import rmtree
+
+
+import numpy as np
 
 
 class TestJob(object):
@@ -24,13 +28,16 @@ class TestJob(object):
         }
         cls.pset = pset.PSet(d)
         cls.bngpath = environ['BNGPATH'] + '/BNG2.pl'
-        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', cls.bngpath, '.')
+        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', cls.bngpath, '.', timeout=None)
+        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', cls.bngpath, '.', timeout=0)
 
     @classmethod
     def teardown_class(cls):
+        rmtree('bnf_out')
         rmtree('sim_net')
         rmtree('sim_x')
         rmtree('sim_1')
+        rmtree('sim_to')
 
     def test_job_components(self):
         mkdir('sim_x')
@@ -61,10 +68,22 @@ class TestJob(object):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
         mkdir('sim_net')
         chdir('sim_net')
-        job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', self.bngpath, '.')
+        job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', self.bngpath, '.', timeout=None)
         job.execute(job._write_models())
         assert isfile('TrickyWP_p1_5_test.net')
         assert isfile('TrickyWP_p1_5_test.bngl')
         assert isfile('TrickyWP_p1_5_test.cdat')
         assert isfile('TrickyWP_p1_5_test.gdat')
         chdir('../')
+
+    def test_timeout(self):
+        res = self.job_to.run_simulation()
+        assert isinstance(res, algorithms.FailedSimulation)
+
+    def test_add_failedsimulation(self):
+        a = algorithms.Algorithm(config.Configuration({"models": {"bngl_files/parabola.bngl"}, 'exp_data':{'bngl_files/par1.exp'},
+                      'bngl_files/parabola.bngl':['bngl_files/par1.exp']}))
+        res = self.job_to.run_simulation()
+        assert res.fail_type == 0
+        a.add_to_trajectory(res)
+        assert next(iter(a.trajectory.trajectory.values())) == np.inf
