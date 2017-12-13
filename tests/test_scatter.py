@@ -1,6 +1,7 @@
 from .context import data, algorithms, pset, objective, config, parse
 from os import mkdir
 from shutil import rmtree
+from copy import deepcopy
 
 
 class TestScatter:
@@ -60,14 +61,14 @@ class TestScatter:
         rmtree('test_ss_output')
 
     def test_start(self):
-        ss = algorithms.ScatterSearch(self.config)
+        ss = algorithms.ScatterSearch(deepcopy(self.config))
         ss.start_run()
         assert len(ss.refs) == 0
         assert len(ss.pending) == 30
         assert len(ss.reserve) == 20
 
     def test_updates(self):
-        ss = algorithms.ScatterSearch(self.config)
+        ss = algorithms.ScatterSearch(deepcopy(self.config))
         start_params = ss.start_run()
         ss.iteration = 1  # Avoid triggering output on iter 0.
 
