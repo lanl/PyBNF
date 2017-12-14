@@ -23,14 +23,9 @@ def parse(s):
     # set up multiple grammars
 
     # single str value
-    strkeys = pp.oneOf(
-        'bng_command\
-        job_name\
-        output_dir\
-        fit_type\
-        objfunc\
-        initialization\
-        ', caseless=True)
+    strkeys = pp.oneOf(' '.join(['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
+                                 'scheduler_address']),
+                       caseless=True)
     string = pp.Word(pp.alphanums + punctuation)
     strgram = strkeys - equals - string - comment
 

@@ -453,7 +453,10 @@ class Algorithm(object):
     def run(self):
         """Main loop for executing the algorithm"""
         logging.debug('Initializing dask Client object')
-        client = Client()
+        if 'scheduler_address' in self.config.config:
+            client = Client(self.config.config['scheduler_address'])
+        else:
+            client = Client()
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = [self.make_job(p) for p in psets]
