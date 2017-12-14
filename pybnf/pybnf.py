@@ -12,8 +12,8 @@ __version__ = "0.1"
 
 
 def main():
-    log_format = "%(levelname)s\t%(message)s"
-    logging.basicConfig(format=log_format, level=logging.WARNING, filename='bnf.log')
+    log_format = "%(asctime)-15s\t%(levelname)s\t%(message)s"
+    logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log')
 
     logging.info("PyBNF v%s" % __version__)
 
