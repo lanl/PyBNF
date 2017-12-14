@@ -27,7 +27,7 @@ class Result(object):
     Container for the results of a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, paramset, simdata, log, name):
+    def __init__(self, paramset, simdata, name):
         """
         Instantiates a Result
 
@@ -40,7 +40,6 @@ class Result(object):
         """
         self.pset = paramset
         self.simdata = simdata
-        self.log = log
         self.name = name
         self.score = None  # To be set later when the Result is scored.
 
@@ -56,7 +55,7 @@ class FailedSimulation(Result):
         :param fail_type: 0 - Exceeded walltime, 1 - Other crash
         :type fail_type: int
         """
-        super(FailedSimulation, self).__init__(paramset, None, None, name)
+        super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
 
 
@@ -119,9 +118,9 @@ class Job:
         try:
             os.chdir(folder)
             model_files = self._write_models()
-            log = self.execute(model_files)
+            self.execute(model_files)
             simdata = self.load_simdata()
-            res = Result(self.params, simdata, log, self.job_id)
+            res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
@@ -133,12 +132,11 @@ class Job:
 
     def execute(self, models):
         """Executes model simulations"""
-        log = []
         for model in models:
             cmd = '%s %s.bngl' % (self.bng_program, model)
-            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, timeout=self.timeout)
-            log.append(cp.stdout.decode('utf-8'))
-        return log
+            log_file = '%s.log' % model
+            with open(log_file, 'w') as lf:
+                run(cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, encoding='UTF-8', timeout=self.timeout)
 
     def load_simdata(self):
         """
