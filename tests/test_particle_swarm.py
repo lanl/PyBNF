@@ -133,18 +133,6 @@ class TestParticleSwarm:
                 assert ps.bests[i][0] in start_params
         assert count == 1
 
-    def test_full(self):
-        conf_dict = parse.load_config(self.config_path)
-        myconfig = config.Configuration(conf_dict)
-        ps = algorithms.ParticleSwarm(myconfig)
-        ps.run()
-        print(ps.global_best)
-        best_fit = ps.global_best[0]
-
-        # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
-        # Here's a reasonable test that the fitting went okay.
-        assert abs(best_fit['v1__FREE__'] - 0.5) < 0.3
-
     def test_latin_hypercube(self):
         ps = algorithms.ParticleSwarm(self.lh_config)
         ps.start_run()
