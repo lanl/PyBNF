@@ -1408,8 +1408,6 @@ class SimplexAlgorithm(Algorithm):
         start_pset = PSet(start_dict)
         self.config.config['simplex_start_point'] = start_pset
 
-
-
     def start_run(self):
 
         # Generate the initial  num_variables+1 points in the simplex by moving parameters, one at a time, by the
@@ -1418,9 +1416,9 @@ class SimplexAlgorithm(Algorithm):
         init_psets = [self.start_point]
         self.pending[self.start_point.name] = 0
         i = 1
-        for v in self.start_point.keys():
+        for v in self.variables:
             new_dict = dict()
-            for p in self.start_point.keys():
+            for p in self.variables:
                 if p == v:
                     new_dict[p] = self.add(self.start_point, p, self.start_steps[p])
                 else:
@@ -1485,7 +1483,7 @@ class SimplexAlgorithm(Algorithm):
                 else:
                     a_hat = self.simplex[-index-1][1]
                 new_dict = dict()
-                for v in a_hat.keys():
+                for v in self.variables:
                     # I think the equation for this in Lee et al p. 178 is wrong; I am instead using the analog to the
                     # equation on p. 176
                     # new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])
