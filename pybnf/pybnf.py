@@ -13,9 +13,10 @@ __version__ = "0.1"
 
 def main():
     log_format = "%(asctime)-15s\t%(levelname)s\t%(message)s"
-    logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log')
+    logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log', filemode='w')
 
     print("PyBNF v%s" % __version__)
+    logging.info('Running PyBNF v%s' % __version__)
 
     parser = argparse.ArgumentParser()
 
@@ -24,6 +25,7 @@ def main():
 
     # Load the conf file and create the algorithm
     results = parser.parse_args()
+    logging.info('Loading configuration file: %s' % results.conf_file)
     conf_dict = load_config(results.conf_file)
     config = Configuration(conf_dict)
     if conf_dict['fit_type'] == 'pso':
