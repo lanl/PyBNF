@@ -6,7 +6,6 @@ from distributed import Client
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import TimeoutExpired
-from subprocess import PIPE
 from subprocess import STDOUT
 
 from .data import Data
@@ -20,6 +19,8 @@ import os
 import re
 import shutil
 import copy
+import sys
+import traceback
 
 
 class Result(object):
@@ -46,7 +47,7 @@ class Result(object):
 
 
 class FailedSimulation(Result):
-    def __init__(self, paramset, name, fail_type):
+    def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None])):
         """
         Instantiates a FailedSimulation
 
@@ -59,6 +60,7 @@ class FailedSimulation(Result):
         super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
         self.failed = True
+        self.traceback = ''.join(traceback.format_exception(*einfo))
 
 
 class Job:
@@ -127,6 +129,8 @@ class Job:
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             res = FailedSimulation(self.params, self.job_id, 0)
+        except Exception:
+            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         finally:
             os.chdir(self.home_dir)
 
@@ -248,10 +252,14 @@ class Algorithm(object):
                     logging.debug(c.stdout)
                     print('Initial network generation failed for model %s... exiting' % m.name)
                     exit()
-                except TimeoutExpired as t:
+                except TimeoutExpired:
                     logging.debug("Network generation exceeded %d seconds... exiting" % self.config.config['wall_time_gen'])
-                    logging.debug(t.stdout)
                     print("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
+                    exit()
+                except Exception as e:
+                    tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
+                    logging.debug("Other exception occurred:\n%s" % tb)
+                    print("Unknown error occurred, see log... exiting")
                     exit()
                 finally:
                     os.chdir(home_dir)
@@ -456,8 +464,9 @@ class Algorithm(object):
         while True:
             f, res = next(pool)
             if isinstance(res, FailedSimulation):
-                logging.debug('Job %s failed' % res.name)
-                print('Job %s failed')
+                tb = '\n'+res.traceback if res.fail_type == 2 else ''
+                logging.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
+                print('Job %s failed' % res.name)
             else:
                 logging.debug('Job %s complete' % res.name)
             pending.remove(f)
