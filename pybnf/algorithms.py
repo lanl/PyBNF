@@ -136,8 +136,8 @@ class Job:
         log = []
         for model in models:
             cmd = '%s %s.bngl' % (self.bng_program, model)
-            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8', timeout=self.timeout)
-            log.append(cp.stdout)
+            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, timeout=self.timeout)
+            log.append(cp.stdout.decode('utf-8'))
         return log
 
     def load_simdata(self):
@@ -229,19 +229,19 @@ class Algorithm(object):
                 m.save(gnm_name, gen_only=True)
                 gn_cmd = "%s %s.bngl" % (self.config.config['bng_command'], gnm_name)
                 try:
-                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, encoding='UTF-8', timeout=self.config.config['wall_time_gen'])
+                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
                     logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
-                    logging.debug(c.stdout)
+                    logging.debug(c.stdout.decode('utf-8'))
                     raise c
                 except TimeoutExpired as t:
                     logging.debug("Network generation exceeded %d seconds" % self.config.config['wall_time_gen'])
-                    logging.debug(t.stdout)
+                    logging.debug(t.stdout.decode('utf-8'))
                     raise t
                 finally:
                     os.chdir(home_dir)
 
-                logging.info(res.stdout)
+                logging.info(res.stdout.decode('utf-8'))
                 final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
             else:
                 final_model_list.append(m)
@@ -1408,8 +1408,6 @@ class SimplexAlgorithm(Algorithm):
         start_pset = PSet(start_dict)
         self.config.config['simplex_start_point'] = start_pset
 
-
-
     def start_run(self):
 
         # Generate the initial  num_variables+1 points in the simplex by moving parameters, one at a time, by the
@@ -1418,9 +1416,9 @@ class SimplexAlgorithm(Algorithm):
         init_psets = [self.start_point]
         self.pending[self.start_point.name] = 0
         i = 1
-        for v in self.start_point.keys():
+        for v in self.variables:
             new_dict = dict()
-            for p in self.start_point.keys():
+            for p in self.variables:
                 if p == v:
                     new_dict[p] = self.add(self.start_point, p, self.start_steps[p])
                 else:
@@ -1485,7 +1483,7 @@ class SimplexAlgorithm(Algorithm):
                 else:
                     a_hat = self.simplex[-index-1][1]
                 new_dict = dict()
-                for v in a_hat.keys():
+                for v in self.variables:
                     # I think the equation for this in Lee et al p. 178 is wrong; I am instead using the analog to the
                     # equation on p. 176
                     # new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])

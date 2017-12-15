@@ -66,13 +66,16 @@ class TestSimplex:
 
     def test_start(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.config))
+        sim.variables.sort()  # Required for Python <= 3.5 to be sure we are checking the correct indices in the simplex
         first = sim.start_run()
         assert len(first) == 4
+        print(first)
         assert first[0]['v1'] == 2.
         assert first[3]['v3'] == 5.
 
     def test_updates(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.config))
+        sim.variables.sort()  # Required for Python <= 3.5 to be sure we are checking the correct indices in the simplex
         first = sim.start_run()
         next_params = []
         for p, score in zip(first, [5., 7., 8., 6.]):
@@ -150,6 +153,7 @@ class TestSimplex:
 
     def test_start_log(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.logconfig))
+        sim.variables.sort()  # Required for Python <= 3.5 to be sure we are checking the correct indices in the simplex
         first = sim.start_run()
         assert len(first) == 4
         np.testing.assert_almost_equal(first[0]['v1'], 10.**2.)
@@ -158,6 +162,7 @@ class TestSimplex:
     def test_updates_log(self):
         """ The above test should also work identically in log space"""
         sim = algorithms.SimplexAlgorithm(deepcopy(self.logconfig))
+        sim.variables.sort()  # Required for Python <= 3.5 to be sure we are checking the correct indices in the simplex
         first = sim.start_run()
         next_params = []
         for p, score in zip(first, [5., 7., 8., 6.]):
