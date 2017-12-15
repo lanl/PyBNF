@@ -142,7 +142,7 @@ class Job:
             cmd = '%s %s.bngl' % (self.bng_program, model)
             log_file = '%s.log' % model
             with open(log_file, 'w') as lf:
-                run(cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, encoding='UTF-8', timeout=self.timeout)
+                run(cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
 
     def load_simdata(self):
         """
