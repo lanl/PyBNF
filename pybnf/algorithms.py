@@ -834,9 +834,6 @@ class DifferentialEvolution(Algorithm):
                     self.migration_perms[migration_num] = [np.random.permutation(self.num_islands)
                                                            for i in range(self.num_to_migrate)]
                     logging.debug('Island %i just set up the migration.' % island)
-                    # logging.debug(str(self.migration_transit))
-                    # logging.debug(str(self.migration_indices))
-                    # logging.debug(str(self.migration_perms))
 
                 # Send the required PSets to migration_transit
                 for j in self.migration_indices[migration_num]:
@@ -848,9 +845,6 @@ class DifferentialEvolution(Algorithm):
             if self.migration_done[island] < min(self.migration_ready):
                 # This island performs a migration
                 logging.debug('Island %i is migrating!' % island)
-                # logging.debug(str(self.migration_transit))
-                # logging.debug(str(self.migration_indices))
-                # logging.debug(str(self.migration_perms))
                 migration_num = self.migration_done[island] + 1
 
                 # Fetch the appropriate new individuals from migration_transit
@@ -951,7 +945,8 @@ class ScatterSearch(Algorithm):
         if 'init_size' in config.config:
             self.init_size = config.config['init_size']
             if self.init_size < self.popsize:
-                logging.warning('init_size cannot be less than population_size. Setting it equal to population_size.')
+                logging.warning('init_size less than population_size. Setting it equal to population_size.')
+                print("Scatter search parameter 'init_size' cannot be less than 'population_size'. Automatically setting it equal to population_size.")
                 self.init_size = self.popsize
         else:
             self.init_size = 10*len(self.variables)
@@ -1050,8 +1045,9 @@ class ScatterSearch(Algorithm):
             # 2) Sort the refs list by quality.
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logging.info('Iteration %i' % self.iteration)
-            logging.info('Current scores: ' + str([x[1] for x in self.refs]))
-            logging.info('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+            print('Iteration %i' % self.iteration)
+            print('Current scores: ' + str([x[1] for x in self.refs]))
+            print('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
@@ -1252,11 +1248,13 @@ class BayesAlgorithm(Algorithm):
         while proposed_pset is None:
             loop_count += 1
             if loop_count == 20:
-                logging.warning('One of your samples is stuck at the same point for 20+ iterations because it keeps '
+                logging.warning('Instance %i terminated after 20 iterations at the same point' % index)
+                print('One of your samples is stuck at the same point for 20+ iterations because it keeps '
                                 'hitting box constraints. Consider using looser box constraints or a smaller '
                                 'step_size.')
             if loop_count == 1000:
-                logging.error('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
+                logging.warning('Instance %i terminated after 1000 iterations at the same point' % index)
+                print('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
                               'because it kept hitting box constraints. Consider using looser box constraints or a '
                               'smaller step_size.' % index)
                 self.iteration[index] = self.max_iterations
@@ -1273,8 +1271,10 @@ class BayesAlgorithm(Algorithm):
                and self.iteration[index] == min(self.iteration)):
                 self.output_results()
                 logging.info('Completed %i iterations' % self.iteration[index])
+                print('Completed %i iterations' % self.iteration[index])
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Instance %i finished' % index)
+                print('Instance %i finished' % index)
                 if self.iteration[index] == min(self.iteration):
                     self.update_histograms('_final')
                     return 'STOP'
