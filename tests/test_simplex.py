@@ -79,7 +79,7 @@ class TestSimplex:
         first = sim.start_run()
         next_params = []
         for p, score in zip(first, [5., 7., 8., 6.]):
-            res = algorithms.Result(p, self.data1s, [''], p.name)
+            res = algorithms.Result(p, self.data1s, p.name)
             res.score = score
             next_params += sim.got_result(res)
 
@@ -91,12 +91,12 @@ class TestSimplex:
         # M = (2, 3 1/3, 4 1/3)
         np.testing.assert_almost_equal(next_params[1]['v1'], 1.)
 
-        res = algorithms.Result(next_params[1], self.data1s, [''], next_params[1].name)
+        res = algorithms.Result(next_params[1], self.data1s, next_params[1].name)
         res.score = 5.5
         # Case 2 - take it, do nothing else.
         p2_1 = sim.got_result(res)
         assert p2_1 == []
-        res = algorithms.Result(next_params[0], self.data1s, [''], next_params[0].name)
+        res = algorithms.Result(next_params[0], self.data1s, next_params[0].name)
         res.score = 4.5
         # Case 1 - pick an expansion point
         p2_2 = sim.got_result(res)
@@ -106,7 +106,7 @@ class TestSimplex:
         np.testing.assert_almost_equal(p2_2[0]['v1'], 3.)
         np.testing.assert_almost_equal(p2_2[0]['v2'], 1.)
 
-        res = algorithms.Result(p2_2[0], self.data1s, [''], p2_2[0].name)
+        res = algorithms.Result(p2_2[0], self.data1s, p2_2[0].name)
         res.score = 4.75
         iter_2 = sim.got_result(res)
         assert len(iter_2) == 2
@@ -120,25 +120,25 @@ class TestSimplex:
         np.testing.assert_almost_equal(iter_2[0]['v1'], 1 + 7./9.)
         np.testing.assert_almost_equal(iter_2[0]['v2'], 2. + 7./9.)
 
-        res = algorithms.Result(iter_2[0], self.data1s, [''], iter_2[0].name)
+        res = algorithms.Result(iter_2[0], self.data1s, iter_2[0].name)
         res.score = 5.9
         p3_1 = sim.got_result(res)
         # Should move half way back to the centroid
         np.testing.assert_almost_equal(p3_1[0]['v1'], 1 + 15./18.)
         np.testing.assert_almost_equal(p3_1[0]['v2'], 2. + 15./18.)
-        res = algorithms.Result(p3_1[0], self.data1s, [''], p3_1[0].name)
+        res = algorithms.Result(p3_1[0], self.data1s, p3_1[0].name)
         res.score = 10.
         nothing = sim.got_result(res)
 
         # iter2[1] modifies (1, 3 2/3, 4 2/3)
         # M = (2 2/9, 2 2/3, 4 5/9)
-        res = algorithms.Result(iter_2[1], self.data1s, [''], iter_2[1].name)
+        res = algorithms.Result(iter_2[1], self.data1s, iter_2[1].name)
         res.score = 5.9
         p3_2 = sim.got_result(res)
         # Worse than original, should move to halfway to the centroid.
         np.testing.assert_almost_equal(p3_2[0]['v1'], 1. + 11. / 18.)
         np.testing.assert_almost_equal(p3_2[0]['v2'], 3. + 1. / 6.)
-        res = algorithms.Result(p3_2[0], self.data1s, [''], p3_2[0].name)
+        res = algorithms.Result(p3_2[0], self.data1s, p3_2[0].name)
         res.score = 10.
         final_ps = sim.got_result(res)
 
@@ -166,7 +166,7 @@ class TestSimplex:
         first = sim.start_run()
         next_params = []
         for p, score in zip(first, [5., 7., 8., 6.]):
-            res = algorithms.Result(p, self.data1s, [''], p.name)
+            res = algorithms.Result(p, self.data1s, p.name)
             res.score = score
             next_params += sim.got_result(res)
 
@@ -178,12 +178,12 @@ class TestSimplex:
         # M = (2, 3 1/3, 4 1/3)
         np.testing.assert_almost_equal(next_params[1]['v1'], 10**1.)
 
-        res = algorithms.Result(next_params[1], self.data1s, [''], next_params[1].name)
+        res = algorithms.Result(next_params[1], self.data1s, next_params[1].name)
         res.score = 5.5
         # Case 2 - take it, do nothing else.
         p2_1 = sim.got_result(res)
         assert p2_1 == []
-        res = algorithms.Result(next_params[0], self.data1s, [''], next_params[0].name)
+        res = algorithms.Result(next_params[0], self.data1s, next_params[0].name)
         res.score = 4.5
         # Case 1 - pick an expansion point
         p2_2 = sim.got_result(res)
@@ -193,7 +193,7 @@ class TestSimplex:
         np.testing.assert_almost_equal(p2_2[0]['v1'], 10**3.)
         np.testing.assert_almost_equal(p2_2[0]['v2'], 10**1.)
 
-        res = algorithms.Result(p2_2[0], self.data1s, [''], p2_2[0].name)
+        res = algorithms.Result(p2_2[0], self.data1s, p2_2[0].name)
         res.score = 4.75
         iter_2 = sim.got_result(res)
         assert len(iter_2) == 2
@@ -207,25 +207,25 @@ class TestSimplex:
         np.testing.assert_almost_equal(iter_2[0]['v1'], 10**(1 + 7. / 9.))
         np.testing.assert_almost_equal(iter_2[0]['v2'], 10**(2. + 7. / 9.))
 
-        res = algorithms.Result(iter_2[0], self.data1s, [''], iter_2[0].name)
+        res = algorithms.Result(iter_2[0], self.data1s, iter_2[0].name)
         res.score = 5.9
         p3_1 = sim.got_result(res)
         # Should move half way back to the centroid
         np.testing.assert_almost_equal(p3_1[0]['v1'], 10**(1 + 15. / 18.))
         np.testing.assert_almost_equal(p3_1[0]['v2'], 10**(2. + 15. / 18.))
-        res = algorithms.Result(p3_1[0], self.data1s, [''], p3_1[0].name)
+        res = algorithms.Result(p3_1[0], self.data1s, p3_1[0].name)
         res.score = 10.
         nothing = sim.got_result(res)
 
         # iter2[1] modifies (1, 3 2/3, 4 2/3)
         # M = (2 2/9, 2 2/3, 4 5/9)
-        res = algorithms.Result(iter_2[1], self.data1s, [''], iter_2[1].name)
+        res = algorithms.Result(iter_2[1], self.data1s, iter_2[1].name)
         res.score = 5.9
         p3_2 = sim.got_result(res)
         # Worse than original, should move to halfway to the centroid.
         np.testing.assert_almost_equal(p3_2[0]['v1'], 10**(1. + 11. / 18.))
         np.testing.assert_almost_equal(p3_2[0]['v2'], 10**(3. + 1. / 6.))
-        res = algorithms.Result(p3_2[0], self.data1s, [''], p3_2[0].name)
+        res = algorithms.Result(p3_2[0], self.data1s, p3_2[0].name)
         res.score = 10.
         final_ps = sim.got_result(res)
 

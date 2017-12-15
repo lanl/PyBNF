@@ -6,7 +6,6 @@ from distributed import Client
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import TimeoutExpired
-from subprocess import PIPE
 from subprocess import STDOUT
 
 from .data import Data
@@ -20,6 +19,8 @@ import os
 import re
 import shutil
 import copy
+import sys
+import traceback
 
 
 class Result(object):
@@ -27,7 +28,7 @@ class Result(object):
     Container for the results of a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, paramset, simdata, log, name):
+    def __init__(self, paramset, simdata, name):
         """
         Instantiates a Result
 
@@ -40,13 +41,13 @@ class Result(object):
         """
         self.pset = paramset
         self.simdata = simdata
-        self.log = log
         self.name = name
         self.score = None  # To be set later when the Result is scored.
+        self.failed = False
 
 
 class FailedSimulation(Result):
-    def __init__(self, paramset, name, fail_type):
+    def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None])):
         """
         Instantiates a FailedSimulation
 
@@ -56,8 +57,10 @@ class FailedSimulation(Result):
         :param fail_type: 0 - Exceeded walltime, 1 - Other crash
         :type fail_type: int
         """
-        super(FailedSimulation, self).__init__(paramset, None, None, name)
+        super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
+        self.failed = True
+        self.traceback = ''.join(traceback.format_exception(*einfo))
 
 
 class Job:
@@ -119,13 +122,15 @@ class Job:
         try:
             os.chdir(folder)
             model_files = self._write_models()
-            log = self.execute(model_files)
+            self.execute(model_files)
             simdata = self.load_simdata()
-            res = Result(self.params, simdata, log, self.job_id)
+            res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             res = FailedSimulation(self.params, self.job_id, 0)
+        except Exception:
+            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         finally:
             os.chdir(self.home_dir)
 
@@ -133,12 +138,11 @@ class Job:
 
     def execute(self, models):
         """Executes model simulations"""
-        log = []
         for model in models:
             cmd = '%s %s.bngl' % (self.bng_program, model)
-            cp = run(cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, timeout=self.timeout)
-            log.append(cp.stdout.decode('utf-8'))
-        return log
+            log_file = '%s.log' % model
+            with open(log_file, 'w') as lf:
+                run(cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
 
     def load_simdata(self):
         """
@@ -176,14 +180,17 @@ class Algorithm(object):
         self.config = config
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
+        logging.debug('Instantiating Trajectory object')
         self.trajectory = Trajectory(config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
 
+        logging.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
+        logging.debug('Initializing models')
         self.model_list = self._initialize_models()
 
         # Generate a list of variable names
@@ -192,6 +199,7 @@ class Algorithm(object):
         # Set the space (log or regular) in which each variable moves, as well as the box constraints on the variable.
         # Currently, this is set based on what distribution the variable is initialized with, but these could be made
         # into a separate, custom options
+        logging.debug('Evaluating variable space')
         self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
@@ -205,7 +213,9 @@ class Algorithm(object):
             elif v[1] == 'static_list_var':
                 self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
             else:
-                raise RuntimeError('Unrecognized variable type: %s' % v[1])
+                logging.info('Variable type not recognized... exiting')
+                print('Unrecognized variable type: %s' % v[1])
+                exit()
 
     def _initialize_models(self):
         """
@@ -216,34 +226,48 @@ class Algorithm(object):
         """
         home_dir = os.getcwd()
         os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
+        logging.debug('Copying list of models')
         init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
         final_model_list = []
         init_dir = os.getcwd() + '/Initialize'
-        if not os.path.isdir(init_dir):
-            os.mkdir(init_dir)
-        os.chdir(init_dir)
 
         for m in init_model_list:
             if m.generates_network:
+                logging.debug('Model %s requires network generation' % m.name)
+
+                if not os.path.isdir(init_dir):
+                    if not os.path.isdir(init_dir):
+                        logging.debug('Creating initialization directory: %s' % init_dir)
+                        os.mkdir(init_dir)
+                    os.chdir(init_dir)
+
                 gnm_name = '%s_gen_net' % m.name
                 m.save(gnm_name, gen_only=True)
                 gn_cmd = "%s %s.bngl" % (self.config.config['bng_command'], gnm_name)
                 try:
-                    res = run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=PIPE, timeout=self.config.config['wall_time_gen'])
+                    with open('%s.log' % gnm_name, 'w') as lf:
+                        run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
                     logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
-                    logging.debug(c.stdout.decode('utf-8'))
-                    raise c
-                except TimeoutExpired as t:
-                    logging.debug("Network generation exceeded %d seconds" % self.config.config['wall_time_gen'])
-                    logging.debug(t.stdout.decode('utf-8'))
-                    raise t
+                    logging.debug(c.stdout)
+                    print('Initial network generation failed for model %s... exiting' % m.name)
+                    exit()
+                except TimeoutExpired:
+                    logging.debug("Network generation exceeded %d seconds... exiting" % self.config.config['wall_time_gen'])
+                    print("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
+                    exit()
+                except Exception as e:
+                    tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
+                    logging.debug("Other exception occurred:\n%s" % tb)
+                    print("Unknown error occurred, see log... exiting")
+                    exit()
                 finally:
                     os.chdir(home_dir)
 
-                logging.info(res.stdout.decode('utf-8'))
+                logging.info('Output for network generation of model %s logged in %s/%s.log' % (m.name, init_dir, gnm_name))
                 final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
             else:
+                logging.info('Model %s does not require network generation' % m.name)
                 final_model_list.append(m)
         os.chdir(home_dir)
         return final_model_list
@@ -259,7 +283,6 @@ class Algorithm(object):
 
         :return: list of PSets
         """
-        logging.info("Initializing algorithm")
         raise NotImplementedError("Subclasses must implement start_run()")
 
     def got_result(self, res):
@@ -269,18 +292,17 @@ class Algorithm(object):
 
         :param res: result from the completed simulation
         :type res: Result
-        :return: List of PSet(s) to be run next.
+        :return: List of PSet(s) to be run next or 'STOP' string.
         """
-        logging.info("Retrieved result")
         raise NotImplementedError("Subclasses must implement got_result()")
 
     def add_to_trajectory(self, res):
         """
         Evaluates the objective function for a Result, and adds the information from the Result to the Trajectory
         instance"""
-
         score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
         res.score = score
+        logging.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
         self.trajectory.add(res.pset, score, res.name)
 
     def random_pset(self):
@@ -289,6 +311,8 @@ class Algorithm(object):
 
         :return:
         """
+        # TODO CONFIRM THIS IS REDUNDANT WITH CODE IN __INIT__
+        logging.debug("Generating a randomly distributed PSet")
         param_dict = dict()
         for (name, type, val1, val2) in self.config.variables_specs:
             if type == 'random_var':
@@ -314,6 +338,7 @@ class Algorithm(object):
         :param n: Number of psets to generate
         :return:
         """
+        logging.debug("Generating PSets using Latin hypercube sampling")
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         num_uniform_vars = len([x for x in self.config.variables_specs
                                if x[1] == 'random_var' or x[1] == 'loguniform_var'])
@@ -394,6 +419,7 @@ class Algorithm(object):
         else:
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
+        logging.debug('Creating Job %s' % job_id)
         return Job(self.model_list, params, job_id, self.config.config['bng_command'],
                    self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'])
 
@@ -412,11 +438,13 @@ class Algorithm(object):
             name = str(self.output_counter)
         self.output_counter += 1
         filepath = '%s/Results/sorted_params_%s.txt' % (self.config.config['output_dir'], name)
+        logging.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
 
         # If the user has asked for fewer output files, each time we're here, move the new file to
         # Results/sorted_params.txt, overwriting the previous one.
         if self.config.config['delete_old_files'] == 1:
+            logging.debug("Overwriting previous 'sorted_params.txt'")
             noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
             if os.path.isfile(noname_filepath):
                 os.remove(noname_filepath)
@@ -424,32 +452,44 @@ class Algorithm(object):
 
     def run(self):
         """Main loop for executing the algorithm"""
+        logging.debug('Initializing dask Client object')
         client = Client()
+        logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = [self.make_job(p) for p in psets]
+        logging.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = [client.submit(job.run_simulation) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
             f, res = next(pool)
+            if isinstance(res, FailedSimulation):
+                tb = '\n'+res.traceback if res.fail_type == 2 else ''
+                logging.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
+                print('Job %s failed' % res.name)
+            else:
+                logging.debug('Job %s complete' % res.name)
             pending.remove(f)
             self.add_to_trajectory(res)
             response = self.got_result(res)
             if response == 'STOP':
                 logging.info("Stop criterion satisfied")
+                print('Stop criterion satisfied')
                 break
             else:
                 new_jobs = [self.make_job(ps) for ps in response]
+                logging.debug('Submitting %d new Jobs' % len(new_jobs))
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
+        logging.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending))
-        logging.debug("Pending jobs cancelled")
         client.close()
         self.output_results('final')
 
         # Copy the best simulations into the results folder
         best_name = self.trajectory.best_fit_name()
+        logging.info('Copying simulation results from best fit parameter set to Results/ folder')
         for m in self.config.models:
             shutil.copy('%s/Simulations/%s/%s_%s.bngl' %
                         (self.config.config['output_dir'], best_name, m, best_name),
@@ -460,11 +500,12 @@ class Algorithm(object):
                                 (self.config.config['output_dir'], best_name, m, best_name, suf),
                                 '%s/Results' % self.config.config['output_dir'])
                 except FileNotFoundError:
-                    logging.error('Best fit gdat file was not found')
+                    logging.error('Cannot find files corresponding to best fit parameter set... exiting')
                     print('Could not find your best fit gdat file. This could happen if all of the simulations in your'
                           '\nrun failed, or if that gdat file was somehow deleted during the run.')
+                    exit()
 
-        logging.info("Fitting complete!")
+        logging.info("Fitting complete")
 
 
 class ParticleSwarm(Algorithm):
@@ -793,9 +834,6 @@ class DifferentialEvolution(Algorithm):
                     self.migration_perms[migration_num] = [np.random.permutation(self.num_islands)
                                                            for i in range(self.num_to_migrate)]
                     logging.debug('Island %i just set up the migration.' % island)
-                    # logging.debug(str(self.migration_transit))
-                    # logging.debug(str(self.migration_indices))
-                    # logging.debug(str(self.migration_perms))
 
                 # Send the required PSets to migration_transit
                 for j in self.migration_indices[migration_num]:
@@ -807,9 +845,6 @@ class DifferentialEvolution(Algorithm):
             if self.migration_done[island] < min(self.migration_ready):
                 # This island performs a migration
                 logging.debug('Island %i is migrating!' % island)
-                # logging.debug(str(self.migration_transit))
-                # logging.debug(str(self.migration_indices))
-                # logging.debug(str(self.migration_perms))
                 migration_num = self.migration_done[island] + 1
 
                 # Fetch the appropriate new individuals from migration_transit
@@ -910,7 +945,8 @@ class ScatterSearch(Algorithm):
         if 'init_size' in config.config:
             self.init_size = config.config['init_size']
             if self.init_size < self.popsize:
-                logging.warning('init_size cannot be less than population_size. Setting it equal to population_size.')
+                logging.warning('init_size less than population_size. Setting it equal to population_size.')
+                print("Scatter search parameter 'init_size' cannot be less than 'population_size'. Automatically setting it equal to population_size.")
                 self.init_size = self.popsize
         else:
             self.init_size = 10*len(self.variables)
@@ -1009,8 +1045,9 @@ class ScatterSearch(Algorithm):
             # 2) Sort the refs list by quality.
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logging.info('Iteration %i' % self.iteration)
-            logging.info('Current scores: ' + str([x[1] for x in self.refs]))
-            logging.info('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+            print('Iteration %i' % self.iteration)
+            print('Current scores: ' + str([x[1] for x in self.refs]))
+            print('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
@@ -1211,11 +1248,13 @@ class BayesAlgorithm(Algorithm):
         while proposed_pset is None:
             loop_count += 1
             if loop_count == 20:
-                logging.warning('One of your samples is stuck at the same point for 20+ iterations because it keeps '
+                logging.warning('Instance %i terminated after 20 iterations at the same point' % index)
+                print('One of your samples is stuck at the same point for 20+ iterations because it keeps '
                                 'hitting box constraints. Consider using looser box constraints or a smaller '
                                 'step_size.')
             if loop_count == 1000:
-                logging.error('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
+                logging.warning('Instance %i terminated after 1000 iterations at the same point' % index)
+                print('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
                               'because it kept hitting box constraints. Consider using looser box constraints or a '
                               'smaller step_size.' % index)
                 self.iteration[index] = self.max_iterations
@@ -1232,8 +1271,10 @@ class BayesAlgorithm(Algorithm):
                and self.iteration[index] == min(self.iteration)):
                 self.output_results()
                 logging.info('Completed %i iterations' % self.iteration[index])
+                print('Completed %i iterations' % self.iteration[index])
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Instance %i finished' % index)
+                print('Instance %i finished' % index)
                 if self.iteration[index] == min(self.iteration):
                     self.update_histograms('_final')
                     return 'STOP'

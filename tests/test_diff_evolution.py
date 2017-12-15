@@ -68,19 +68,19 @@ class TestDiffEvolution:
         start_params = de.start_run()
 
         for i in range(9):
-            res = algorithms.Result(start_params[i], self.data1s, [''], start_params[i].name)
+            res = algorithms.Result(start_params[i], self.data1s, start_params[i].name)
             res.score = 42.
             torun = de.got_result(res)
             assert torun == []
         # Finish island 1 iter 0, should get some new params.
-        res = algorithms.Result(start_params[9], self.data1s, [''], start_params[9].name)
+        res = algorithms.Result(start_params[9], self.data1s, start_params[9].name)
         res.score = 42.
         torun = de.got_result(res)
         assert len(torun) == 10
         next_params = torun
         assert de.iter_num == [1, 0]
         for i in range(10, 20):
-            res = algorithms.Result(start_params[i], self.data1s, [''], start_params[i].name)
+            res = algorithms.Result(start_params[i], self.data1s, start_params[i].name)
             res.score = 150.
             torun = de.got_result(res)
             next_params += torun
@@ -89,7 +89,7 @@ class TestDiffEvolution:
 
         params_gen2 = []
         for i in range(20):
-            res = algorithms.Result(next_params[i], self.data1s, [''], next_params[i].name)
+            res = algorithms.Result(next_params[i], self.data1s, next_params[i].name)
             res.score = max(1., i ** 2)
             if i < 10:
                 assert de.island_map[next_params[i]] == (0, i)
@@ -116,7 +116,7 @@ class TestDiffEvolution:
         # After iteration 2, migration will trigger
         params_gen3 = []
         for i in range(10):
-            res = algorithms.Result(params_gen2[i], self.data1s, [''], params_gen2[i].name)
+            res = algorithms.Result(params_gen2[i], self.data1s, params_gen2[i].name)
             res.score = 9999.
             torun = de.got_result(res)
             params_gen3 += torun
@@ -128,7 +128,7 @@ class TestDiffEvolution:
         assert len(de.migration_transit[1][1]) == 0
 
         for i in range(10, 20):
-            res = algorithms.Result(params_gen2[i], self.data1s, [''], params_gen2[i].name)
+            res = algorithms.Result(params_gen2[i], self.data1s, params_gen2[i].name)
             res.score = 9999.
             torun = de.got_result(res)
             params_gen3 += torun
