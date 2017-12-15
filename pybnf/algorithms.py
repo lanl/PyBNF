@@ -473,8 +473,8 @@ class Algorithm(object):
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
+        logging.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending))
-        logging.info("Pending jobs cancelled")
         client.close()
         self.output_results('final')
 
