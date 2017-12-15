@@ -113,13 +113,13 @@ class TestParticleSwarm:
         start_params = ps.start_run()
         next_params = []
         for p in start_params:
-            new_result = algorithms.Result(p, self.d2s, '', 'sim_1')
+            new_result = algorithms.Result(p, self.d2s, 'sim_1')
             new_result.score = ps.objective.evaluate(self.d2s, self.d1e)
             next_params += ps.got_result(new_result)
 
         assert ps.global_best[0] in start_params
 
-        new_result = algorithms.Result(next_params[7], self.d1s, '', 'sim_1')
+        new_result = algorithms.Result(next_params[7], self.d1s, 'sim_1')
         new_result.score = ps.objective.evaluate(self.d1s, self.d1e)
         ps.got_result(new_result)  # better than the previous ones
         assert ps.global_best[0] == next_params[7]

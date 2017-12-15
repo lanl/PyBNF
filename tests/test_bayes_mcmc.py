@@ -73,13 +73,13 @@ class TestBayes:
         start_params = ba.start_run()
         next_params = []
         for p in start_params:
-            res = algorithms.Result(p, self.data1s, [''], p.name)
+            res = algorithms.Result(p, self.data1s, p.name)
             res.score = 42.
             next_params += ba.got_result(res)
 
         params_3 = []
         for p in next_params:
-            res = algorithms.Result(p, self.data1s, [''], p.name)
+            res = algorithms.Result(p, self.data1s, p.name)
             res.score = 42.693  # Should accept with probability 0.5
             params_3 += ba.got_result(res)
 
@@ -98,7 +98,7 @@ class TestBayes:
 
         params_4 = []
         for p in params_3:
-            res = algorithms.Result(p, self.data1s, [''], p.name)
+            res = algorithms.Result(p, self.data1s, p.name)
             res.score = 41.9999  # Should accept with probability 1
             params_4 += ba.got_result(res)
         for pp in ba.current_pset:
@@ -116,7 +116,7 @@ class TestBayes:
         for i in range(10):
             next_params = []
             for p in curr_params:
-                res = algorithms.Result(p, self.data1s, [''], p.name)
+                res = algorithms.Result(p, self.data1s, p.name)
                 res.score = 42.
                 next_params += ba.got_result(res)
             curr_params = next_params

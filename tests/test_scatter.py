@@ -74,7 +74,7 @@ class TestScatter:
 
         iter2run = []
         for i in range(30):
-            res = algorithms.Result(start_params[i], self.data1s, [''], start_params[i].name)
+            res = algorithms.Result(start_params[i], self.data1s, start_params[i].name)
             res.score = 42.
             torun = ss.got_result(res)
             if i < 29:
@@ -97,7 +97,7 @@ class TestScatter:
                     continue
                 ps = iter2run[i]
                 i += 1
-                res = algorithms.Result(ps, self.data1s, [''], ps.name)
+                res = algorithms.Result(ps, self.data1s, ps.name)
                 if pi == 3 and hi == 5:
                     res.score = 37.
                     newref = (ps, 37.)
