@@ -10,7 +10,7 @@ version = re.search(
     re.M
     ).group(1)
 
-with open('README', 'rb') as f:
+with open('README.md', 'rb') as f:
     long_desc = f.read().decode('utf-8')
 
 setup(name='pybnf',
@@ -21,4 +21,4 @@ setup(name='pybnf',
       long_description=long_desc,
       author='Alex Ionkov, Eshan Mitra, Ryan Suderman',
       package=['pybnf'],
-      requires=['dask', 'distributed', 'numpy', 'nose'])
+      install_requires=['dask', 'distributed', 'numpy', 'nose', 'pyparsing'])
