@@ -86,9 +86,16 @@ class Job:
         self.models = models
         self.params = params
         self.job_id = job_id
-        self.bng_program = bngcommand
-        self.output_dir = output_dir
         self.home_dir = os.getcwd()
+        # Force absolute paths for bngcommand and output_dir, because workers do not get the relative path info.
+        if bngcommand[0] == '/':
+            self.bng_program = bngcommand
+        else:
+            self.bng_program = self.home_dir + '/' + bngcommand
+        if output_dir[0] == '/':
+            self.output_dir = output_dir
+        else:
+            self.output_dir = self.home_dir + '/' + output_dir
         self.timeout = timeout
 
     def _name_with_id(self, model):
@@ -117,6 +124,7 @@ class Job:
                 os.mkdir(folder)
                 made_folder = True
             except OSError:
+                logging.warning('Failed to create folder %s, trying again.' % folder)
                 failures += 1
                 folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
         try:
@@ -129,8 +137,9 @@ class Job:
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             res = FailedSimulation(self.params, self.job_id, 0)
-        except Exception:
-            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+        # This block is making bugs hard to diagnose
+        # except Exception:
+        #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         finally:
             os.chdir(self.home_dir)
 
