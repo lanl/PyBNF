@@ -12,6 +12,7 @@ __version__ = "0.1"
 
 
 def main():
+    print('This is the version I want to put on Darwin on 18.01.23')
     log_format = "%(asctime)-15s\t%(levelname)s\t%(message)s"
     logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log', filemode='w')
 
