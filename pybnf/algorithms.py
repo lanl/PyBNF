@@ -86,7 +86,7 @@ class Job:
         self.models = models
         self.params = params
         self.job_id = job_id
-        self.home_dir = os.getcwd()
+        self.home_dir = os.getcwd()  # This is safe because it is called from the scheduler, not the workers.
         # Force absolute paths for bngcommand and output_dir, because workers do not get the relative path info.
         if bngcommand[0] == '/':
             self.bng_program = bngcommand
@@ -98,6 +98,9 @@ class Job:
             self.output_dir = self.home_dir + '/' + output_dir
         self.timeout = timeout
 
+        # Folder where we save the model files and outputs.
+        self.folder = '%s/%s' % (self.output_dir, self.job_id)
+
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
 
@@ -107,28 +110,25 @@ class Job:
         for i, model in enumerate(self.models):
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
-            model_with_params.save(model_file_prefix)
-            model_files.append(model_file_prefix)
+            model_with_params.save('%s/%s' % (self.folder, model_file_prefix))
+            model_files.append('%s/%s' % (self.folder, model_file_prefix))
         return model_files
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
-
-        folder = '%s/%s' % (self.output_dir, self.job_id)
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
         failures = 0
         while not made_folder:
             try:
-                os.mkdir(folder)
+                os.mkdir(self.folder)
                 made_folder = True
             except OSError:
-                logging.warning('Failed to create folder %s, trying again.' % folder)
+                logging.warning('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
-                folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
+                self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
         try:
-            os.chdir(folder)
             model_files = self._write_models()
             self.execute(model_files)
             simdata = self.load_simdata()
@@ -140,15 +140,13 @@ class Job:
         # This block is making bugs hard to diagnose
         # except Exception:
         #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
-        finally:
-            os.chdir(self.home_dir)
 
         return res
 
     def execute(self, models):
         """Executes model simulations"""
         for model in models:
-            cmd = '%s %s.bngl' % (self.bng_program, model)
+            cmd = '%s %s.bngl --outdir %s' % (self.bng_program, model, self.folder)
             log_file = '%s.log' % model
             with open(log_file, 'w') as lf:
                 run(cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
@@ -167,10 +165,10 @@ class Job:
             ds[model.name] = {}
             for suff in model.suffixes:
                 if suff[0] == 'simulate':
-                    data_file = '%s_%s.gdat' % (self._name_with_id(model), suff[1])
+                    data_file = '%s/%s_%s.gdat' % (self.folder, self._name_with_id(model), suff[1])
                     data = Data(file_name=data_file)
                 else:  # suff[0] == 'parameter_scan'
-                    data_file = '%s_%s.scan' % (self._name_with_id(model), suff[1])
+                    data_file = '%s/%s_%s.scan' % (self.folder, self._name_with_id(model), suff[1])
                     data = Data(file_name=data_file)
                 ds[model.name][suff[1]] = data
         return ds
