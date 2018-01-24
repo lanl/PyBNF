@@ -125,7 +125,7 @@ class Job:
                 os.mkdir(self.folder)
                 made_folder = True
             except OSError:
-                logging.warning('Failed to create folder %s, trying again.' % self.folder)
+                logging.info('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
         try:
