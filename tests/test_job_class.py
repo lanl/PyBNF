@@ -2,9 +2,9 @@ from .context import algorithms
 from .context import data
 from .context import pset
 from .context import config
-from os import chdir
 from os import mkdir
 from os import environ
+from os import getcwd
 from os.path import isfile
 from os.path import isdir
 from shutil import rmtree
@@ -41,7 +41,7 @@ class TestJob(object):
 
     def test_job_components(self):
         mkdir('sim_x')
-        chdir('sim_x')
+        self.job.folder = getcwd() + '/sim_x'
         model_files = self.job._write_models()
         self.job.execute(model_files)
         sim_data = self.job.load_simdata()
@@ -49,11 +49,11 @@ class TestJob(object):
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
         assert isinstance(list(sim_data['Tricky'].values())[0], data.Data)
-        chdir('../')
         assert isfile('sim_x/Tricky_sim_1.bngl')
         assert isdir('sim_x/Tricky_sim_1_thing')
 
     def test_job_run(self):
+        self.job.folder = getcwd() + '/sim_1'
         res = self.job.run_simulation()
         assert isinstance(res, algorithms.Result)
         sim_data = res.simdata
@@ -67,14 +67,13 @@ class TestJob(object):
     def test_net_job(self):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
         mkdir('sim_net')
-        chdir('sim_net')
         job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', self.bngpath, '.', timeout=None)
+        job.folder = getcwd() + '/sim_net'
         job.execute(job._write_models())
-        assert isfile('TrickyWP_p1_5_test.net')
-        assert isfile('TrickyWP_p1_5_test.bngl')
-        assert isfile('TrickyWP_p1_5_test.cdat')
-        assert isfile('TrickyWP_p1_5_test.gdat')
-        chdir('../')
+        assert isfile('sim_net/TrickyWP_p1_5_test.net')
+        assert isfile('sim_net/TrickyWP_p1_5_test.bngl')
+        assert isfile('sim_net/TrickyWP_p1_5_test.cdat')
+        assert isfile('sim_net/TrickyWP_p1_5_test.gdat')
 
     def test_timeout(self):
         res = self.job_to.run_simulation()
