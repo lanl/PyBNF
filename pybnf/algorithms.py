@@ -604,14 +604,13 @@ class ParticleSwarm(Algorithm):
         self.global_best = [None, np.inf]  # The best result for the whole swarm
         self.last_best = np.inf
 
-        print2('Running Particle Swarm Optimization with %i particles for %i total simulations' %
-               (self.num_particles, self.max_evals))
-
     def start_run(self):
         """
         Start the run by initializing n particles at random positions and velocities
         :return:
         """
+        print2('Running Particle Swarm Optimization with %i particles for %i total simulations' %
+               (self.num_particles, self.max_evals))
 
         if self.config.config['initialization'] == 'lh':
             new_params_list = self.random_latin_hypercube_psets(self.num_particles)
@@ -766,14 +765,13 @@ class DifferentialEvolution(Algorithm):
 
         self.strategy = 'rand1'  # Customizable later
 
+    def start_run(self):
         if self.num_islands == 1:
             print2('Running Differential Evolution with population size %i for up to %i iterations' %
                    (self.num_per_island, self.max_iterations))
         else:
             print2('Running asynchronous Differential Evolution with %i islands of %i individuals each, '
                    'for up to %i iterations' % (self.num_islands, self.num_per_island, self.max_iterations))
-
-    def start_run(self):
 
         # Initialize random individuals
         if self.config.config['initialization'] == 'lh':
@@ -995,11 +993,9 @@ class ScatterSearch(Algorithm):
         self.local_mins = [] # (Pset, score) pairs that were stuck for 5 gens, and so replaced.
         self.reserve = []
 
-        print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
-               (self.popsize, self.popsize*(self.popsize-1), self.maxiters))
-
-
     def start_run(self):
+        print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
+               (self.popsize, self.popsize * (self.popsize - 1), self.maxiters))
         # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
         if self.config.config['initialization'] == 'lh':
             psets = self.random_latin_hypercube_psets(self.init_size)
@@ -1196,11 +1192,6 @@ class BayesAlgorithm(Algorithm):
 
         self.samples_file = None # Initialize later.
 
-        print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.' %
-               (self.num_parallel, self.max_iterations))
-        print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
-               % (self.sample_every, self.burn_in))
-
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
         self.prior = dict()  # {variable: ('n', mean, sigma), variable2: ('b', min, max)}
@@ -1223,6 +1214,11 @@ class BayesAlgorithm(Algorithm):
 
         :return: list of PSets
         """
+        print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.' %
+               (self.num_parallel, self.max_iterations))
+        print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
+               % (self.sample_every, self.burn_in))
+
         # Set up the output files
         # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
         self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
@@ -1483,8 +1479,6 @@ class SimplexAlgorithm(Algorithm):
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
 
-        print2('Running local optimization by the Simplex algorithm for %i iterations' % self.max_iterations)
-
     def _parse_start_point(self):
         """
         Called when the start point is not passed in the config (which is when we're doing a pure simplex run,
@@ -1504,6 +1498,7 @@ class SimplexAlgorithm(Algorithm):
         self.config.config['simplex_start_point'] = start_pset
 
     def start_run(self):
+        print2('Running local optimization by the Simplex algorithm for %i iterations' % self.max_iterations)
 
         # Generate the initial  num_variables+1 points in the simplex by moving parameters, one at a time, by the
         # specified step size
