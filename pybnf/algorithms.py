@@ -517,7 +517,6 @@ class Algorithm(object):
                     exit()
 
         logging.info("Fitting complete")
-        print0('Fitting complete')
 
 
 class ParticleSwarm(Algorithm):
