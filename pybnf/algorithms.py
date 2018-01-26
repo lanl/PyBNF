@@ -222,7 +222,7 @@ class Algorithm(object):
                 self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
             else:
                 logging.info('Variable type not recognized... exiting')
-                print('Unrecognized variable type: %s' % v[1])
+                print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
                 exit()
 
     def _initialize_models(self):
@@ -258,16 +258,16 @@ class Algorithm(object):
                 except CalledProcessError as c:
                     logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
                     logging.debug(c.stdout)
-                    print('Initial network generation failed for model %s... exiting' % m.name)
+                    print0('Initial network generation failed for model %s... exiting' % m.name)
                     exit()
                 except TimeoutExpired:
                     logging.debug("Network generation exceeded %d seconds... exiting" % self.config.config['wall_time_gen'])
-                    print("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
+                    print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
                     exit()
                 except Exception as e:
                     tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
                     logging.debug("Other exception occurred:\n%s" % tb)
-                    print("Unknown error occurred, see log... exiting")
+                    print0("Unknown error occurred during network generation, see log... exiting")
                     exit()
                 finally:
                     os.chdir(home_dir)
@@ -477,7 +477,7 @@ class Algorithm(object):
             if isinstance(res, FailedSimulation):
                 tb = '\n'+res.traceback if res.fail_type == 2 else ''
                 logging.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
-                print('Job %s failed' % res.name)
+                print1('Job %s failed' % res.name)
             else:
                 logging.debug('Job %s complete' % res.name)
             pending.remove(f)
@@ -485,7 +485,7 @@ class Algorithm(object):
             response = self.got_result(res)
             if response == 'STOP':
                 logging.info("Stop criterion satisfied")
-                print('Stop criterion satisfied')
+                print1('Stop criterion satisfied')
                 break
             else:
                 new_jobs = [self.make_job(ps) for ps in response]
@@ -512,7 +512,7 @@ class Algorithm(object):
                                 '%s/Results' % self.config.config['output_dir'])
                 except FileNotFoundError:
                     logging.error('Cannot find files corresponding to best fit parameter set... exiting')
-                    print('Could not find your best fit gdat file. This could happen if all of the simulations in your'
+                    print0('Could not find your best fit gdat file. This could happen if all of the simulations in your'
                           '\nrun failed, or if that gdat file was somehow deleted during the run.')
                     exit()
 
@@ -957,7 +957,8 @@ class ScatterSearch(Algorithm):
             self.init_size = config.config['init_size']
             if self.init_size < self.popsize:
                 logging.warning('init_size less than population_size. Setting it equal to population_size.')
-                print("Scatter search parameter 'init_size' cannot be less than 'population_size'. Automatically setting it equal to population_size.")
+                print1("Scatter search parameter 'init_size' cannot be less than 'population_size'. "
+                       "Automatically setting it equal to population_size.")
                 self.init_size = self.popsize
         else:
             self.init_size = 10*len(self.variables)
@@ -1056,9 +1057,9 @@ class ScatterSearch(Algorithm):
             # 2) Sort the refs list by quality.
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logging.info('Iteration %i' % self.iteration)
-            print('Iteration %i' % self.iteration)
-            print('Current scores: ' + str([x[1] for x in self.refs]))
-            print('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+            print1('Iteration %i of %i' % (self.iteration, self.maxiters))
+            print2('Current scores: ' + str([x[1] for x in self.refs]))
+            print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
@@ -1259,13 +1260,13 @@ class BayesAlgorithm(Algorithm):
         while proposed_pset is None:
             loop_count += 1
             if loop_count == 20:
-                logging.warning('Instance %i terminated after 20 iterations at the same point' % index)
-                print('One of your samples is stuck at the same point for 20+ iterations because it keeps '
+                logging.warning('Instance %i spent 20 iterations at the same point' % index)
+                print1('One of your samples is stuck at the same point for 20+ iterations because it keeps '
                                 'hitting box constraints. Consider using looser box constraints or a smaller '
                                 'step_size.')
             if loop_count == 1000:
                 logging.warning('Instance %i terminated after 1000 iterations at the same point' % index)
-                print('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
+                print1('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
                               'because it kept hitting box constraints. Consider using looser box constraints or a '
                               'smaller step_size.' % index)
                 self.iteration[index] = self.max_iterations
@@ -1282,10 +1283,10 @@ class BayesAlgorithm(Algorithm):
                and self.iteration[index] == min(self.iteration)):
                 self.output_results()
                 logging.info('Completed %i iterations' % self.iteration[index])
-                print('Completed %i iterations' % self.iteration[index])
+                print1('Completed %i iterations' % self.iteration[index])
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Instance %i finished' % index)
-                print('Instance %i finished' % index)
+                print1('Instance %i finished' % index)
                 if self.iteration[index] == min(self.iteration):
                     self.update_histograms('_final')
                     return 'STOP'

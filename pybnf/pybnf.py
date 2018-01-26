@@ -16,7 +16,7 @@ def main():
     log_format = "%(asctime)-15s\t%(levelname)s\t%(message)s"
     logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log', filemode='w')
 
-    print("PyBNF v%s" % __version__)
+    printing.print0("PyBNF v%s" % __version__)
     logging.info('Running PyBNF v%s' % __version__)
 
     parser = argparse.ArgumentParser()
@@ -68,12 +68,13 @@ def main():
                         shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
                 else:
                     logging.info("Overwrite rejected... exiting")
-                    print('Quitting')
+                    printing.print0('Quitting')
                     exit()
 
         else:
             logging.info("Requested output directory exists as an ordinary file... exiting")
-            print('Your specified output_dir already exists as an ordinary file. Please choose a different name.')
+            printing.print0('Your specified output_dir already exists as an ordinary file. Please choose a '
+                            'different name.')
             exit()
 
     os.makedirs(conf_dict['output_dir'] + '/Results')
@@ -88,11 +89,11 @@ def main():
         logging.debug('Refinement requested for best fit parameter set')
         if config.config['fit_type'] == 'sim':
             logging.debug('Cannot refine further if Simplex algorithm was used for original fit')
-            print("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
+            printing.print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
                   "\nSkipping refine.")
         else:
             logging.debug('Refining further using the Simplex algorithm')
-            print("Refining the best fit by the Simplex algorithm")
+            printing.print1("Refining the best fit by the Simplex algorithm")
             config.config['simplex_start_point'] = alg.trajectory.best_fit()
             simplex = algs.SimplexAlgorithm(config)
             simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
