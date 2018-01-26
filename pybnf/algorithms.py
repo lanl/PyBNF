@@ -12,6 +12,7 @@ from .data import Data
 from .pset import PSet
 from .pset import Trajectory
 from .pset import NetModel
+from .printing import print0, print1, print2
 
 import logging
 import numpy as np

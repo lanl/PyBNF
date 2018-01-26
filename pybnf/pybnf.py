@@ -4,6 +4,7 @@ import logging
 import argparse
 from .parse import load_config
 from .config import Configuration
+import pybnf.printing as printing
 import pybnf.algorithms as algs
 import os
 import shutil
@@ -27,6 +28,23 @@ def main():
     results = parser.parse_args()
     logging.info('Loading configuration file: %s' % results.conf_file)
     conf_dict = load_config(results.conf_file)
+
+    if 'verbosity' in conf_dict:
+        printing.verbosity = conf_dict['verbosity']
+
+    config = Configuration(conf_dict)
+    if conf_dict['fit_type'] == 'pso':
+        alg = algs.ParticleSwarm(config)
+    elif conf_dict['fit_type'] == 'de':
+        alg = algs.DifferentialEvolution(config)
+    elif conf_dict['fit_type'] == 'ss':
+        alg = algs.ScatterSearch(config)
+    elif conf_dict['fit_type'] == 'bmc':
+        alg = algs.BayesAlgorithm(config)
+    elif conf_dict['fit_type'] == 'sim':
+        alg = algs.SimplexAlgorithm(config)
+    else:
+        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
     # Create output folders, checking for overwrites.
     if os.path.exists(conf_dict['output_dir']):
@@ -61,20 +79,6 @@ def main():
     os.makedirs(conf_dict['output_dir'] + '/Results')
     os.mkdir(conf_dict['output_dir'] + '/Simulations')
     shutil.copy(results.conf_file, conf_dict['output_dir'] + '/Results')
-
-    config = Configuration(conf_dict)
-    if conf_dict['fit_type'] == 'pso':
-        alg = algs.ParticleSwarm(config)
-    elif conf_dict['fit_type'] == 'de':
-        alg = algs.DifferentialEvolution(config)
-    elif conf_dict['fit_type'] == 'ss':
-        alg = algs.ScatterSearch(config)
-    elif conf_dict['fit_type'] == 'bmc':
-        alg = algs.BayesAlgorithm(config)
-    elif conf_dict['fit_type'] == 'sim':
-        alg = algs.SimplexAlgorithm(config)
-    else:
-        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
     # Run the algorithm!
     logging.debug('Algorithm initialization')
