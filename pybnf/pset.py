@@ -405,7 +405,11 @@ class Trajectory(object):
         if len(self.trajectory) > 0:
             if not self._valid_pset(pset):
                 raise ValueError("PSet %s has incompatible parameters" % pset)
-        self.trajectory[pset] = obj
+        if np.isnan(obj):
+            # Treat nan values as Inf in order to sort correctly
+            self.trajectory[pset] = np.inf
+        else:
+            self.trajectory[pset] = obj
         self.names[pset] = name
 
     def _write(self):
