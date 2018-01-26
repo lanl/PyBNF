@@ -27,6 +27,41 @@ def main():
     results = parser.parse_args()
     logging.info('Loading configuration file: %s' % results.conf_file)
     conf_dict = load_config(results.conf_file)
+
+    # Create output folders, checking for overwrites.
+    if os.path.exists(conf_dict['output_dir']):
+        if os.path.isdir(conf_dict['output_dir']):
+            if os.path.exists(conf_dict['output_dir'] + '/Results') or os.path.exists(
+                            conf_dict['output_dir'] + '/Simulations') or os.path.exists(
+                        conf_dict['output_dir'] + '/Initialize'):
+                logging.info("Output directory has subdirectories... querying user for overwrite permission")
+                ans = 'x'
+                while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                    ans = input('It looks like your output_dir already contains Results/, Simulations/, and/or '
+                                'Initialize/ folders from a previous run. \n'
+                                'Overwrite them with the current run? [y/n] (n) ')
+                if ans.lower() == 'y' or ans.lower() == 'yes':
+                    logging.info("Overwriting existing output directory")
+                    if os.path.exists(conf_dict['output_dir'] + '/Results'):
+                        shutil.rmtree(conf_dict['output_dir'] + '/Results')
+                    if os.path.exists(conf_dict['output_dir'] + '/Simulations'):
+                        shutil.rmtree(conf_dict['output_dir'] + '/Simulations')
+                    if os.path.exists(conf_dict['output_dir'] + '/Initialize'):
+                        shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
+                else:
+                    logging.info("Overwrite rejected... exiting")
+                    print('Quitting')
+                    exit()
+
+        else:
+            logging.info("Requested output directory exists as an ordinary file... exiting")
+            print('Your specified output_dir already exists as an ordinary file. Please choose a different name.')
+            exit()
+
+    os.makedirs(conf_dict['output_dir'] + '/Results')
+    os.mkdir(conf_dict['output_dir'] + '/Simulations')
+    shutil.copy(results.conf_file, conf_dict['output_dir'] + '/Results')
+
     config = Configuration(conf_dict)
     if conf_dict['fit_type'] == 'pso':
         alg = algs.ParticleSwarm(config)
@@ -40,36 +75,6 @@ def main():
         alg = algs.SimplexAlgorithm(config)
     else:
         raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
-
-    # Create output folders, checking for overwrites.
-    if os.path.exists(config.config['output_dir']):
-        if os.path.isdir(config.config['output_dir']):
-            if os.path.exists(config.config['output_dir'] + '/Results') or os.path.exists(
-                            config.config['output_dir'] + '/Simulations'):
-                logging.info("Output directory has subdirectories... querying user for overwrite permission")
-                ans = 'x'
-                while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                    ans = input('It looks like your output_dir already contains Results/ and/or Simulations/ folders '
-                                'from a previous run. Overwrite them with the current run? [y/n] (n) ')
-                if ans.lower() == 'y' or ans.lower == 'yes':
-                    logging.info("Overwriting existing output directory")
-                    if os.path.exists(config.config['output_dir'] + '/Results'):
-                        shutil.rmtree(config.config['output_dir'] + '/Results')
-                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                        shutil.rmtree(config.config['output_dir'] + '/Simulations')
-                else:
-                    logging.info("Overwrite rejected... exiting")
-                    print('Quitting')
-                    exit()
-
-        else:
-            logging.info("Requested output directory exists as an ordinary file... exiting")
-            print('Your specified output_dir already exists as an ordinary file. Please choose a different name.')
-            exit()
-
-    os.makedirs(config.config['output_dir'] + '/Results')
-    os.mkdir(config.config['output_dir'] + '/Simulations')
-    shutil.copy(results.conf_file, config.config['output_dir'] + '/Results')
 
     # Run the algorithm!
     logging.debug('Algorithm initialization')
