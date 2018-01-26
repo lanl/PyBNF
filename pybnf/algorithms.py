@@ -517,6 +517,7 @@ class Algorithm(object):
                     exit()
 
         logging.info("Fitting complete")
+        print0('Fitting complete')
 
 
 class ParticleSwarm(Algorithm):
@@ -604,6 +605,9 @@ class ParticleSwarm(Algorithm):
         self.global_best = [None, np.inf]  # The best result for the whole swarm
         self.last_best = np.inf
 
+        print2('Running Particle Swarm Optimization with %i particles for %i total simulations' %
+               (self.num_particles, self.max_evals))
+
     def start_run(self):
         """
         Start the run by initializing n particles at random positions and velocities
@@ -639,6 +643,11 @@ class ParticleSwarm(Algorithm):
         self.num_evals += 1
 
         if self.num_evals % self.num_particles == 0:
+            if (self.num_evals / self.num_particles) % 100 == 0:
+                print1('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
+            elif (self.num_evals / self.num_particles) % 100 == 0:
+                print2('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
+                print2('Current best score: %d' % self.global_best[1])
             # End of one "pseudoflight", check if it was productive.
             if (self.last_best != np.inf and
                     np.abs(self.last_best - self.global_best[1]) <
@@ -758,6 +767,13 @@ class DifferentialEvolution(Algorithm):
 
         self.strategy = 'rand1'  # Customizable later
 
+        if self.num_islands == 1:
+            print2('Running Differential Evolution with population size %i for up to %i iterations' %
+                   (self.num_per_island, self.max_iterations))
+        else:
+            print2('Running asynchronous Differential Evolution with %i islands of %i individuals each, '
+                   'for up to %i iterations' % (self.num_islands, self.num_per_island, self.max_iterations))
+
     def start_run(self):
 
         # Initialize random individuals
@@ -821,9 +837,17 @@ class DifferentialEvolution(Algorithm):
         if self.waiting_count[island] == 0:
 
             self.iter_num[island] += 1
-            if self.iter_num[island] % self.config.config['output_every'] == 0:
-                if min(self.iter_num) == self.iter_num[island]:
+            if min(self.iter_num) == self.iter_num[island]:
+                # Last island to complete this iteration
+                if self.iter_num[island] % self.config.config['output_every'] == 0:
                     self.output_results()
+                if self.iter_num[island] % 100 == 0:
+                    print1('Completed %i of %i iterations' % (self.iter_num[island], self.max_iterations))
+                elif self.iter_num[island] % 10 == 0:
+                    print2('Completed %i of %i iterations' % (self.iter_num[island], self.max_iterations))
+                    print2('Current population fitnesses:')
+                    for l in self.fitnesses:
+                        print2(sorted(l))
 
             if self.iter_num[island] == self.max_iterations:
                 # Submit no more jobs for this island
@@ -972,6 +996,9 @@ class ScatterSearch(Algorithm):
         self.local_mins = [] # (Pset, score) pairs that were stuck for 5 gens, and so replaced.
         self.reserve = []
 
+        print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
+               (self.popsize, self.popsize*(self.popsize-1), self.maxiters))
+
 
     def start_run(self):
         # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
@@ -1057,9 +1084,12 @@ class ScatterSearch(Algorithm):
             # 2) Sort the refs list by quality.
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logging.info('Iteration %i' % self.iteration)
-            print1('Iteration %i of %i' % (self.iteration, self.maxiters))
-            print2('Current scores: ' + str([x[1] for x in self.refs]))
-            print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+            if self.iteration % 10 == 0:
+                print1('Completed iteration %i of %i' % (self.iteration, self.maxiters))
+            else:
+                print2('Completed iteration %i of %i' % (self.iteration, self.maxiters))
+                print2('Current scores: ' + str([x[1] for x in self.refs]))
+                print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
@@ -1166,6 +1196,11 @@ class BayesAlgorithm(Algorithm):
         self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
 
         self.samples_file = None # Initialize later.
+
+        print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.' %
+               (self.num_parallel, self.max_iterations))
+        print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
+               % (self.sample_every, self.burn_in))
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1279,14 +1314,20 @@ class BayesAlgorithm(Algorithm):
             if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
                and self.iteration[index] == min(self.iteration)):
                 self.update_histograms('_%i' % self.iteration[index])
-            if (self.iteration[index] % self.config.config['output_every'] == 0
-               and self.iteration[index] == min(self.iteration)):
-                self.output_results()
-                logging.info('Completed %i iterations' % self.iteration[index])
-                print1('Completed %i iterations' % self.iteration[index])
+
+            if self.iteration[index] == min(self.iteration):
+                if self.iteration[index] % self.config.config['output_every'] == 0:
+                    self.output_results()
+                if self.iteration[index] % 100 == 0:
+                    print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                    logging.info('Completed %i iterations' % self.iteration[index])
+                elif self.iteration[index] % 10 == 0:
+                    logging.info('Completed %i iterations' % self.iteration[index])
+                    print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                    print2('Current objective values: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
-                logging.info('Instance %i finished' % index)
-                print1('Instance %i finished' % index)
+                logging.info('Finished replicate number %i' % index)
+                print2('Finished replicate number %i' % index)
                 if self.iteration[index] == min(self.iteration):
                     self.update_histograms('_final')
                     return 'STOP'
@@ -1443,6 +1484,8 @@ class SimplexAlgorithm(Algorithm):
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
 
+        print2('Running local optimization by the Simplex algorithm for %i iterations' % self.max_iterations)
+
     def _parse_start_point(self):
         """
         Called when the start point is not passed in the config (which is when we're doing a pure simplex run,
@@ -1555,6 +1598,11 @@ class SimplexAlgorithm(Algorithm):
             self.iteration += 1
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
+            if self.iteration % 100 == 0:
+                print1('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
+            elif self.iteration % 10 == 0:
+                print2('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
+                print2('Current best score: %f' % sorted(self.simplex, key=lambda x: x[0])[0][0])
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:
