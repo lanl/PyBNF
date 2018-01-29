@@ -118,6 +118,7 @@ def ploop(ls):  # parse loop
                 d[key] = values
 
         except:
+            # Todo: Improve error handling here
             message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
             print(message)
             raise  # Rethrow the error that was raised, for easier debugging.
@@ -127,7 +128,7 @@ def ploop(ls):  # parse loop
     d['exp_data'] = exp_data
     return d
 
-
+# Todo: Is this unused?
 class IllegalParamException(Exception):
     def __init__(self, value):
         print(self.message)

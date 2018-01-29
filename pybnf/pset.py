@@ -263,7 +263,10 @@ class NetModel(Model):
 
 
 class ModelError(Exception):
-    pass
+    # These are sometimes but not always user-generated, so need to be able to pass the info back to the
+    # user exception handler.
+    def __init__(self, message):
+        self.message = message
 
 
 class PSet(object):

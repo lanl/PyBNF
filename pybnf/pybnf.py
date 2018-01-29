@@ -45,7 +45,7 @@ def main():
         elif conf_dict['fit_type'] == 'sim':
             alg = algs.SimplexAlgorithm(config)
         else:
-            raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
+            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
         # Create output folders, checking for overwrites.
         if os.path.exists(config.config['output_dir']):
