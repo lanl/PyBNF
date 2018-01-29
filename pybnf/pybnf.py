@@ -25,12 +25,12 @@ def main():
         parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
 
         parser.add_argument('-c', action='store', dest='conf_file',
-                            help='Path to the BioNetFit configuration file', metavar='config.conf', required=True)
+                            help='Path to the BioNetFit configuration file', metavar='config.conf')
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
         if results.conf_file is None:
-            print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf -h')
+            print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
             exit(0)
 
         logging.info('Loading configuration file: %s' % results.conf_file)

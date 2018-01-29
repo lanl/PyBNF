@@ -5,8 +5,8 @@ bad_fit_type: OK
 bad_initialization: ignores and runs anyway
 bad_objfunc: OK
 blank: OK
-bng_badcommand: 
-bng_error: print 'Initial network generation failed', then internal error
+bng_badcommand: OK
+bng_error: OK
 data_not_found: OK
 data_not_found_2: OK
 data_not_specified: OK
