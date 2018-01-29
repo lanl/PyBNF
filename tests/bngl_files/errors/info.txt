@@ -8,20 +8,22 @@ blank: internal error (KeyError 'population_size')
 bng_error: print 'Initial network generation failed', then internal error
 data_not_found: OK
 data_not_found_2: OK
-data_not_specified: 'misconfigured parameter' error
+data_not_specified: OK
 free_extra: runs anyway; automatically sets the unspecified parameter to constant 1.0
 free_missing: print 'Initial network generation failed', then internal error (not very helpful)
 garbage_line: 'misconfigured parameter' error
-invalid_config_key: 'misconfigured parameter' error
+invalid_config_key: OK
 key_bad_value: internal error
 key_bad_value_2: runs anyway, messed up results. 
-key_wrong_type: misconfigured parameter error
+key_wrong_type: OK
 long_output_tree: internal error FileNotFound
 model_not_found: OK
 model_not_specified: runs anyway, just churning through random parameters and giving all simulations inf score. 
-no_frees: OK (but could use a better message)
+no_frees: OK
 no_generate_network: runs anyway, all jobs fail
-no_suffix: OK (but message needs edit)
+no_suffix: OK
 no_write_access: internal error (PermissionError)
 
+
 specifying a conf file that does not exist: internal error
+not specifying a conf file: 

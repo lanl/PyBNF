@@ -9,6 +9,7 @@ from .printing import print0, print1, print2, PybnfError
 import pybnf.algorithms as algs
 import os
 import shutil
+import traceback
 
 __version__ = "0.1"
 
@@ -106,6 +107,8 @@ def main():
     except:
         # Sends any unhandled errors to log instead of to user output
         logging.exception('Internal error')
-        print0('Sorry, an internal error occurred. Details have been saved to bnf.log.\n'
-               'Please report this bug to help us improve PyBNF.')
+        exceptiondata = traceback.format_exc().splitlines()
+        print0('Sorry, an unknown error occurred: %s\n'
+               'Details have been saved to bnf.log.\n'
+               'Please report this bug to help us improve PyBNF.' % exceptiondata[-1])
         exit(1)

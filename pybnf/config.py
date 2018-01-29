@@ -155,7 +155,7 @@ class Configuration(object):
                         raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef,
                               "You specified that model %s.bngl corresponds to data file %s.exp, but I can't find the "
                               "corresponding action in the model file. One of the actions in %s.bngl needs to include "
-                              "the argument 'suffix=>\"%s\" '." % (ef, model.name, model.name, ef))
+                              "the argument 'suffix=>\"%s\" '." % (model.name, ef, model.name, ef))
             mapping[model.name] = efs_per_m
         return mapping
 
