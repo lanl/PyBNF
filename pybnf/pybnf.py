@@ -22,13 +22,17 @@ def main():
         print0("PyBNF v%s" % __version__)
         logging.info('Running PyBNF v%s' % __version__)
 
-        parser = argparse.ArgumentParser()
+        parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
 
         parser.add_argument('-c', action='store', dest='conf_file',
-                            help='Path to the BioNetFit configuration file', metavar='config.txt')
+                            help='Path to the BioNetFit configuration file', metavar='config.conf', required=True)
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
+        if results.conf_file is None:
+            print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf -h')
+            exit(0)
+
         logging.info('Loading configuration file: %s' % results.conf_file)
         conf_dict = load_config(results.conf_file)
         if 'verbosity' in conf_dict:
@@ -104,7 +108,7 @@ def main():
         logging.error(e.log_message)
         print0('Error: %s' % e.message)
         exit(1)
-    except:
+    except Exception:
         # Sends any unhandled errors to log instead of to user output
         logging.exception('Internal error')
         exceptiondata = traceback.format_exc().splitlines()

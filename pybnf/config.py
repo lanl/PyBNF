@@ -49,6 +49,7 @@ class Configuration(object):
         self.exp_data = self._load_exp_data()
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
+        self._check_variable_correspondence()
 
     @staticmethod
     def default_config():
@@ -212,6 +213,27 @@ class Configuration(object):
                     else:
                         variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
         return variables, variables_specs
+
+
+    def _check_variable_correspondence(self):
+        """
+        Verifies that each variable specified in the configuration appears in at least one model file, and each
+        FREE parameter specified in a model file appears in the config file
+        :return:
+        """
+        model_vars = set()
+        for m in self.models.values():
+            model_vars.update(m.param_names)
+
+        extra_in_conf = set(self.variables).difference(model_vars)
+        extra_in_model = set(model_vars).difference(self.variables)
+        if len(extra_in_conf) > 0:
+            raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '
+                             'file: %s' % extra_in_conf)
+        if len(extra_in_model) > 0:
+            raise PybnfError('The following free parameters are in your model files, but are not declared in your '
+                             '.conf file: %s' % extra_in_model)
+
 
 
 class UnknownObjectiveFunctionError(PybnfError):

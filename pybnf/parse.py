@@ -72,7 +72,10 @@ def parse(s):
 
 
 def load_config(path):
-    infile = open(path, 'r')
+    try:
+        infile = open(path, 'r')
+    except FileNotFoundError:
+        raise PybnfError('Configuration file %s not found' % path)
     param_dict = ploop(infile.readlines())
     infile.close()
     return param_dict

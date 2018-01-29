@@ -10,8 +10,8 @@ bng_error: print 'Initial network generation failed', then internal error
 data_not_found: OK
 data_not_found_2: OK
 data_not_specified: OK
-free_extra: runs anyway; automatically sets the unspecified parameter to constant 1.0
-free_missing: print 'Initial network generation failed', then internal error (not very helpful)
+free_extra: OK
+free_missing: OK
 garbage_line: OK
 invalid_config_key: OK
 key_bad_value: internal error
@@ -26,5 +26,5 @@ no_suffix: OK
 no_write_access: internal error (PermissionError)
 
 
-specifying a conf file that does not exist: internal error
-not specifying a conf file: 
+specifying a conf file that does not exist: OK
+not specifying a conf file: OK
