@@ -22,6 +22,9 @@ class Configuration(object):
         :param d: The result from parsing a configuration file
         :type d: dict
         """
+        if len(d['models']) == 0:
+            raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
+
         if not self._req_user_params() <= d.keys():
             unspecified_keys = []
             for k in self._req_user_params():
@@ -109,7 +112,7 @@ class Configuration(object):
     @staticmethod
     def _req_user_params():
         """Configuration keys that the user must specify"""
-        return {'models'}
+        return {'models', 'population_size', 'max_iterations'}
 
     def _load_models(self):
         """

@@ -39,8 +39,8 @@ verbosity: Specifies the amount of information output to the terminal. 0 - Quiet
 
 ***Settings that apply to multiple Algorithms***
 
-population_size: How many individuals to have in the population. 
-max_iterations: Max number of iterations
+population_size: How many individuals to have in the population. Required.
+max_iterations: Max number of iterations. Required.
 initialization: 'rand' - initialize params randomly according to the distributions. 'lh' - For random_var's and loguniform_var's, initialize with a latin hypercube distribution, to more uniformly cover the search space.
 
 
