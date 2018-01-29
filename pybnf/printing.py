@@ -20,3 +20,12 @@ def print2(s):
     """Print the statement only if the verbosity level is 2"""
     if verbosity >= 2:
         print(s)
+
+
+class PybnfError(RuntimeError):
+    """
+    Represents a user-generated error for which we can provide an informative message to the user about what
+    went wrong with the input before quitting.
+    """
+    def __init__(self, message):
+        self.message = message
