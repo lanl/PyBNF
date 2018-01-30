@@ -31,6 +31,19 @@ class TestObjectiveFunctions:
         cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
 
         cls.chi_sq = objective.ChiSquareObjective()
+        cls.sos = objective.SumOfSquaresObjective()
+        cls.norm_sos = objective.NormSumOfSquaresObjective()
+        cls.ave_norm_sos = objective.AveNormSumOfSquaresObjective()
 
     def test_chi_square(self):
         npt.assert_almost_equal(self.chi_sq.evaluate(self.d1s, self.d1e), 0.797777777777778)  # Value computed by hand
+
+    def test_sum_of_squares(self):
+        npt.assert_almost_equal(self.sos.evaluate(self.d1s, self.d1e), 0.1)  # Value computed by hand
+
+    def test_norm_sum_of_squares(self):
+        npt.assert_almost_equal(self.norm_sos.evaluate(self.d1s, self.d1e), 0.00441111111111)  # Value computed by hand
+
+    def test_ave_norm_sum_of_squares(self):
+        # Value computed by hand
+        npt.assert_almost_equal(self.ave_norm_sos.evaluate(self.d1s, self.d1e), 0.00657963719, decimal=5)
