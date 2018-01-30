@@ -2,7 +2,8 @@
 
 
 from .data import Data
-from .objective import ChiSquareObjective
+from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
+    AveNormSumOfSquaresObjective
 from .pset import BNGLModel, ModelError
 from .printing import verbosity, print0, print1, print2, PybnfError
 
@@ -166,9 +167,15 @@ class Configuration(object):
     def _load_obj_func(self):
         if self.config['objfunc'] == 'chi_sq':
             return ChiSquareObjective()
+        elif self.config['objfunc'] == 'sos':
+            return SumOfSquaresObjective()
+        elif self.config['objfunc'] == 'norm_sos':
+            return NormSumOfSquaresObjective()
+        elif self.config['objfunc'] == 'ave_norm_sos':
+            return AveNormSumOfSquaresObjective()
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
               "Objective function %s is not defined. Valid objective function choices are: "
-              "chi_sq" % self.config['objfunc'])
+              "chi_sq, sos, norm_sos, ave_norm_sos" % self.config['objfunc'])
 
     def _load_variables(self):
         """
