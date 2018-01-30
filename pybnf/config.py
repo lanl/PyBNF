@@ -22,7 +22,7 @@ class Configuration(object):
         :param d: The result from parsing a configuration file
         :type d: dict
         """
-        if len(d['models']) == 0:
+        if 'models' not in d or len(d['models']) == 0:
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
 
         if not self._req_user_params() <= d.keys():

@@ -34,18 +34,18 @@ class TestScatter:
         cls.d2s = data.Data()
         cls.d2s.data = cls.d2s._read_file_lines(cls.data2s, '\s+')
 
-        cls.variables = ['v1', 'v2', 'v3']
+        cls.variables = ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.params = pset.PSet({'v1': 3.14, 'v2': 1.0, 'v3': 0.1})
-        cls.params2 = pset.PSet({'v1': 4.14, 'v2': 10.0, 'v3': 1.0})
+        cls.params = pset.PSet({'v1__FREE__': 3.14, 'v2__FREE__': 1.0, 'v3__FREE__': 0.1})
+        cls.params2 = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
 
         # Note mutation_rate is set to 1.0 because for tests with few params, with a lower mutation_rate might randomly
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.
         cls.config = config.Configuration({
             'population_size': 7, 'max_iterations': 20, 'fit_type': 'ss',
-            ('random_var', 'v1'): [0, 10], ('random_var', 'v2'): [0, 10], ('random_var', 'v3'): [0, 10],
+            ('random_var', 'v1__FREE__'): [0, 10], ('random_var', 'v2__FREE__'): [0, 10], ('random_var', 'v3__FREE__'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
