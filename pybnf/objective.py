@@ -1,6 +1,7 @@
 import numpy as np
 import pybnf.data as data
 import warnings
+from .printing import PybnfError, print1
 
 
 class ObjectiveFunction(object):
@@ -52,6 +53,10 @@ class SummationObjective(ObjectiveFunction):
     Currently, this describes all objective functions in PyBNF.
     """
 
+    def __init__(self):
+        # Keep track of which warnings we've printed, so we only print each one once.
+        self.warned = set()
+
     def evaluate(self, sim_data, exp_data):
         """
         :param sim_data: A Data object containing simulated data
@@ -64,9 +69,9 @@ class SummationObjective(ObjectiveFunction):
         indvar = min(exp_data.cols, key=exp_data.cols.get)  # Get the name of column 0, the independent variable
 
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
+        # Warn if experiment columns are going unused
+        self._check_columns(exp_data.cols, compare_cols)
         compare_cols.remove(indvar)
-
-        # TODO: Warn if experiment columns are going unused
 
         func_value = 0.0
         # Iterate through rows of experimental data
@@ -77,15 +82,17 @@ class SummationObjective(ObjectiveFunction):
             sim_row = np.argmax(np.isclose(exp_data.data[rownum, 0], sim_data.data[:, 0]))
             # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
             if sim_row == 0 and not np.isclose(exp_data.data[rownum, 0], sim_data.data[0, 0]):
-                warnings.warn("Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
-                              " because that " + indvar + " was not in the simulation data.", RuntimeWarning)
+                warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
+                if warnstr not in self.warned:
+                    print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
+                           " because that " + indvar + " was not in the simulation data.")
+                    self.warned.add(warnstr)
                 continue
 
             for col_name in compare_cols:
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):
                     continue
                 # TODO: handle nan simulation values
-                # TODO: more informative error if _SD is missing
                 func_value += self.eval_point(sim_data, exp_data, sim_row, rownum, col_name)
 
         return func_value
@@ -105,6 +112,20 @@ class SummationObjective(ObjectiveFunction):
         """
         raise NotImplementedError('Subclasses of SummationObjective must override eval_point')
 
+    def _check_columns(self, exp_cols, compare_cols):
+        """
+        Check that all exp_cols are being read in compare_cols; give a warning if not.
+        :param exp_cols: Iterable of all experimental data column names
+        :param compare_cols: Iterable of the names being used
+        :return: None
+        """
+        missed = set(exp_cols).difference(set(compare_cols))
+        for name in missed:
+            if name not in self.warned:
+                print1("Warning: Ignoring experimental data column '%s' because that name is not in the simulation "
+                       "output" % name)
+                self.warned.add(name)
+
 
 class ChiSquareObjective(SummationObjective):
 
@@ -112,8 +133,30 @@ class ChiSquareObjective(SummationObjective):
 
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        exp_sigma = exp_data.data[exp_row, exp_data.cols[col_name + '_SD']]
+        try:
+            # Todo: Check for this and throw the error before all the workers get created.
+            sd_col = exp_data.cols[col_name + '_SD']
+        except KeyError:
+            raise PybnfError('Column %s_SD not found' % col_name,
+                 "Column %s_SD was not found in the experimental data. When using the chi_sq objective function, your "
+                 "data file must include a _SD column corresponding to each experimental variable, giving the standard "
+                 "deviations of that variable. " % col_name)
+        exp_sigma = exp_data.data[exp_row, sd_col]
         return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
+
+    def _check_columns(self, exp_cols, compare_cols):
+        """
+        Check that all exp_cols are being read in compare_cols; give a warning if not.
+        :param exp_cols: Iterable of all experimental data column names
+        :param compare_cols: Iterable of the names being used
+        :return: None
+        """
+        missed = set(exp_cols).difference(set(compare_cols).union(set(['%s_SD' % s for s in compare_cols])))
+        for name in missed:
+            if name not in self.warned:
+                print1("Warning: Ignoring experimental data column '%s' because that name is not in the simulation "
+                       "output" % name)
+                self.warned.add(name)
 
 
 class SumOfSquaresObjective(SummationObjective):
