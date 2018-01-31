@@ -1,0 +1,400 @@
+# filename: model.bngl
+# date of last edit: 25-Jul-2017
+# authors: Chylek LA, Mitra E, Hlavacek WS (Los Alamos National Laboratory)
+# software compatibility: RuleBender (version 2.1.0.8), 
+# BioNetGen (version 2.2.6)
+
+begin model
+
+begin parameters
+
+# The following parameters were fit to experimental degranulation data using
+# BioNetFit 1.0
+# For more information, see the BioNetFit configuration file model_fit.conf
+
+X_tot__FREE__ 6.13331088e+00
+k_Xoff__FREE__ 1.91394890e-06
+k_Xon__FREE__ 9.39816993e+04
+kase__FREE__ 3.76143208e+00
+kdegX__FREE__ 3.19130252e-04
+kdegran__FREE__ 188893.283626392
+km_Ship1__FREE__ 1.43154204e-03
+km_Syk__FREE__ 2.87783197e-01
+km_x__FREE__ 1.12185442e-01
+koff__FREE__ 4.45671503e-03
+kp_Ship1__FREE__ 1.10810534e+04
+kp_Syk__FREE__ 2.65462642e+05
+kp_x__FREE__ 7.81553987e+05
+kpten__FREE__ 0.00995093271320638
+ksynth1__FREE__ 1.84930114e-02
+pase__FREE__ 1.60206452e-01
+
+#  End fit parameters
+
+# system size scaling factor (>0)
+f 1 # cells per reaction compartment
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# time unit conversion factor
+T 60 # s per min
+
+# channel volume in microfluidic device
+Vchannel 500e-9 # L per channel (500 nL)
+
+# number of cells per channel
+Nchannel 1000 # cells per channel
+
+# volume of extracellular fluid
+Vecf=f*(Vchannel/Nchannel) # L per cell (500 pL/cell)
+
+# cytosolic volume of an RBL-2H3 cell
+# This estimate corresponds to the volume of a sphere with a diameter of 
+# 17.9 microns.
+Vcyt f*3e-12 # L per cell (3 pL/cell)
+
+# multivalent antigen abundance in medium at condition 0 
+Ag_tot_0 0 # copies per cell (cpc)
+
+# multivalent antigen abundance in medium at condition 1 
+Ag_conc1 10e-9 # M (10 nM)
+Ag_tot_1=Ag_conc1*(NA*Vecf) # cpc
+
+# antigen receptor abundance
+R_tot f*3e5 # cpc (1 nM)
+
+# Syk abundance
+Syk_tot f*3e5 # cpc (0.166 uM)
+
+# Ship1 abundance
+Ship1_tot f*3e5 # cpc (0.166 uM)
+
+# rate constant for antigen capture
+kon 1e7*T/(NA*Vecf) # /M/s converted to /cpc/min
+# We assume a diffusion-limited value of 1e7 /M/s
+
+# rate constant for antigen release
+koff koff__FREE__*T # 4.46e-3 /s converted to 0.268 /min
+
+# rate constant for pseudo first-order phosphorylation of antigen-engaged
+# receptor
+kase kase__FREE__*T # 3.76 /s converted to 2.25e+2 /min
+
+# rate constant for pseuedo first-order dephosphorylation of phosphorylated
+# receptor
+pase pase__FREE__*T # 1.60e-1 /s converted to 9.6 /min
+
+kp_Syk kp_Syk__FREE__*T/(NA*Vcyt) # 2.65e+5 /M/s converted to 8.80e-6 /cpc/min
+km_Syk km_Syk__FREE__*T # 2.88e-1 /s converted to 17.2 /min
+
+kp_Ship1 kp_Ship1__FREE__*T/(NA*Vcyt) # 1.11e+4 /M/s converted to
+# 3.68e-7 /cpc/min
+km_Ship1 km_Ship1__FREE__*T #  1.43e-3 /s converted to 8.58e-2 /min 
+
+ksynth1 ksynth1__FREE__*T # 1.85e-2 /s converted to 1.11 /min
+kdeg1 1e7*T/(NA*Vcyt) # /M/s converted to /cpc/min;
+# We assume a diffusion-limited value of 1e7 /M/s
+
+# Rate of basal degradation of PIP3 and/or IP3
+kpten kpten__FREE__*T # 9.95e-3 /s converted to 0.597 /min 
+
+
+H_tot 1e6 # cpc
+
+kdegran kdegran__FREE__*T/(NA*Vcyt) # 1.89e+5 /M/s converted to 6.27e-6/cpc/min
+
+# rate constant for degradation of X 
+# (in one step, including ubiquitination and proteosomal degradation)
+kdegX kdegX__FREE__*T # 3.19e-4 /s converted to 1.91e-2 /min
+
+
+k_Xon k_Xon__FREE__*T/(NA*Vcyt) # 9.40e+4 /M/s converted to 3.12e-6 /cpc/min
+k_Xoff k_Xoff__FREE__*T # 1.91e-6 /s converted to 1.15e-4 /min
+
+kp_x kp_x__FREE__*T/(NA*Vcyt) # 7.81e+5 /M/s converted to 2.59e-5 /cpc/min
+km_x km_x__FREE__*T # 1.12e-1 /s converted to 7.26 /min
+
+# abundance of hypothetical Ship1 cofactor X
+X_tot=X_tot__FREE__*Ship1_tot # 6.13 times the Ship1 concentration, converted
+# to 1.84e6 cpc
+
+end parameters
+
+begin molecule types
+
+# antigen (DNP-conjugated BSA)
+#  DNP: 2,4-dinitrophenyl groups
+Ag(DNP) 
+
+# antigen receptor (anti-DNP IgE bound to Fc&epsilon;RI)
+#  IgE: anti-DNP IgE
+#  Yb: tyrosine residues (0, unmodified; P, phosphorylated) 
+#     in the &beta; chain ITAM of Fc&epsilon;RI
+#  Yg: tyrosine residues (0, unmodified; P, phosphorylated)
+# 	  in the &gamma; chain ITAMs of Fc&epsilon;RI    
+R(IgE,Yb~0~P,Yg~0~P) 
+
+# protein tyrosine kinase Syk
+#  tSH2: tandem SH2 domains
+Syk(tSH2)
+
+# lipid phosphatase Ship1
+#  SH2: Src homology 2 (SH2) domain
+#  x: binding site for hypothethical Ship1 cofactor X
+Ship1(SH2,x)
+
+# hypothetical Ship1 cofactor X
+#  s: Ship1 binding site (on, active; off, inactive)
+X(s~on~off) 
+
+# phosphatidylinositol (3,4,5)-trisphosphate
+PIP3()
+
+
+# &beta;-hexosaminidase
+#  loc: location (in, inside granules; out, secreted/outside cell)
+H(loc~in~out)
+
+end molecule types
+
+begin seed species
+
+# initial conditions
+
+# initial abundance of free antigen (in medium) per cell
+# The $ prefix indicates that this abundance is to be held constant.
+$Ag(DNP) Ag_tot_1
+
+# initial abundance of free antigen receptor
+R(IgE,Yb~0,Yg~0) R_tot
+
+# initial abundance of (inactive) cytosolic Syk
+Syk(tSH2) Syk_tot
+
+# initial abundance of (inactive) cytosolic Ship1
+Ship1(SH2,x) Ship1_tot
+
+# initial abundance of PIP3
+PIP3()	0
+
+# initial abundance of &beta;-hexosaminidase (stored in cellular granules)
+H(loc~in) H_tot
+
+# initial abundance of inactive hypothetical Ship1 cofactor X
+X(s~off) X_tot
+
+end seed species
+
+begin observables
+
+# simulation outputs
+
+Molecules Ag_total Ag() # This quantity may accumulate because free Ag
+# abundance is held fixed.
+Molecules Ag_free Ag(DNP) # This quantity is held constant, except for
+# adjustments in the actions block.
+Molecules R_bound R(IgE!+) # number of antigen-bound receptors per cell
+Molecules R_free R(IgE) # number of antigen-free receptors per cell
+Molecules RP R(Yg~P!?) # number of phosphorylated receptors per cell
+Molecules R0 R(Yg~0) # number of unphosphorylated receptors per cell
+Molecules actSyk Syk(tSH2!+) # number of Syk molecules recruited to antigen
+# receptors
+Molecules actShip1 Ship1(SH2!+,x!+) # number of Ship1 molecules recruited to
+# antigen receptors and bound to X
+Molecules Ship1_total Ship1() # total abundance of Ship1
+Molecules PIP3_total PIP3() # total abundance of PIP3
+Molecules degranulation H(loc~out) # abundance of secreted &beta;-hexominadase
+# (surrogate for secreted mediators of inflammation)
+Molecules Xall X() # total abundance of hypothetical Ship1 cofactor X
+Molecules X_on_free X(s~on) # abundance of free X in activated state
+Molecules X_on_free_or_bound X(s~on!?) # abundance of X (bound or free) in
+# activated state
+Molecules XShip1 X(s~on!1).Ship1(x!1) # abundance of Ship1 bound to (activated)
+# cofactor X
+
+end observables
+
+begin reaction rules
+
+# ligand-receptor binding
+# As a simplification, we consider a one-step binding mechanism.
+# Thus, the rate constants are effective parameters that reflect
+# capture and release of (multivalent) antigen as well as the effects 
+# of antigen-mediated receptor aggregation on the residence time of antigen
+# on the cell surface. Recall that the antigen receptor is a long-lived 1:1
+# complex of antigen-specific IgE and Fc&epsilon;RI, the high-affinity Fc
+# receptor for IgE.
+Ag(DNP)+R(IgE)<->Ag(DNP!1).R(IgE!1) kon,koff
+
+# ligand-dependent receptor phosphorylation
+# We assume that bound receptors are competent for (Lyn-mediated)
+# phosphorylation of the tyrosines in &beta; and &gamma; ITAMs. 
+# As a simplification, we assume that the &beta; and &gamma; sites are 
+# phosphorylated simultaneously as part of a single process. 
+# The effective rate constant for phosphorylation is assumed to capture
+# associaton of Lyn with receptors and the relationship between the abundance
+# of cell-associated antigen and the extent of antigen-mediated receptor
+# crosslinking.
+R(IgE!+,Yb~0,Yg~0)->R(IgE!+,Yb~P,Yg~P) kase
+
+# receptor dephosphorylation
+# # As a simplification, we assume that the &beta; and &gamma; sites are
+# dephosphorylated simultaneously as part of a single process. 
+# As an additional simplification, we consider a pseudo first-order mechanism. 
+# Thus, the effective rate constant for phosphorylation can be viewed 
+# as the Vmax/KM ratio for phosphatases. We expect phosphatase activity to be
+# high.
+R(Yb~P,Yg~P)->R(Yb~0,Yg~0) pase
+ 
+# recruitment of Syk to the &gamma; subunit of the phosphorylated receptor
+# As a simplification, we consider a one-step binding mechanism.
+# We expect this simplification to be accurate even though the tandem 
+# SH2 domains of Syk dock to a doubly phosphorylated &gamma; ITAM via a 
+# two-step mechanism because isomerization reactions are expected to be fast.
+R(Yg~P)+Syk(tSH2)<->R(Yg~P!1).Syk(tSH2!1) kp_Syk,km_Syk
+
+# recruitment of Ship1 to the &beta; subunit of the phosphorylated receptor
+# The SH2 domain Ship1 interacts with the phosphorylated &beta; ITAM.
+R(Yb~P)+Ship1(SH2)<->R(Yb~P!1).Ship1(SH2!1) kp_Ship1,km_Ship1
+
+# receptor-mediated activation of hypothetical Ship1 cofactor X
+# As a simplification, we consider a pseudo second-order mechanism.
+# The rate constant for activation of X can be viewed as the kcat/KM ratio for
+# a receptor-associated kinase responsible for activating phosphorylation of X.
+# Note that our choice to check the phosphorylation state of R(Yb) rather than
+# R(Yg) is arbitrary, as within the simplifications of this model, the two
+# sites are phosphorylated and dephosphorylated simultaneously. 
+R(Yb~P!?)+X(s~off)->R(Yb~P!?)+X(s~on) k_Xon
+
+# decativation of X
+# As a simplification, we consider a pseudo first-order mechanism.
+X(s~on)->X(s~off) k_Xoff
+
+# activated Syk-dependent synthesis of PIP3
+# PI3K is recruited to phosphorylated LAT, a key substrate of Syk and plasma
+# membrane protein, and there generates PI(3,4,5)P3 from PI(4,5)P2.
+# As a simplification, we assume that PI3K activity (and PIP3 generation) is
+# proportional to the abundance of receptor-recruited Syk. Thus, we assume that
+# the rate constant for PIP3 generation captures the relationship between Syk
+# recruitment/activation and PI3K recruitment/activation enabled by
+# Syk-mediated phosphorylation of LAT.
+Syk(tSH2!+)->Syk(tSH2!+)+PIP3() ksynth1
+
+# interaction of activated X with Ship1
+# We assume that X-Ship1 interaction requires prior receptor-mediated
+# activation of X. Thus, only X with a Ship1 binding site "s" in the "on" state
+# is allowed to associate with Ship1.
+X(s~on)+Ship1(x)<->X(s~on!1).Ship1(x!1) kp_x,km_x
+
+
+# activated Ship1-dependent clearance of PIP3
+# We assume that membrane-associated Ship1, when bound to both the receptor and
+# a cofactor (X), is mainly responsible for clearance of PIP3. Ship1 catalyzes
+# the conversion of PI(3,4,5)P3 to PI(3,4)P2.
+Ship1(SH2!+,x!+)+PIP3()->Ship1(SH2!+,x!+) kdeg1
+
+# clearance of PIP3
+# PIP3 is degraded to PI(4,5)P2 by PTEN.
+# We assume that all degradation of PIP3 can be simplified into a single
+# pseudo first-order process.  
+PIP3()->0 kpten
+
+
+# Degradation of activated X
+# We assume that activated X is subject to ubiquitination, followed by
+# degradation in the proteosome
+# We take this to occur via a pseudo first-order process
+# X bound to Ship1 is also subject to proteosomal degradation, which is assumed
+# to liberate Ship1.
+# We assume that synthesis and degradation of *inactive* X are sufficiently
+# slow to not be relevant on the time scales studied.
+X(s~on)->0 kdegX
+X(s~on!1).Ship1(x!1)->Ship1(x) kdegX
+
+# Degranulation due to the presence of PIP3
+# PIP3 serves as a PLC&gamma; substrate, leading to the production of IP3,
+# stimulating store-operated calcium release followed by degranulation
+# We assume this occurs as a pseudo second order process. 
+PIP3()+H(loc~in)->PIP3()+H(loc~out) kdegran
+
+end reaction rules
+
+end model
+
+begin actions
+
+# The command below instructs BioNetGen to derive a reaction network from the 
+# model's rules.
+# The output is sent to a file that has a .net filename extension.
+# The .net file can be further processed to generate the ordinary differential
+# equations corresponding to the reaction network and the rate laws associated
+# with the model's rules.
+generate_network({overwrite=>1})
+
+# The commands below illustrate how we simulated 
+# 1) an initial period of multivalent antigen-stimulated IgE receptor
+# signaling,
+# 2) an intermediate period of monovalent antigen-induced IgE receptor
+# signaling quiescence, and
+# 3) a second and final period of multivalent antigen-stimulated IgE receptor
+# signaling.
+
+# For the purposes of fitting to experimental data, we repeat the series of 3
+# simulations for each time delay that was tested experimentally
+# For each one, a .exp file was saved containing the appropriate experimental
+# data point from Fig. 4
+# BioNetFit was used to fit the model to the .exp files.
+
+# first 5-min period of multivalent antigen stimulation
+setConcentration("Ag(DNP)","Ag_tot_1") 
+simulate({suffix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
+# Remember these concentrations, so we can go back for each interval tested
+saveConcentrations() 
+
+# treatment with monovalent antigen to rapidly induce signaling quiescence
+setConcentration("Ag(DNP)","Ag_tot_0")
+# Interval is 5 min
+simulate({suffix=>"p2_5",method=>"ode",t_end=>5,n_steps=>50}) 
+
+# second 5-min period of multivalent antigen stimulation
+setConcentration("Ag(DNP)","Ag_tot_1")
+# Remove all existing secreted &beta; hex, in order to measure only what is
+# secreted during this interval
+setConcentration("H(loc~out)",0) 
+simulate({suffix=>"p3_5",method=>"ode",t_end=>5,n_steps=>50})
+
+# Repeat for an interval of 30 min
+resetConcentrations() # Revert to the state after simulation 1
+setConcentration("Ag(DNP)","Ag_tot_0")
+simulate({suffix=>"p2_30",method=>"ode",t_end=>30,n_steps=>300})
+setConcentration("Ag(DNP)","Ag_tot_1")
+setConcentration("H(loc~out)",0) 
+simulate({suffix=>"p3_30",method=>"ode",t_end=>5,n_steps=>50})
+
+
+# Repeat for an interval of 60 min
+resetConcentrations() # Revert to the state after simulation 1
+setConcentration("Ag(DNP)","Ag_tot_0")
+simulate({suffix=>"p2_60",method=>"ode",t_end=>60,n_steps=>600})
+setConcentration("Ag(DNP)","Ag_tot_1")
+setConcentration("H(loc~out)",0) 
+simulate({suffix=>"p3_60",method=>"ode",t_end=>5,n_steps=>50})
+
+# Repeat for an interval of 120 min
+resetConcentrations() # Revert to the state after simulation 1
+setConcentration("Ag(DNP)","Ag_tot_0")
+simulate({suffix=>"p2_120",method=>"ode",t_end=>120,n_steps=>1200})
+setConcentration("Ag(DNP)","Ag_tot_1")
+setConcentration("H(loc~out)",0) 
+simulate({suffix=>"p3_120",method=>"ode",t_end=>5,n_steps=>50})
+
+# Repeat for an interval of 240 min
+resetConcentrations() # Revert to the state after simulation 1
+setConcentration("Ag(DNP)","Ag_tot_0")
+simulate({suffix=>"p2_240",method=>"ode",t_end=>240,n_steps=>2400})
+setConcentration("Ag(DNP)","Ag_tot_1")
+setConcentration("H(loc~out)",0) 
+simulate({suffix=>"p3_240",method=>"ode",t_end=>5,n_steps=>50})
+
+end actions
