@@ -162,7 +162,7 @@ end reaction rules
 
 end model
 
-
+begin actions
 # actions
 
 # Simulate for 600 seconds to reach equilibrium
@@ -173,3 +173,4 @@ setConcentration("L(r)","EGF_copy_number")
 
 # Simulate for 60 seconds. This simulation output is fit to the data in example6.exp
 simulate({method=>"nf",t_start=>0,t_end=>60,n_steps=>12,suffix=>"example6",get_final_state=>0})
+end actions
