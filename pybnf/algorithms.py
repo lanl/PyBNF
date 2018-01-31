@@ -363,7 +363,7 @@ class Algorithm(object):
                     param_dict[name] = val1 + row[rowindex]*(val2-val1)
                     rowindex += 1
                 elif type == 'loguniform_var':
-                    param_dict[name] = 10. ** (val1 + row[rowindex]*(val2-val1))
+                    param_dict[name] = 10. ** (np.log10(val1) + row[rowindex]*(np.log10(val2)-np.log10(val1)))
                     rowindex += 1
                 elif type == 'lognormrandom_var':
                     param_dict[name] = 10. ** np.random.normal(val1, val2)
