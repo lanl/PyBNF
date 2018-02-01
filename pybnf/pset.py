@@ -47,6 +47,7 @@ class BNGLModel(Model):
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
 
         self.generates_network = False
+        self.generate_network_line = None
         self.action_line_indices = []
         self.actions = []
 
@@ -89,6 +90,7 @@ class BNGLModel(Model):
                 self.split_line_index = i + 1
             elif re.search('generate_network', line):
                 self.generates_network = True
+                self.generate_network_line = line
 
             action_suffix = self._get_action_suffix(line)
             if action_suffix is not None:
@@ -193,7 +195,7 @@ class BNGLModel(Model):
         if gen_only:
             action_lines = [
                 'begin actions\n',
-                'generate_network({overwrite=>1})\n',
+                self.generate_network_line + '\n',
                 'end actions'
             ]
             self.model_lines = \
