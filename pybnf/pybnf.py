@@ -108,6 +108,10 @@ def main():
         logging.error(e.log_message)
         print0('Error: %s' % e.message)
         exit(1)
+    except KeyboardInterrupt:
+        print0('Fitting aborted.')
+        logging.info('Terminating due to keyboard interrupt')
+        logging.exception('Keyboard interrupt')
     except Exception:
         # Sends any unhandled errors to log instead of to user output
         logging.exception('Internal error')
