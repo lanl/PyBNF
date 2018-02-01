@@ -1,6 +1,7 @@
 import pyparsing as pp
 import re
 from string import punctuation
+from .printing import PybnfError
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
                'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
@@ -15,6 +16,9 @@ numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 
 multnumkeys = ['credible_intervals']
 var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'normrandom_var', 'static_list_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
+strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
+                                 'scheduler_address']
+slvkeylist = ['static_list_var']
 
 def parse(s):
     equals = pp.Suppress('=')
@@ -23,8 +27,7 @@ def parse(s):
     # set up multiple grammars
 
     # single str value
-    strkeys = pp.oneOf(' '.join(['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
-                                 'scheduler_address']),
+    strkeys = pp.oneOf(' '.join(strkeylist),
                        caseless=True)
     string = pp.Word(pp.alphanums + punctuation)
     strgram = strkeys - equals - string - comment
@@ -49,7 +52,7 @@ def parse(s):
     vargram = varkeys - equals - bng_parameter - num - pp.Optional(num) - comment
 
     # static_list_var grammar
-    slvkey = pp.oneOf('static_list_var', caseless=True)
+    slvkey = pp.oneOf(' '.join(slvkeylist), caseless=True)
     slvgram = slvkey - equals - bng_parameter - pp.OneOrMore(num) - comment
 
     # multiple num value
@@ -69,7 +72,10 @@ def parse(s):
 
 
 def load_config(path):
-    infile = open(path, 'r')
+    try:
+        infile = open(path, 'r')
+    except FileNotFoundError:
+        raise PybnfError('Configuration file %s not found' % path)
     param_dict = ploop(infile.readlines())
     infile.close()
     return param_dict
@@ -118,16 +124,34 @@ def ploop(ls):  # parse loop
                 d[key] = values
 
         except:
-            message = "misconfigured parameter '%s' at line: %s" % (line.strip(), i)
-            print(message)
-            raise  # Rethrow the error that was raised, for easier debugging.
-            #raise Exception(message)
+            key = re.split('[ =]', line)[0].lower()
+            fmt = ''
+            if key in numkeys_int:
+                fmt = "'%s=x' where x is an integer" % key
+            elif key in numkeys_float:
+                fmt = "'%s=x' where x is a decimal number" % key
+            elif key in multnumkeys:
+                fmt = "'%s=x1 x2 ...' where x1, x2, ... is a list of numbers" % key
+            elif key in var_def_keys:
+                fmt = "'%s=v x y' where v is a variable name, and x and y are numbers" % key
+            elif key in var_def_keys_1or2nums:
+                fmt = "'%s=v x' or '%s=v x y' where v is a variable name, and x and y are decimal numbers" % (key, key)
+            elif key in strkeylist:
+                fmt = "'%s=s' where s is a string" % key
+            elif key in slvkeylist:
+                fmt = "'%s=v x1 x2 ...' where v is a variable name, and x1, x2, ... is a list of numbers" % key
+            elif key == 'model':
+                fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'"
+
+            message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
+            if fmt == '':
+                message += '%s is not a valid configuration key.' % key
+            else:
+                message += '%s should be specified in the format %s' % (key, fmt)
+
+            raise PybnfError("Misconfigured config key '%s' at line: %s" % (line.strip(), i), message)
+
 
     d['models'] = models
     d['exp_data'] = exp_data
     return d
-
-
-class IllegalParamException(Exception):
-    def __init__(self, value):
-        print(self.message)

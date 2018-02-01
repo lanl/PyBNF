@@ -3,8 +3,8 @@
 
 from .data import Data
 from .objective import ChiSquareObjective
-from .pset import BNGLModel
-from .printing import verbosity, print0, print1, print2
+from .pset import BNGLModel, ModelError
+from .printing import verbosity, print0, print1, print2, PybnfError
 
 import numpy as np
 import os
@@ -22,6 +22,9 @@ class Configuration(object):
         :param d: The result from parsing a configuration file
         :type d: dict
         """
+        if 'models' not in d or len(d['models']) == 0:
+            raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
+
         if not self._req_user_params() <= d.keys():
             unspecified_keys = []
             for k in self._req_user_params():
@@ -46,6 +49,7 @@ class Configuration(object):
         self.exp_data = self._load_exp_data()
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
+        self._check_variable_correspondence()
 
     @staticmethod
     def default_config():
@@ -109,7 +113,7 @@ class Configuration(object):
     @staticmethod
     def _req_user_params():
         """Configuration keys that the user must specify"""
-        return {'models'}
+        return {'models', 'population_size', 'max_iterations'}
 
     def _load_models(self):
         """
@@ -118,7 +122,12 @@ class Configuration(object):
         """
         md = {}
         for mf in self.config['models']:
-            model = BNGLModel(mf)
+            try:
+                model = BNGLModel(mf)
+            except FileNotFoundError:
+                raise PybnfError('Model file %s was not found.' % mf)
+            except ModelError as e:
+                raise PybnfError('In model file %s: %s' % (mf, e.message))
             md[model.name] = model
         return md
 
@@ -132,7 +141,10 @@ class Configuration(object):
         """
         ed = {}
         for ef in self.config['exp_data']:
-            d = Data(file_name=ef)
+            try:
+                d = Data(file_name=ef)
+            except FileNotFoundError:
+                raise PybnfError('Experimental data file %s was not found.' % ef)
             ed[self._exp_file_prefix(ef)] = d
         return ed
 
@@ -144,14 +156,19 @@ class Configuration(object):
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
                     if ef not in suffs:
-                        raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef)
+                        raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef,
+                              "You specified that model %s.bngl corresponds to data file %s.exp, but I can't find the "
+                              "corresponding action in the model file. One of the actions in %s.bngl needs to include "
+                              "the argument 'suffix=>\"%s\" '." % (model.name, ef, model.name, ef))
             mapping[model.name] = efs_per_m
         return mapping
 
     def _load_obj_func(self):
         if self.config['objfunc'] == 'chi_sq':
             return ChiSquareObjective()
-        raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'])
+        raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
+              "Objective function %s is not defined. Valid objective function choices are: "
+              "chi_sq" % self.config['objfunc'])
 
     def _load_variables(self):
         """
@@ -169,19 +186,18 @@ class Configuration(object):
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
                     if self.config['fit_type'] == 'sim' and k[0] not in ('var', 'logvar'):
-                        print0("Error: You've specified the Simplex algorithm (fit_type = sim)\n "
+                        raise PybnfError('Invalid Simplex variable type %s' % k[0],
+                               "You've specified the Simplex algorithm (fit_type = sim), "
                                "but defined variable %s with the %s keyword.\n"
                                "For Simplex, you must instead define a single initial value for each variable\n"
                                "using the var or logvar keyword (e.g. var=%s 42 )" % (k[1], k[0], k[1]))
-                        logging.error('Quitting due to invalid Simplex variable type')
-                        exit(1)
+
                     if self.config['fit_type'] != 'sim' and k[0] in ('var', 'logvar'):
-                        print0("Error: You've specified variable %s with keyword %s, but that keyword \n"
+                        raise PybnfError('Tried to use Simplex variable type %s in another algorithm.' % k[0],
+                               "You've specified variable %s with keyword %s, but that keyword "
                                "is only to be used with the Simplex algorithm (fit_type = sim)\n"
                                "Valid keywords for other algorithms are: random_var, normrandom_var, \n"
                                "lognormrandom_var, loguniform_var." % (k[1], k[0]))
-                        logging.error('Quitting due to Simplex variable type being used in another algorithm.')
-                        exit(1)
                     variables.append(k[1])
                     if k[0] == 'static_list_var':
                         variables_specs.append((k[1], k[0], self.config[k], None))
@@ -199,13 +215,34 @@ class Configuration(object):
         return variables, variables_specs
 
 
-class UnknownObjectiveFunctionError(Exception):
+    def _check_variable_correspondence(self):
+        """
+        Verifies that each variable specified in the configuration appears in at least one model file, and each
+        FREE parameter specified in a model file appears in the config file
+        :return:
+        """
+        model_vars = set()
+        for m in self.models.values():
+            model_vars.update(m.param_names)
+
+        extra_in_conf = set(self.variables).difference(model_vars)
+        extra_in_model = set(model_vars).difference(self.variables)
+        if len(extra_in_conf) > 0:
+            raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '
+                             'file: %s' % extra_in_conf)
+        if len(extra_in_model) > 0:
+            raise PybnfError('The following free parameters are in your model files, but are not declared in your '
+                             '.conf file: %s' % extra_in_model)
+
+
+
+class UnknownObjectiveFunctionError(PybnfError):
     pass
 
 
-class UnspecifiedConfigurationKeyError(Exception):
+class UnspecifiedConfigurationKeyError(PybnfError):
     pass
 
 
-class UnmatchedExperimentalDataError(Exception):
+class UnmatchedExperimentalDataError(PybnfError):
     pass

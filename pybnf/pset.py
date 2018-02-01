@@ -98,7 +98,8 @@ class BNGLModel(Model):
                     self.action_line_indices.append(i)
 
         if len(param_names_set) == 0:
-            raise ModelError("No free parameters found")
+            raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
+                             "that end in '__FREE__' to tell BioNetFit which parameters to fit." % bngl_file)
 
         if self.split_line_index is None:
             raise ModelError("'begin parameters' not found in BNGL file")
@@ -263,7 +264,10 @@ class NetModel(Model):
 
 
 class ModelError(Exception):
-    pass
+    # These are sometimes but not always user-generated, so need to be able to pass the info back to the
+    # user exception handler.
+    def __init__(self, message):
+        self.message = message
 
 
 class PSet(object):

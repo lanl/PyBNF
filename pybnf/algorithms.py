@@ -256,19 +256,20 @@ class Algorithm(object):
                     with open('%s.log' % gnm_name, 'w') as lf:
                         run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
-                    logging.debug("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
-                    logging.debug(c.stdout)
-                    print0('Initial network generation failed for model %s... exiting' % m.name)
-                    exit()
+                    logging.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                    logging.error(c.stdout)
+                    print0('Error: Initial network generation failed for model %s... see BioNetGen error log at '
+                           '%s/%s.log' % (m.name, os.getcwd(), gnm_name))
+                    exit(1)
                 except TimeoutExpired:
                     logging.debug("Network generation exceeded %d seconds... exiting" % self.config.config['wall_time_gen'])
                     print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
-                    exit()
+                    exit(1)
                 except Exception as e:
                     tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
                     logging.debug("Other exception occurred:\n%s" % tb)
                     print0("Unknown error occurred during network generation, see log... exiting")
-                    exit()
+                    exit(1)
                 finally:
                     os.chdir(home_dir)
 

@@ -15,13 +15,15 @@ class TestConfig(object):
         cls.cf0 = {'models': {'bngl_files/Tricky.bngl'},
                    'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                   ('random_var', 'avar__FREE__'): [4., 5.],
-                   ('loguniform_var', 'bvar__FREE__'): [0.01, 1e5],
-                   ('static_list_var', 'cvar__FREE__'): [17., 23., 37., 42.],
-                   'fit_type': 'de'}
+                   ('random_var', 'koff__FREE__'): [4., 5.],
+                   ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
+                   ('static_list_var', 'kase__FREE__'): [17., 23., 37., 42.],
+                   ('random_var', 'pase__FREE__'): [6., 7.],
+                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
-                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de'}
+                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de',
+                   'population_size': 10, 'max_iterations': 10}
 
     @classmethod
     def teardown_class(cls):
@@ -34,10 +36,12 @@ class TestConfig(object):
         assert 'p1_5' in c.mapping['Tricky']
         assert 'thing' in c.mapping['Tricky']
         assert isinstance(c.obj, objective.ChiSquareObjective)
-        assert sorted(c.variables) == ['avar__FREE__', 'bvar__FREE__', 'cvar__FREE__']
-        assert sorted(c.variables_specs) == [('avar__FREE__', 'random_var', 4., 5.),
-                                             ('bvar__FREE__', 'loguniform_var', 0.01, 1e5),
-                                             ('cvar__FREE__', 'static_list_var', [17., 23., 37., 42.], None)]
+        assert sorted(c.variables) == ['__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__']
+        assert sorted(c.variables_specs) == [('__koff2__FREE__', 'loguniform_var', 0.01, 1e5),
+                                             ('kase__FREE__', 'static_list_var', [17., 23., 37., 42.], None),
+                                             ('koff__FREE__', 'random_var', 4., 5.),
+                                             ('pase__FREE__', 'random_var', 6., 7.),
+                                             ]
 
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):

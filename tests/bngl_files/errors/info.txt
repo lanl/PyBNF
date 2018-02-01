@@ -1,0 +1,30 @@
+These test files all contain user errors that should fail cleanly with a helpful error message. 
+
+Current status
+bad_fit_type: OK
+bad_initialization: ignores and runs anyway
+bad_objfunc: OK
+blank: OK
+bng_badcommand: OK
+bng_error: OK
+data_not_found: OK
+data_not_found_2: OK
+data_not_specified: OK
+free_extra: OK
+free_missing: OK
+garbage_line: OK
+invalid_config_key: OK
+key_bad_value: internal error
+key_bad_value_2: runs anyway, messed up results. 
+key_wrong_type: OK
+long_output_tree: internal error FileNotFound
+model_not_found: OK
+model_not_specified: OK
+no_frees: OK
+no_generate_network: runs anyway, all jobs fail
+no_suffix: OK
+no_write_access: internal error (PermissionError)
+
+
+specifying a conf file that does not exist: OK
+not specifying a conf file: OK
