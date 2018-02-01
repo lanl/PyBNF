@@ -1,0 +1,380 @@
+# Ensemble model translated into BNGL
+
+begin molecule types
+	I()
+	Trash()
+	Pheromone(ste2)
+	Ste2(pheromone,gpa1,sst2)
+	Gpa1(ste2,ste4,nuc~GDP~GTP)
+	Ste4(ste5,gpa1,state~reg~synth,ste20)
+	Sst2(ste2,mapk,S539~u~p)
+	Ste20(ste4)
+	Ste5(ste11,ste7,ste4,mapk,ste5,loc~n~c,T287~u~p)
+	Ste11(mapk,ste5,degradation~u~p,S302_S306_S307~u~p~pp~ppp)
+	Ste7(ste5,mapk,S359_T363~u~p~pp)
+	Fus3(dock,T180~u~p,Y182~u~p)
+	Kss1(dock,T183~u~p,Y185~u~p)
+	Msg5(mapk)
+	Ptp(mapk)
+	Ste12(mapk,dna,dig1,dig2)
+	Dig1(ste12,mapk,activation~u~p)
+	Dig2(ste12,mapk,activation~u~p)
+	Ste2_gene(promoter)
+	Gpa1_gene(promoter)
+	Dig2_gene(promoter)
+	Ste4_gene(promoter)
+	Sst2_gene(promoter)
+	Fus3_gene(promoter)
+	Ste12_gene(promoter)
+	Msg5_gene(promoter)
+	Mekkp(ste11)
+	Mekp(ste7)
+end molecule types
+
+begin seed species
+	I()	1
+	Trash()	1
+	Pheromone(ste2)	0
+	Ste12_gene(promoter)	1
+	Dig2_gene(promoter)	1
+	Ste12(dig1!1,dig2,mapk,dna).Dig1(mapk,ste12!1,activation~u)	1390
+	Dig2(mapk,ste12,activation~u)	1184
+	Dig1(mapk,ste12,activation~u)	3409
+	Msg5_gene(promoter)	1
+	Fus3_gene(promoter)	1
+	Sst2_gene(promoter)	1
+	Gpa1_gene(promoter)	1
+	Ste4_gene(promoter)	1
+	Ste2_gene(promoter)	1
+	Gpa1(ste4!1,ste2,nuc~GDP).Ste4(ste5,gpa1!1,ste20,state~reg)	10000
+	Gpa1(ste4,ste2,nuc~GDP)	5000
+	Sst2(mapk,ste2,S539~u)	2500
+	Ste2(gpa1,sst2,pheromone)	10000
+	Ste20(ste4)	4200
+	Fus3(T180~u,Y182~u,dock)	20400
+	Kss1(Y185~u,T183~u,dock)	20800
+	Msg5(mapk)	38
+	Ptp(mapk)	1270
+	Ste7(ste5,mapk,S359_T363~u)	960
+	Ste11(ste5,S302_S306_S307~u,mapk,degradation~u)	3500
+	Ste5(ste5,ste7,ste4,mapk,ste11,loc~n,T287~u)	1680
+	Mekkp(ste11)	1750
+	Mekp(ste7)	1750
+end seed species
+
+begin observables
+	Molecules	G_act Ste4(gpa1)
+	Molecules	Gpa1_free Gpa1(ste4)
+	Molecules	Fus3tot Fus3()
+	Molecules	Fus3PP Fus3(T180~p,Y182~p)
+	Molecules	membrane_Ste5 Ste5(ste4!1).Ste4(ste5!1)
+	Molecules	bound_G_protein Gpa1(ste4!1).Ste4(gpa1!1)
+	Molecules	total_Gpa1 Gpa1()
+	Molecules	total_Ste4 Ste4()
+	Molecules	unbound_Ste4 Ste4(gpa1)
+	Molecules	ste20_bound_ste4 Ste4(ste20!1).Ste20(ste4!1)
+	Molecules	active_Ste12 Ste12(dig1,dig2,mapk)
+	Molecules	total_Ste12 Ste12()
+	Molecules	activated_Ste7 Ste7(S359_T363~pp)
+	Molecules	total_Ste7 Ste7()
+	Molecules	active_Ste11 Ste11(S302_S306_S307~ppp)
+	Molecules	Ste11_pp Ste11(S302_S306_S307~pp)
+	Molecules	Ste11_p Ste11(S302_S306_S307~p)
+	Molecules	Msg5 Msg5()
+	Molecules	active_Ste2 Ste2(pheromone!1).Pheromone(ste2!1)
+	Molecules	total_Ste2 Ste2()
+	Molecules	Kss1tot Kss1()
+	Molecules	Kss1PP Kss1(T183~p,Y185~p)
+	Molecules	synthesized_Ste4 Ste4(state~synth)
+	Molecules	Ste12_bound_to_Ste4_gene Ste12(dna!1).Ste4_gene(promoter!1)
+	Molecules	total_Pheromone Pheromone()
+	Molecules	nuclear_Ste5 Ste5(loc~n,ste11,ste7,ste4,mapk,ste5)
+	Molecules	cyto__free_ste5 Ste5(loc~c,ste11,ste7,ste4,mapk,ste5)
+	Molecules	ste5_ste11 Ste5(ste11!1).Ste11(ste5!1)
+	Molecules	ste5_ste7 Ste5(ste7!1).Ste7(ste5!1)
+	Molecules	ste5_mapk Ste5(mapk!+)
+	Molecules	ste5_dimerized Ste5(ste5!1).Ste5(ste5!1)
+	Molecules	ste5_phosph Ste5(T287~p)
+end observables
+
+begin functions
+	Func0()=Gpa1_free / bound_G_protein 
+	Func1()=0.3 * ( Gpa1_free / ( Gpa1_free + 2500))
+end functions
+
+begin reaction rules
+	Pheromone(ste2) + Ste2(pheromone) -> Pheromone(ste2!1).Ste2(pheromone!1) + Pheromone(ste2) 3e-05
+	Ste2(pheromone!1).Pheromone(ste2!1) -> Ste2(pheromone) 0.015 DeleteMolecules
+	Ste2(gpa1) + Gpa1(ste2) -> Ste2(gpa1!1).Gpa1(ste2!1) 0.001725
+	Ste2(gpa1!1).Gpa1(ste2!1) -> Ste2(gpa1) + Gpa1(ste2) 0
+	Ste2(gpa1!1).Gpa1(ste2!1,ste4) -> Ste2(gpa1) + Gpa1(ste2,ste4) 0.15
+	Ste2(gpa1!1).Gpa1(ste2!1,ste4!2).Ste4(gpa1!2) -> Ste2(gpa1) + Gpa1(ste2,ste4!2).Ste4(gpa1!2) 0.03
+	Gpa1(ste4) + Ste4(gpa1,ste5,ste20,state~reg) -> Gpa1(ste4!1).Ste4(gpa1!1,ste5,ste20,state~reg) 0.001725
+	Gpa1(ste4) + Ste4(gpa1,ste5,ste20,state~synth) -> Gpa1(ste4!1).Ste4(gpa1!1,ste5,ste20,state~synth) 8.595e-08
+	Gpa1(ste4!1).Ste4(gpa1!1) -> Gpa1(ste4) + Ste4(gpa1) 0
+	Ste4(gpa1!1).Gpa1(ste4!1,ste2,nuc~GTP) -> Ste4(gpa1) + Gpa1(ste4,ste2,nuc~GTP) 7.5
+	Ste4(gpa1!1).Gpa1(ste4!1,ste2!+,nuc~GTP) -> Ste4(gpa1) + Gpa1(ste4,ste2!+,nuc~GTP) 1.5
+	Gpa1(nuc~GDP) -> Gpa1(nuc~GTP) 0
+	Pheromone(ste2!1).Ste2(pheromone!1,gpa1!2).Gpa1(nuc~GDP,ste2!2) -> Pheromone(ste2!1).Ste2(pheromone!1,gpa1!2).Gpa1(nuc~GTP,ste2!2) 0.15
+	Ste2(sst2) + Sst2(ste2) -> Ste2(sst2!1).Sst2(ste2!1) 0.0008595
+	Ste2(sst2!1).Sst2(ste2!1) -> Ste2(sst2) + Sst2(ste2) 0.15
+	Gpa1(nuc~GTP) -> Gpa1(nuc~GDP) 0
+	Gpa1(nuc~GTP,ste2) -> Gpa1(nuc~GDP,ste2) 0.015
+	Gpa1(nuc~GTP,ste2!2).Ste2(gpa1!2,sst2) -> Gpa1(nuc~GDP,ste2!2).Ste2(gpa1!2,sst2) 0.015
+	Gpa1(nuc~GTP,ste2!2).Ste2(gpa1!2,sst2!1).Sst2(ste2!1,S539~p) -> Gpa1(nuc~GDP,ste2!2).Ste2(gpa1!2,sst2!1).Sst2(ste2!1,S539~p) 1.5
+	Gpa1(nuc~GTP,ste2!2).Ste2(gpa1!2,sst2!1).Sst2(ste2!1,S539~u) -> Gpa1(nuc~GDP,ste2!2).Ste2(gpa1!2,sst2!1).Sst2(ste2!1,S539~u) 1.5
+	Fus3(dock) + Sst2(S539,mapk) -> Fus3(dock!1).Sst2(S539,mapk!1) 8.595e-05
+	Fus3(dock!1).Sst2(S539,mapk!1) -> Fus3(dock) + Sst2(S539,mapk) 0
+	Fus3(dock!1,T180~u,Y182~u).Sst2(S539,mapk!1) -> Fus3(dock,T180~u,Y182~u) + Sst2(S539,mapk) 1.5
+	Fus3(dock!1,T180~p,Y182~u).Sst2(S539,mapk!1) -> Fus3(dock,T180~p,Y182~u) + Sst2(S539,mapk) 0.75
+	Fus3(dock!1,T180~u,Y182~p).Sst2(S539,mapk!1) -> Fus3(dock,T180~u,Y182~p) + Sst2(S539,mapk) 0.75
+	Fus3(dock!1,T180~p,Y182~p).Sst2(S539,mapk!1) -> Fus3(dock,T180~p,Y182~p) + Sst2(S539,mapk) 0.375
+	Sst2(mapk!1,S539~u).Fus3(dock!1) -> Sst2(mapk,S539~p) + Fus3(dock) 0
+	Sst2(mapk!1,S539~u).Fus3(dock!1,T180~p,Y182~p) -> Sst2(mapk,S539~p) + Fus3(dock,T180~p,Y182~p) 1.5
+	Kss1(dock) + Sst2(S539,mapk) -> Kss1(dock!1).Sst2(S539,mapk!1) 8.595e-05
+	Kss1(dock!1).Sst2(S539,mapk!1) -> Kss1(dock) + Sst2(S539,mapk) 0
+	Kss1(dock!1,T183~u,Y185~u).Sst2(S539,mapk!1) -> Kss1(dock,T183~u,Y185~u) + Sst2(S539,mapk) 1.5
+	Kss1(dock!1,T183~p,Y185~u).Sst2(S539,mapk!1) -> Kss1(dock,T183~p,Y185~u) + Sst2(S539,mapk) 0.75
+	Kss1(dock!1,T183~u,Y185~p).Sst2(S539,mapk!1) -> Kss1(dock,T183~u,Y185~p) + Sst2(S539,mapk) 0.75
+	Kss1(dock!1,T183~p,Y185~p).Sst2(S539,mapk!1) -> Kss1(dock,T183~p,Y185~p) + Sst2(S539,mapk) 0.375
+	Sst2(mapk!1,S539~u).Kss1(dock!1) -> Sst2(mapk,S539~p) + Kss1(dock) 0
+	Sst2(mapk!1,S539~u).Kss1(dock!1,T183~p,Y185~p) -> Sst2(mapk,S539~p) + Kss1(dock,T183~p,Y185~p) 1.5
+	Sst2(S539~p) -> Sst2(S539~u) 0.00087
+	Ste2(pheromone) -> Trash() 0.000435 DeleteMolecules
+	Pheromone(ste2!1).Ste2(pheromone!1) -> Trash() 0.00295 DeleteMolecules
+	Ste12(dna) + Ste2_gene(promoter) -> Ste12(dna!1).Ste2_gene(promoter!1) 2.145e-05
+	Ste12(dna!1).Ste2_gene(promoter!1) -> Ste12(dna) + Ste2_gene(promoter) 0.03
+	I() -> I() + Ste2(gpa1,pheromone,sst2) 2.865
+	Ste12(dig1,dig2,mapk,dna!1).Ste2_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Ste2_gene(promoter!1) + Ste2(gpa1,pheromone,sst2) 12
+	Gpa1(ste4) -> Trash() 4.95e-05 DeleteMolecules
+	Ste4(gpa1) -> Trash() 4.95e-05 DeleteMolecules
+	Ste4(gpa1!1).Gpa1(ste4!1) -> Trash() 3.3e-5 DeleteMolecules
+	Ste12(dna) + Gpa1_gene(promoter) -> Ste12(dna!1).Gpa1_gene(promoter!1) 2.145e-03
+	Ste12(dna!1).Gpa1_gene(promoter!1) -> Ste12(dna) + Gpa1_gene(promoter) 0.03
+	Ste12(dig1,dig2,mapk,dna!1).Gpa1_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Gpa1_gene(promoter!1) + Gpa1(ste2,ste4,nuc~GDP) 27
+	Ste12(dna) + Ste4_gene(promoter) -> Ste12(dna!1).Ste4_gene(promoter!1) 0.0002145
+	Ste12(dna!1).Ste4_gene(promoter!1) -> Ste12(dna) + Ste4_gene(promoter) 0.03
+	I() -> I() + Ste4(gpa1!1,ste5,ste20,state~reg).Gpa1(ste4!1,ste2,nuc~GDP) 0.495
+	Ste12(dna!1,dig1,dig2,mapk).Ste4_gene(promoter!1) -> Ste12(dna!1,dig1,dig2,mapk).Ste4_gene(promoter!1) + Ste4(gpa1,ste5,ste20,state~synth) 18
+	Sst2() -> Trash() 0 DeleteMolecules
+	Sst2(S539~u) -> Trash() 0.00039 DeleteMolecules
+	Sst2(S539~p) -> Trash() 0.000585 DeleteMolecules
+	Ste12(dna) + Sst2_gene(promoter) -> Ste12(dna!1).Sst2_gene(promoter!1) 2.145e-05
+	Ste12(dna!1).Sst2_gene(promoter!1) -> Ste12(dna) + Sst2_gene(promoter) 0.03
+	I() -> I() + Sst2(ste2,mapk,S539~u) 0.78
+	Ste12(dig1,dig2,mapk,dna!1).Sst2_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Sst2_gene(promoter!1) + Sst2(ste2,mapk,S539~u) 1.5
+	Ste20(ste4) + Ste4(gpa1,ste20) -> Ste20(ste4!1).Ste4(gpa1,ste20!1) 8.595e-05
+	Ste20(ste4!1).Ste4(gpa1,ste20!1) -> Ste20(ste4) + Ste4(gpa1,ste20) 0.8
+	Ste5(ste4,loc~c) + Ste4(ste5,gpa1) -> Ste5(ste4!1,loc~c).Ste4(ste5!1,gpa1) 0
+	Ste5(ste4,ste5!1,loc~c).Ste4(ste5!2).Ste5(ste5!1,ste4!2,loc~c) + Ste4(ste5,gpa1) -> Ste5(ste4!3,ste5!1,loc~c).Ste4(ste5!2).Ste4(ste5!3,gpa1).Ste5(ste5!1,ste4!2,loc~c) 0.001725
+	Ste5(ste5!1,ste4,loc~c).Ste5(ste5!1,ste4,loc~c) + Ste4(ste5,gpa1) -> Ste5(ste5!1,ste4!3,loc~c).Ste5(ste5!1,ste4,loc~c).Ste4(ste5!3,gpa1) 8.595e-05
+	Ste5(ste5,ste4,loc~c) + Ste4(gpa1,ste5) -> Ste5(ste5,ste4!3,loc~c).Ste4(gpa1,ste5!3) 8.595e-05
+	Ste5(ste4!1).Ste4(ste5!1) -> Ste5(ste4) + Ste4(ste5) 0
+	Ste4(ste5!1).Ste5(ste4!1,ste5) -> Ste4(ste5) + Ste5(ste4,ste5) 0.2
+	Ste4(ste5!1).Ste5(ste4!1,ste5!2).Ste5(ste5!2) -> Ste4(ste5) + Ste5(ste4,ste5!2).Ste5(ste5!2) 0.02
+	Ste5(ste5,loc~c) + Ste5(ste5,loc~c) -> Ste5(ste5!1,loc~c).Ste5(ste5!1,loc~c) 0
+	Ste5(ste5,ste4,loc~c) + Ste5(ste5,ste4,loc~c) -> Ste5(ste5!3,ste4,loc~c).Ste5(ste5!3,ste4,loc~c) 8.595e-05
+	Ste5(ste5,ste4!1,loc~c).Ste4(ste5!1) + Ste5(ste5,ste4,loc~c) -> Ste5(ste5!1,ste4!2,loc~c).Ste5(ste5!1,ste4,loc~c).Ste4(ste5!2) 8.595e-05
+	Ste4(ste5!2).Ste5(ste5,ste4!2,loc~c) + Ste5(ste5,ste4!1,loc~c).Ste4(ste5!1) -> Ste4(ste5!3).Ste5(ste5!1,ste4!3,loc~c).Ste5(ste5!1,ste4!2,loc~c).Ste4(ste5!2) 0.001725
+	Ste5(ste5!1).Ste5(ste5!1) -> Ste5(ste5) + Ste5(ste5) 0
+	Ste5(ste5!1,ste4).Ste5(ste5!1,ste4) -> Ste5(ste5,ste4) + Ste5(ste5,ste4) 0.075
+	Ste5(ste4!2,ste5!1).Ste5(ste5!1,ste4).Ste4(ste5!2) -> Ste5(ste4!2,ste5).Ste4(ste5!2) + Ste5(ste5,ste4) 0.0075
+	Ste5(ste4!3,ste5!1).Ste5(ste5!1,ste4!2).Ste4(ste5!3).Ste4(ste5!2) -> Ste5(ste4!3,ste5).Ste4(ste5!3) + Ste5(ste5,ste4!2).Ste4(ste5!2) 0.0005 # activated rule
+	Ste5(ste11,loc~c) + Ste11(ste5) -> Ste5(ste11!1,loc~c).Ste11(ste5!1) 8.595e-05
+	Ste5(ste11!1).Ste11(ste5!1) -> Ste5(ste11) + Ste11(ste5) 0.1605
+	Ste4(ste20!1,ste5!2).Ste20(ste4!1).Ste11(ste5!3,S302_S306_S307~u).Ste5(ste4!2,ste11!3) -> Ste4(ste20!1,ste5!2).Ste20(ste4!1).Ste11(ste5!3,S302_S306_S307~p).Ste5(ste4!2,ste11!3) 0.495
+	Ste20(ste4!1).Ste4(ste20!1,ste5!2).Ste11(ste5!3,S302_S306_S307~p).Ste5(ste4!2,ste11!3) -> Ste20(ste4!1).Ste4(ste20!1,ste5!2).Ste11(ste5!3,S302_S306_S307~pp).Ste5(ste4!2,ste11!3) 0.495
+	Ste20(ste4!1).Ste4(ste20!1,ste5!2).Ste11(ste5!3,S302_S306_S307~pp).Ste5(ste4!2,ste11!3) -> Ste20(ste4!1).Ste4(ste20!1,ste5!2).Ste11(ste5!3,S302_S306_S307~ppp).Ste5(ste4!2,ste11!3) 0.495
+	Ste5(ste7,loc~c,T287~u) + Ste7(ste5) -> Ste5(ste7!1,loc~c,T287~u).Ste7(ste5!1) 8.595e-05
+	Ste5(ste7,loc~c,T287~p) + Ste7(ste5) -> Ste5(ste7!1,loc~c,T287~p).Ste7(ste5!1) 8.595e-07
+	Ste5(ste7!1).Ste7(ste5!1) -> Ste5(ste7) + Ste7(ste5) 0.153
+	Ste5(ste11!3,ste5!2).Ste11(ste5!3).Ste5(ste5!2,ste7!1).Ste7(S359_T363~u,ste5!1) -> Ste5(ste11!3,ste5!2).Ste11(ste5!3).Ste5(ste5!2,ste7!1).Ste7(S359_T363~p,ste5!1) 0
+	Ste7(S359_T363~u,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) -> Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) 0.495
+	Ste7(S359_T363~u,ste5!1).Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) -> Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) 0.495
+	Ste7(S359_T363~u,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4).Ste4(ste5!5) -> Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4).Ste4(ste5!5) 0.495
+	Ste7(S359_T363~u,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4) -> Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4) 0.495
+	Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste7(S359_T363~u,ste5!1) -> Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste7(S359_T363~p,ste5!1) 0.495
+	Ste7(S359_T363~u,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste4(ste5!5) -> Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste4(ste5!5) 0.495
+	Ste5(ste11!3,ste5!2).Ste11(ste5!3).Ste5(ste5!2,ste7!1).Ste7(S359_T363~p,ste5!1) -> Ste5(ste11!3,ste5!2).Ste11(ste5!3).Ste5(ste5!2,ste7!1).Ste7(S359_T363~pp,ste5!1) 0
+	Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) -> Ste7(S359_T363~pp,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) 0.495
+	Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) -> Ste7(S359_T363~pp,ste5!1).Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4) 0.495
+	Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4).Ste4(ste5!5) -> Ste7(S359_T363~pp,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~pp).Ste4(ste5!4).Ste4(ste5!5) 0.495
+	Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4) -> Ste7(S359_T363~pp,ste5!1).Ste5(ste11!3,ste5!2,ste4!4).Ste5(ste5!2,ste7!1,ste4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4) 0.495
+	Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste7(S359_T363~p,ste5!1) -> Ste5(ste11!3,ste5!2,ste4).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste7(S359_T363~pp,ste5!1) 0.495
+	Ste7(S359_T363~p,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste4(ste5!5) -> Ste7(S359_T363~pp,ste5!1).Ste5(ste11!3,ste5!2,ste4!5).Ste5(ste5!2,ste7!1,ste4!4).Ste11(ste5!3,S302_S306_S307~ppp).Ste4(ste5!4).Ste4(ste5!5) 0.495
+	Ste7(mapk) + Fus3(dock) -> Ste7(mapk!1).Fus3(dock!1) 4.35e-06
+	Ste7(mapk!1).Fus3(dock!1) -> Ste7(mapk) + Fus3(dock) 0.0075
+	Ste5(ste7!1).Ste7(mapk!2,ste5!1).Fus3(dock!2,T180~u) -> Ste5(ste7!1).Ste7(mapk!2,ste5!1).Fus3(dock!2,T180~p) 0
+	Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~u,Y182~u) -> Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~p,Y182~u) 7.5
+	Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~u,Y182~p) -> Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~p,Y182~p) 7.5
+	Ste5(ste7!1).Ste7(mapk!2,ste5!1).Fus3(dock!2,Y182~u) -> Ste5(ste7!1).Ste7(mapk!2,ste5!1).Fus3(dock!2,Y182~p) 0
+	Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~u,Y182~u) -> Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~u,Y182~p) 7.5
+	Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~p,Y182~u) -> Ste5(ste7!1).Ste7(mapk!2,ste5!1,S359_T363~pp).Fus3(dock!2,T180~p,Y182~p) 7.5
+	Fus3(dock) + Ste5(mapk,loc~c) -> Fus3(dock!1).Ste5(mapk!1,loc~c) 8.595e-05
+	Fus3(dock!1).Ste5(mapk!1) -> Fus3(dock) + Ste5(mapk) 1.425
+	Ste5(mapk!1).Fus3(dock!1,Y182~u) -> Ste5(mapk!1).Fus3(dock!1,Y182~p) 0.000435
+	Ste7(mapk) + Kss1(dock) -> Ste7(mapk!1).Kss1(dock!1) 4.35e-06
+	Ste7(mapk!1).Kss1(dock!1) -> Ste7(mapk) + Kss1(dock) 0.0075
+	Ste7(mapk!2).Kss1(dock!2,T183~u) -> Ste7(mapk!2).Kss1(dock!2,T183~p) 0
+	Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~u,T183~u) -> Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~u,T183~p) 1.5
+	Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~p,T183~u) -> Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~p,T183~p) 1.5
+	Ste7(mapk!2).Kss1(dock!2,Y185~u) -> Ste7(mapk!2).Kss1(dock!2,Y185~p) 0
+	Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~u,T183~u) -> Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~p,T183~u) 1.5
+	Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~u,T183~p) -> Ste7(mapk!2,S359_T363~pp).Kss1(dock!2,Y185~p,T183~p) 1.5
+	Kss1(dock) + Ste5(mapk,loc~c) -> Kss1(dock!1).Ste5(mapk!1,loc~c) 8.595e-05
+	Kss1(dock!1).Ste5(mapk!1) -> Kss1(dock) + Ste5(mapk) 1.425
+	Ste5(mapk!1).Kss1(dock!1,Y185~u) -> Ste5(mapk!1).Kss1(dock!1,Y185~p) 0.000435
+	Ste11(S302_S306_S307~ppp) -> Ste11(S302_S306_S307~pp) 0.00087
+	Ste11(S302_S306_S307~pp) -> Ste11(S302_S306_S307~p) 0.00087
+	Ste11(S302_S306_S307~p) -> Ste11(S302_S306_S307~u) 0.00087
+	Ste11(degradation~p) -> Ste11(degradation~u) 0.00087
+	Fus3(dock) + Ste11(mapk,degradation~u) -> Fus3(dock!1).Ste11(mapk!1,degradation~u) 8.595e-05
+	Fus3(dock!1).Ste11(mapk!1) -> Fus3(dock) + Ste11(mapk) 0
+	Fus3(dock!1,T180~u,Y182~u).Ste11(mapk!1) -> Fus3(dock,T180~u,Y182~u) + Ste11(mapk) 1.5
+	Fus3(dock!1,T180~p,Y182~u).Ste11(mapk!1) -> Fus3(dock,T180~p,Y182~u) + Ste11(mapk) 0.75
+	Fus3(dock!1,T180~u,Y182~p).Ste11(mapk!1) -> Fus3(dock,T180~u,Y182~p) + Ste11(mapk) 0.75
+	Fus3(dock!1,T180~p,Y182~p).Ste11(mapk!1) -> Fus3(dock,T180~p,Y182~p) + Ste11(mapk) 0.375
+	Ste11(mapk!1,degradation~u).Kss1(dock!1) -> Ste11(mapk,degradation~p) + Kss1(dock) 0
+	Ste11(mapk!1,degradation~u).Kss1(dock!1,Y185~p,T183~p) -> Ste11(mapk,degradation~p) + Kss1(dock,Y185~p,T183~p) 1.5
+	Kss1(dock) + Ste11(mapk,degradation~u) -> Kss1(dock!1).Ste11(mapk!1,degradation~u) 8.595e-05
+	Kss1(dock!1).Ste11(mapk!1) -> Kss1(dock) + Ste11(mapk) 0
+	Kss1(dock!1,T183~u,Y185~u).Ste11(mapk!1) -> Kss1(dock,T183~u,Y185~u) + Ste11(mapk) 1.5
+	Kss1(dock!1,T183~p,Y185~u).Ste11(mapk!1) -> Kss1(dock,T183~p,Y185~u) + Ste11(mapk) 0.75
+	Kss1(dock!1,T183~u,Y185~p).Ste11(mapk!1) -> Kss1(dock,T183~u,Y185~p) + Ste11(mapk) 0.75
+	Kss1(dock!1,T183~p,Y185~p).Ste11(mapk!1) -> Kss1(dock,T183~p,Y185~p) + Ste11(mapk) 0.375
+	Ste11(mapk!1,degradation~u).Fus3(dock!1) -> Ste11(mapk,degradation~p) + Fus3(dock) 0
+	Ste11(mapk!1,degradation~u).Fus3(dock!1,Y182~p,T180~p) -> Ste11(mapk,degradation~p) + Fus3(dock,Y182~p,T180~p) 1.5
+	Ste11() -> Trash() 0 DeleteMolecules
+	Ste11(degradation~p) -> Trash() 0.00075 DeleteMolecules
+	Ste7(S359_T363~pp) -> Ste7(S359_T363~p) 0.00087
+	Ste7(S359_T363~p) -> Ste7(S359_T363~u) 0.00087
+	Fus3(T180~p) -> Fus3(T180~u) 0.00087
+	Fus3(Y182~p) -> Fus3(Y182~u) 0.00087
+	Kss1(T183~p) -> Kss1(T183~u) 0.00087
+	Kss1(Y185~p) -> Kss1(Y185~u) 0.00087
+	Fus3(dock) + Msg5(mapk) -> Fus3(dock!1).Msg5(mapk!1) 8.595e-05
+	Msg5(mapk!1).Fus3(dock!1) -> Msg5(mapk) + Fus3(dock) 0
+	Fus3(dock!1,Y182~u,T180~u).Msg5(mapk!1) -> Fus3(dock,Y182~u,T180~u) + Msg5(mapk) 7.5
+	Fus3(dock!1,Y182~p,T180~u).Msg5(mapk!1) -> Fus3(dock,Y182~p,T180~u) + Msg5(mapk) 3
+	Msg5(mapk!1).Fus3(dock!1,T180~p,Y182~u) -> Msg5(mapk) + Fus3(dock,T180~p,Y182~u) 3
+	Msg5(mapk!1).Fus3(dock!1,T180~p,Y182~p) -> Msg5(mapk) + Fus3(dock,T180~p,Y182~p) 3
+	Msg5(mapk!1).Fus3(dock!1,T180~p) -> Msg5(mapk) + Fus3(dock,T180~u) 0.12
+	Fus3(dock!1,Y182~p).Msg5(mapk!1) -> Fus3(dock,Y182~u) + Msg5(mapk) 0.12
+	Kss1(dock) + Msg5(mapk) -> Kss1(dock!1).Msg5(mapk!1) 8.595e-05
+	Msg5(mapk!1).Kss1(dock!1) -> Msg5(mapk) + Kss1(dock) 0
+	Msg5(mapk!1).Kss1(dock!1,T183~u,Y185~u) -> Msg5(mapk) + Kss1(dock,T183~u,Y185~u) 1.2
+	Msg5(mapk!1).Kss1(dock!1,T183~u,Y185~p) -> Msg5(mapk) + Kss1(dock,T183~u,Y185~p) 0.12
+	Msg5(mapk!1).Kss1(dock!1,T183~p,Y185~u) -> Msg5(mapk) + Kss1(dock,T183~p,Y185~u) 0.12
+	Msg5(mapk!1).Kss1(dock!1,T183~p,Y185~p) -> Msg5(mapk) + Kss1(dock,T183~p,Y185~p) 0.12
+	Msg5(mapk!1).Kss1(dock!1,T183~p) -> Msg5(mapk) + Kss1(dock,T183~u) 0.12
+	Msg5(mapk!1).Kss1(dock!1,Y185~p) -> Msg5(mapk) + Kss1(dock,Y185~u) 0.12
+	Fus3(dock) + Ptp(mapk) -> Fus3(dock!1).Ptp(mapk!1) 8.595e-05
+	Ptp(mapk!1).Fus3(dock!1) -> Ptp(mapk) + Fus3(dock) 0
+	Ptp(mapk!1).Fus3(dock!1,Y182~u) -> Ptp(mapk) + Fus3(dock,Y182~u) 1.5
+	Ptp(mapk!1).Fus3(dock!1,Y182~p) -> Ptp(mapk) + Fus3(dock,Y182~p) 0.3
+	Ptp(mapk!1).Fus3(dock!1,Y182~p) -> Ptp(mapk) + Fus3(dock,Y182~u) 1.2
+	Kss1(dock) + Ptp(mapk) -> Kss1(dock!1).Ptp(mapk!1) 8.595e-05
+	Ptp(mapk!1).Kss1(dock!1) -> Ptp(mapk) + Kss1(dock) 0
+	Ptp(mapk!1).Kss1(dock!1,Y185~u) -> Ptp(mapk) + Kss1(dock,Y185~u) 0.15
+	Ptp(mapk!1).Kss1(dock!1,Y185~p) -> Ptp(mapk) + Kss1(dock,Y185~p) 0.03
+	Ptp(mapk!1).Kss1(dock!1,Y185~p) -> Ptp(mapk) + Kss1(dock,Y185~u) 0.12
+	Fus3() -> Trash() 0.000192 DeleteMolecules
+	Ste12(dna) + Fus3_gene(promoter) -> Ste12(dna!1).Fus3_gene(promoter!1) 2.145e-05
+	Ste12(dna!1).Fus3_gene(promoter!1) -> Ste12(dna) + Fus3_gene(promoter) 0.03
+	I() -> I() + Fus3(dock,T180~u,Y182~u) 3.9
+	Ste12(dig1,dig2,mapk,dna!1).Fus3_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Fus3_gene(promoter!1) + Fus3(dock,T180~u,Y182~u) 15
+	Msg5() -> Trash() 0.000795 DeleteMolecules
+	Ste12(dna) + Msg5_gene(promoter) -> Ste12(dna!1).Msg5_gene(promoter!1) 2.145e-05
+	Ste12(dna!1).Msg5_gene(promoter!1) -> Ste12(dna) + Msg5_gene(promoter) 0.03
+	I() -> I() + Msg5(mapk) 0.0795
+	Ste12(dig1,dig2,mapk,dna!1).Msg5_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Msg5_gene(promoter!1) + Msg5(mapk) 0.63
+	Dig1(ste12) + Ste12(dig1) -> Dig1(ste12!1).Ste12(dig1!1) 0.000855
+	Dig1(ste12!1).Ste12(dig1!1) -> Dig1(ste12) + Ste12(dig1) 0
+	Dig1(ste12!1,activation~p).Ste12(dig1!1,dig2,mapk) -> Dig1(ste12,activation~p) + Ste12(dig1,dig2,mapk) 30
+	Dig1(ste12!1,activation~p).Ste12(dig1!1,dig2!2,mapk).Dig2(ste12!2) -> Dig1(ste12,activation~p) + Ste12(dig1,dig2!2,mapk).Dig2(ste12!2) 3
+	Dig1(ste12!1,activation~p).Ste12(dig1!1,dig2,mapk!+) -> Dig1(ste12,activation~p) + Ste12(dig1,dig2,mapk!+) 3
+	Dig1(ste12!1,activation~p).Ste12(dig1!1,dig2!2,mapk!+).Dig2(ste12!2) -> Dig1(ste12,activation~p) + Ste12(dig1,dig2!2,mapk!+).Dig2(ste12!2) 0.03
+	Ste12(dig2) + Dig2(ste12) -> Ste12(dig2!1).Dig2(ste12!1) 0.000855
+	Dig2(ste12!1).Ste12(dig2!1) -> Dig2(ste12) + Ste12(dig2) 0
+	Dig2(ste12!1,activation~p).Ste12(dig1,dig2!1) -> Dig2(ste12,activation~p) + Ste12(dig1,dig2) 30
+	Ste12(dig1!1,dig2!2).Dig1(ste12!1).Dig2(ste12!2,activation~p) -> Ste12(dig1!1,dig2).Dig1(ste12!1) + Dig2(ste12,activation~p) 3
+	Fus3(dock) + Ste12(mapk) -> Fus3(dock!1).Ste12(mapk!1) 8.595e-05
+	Ste12(mapk!1).Fus3(dock!1) -> Ste12(mapk) + Fus3(dock) 0
+	Ste12(mapk!1,dig1).Fus3(dock!1,T180~u,Y182~u) -> Ste12(mapk,dig1) + Fus3(dock,T180~u,Y182~u) 3
+	Ste12(mapk!1,dig1).Fus3(dock!1,T180~u,Y182~p) -> Ste12(mapk,dig1) + Fus3(dock,T180~u,Y182~p) 15
+	Ste12(mapk!1,dig1).Fus3(dock!1,T180~p,Y182~u) -> Ste12(mapk,dig1) + Fus3(dock,T180~p,Y182~u) 15
+	Ste12(mapk!1,dig1).Fus3(dock!1,T180~p,Y182~p) -> Ste12(mapk,dig1) + Fus3(dock,T180~p,Y182~p) 75
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Fus3(dock!1,T180~u,Y182~u) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Fus3(dock,T180~u,Y182~u) 0.3
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Fus3(dock!1,T180~u,Y182~p) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Fus3(dock,T180~u,Y182~p) 1.5
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Fus3(dock!1,T180~p,Y182~u) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Fus3(dock,T180~p,Y182~u) 1.5
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Fus3(dock!1,T180~p,Y182~p) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Fus3(dock,T180~p,Y182~p) 7.5
+	Kss1(dock) + Ste12(mapk) -> Kss1(dock!1).Ste12(mapk!1) 8.595e-05
+	Ste12(mapk!1).Kss1(dock!1) -> Ste12(mapk) + Kss1(dock) 0
+	Ste12(mapk!1,dig1).Kss1(dock!1,T183~u,Y185~u) -> Ste12(mapk,dig1) + Kss1(dock,T183~u,Y185~u) 0.75
+	Ste12(mapk!1,dig1).Kss1(dock!1,T183~u,Y185~p) -> Ste12(mapk,dig1) + Kss1(dock,T183~u,Y185~p) 3.75
+	Ste12(mapk!1,dig1).Kss1(dock!1,T183~p,Y185~u) -> Ste12(mapk,dig1) + Kss1(dock,T183~p,Y185~u) 3.75
+	Ste12(mapk!1,dig1).Kss1(dock!1,T183~p,Y185~p) -> Ste12(mapk,dig1) + Kss1(dock,T183~p,Y185~p) 18.75
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Kss1(dock!1,T183~u,Y185~u) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Kss1(dock,T183~u,Y185~u) 0.075
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Kss1(dock!1,T183~u,Y185~p) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Kss1(dock,T183~u,Y185~p) 0.375
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Kss1(dock!1,T183~p,Y185~u) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Kss1(dock,T183~p,Y185~u) 0.375
+	Ste12(mapk!1,dig1!2).Dig1(ste12!2).Kss1(dock!1,T183~p,Y185~p) -> Ste12(mapk,dig1!1).Dig1(ste12!1) + Kss1(dock,T183~p,Y185~p) 1.5
+	Dig1(mapk,activation~u) + Fus3(dock) -> Dig1(mapk!1,activation~u).Fus3(dock!1) 8.595e-05
+	Dig1(mapk!1).Fus3(dock!1) -> Dig1(mapk) + Fus3(dock) 0
+	Dig1(mapk!1).Fus3(dock!1,T180~u,Y182~u) -> Dig1(mapk) + Fus3(dock,T180~u,Y182~u) 4.5
+	Dig1(mapk!1).Fus3(dock!1,T180~u,Y182~p) -> Dig1(mapk) + Fus3(dock,T180~u,Y182~p) 2.25
+	Dig1(mapk!1).Fus3(dock!1,T180~p,Y182~u) -> Dig1(mapk) + Fus3(dock,T180~p,Y182~u) 2.25
+	Dig1(mapk!1).Fus3(dock!1,T180~p,Y182~p) -> Dig1(mapk) + Fus3(dock,T180~p,Y182~p) 1.125
+	Fus3(dock!1).Dig1(mapk!1,activation~u) -> Fus3(dock) + Dig1(mapk,activation~p) 0
+	Dig1(mapk!1,activation~u).Fus3(dock!1,T180~p,Y182~p) -> Dig1(mapk,activation~p) + Fus3(dock,T180~p,Y182~p) 1.5
+	Kss1(dock) + Dig1(mapk,activation~u) -> Kss1(dock!1).Dig1(mapk!1,activation~u) 8.595e-06
+	Kss1(dock!1).Dig1(mapk!1) -> Kss1(dock) + Dig1(mapk) 0
+	Dig1(mapk!1).Kss1(dock!1,Y185~u,T183~u) -> Dig1(mapk) + Kss1(dock,Y185~u,T183~u) 7.5
+	Dig1(mapk!1).Kss1(dock!1,Y185~u,T183~p) -> Dig1(mapk) + Kss1(dock,Y185~u,T183~p) 3.75
+	Dig1(mapk!1).Kss1(dock!1,Y185~p,T183~u) -> Dig1(mapk) + Kss1(dock,Y185~p,T183~u) 3.75
+	Dig1(mapk!1).Kss1(dock!1,Y185~p,T183~p) -> Dig1(mapk) + Kss1(dock,Y185~p,T183~p) 1.875
+	Dig1(mapk!1,activation~u).Kss1(dock!1) -> Dig1(mapk,activation~p) + Kss1(dock) 0
+	Kss1(dock!1,Y185~p,T183~p).Dig1(mapk!1,activation~u) -> Kss1(dock,Y185~p,T183~p) + Dig1(mapk,activation~p) 1.5
+	Fus3(dock) + Dig2(mapk,activation~u) -> Fus3(dock!1).Dig2(mapk!1,activation~u) 8.595e-05
+	Fus3(dock!1).Dig2(mapk!1) -> Fus3(dock) + Dig2(mapk) 0
+	Dig2(mapk!1).Fus3(dock!1,T180~u,Y182~u) -> Dig2(mapk) + Fus3(dock,T180~u,Y182~u) 1.5
+	Dig2(mapk!1).Fus3(dock!1,T180~u,Y182~p) -> Dig2(mapk) + Fus3(dock,T180~u,Y182~p) 0.75
+	Dig2(mapk!1).Fus3(dock!1,T180~p,Y182~u) -> Dig2(mapk) + Fus3(dock,T180~p,Y182~u) 0.75
+	Dig2(mapk!1).Fus3(dock!1,T180~p,Y182~p) -> Dig2(mapk) + Fus3(dock,T180~p,Y182~p) 0.375
+	Fus3(dock!1).Dig2(mapk!1,activation~u) -> Fus3(dock) + Dig2(mapk,activation~p) 0
+	Dig2(mapk!1,activation~u).Fus3(dock!1,T180~p,Y182~p) -> Dig2(mapk,activation~p) + Fus3(dock,T180~p,Y182~p) 1.5
+	Dig2(mapk,activation~u) + Kss1(dock) -> Dig2(mapk!1,activation~u).Kss1(dock!1) 8.595e-06
+	Kss1(dock!1).Dig2(mapk!1) -> Kss1(dock) + Dig2(mapk) 0
+	Dig2(mapk!1).Kss1(dock!1,Y185~u,T183~u) -> Dig2(mapk) + Kss1(dock,Y185~u,T183~u) 2.55
+	Dig2(mapk!1).Kss1(dock!1,Y185~u,T183~p) -> Dig2(mapk) + Kss1(dock,Y185~u,T183~p) 1.275
+	Dig2(mapk!1).Kss1(dock!1,Y185~p,T183~u) -> Dig2(mapk) + Kss1(dock,Y185~p,T183~u) 1.275
+	Dig2(mapk!1).Kss1(dock!1,Y185~p,T183~p) -> Dig2(mapk) + Kss1(dock,Y185~p,T183~p) 0.645
+	Kss1(dock!1).Dig2(mapk!1,activation~u) -> Kss1(dock) + Dig2(mapk,activation~p) 0
+	Kss1(dock!1,Y185~p,T183~p).Dig2(mapk!1,activation~u) -> Kss1(dock,Y185~p,T183~p) + Dig2(mapk,activation~p) 1.5
+	Dig1(activation~p) -> Dig1(activation~u) 0.00087
+	Dig2(activation~p) -> Dig2(activation~u) 0.00087
+	Dig2() -> Trash() 0.000192 DeleteMolecules
+	Ste12(dna) + Dig2_gene(promoter) -> Ste12(dna!1).Dig2_gene(promoter!1) 2.145e-05
+	Ste12(dna!1).Dig2_gene(promoter!1) -> Ste12(dna) + Dig2_gene(promoter) 0.03
+	I() -> I() + Dig2(mapk,ste12,activation~u) 0.24
+	Ste12(dig1,dig2,mapk,dna!1).Dig2_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Dig2_gene(promoter!1) + Dig2(mapk,ste12,activation~u) 0.45
+	Ste12(dna) + Ste12_gene(promoter) -> Ste12(dna!1).Ste12_gene(promoter!1) 2.145e-05
+	Ste12(dna!1).Ste12_gene(promoter!1) -> Ste12(dna) + Ste12_gene(promoter) 0.03
+	Ste12(dig1,dig2,mapk,dna!1).Ste12_gene(promoter!1) -> Ste12(dig1,dig2,mapk,dna!1).Ste12_gene(promoter!1) + Ste12(dig1,dig2,mapk,dna) 0.45
+	Ste7(ste5!2,S359_T363~pp,mapk!1).Ste5(ste7!2).Fus3(dock!1,T180~p,Y182~p) -> Ste7(ste5,S359_T363~pp,mapk) + Ste5(ste7) + Fus3(dock,T180~p,Y182~p) 0.495
+	Ste7(ste5,S359_T363~pp,mapk) -> Trash() 0.00255 DeleteMolecules
+	Ste11(ste5) + Mekkp(ste11) -> Ste11(ste5!1).Mekkp(ste11!1) 7.155e-05
+	Ste11(ste5!1).Mekkp(ste11!1) -> Ste11(ste5) + Mekkp(ste11) 0.6
+	Ste11(S302_S306_S307~ppp,ste5!1).Mekkp(ste11!1) -> Ste11(S302_S306_S307~pp,ste5!1).Mekkp(ste11!1) 0.2505
+	Ste11(S302_S306_S307~pp,ste5!1).Mekkp(ste11!1) -> Ste11(S302_S306_S307~p,ste5!1).Mekkp(ste11!1) 0.2505
+	Ste11(S302_S306_S307~p,ste5!1).Mekkp(ste11!1) -> Ste11(S302_S306_S307~u,ste5!1).Mekkp(ste11!1) 0.2505
+	Ste7(ste5) + Mekp(ste7) -> Ste7(ste5!1).Mekp(ste7!1) 7.155e-05
+	Ste7(ste5!1).Mekp(ste7!1) -> Ste7(ste5) + Mekp(ste7) 0.6
+	Ste7(S359_T363~pp,ste5!1).Mekp(ste7!1) -> Ste7(S359_T363~p,ste5!1).Mekp(ste7!1) 0.2505
+	Ste7(S359_T363~p,ste5!1).Mekp(ste7!1) -> Ste7(S359_T363~u,ste5!1).Mekp(ste7!1) 0.2505
+	Ste5(ste11,ste7,ste4,mapk,ste5,loc~c) -> Ste5(ste11,ste7,ste4,mapk,ste5,loc~n) 0.5
+	Ste5(loc~n) -> Ste5(loc~c) Func1()
+	Fus3(dock!1,Y182~p).Ste5(mapk!1,T287~u) -> Fus3(dock!1,Y182~p).Ste5(mapk!1,T287~p) 1.5
+	Ste5(T287~p) -> Ste5(T287~u) 0.0087
+end reaction rules
+
+writeXML()
