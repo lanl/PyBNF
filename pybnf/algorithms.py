@@ -641,11 +641,11 @@ class ParticleSwarm(Algorithm):
         self.num_evals += 1
 
         if self.num_evals % self.num_particles == 0:
-            if (self.num_evals / self.num_particles) % 100 == 0:
+            if (self.num_evals / self.num_particles) % 10 == 0:
                 print1('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
-            elif (self.num_evals / self.num_particles) % 100 == 0:
+            else:
                 print2('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
-                print2('Current best score: %d' % self.global_best[1])
+            print2('Current best score: %d' % self.global_best[1])
             # End of one "pseudoflight", check if it was productive.
             if (self.last_best != np.inf and
                     np.abs(self.last_best - self.global_best[1]) <
@@ -838,13 +838,13 @@ class DifferentialEvolution(Algorithm):
                 # Last island to complete this iteration
                 if self.iter_num[island] % self.config.config['output_every'] == 0:
                     self.output_results()
-                if self.iter_num[island] % 100 == 0:
+                if self.iter_num[island] % 10 == 0:
                     print1('Completed %i of %i iterations' % (self.iter_num[island], self.max_iterations))
-                elif self.iter_num[island] % 10 == 0:
+                else:
                     print2('Completed %i of %i iterations' % (self.iter_num[island], self.max_iterations))
-                    print2('Current population fitnesses:')
-                    for l in self.fitnesses:
-                        print2(sorted(l))
+                print2('Current population fitnesses:')
+                for l in self.fitnesses:
+                    print2(sorted(l))
 
             if self.iter_num[island] == self.max_iterations:
                 # Submit no more jobs for this island
@@ -1083,8 +1083,8 @@ class ScatterSearch(Algorithm):
                 print1('Completed iteration %i of %i' % (self.iteration, self.maxiters))
             else:
                 print2('Completed iteration %i of %i' % (self.iteration, self.maxiters))
-                print2('Current scores: ' + str([x[1] for x in self.refs]))
-                print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+            print2('Current scores: ' + str([x[1] for x in self.refs]))
+            print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
@@ -1313,13 +1313,13 @@ class BayesAlgorithm(Algorithm):
             if self.iteration[index] == min(self.iteration):
                 if self.iteration[index] % self.config.config['output_every'] == 0:
                     self.output_results()
-                if self.iteration[index] % 100 == 0:
+                if self.iteration[index] % 10 == 0:
                     print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                     logging.info('Completed %i iterations' % self.iteration[index])
-                elif self.iteration[index] % 10 == 0:
+                else:
                     logging.info('Completed %i iterations' % self.iteration[index])
-                    print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                    print2('Current objective values: ' + str(self.ln_current_P))
+                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                print2('Current objective values: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Finished replicate number %i' % index)
                 print2('Finished replicate number %i' % index)
@@ -1592,11 +1592,11 @@ class SimplexAlgorithm(Algorithm):
             self.iteration += 1
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()
-            if self.iteration % 100 == 0:
+            if self.iteration % 10 == 0:
                 print1('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
-            elif self.iteration % 10 == 0:
+            else:
                 print2('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
-                print2('Current best score: %f' % sorted(self.simplex, key=lambda x: x[0])[0][0])
+            print2('Current best score: %f' % sorted(self.simplex, key=lambda x: x[0])[0][0])
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:
