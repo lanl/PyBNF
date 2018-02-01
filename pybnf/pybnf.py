@@ -4,6 +4,7 @@ import logging
 import argparse
 from .parse import load_config
 from .config import Configuration
+import pybnf.printing as printing
 import pybnf.algorithms as algs
 import os
 import shutil
@@ -15,7 +16,7 @@ def main():
     log_format = "%(asctime)-15s\t%(levelname)s\t%(message)s"
     logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log', filemode='w')
 
-    print("PyBNF v%s" % __version__)
+    printing.print0("PyBNF v%s" % __version__)
     logging.info('Running PyBNF v%s' % __version__)
 
     parser = argparse.ArgumentParser()
@@ -27,6 +28,23 @@ def main():
     results = parser.parse_args()
     logging.info('Loading configuration file: %s' % results.conf_file)
     conf_dict = load_config(results.conf_file)
+
+    if 'verbosity' in conf_dict:
+        printing.verbosity = conf_dict['verbosity']
+
+    config = Configuration(conf_dict)
+    if conf_dict['fit_type'] == 'pso':
+        alg = algs.ParticleSwarm(config)
+    elif conf_dict['fit_type'] == 'de':
+        alg = algs.DifferentialEvolution(config)
+    elif conf_dict['fit_type'] == 'ss':
+        alg = algs.ScatterSearch(config)
+    elif conf_dict['fit_type'] == 'bmc':
+        alg = algs.BayesAlgorithm(config)
+    elif conf_dict['fit_type'] == 'sim':
+        alg = algs.SimplexAlgorithm(config)
+    else:
+        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
     # Create output folders, checking for overwrites.
     if os.path.exists(conf_dict['output_dir']):
@@ -50,31 +68,18 @@ def main():
                         shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
                 else:
                     logging.info("Overwrite rejected... exiting")
-                    print('Quitting')
+                    printing.print0('Quitting')
                     exit()
 
         else:
             logging.info("Requested output directory exists as an ordinary file... exiting")
-            print('Your specified output_dir already exists as an ordinary file. Please choose a different name.')
+            printing.print0('Your specified output_dir already exists as an ordinary file. Please choose a '
+                            'different name.')
             exit()
 
     os.makedirs(conf_dict['output_dir'] + '/Results')
     os.mkdir(conf_dict['output_dir'] + '/Simulations')
     shutil.copy(results.conf_file, conf_dict['output_dir'] + '/Results')
-
-    config = Configuration(conf_dict)
-    if conf_dict['fit_type'] == 'pso':
-        alg = algs.ParticleSwarm(config)
-    elif conf_dict['fit_type'] == 'de':
-        alg = algs.DifferentialEvolution(config)
-    elif conf_dict['fit_type'] == 'ss':
-        alg = algs.ScatterSearch(config)
-    elif conf_dict['fit_type'] == 'bmc':
-        alg = algs.BayesAlgorithm(config)
-    elif conf_dict['fit_type'] == 'sim':
-        alg = algs.SimplexAlgorithm(config)
-    else:
-        raise ValueError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
 
     # Run the algorithm!
     logging.debug('Algorithm initialization')
@@ -84,12 +89,13 @@ def main():
         logging.debug('Refinement requested for best fit parameter set')
         if config.config['fit_type'] == 'sim':
             logging.debug('Cannot refine further if Simplex algorithm was used for original fit')
-            print("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
+            printing.print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
                   "\nSkipping refine.")
         else:
             logging.debug('Refining further using the Simplex algorithm')
-            print("Refining the best fit by the Simplex algorithm")
+            printing.print1("Refining the best fit by the Simplex algorithm")
             config.config['simplex_start_point'] = alg.trajectory.best_fit()
             simplex = algs.SimplexAlgorithm(config)
             simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
             simplex.run()
+    printing.print0('Fitting complete')

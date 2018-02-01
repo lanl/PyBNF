@@ -4,6 +4,7 @@
 from .data import Data
 from .objective import ChiSquareObjective
 from .pset import BNGLModel
+from .printing import verbosity, print0, print1, print2
 
 import numpy as np
 import os
@@ -31,9 +32,9 @@ class Configuration(object):
 
         if 'fit_type' not in d:
             d['fit_type'] = 'de'
-            logging.warning('fit_type was not specified. Defaulting to de (Differential Evolution).')
+            print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
 
-        if logging.getLogger().getEffectiveLevel() <= logging.WARNING:
+        if verbosity >= 1:
             self.check_unused_keys(d)
 
         self.config = self.default_config()
@@ -102,7 +103,7 @@ class Configuration(object):
                and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)):
                 ignored_params = ignored_params.union(alg_specific[alg])
         for k in ignored_params.intersection(set(conf_dict.keys())):
-            logging.warning('Configuration key %s is not used in fit_type %s, so I am ignoring it'
+            print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                             % (k, conf_dict['fit_type']))
 
     @staticmethod
@@ -168,16 +169,18 @@ class Configuration(object):
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
                     if self.config['fit_type'] == 'sim' and k[0] not in ('var', 'logvar'):
-                        logging.error("You've specified the Simplex algorithm (fit_type = sim)\n "
-                                      "but defined variable %s with the %s keyword.\n"
-                                      "For Simplex, you must instead define a single initial value for each variable\n"
-                                      "using the var or logvar keyword (e.g. var=%s 42 )" % (k[1], k[0], k[1]))
+                        print0("Error: You've specified the Simplex algorithm (fit_type = sim)\n "
+                               "but defined variable %s with the %s keyword.\n"
+                               "For Simplex, you must instead define a single initial value for each variable\n"
+                               "using the var or logvar keyword (e.g. var=%s 42 )" % (k[1], k[0], k[1]))
+                        logging.error('Quitting due to invalid Simplex variable type')
                         exit(1)
                     if self.config['fit_type'] != 'sim' and k[0] in ('var', 'logvar'):
-                        logging.error("You've specified variable %s with keyword %s, but that keyword is \n"
-                                      "only to be used with the Simplex algorithm (fit_type = sim)\n"
-                                      "Valid keywords for other algorithms are: random_var, normrandom_var, \n"
-                                      "lognormrandom_var, loguniform_var." % (k[1], k[0]))
+                        print0("Error: You've specified variable %s with keyword %s, but that keyword \n"
+                               "is only to be used with the Simplex algorithm (fit_type = sim)\n"
+                               "Valid keywords for other algorithms are: random_var, normrandom_var, \n"
+                               "lognormrandom_var, loguniform_var." % (k[1], k[0]))
+                        logging.error('Quitting due to Simplex variable type being used in another algorithm.')
                         exit(1)
                     variables.append(k[1])
                     if k[0] == 'static_list_var':
