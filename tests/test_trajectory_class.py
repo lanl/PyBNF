@@ -48,7 +48,6 @@ class TestTrajectory:
         traj.add(self.ps2, self.obj2, 'p2')
         traj.add(self.ps3, self.obj3, 'p3')
         s = traj._write()
-        print(s)
         assert re.match('#\tSimulation\tObj\tx\ty\tz\n', s)
         assert re.search('\t1.0\t3.0\t700.3\t0.00052\n', s)
 
