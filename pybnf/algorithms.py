@@ -1235,7 +1235,7 @@ class BayesAlgorithm(Algorithm):
         # Because the P's are so small to start, we express posterior, p_accept, and current_P in ln space
         lnposterior = lnprior + lnlikelihood
 
-        ln_p_accept = lnposterior - self.ln_current_P[index]
+        ln_p_accept = min(0., lnposterior - self.ln_current_P[index])
         # print("lnprior:"+str(lnprior))
         # print("lnlikelihood:" + str(lnlikelihood))
         # print("lnposterior:" + str(lnposterior))
