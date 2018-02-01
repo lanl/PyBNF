@@ -61,10 +61,23 @@ class BNGLModel(Model):
         self.model_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
         in_action_block = False
 
+        continuation = ''
         for i, line in enumerate(self.model_lines):
             commenti = line.find('#')
             if commenti != -1:
                 line = line[:commenti]
+
+            if re.match(r'^\s*$', line):
+                continue # Blank line - must handle before line continuation
+
+            # Handle case where '\' is used to continue on the next line
+            line = continuation + line
+            continuation = ''
+            continue_match = re.search(r'\\\s*$', line)
+            if continue_match:
+                # This line continues on the next line
+                continuation = line[:continue_match.start()]
+                continue
 
             # Find every item matching [alphanumeric]__FREE__
             params = re.findall('[A-Za-z_]\w*__FREE__', line)
