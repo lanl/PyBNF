@@ -48,6 +48,7 @@ class BNGLModel(Model):
 
         self.generates_network = False
         self.generate_network_line = None
+        self.generate_network_line_index = None
         self.action_line_indices = []
         self.actions = []
 
@@ -92,6 +93,7 @@ class BNGLModel(Model):
             elif re.search('generate_network', line):
                 self.generates_network = True
                 self.generate_network_line = line
+                self.generate_network_line_index = i
 
             action_suffix = self._get_action_suffix(line)
             if action_suffix is not None:
@@ -126,8 +128,8 @@ class BNGLModel(Model):
                 if re.match('generate_network', line.strip()):
                     continue
                 else:
-                    self.actions.append(line)
                     self.action_line_indices.append(i)
+                    self.actions.append(line)
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
@@ -218,7 +220,8 @@ class BNGLModel(Model):
             self.model_lines = \
                 self.model_lines[:self.split_line_index] + \
                 param_text_lines + \
-                self.model_lines[self.split_line_index:self.action_line_indices[0]] + \
+                [self.model_lines[i] for i in range(self.split_line_index, len(self.model_lines))
+                 if i not in self.action_line_indices + [self.generate_network_line_index]] + \
                 action_lines
         else:
             self.model_lines = \
