@@ -29,8 +29,13 @@ def main():
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
+        if results.conf_file is None:
+            print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
+            exit(0)
         logging.info('Loading configuration file: %s' % results.conf_file)
         conf_dict = load_config(results.conf_file)
+        if 'verbosity' in conf_dict:
+            printing.verbosity = conf_dict['verbosity']
 
         # Create output folders, checking for overwrites.
         if os.path.exists(conf_dict['output_dir']):
