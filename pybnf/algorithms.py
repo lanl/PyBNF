@@ -464,6 +464,9 @@ class Algorithm(object):
 
         logging.debug('Initializing dask Client object')
         if 'scheduler_address' in self.config.config:
+            if 'parallel_count' in self.config.config:
+                print1("Warning: 'parallel_count' option is not supported when you have also specified "
+                       "'scheduler_address'. I will just use all of the workers in your scheduler.")
             client = Client(self.config.config['scheduler_address'])
         else:
             if 'parallel_count' in self.config.config:
