@@ -2,9 +2,7 @@
 
 
 from distributed import as_completed
-from distributed import Client
-from dask import set_options
-from multiprocessing.pool import ThreadPool
+from distributed import Client, LocalCluster
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import TimeoutExpired
@@ -463,15 +461,16 @@ class Algorithm(object):
 
     def run(self):
         """Main loop for executing the algorithm"""
-        # Set number of Threads to run if specified by user. Otherwise, default is the total number of cores.
-        if 'parallel_count' in self.config.config:
-            set_options(pool=ThreadPool(self.config.config['parallel_count']))
 
         logging.debug('Initializing dask Client object')
         if 'scheduler_address' in self.config.config:
             client = Client(self.config.config['scheduler_address'])
         else:
-            client = Client()
+            if 'parallel_count' in self.config.config:
+                lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
+                client = Client(lc)
+            else:
+                client = Client()
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = [self.make_job(p) for p in psets]
