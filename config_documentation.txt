@@ -8,7 +8,7 @@ model - specifies the mapping between .bngl model files and .exp files. This has
 bng_command - path to BNG2.pl . Default: value of the BNGPATH environment variable
 output_dir - Directory where to save the output. Default: bnf_out
 fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search. Future options: sa - Simulated Annealing. Default: de
-objfunc - Which objective function to use. Options: chisq - Chi Squared. Default: chisq
+objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
 scheduler_address - If running on a cluster, input the IP address and port of the scheduler (which you received when you ran dask-scheduler or dask-ssh)
 
 
