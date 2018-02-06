@@ -593,6 +593,8 @@ class Algorithm(object):
             to_save = this_model.copy_with_param_set(best_pset)
             to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name), gen_only=False)
             for suf in self.config.mapping[m]:
+                if self.config.config['smoothing'] > 1:
+                    best_name = best_name + '_rep0'  # Look for one specific replicate of the data
                 try:
                     shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
                                 (self.config.config['output_dir'], best_name, m, best_name, suf),
