@@ -175,6 +175,41 @@ class Job:
         return ds
 
 
+class JobGroup:
+    """
+    Represents a group of jobs that are identical replicates to be averaged together for smoothing
+    """
+    def __init__(self, job_id, subjob_ids):
+        """
+        :param job_id: The name of the Job this group is representing
+        :param subjob_ids: A list of the ids of the identical replicate Jobs.
+        """
+        self.job_id = job_id
+        self.subjob_ids = subjob_ids
+        self.result_list = []
+
+    def job_finished(self, res):
+        """
+        Called when one job in this group has finished
+        :param res: Result object for the completed job
+        :return: Boolean, whether everything in this job group has finished
+        """
+        if res.name not in self.subjob_ids:
+            raise ValueError('Job group %s received unwanted result %s' % (self.job_id, res.name))
+        self.result_list.append(res)
+        return len(self.result_list) == len(self.subjob_ids)
+
+    def average_results(self):
+        """
+        To be called after all results are in for this group.
+        Averages the results and returns a new Result object containing the averages
+
+        :return: New Result object with the job_id of this JobGroup and the averaged Data as the simdata
+        """
+        avedata = Data.average([r.simdata for r in self.result_list])
+        return Result(self.result_list[0].pset, avedata, self.job_id)
+
+
 class Algorithm(object):
     def __init__(self, config):
         """
@@ -192,6 +227,7 @@ class Algorithm(object):
         self.trajectory = Trajectory(config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
+        self.job_group_dir = dict()
 
         logging.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
@@ -418,10 +454,11 @@ class Algorithm(object):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
         Algorithm object
+        If smoothing is turned on, makes n identical Jobs and a JobGroup
 
         :param params:
         :type params: PSet
-        :return: Job
+        :return: list of Jobs (of length equal to smoothing setting)
         """
         if params.name:
             job_id = params.name
@@ -429,8 +466,23 @@ class Algorithm(object):
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
         logging.debug('Creating Job %s' % job_id)
-        return Job(self.model_list, params, job_id, self.config.config['bng_command'],
-                   self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'])
+        if self.config.config['smoothing'] == 1:
+            # Create a single job
+            return [Job(self.model_list, params, job_id, self.config.config['bng_command'],
+                       self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'])]
+        else:
+            # Create multiple identical Jobs for use with smoothing
+            newjobs = []
+            newnames = []
+            for i in range(self.config.config['smoothing']):
+                thisname = '%s_rep%i' % (job_id, i)
+                newnames.append(thisname)
+                newjobs.append(Job(self.model_list, params, thisname, self.config.config['bng_command'],
+                       self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim']))
+            new_group = JobGroup(job_id, newnames)
+            for n in newnames:
+                self.job_group_dir[n] = new_group
+            return newjobs
 
     def output_results(self, name=''):
         """
@@ -468,13 +520,22 @@ class Algorithm(object):
             client = Client()
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
-        jobs = [self.make_job(p) for p in psets]
+        jobs = []
+        for p in psets:
+            jobs += self.make_job(p)
         logging.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = [client.submit(job.run_simulation) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
             f, res = next(pool)
+            # Handle if this result is one of multiple instances for smoothing
+            if self.config.config['smoothing'] > 1:
+                group = self.job_group_dir.pop(res.name)
+                done = group.job_finished(res)
+                if not done:
+                    continue
+                res = group.average_results()
             if isinstance(res, FailedSimulation):
                 tb = '\n'+res.traceback if res.fail_type == 2 else ''
                 logging.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
@@ -489,7 +550,9 @@ class Algorithm(object):
                 print1('Stop criterion satisfied')
                 break
             else:
-                new_jobs = [self.make_job(ps) for ps in response]
+                new_jobs = []
+                for ps in response:
+                    new_jobs += self.make_job(ps)
                 logging.debug('Submitting %d new Jobs' % len(new_jobs))
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
                 pending.update(new_futures)
