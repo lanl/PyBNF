@@ -1,0 +1,37 @@
+begin parameters
+  R0   5360
+  L0   1160
+  A0   5360
+  kon  0.01
+  koff  0.1
+  kAon  0.01
+  kAoff  0.1
+  kAp 0.01
+  kAdp 0.1
+end parameters
+
+begin molecule types
+   R(l,a)
+   L(r)
+   A(r,Y~U~P)
+end molecule types
+
+begin species
+  R(l,a)   R0    
+  L(r)   L0
+  A(r,Y~U)   A0
+end species
+
+begin reaction rules
+   R(l) + L(r) <-> R(l!1).L(r!1) kon,koff
+   R(a) + A(r) <-> R(a!1).A(r!1) kAon,kAoff
+   L().R().A(Y~U) -> L().R().A(Y~P)  kAp
+   A(Y~P) -> A(Y~U)   kAdp
+end reaction rules
+
+begin observables
+  Molecules A_P  A(Y~P)
+  Molecules A_unbound_P  A(r,Y~P)
+  Molecules A_bound_P  A(r!+,Y~P)
+  Molecules RLA_P  R().L().A(Y~P)
+end observables

@@ -1,0 +1,65 @@
+begin parameters
+
+   Rtot 5360
+   Ltot 1160
+   Atot 5360
+
+   kOnR   0.01
+   kOffR  0.1
+   kCatR  5.0
+
+   kOnL   0.01
+   kOffL  0.1
+   kCatL  5.1
+
+end parameters
+
+
+begin molecule types
+   R(a)
+   L(a)
+   A(p1~U~P,p2~U~P,p3~U~P)
+end molecule types
+
+
+begin species
+   R(a)     Rtot
+   L(a)     Ltot
+   A(p1~U,p2~U,p3~U)  Atot
+end species
+
+begin reaction rules
+  
+   ###  SITE 1 ###
+   R(a) + A(p1~U) <-> R(a!1).A(p1~U!1) kOnR, kOffR
+   R(a!1).A(p1~U!1) -> R(a) + A(p1~P) kCatR
+
+   L(a) + A(p1~P) <-> L(a!1).A(p1~P!1) kOnL, kOffL
+   L(a!1).A(p1~P!1) -> L(a) + A(p1~U) kCatL
+
+
+
+   ###  SITE 2 ###
+   R(a) + A(p2~U) <-> R(a!1).A(p2~U!1) kOnR, kOffR
+   R(a!1).A(p2~U!1) -> R(a) + A(p2~P) kCatR
+
+   L(a) + A(p2~P) <-> L(a!1).A(p2~P!1) kOnL, kOffL
+   L(a!1).A(p2~P!1) -> L(a) + A(p2~U) kCatL
+
+   ###  SITE 3 ###
+   R(a) + A(p3~U) <-> R(a!1).A(p3~U!1) kOnR, kOffR
+   R(a!1).A(p3~U!1) -> R(a) + A(p3~P) kCatR
+
+   L(a) + A(p3~P) <-> L(a!1).A(p3~P!1) kOnL, kOffL
+   L(a!1).A(p3~P!1) -> L(a) + A(p3~U) kCatL
+
+end reaction rules
+
+begin observables
+
+   Molecules Rfree R(a)
+   Molecules Lfree L(a)
+   Molecules A1P   A(p1~P!?)
+
+end observables
+
