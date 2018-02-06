@@ -189,6 +189,7 @@ class JobGroup:
         self.job_id = job_id
         self.subjob_ids = subjob_ids
         self.result_list = []
+        self.failed = None
 
     def job_finished(self, res):
         """
@@ -196,6 +197,15 @@ class JobGroup:
         :param res: Result object for the completed job
         :return: Boolean, whether everything in this job group has finished
         """
+        # Handle edge cases of failed simulations - if we get one FailedSimulation, we declare the group is done,
+        # and return a FailedSimulation object as the average
+        if self.failed:
+            # JobGroup already finished when a previous failed simulation came in.
+            return False
+        if isinstance(res, FailedSimulation):
+            self.failed = res
+            return True
+
         if res.name not in self.subjob_ids:
             raise ValueError('Job group %s received unwanted result %s' % (self.job_id, res.name))
         self.result_list.append(res)
@@ -208,6 +218,10 @@ class JobGroup:
 
         :return: New Result object with the job_id of this JobGroup and the averaged Data as the simdata
         """
+        if self.failed:
+            self.failed.name = self.job_id
+            return self.failed
+
         # Iterate through the models and suffixes in the simdata strucutre, and calculate the average for each
         # Data object it contains
         avedata = dict()
