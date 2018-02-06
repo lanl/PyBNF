@@ -35,8 +35,10 @@ class Result(object):
 
         :param paramset: The parameters corresponding to this evaluation
         :type paramset: PSet
-        :param simdata: The simulation results corresponding to this evaluation
-        :type simdata: list of Data instances
+        :param simdata: The simulation results corresponding to this evaluation, as a nested dictionary structure.
+        Top-level keys are model names and values are dictionaries whose keys are action suffixes and values are
+        Data instances
+        :type simdata: dict Returns a
         :param log: The stdout + stderr of the simulations
         :type log: list of str
         """
@@ -206,7 +208,13 @@ class JobGroup:
 
         :return: New Result object with the job_id of this JobGroup and the averaged Data as the simdata
         """
-        avedata = Data.average([r.simdata for r in self.result_list])
+        # Iterate through the models and suffixes in the simdata strucutre, and calculate the average for each
+        # Data object it contains
+        avedata = dict()
+        for m in self.result_list[0].simdata:
+            avedata[m] = dict()
+            for suf in self.result_list[0].simdata[m]:
+                avedata[m][suf] = Data.average([r.simdata[m][suf] for r in self.result_list])
         return Result(self.result_list[0].pset, avedata, self.job_id)
 
 
