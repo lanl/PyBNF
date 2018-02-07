@@ -1072,6 +1072,10 @@ class ScatterSearch(Algorithm):
                 self.init_size = self.popsize
         else:
             self.init_size = 10*len(self.variables)
+            if self.init_size < self.popsize:
+                logging.warning('init_size less than population_size. Setting it equal to population_size.')
+                self.init_size = self.popsize
+
         self.local_min_limit = config.config['local_min_limit']
 
         self.pending = dict() # {pendingPSet: parentPSet}
