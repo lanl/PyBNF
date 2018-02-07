@@ -127,6 +127,14 @@ class Configuration(object):
             except ModelError as e:
                 raise PybnfError('In model file %s: %s' % (mf, e.message))
             md[model.name] = model
+
+        if self.config['smoothing'] > 1:
+            # Check for misuse of 'smoothing' feature
+            stochastic = np.any([m.stochastic for m in md.values()])
+            if not stochastic:
+                print1('Warning: You specified smoothing=%i, but it looks like none of your models use a stochastic '
+                       'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
+
         return md
 
     @staticmethod
