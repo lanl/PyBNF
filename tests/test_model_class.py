@@ -116,7 +116,7 @@ class TestModel:
 
         model1 = pset.BNGLModel(self.file1, ps1)
 
-        model1.save(self.savefile2_prefix, True)
+        model1.save(self.savefile2_prefix, gen_only=True)
         f_myguess2 = open(self.savefile2_prefix + '.bngl')
         myguess2 = f_myguess2.read()
         f_myguess2.close()
