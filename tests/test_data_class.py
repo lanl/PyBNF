@@ -1,7 +1,7 @@
 import math
 import numpy as np
 import numpy.testing as npt
-from .context import data
+from .context import data, printing
 from nose.tools import raises
 
 # Doesn't print warnings when dividing by zero
@@ -37,6 +37,21 @@ class TestData:
         ]
         cls.d1 = data.Data()
         cls.d1.data = cls.d1._read_file_lines(cls.data1, '\s+')
+
+        cls.data2 = [
+            '# x    obs1    obs2    obs3\n',
+            ' 0 3   4   5\n'
+            ' \n',
+            ' 1 2   3   6\n',
+            ' 2 4   2   10\n\n'
+        ]
+
+        cls.data3 = [
+            '# x    obs1    obs2    obs3\n',
+            ' 0 3   4   5\n',
+            ' 1 23   6\n',
+            ' 2 4   2   10\n'
+        ]
 
     def test_number_reader(self):
         assert data.Data._to_number(self.str0) == math.inf
@@ -116,3 +131,13 @@ class TestData:
              [1., -1. / np.std(self.d1.data[:, 1], ddof=1), 0., -1. / np.std(self.d1.data[:, 3], ddof=1)],
              [2., 1. / np.std(self.d1.data[:, 1], ddof=1), -1. / np.std(self.d1.data[:, 2], ddof=1),
               3. / np.std(self.d1.data[:, 3], ddof=1)]]))
+
+    def test_whitespace(self):
+        d = data.Data()
+        d.data = d._read_file_lines(self.data2, '\s+')
+        assert d['obs1'][1] == 2
+
+    @raises(printing.PybnfError)
+    def test_misformatted(self):
+        d = data.Data()
+        d._read_file_lines(self.data3, '\s+')

@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import re
+from .printing import PybnfError
 
 
 class Data(object):
@@ -75,20 +76,27 @@ class Data(object):
         with open(file_name) as f:
             lines = f.readlines()
 
-        self.data = self._read_file_lines(lines, sep)
+        self.data = self._read_file_lines(lines, sep, file_name=file_name)
 
-    def _read_file_lines(self, lines, sep):
+    def _read_file_lines(self, lines, sep, file_name=''):
         """Helper function that reads lines from BNGL gdat files"""
 
         header = re.split(sep, lines[0].strip().strip('#').strip())
+        ncols = len(header)
 
         for c in header:
             l = len(self.cols)
             self.cols[c] = l
 
         data = []
-        for l in lines[1:]:
-            data.append([self._to_number(x) for x in re.split(sep, l.strip())])
+        for i, l in enumerate(lines[1:]):
+            if re.match('^\s*$', l):
+                continue
+            num_list = [self._to_number(x) for x in re.split(sep, l.strip())]
+            if len(num_list) != ncols:
+                raise PybnfError('Parsing %s.exp on line %i: Found %i values, expected %i' %
+                                 (file_name, i+1, len(num_list), ncols))
+            data.append(num_list)
 
         return np.array(data)
 
