@@ -94,8 +94,8 @@ class Data(object):
                 continue
             num_list = [self._to_number(x) for x in re.split(sep, l.strip())]
             if len(num_list) != ncols:
-                raise PybnfError('Parsing %s.exp on line %i: Found %i values, expected %i' %
-                                 (file_name, i+1, len(num_list), ncols))
+                raise PybnfError('Parsing %s on line %i: Found %i values, expected %i' %
+                                 (file_name, i+2, len(num_list), ncols))
             data.append(num_list)
 
         return np.array(data)
