@@ -634,6 +634,8 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations in your'
                               '\nrun failed, or if that gdat file was somehow deleted during the run.')
                         exit()
+        if self.config.config['delete_old_files'] == 1:
+            shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
 
