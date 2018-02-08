@@ -72,7 +72,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, job_id, bngcommand, output_dir, timeout):
+    def __init__(self, models, params, job_id, bngcommand, output_dir, timeout, delete_folder=False):
         """
         Instantiates a Job
 
@@ -86,6 +86,8 @@ class Job:
         :type bngcommand: str
         :param output_dir path to the directory where I should create my simulation folder
         :type output_dir: str
+        :param delete_folder: If True, delete the folder and files created after the simulation runs
+        :type delete_folder: bool
         """
         self.models = models
         self.params = params
@@ -104,6 +106,7 @@ class Job:
 
         # Folder where we save the model files and outputs.
         self.folder = '%s/%s' % (self.output_dir, self.job_id)
+        self.delete_folder = delete_folder
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
@@ -146,6 +149,8 @@ class Job:
         # This block is making bugs hard to diagnose
         # except Exception:
         #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+        if self.delete_folder:
+            shutil.rmtree(self.folder)
 
         return res
 
@@ -500,7 +505,8 @@ class Algorithm(object):
         if self.config.config['smoothing'] == 1:
             # Create a single job
             return [Job(self.model_list, params, job_id, self.config.config['bng_command'],
-                       self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'])]
+                       self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
+                        bool(self.config.config['delete_old_files']))]
         else:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
@@ -509,7 +515,8 @@ class Algorithm(object):
                 thisname = '%s_rep%i' % (job_id, i)
                 newnames.append(thisname)
                 newjobs.append(Job(self.model_list, params, thisname, self.config.config['bng_command'],
-                       self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim']))
+                                   self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
+                                   bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
@@ -610,22 +617,23 @@ class Algorithm(object):
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
             to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name), gen_only=False)
-            for simtype, suf in this_model.suffixes:
-                if simtype == 'simulate':
-                    ext = 'gdat'
-                else:  # parameter_scan
-                    ext = 'scan'
-                if self.config.config['smoothing'] > 1:
-                    best_name = best_name + '_rep0'  # Look for one specific replicate of the data
-                try:
-                    shutil.copy('%s/Simulations/%s/%s_%s_%s.%s' %
-                                (self.config.config['output_dir'], best_name, m, best_name, suf, ext),
-                                '%s/Results' % self.config.config['output_dir'])
-                except FileNotFoundError:
-                    logging.error('Cannot find files corresponding to best fit parameter set... exiting')
-                    print0('Could not find your best fit gdat file. This could happen if all of the simulations in your'
-                          '\nrun failed, or if that gdat file was somehow deleted during the run.')
-                    exit()
+            if self.config.config['delete_old_files'] == 0:
+                for simtype, suf in this_model.suffixes:
+                    if simtype == 'simulate':
+                        ext = 'gdat'
+                    else:  # parameter_scan
+                        ext = 'scan'
+                    if self.config.config['smoothing'] > 1:
+                        best_name = best_name + '_rep0'  # Look for one specific replicate of the data
+                    try:
+                        shutil.copy('%s/Simulations/%s/%s_%s_%s.%s' %
+                                    (self.config.config['output_dir'], best_name, m, best_name, suf, ext),
+                                    '%s/Results' % self.config.config['output_dir'])
+                    except FileNotFoundError:
+                        logging.error('Cannot find files corresponding to best fit parameter set... exiting')
+                        print0('Could not find your best fit gdat file. This could happen if all of the simulations in your'
+                              '\nrun failed, or if that gdat file was somehow deleted during the run.')
+                        exit()
 
         logging.info("Fitting complete")
 
