@@ -92,7 +92,10 @@ class Data(object):
         for i, l in enumerate(lines[1:]):
             if re.match('^\s*$', l):
                 continue
-            num_list = [self._to_number(x) for x in re.split(sep, l.strip())]
+            try:
+                num_list = [self._to_number(x) for x in re.split(sep, l.strip())]
+            except ValueError as err:
+                raise PybnfError('Parsing %s on line %i: %s' % (file_name, i+2, err.args[0]))
             if len(num_list) != ncols:
                 raise PybnfError('Parsing %s on line %i: Found %i values, expected %i' %
                                  (file_name, i+2, len(num_list), ncols))
