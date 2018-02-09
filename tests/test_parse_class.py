@@ -11,7 +11,7 @@ class TestParse:
         cls.s = ['job_name =  world #test test', 'verbosity = 3', 'model = thing.bngl : data.exp', 'mutate = derp 1 3',
                  ' #derp = derp', 'random_var = var__FREE__ 1 5', 'lognormrandom_var= var2__FREE__ 0.01 1.0e5',
                  'random_var = var3__FREE__ 4 5', 'model = another.bngl: d1.exp, d2.exp',
-                 'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3']
+                 'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3', 'normalization=init : data1.exp']
 
     @classmethod
     def teardown_class(cls):
@@ -29,6 +29,7 @@ class TestParse:
         assert parse.parse(self.s[9]) == ['credible_intervals', '68', '95', '99.7']
         assert parse.parse(self.s[10]) == ['var', 'a', '1', '2']
         assert parse.parse(self.s[11]) == ['logvar', 'b', '3']
+        assert parse.parse(self.s[12]) == ['normalization', 'init', 'data1.exp']
 
     def test_capital(self):
         assert parse.parse('Model = string.bngl: string.exp') == ['model', 'string.bngl', 'string.exp']
@@ -59,6 +60,10 @@ class TestParse:
         assert d['credible_intervals'] == [68., 95., 99.7]
         assert d[('var', 'a')] == [1., 2.]
         assert d[('logvar', 'b')] == [3.]
+        assert d['normalization'] == {'data1.exp': 'init'}
 
         d2 = parse.ploop(['credible_intervals=68'])
         assert d2['credible_intervals'] == [68.0]
+
+        d3 = parse.ploop(['normalization=zero'])
+        assert d3['normalization'] == 'zero'

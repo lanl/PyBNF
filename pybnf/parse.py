@@ -1,7 +1,7 @@
 import pyparsing as pp
 import re
 from string import punctuation
-from .printing import PybnfError
+from .printing import PybnfError, print1
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
                'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
@@ -65,8 +65,12 @@ def parse(s):
     exp_file = pp.Regex(".*?\.exp")
     mdmgram = mdmkey - equals - bngl_file - colon - pp.delimitedList(exp_file) - comment
 
+    # normalization mapping grammar
+    normkey = pp.CaselessLiteral("normalization")
+    normgram = normkey - equals - string - pp.Optional(colon - pp.delimitedList(exp_file)) - comment
+
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | vargram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | vargram | normgram).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -120,7 +124,25 @@ def ploop(ls):  # parse loop
                 d[key] = values  # individual data files remain in list
                 models.add(key)
                 exp_data.update(values)
+            elif l[0] == 'normalization' and type(values) == list:
+                # Normalization defined with the pairing syntax.
+                # Note the simpler syntax is handled in the regular else case
+                keydict = {exp:l[1] for exp in l[2:]}
+                if 'normalization' in d:
+                    if type(d['normalization']) != dict:
+                        raise PybnfError('contradictory normalization keys',
+                                         "Config file contains multiple 'normalization' keys, one of which specifies"
+                                         " no specific exp files, thereby applying to all of them. If you are using "
+                                         "this option, you should only have one 'normalization' key in the config file.")
+                    d['normalization'].update(keydict)
+                else:
+                    d['normalization'] = keydict
             else:
+                if key in d:
+                    if d[key] == values:
+                        print1("Warning: Config key '%s' is specified multiple times" % key)
+                    else:
+                        raise PybnfError("Config key '%s' is specified multiple times with different values." % key)
                 d[key] = values
 
         except:
@@ -142,6 +164,9 @@ def ploop(ls):  # parse loop
                 fmt = "'%s=v x1 x2 ...' where v is a variable name, and x1, x2, ... is a list of numbers" % key
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'"
+            elif key == 'normalization':
+                fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init'. 'peak', or 'zero')"\
+                    % (key, key)
 
             message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
             if fmt == '':

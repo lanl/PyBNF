@@ -100,7 +100,8 @@ class Configuration(object):
             'simplex_shrink': 0.5,
 
             'wall_time_gen': 3600,
-            'wall_time_sim': 3600
+            'wall_time_sim': 3600,
+            'normalization': None
         }
         return default
 
