@@ -276,7 +276,7 @@ class Configuration(object):
         :return:
         """
         valid = ('init', 'peak', 'zero')
-        if type(self.config['normalization'] == dict):
+        if type(self.config['normalization']) == dict:
             # Iterate through the keys, which should be .exp file names. Check that these are actual exp files that
             # are used in the fitting, then add to the dictionary just the suffix, for easier lookup later
             newdict = dict()
@@ -288,12 +288,12 @@ class Configuration(object):
                                      "any model." % ef)
                 val = self.config['normalization'][ef]
                 if val not in valid:
-                    raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
+                    raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
                                      "Invalid normalization type '%s'. Options are: init, peak, zero" %
-                                     self.config['normalization'])
+                                     self.config['normalization'][ef])
                 newdict[self._exp_file_prefix(ef)] = val
             self.config['normalization'].update(newdict)
-        elif type(self.config['normalization'] == str):
+        elif type(self.config['normalization']) == str:
             if self.config['normalization'] not in valid:
                 raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
                                  "Invalid normalization type '%s'. Options are: init, peak, zero" %
