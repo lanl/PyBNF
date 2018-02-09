@@ -13,7 +13,7 @@ chisq_no_sd: Prints correct error message, followed by a bunch of tornado.applic
 data_not_found: OK
 data_not_found_2: OK
 data_not_specified: OK
-duplicate_key: Wrong error message (error parsing the 2nd key instance)
+duplicate_key: OK
 duplicate_var: Runs anyway (using 2nd declaration?)
 free_extra: OK
 free_missing: OK

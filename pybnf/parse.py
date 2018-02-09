@@ -145,7 +145,7 @@ def ploop(ls):  # parse loop
                         raise PybnfError("Config key '%s' is specified multiple times with different values." % key)
                 d[key] = values
 
-        except:
+        except pp.ParseBaseException:
             key = re.split('[ =]', line)[0].lower()
             fmt = ''
             if key in numkeys_int:
