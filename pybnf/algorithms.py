@@ -49,6 +49,24 @@ class Result(object):
         self.score = None  # To be set later when the Result is scored.
         self.failed = False
 
+    def normalize(self, settings):
+        """
+        Normalizes the Data object in this result, according to settings
+        :param settings: Config value for 'normalization': a string representing the normalization type, a dict mapping
+        exp files to normalization type, or None
+        :return:
+        """
+        if settings is None:
+            return
+
+        for m in self.simdata:
+            for suff in self.simdata[m]:
+                if type(settings) == str:
+                    self.simdata[m][suff].normalize(settings)
+                elif suff in settings:
+                    self.simdata[m][suff].normalize(settings[suff])
+
+
 
 class FailedSimulation(Result):
     def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None])):
@@ -65,6 +83,9 @@ class FailedSimulation(Result):
         self.fail_type = fail_type
         self.failed = True
         self.traceback = ''.join(traceback.format_exception(*einfo))
+
+    def normalize(self, settings):
+        return
 
 
 class Job:
@@ -583,6 +604,7 @@ class Algorithm(object):
             else:
                 logging.debug('Job %s complete' % res.name)
             pending.remove(f)
+            res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
             response = self.got_result(res)
             if response == 'STOP':

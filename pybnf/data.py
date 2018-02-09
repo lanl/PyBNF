@@ -160,6 +160,8 @@ class Data(object):
 
         :param idx: Index of independent variable
         :type idx: int
+        :param bc: If True, the standard deviation is normalized by 1/(N-1). If False, by 1/N.
+        :type bc: bool
         :return: Normalized Numpy array (including independent variable column)
         """
         ind = self._ind_col(idx)
@@ -193,3 +195,17 @@ class Data(object):
         output.data = np.mean(np.stack([d.data for d in datas]), axis=0)
         return output
 
+    def normalize(self, method):
+        """
+        Normalize the data according to the specified method: 'init', 'peak', or 'zero'
+        Updates the data array in this object, returns none.
+        """
+        if method == 'init':
+            self.data = self.normalize_to_init()
+        elif method == 'peak':
+            self.data = self.normalize_to_peak()
+        elif method == 'zero':
+            self.data = self.normalize_to_zero()
+        else:
+            # Should have caught a user-defined invalid setting in config before getting here.
+            raise ValueError('Invalid method %s for Data.normalize()' % method)

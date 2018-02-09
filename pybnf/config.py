@@ -72,6 +72,7 @@ class Configuration(object):
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
         self._check_variable_correspondence()
+        self._postprocess_normalization()
 
     @staticmethod
     def default_config():
@@ -269,6 +270,34 @@ class Configuration(object):
             raise PybnfError('The following free parameters are in your model files, but are not declared in your '
                              '.conf file: %s' % extra_in_model)
 
+    def _postprocess_normalization(self):
+        """
+        Postprocessing on the 'normalization' key
+        :return:
+        """
+        valid = ('init', 'peak', 'zero')
+        if type(self.config['normalization'] == dict):
+            # Iterate through the keys, which should be .exp file names. Check that these are actual exp files that
+            # are used in the fitting, then add to the dictionary just the suffix, for easier lookup later
+            newdict = dict()
+            for ef in self.config['normalization']:
+                if ef not in self.config['exp_data']:
+                    # Could be just a warning?
+                    raise PybnfError("Invalid exp file %s under the normalization key" % ef,
+                                     "The exp file %s given under the 'normalization' keyword is not associated with "
+                                     "any model." % ef)
+                val = self.config['normalization'][ef]
+                if val not in valid:
+                    raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
+                                     "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                     self.config['normalization'])
+                newdict[self._exp_file_prefix(ef)] = val
+            self.config['normalization'].update(newdict)
+        elif type(self.config['normalization'] == str):
+            if self.config['normalization'] not in valid:
+                raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
+                                 "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                 self.config['normalization'])
 
 
 class UnknownObjectiveFunctionError(PybnfError):

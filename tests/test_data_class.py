@@ -156,3 +156,9 @@ class TestData:
     def test_misformatted(self):
         d = data.Data()
         d._read_file_lines(self.data3, '\s+')
+
+    def test_normalize(self):
+        d0 = data.Data()
+        d0.data = d0._read_file_lines(self.data0, '\s+')
+        d0.normalize('peak')
+        npt.assert_allclose(d0.data, np.array([[0., 1., 1., 1., np.nan, 1.], [1., 1., 1., 1., np.nan, 1.]]))

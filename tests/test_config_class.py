@@ -19,7 +19,8 @@ class TestConfig(object):
                    ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
                    ('static_list_var', 'kase__FREE__'): [17., 23., 37., 42.],
                    ('random_var', 'pase__FREE__'): [6., 7.],
-                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10}
+                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
+                   'normalization': {'bngl_files/p1_5.exp': 'init'}}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de',
@@ -42,6 +43,7 @@ class TestConfig(object):
                                              ('koff__FREE__', 'random_var', 4., 5.),
                                              ('pase__FREE__', 'random_var', 6., 7.),
                                              ]
+        assert c.config['normalization']['p1_5'] == 'init'
 
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):
