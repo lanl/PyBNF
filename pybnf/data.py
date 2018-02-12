@@ -165,3 +165,19 @@ class Data(object):
 
         col_norm = np.apply_along_axis(norm_by_std, 0, (dep - col_means))
         return np.hstack((ind.reshape((l, 1)), col_norm))
+
+    @staticmethod
+    def average(datas):
+        """
+        Calculates the average of several data objects.
+        The input Data objects should have the same column labels and independent variable values (NOT CURRENTLY
+        CHECKED)
+
+        :param datas: Iterable of Data objects of identical size to be averaged
+        :return: Data object
+        """
+        output = Data()
+        output.cols = datas[0].cols
+        output.data = np.mean(np.stack([d.data for d in datas]), axis=0)
+        return output
+

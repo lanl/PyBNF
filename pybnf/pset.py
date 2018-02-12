@@ -4,6 +4,7 @@ import re
 import copy
 import warnings
 import logging
+from .printing import print1
 
 class Model(object):
     """
@@ -51,6 +52,8 @@ class BNGLModel(Model):
         self.generate_network_line_index = None
         self.action_line_indices = []
         self.actions = []
+
+        self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
 
         # Read the file
         with open(self.file_path) as file:
@@ -128,6 +131,13 @@ class BNGLModel(Model):
                 if re.match('generate_network', line.strip()):
                     continue
                 else:
+                    if 'method=>"nf"' in line or 'method=>"ssa"' in line or 'method=>"pla"' in line or \
+                            'simulate_nf' in line or 'simulate_ssa' in line or 'simulate_pla' in line:
+                        self.stochastic = True
+                    if re.search('seed=>\d+', line):
+                        # There's probably a better way to handle this.
+                        print1("Warning: Your model file specifies the 'seed' argument. This means that if you are "
+                               "using the 'smoothing' feature, all of your replicates will come out the same.")
                     self.action_line_indices.append(i)
                     self.actions.append(line)
 

@@ -35,7 +35,7 @@ output_every: Write the Trajectory to file every x iterations. Default: 20
 wall_time_sim: Maximum time (in seconds) to wait for a simulation to finish.  Exceeding this (either for a simulation or network generation) results in an infinite objective function value.  Default: 3600
 wall_time_gen: Same as wall_time_sim, but for the initial network generation.  Will cause the program to exit if exceeded.
 verbosity: Specifies the amount of information output to the terminal. 0 - Quiet; user prompts and errors only. 1 - Normal; Warnings and concise progress updates. 2 - Verbose; Information and detailed progress updates. Default: 1
-
+smoothing: Number of replicates to run for each parameter set (useful for stochastic runs). Default: 1
 
 ***Settings that apply to multiple Algorithms***
 

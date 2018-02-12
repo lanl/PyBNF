@@ -1,0 +1,43 @@
+begin model
+
+  begin parameters
+
+    v1 v1__FREE__
+
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    A() 500
+    B() 500
+  end seed species
+
+  begin observables
+    Molecules a A()
+    Molecules b B()
+  end observables
+
+  begin functions
+
+    function1()=v1*2
+
+  end functions
+
+  begin reaction rules
+    A()<->B() function1,2
+  end reaction rules
+
+end model
+
+begin actions
+  # generate_network({overwrite=>1})
+  simulate({method=>"nf",t_start=>0,t_end=>20,n_steps=>20,suffix=>"nf1",seed=>42,print_functions=>1})
+
+end actions
+
+
