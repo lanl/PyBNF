@@ -2,7 +2,7 @@
 
 
 from distributed import as_completed
-from distributed import Client
+from distributed import Client, LocalCluster
 from subprocess import run
 from subprocess import CalledProcessError
 from subprocess import TimeoutExpired
@@ -535,11 +535,19 @@ class Algorithm(object):
 
     def run(self):
         """Main loop for executing the algorithm"""
+
         logging.debug('Initializing dask Client object')
         if 'scheduler_address' in self.config.config:
+            if 'parallel_count' in self.config.config:
+                print1("Warning: 'parallel_count' option is not supported when you have also specified "
+                       "'scheduler_address'. I will just use all of the workers in your scheduler.")
             client = Client(self.config.config['scheduler_address'])
         else:
-            client = Client()
+            if 'parallel_count' in self.config.config:
+                lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
+                client = Client(lc)
+            else:
+                client = Client()
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = []
