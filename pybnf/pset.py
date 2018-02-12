@@ -48,6 +48,7 @@ class BNGLModel(Model):
 
         self.generates_network = False
         self.generate_network_line = None
+        self.generate_network_line_index = None
         self.action_line_indices = []
         self.actions = []
 
@@ -61,6 +62,7 @@ class BNGLModel(Model):
         self.split_line_index = None # for insertion of free parameters
         self.model_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
         in_action_block = False
+        in_no_block = True
 
         continuation = ''
         for i, line in enumerate(self.model_lines):
@@ -91,26 +93,43 @@ class BNGLModel(Model):
             elif re.search('generate_network', line):
                 self.generates_network = True
                 self.generate_network_line = line
+                self.generate_network_line_index = i
 
             action_suffix = self._get_action_suffix(line)
             if action_suffix is not None:
                 self.suffixes.append(action_suffix)
 
+            # "begin model" doesn't work like a regular block, so escape before we start handling blocks.
+            if re.match('(begin|end)\s+model', line.strip()):
+                continue
+
             if re.match('begin\s+actions', line.strip()):
                 in_action_block = True
+                in_no_block = False
                 self.action_line_indices.append(i)
                 continue
             elif re.match('end\s+actions', line.strip()):
                 in_action_block = False
+                in_no_block = True
                 self.action_line_indices.append(i)
                 continue
 
-            if in_action_block:
+            # To keep track of whether we're in no block, which counts as an action block, check for
+            # begin and end keywords
+            if re.match('begin\s+[a-z][a-z\s]*', line.strip()) and not re.match('begin\s+model', line.strip()):
+                in_no_block = False
+                continue
+
+            if re.match('end\s+[a-z][a-z\s]*', line.strip()) and not re.match('end\s+model', line.strip()):
+                in_no_block = True
+                continue
+
+            if in_action_block or in_no_block:
                 if re.match('generate_network', line.strip()):
                     continue
                 else:
-                    self.actions.append(line)
                     self.action_line_indices.append(i)
+                    self.actions.append(line)
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
@@ -120,7 +139,7 @@ class BNGLModel(Model):
             raise ModelError("'begin parameters' not found in BNGL file")
 
         if not self.action_line_indices:
-            raise ModelError("Model has no actions block")
+            raise ModelError("No actions found in model")
 
         # Save model_params as a sorted tuple
         param_names_list = list(param_names_set)
@@ -201,7 +220,8 @@ class BNGLModel(Model):
             self.model_lines = \
                 self.model_lines[:self.split_line_index] + \
                 param_text_lines + \
-                self.model_lines[self.split_line_index:self.action_line_indices[0]] + \
+                [self.model_lines[i] for i in range(self.split_line_index, len(self.model_lines))
+                 if i not in self.action_line_indices + [self.generate_network_line_index]] + \
                 action_lines
         else:
             self.model_lines = \

@@ -501,11 +501,12 @@ class Algorithm(object):
 
         # Copy the best simulations into the results folder
         best_name = self.trajectory.best_fit_name()
+        best_pset = self.trajectory.best_fit()
         logging.info('Copying simulation results from best fit parameter set to Results/ folder')
         for m in self.config.models:
-            shutil.copy('%s/Simulations/%s/%s_%s.bngl' %
-                        (self.config.config['output_dir'], best_name, m, best_name),
-                        '%s/Results' % self.config.config['output_dir'])
+            this_model = self.config.models[m]
+            to_save = this_model.copy_with_param_set(best_pset)
+            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name), gen_only=False)
             for suf in self.config.mapping[m]:
                 try:
                     shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %

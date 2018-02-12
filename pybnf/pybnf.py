@@ -27,6 +27,9 @@ def main():
         parser.add_argument('-c', action='store', dest='conf_file',
                             help='Path to the BioNetFit configuration file', metavar='config.conf')
 
+        parser.add_argument('-a', action='store', dest='scheduler_address',
+                            help='The IP address and port of the dask-scheduler to use if running on a cluster')
+
         # Load the conf file and create the algorithm
         results = parser.parse_args()
         if results.conf_file is None:
@@ -36,6 +39,8 @@ def main():
         conf_dict = load_config(results.conf_file)
         if 'verbosity' in conf_dict:
             printing.verbosity = conf_dict['verbosity']
+        if results.scheduler_address is not None:
+            conf_dict['scheduler_address'] = results.scheduler_address
 
         # Create output folders, checking for overwrites.
         if os.path.exists(conf_dict['output_dir']):
