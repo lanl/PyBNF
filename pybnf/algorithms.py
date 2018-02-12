@@ -592,12 +592,16 @@ class Algorithm(object):
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
             to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name), gen_only=False)
-            for suf in self.config.mapping[m]:
+            for simtype, suf in this_model.suffixes:
+                if simtype == 'simulate':
+                    ext = 'gdat'
+                else:  # parameter_scan
+                    ext = 'scan'
                 if self.config.config['smoothing'] > 1:
                     best_name = best_name + '_rep0'  # Look for one specific replicate of the data
                 try:
-                    shutil.copy('%s/Simulations/%s/%s_%s_%s.gdat' %
-                                (self.config.config['output_dir'], best_name, m, best_name, suf),
+                    shutil.copy('%s/Simulations/%s/%s_%s_%s.%s' %
+                                (self.config.config['output_dir'], best_name, m, best_name, suf, ext),
                                 '%s/Results' % self.config.config['output_dir'])
                 except FileNotFoundError:
                     logging.error('Cannot find files corresponding to best fit parameter set... exiting')
