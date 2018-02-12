@@ -1,7 +1,7 @@
 import math
 import numpy as np
 import numpy.testing as npt
-from .context import data
+from .context import data, printing
 from nose.tools import raises
 
 # Doesn't print warnings when dividing by zero
@@ -46,6 +46,21 @@ class TestData:
         ]
         cls.d1b = data.Data()
         cls.d1b.data = cls.d1b._read_file_lines(cls.data1b, '\s+')
+
+        cls.data2 = [
+            '# x    obs1    obs2    obs3\n',
+            ' 0 3   4   5\n'
+            ' \n',
+            ' 1 2   3   6\n',
+            ' 2 4   2   10\n\n'
+        ]
+
+        cls.data3 = [
+            '# x    obs1    obs2    obs3\n',
+            ' 0 3   4   5\n',
+            ' 1 23   6\n',
+            ' 2 4   2   10\n'
+        ]
 
     def test_number_reader(self):
         assert data.Data._to_number(self.str0) == math.inf
@@ -131,3 +146,13 @@ class TestData:
         assert ave.data[1, 0] == 1
         assert ave['obs3'][0] == 5.
         npt.assert_almost_equal(ave['obs1'][2], 4.5)
+
+    def test_whitespace(self):
+        d = data.Data()
+        d.data = d._read_file_lines(self.data2, '\s+')
+        assert d['obs1'][1] == 2
+
+    @raises(printing.PybnfError)
+    def test_misformatted(self):
+        d = data.Data()
+        d._read_file_lines(self.data3, '\s+')

@@ -1,6 +1,8 @@
 These test files all contain user errors that should fail cleanly with a helpful error message. 
 
 Current status
+bad_exp: OK
+bad_exp_number: OK
 bad_fit_type: OK
 bad_initialization: ignores and runs anyway
 bad_objfunc: OK
