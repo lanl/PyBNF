@@ -12,7 +12,7 @@ from .data import Data
 from .pset import PSet
 from .pset import Trajectory
 from .pset import NetModel
-from .printing import print0, print1, print2
+from .printing import print0, print1, print2, PybnfError
 
 import logging
 import numpy as np
@@ -387,9 +387,9 @@ class Algorithm(object):
             elif type == 'normrandom_var':
                 param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
             elif type == 'loguniform_var':
-                param_dict[name] = 10.**np.random.uniform(np.log10(val1), np.log10(val2))
+                param_dict[name] = exp10(np.random.uniform(np.log10(val1), np.log10(val2)))
             elif type == 'lognormrandom_var':
-                param_dict[name] = 10.**np.random.normal(val1, val2)
+                param_dict[name] = exp10(np.random.normal(val1, val2))
             elif type == 'static_list_var':
                 param_dict[name] = np.random.choice(val1)
             else:
@@ -421,10 +421,10 @@ class Algorithm(object):
                     param_dict[name] = val1 + row[rowindex]*(val2-val1)
                     rowindex += 1
                 elif type == 'loguniform_var':
-                    param_dict[name] = 10. ** (np.log10(val1) + row[rowindex]*(np.log10(val2)-np.log10(val1)))
+                    param_dict[name] = exp10(val1 + row[rowindex]*(val2-val1))
                     rowindex += 1
                 elif type == 'lognormrandom_var':
-                    param_dict[name] = 10. ** np.random.normal(val1, val2)
+                    param_dict[name] = exp10(np.random.normal(val1, val2))
                 elif type == 'normrandom_var':
                     param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
                 elif type == 'static_list_var':
@@ -452,7 +452,7 @@ class Algorithm(object):
             return max(self.variable_space[param][1], min(self.variable_space[param][2], paramset[param] + value))
         elif self.variable_space[param][0] == 'log':
             return max(self.variable_space[param][1], min(self.variable_space[param][2],
-                                                          10.**(np.log10(paramset[param]) + value)))
+                                                          exp10(np.log10(paramset[param]) + value)))
         elif self.variable_space[param][0] == 'static':
             return paramset[param]
         else:
@@ -1257,7 +1257,7 @@ class ScatterSearch(Algorithm):
             lb = np.log10(paramset[param]) + lower
             ub = np.log10(paramset[param]) + upper
             pick = np.random.uniform(lb, ub)
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], 10. ** pick))
+            return max(self.variable_space[param][1], min(self.variable_space[param][2], exp10(pick)))
         elif self.variable_space[param][0] == 'static':
             return paramset[param]
         else:
@@ -1595,7 +1595,7 @@ class SimplexAlgorithm(Algorithm):
             if vinfo[1] == 'var':
                 start_dict[vinfo[0]] = vinfo[2]
             elif vinfo[1] == 'logvar':
-                start_dict[vinfo[0]] = 10.**vinfo[2]
+                start_dict[vinfo[0]] = exp10(vinfo[2])
             else:
                 raise RuntimeError('Internal error in SimplexAlgorithm: Encountered variable type %s while trying'
                                    'to parse start point' % vinfo[1])
@@ -1773,7 +1773,7 @@ class SimplexAlgorithm(Algorithm):
                 for v in a.keys():
                     if self.variable_space[v][0] == 'log':
                         # Calc centroid in regular space.
-                        centroid = 10. ** ((sums[v] - np.log10(a[v])) / (len(self.simplex) - 1))
+                        centroid = exp10((sums[v] - np.log10(a[v])) / (len(self.simplex) - 1))
                     else:
                         centroid = (sums[v] - a[v]) / (len(self.simplex) - 1)
                     this_centroid[v] = centroid
@@ -1890,3 +1890,19 @@ def latin_hypercube(nsamples, ndims):
         population[:, j] = samples[order, j]
 
     return population
+
+def exp10(n):
+    """
+    Raise 10 to the power of a possibly user-defined value, and raise a helpful error if it overflows
+    :param n: A float
+    :return: 10.** n
+    """
+    try:
+        ans = 10.**n
+    except OverflowError:
+        logging.exception('Overflow error in exp10()')
+        raise PybnfError('Overflow when calculating 10^%d\n'
+                         'Details are saved in bnf.log\n'
+                         'This may be because you declared a lognormrandom_var or a logvar, and specified the '
+                         'arguments in regular space instead of log10 space.' % n)
+    return ans

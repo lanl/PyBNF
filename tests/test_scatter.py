@@ -1,4 +1,5 @@
-from .context import data, algorithms, pset, objective, config, parse
+from .context import data, algorithms, pset, objective, config, parse, printing
+from nose.tools import raises
 from os import mkdir
 from shutil import rmtree
 from copy import deepcopy
@@ -124,3 +125,10 @@ class TestScatter:
         # Here's a reasonable test that the fitting went okay.
         # Typically v1 fits to within 0.02, so the required margin of 0.1 should essentially never fail.
         assert abs(best_fit['v1__FREE__'] - 0.5) < 0.1
+
+    def test_exp10(self):
+        assert algorithms.exp10(2.) == 100.
+
+    @raises(printing.PybnfError)
+    def test_exp10_overflow(self):
+        algorithms.exp10(100000.)

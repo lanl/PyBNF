@@ -25,6 +25,7 @@ no_frees: OK
 no_generate_network: runs anyway, all jobs fail
 no_suffix: OK
 no_write_access: internal error (PermissionError)
+overflow: OK
 
 
 specifying a conf file that does not exist: OK
