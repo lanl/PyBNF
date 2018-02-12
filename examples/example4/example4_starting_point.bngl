@@ -1,0 +1,631 @@
+# Supplementary File A in File S1
+# "Phosphorylation site dynamics of early T-cell receptor signaling"
+# L.A. Chylek, V. Akimov, J. Dengjel, K.T.G. Rigbolt, B. Hu, W.S. Hlavacek, B. Blagoev
+# This file is an encoding of the TCR signaling model in BNGL. For a description of BNGL, see:
+# Faeder JR, Blinov ML, Hlavacek WS, Rule-based modeling of biochemical systems with BioNetGen. Methods Mol. Biol. 500, 113-167 (2009).
+# This file can be processed by BNGL-compatible tools, such as BioNetGen (http://bionetgen.org/) and NFsim (http://emonet.biology.yale.edu/nfsim/).
+# This file is meant to be used in conjunction with Supplementary File B in File S1, which is a simulation protocol for NFsim in the form of an RNF (Run NFsim) script.
+
+# This file should be named FileA.bngl (to ensure proper processing by BioNetGen and subsequent processing of the output by NFsim)
+
+begin parameters
+
+NA			6.022e23		# Avogadro's number; molecules/mole
+celldensity	9.7e10			# Cell density; cells/L
+Fx			0.05	 	  	# Scaling factor representing the fraction of a cell to consider in simulations
+							# Use of a subvolume speeds simulation, see Faeder et al. (2009)
+ECFvol		1/(celldensity)	# Extracellular volume; L/cell
+simECFvol	ECFvol*Fx		# Simulated fraction of extracellular volume
+Cellvol		1.0e-12			# Cell volume; L
+simCellvol	Cellvol*Fx		# Simulated fraction of cell volume
+
+# Units and descriptions of parameters below are given in Supplementary Table S2 (Excel spreadsheet of parameter values)
+
+KD_LckCd28	1.44E-06 					# 1.44E-06
+kfLckCd28	2.50E+07/(NA*simCellvol)	# 2.50E+07
+krLckCd28 = KD_LckCd28*2.50E+07			# 36
+
+kfItkCd28	kfLckCd28					# 2.50E+07
+krItkCd28	0.002						# 0.002
+
+act		 	2							# 2
+
+kpLckLck1	10			# 10
+kpLckLck2	act*kpLckLck1				# 20
+
+kpLckItk1	3			# 3
+kpLckItk2	act*kpLckItk1				# 6
+
+kpLckTcrz1	2							# 2
+kpLckTcrz2	kpLckTcrz1					# 2
+kpLckCd3e1	kpLckTcrz1					# 2
+kpLckCd3e2	kpLckTcrz1					# 2
+kpLckCd3g	kpLckItk2					# Assumed to be the same as kpLckItk2 (2 or 6?)
+kpLckCd3d	kpLckItk2 					# Assumed to be the same as kpLckItk2 (2 OR 6?)
+
+KD_ZapTcr		5.56E-09				# 5.56E-09
+krZapTcr		0.25 					# 0.25
+kfZapTcr		krZapTcr/KD_ZapTcr/(NA*simCellvol) # 4.50E+07
+
+kfZapCd3e	kfZapTcr					# 4.50E+07
+krZapCd3e	10*krZapTcr					# 2.5
+
+kpLckZap	6							# 6
+
+kfPtpTcr	kfZapTcr					# 4.50E+07
+krPtpTcr	krZapTcr					# 0.25
+
+kdpLck192	7							# 7
+kdpLck394	60							# 60
+
+kpLckPtp1 	100							# 100
+kpLckPtp2 =	act*kpLckPtp1				# 200
+
+kfLckPtp = 	3.50E+05/(NA*simCellvol) 	# 3.50E+05
+krLckPtp	0.004 						# 0.004
+
+kfLckPtp2 =	3.5e4/(NA*simCellvol)		# 3.40E+04
+krLckPtp2	0.04						# 0.04
+
+kfPagCsk =	2.40E+07/(NA*simCellvol)	# 2.40E+07
+krPagCsk	10							# 10
+
+KD_PagLck	8.33E-06					# 8.33E-06
+krPagLck	100							# 100
+kfPagLck =	krPagLck/KD_PagLck/(NA*simCellvol)	# 1.20E+07
+
+kpLckPag	1000						# 1000
+
+kpCskLck	kpLckPag					# 1000
+
+KM_PagPtp		2.08E-05				# 2.08E-05
+krPagPtp		100						# 100
+kdpPag			66						# 66
+kfPagPtp =	((kdpPag + krPagPtp)/KM_PagPtp)/(NA*simCellvol) #8e6
+
+cyt 	 	 0.1						# 0.01
+kfPagPtp_cyt = cyt*kfPagPtp				# 8.00E+05
+
+KM_Dok1Ptp	1.54E-05					# 1.54E-05
+krDok1Ptp	krPagPtp 					# 100
+kdpDok1		kdpLck394 					# 60
+kfDok1Ptp = ((kdpDok1 + krDok1Ptp)/KM_Dok1Ptp)/(NA*simCellvol)	# 1.04E+07
+
+kfDok2Ptp	kfPagPtp					# 8.00E+06
+krDok2Ptp	krPagPtp 					# 100
+
+kdpDok2		kdpLck394					# 60
+	
+kfTcrFyn	3.00E+05/(NA*simCellvol) 	# 3.00E+05
+krTcrFyn	1							# 1
+
+kfWasNck	2.4e5/(NA*simCellvol)		# 2.40E+05
+krWasNck	7.4e-2						# 0.074
+
+KD_TcrNck	4.11E-05							# 4.11E-05
+krTcrNck	krWasNck							# 0.074
+kfTcrNck	krWasNck/KD_TcrNck/(NA*simCellvol) 	# 1.80E+03
+
+kpWas		35							# 35
+
+KM_ZapLat132		3.19E-05			# 3.19E-05
+kfZapLat132_MS		7.20E+06			# 7.20E+06
+kfZapLat132 = 		kfZapLat132_MS/(NA*simCellvol)
+
+kfZapLat191	2.16E+07/(NA*simCellvol) 	# 2.16E+07
+
+kpZapLat2	200							# 200
+
+krZapLat = 	KM_ZapLat132*kfZapLat132_MS-kpZapLat2 # 30
+
+KD_PlcgLat	6.20E-08					# 6.20E-08
+krPlcgLat	1							# 1
+kfPlcgLat	krPlcgLat/KD_PlcgLat/(NA*simCellvol)	# 1.61E+07
+
+KD_LatGrap	1.52E-07					# 1.52E-07
+krLatGrap 	krPlcgLat					# 1
+kfLatGrap = krPlcgLat/KD_LatGrap/(NA*simCellvol) # 6.60E+06
+
+KD_NckLcp	8.00E-07					# 8.00E-07
+krNckLcp 	1							# 1
+kfNckLcp = 	1.19E+06/(NA*simCellvol) 	# 1.19E+06 (Lily uses 1.19 but really it should be 1.25?)
+
+kfGrapLcp 	9.5e6/(NA*simCellvol)		# 9.50E+06
+krGrapLcp 	0.06 						# 0.06
+
+kpZapLcp2 	kpZapLat2					# 200
+
+kfWasFyn	kfZapLat191					# 2.16E+07
+krWasFyn	krZapLat					# 30
+
+KD_PlcgLcp	6.32E-09					# 6.32E-09
+krPlcgLcp	10*krGrapLcp				# 0.6
+kfPlcgLcp = krPlcgLcp/KD_PlcgLcp/(NA*simCellvol) # 9.50E+07
+
+kfLcpItk	kfNckLcp					# 1.19E+06
+krLcpItk	0.1							# 0.1
+
+kfZapLcp	1.44E+08/(NA*simCellvol)	# 1.44E+08
+krZapLcp	3							# 3
+
+kpPlcg		kpLckPag					# 1000
+
+kp1 	    5.00E-03      				
+kp2 	    0.01						
+kp3	    	0.05						
+kp4	    	2.00E-03					
+
+kdp1	    10  						
+kdp2	    1							# PMID: 22711887
+kdp3	    0.01						
+kdp4	    2							
+kdp5 		3.00E-02 					
+
+#kfl			7.45E+05/(NA*simECFvol) # 7.45E+05
+kfl 0
+
+krl	       	2.00E-03					# 2.00E-03
+
+#kfl_m	    kfl*100						# 7.45E+07
+kfl_m 0
+
+Ligtot 	8.0707e+04*Fx				# Antibodies were present at 4 micrograms/mL. With a cell density of 9.7e10 cells/mL and assuming the antibodies' molecular weight is 150 kDA, there were 1.65e5 antibodies/cell. We model the pre-crosslinked antibodies as virtual ligands whose concentration is somewhat lower than the total antibody concentration because formation of crosslinked antibody complexes is dependent on their affinities.
+#Ligtot		0
+
+# Protein copy numbers are given on a per cell basis
+Proteintot	200000*Fx					# For Jurkat T cells, Denny et al. (PMID: 10648627)  estimated LCK to be present at 160,000-200,000 copies per cell. For simplicity we assume that all cytosolic proteins are expressed at 200,000 copies per cell, which corresponds to a concetration of ~0.33 micromolar (assuming a cytoplasmic volume of 1 pL). Thus, any differences in copy numbers are subsumed in forward rate constants.
+TCRtot 		1.00E+05*Fx			# As reported in Bartelt et al. (PMID: 19412549), Jurkat E6.1 cells, which were used in our experiments, express abundant levels of TCR and do not respond to cross-linking of CD28 alone, suggesting that CD28 is expressed at a lower level. Data of Marano et al. and Acuto et al. (PMIDs 2787352 and 14647476)  suggest that the expression levels of these receptors are on the order 10,000 to 100,000 copies per cell.
+CD28tot		1.00E+04*Fx			# See note on TCRtot above.
+
+end parameters
+begin molecule types
+
+# Descriptions of molecule types can be found in the Supplementary Text (model guide, File S3)
+
+Lig1(aCD28,aCD28)
+Lig2(aCD28,aCD3)
+Lig3(aCD3,aCD3)
+TCR(epitope,Y149_D~0~P,Y171_G~0~P,Y111~0~P,Y123~0~P,fynbind,PRS_E,Y188_E~0~P,Y199_E~0~P)
+CD28(epitope,PRS1,PRS2)
+LCK(SH2,SH3,Y192~0~P,Y424~0~P,Y505~0~P)
+ITK(SH3,SH2,PTK,Y512~0~P)
+ZAP70(SH2,PTK,Y493~0~P)
+PTPN6(SH2,PTP,Y566~0~P)
+PAG1(Y163~0~P,Y317~0~P)
+CSK(SH2)
+DOK1(Y449~0~P)
+DOK2(Y299~0~P)
+FYN(unique,PTK)
+NCK(SH3_1,SH3_3,SH2)
+WAS(PRS,Y291~0~P)
+LAT(Y132~0~P,Y191~0~P)
+PLCG1(SH2,SH3,Y783~0~P)
+GRAP2(SH2,SH3)
+LCP2(RxxK,Y113_Y128~0~P,PRS,Y145~0~P)
+
+end molecule types
+
+begin seed species
+
+# Seed species are used to initialize a simulation. Following each molecule is parameter that specifies copy number
+
+Lig1(aCD28,aCD28) Ligtot
+Lig2(aCD28,aCD3) Ligtot
+Lig3(aCD3,aCD3) Ligtot
+CD28(epitope,PRS1,PRS2) CD28tot
+TCR(epitope,Y149_D~0,Y171_G~0,Y111~0,Y123~0,fynbind,PRS_E,Y188_E~0,Y199_E~0) TCRtot
+LCK(SH2,SH3,Y192~0,Y424~0,Y505~0) Proteintot
+ITK(SH3,SH2,PTK,Y512~0) Proteintot
+ZAP70(SH2,PTK,Y493~0) Proteintot
+PAG1(Y163~0,Y317~0) Proteintot
+CSK(SH2) Proteintot
+DOK1(Y449~0) Proteintot
+DOK2(Y299~0) Proteintot
+FYN(unique,PTK) Proteintot
+NCK(SH3_1,SH3_3,SH2) Proteintot
+WAS(PRS,Y291~0) Proteintot
+LAT(Y132~0,Y191~0) Proteintot
+PLCG1(SH2,SH3,Y783~0) Proteintot
+GRAP2(SH2,SH3) Proteintot
+
+# To simulate PTPN6 knockdown, the copy number of PTPN6 was set to 0.
+PTPN6(SH2,PTP,Y566~0) Proteintot
+
+# To simulate LCP2 knockdown, the copy number of LCP2 was set to 0.
+LCP2(RxxK,Y113_Y128~0,PRS,Y145~0) Proteintot
+
+end seed species
+
+begin reaction rules
+
+# Rules are numbered to correspond to entries in Supplementary Text (model guide), where rules are annotated
+
+# Rule 1a
+Lig1(aCD28,aCD28) + CD28(epitope) <-> Lig1(aCD28!1,aCD28).CD28(epitope!1) kfl,krl
+
+# Rule 1b
+Lig1(aCD28!1,aCD28).CD28(epitope!1) + CD28(epitope) <-> Lig1(aCD28!1,aCD28!2).CD28(epitope!1).CD28(epitope!2) kfl_m,krl
+
+# Rule 2a
+Lig3(aCD3,aCD3) + TCR(epitope) <-> Lig3(aCD3!1,aCD3).TCR(epitope!1) kfl,krl
+
+# Rule 2b
+Lig3(aCD3!1,aCD3).TCR(epitope!1) + TCR(epitope) <-> Lig3(aCD3!1,aCD3!2).TCR(epitope!1).TCR(epitope!2) kfl_m,krl
+
+# Rule 3a
+Lig2(aCD28,aCD3) + CD28(epitope) <-> Lig2(aCD28!1,aCD3).CD28(epitope!1) kfl,krl
+
+# Rule 3b
+Lig2(aCD28!1,aCD3).CD28(epitope!1) + TCR(epitope) <-> Lig2(aCD28!1,aCD3!2).CD28(epitope!1).TCR(epitope!2) kfl_m,krl
+
+# Rule 3c
+Lig2(aCD28,aCD3) + TCR(epitope) <-> Lig2(aCD28,aCD3!1).TCR(epitope!1) kfl,krl
+
+# Rule 3d
+Lig2(aCD28,aCD3!1).TCR(epitope!1) + CD28(epitope) <-> Lig2(aCD28!2,aCD3!1).TCR(epitope!1).CD28(epitope!2) kfl_m,krl
+
+# Rule 4
+LCK(SH3) + CD28(PRS1) <-> LCK(SH3!1).CD28(PRS1!1) kfLckCd28,krLckCd28
+
+# Rule 5
+CD28(PRS2) + ITK(SH3) <-> CD28(PRS2!1).ITK(SH3!1) kfItkCd28, krItkCd28
+
+# Rule 6
+TCR(fynbind) + FYN(unique) <-> TCR(fynbind!1).FYN(unique!1) kfTcrFyn,krTcrFyn
+
+# Rule 7a
+NCK(SH3_1) + TCR(Y188_E~0,PRS_E) <-> NCK(SH3_1!1).TCR(Y188_E~0,PRS_E!1) kfWasNck,krWasNck
+
+# Rule 7b
+NCK(SH3_1!1).TCR(Y188_E~P,PRS_E!1) -> NCK(SH3_1) + TCR(Y188_E~P,PRS_E) 1e5*krWasNck
+
+# Rule 8
+TCR(Y111~P) + ZAP70(SH2) <-> TCR(Y111~P!1).ZAP70(SH2!1) kfZapTcr,krZapTcr
+
+# Rule 9
+TCR(Y123~P) + ZAP70(SH2) <-> TCR(Y123~P!1).ZAP70(SH2!1) kfZapTcr,krZapTcr
+
+# Rule 10
+TCR(Y199_E~P) + ZAP70(SH2) <-> TCR(Y199_E~P!1).ZAP70(SH2!1) kfZapCd3e,krZapCd3e
+
+# Rule 11
+TCR(Y188_E~P) + ZAP70(SH2) <-> TCR(Y188_E~P!1).ZAP70(SH2!1) kfZapCd3e,krZapCd3e
+
+# Rule 12
+PTPN6(SH2) + TCR(Y149_D~P) <-> PTPN6(SH2!1).TCR(Y149_D~P!1) kfPtpTcr,krPtpTcr
+
+# Rule 13
+PTPN6(SH2) + TCR(Y171_G~P) <-> PTPN6(SH2!1).TCR(Y171_G~P!1) kfPtpTcr,krPtpTcr
+
+# Rule 14
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y188_E~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y188_E~P) kpLckCd3e1
+
+# Rule 15
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y199_E~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y199_E~P) kpLckCd3e2
+
+# Rule 16
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P) kpLckCd3d
+
+# Rule 17
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P) kpLckCd3g
+
+# Rule 18
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y111~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y111~P) kpLckTcrz1
+
+# Rule 19
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y123~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y123~P) kpLckTcrz1
+
+# Rule 20a
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS1!4).LCK(SH3!4,Y424~0) ->\
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS1!4).LCK(SH3!4,Y424~P) kpLckLck1
+
+# Rule 20b
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS1!4).LCK(SH3!4,Y424~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS1!4).LCK(SH3!4,Y424~P) kpLckLck2
+
+# Rule 21a
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS2!4).ITK(SH3!4,Y512~0) ->\
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS2!4).ITK(SH3!4,Y512~P) kpLckItk1
+
+# Rule 21b
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS2!4).ITK(SH3!4,Y512~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig1(aCD28!2,aCD28!3).CD28(epitope!3,PRS2!4).ITK(SH3!4,Y512~P) kpLckItk2
+
+# Rule 22a
+TCR(epitope!3,Y111~P!1).ZAP70(Y493~0,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) ->\
+TCR(epitope!3,Y111~P!1).ZAP70(Y493~P,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) kpLckZap
+
+# Rule 22b
+TCR(epitope!3,Y123~P!1).ZAP70(Y493~0,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) ->\
+TCR(epitope!3,Y123~P!1).ZAP70(Y493~P,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) kpLckZap
+
+# Rule 22c
+TCR(epitope!3,Y188_E~P!1).ZAP70(Y493~0,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) ->\
+TCR(epitope!3,Y188_E~P!1).ZAP70(Y493~P,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) kpLckZap
+
+# Rule 22d
+TCR(epitope!3,Y199_E~P!1).ZAP70(Y493~0,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) ->\
+TCR(epitope!3,Y199_E~P!1).ZAP70(Y493~P,SH2!1).Lig2(aCD28!2,aCD3!3).CD28(epitope!2,PRS1!4).LCK(SH3!4,Y505~0) kpLckZap
+
+# Rule 23a
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~0) ->\
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~P) kpLckPtp1
+
+# Rule 23b
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~P) kpLckPtp2
+
+# Rule 23c
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~0) ->\
+LCK(SH3!1,Y505~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~P) kpLckPtp1
+
+# Rule 23d
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~0) ->\
+LCK(SH3!1,Y505~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~P) kpLckPtp2
+
+# Rule 24a
+LCK(SH2,Y192~0) + PTPN6(Y566~P) <-> LCK(SH2!1,Y192~0).PTPN6(Y566~P!1) kfLckPtp,krLckPtp
+
+# Rule 24b
+LCK(SH2,Y192~P) + PTPN6(Y566~P) <-> LCK(SH2!1,Y192~P).PTPN6(Y566~P!1)  kfLckPtp2,krLckPtp2
+
+# Rule 25
+PAG1(Y317~P) + CSK(SH2) <-> PAG1(Y317~P!1).CSK(SH2!1) kfPagCsk,krPagCsk
+
+# Rule 26
+PAG1(Y163~P) + LCK(SH2) <-> PAG1(Y163~P!1).LCK(SH2!1) kfPagLck,krPagLck
+
+# Rule 27
+PAG1(Y317~0,Y163~P!1).LCK(SH2!1) -> PAG1(Y317~P,Y163~P!1).LCK(SH2!1) kpLckPag
+
+# Rule 28
+PAG1(Y317~P!2,Y163~P!1).LCK(SH2!1,Y505~0).CSK(SH2!2) -> PAG1(Y317~P!2,Y163~P!1).LCK(SH2!1,Y505~P).CSK(SH2!2) kpCskLck
+
+# Rule 29a
+LCK(SH3!1,Y192~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~P!?) ->\
+LCK(SH3!1,Y192~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~P!?) kdpLck192
+
+# Rule 29b
+LCK(SH3!1,Y192~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~P!?) ->\
+LCK(SH3!1,Y192~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~P!?) kdpLck192
+
+# Rule 30a
+LCK(SH3!1,Y424~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~P!?) ->\
+LCK(SH3!1,Y424~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y149_D~P!4).PTPN6(SH2!4,Y566~P!?) kdpLck394
+
+# Rule 30b
+LCK(SH3!1,Y424~P).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~P!?) ->\
+LCK(SH3!1,Y424~0).CD28(PRS1!1,epitope!2).Lig2(aCD28!2,aCD3!3).TCR(epitope!3,Y171_G~P!4).PTPN6(SH2!4,Y566~P!?) kdpLck394
+
+# Rule 30c
+PTPN6(Y566~P!1).LCK(SH2!1,Y424~P) -> PTPN6(Y566~P!1).LCK(SH2!1,Y424~0) kdpLck394
+
+# Rule 31a
+PAG1(Y163~P) + PTPN6(SH2!2,PTP).TCR(Y149_D~P!2) ->\
+PAG1(Y163~P!1).PTPN6(SH2!2,PTP!1).TCR(Y149_D~P!2) kfPagPtp
+
+# Rule 31b
+PAG1(Y163~P) + PTPN6(SH2!2,PTP).TCR(Y171_G~P!2) ->\
+PAG1(Y163~P!1).PTPN6(SH2!2,PTP!1).TCR(Y171_G~P!2) kfPagPtp
+
+# Rule 31c
+PTPN6(PTP,SH2) + PAG1(Y163~P) -> PTPN6(PTP!1,SH2).PAG1(Y163~P!1) kfPagPtp_cyt
+
+# Rule 31d
+PAG1(Y163~P!1).PTPN6(PTP!1) -> PAG1(Y163~P) + PTPN6(PTP) krPagPtp
+
+# Rule 31e
+PAG1(Y163~P!1).PTPN6(PTP!1,Y566~P!?) -> PAG1(Y163~0) + PTPN6(PTP,Y566~P!?) kdpPag
+
+# Rule 32a
+DOK1(Y449~P) + PTPN6(SH2!2,PTP).TCR(Y149_D~P!2) -> DOK1(Y449~P!1).PTPN6(SH2!2,PTP!1).TCR(Y149_D~P!2) kfDok1Ptp
+
+# Rule 32b
+DOK1(Y449~P) + PTPN6(SH2!2,PTP).TCR(Y171_G~P!2) -> DOK1(Y449~P!1).PTPN6(SH2!2,PTP!1).TCR(Y171_G~P!2) kfDok1Ptp
+
+# Rule 32c
+DOK1(Y449~P!1).PTPN6(PTP!1) -> DOK1(Y449~P) + PTPN6(PTP) krDok1Ptp
+
+# Rule 32d
+DOK1(Y449~P!1).PTPN6(PTP!1,Y566~P!?) -> DOK1(Y449~0) + PTPN6(PTP,Y566~P!?) kdpDok1
+
+# Rule 33a
+DOK2(Y299~P) + PTPN6(SH2!2,PTP).TCR(Y149_D~P!2) -> DOK2(Y299~P!1).PTPN6(SH2!2,PTP!1).TCR(Y149_D~P!2) kfDok2Ptp
+
+# Rule 33b
+DOK2(Y299~P) + PTPN6(SH2!2,PTP).TCR(Y171_G~P!2) -> DOK2(Y299~P!1).PTPN6(SH2!2,PTP!1).TCR(Y171_G~P!2) kfDok2Ptp
+
+# Rule 33c
+DOK2(Y299~P!1).PTPN6(PTP!1) -> DOK2(Y299~P) + PTPN6(PTP) krDok2Ptp
+
+# Rule 33d
+DOK2(Y299~P!1).PTPN6(PTP!1,Y566~P!?) -> DOK2(Y299~0) + PTPN6(PTP,Y566~P!?) kdpDok2
+
+# Rule 34
+WAS(PRS) + NCK(SH3_3) <-> WAS(PRS!1).NCK(SH3_3!1) kfWasNck,krWasNck
+
+# Rule 35a
+TCR(epitope!3,fynbind!1).FYN(unique!1).Lig3(aCD3!2,aCD3!3).TCR(epitope!2,PRS_E!4).NCK(SH3_1!4,SH3_3!5).WAS(Y291~0,PRS!5) ->\
+TCR(epitope!3,fynbind!1).FYN(unique!1).Lig3(aCD3!2,aCD3!3).TCR(epitope!2,PRS_E!4).NCK(SH3_1!4,SH3_3!5).WAS(Y291~P,PRS!5) kpWas
+
+# Rule 35b
+LAT(Y191~P!1).GRAP2(SH2!1,SH3!2).LCP2(RxxK!2,Y113_Y128~P!3).NCK(SH2!3,SH3_3!4).WAS(PRS!4,Y291~0) + FYN(unique!+,PTK) ->\
+LAT(Y191~P!1).GRAP2(SH2!1,SH3!2).LCP2(RxxK!2,Y113_Y128~P!3).NCK(SH2!3,SH3_3!4).WAS(PRS!4,Y291~0!5).FYN(unique!+,PTK!5) kfWasFyn
+
+# Rule 35c
+WAS(Y291~0!5).FYN(PTK!5) -> WAS(Y291~P) + FYN(PTK) kpWas
+
+# Rule 35d
+WAS(Y291~0!1).FYN(PTK!1) -> WAS(Y291~0) + FYN(PTK) krWasFyn
+
+# Rule 36a
+ZAP70(SH2!+,PTK) + LAT(Y132~0) -> ZAP70(SH2!+,PTK!1).LAT(Y132~0!1) kfZapLat132
+
+# Rule 36b
+ZAP70(PTK!1).LAT(Y132~0!1) -> ZAP70(PTK) + LAT(Y132~0) krZapLat
+
+# Rule 36c
+ZAP70(PTK!1,Y493~P).LAT(Y132~0!1) -> ZAP70(PTK,Y493~P) + LAT(Y132~P) kpZapLat2
+
+# Rule 37a
+ZAP70(SH2!+,PTK) + LAT(Y191~0) -> ZAP70(SH2!+,PTK!1).LAT(Y191~0!1) kfZapLat191
+
+# Rule 37b
+ZAP70(PTK!1).LAT(Y191~0!1) -> ZAP70(PTK) + LAT(Y191~0) krZapLat
+
+# Rule 37c
+ZAP70(PTK!1,Y493~P).LAT(Y191~0!1) -> ZAP70(PTK,Y493~P) + LAT(Y191~P) kpZapLat2
+
+# Rule 38
+PLCG1(SH2) + LAT(Y132~P) <->  PLCG1(SH2!1).LAT(Y132~P!1) kfPlcgLat,krPlcgLat
+
+# Rule 39
+LAT(Y191~P) + GRAP2(SH2) <-> LAT(Y191~P!1).GRAP2(SH2!1) kfLatGrap,krLatGrap
+
+# Rule 40
+GRAP2(SH3) + LCP2(RxxK) <-> GRAP2(SH3!1).LCP2(RxxK!1) kfGrapLcp, krGrapLcp
+
+# Rule 41
+NCK(SH2) + LCP2(Y113_Y128~P) <-> NCK(SH2!1).LCP2(Y113_Y128~P!1) kfNckLcp,krNckLcp
+
+# Rule 42a
+LAT(Y191~P!1).GRAP2(SH2!1,SH3!2).LCP2(RxxK!2,Y113_Y128~0) + ZAP70(SH2!+,PTK) ->\
+LAT(Y191~P!1).GRAP2(SH2!1,SH3!2).LCP2(RxxK!2,Y113_Y128~0!3).ZAP70(SH2!+,PTK!3) kfZapLcp
+
+# Rule 42b
+ZAP70(PTK!1).LCP2(Y113_Y128~0!1) -> ZAP70(PTK) + LCP2(Y113_Y128~0) krZapLcp
+
+# Rule 42c
+LCP2(Y113_Y128~0!3).ZAP70(PTK!3,Y493~P) -> LCP2(Y113_Y128~P) + ZAP70(PTK,Y493~P) kpZapLcp2
+
+# Rule 43
+PLCG1(SH3) + LCP2(PRS) <-> PLCG1(SH3!1).LCP2(PRS!1) kfPlcgLcp,krPlcgLcp
+
+# Rule 44
+LCP2(Y145~P) + ITK(SH2) <-> LCP2(Y145~P!1).ITK(SH2!1) kfLcpItk,krLcpItk
+
+# Rule 45a
+LAT(Y191~P!1).GRAP2(SH2!1,SH3!2).LCP2(RxxK!2,Y145~0) + ZAP70(SH2!+,PTK) ->\
+LAT(Y191~P!1).GRAP2(SH2!1,SH3!2).LCP2(RxxK!2,Y145~0!3).ZAP70(SH2!+,PTK!3) kfZapLcp
+
+# Rule 45b
+ZAP70(PTK!1).LCP2(Y145~0!1) -> ZAP70(PTK) + LCP2(Y145~0) krZapLcp
+
+# Rule 45c
+LCP2(Y145~0!3).ZAP70(PTK!3,Y493~P) -> LCP2(Y145~P) + ZAP70(PTK,Y493~P) kpZapLcp2
+
+# Rule 46
+PLCG1(SH3!1,SH2!+,Y783~0).LCP2(PRS!1,Y145~P!2).ITK(SH2!2) -> PLCG1(SH3!1,SH2!+,Y783~P).LCP2(PRS!1,Y145~P!2).ITK(SH2!2) kpPlcg
+
+# The following rules account for phosphorylation and dephosphorylation in the basal state, and are not discussed in the model guide
+
+TCR(Y149_D~0) -> TCR(Y149_D~P) kp1
+TCR(Y149_D~P) -> TCR(Y149_D~0) kdp1
+
+TCR(Y171_G~0) -> TCR(Y171_G~P) kp1
+TCR(Y171_G~P) -> TCR(Y171_G~0) kdp1
+
+TCR(Y111~0) -> TCR(Y111~P) kp1
+TCR(Y111~P) -> TCR(Y111~0) kdp4
+
+TCR(Y123~0) -> TCR(Y123~P) kp1
+TCR(Y123~P) -> TCR(Y123~0) kdp4
+
+TCR(Y199_E~0) -> TCR(Y199_E~P) kp1
+TCR(Y199_E~P) -> TCR(Y199_E~0) kdp1
+
+TCR(Y188_E~0) -> TCR(Y188_E~P) kp1
+TCR(Y188_E~P) -> TCR(Y188_E~0) kdp1
+
+LCK(Y192~0) -> LCK(Y192~P) kp2
+LCK(Y192~P) -> LCK(Y192~0) kdp3
+
+LCK(Y424~0) -> LCK(Y424~P) kp2
+LCK(Y424~P) -> LCK(Y424~0) kdp2
+
+LCK(Y505~0) -> LCK(Y505~P) kp2 
+LCK(Y505~P) -> LCK(Y505~0) kdp5
+
+PTPN6(Y566~0) -> PTPN6(Y566~P) kp2
+PTPN6(Y566~P) -> PTPN6(Y566~0) kdp4
+
+ZAP70(Y493~0) -> ZAP70(Y493~P) kp1
+ZAP70(Y493~P) -> ZAP70(Y493~0) kdp2 
+
+LAT(Y132~0) -> LAT(Y132~P) kp2
+LAT(Y132~P) -> LAT(Y132~0) kdp2
+
+LAT(Y191~0) -> LAT(Y191~P) kp2
+LAT(Y191~P) -> LAT(Y191~0) kdp2
+
+ITK(Y512~0) -> ITK(Y512~P) kp2
+ITK(Y512~P) -> ITK(Y512~0) kdp2
+
+PLCG1(Y783~0) -> PLCG1(Y783~P) kp1
+PLCG1(Y783~P) -> PLCG1(Y783~0) kdp1
+
+LCP2(Y113_Y128~0) -> LCP2(Y113_Y128~P) kp2
+LCP2(Y113_Y128~P) -> LCP2(Y113_Y128~0) kdp2
+
+LCP2(Y145~0) -> LCP2(Y145~P) kp2
+LCP2(Y145~P) -> LCP2(Y145~0) kdp2
+
+PAG1(Y163~0) -> PAG1(Y163~P) kp4
+PAG1(Y163~P) -> PAG1(Y163~0) kdp3
+
+PAG1(Y317~0) -> PAG1(Y317~P) kp4
+PAG1(Y317~P) -> PAG1(Y317~0) kdp4
+
+DOK1(Y449~0) -> DOK1(Y449~P) kp4
+DOK1(Y449~P) -> DOK1(Y449~0) kdp3
+
+DOK2(Y299~0) -> DOK2(Y299~P) kp4
+DOK2(Y299~P) -> DOK2(Y299~0) kdp3
+
+WAS(Y291~0) -> WAS(Y291~P) kp2
+WAS(Y291~P) -> WAS(Y291~0) kdp2
+
+end reaction rules
+
+begin observables
+
+# Beside each observable is noted the figure(s) in which the observable is plotted.
+Molecules DOK1_pY449 DOK1(Y449~P!?)		# Fig. 2 and Fig. S6
+Molecules DOK2_pY299  DOK2(Y299~P!?)		# Fig. 2 and Fig. S6
+Molecules ITK_pY512 ITK(Y512~P!?)		# Fig. 2 and Fig. S6
+Molecules LCK_pY192 LCK(Y192~P!?)		# Fig. 2, 3 and Fig. S6
+Molecules LCK_pY424 LCK(Y424~P!?)		# Fig. 2 and Fig. S6
+Molecules PAG1_pY163 PAG1(Y163~P!?)		# Fig. 2 and Fig. S6
+Molecules PLCG1_pY783 PLCG1(Y783~P!?)		# Fig. 2, 4 and Fig. S6
+Molecules PTPN6_pY566 PTPN6(Y566~P!?)		# Fig. 2, 3 and Fig. S6
+Molecules TCR_pY111 TCR(Y111~P!?)		# Fig. 2 and Fig. S6
+Molecules TCR_pY123 TCR(Y123~P!?)		# Fig. 2 and Fig. S6
+Molecules TCR_pY149_D TCR(Y149_D~P!?)		# Fig. 2 and Fig. S6
+Molecules TCR_pY171_G TCR(Y171_G~P!?)		# Fig. 2 and Fig. S6
+Molecules TCR_pY188_E TCR(Y188_E~P!?)		# Fig. 2 and Fig. S6
+Molecules TCR_pY199_E TCR(Y199_E~P!?)		# Fig. 2 and Fig. S6
+Molecules WAS_pY291 WAS(Y291~P!?)		# Fig. 2, 4 and Fig. S6
+Molecules ZAP70_pY493 ZAP70(Y493~P!?)		# Figs. 2, 3 and Fig. S6
+
+end observables
+
+begin actions
+
+# Equilibrate for 500 seconds
+simulate({suffix=>"equil", method=>"nf", t_start=>0, t_end=>500, n_steps=>1, get_final_state=>1});
+
+# Add ligand (8.0707e+04 * Fx)
+setConcentration("Lig1(aCD28,aCD28)","8.0707e+04*Fx")
+setConcentration("Lig2(aCD28,aCD3)","8.0707e+04*Fx")
+setConcentration("Lig3(aCD3,aCD3)","8.0707e+04*Fx")
+
+# Simulate for 60 seconds, outputting every 5 seconds
+simulate({suffix=>"tcr", method=>"nf", t_start=>0, t_end=>60, get_final_state=>0, n_steps=>12});
+
+end actions

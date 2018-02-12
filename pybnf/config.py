@@ -161,6 +161,7 @@ class Configuration(object):
                               "You specified that model %s.bngl corresponds to data file %s.exp, but I can't find the "
                               "corresponding action in the model file. One of the actions in %s.bngl needs to include "
                               "the argument 'suffix=>\"%s\" '." % (model.name, ef, model.name, ef))
+            logging.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
             mapping[model.name] = efs_per_m
         return mapping
 

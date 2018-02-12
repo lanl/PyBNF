@@ -13,7 +13,6 @@ begin model
 
 begin parameters # this comment might break your parser
 
-
 f 1 # cells per reaction compartment
 
 # Avogadro constant
@@ -149,7 +148,8 @@ begin actions
 # The output is sent to a file that has a .net filename extension.
 # The .net file can be further processed to generate the ordinary differential equations 
 # corresponding to the reaction network and the rate laws associated with the model's rules.
-generate_network({overwrite=>1})
+generate_net\
+work({overwrite=>1})
 
 # The commands below illustrate how we simulated 
 # 1) an initial period of multivalent antigen-stimulated IgE receptor signaling,
@@ -163,9 +163,14 @@ generate_network({overwrite=>1})
 # first 5-min period of multivalent antigen stimulation
 setConcentration("Ag(DNP)","Ag_tot_1") 
 saveConcentrations()
-simulate({suffix=>"p1_5",method=>"ode",t_start=>0,t_end=>5,n_steps=>50})
+simulate({suffix\
+=\						# Comment
+>"p1_\
+\
+5",method=>"ode",t_start=>0,t_end=>5,n_steps=>50})
 resetConcentrations()
-parameter_scan({method=>"ssa",t_start=>0,t_end=>1,n_steps=>100,parameter=>'kase',par_min=>'0.01',par_max=>'10',n_scan_pts=>4,log_scale=>1,suffix=>"thing"})
+parameter_scan({method=>"ssa",t_start=>0,t_end=>1,\
+	n_steps=>100,parameter=>'kase',par_min=>'0.01',par_max=>'10',n_scan_pts=>4,log_scale=>1,suffix=>"thing"})
 
 
 end actions

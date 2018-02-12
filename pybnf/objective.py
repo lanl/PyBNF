@@ -31,7 +31,10 @@ class ObjectiveFunction(object):
         else:
             for model in sim_data_dict:
                 for suffix in sim_data_dict[model]:
-                    total += self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+                    # Suffixes might exist in sim_data_dict that do not have experimental data.
+                    # Need to check for that here.
+                    if suffix in exp_data_dict:
+                        total += self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
 
             return total
 

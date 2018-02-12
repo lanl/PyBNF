@@ -1,0 +1,97 @@
+begin model
+
+# Reference:
+# 1. Monine MI et al. (2010) Biophys J 98: 48-56. <-- model and fitting results
+# 2. Posner RG et al. (2007) Org Lett 9: 3551-3554. <-- data
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# fraction of a cell to consider in a stochastic simulation
+f 0.001 # [=] dimensionless, from Table 1 in Ref 1
+
+chi=1.0/f
+
+# cell density
+cellDensity 1.0e9 # [=] cells per L (1e6 cells per ml), from Table 1 in Ref 1
+
+# volume of ECF surrounding a single cell (on average)
+Vref=f/cellDensity # [=] L, from Table 1 in Ref 1
+
+LTconc 7.0 # [=] nM
+
+RTref f*3.0e5 # [=] molecules per cell, from Table 1 in Ref 1
+LTref = LTconc*1.0e-9*(NA*Vref) # [=] ~4,200,000 molecules per cell, cf. Table 1 in Ref 1
+RTconc = RTref*1.0e9/(NA*Vref) # [=] nM
+
+# dissociation rate constants (settings are arbitrary)
+koff 0.01 # [=] /s, from Table 1 in Ref
+kr1=koff # [=] /s
+kr2=koff # [=] /s
+
+alpha alpha__FREE__
+
+inverse_alpha=1.0/alpha # 1/alpha
+
+K1 K1__FREE__ # [=] /nM, from Brandon
+K2 K2__FREE__ # [=] /nM, from Brandon
+
+kf1=K1*1.0e9*kr1/(NA*Vref) # [=] /(molecule/cell)/s
+kf2=K2*1.0e9*kr2/(NA*Vref) # [=] /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+L(s,s,s)
+R(s,s)
+
+end molecule types
+
+begin seed species
+
+L(s,s,s) LTref
+R(s,s) RTref
+
+end  seed species
+
+begin observables
+
+Molecules R_total R()
+Molecules L_total L()
+Species L_free L(s,s,s)
+
+end observables
+
+begin functions
+
+lambda() (L_total-L_free)/(2.0*R_total) # [=] dimensionless, (0,1)
+FL() inverse_alpha*(L_total-L_free)/(2.0*R_total) # FL = lambda/alpha or lambda = alpha*FL
+# I am multiplying by the inverse of alpha instead of dividing by alpha
+# to avoid a "divide by zero" error
+
+end functions
+
+begin reaction rules
+
+L(s,s,s)+R(s)->L(s!1,s,s).R(s!1) kf1
+L(s!+,s)+R(s)->L(s!+,s!1).R(s!1) kf2
+L(s!1).R(s!1)->L(s)+R(s) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+parameter_scan({parameter=>"LTconc",\
+                par_scan_vals=>[0.0005006902,0.001362623,0.0044341334,0.0149210839,\
+                0.0441574,0.1507897315,0.5013619944,1.5652727704,5.2257161826,\
+                16.9016532291,67.9604112309,213.4593409505],\
+                method=>"nf",complex=>1,gml=>10000000,print_functions=>1,\
+                t_start=>0,t_end=>5000,n_steps=>10,suffix=>"example3",\
+                steady_state=>1,get_final_state=>0})
+
+end actions

@@ -1,0 +1,341 @@
+
+# Author: William S. Hlavacek
+# Affiliation: Theoretical Division, Los Alamos National Laboratory
+
+# list of free parameters:
+# K1__FREE__
+# K2__FREE__
+# K1prime__FREE__
+
+begin model
+
+# Model for IGF1 interaction with IGF1R
+
+# References:
+# Kiselyov VV, ..., De Meyts P (2009) Mol Syst Biol 5:243 [PMID:19225456]
+
+begin parameters
+
+# fraction of cell to be considered in a simulation
+#   The scaling factor f should multiply volumes, copy numbers, 
+#   and rate constants for zero-order processes.
+f 1.0 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# volume of extracellular fluid per cell
+#   Assumptions:
+#    - 15 cm culture dishes (cells 95% confluent)
+#    - 1.2e5 cells per cm^2
+#    - growth surface area of 140 cm^2
+#    - 1.7e7 cells per dish
+#    - 0.25 mL of medium per square cm of growth surface
+#    - 35 mL of medium per dish
+Vecf_default 2.1e-9*f # [=] L per cell
+
+dilution 1.0
+Vecf=dilution*Vecf_default
+
+IGF1_hot_conc 7.0e-12 # [=] M (7 pM or 24 pM, p. 8 of Kiselyov et al., 2009)
+
+IGF1_cold_conc_nM 0.0 # [=] nM (0.001 to 1000 nM in Fig 5B of Kiselyov et al., 2009)
+IGF1_cold_conc=IGF1_cold_conc_nM*1.0e-9 # [=] M
+
+# copies of IGF1 per cell
+IGF1_hot_total=IGF1_hot_conc*(NA*Vecf)
+IGF1_cold_total=IGF1_cold_conc*(NA*Vecf)
+
+IGF1R_total 20000*f # [=] copies per cell (NB: two copies of IGF1R per dimer)
+
+# Equilibrium constants for ligand capture/release reactions
+#   K1=d1/a1=9.2 nM - 9.09 nM is the Site 1 KD reported in Table 1 (Kiselyov et al., 2009)
+#   K2=d2/a2=483 nM -  490 nM is the Site 2 KD reported in Table 1 (Kiselyov et al., 2009)
+
+K1	K1__FREE__		# [=] M
+K2	K2__FREE__		# [=] M
+K1prime	K1prime__FREE__		# [=] dimensionless
+
+# Guess we have to assume some rate constants. Use the values reported by Kiselyov et al.,2009 in Table 1
+a1_perMpers 3.47e5		# /M/s
+a1=a1_perMpers/(NA*Vecf)	# [=] /M/s converted to /(molecule/cell)/s
+a2_perMpers 8.7e3		# /M/s
+a2=a2_perMpers/(NA*Vecf)	# [=] /M/s converted to /(molecule/cell)/s
+# reverse rate constant for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+d1=K1*a1_perMpers	# [=] /s
+
+# reverse rate constant for IGF1 (hs) interaction with IGF1R (S2)
+#   Free IGF1 binds Site 2 in IGFR1.
+d2=K2*a2_perMpers		# [=] /s
+
+# rate constants for ligand-mediated Site 1-Site 2 crosslinking/uncrosslinking reactions
+#   Kiselyov et al. (2009) assumed that the rate constant for crosslinking has the same value 
+#     as that determined for insulin-insulin receptor interaction. 
+#     A single rate constant is used to characterize both of the two possible crosslinking reactions.
+#   Kiselyov et al. (2009) reported that setting d1prime=d1 and d2prime=d2 is a reasonable simplification.
+#     See discussion on pp. 8 and 9 (Kiselyov et al., 2009).
+#     Best-fit values for d1prime and d2prime are said to be ~3x larger than d1 and d2, respectively.
+
+# reverse rate constants (uncrosslinking reactions)
+#   Release of ligand from Site 1
+d1prime=d1 			# [=] /s - see p. 9 in Kiselyov et al. (2009)
+#   Release of ligand from Site 2
+d2prime=d2 			# [=] /s - see p. 9 in Kiselyov et al. (2009)
+
+# forward rate constant (crosslinking reactions)
+#   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
+# kcr kcr__FREE__ #0.33 # [=] /s
+ a1prime=d1prime/K1prime	# [=] /s
+ a2prime=(a2/a1)*a1prime	# [=] /s [By applying the detailed balance]
+
+# K2prime = K2*K1prime/K1
+
+end parameters
+
+begin molecule types
+
+# ligand (insulin-like growth factor 1)
+#  ds: dimerization surface (this site is not functional in IGF1, as it is in insulin)
+#  hs: hexamerization surface
+IGF1(ds,hs,label~hot~cold)
+
+# receptor (IGF1 receptor)
+#  S1: Site 1
+#  S2: Site 2
+#  C: cysteine residues involved in disulfide bonds of the receptor dimer
+IGF1R(S1,S2,C)
+
+end molecule types
+
+begin seed species
+
+IGF1(ds,hs,label~hot) IGF1_hot_total
+IGF1(ds,hs,label~cold) IGF1_cold_total
+IGF1R(S1,S2,C!0).IGF1R(S1,S2,C!0) 0.5*IGF1R_total
+
+end  seed species
+
+begin observables
+
+
+Molecules IGF1_hot_bound IGF1(ds!+,hs,label~hot) \
+                         IGF1(ds,hs!+,label~hot) \
+                         IGF1R(S1!1).IGF1(ds!1,hs!2,label~hot).IGF1R(S2!2)
+
+#Species IGF1_hot_free IGF1(ds,hs,label~hot)
+#Molecules IGF1_cold_bound IGF1(ds!+,hs,label~cold) \
+#                         IGF1(ds,hs!+,label~cold) \
+#                         IGF1R(S1!1).IGF1(ds!1,hs!2,label~cold).IGF1R(S2!2)
+#Species IGF1_cold_free IGF1(ds,hs,label~cold)
+
+end observables
+
+begin functions
+
+# B()=IGF1_hot_bound+IGF1_cold_bound
+# B_div_F()=B()/(IGF1_hot_free+IGF1_cold_free)
+
+end functions
+
+
+begin reaction rules
+
+# Free IGF1 reversibly binds a free copy of Site 1 in dimeric IGF1R.
+IGF1(ds,hs)+IGF1R(S1,C!0).IGF1R(S2,C!0)<->IGF1(ds!1,hs).IGF1R(S1!1,C!0).IGF1R(S2,C!0) a1,d1
+#   This rules stipulates that ligand binds S1 in R1 only if S2 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S1 in R1 and S2 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S1 in R1 and S2 in R2 can only accomodate a single ligand.
+# Free IGF1 reversibly binds a free copy of Site 2 in dimeric IGF1R.
+
+IGF1(ds,hs)+IGF1R(S2,C!0).IGF1R(S1,C!0)<->IGF1(ds,hs!1).IGF1R(S2!1,C!0).IGF1R(S1,C!0) a2,d2
+#   This rules stipulates that ligand binds S2 in R1 only if S1 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S2 in R1 and S1 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S2 in R1 and S1 in R2 can only accomodate a single ligand.
+
+# IGF1 bound at Site 1 in R1 reversibly crosslinks Site 1 in R1 and Site 2 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 2 in R1 and Site 1 in R2.
+IGF1R(S1!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,C!0).IGF1R(S1,S2!2,C!0).IGF1(ds!1,hs!2) a2prime,d2prime
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2!2,C!0).IGF1(ds!1,hs!2) a2prime,d2prime
+
+# IGF1 bound at Site 2 in R1 reversibly crosslinks Site 2 in R1 and Site 1 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 1 in R1 and Site 2 in R2.
+IGF1R(S2!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S2!1,C!0).IGF1R(S1!2,S2,C!0).IGF1(ds!2,hs!1) a1prime,d1prime
+IGF1R(S1,S2!1,C!0).IGF1R(S1,S2!+,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S1,S2!1,C!0).IGF1R(S1!2,S2!+,C!0).IGF1(ds!2,hs!1) a1prime,d1prime
+
+end reaction rules
+
+end model
+
+# actions
+
+generate_network({overwrite=>1})
+
+# dissociation experiments - generate time courses
+
+saveConcentrations("t=0")
+# # Expt 1
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt1",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 0.001 nM => 12,65 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",1265)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt1",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt1",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# # Expt 2
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt2",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 0.01 nM => 12,646 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",12646)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt2",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt2",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# # Expt 3
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt3",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 0.1 nM => 126,465 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",126465)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt3",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt3",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# # Expt 4
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt4",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 1 nM => 1,264,649 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",1264649)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt4",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt4",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# # Expt 5
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt5",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 10 nM => 12,646,494 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",12646494)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt5",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt5",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# # Expt 6
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt6",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 100 nM => 126,464,940 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",126464940)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt6",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt6",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# # Expt 7
+# # preincubation with hot ligand
+# # settings in parameters block should be consistent with:
+# # [hot ligand] = 24 pM, [cold ligand] = 0.0 <= make sure this is true
+# # incubate for 2 hours
+# resetConcentrations("t=0")
+# simulate({suffix=>"expt7",method=>"ode",t_start=>0,t_end=>7200,n_steps=>1})
+# # wash
+# setConcentration("IGF1(ds,hs,label~hot)",0.0)
+# # add cold ligand
+# # 1000 nM => 1,264,649,400 copies per cell (at 1X dilution or after 40X dilution with f=1/40)
+# setConcentration("IGF1(ds,hs,label~cold",1264649400)
+# saveConcentrations("start_competition")
+# # incubate for 20 min
+# simulate({suffix=>"expt7",continue=>1,method=>"ode",t_start=>7200,t_end=>8400,n_steps=>1})
+# # repeat, with an incubation time of 60 min
+# resetConcentrations("start_competition")
+# simulate({suffix=>"expt7",continue=>1,method=>"ode",t_start=>8400,t_end=>10800,n_steps=>1})
+
+# steady-state competition experiments - generate steady-state dose-response curve
+
+resetConcentrations("t=0")
+
+# 7 pM = 8852 copies per cell
+setConcentration("IGF1(ds,hs,label~hot)",8852)
+
+parameter_scan({suffix=>"F5B",parameter=>"IGF1_cold_conc",par_scan_vals=>[\
+		2.5822e-12,\
+		6.9016e-12,\
+		1.3065e-11,\
+		1.3178e-12,\
+		2.6498e-11,\
+		6.6104e-11,\
+		1.2953e-10,\
+		2.5822e-10,\
+		6.5536e-10,\
+		1.2841e-9,\
+		2.6498e-9,\
+		6.7254e-9,\
+		1.3178e-8,\
+		2.5822e-8,\
+		6.5536e-8,\
+		1.2841e-7,\
+		2.6498e-7,\
+		6.6104e-7,\
+		1.2841e-7],\
+    method=>"ode",t_start=>0,t_end=>14400,n_steps=>10,print_functions=>1})

@@ -47,6 +47,7 @@ class BNGLModel(Model):
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
 
         self.generates_network = False
+        self.generate_network_line = None
         self.action_line_indices = []
         self.actions = []
 
@@ -61,10 +62,23 @@ class BNGLModel(Model):
         self.model_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
         in_action_block = False
 
+        continuation = ''
         for i, line in enumerate(self.model_lines):
             commenti = line.find('#')
             if commenti != -1:
                 line = line[:commenti]
+
+            if re.match(r'^\s*$', line):
+                continue # Blank line - must handle before line continuation
+
+            # Handle case where '\' is used to continue on the next line
+            line = continuation + line
+            continuation = ''
+            continue_match = re.search(r'\\\s*$', line)
+            if continue_match:
+                # This line continues on the next line
+                continuation = line[:continue_match.start()]
+                continue
 
             # Find every item matching [alphanumeric]__FREE__
             params = re.findall('[A-Za-z_]\w*__FREE__', line)
@@ -76,6 +90,7 @@ class BNGLModel(Model):
                 self.split_line_index = i + 1
             elif re.search('generate_network', line):
                 self.generates_network = True
+                self.generate_network_line = line
 
             action_suffix = self._get_action_suffix(line)
             if action_suffix is not None:
@@ -180,7 +195,7 @@ class BNGLModel(Model):
         if gen_only:
             action_lines = [
                 'begin actions\n',
-                'generate_network({overwrite=>1})\n',
+                self.generate_network_line + '\n',
                 'end actions'
             ]
             self.model_lines = \
