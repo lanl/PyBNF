@@ -8,6 +8,7 @@ from subprocess import CalledProcessError
 from subprocess import TimeoutExpired
 from subprocess import STDOUT
 
+from .config import init_logging
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
@@ -120,7 +121,6 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        print(logging.getLoggerClass())
         logging.debug("Worker running Job %s" % self.job_id)
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
@@ -551,6 +551,7 @@ class Algorithm(object):
                 client = Client(lc)
             else:
                 client = Client()
+        client.run(init_logging)
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = []

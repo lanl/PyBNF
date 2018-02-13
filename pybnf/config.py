@@ -13,6 +13,21 @@ import re
 import logging
 
 
+def init_logging():
+    dfh = logging.FileHandler('bnf_debug.log')
+    efh = logging.FileHandler('bnf_errors.log')
+
+    dlog = logging.getLogger('distributed')
+    dlog.setLevel(logging.DEBUG)
+    dlog.addHandler(dfh)
+    dlog.addHandler(efh)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(dfh)
+    root.addHandler(efh)
+
+
 class Configuration(object):
     def __init__(self, d=dict()):
         """
