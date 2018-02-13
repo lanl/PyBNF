@@ -1,0 +1,124 @@
+begin parameters
+Lig_tot  6000
+Rec_tot  400
+Lyn_tot  28
+Syk_tot  400
+
+ kp1  kp1__FREE__
+ km1  0
+ kp2  kp2__FREE__
+ km2  0
+ kpL  kpL__FREE__
+ kmL  kmL__FREE__
+kpLs  kpLs__FREE__
+kmLs  kmLs__FREE__
+ kpS  kps__FREE__
+ kmS  kmS__FREE__
+kpSs  kpSs__FREE__
+kmSs  kmSs__FREE__
+ pLb  pLb__FREE__
+pLbs  pLbs__FREE__
+ pLg  pLg__FREE__
+pLgs  pLgs__FREE__
+ pLS  pLS__FREE__
+pLSs  pLSs__FREE__
+ pSS  pSS__FREE__
+pSSs  pSSs__FREE__
+  dm  dm__FREE__
+  dc  dc__FREE__
+end parameters
+
+
+# Added molecule type definition block so that the
+# xml properly defines all extra possible states for
+# each component - sneddon
+begin molecule types
+Lig(l,l)
+Lyn(U,SH2)
+Syk(tSH2,l~Y~pY,a~Y~pY)
+Rec(a,b~Y~pY,g~Y~pY,g~Y~pY)
+end molecule types
+
+begin species
+Lig(l,l) Lig_tot 
+Lyn(U,SH2) Lyn_tot
+Syk(tSH2,l~Y,a~Y) Syk_tot
+Rec(a,b~Y,g~Y,g~Y) Rec_tot
+end species
+
+
+begin observables
+Molecules     LynFree     Lyn(U,SH2)
+Molecules     RecMon	  Rec(a) Rec(a!1).Lig(l!1,l)
+Molecules     RecPbeta    Rec(b~pY!?)
+Molecules     RecPgamma   Rec(g~pY) Rec(g~pY!+)
+Molecules     RecSyk      Rec(g~pY!1).Syk(tSH2!1)
+Molecules     RecSykPS    Rec(g~pY!1).Syk(tSH2!1,a~pY)
+
+end observables
+
+
+begin reaction rules
+# Ligand-receptor binding      
+Rec(a) + Lig(l,l) <-> Rec(a!1).Lig(l!1,l) kp1, km1
+
+# Receptor-aggregation
+Rec(a) + Lig(l,l!+) <-> Rec(a!2).Lig(l!2,l!+) kp2,km2
+
+# Constitutive Lyn-receptor binding
+Rec(b~Y) + Lyn(U,SH2) <-> Rec(b~Y!1).Lyn(U!1,SH2) kpL, kmL
+
+# Transphosphorylation of beta by constitutive Lyn
+Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~Y) -> Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY) pLb
+
+# Transphosphorylation of gamma by constitutive Lyn
+Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~Y) -> Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY) pLg
+
+# Lyn-receptor binding through SH2 domain
+Rec(b~pY) + Lyn(U,SH2) <-> Rec(b~pY!1).Lyn(U,SH2!1) kpLs, kmLs
+
+# Transphosphorylation of beta by SH2-bound Lyn
+Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~Y) -> Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY) pLbs
+
+# Transphosphorylation of gamma by SH2-bound Lyn
+Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~Y) -> Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY) pLgs
+
+# Syk-receptor binding through tSH2 domain
+Rec(g~pY) + Syk(tSH2) <-> Rec(g~pY!1).Syk(tSH2!1) kpS, kmS
+
+# Transphosphorylation of Syk by constitutive Lyn
+Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~Y) -> \
+Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~pY) pLS
+
+# Transphosphorylation of Syk by SH2-bound Lyn
+Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~Y) -> \
+Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~pY) pLSs
+
+# Transphosphorylation of Syk by Syk not phosphorylated on aloop
+Lig(l!1,l!2).Syk(tSH2!3,a~Y).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~Y) -> \
+Lig(l!1,l!2).Syk(tSH2!3,a~Y).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~pY) pSS
+
+# Transphosphorylation of Syk by Syk phosphorylated on aloop
+Lig(l!1,l!2).Syk(tSH2!3,a~pY).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~Y) -> \
+Lig(l!1,l!2).Syk(tSH2!3,a~pY).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~pY) pSSs
+
+# Dephosphorylation of Rec beta
+Rec(b~pY)-> Rec(b~Y) dm
+
+# Dephosphorylation of Rec gamma
+Rec(g~pY)-> Rec(g~Y) dm
+
+# Dephosphorylation of Syk at membrane
+Syk(tSH2!+,l~pY)-> Syk(tSH2!+,l~Y) dm
+Syk(tSH2!+,a~pY)-> Syk(tSH2!+,a~Y) dm
+
+# Dephosphorylation of Syk in cytosol
+Syk(tSH2,l~pY)-> Syk(tSH2,l~Y) dc
+Syk(tSH2,a~pY)-> Syk(tSH2,a~Y) dc
+
+end reaction rules
+
+generate_network({max_iter=>100, overwrite=>0});
+simulate({method=>"ssa", t_start=>0, t_end=>100, n_steps=>10, suffix=>"fceri_gamma2"})
+# generate_network({overwrite=>1});
+# writeSBML();
