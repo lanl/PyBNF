@@ -14,8 +14,12 @@ import logging
 
 
 def init_logging():
+    fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
+
     dfh = logging.FileHandler('bnf_debug.log')
     efh = logging.FileHandler('bnf_errors.log')
+    dfh.setFormatter(fmt)
+    efh.setFormatter(fmt)
 
     dlog = logging.getLogger('distributed')
     dlog.setLevel(logging.DEBUG)
