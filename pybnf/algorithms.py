@@ -368,8 +368,14 @@ class Algorithm(object):
         Evaluates the objective function for a Result, and adds the information from the Result to the Trajectory
         instance"""
         score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
-        res.score = score
-        logging.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
+        if score is None:
+            logging.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+            logging.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+            print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
+            res.score = np.inf
+        else:
+            res.score = score
+            logging.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
         self.trajectory.add(res.pset, score, res.name)
 
     def random_pset(self):
