@@ -95,7 +95,11 @@ class SummationObjective(ObjectiveFunction):
             for col_name in compare_cols:
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):
                     continue
-                # TODO: handle nan simulation values
+
+                cur_sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+
+                if np.isnan(cur_sim_val) or np.isinf(cur_sim_val):
+                    return None
                 func_value += self.eval_point(sim_data, exp_data, sim_row, rownum, col_name)
 
         return func_value
