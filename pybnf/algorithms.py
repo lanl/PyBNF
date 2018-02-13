@@ -1898,8 +1898,9 @@ def exp10(n):
     :return: 10.** n
     """
     try:
-        ans = 10.**n
-    except OverflowError:
+        with np.errstate(over='raise'):
+            ans = 10.**n
+    except (OverflowError, FloatingPointError):
         logging.exception('Overflow error in exp10()')
         raise PybnfError('Overflow when calculating 10^%d\n'
                          'Details are saved in bnf.log\n'
