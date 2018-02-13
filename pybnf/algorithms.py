@@ -120,6 +120,9 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
+        print(logging.getLoggerClass())
+        logging.debug("Worker running Job %s" % self.job_id)
+
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
         failures = 0
