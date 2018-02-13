@@ -421,7 +421,7 @@ class Algorithm(object):
                     param_dict[name] = val1 + row[rowindex]*(val2-val1)
                     rowindex += 1
                 elif type == 'loguniform_var':
-                    param_dict[name] = exp10(val1 + row[rowindex]*(val2-val1))
+                    param_dict[name] = exp10(np.log10(val1) + np.log10(row[rowindex]*(val2-val1)))
                     rowindex += 1
                 elif type == 'lognormrandom_var':
                     param_dict[name] = exp10(np.random.normal(val1, val2))
