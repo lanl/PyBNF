@@ -280,6 +280,9 @@ class Algorithm(object):
         self.output_counter = 0
         self.job_group_dir = dict()
 
+        self.client = None
+        self.pending_futures = set()
+
         logging.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
@@ -587,6 +590,7 @@ class Algorithm(object):
             else:
                 client = Client()
         client.run(init_logging)
+        self.client = client
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = []
@@ -594,7 +598,7 @@ class Algorithm(object):
             jobs += self.make_job(p)
         logging.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = [client.submit(job.run_simulation) for job in jobs]
-        pending = set(futures)
+        self.pending_futures = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
             f, res = next(pool)
@@ -611,7 +615,7 @@ class Algorithm(object):
                 print1('Job %s failed' % res.name)
             else:
                 logging.debug('Job %s complete' % res.name)
-            pending.remove(f)
+            self.pending_futures.remove(f)
             res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
             response = self.got_result(res)
@@ -625,10 +629,10 @@ class Algorithm(object):
                     new_jobs += self.make_job(ps)
                 logging.debug('Submitting %d new Jobs' % len(new_jobs))
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
-                pending.update(new_futures)
+                self.pending_futures.update(new_futures)
                 pool.update(new_futures)
-        logging.info("Cancelling %d pending jobs" % len(pending))
-        client.cancel(list(pending))
+        logging.info("Cancelling %d pending jobs" % len(self.pending_futures))
+        client.cancel(list(self.pending_futures))
         client.close()
         self.output_results('final')
 
@@ -661,6 +665,15 @@ class Algorithm(object):
             shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
+
+    def cleanup(self):
+        """
+        Called before the program exits due to an exception.
+        :return:
+        """
+        self.output_results('end')
+        self.client.cancel(list(self.pending_futures))
+
 
 
 class ParticleSwarm(Algorithm):
