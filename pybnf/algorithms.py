@@ -746,7 +746,7 @@ class ParticleSwarm(Algorithm):
                 print1('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
             else:
                 print2('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
-            print2('Current best score: %d' % self.global_best[1])
+            print2('Current best score: %f' % self.global_best[1])
             # End of one "pseudoflight", check if it was productive.
             if (self.last_best != np.inf and
                     np.abs(self.last_best - self.global_best[1]) <

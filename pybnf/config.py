@@ -68,7 +68,7 @@ class Configuration(object):
             'stop_tolerance': 0.002,
 
             'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
-            'adaptive_rel_tol': 0.0,
+            'adaptive_rel_tol': 0.0, 'cognitive': 1.5, 'social': 1.5,
 
             'local_min_limit': 5,
 
