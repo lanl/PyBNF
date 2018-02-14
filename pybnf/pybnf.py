@@ -1,9 +1,11 @@
 """pybnf.pybnf: defines the entry point for the PyBNF application"""
 
 import logging
+import logging.config
+import logging.handlers
 import argparse
 from .parse import load_config
-from .config import Configuration
+from .config import Configuration, init_logging
 import pybnf.printing as printing
 from .printing import print0, print1, print2, PybnfError
 import pybnf.algorithms as algs
@@ -16,8 +18,7 @@ __version__ = "0.1"
 
 def main():
     try:
-        log_format = "%(asctime)-15s\t%(levelname)s\t%(message)s"
-        logging.basicConfig(format=log_format, level=logging.DEBUG, filename='bnf.log', filemode='w')
+        init_logging()
 
         print0("PyBNF v%s" % __version__)
         logging.info('Running PyBNF v%s' % __version__)
@@ -120,6 +121,6 @@ def main():
         logging.exception('Internal error')
         exceptiondata = traceback.format_exc().splitlines()
         print0('Sorry, an unknown error occurred: %s\n'
-               'Details have been saved to bnf.log.\n'
+               'Details have been saved to bnf_errors.log.\n'
                'Please report this bug to help us improve PyBNF.' % exceptiondata[-1])
         exit(1)

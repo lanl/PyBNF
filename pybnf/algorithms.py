@@ -8,6 +8,7 @@ from subprocess import CalledProcessError
 from subprocess import TimeoutExpired
 from subprocess import STDOUT
 
+from .config import init_logging
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
@@ -119,6 +120,8 @@ class Job:
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
+
+        logging.debug("Worker running Job %s" % self.job_id)
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
@@ -554,6 +557,7 @@ class Algorithm(object):
                 client = Client(lc)
             else:
                 client = Client()
+        client.run(init_logging)
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
         jobs = []
@@ -1911,7 +1915,7 @@ def exp10(n):
     except (OverflowError, FloatingPointError):
         logging.exception('Overflow error in exp10()')
         raise PybnfError('Overflow when calculating 10^%d\n'
-                         'Details are saved in bnf.log\n'
+                         'Details are saved in bnf_errors.log\n'
                          'This may be because you declared a lognormrandom_var or a logvar, and specified the '
                          'arguments in regular space instead of log10 space.' % n)
     return ans

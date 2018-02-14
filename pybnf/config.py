@@ -13,6 +13,27 @@ import re
 import logging
 
 
+def init_logging():
+    fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
+
+    dfh = logging.FileHandler('bnf_debug.log')
+    dfh.setLevel(logging.DEBUG)
+    efh = logging.FileHandler('bnf_errors.log')
+    efh.setLevel(logging.ERROR)
+    dfh.setFormatter(fmt)
+    efh.setFormatter(fmt)
+
+    dlog = logging.getLogger('distributed')
+    dlog.setLevel(logging.DEBUG)
+    dlog.addHandler(dfh)
+    dlog.addHandler(efh)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(dfh)
+    root.addHandler(efh)
+
+
 class Configuration(object):
     def __init__(self, d=dict()):
         """
