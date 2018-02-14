@@ -34,7 +34,10 @@ class ObjectiveFunction(object):
                     # Suffixes might exist in sim_data_dict that do not have experimental data.
                     # Need to check for that here.
                     if suffix in exp_data_dict:
-                        total += self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+                        val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+                        if val is None:
+                            return None
+                        total += val
 
             return total
 
@@ -95,7 +98,11 @@ class SummationObjective(ObjectiveFunction):
             for col_name in compare_cols:
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):
                     continue
-                # TODO: handle nan simulation values
+
+                cur_sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+
+                if np.isnan(cur_sim_val) or np.isinf(cur_sim_val):
+                    return None
                 func_value += self.eval_point(sim_data, exp_data, sim_row, rownum, col_name)
 
         return func_value
