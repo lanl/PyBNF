@@ -1906,7 +1906,7 @@ def exp10(n):
     except OverflowError:
         logging.exception('Overflow error in exp10()')
         raise PybnfError('Overflow when calculating 10^%d\n'
-                         'Details are saved in bnf.log\n'
+                         'Details are saved in bnf_errors.log\n'
                          'This may be because you declared a lognormrandom_var or a logvar, and specified the '
                          'arguments in regular space instead of log10 space.' % n)
     return ans

@@ -121,6 +121,6 @@ def main():
         logging.exception('Internal error')
         exceptiondata = traceback.format_exc().splitlines()
         print0('Sorry, an unknown error occurred: %s\n'
-               'Details have been saved to bnf.log.\n'
+               'Details have been saved to bnf_errors.log.\n'
                'Please report this bug to help us improve PyBNF.' % exceptiondata[-1])
         exit(1)
