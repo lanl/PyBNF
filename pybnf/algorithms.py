@@ -427,7 +427,7 @@ class Algorithm(object):
                     param_dict[name] = val1 + row[rowindex]*(val2-val1)
                     rowindex += 1
                 elif type == 'loguniform_var':
-                    param_dict[name] = exp10(val1 + row[rowindex]*(val2-val1))
+                    param_dict[name] = exp10(np.log10(val1) + row[rowindex]*(np.log10(val2)-np.log10(val1)))
                     rowindex += 1
                 elif type == 'lognormrandom_var':
                     param_dict[name] = exp10(np.random.normal(val1, val2))
@@ -752,7 +752,7 @@ class ParticleSwarm(Algorithm):
                 print1('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
             else:
                 print2('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
-            print2('Current best score: %d' % self.global_best[1])
+            print2('Current best score: %f' % self.global_best[1])
             # End of one "pseudoflight", check if it was productive.
             if (self.last_best != np.inf and
                     np.abs(self.last_best - self.global_best[1]) <
@@ -1468,7 +1468,9 @@ class BayesAlgorithm(Algorithm):
             # The same could happen if normrandom_var's try to go below 0
             new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
             if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
-                logging.debug('Rejected a move because %s moved outside the box constraint' % k)
+                logging.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
+                              (k, oldpset[k], delta_vector_normalized[k], self.variable_space[k][1],
+                               self.variable_space[k][2]))
                 return None
 
         return PSet(new_dict)
@@ -1904,8 +1906,9 @@ def exp10(n):
     :return: 10.** n
     """
     try:
-        ans = 10.**n
-    except OverflowError:
+        with np.errstate(over='raise'):
+            ans = 10.**n
+    except (OverflowError, FloatingPointError):
         logging.exception('Overflow error in exp10()')
         raise PybnfError('Overflow when calculating 10^%d\n'
                          'Details are saved in bnf.log\n'
