@@ -49,7 +49,7 @@ class BNGLModel(Model):
 
         self.generates_network = False
         self.generate_network_line = None
-        self.generate_network_line_index = None
+        self.generate_network_line_index = -1
         self.action_line_indices = []
         self.actions = []
 
@@ -97,6 +97,8 @@ class BNGLModel(Model):
                 self.generates_network = True
                 self.generate_network_line = line
                 self.generate_network_line_index = i
+            elif re.search('simulate.*((ode)|(ssa)|(pla))', line):
+                self.generates_network = True  # in case there is no "generate_network" command present
 
             action_suffix = self._get_action_suffix(line)
             if action_suffix is not None:
@@ -140,6 +142,16 @@ class BNGLModel(Model):
                                "using the 'smoothing' feature, all of your replicates will come out the same.")
                     self.action_line_indices.append(i)
                     self.actions.append(line)
+
+        if self.generates_network and self.generate_network_line is None:
+            self.generate_network_line = 'generate_network({overwrite=>1})'
+            first_action_index = min(self.action_line_indices)
+
+            # places generate_network command directly prior to actions
+            self.generate_network_line_index = first_action_index
+            self.model_lines.insert(self.generate_network_line_index, self.generate_network_line)
+            for i, v in enumerate(self.action_line_indices):
+                self.action_line_indices[i] = 1 + v
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
