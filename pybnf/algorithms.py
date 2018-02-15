@@ -542,12 +542,13 @@ class Algorithm(object):
 
         # If the user has asked for fewer output files, each time we're here, move the new file to
         # Results/sorted_params.txt, overwriting the previous one.
-        if self.config.config['delete_old_files'] == 1:
-            logging.debug("Overwriting previous 'sorted_params.txt'")
-            noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
-            if os.path.isfile(noname_filepath):
-                os.remove(noname_filepath)
-            os.rename(filepath, noname_filepath)
+        # Disabled this feature because it's more likely the user would just want the old Simulation folders deleted
+        # if self.config.config['delete_old_files'] == 1:
+        #     logging.debug("Overwriting previous 'sorted_params.txt'")
+        #     noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
+        #     if os.path.isfile(noname_filepath):
+        #         os.remove(noname_filepath)
+        #     os.rename(filepath, noname_filepath)
 
     def run(self):
         """Main loop for executing the algorithm"""
