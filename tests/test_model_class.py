@@ -18,6 +18,7 @@ class TestModel:
         cls.file3 = 'bngl_files/Tricky.bngl'
         cls.file4 = 'bngl_files/NFmodel.bngl'
         cls.file5 = 'bngl_files/TrickyWP_p1_5.net'
+        cls.file6 = 'bngl_files/Simple_nogen.bngl'
 
         cls.file1a = 'bngl_files/Simple_Answer.bngl'
         cls.file1b = 'bngl_files/Simple_GenOnly.bngl'
@@ -38,6 +39,14 @@ class TestModel:
         remove(cls.savefile3_prefix +'.net')
         remove(cls.savefile4_prefix + '.bngl')
         remove(cls.savefile4_prefix + '.net')
+
+    def test_no_gen_command(self):
+        model = pset.BNGLModel(self.file6)
+        assert model.generates_network
+        print(model.generate_network_line_index, model.action_line_indices)
+        assert model.generate_network_line_index == min(model.action_line_indices) - 1
+        assert model.model_lines[model.generate_network_line_index] == 'generate_network({overwrite=>1})'
+        assert model.generate_network_line == 'generate_network({overwrite=>1})'
 
     def test_initialize(self):
         model1 = pset.BNGLModel(self.file1)
