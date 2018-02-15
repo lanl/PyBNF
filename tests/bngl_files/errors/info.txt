@@ -29,6 +29,12 @@ no_frees: OK
 no_generate_network: runs anyway, all jobs fail
 no_suffix: OK
 no_write_access: internal error (PermissionError)
+normalization_badindices: OK
+normalization_badpairing: OK
+normalization_contradiction: OK
+normalization_contradiction2: Runs anyway
+normalization_disaster: OK
+normalization_mixed_types: OK
 normalize_badfile: OK
 normalize_badtype: OK
 overflow: OK

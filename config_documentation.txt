@@ -37,7 +37,7 @@ wall_time_sim: Maximum time (in seconds) to wait for a simulation to finish.  Ex
 wall_time_gen: Same as wall_time_sim, but for the initial network generation.  Will cause the program to exit if exceeded.
 verbosity: Specifies the amount of information output to the terminal. 0 - Quiet; user prompts and errors only. 1 - Normal; Warnings and concise progress updates. 2 - Verbose; Information and detailed progress updates. Default: 1
 smoothing: Number of replicates to run for each parameter set (useful for stochastic runs). Default: 1
-normalization = type [: d1.exp, d2.exp] - Indicates that simulation data must be normalized in order to compare with exp files. Choices are: 'init', 'peak', 'zero'. If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Multiple lines with this key can be used. Default: No normalization
+normalization = type [: d1.exp, d2.exp] - Indicates that simulation data must be normalized in order to compare with exp files. Choices are: 'init', 'peak', 'zero'. If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, like this (data1.exp: 1,3-5) or (data1.exp: var1,var2) Multiple lines with this key can be used. Default: No normalization
 
 ***Settings that apply to multiple Algorithms***
 

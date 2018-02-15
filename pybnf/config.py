@@ -304,7 +304,7 @@ class Configuration(object):
                             if type(c) == str and c not in self.exp_data[suff].cols:
                                 raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
                                                  "Specified normalization for column %s in file %s, but that file does "
-                                                 "not contain that column." % (c, ef) + seedoc)
+                                                 "not contain that column name." % (c, ef) + seedoc)
                             elif type(c) == int and c >= self.exp_data[suff].data.shape[1]:
                                 raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
                                                  "Specified normalization for column %i in file %s, but that file "
