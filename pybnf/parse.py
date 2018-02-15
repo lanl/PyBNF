@@ -67,7 +67,9 @@ def parse(s):
 
     # normalization mapping grammar
     normkey = pp.CaselessLiteral("normalization")
-    normgram = normkey - equals - string - pp.Optional(colon - pp.delimitedList(exp_file)) - comment
+    anything = pp.Word(pp.alphanums+punctuation+' ')
+    normgram = normkey - equals - anything  # The set of legal grammars for normalization is too complicated,
+    # Will handle with separate code.
 
     # check each grammar and output somewhat legible error message
     line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | vargram | normgram).parseString(s, parseAll=True).asList()
@@ -124,19 +126,40 @@ def ploop(ls):  # parse loop
                 d[key] = values  # individual data files remain in list
                 models.add(key)
                 exp_data.update(values)
-            elif l[0] == 'normalization' and type(values) == list:
-                # Normalization defined with the pairing syntax.
-                # Note the simpler syntax is handled in the regular else case
-                keydict = {exp:l[1] for exp in l[2:]}
-                if 'normalization' in d:
-                    if type(d['normalization']) != dict:
+            elif l[0] == 'normalization':
+                # Normalization defined with way too many possible options
+                # At the end of all this, the config dict has one of the following formats:
+                # 'normalization' : 'type'
+                # 'normalization' : {'expfile':'type', 'expfile2':[('type1', [numbers]), ('type2', [colnames]), ...]}
+
+                parsed = parse_normalization_def(values)
+                if type(parsed) == str:
+                    if 'normalization' in d:
                         raise PybnfError('contradictory normalization keys',
                                          "Config file contains multiple 'normalization' keys, one of which specifies"
                                          " no specific exp files, thereby applying to all of them. If you are using "
                                          "this option, you should only have one 'normalization' key in the config file.")
-                    d['normalization'].update(keydict)
+                    d['normalization'] = parsed
                 else:
-                    d['normalization'] = keydict
+                    if 'normalization' in d:
+                        if type(d['normalization']) != dict:
+                            raise PybnfError('contradictory normalization keys',
+                                             "Config file contains multiple 'normalization' keys, one of which specifies"
+                                             " no specific exp files, thereby applying to all of them. If you are using "
+                                             "this option, you should only have one 'normalization' key in the config file.")
+                    else:
+                        d['normalization'] = dict()
+                    for k in parsed:
+                        if k in d['normalization'] and (type(parsed[k]) == str or type(d['normalization'][k]) == str):
+                            raise PybnfError('contradictory normalization keys for %s' % k,
+                                             "File %s has normalization specified multiple times in a way that is "
+                                             "contradictory." % k)
+                        if type(parsed[k]) == str:
+                            d['normalization'][k] = parsed[k]
+                        else:
+                            if k not in d['normalization']:
+                                d['normalization'][k] = []
+                            d['normalization'][k].append(parsed[k])
             else:
                 if key in d:
                     if d[key] == values:
@@ -180,3 +203,62 @@ def ploop(ls):  # parse loop
     d['models'] = models
     d['exp_data'] = exp_data
     return d
+
+
+def parse_normalization_def(s):
+    """
+    Parse the complicated normalization grammar
+    If the grammar is specified incorrectly, it will end up calling something invalid the normalization type or the
+    exp file, and this error will be caught later.
+
+    :param s: The string following the equals sign in the normalization key
+    :return: What to write in the config dictionary: A string, or a dictionary {expfile: string} or
+    {expfile: (string, index_list)} or {expfile: (string, name_list)}
+    """
+
+    def parse_range(x):
+        """Parse a string as a set of numbers like 10,"""
+        result = []
+        for part in x.split(','):
+            if '-' in part:
+                a, b = part.split('-')
+                a, b = int(a), int(b)
+                result.extend(range(a, b + 1))
+            else:
+                a = int(part)
+                result.append(a)
+        return result
+
+    # Remove all spaces
+    s = re.sub('\s', '', s)
+    if ':' in s:
+        # List of exp files
+        res = dict()
+        i = s.index(':')
+        normtype = s[:i]
+        explist = s[i+1:]
+        exps = re.split(r',(?![^()]*\))', explist) # Dark magic: split on commas that aren't inside parentheses
+        # Achievement unlocked: Use 16 punctuation marks in a row
+        for e in exps:
+            if e[0] == '(' and e[-1] == ')':
+                # It's an exp in parentheses with column-wise specs
+                pair = e[1:-1].split(':')
+                if len(pair) == 1:
+                    res[pair[0]] = normtype
+                elif len(pair) == 2:
+                    e, cols = pair
+                    if re.match('^[\d,\-]+$', cols):
+                        col_nums = parse_range(cols)
+                        res[e] = (normtype, col_nums)
+                    else:
+                        col_names = cols.split(',')
+                        res[e] = (normtype, col_names)
+                else:
+                    raise PybnfError("Parsing normalization key - the item '%s' has too many colons in it" % e)
+            else:
+                # It's just an exp
+                res[e] = normtype
+        return res
+    else:
+        # Single string for all
+        return s
