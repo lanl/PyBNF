@@ -56,7 +56,7 @@ class TestConfig(object):
                    ('random_var', 'pase__FREE__'): [6., 7.],
                    'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                    'normalization': {'bngl_files/p1_5.exp': [('init', [1])], 'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
-        assert c.config['normalization']['p1_5'] == [('init', [1])]
+        assert c.config['normalization']['p1_5'] == [('init', ['R_free'])]
         assert c.config['normalization']['thing'] == [('peak', ['Ag_total'])]
 
     @raises(printing.PybnfError)
