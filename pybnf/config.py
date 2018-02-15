@@ -275,6 +275,7 @@ class Configuration(object):
         Postprocessing on the 'normalization' key
         :return:
         """
+        seedoc = "\nSee the documentation for the syntax options for the 'normalization' key"
         valid = ('init', 'peak', 'zero')
         if type(self.config['normalization']) == dict:
             # Iterate through the keys, which should be .exp file names. Check that these are actual exp files that
@@ -282,22 +283,40 @@ class Configuration(object):
             newdict = dict()
             for ef in self.config['normalization']:
                 if ef not in self.config['exp_data']:
-                    # Could be just a warning?
                     raise PybnfError("Invalid exp file %s under the normalization key" % ef,
                                      "The exp file %s given under the 'normalization' keyword is not associated with "
-                                     "any model." % ef)
+                                     "any model." % ef + seedoc)
                 val = self.config['normalization'][ef]
-                if val not in valid:
-                    raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
-                                     "Invalid normalization type '%s'. Options are: init, peak, zero" %
-                                     self.config['normalization'][ef])
-                newdict[self._exp_file_prefix(ef)] = val
+                suff = self._exp_file_prefix(ef)
+                def checkval(v):
+                    if v not in valid:
+                        raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
+                                         "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                         self.config['normalization'][ef] + seedoc)
+                if type(val) == str:
+                    # This exp file has a single normalization type for all columns
+                    checkval(val)
+                else:
+                    # This exp file has a list of one or more pairs specifying (normalization_type, [columns])
+                    for ntype, cols in val:
+                        checkval(ntype)
+                        for c in cols:
+                            if type(c) == str and c not in self.exp_data[suff].cols:
+                                raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
+                                                 "Specified normalization for column %s in file %s, but that file does "
+                                                 "not contain that column." % (c, ef) + seedoc)
+                            elif type(c) == int and c >= self.exp_data[suff].data.shape[1]:
+                                raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
+                                                 "Specified normalization for column %i in file %s, but that file "
+                                                 "contains only %i columns." % (c, ef, self.exp_data[suff].data.shape[1]) + seedoc)
+
+                newdict[suff] = val
             self.config['normalization'].update(newdict)
         elif type(self.config['normalization']) == str:
             if self.config['normalization'] not in valid:
                 raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
                                  "Invalid normalization type '%s'. Options are: init, peak, zero" %
-                                 self.config['normalization'])
+                                 self.config['normalization'] + seedoc)
 
 
 class UnknownObjectiveFunctionError(PybnfError):
