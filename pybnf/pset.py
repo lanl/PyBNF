@@ -97,7 +97,7 @@ class BNGLModel(Model):
                 self.generates_network = True
                 self.generate_network_line = line
                 self.generate_network_line_index = i
-            elif re.search('simulate.*((ode)|(ssa)|(pla))', line):
+            elif re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search('simulate.*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
                 self.generates_network = True  # in case there is no "generate_network" command present
 
             action_suffix = self._get_action_suffix(line)
