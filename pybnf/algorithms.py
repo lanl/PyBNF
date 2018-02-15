@@ -400,7 +400,7 @@ class Algorithm(object):
         else:
             res.score = score
             logging.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
-        self.trajectory.add(res.pset, score, res.name)
+        self.trajectory.add(res.pset, res.score, res.name)
 
     def random_pset(self):
         """
