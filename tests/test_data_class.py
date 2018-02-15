@@ -3,6 +3,7 @@ import numpy as np
 import numpy.testing as npt
 from .context import data, printing
 from nose.tools import raises
+import copy
 
 # Doesn't print warnings when dividing by zero
 np.seterr(invalid='ignore', divide='ignore')
@@ -113,29 +114,50 @@ class TestData:
         self.d0._dep_cols(6)
 
     def test_init_normalization(self):
-        norm0 = self.d0.normalize_to_init()
-        npt.assert_allclose(norm0, np.array([[0., 1., 1., 1., np.nan, 1.], [1., 1., 1., 1., np.nan, 1.]]))
-        norm1 = self.d1.normalize_to_init()
-        npt.assert_allclose(norm1, np.array(
+        d0 = copy.deepcopy(self.d0)
+        d0.normalize_to_init()
+        npt.assert_allclose(d0.data, np.array([[0., 1., 1., 1., np.nan, 1.], [1., 1., 1., 1., np.nan, 1.]]))
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_init()
+        npt.assert_allclose(d1.data, np.array(
             [[0., 1., 1., 1.], [1., 2. / 3., 3. / 4., 6. / 5.], [2., 4. / 3., 2. / 4., 10. / 5.]]))
+        d1b = copy.deepcopy(self.d1)
+        d1b.normalize_to_init(cols=[1, 3])
+        npt.assert_allclose(d1b.data, np.array(
+            [[0., 1., 4., 1.], [1., 2. / 3., 3., 6. / 5.], [2., 4. / 3., 2., 10. / 5.]]))
 
     def test_max_normalization(self):
-        norm0 = self.d0.normalize_to_peak()
-        npt.assert_allclose(norm0, np.array([[0., 1., 1., 1., np.nan, 1.], [1., 1., 1., 1., np.nan, 1.]]))
-        norm1 = self.d1.normalize_to_peak()
-        npt.assert_allclose(norm1, np.array(
+        d0 = copy.deepcopy(self.d0)
+        d0.normalize_to_peak()
+        npt.assert_allclose(d0.data, np.array([[0., 1., 1., 1., np.nan, 1.], [1., 1., 1., 1., np.nan, 1.]]))
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_peak()
+        npt.assert_allclose(d1.data, np.array(
             [[0., 3. / 4., 4. / 4., 5. / 10.], [1., 2. / 4., 3. / 4., 6. / 10.], [2., 4. / 4., 2. / 4., 10. / 10.]]))
+        d1b = copy.deepcopy(self.d1)
+        d1b.normalize_to_peak(cols=[1, 3])
+        npt.assert_allclose(d1b.data, np.array(
+            [[0., 3. / 4., 4., 5. / 10.], [1., 2. / 4., 3. , 6. / 10.], [2., 4. / 4., 2., 10. / 10.]]))
 
     def test_zero_normalization(self):
-        norm0 = self.d0.normalize_to_zero()
-        npt.assert_allclose(norm0, np.array([[0., 0., 0., 0., 0., 0.], [1., 0., 0., 0., 0., 0]]))
-        norm1 = self.d1.normalize_to_zero(bc=False)
-        npt.assert_allclose(norm1, np.array(
+        d0 = copy.deepcopy(self.d0)
+        d0.normalize_to_zero()
+        npt.assert_allclose(d0.data, np.array([[0., 0., 0., 0., 0., 0.], [1., 0., 0., 0., 0., 0]]))
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_zero(bc=False)
+        npt.assert_allclose(d1.data, np.array(
             [[0., 0., 1. / np.std(self.d1.data[:, 2]), -2. / np.std(self.d1.data[:, 3])],
              [1., -1. / np.std(self.d1.data[:, 1]), 0., -1. / np.std(self.d1.data[:, 3])],
              [2., 1. / np.std(self.d1.data[:, 1]), -1. / np.std(self.d1.data[:, 2]), 3. / np.std(self.d1.data[:, 3])]]))
-        norm2 = self.d1.normalize_to_zero()
-        npt.assert_allclose(norm2, np.array(
+        d1b = copy.deepcopy(self.d1)
+        d1b.normalize_to_zero(bc=False, cols=[1,3])
+        npt.assert_allclose(d1b.data, np.array(
+            [[0., 0., 4., -2. / np.std(self.d1.data[:, 3])],
+             [1., -1. / np.std(self.d1.data[:, 1]), 3., -1. / np.std(self.d1.data[:, 3])],
+             [2., 1. / np.std(self.d1.data[:, 1]), 2., 3. / np.std(self.d1.data[:, 3])]]))
+        d2 = copy.deepcopy(self.d1)
+        d2.normalize_to_zero()
+        npt.assert_allclose(d2.data, np.array(
             [[0., 0., 1. / np.std(self.d1.data[:, 2], ddof=1), -2. / np.std(self.d1.data[:, 3], ddof=1)],
              [1., -1. / np.std(self.d1.data[:, 1], ddof=1), 0., -1. / np.std(self.d1.data[:, 3], ddof=1)],
              [2., 1. / np.std(self.d1.data[:, 1], ddof=1), -1. / np.std(self.d1.data[:, 2], ddof=1),
