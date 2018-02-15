@@ -2,6 +2,7 @@ import numpy as np
 import pybnf.data as data
 import warnings
 from .printing import PybnfError, print1
+import logging
 
 
 class ObjectiveFunction(object):
@@ -35,6 +36,7 @@ class ObjectiveFunction(object):
                     # Need to check for that here.
                     if suffix in exp_data_dict:
                         val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+                        logging.debug('Evaluated %s with value %s' % (sim_data_dict[model][suffix].data, val))
                         if val is None:
                             return None
                         total += val
@@ -85,9 +87,9 @@ class SummationObjective(ObjectiveFunction):
 
             # Figure out the corresponding row number in the simulation data
             # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
-            sim_row = np.argmax(np.isclose(exp_data.data[rownum, 0], sim_data.data[:, 0]))
+            sim_row = np.argmax(np.isclose(sim_data.data[:, 0], exp_data.data[rownum, 0], atol=0.))
             # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
-            if sim_row == 0 and not np.isclose(exp_data.data[rownum, 0], sim_data.data[0, 0]):
+            if sim_row == 0 and not np.isclose(sim_data.data[0, 0], exp_data.data[rownum, 0], atol=0.):
                 warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
                 if warnstr not in self.warned:
                     print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
@@ -140,6 +142,8 @@ class SummationObjective(ObjectiveFunction):
 class ChiSquareObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        logging.debug('This evaluation is at sim_row %s, column %s which is number %s' % (sim_row, col_name, sim_data.cols[col_name]))
+        logging.debug('Im reading the sim_data %s' % sim_data.data)
 
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
@@ -152,6 +156,7 @@ class ChiSquareObjective(SummationObjective):
                  "data file must include a _SD column corresponding to each experimental variable, giving the standard "
                  "deviations of that variable. " % col_name)
         exp_sigma = exp_data.data[exp_row, sd_col]
+        logging.debug('sim_val: %s, exp_val: %s, exp_sigma: %s, result: %s' % (sim_val, exp_val, exp_sigma, 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.))
         return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
 
     def _check_columns(self, exp_cols, compare_cols):
