@@ -1375,17 +1375,6 @@ class BayesAlgorithm(Algorithm):
         print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
                % (self.sample_every, self.burn_in))
 
-        # Set up the output files
-        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
-        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
-        with open(self.samples_file, 'w') as f:
-            f.write('# Name\tLn_probability\t')
-            for v in self.variables:
-                f.write(v + '\t')
-            f.write('\n')
-        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
-
-
         if self.config.config['initialization'] == 'lh':
             first_pset = self.random_latin_hypercube_psets(self.num_parallel)
         else:
@@ -1395,6 +1384,13 @@ class BayesAlgorithm(Algorithm):
         self.current_pset = [None]*self.num_parallel
         for i in range(len(first_pset)):
             first_pset[i].name = 'iter0run%i' % i
+
+        # Set up the output files
+        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
+        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+        with open(self.samples_file, 'w') as f:
+            f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
+        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
 
         return first_pset
 
@@ -1552,10 +1548,7 @@ class BayesAlgorithm(Algorithm):
         :type ln_prob: float
         """
         with open(self.samples_file, 'a') as f:
-            f.write(pset.name+'\t'+str(ln_prob)+'\t')
-            for v in self.variables:
-                f.write('%f\t' % pset[v])
-            f.write('\n')
+            f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
 
     def update_histograms(self, file_ext):
         """
