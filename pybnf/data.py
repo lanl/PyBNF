@@ -182,7 +182,6 @@ class Data(object):
             if std != 0:
                 col /= std
             self.data[:, c] = col
-            self.data[:, c] = self.data[:, c]
 
     @staticmethod
     def average(datas):
