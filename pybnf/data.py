@@ -124,59 +124,65 @@ class Data(object):
         """
         return self.data[:, idx]
 
-    def normalize_to_peak(self, idx=0):
+    def normalize_to_peak(self, idx=0, cols='all'):
         """
         Normalizes all data columns (except the independent variable) to the peak
         value in their respective columns
 
+        Updates the data array in this object, returns none.
+
         :param idx: Index of independent variable
         :type idx: int
+        :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         :return: Normalized Numpy array (including independent variable column)
         """
-        ind = self._ind_col(idx)
-        l = ind.shape[0]
-        dep = self._dep_cols(idx)
-        dep_rel = dep / np.amax(dep, axis=0)
-        return np.hstack((ind.reshape((l, 1)), dep_rel))
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
+        for c in cols:
+            self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
 
-    def normalize_to_init(self, idx=0):
+    def normalize_to_init(self, idx=0, cols='all'):
         """
         Normalizes all data columns (except the independent variable) to the initial
         value in their respective columns
 
+        Updates the data array in this object, returns none.
+
         :param idx: Index of independent variable
         :type idx: int
-        :return: Normalized Numpy array (including independent variable column)
+        :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         """
-        ind = self._ind_col(idx)
-        l = ind.shape[0]
-        dep = self._dep_cols(idx)
-        dep_rel = dep / dep[0, :]
-        return np.hstack((ind.reshape((l, 1)), dep_rel))
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
+        for c in cols:
+            self.data[:, c] = self.data[:, c] / self.data[0, c]
 
-    def normalize_to_zero(self, idx=0, bc=True):
+    def normalize_to_zero(self, idx=0, bc=True, cols='all'):
         """
         Normalizes data so that each column's mean is 0
 
+        Updates the data array in this object, returns none.
+
         :param idx: Index of independent variable
         :type idx: int
-        :return: Normalized Numpy array (including independent variable column)
+        :param bc: If True, the standard deviation is normalized by 1/(N-1). If False, by 1/N.
+        :type bc: bool
+        :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         """
-        ind = self._ind_col(idx)
-        l = ind.shape[0]
-        dep = self._dep_cols(idx)
-        col_means = np.mean(dep, axis=0)
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
         ddof = 0 if not bc else 1
-
-        def norm_by_std(col):
-            col_std = np.std(col, ddof=ddof)
-            if col_std == 0.:
-                return col
-            else:
-                return col / col_std
-
-        col_norm = np.apply_along_axis(norm_by_std, 0, (dep - col_means))
-        return np.hstack((ind.reshape((l, 1)), col_norm))
+        for c in cols:
+            col = self.data[:, c]
+            col -= np.mean(col)
+            std = np.std(col, ddof=ddof)
+            if std != 0:
+                col /= std
+            self.data[:, c] = col
+            self.data[:, c] = self.data[:, c]
 
     @staticmethod
     def average(datas):
@@ -193,3 +199,31 @@ class Data(object):
         output.data = np.mean(np.stack([d.data for d in datas]), axis=0)
         return output
 
+    def normalize(self, method):
+        """
+        Normalize the data according to the specified method: 'init', 'peak', or 'zero'
+        The method could also be a list of ordered pairs [('init', [columns]), ('peak', [columns])], where columns
+        is a list of integers or column labels
+
+        Updates the data array in this object, returns none.
+        """
+
+        def normalize_once(m, cols):
+            if m == 'init':
+                self.normalize_to_init(cols=cols)
+            elif m == 'peak':
+                self.normalize_to_peak(cols=cols)
+            elif m == 'zero':
+                self.normalize_to_zero(cols=cols)
+            else:
+                # Should have caught a user-defined invalid setting in config before getting here.
+                raise ValueError('Invalid method %s for Data.normalize()' % m)
+
+        if type(method) == str:
+            normalize_once(method, 'all')
+        else:
+            for mi, cols_i in method:
+                if type(cols_i[0]) == str:
+                    # Convert to int indices
+                    cols_i = [self.cols[c] for c in cols_i]
+                normalize_once(mi, cols_i)

@@ -8,10 +8,12 @@ class TestParse:
 
     @classmethod
     def setup_class(cls):
-        cls.s = ['job_name =  world #test test', 'verbosity = 3', 'model = thing.bngl : data.exp', 'mutate = derp 1 3',
+        cls.s = ['job_name =  world #test test', 'verbosity = 3', 'model = thing.bngl: data.exp', 'mutate = derp 1 3',
                  ' #derp = derp', 'random_var = var__FREE__ 1 5', 'lognormrandom_var= var2__FREE__ 0.01 1.0e5',
                  'random_var = var3__FREE__ 4 5', 'model = another.bngl: d1.exp, d2.exp',
-                 'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3']
+                 'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3',
+                 'normalization=init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)',
+                 'normalization=zero: (data2.exp:xyz)']
 
     @classmethod
     def teardown_class(cls):
@@ -29,6 +31,14 @@ class TestParse:
         assert parse.parse(self.s[9]) == ['credible_intervals', '68', '95', '99.7']
         assert parse.parse(self.s[10]) == ['var', 'a', '1', '2']
         assert parse.parse(self.s[11]) == ['logvar', 'b', '3']
+        assert parse.parse(self.s[12]) == ['normalization', 'init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)']
+
+    def test_normalize_parse(self):
+        assert parse.parse_normalization_def('init') == 'init'
+        assert parse.parse_normalization_def('init: data1.exp') == {'data1.exp': 'init'}
+        assert parse.parse_normalization_def('init: ( data1.exp: 1,5-8 )') == {'data1.exp': ('init', [1, 5, 6, 7, 8])}
+        assert parse.parse_normalization_def('init : (data1.exp: VAR_1, XXX)') == {'data1.exp': ('init', ['VAR_1', 'XXX'])}
+        assert parse.parse_normalization_def('init : ( data1.exp: VAR_1, XXX ) , data2.exp') == {'data1.exp': ('init', ['VAR_1', 'XXX']), 'data2.exp': 'init'}
 
     def test_capital(self):
         assert parse.parse('Model = string.bngl: string.exp') == ['model', 'string.bngl', 'string.exp']
@@ -59,6 +69,10 @@ class TestParse:
         assert d['credible_intervals'] == [68., 95., 99.7]
         assert d[('var', 'a')] == [1., 2.]
         assert d[('logvar', 'b')] == [3.]
+        assert d['normalization'] == {'data1.exp': 'init', 'data2.exp': [('init', [4,6,7,8]), ('zero', ['xyz'])], 'data3.exp': [('init', ['var1', 'var2'])]}
 
         d2 = parse.ploop(['credible_intervals=68'])
         assert d2['credible_intervals'] == [68.0]
+
+        d3 = parse.ploop(['normalization=zero'])
+        assert d3['normalization'] == 'zero'

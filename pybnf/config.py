@@ -72,6 +72,7 @@ class Configuration(object):
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
         self._check_variable_correspondence()
+        self._postprocess_normalization()
 
     @staticmethod
     def default_config():
@@ -100,7 +101,8 @@ class Configuration(object):
             'simplex_shrink': 0.5,
 
             'wall_time_gen': 3600,
-            'wall_time_sim': 3600
+            'wall_time_sim': 3600,
+            'normalization': None
         }
         return default
 
@@ -268,6 +270,75 @@ class Configuration(object):
             raise PybnfError('The following free parameters are in your model files, but are not declared in your '
                              '.conf file: %s' % extra_in_model)
 
+    def _postprocess_normalization(self):
+        """
+        Postprocessing on the 'normalization' key
+        :return:
+        """
+        seedoc = "\nSee the documentation for the syntax options for the 'normalization' key"
+        valid = ('init', 'peak', 'zero')
+        if type(self.config['normalization']) == dict:
+            # Iterate through the keys, which should be .exp file names. Check that these are actual exp files that
+            # are used in the fitting, then add to the dictionary just the suffix, for easier lookup later
+            newdict = dict()
+            for ef in self.config['normalization']:
+                if ef not in self.config['exp_data']:
+                    raise PybnfError("Invalid exp file %s under the normalization key" % ef,
+                                     "The exp file %s given under the 'normalization' keyword is not associated with "
+                                     "any model." % ef + seedoc)
+                val = self.config['normalization'][ef]
+                suff = self._exp_file_prefix(ef)
+                def checkval(v):
+                    if v not in valid:
+                        raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
+                                         "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                         self.config['normalization'][ef] + seedoc)
+                if type(val) == str:
+                    # This exp file has a single normalization type for all columns
+                    checkval(val)
+                else:
+                    # This exp file has a list of one or more pairs specifying (normalization_type, [columns])
+                    for (i, (ntype, cols)) in enumerate(val):
+                        checkval(ntype)
+                        new_cols = []
+                        if type(cols[0]) == int:
+                            # Need to convert to string labels, because the indices into the sim data will be different
+                            to_convert = cols
+                            for label in self.exp_data[suff].cols:
+                                ci = self.exp_data[suff].cols[label]
+                                if ci in to_convert:
+                                    to_convert.remove(ci)
+                                    new_cols.append(label)
+                            if len(to_convert) > 0:
+                                raise PybnfError("Invalid normalization column %s for file %s" % (to_convert[0], ef),
+                                                 "Specified normalization for column %i in file %s, but that file "
+                                                 "contains only %i columns." % (
+                                                 to_convert[0], ef, self.exp_data[suff].data.shape[1]) + seedoc)
+                        else:
+                            new_cols = cols
+                        new_cols_iter = new_cols
+                        for c in new_cols_iter:
+                            if c not in self.exp_data[suff].cols:
+                                raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
+                                                 "Specified normalization for column %s in file %s, but that file does "
+                                                 "not contain that column name." % (c, ef) + seedoc)
+                            if c[-3:] == '_SD':
+                                logging.info('Removing %s from the normalization list' % c)
+                                print1("Warning: You specified a normalization for %s, but I can't normalize a "
+                                       "standard deviation separately, because it's not an output of the simulation. "
+                                       "I'm ignoring your %s setting and assuming it's on the same scale as its data "
+                                       "column." % (c, c))
+                                new_cols.remove(c)
+                        # Update with the postprocessed normalization info
+                        val[i] = (ntype, new_cols)
+
+                newdict[suff] = val
+            self.config['normalization'].update(newdict)
+        elif type(self.config['normalization']) == str:
+            if self.config['normalization'] not in valid:
+                raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
+                                 "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                 self.config['normalization'] + seedoc)
 
 
 class UnknownObjectiveFunctionError(PybnfError):

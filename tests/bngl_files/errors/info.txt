@@ -13,6 +13,8 @@ chisq_no_sd: Prints correct error message, followed by a bunch of tornado.applic
 data_not_found: OK
 data_not_found_2: OK
 data_not_specified: OK
+duplicate_key: OK
+duplicate_var: Runs anyway (using 2nd declaration?)
 free_extra: OK
 free_missing: OK
 garbage_line: OK
@@ -27,6 +29,14 @@ no_frees: OK
 no_generate_network: runs anyway, all jobs fail
 no_suffix: OK
 no_write_access: internal error (PermissionError)
+normalization_badindices: OK
+normalization_badpairing: OK
+normalization_contradiction: OK
+normalization_contradiction2: Runs anyway
+normalization_disaster: OK
+normalization_mixed_types: OK
+normalize_badfile: OK
+normalize_badtype: OK
 overflow: OK
 
 
