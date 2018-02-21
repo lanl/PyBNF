@@ -24,9 +24,11 @@ def init_logging():
     efh.setFormatter(fmt)
 
     dlog = logging.getLogger('distributed')
+    stdout_handler = dlog.handlers[0]  # Before we add anything, distributed has a handler going to stdout
     dlog.setLevel(logging.DEBUG)
     dlog.addHandler(dfh)
     dlog.addHandler(efh)
+    dlog.removeHandler(stdout_handler)  # Remove the logging to stdout
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
