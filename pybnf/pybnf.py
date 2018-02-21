@@ -14,6 +14,8 @@ import shutil
 import traceback
 import subprocess
 import re
+import time
+
 
 __version__ = "0.1"
 
@@ -85,20 +87,21 @@ def main():
         ctype = 'slurm'
         scheduler_node = None
         if ctype == 'slurm':
+            logging.debug('Detected selection of SLURM cluster')
             get_hosts_cmd = 'scontrol show hostname $SLURM_JOB_NODELIST'
-            proc = subprocess.Popen(get_hosts_cmd, shell=True, stdout=subprocess.PIPE)
             try:
-                proc_stdout, proc_stderr = proc.communicate(timeout=10)
+                proc = subprocess.run(get_hosts_cmd, shell=True, stdout=subprocess.PIPE, timeout=10)
             except subprocess.TimeoutExpired:
                 logging.debug('Could not retrieve host names in 10s')
                 raise PybnfError('Failed to find node names.  Exiting')
-            nodes = re.split('\n', proc_stdout.decode('UTF-8').strip())
-            logging.info('Nodes %s are being used as compute nodes' % nodes)
+            nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
             scheduler_node = nodes[0]
             logging.info('Node %s is being used as the scheduler node' % scheduler_node)
+            logging.info('Node(s) %s is/are being used as compute nodes' % ','.join(nodes))
             node_string = ' '.join(nodes)
             logging.debug('Starting dask-ssh subprocess')
-            dask_ssh_proc =subprocess.Popen('dask-ssh %s' % node_string, shell=True)
+            dask_ssh_proc = subprocess.Popen('dask-ssh %s' % node_string, shell=True)
+            time.sleep(10) # TODO gotta be a smarter way to wait for dask-ssh to set things up
 
         os.makedirs(conf_dict['output_dir'] + '/Results')
         os.mkdir(conf_dict['output_dir'] + '/Simulations')
