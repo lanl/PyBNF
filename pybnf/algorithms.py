@@ -662,6 +662,14 @@ class Algorithm(object):
 
         logging.info("Fitting complete")
 
+    def cleanup(self):
+        """
+        Called before the program exits due to an exception.
+        :return:
+        """
+        self.output_results('end')
+
+
 
 class ParticleSwarm(Algorithm):
     """
