@@ -33,6 +33,13 @@ def init_logging():
     root.addHandler(dfh)
     root.addHandler(efh)
 
+    tornado = logging.getLogger('tornado.application')
+    stdout_handler = tornado.handlers[0]  # Before we add anything, tornado has a handler going to stdout
+    tornado.setLevel(logging.ERROR)
+    tornado.addHandler(dfh)
+    tornado.removeHandler(stdout_handler)  # Stop tornado from going to stdout
+    # Don't clog our error log with all the tornado stuff, just send it to the debug log
+
 
 class Configuration(object):
     def __init__(self, d=dict()):
