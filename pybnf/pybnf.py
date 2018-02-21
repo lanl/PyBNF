@@ -93,9 +93,12 @@ def main():
                 logging.debug('Could not retrieve host names in 10s')
                 raise PybnfError('Failed to find node names.  Exiting')
             nodes = re.split('\n', proc_stdout.decode('UTF-8').strip())
+            logging.info('Nodes %s are being used as compute nodes' % nodes)
             scheduler_node = nodes[0]
+            logging.info('Node %s is being used as the scheduler node' % scheduler_node)
             node_string = ' '.join(nodes)
-            dask_ssh_proc = subprocess.Popen('dask-ssh %s' % node_string, shell=True)
+            logging.debug('Starting dask-ssh subprocess')
+            dask_ssh_proc =subprocess.Popen('dask-ssh %s' % node_string, shell=True)
 
         os.makedirs(conf_dict['output_dir'] + '/Results')
         os.mkdir(conf_dict['output_dir'] + '/Simulations')
