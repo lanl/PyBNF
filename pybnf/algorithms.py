@@ -1595,8 +1595,13 @@ class BayesAlgorithm(Algorithm):
             for interval, file in zip(self.credible_intervals, cred_files):
                 min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
                 max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
-                file.write('%s\t%f\t%f\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+                file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
 
+    def cleanup(self):
+        """Called when quitting due to error.
+        Save the histograms in addition to the usual algorithm cleanup"""
+        super().cleanup()
+        self.update_histograms('_end')
 
 class SimplexAlgorithm(Algorithm):
 
