@@ -1362,7 +1362,7 @@ class BayesAlgorithm(Algorithm):
             elif type == 'random_var':
                 self.prior[name] = ('reg', 'b', val1, val2)
             elif type == 'loguniform_var':
-                self.prior[name] = ('log', 'n', np.log10(val1), np.log10(val2))
+                self.prior[name] = ('log', 'b', np.log10(val1), np.log10(val2))
             else:
                 raise PybnfError('Bayesian MCMC cannot handle variable type %s' % type)
 
@@ -1540,7 +1540,7 @@ class BayesAlgorithm(Algorithm):
                 total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
             else:
                 # Uniform from x1 to x2
-                if x1 <= pset[v] <= x2:
+                if x1 <= val <= x2:
                     total += -np.log(x2-x1)
                 else:
                     logging.warning('Box-constrained parameter %s reached a value outside the box.')
