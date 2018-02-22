@@ -1350,17 +1350,21 @@ class BayesAlgorithm(Algorithm):
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
-        self.prior = dict()  # {variable: ('n', mean, sigma), variable2: ('b', min, max)}
-        # n for normally distributed priors, b for box priors (which are weird, but should be allowed)
+        self.prior = dict()  # Maps each variable to a 4-tuple (space, dist, val1, val2)
+        # space is 'reg' for regular space, 'log' for log space. dist is 'n' for normal, 'b' for box.
+        # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
+        # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
         for (name, type, val1, val2) in self.config.variables_specs:
-            if type in ('lognormrandom_var', 'normrandom_var'):
-                self.prior[name] = ('n', val1, val2)
-            elif type in ('random_var', 'loguniform_var'):
-                self.prior[name] = ('b', val1, val2)
-            elif type in ('loguniform_var'):
-                self.prior[name] = ('b', np.log10(val1), np.log10(val2))
+            if type == 'normrandom_var':
+                self.prior[name] = ('reg', 'n', val1, val2)
+            elif type == 'lognormrandom_var':
+                self.prior[name] = ('log', 'n', val1, val2)
+            elif type == 'random_var':
+                self.prior[name] = ('reg', 'b', val1, val2)
+            elif type == 'loguniform_var':
+                self.prior[name] = ('log', 'b', np.log10(val1), np.log10(val2))
             else:
-                raise NotImplementedError('Bayesian MCMC cannot handle variable type %s' % type)
+                raise PybnfError('Bayesian MCMC cannot handle variable type %s' % type)
 
 
     def start_run(self):
@@ -1375,17 +1379,6 @@ class BayesAlgorithm(Algorithm):
         print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
                % (self.sample_every, self.burn_in))
 
-        # Set up the output files
-        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
-        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
-        with open(self.samples_file, 'w') as f:
-            f.write('# Name\tLn_probability\t')
-            for v in self.variables:
-                f.write(v + '\t')
-            f.write('\n')
-        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
-
-
         if self.config.config['initialization'] == 'lh':
             first_pset = self.random_latin_hypercube_psets(self.num_parallel)
         else:
@@ -1395,6 +1388,13 @@ class BayesAlgorithm(Algorithm):
         self.current_pset = [None]*self.num_parallel
         for i in range(len(first_pset)):
             first_pset[i].name = 'iter0run%i' % i
+
+        # Set up the output files
+        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
+        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+        with open(self.samples_file, 'w') as f:
+            f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
+        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
 
         return first_pset
 
@@ -1471,11 +1471,10 @@ class BayesAlgorithm(Algorithm):
                     self.output_results()
                 if self.iteration[index] % 10 == 0:
                     print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                    logging.info('Completed %i iterations' % self.iteration[index])
                 else:
-                    logging.info('Completed %i iterations' % self.iteration[index])
-                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                print2('Current objective values: ' + str(self.ln_current_P))
+                    print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                logging.info('Completed %i iterations' % self.iteration[index])
+                print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Finished replicate number %i' % index)
                 print2('Finished replicate number %i' % index)
@@ -1530,13 +1529,18 @@ class BayesAlgorithm(Algorithm):
         """
         total = 0.
         for v in self.prior:
-            (typ, x1, x2) = self.prior[v]
-            if typ == 'n':
+            (space, dist, x1, x2) = self.prior[v]
+            if space == 'log':
+                val = np.log10(pset[v])
+            else:
+                val = pset[v]
+
+            if dist == 'n':
                 # Normal with mean x1 and value x2
-                total += -1. / (2. * x2 ** 2.) * (x1 - pset[v])**2.
+                total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
             else:
                 # Uniform from x1 to x2
-                if x1 <= pset[v] <= x2:
+                if x1 <= val <= x2:
                     total += -np.log(x2-x1)
                 else:
                     logging.warning('Box-constrained parameter %s reached a value outside the box.')
@@ -1552,10 +1556,7 @@ class BayesAlgorithm(Algorithm):
         :type ln_prob: float
         """
         with open(self.samples_file, 'a') as f:
-            f.write(pset.name+'\t'+str(ln_prob)+'\t')
-            for v in self.variables:
-                f.write('%f\t' % pset[v])
-            f.write('\n')
+            f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
 
     def update_histograms(self, file_ext):
         """
@@ -1594,8 +1595,13 @@ class BayesAlgorithm(Algorithm):
             for interval, file in zip(self.credible_intervals, cred_files):
                 min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
                 max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
-                file.write('%s\t%f\t%f\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+                file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
 
+    def cleanup(self):
+        """Called when quitting due to error.
+        Save the histograms in addition to the usual algorithm cleanup"""
+        super().cleanup()
+        self.update_histograms('_end')
 
 class SimplexAlgorithm(Algorithm):
 

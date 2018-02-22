@@ -33,7 +33,7 @@ class TestBayes:
         cls.config = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('lognormrandom_var', 'v1__FREE__'): [0., 0.5], ('lognormrandom_var', 'v2__FREE__'): [0., 0.5], ('random_var', 'v3__FREE__'): [0, 10],
+            ('lognormrandom_var', 'v1__FREE__'): [0., 0.5], ('loguniform_var', 'v2__FREE__'): [1., 10.], ('random_var', 'v3__FREE__'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
@@ -62,8 +62,9 @@ class TestBayes:
         ba = algorithms.BayesAlgorithm(self.config)
         start_params = ba.start_run()
         assert len(start_params) == 20
-        assert ba.prior['v1__FREE__'] == ('n', 0., 0.5)
-        assert ba.prior['v3__FREE__'] == ('b', 0, 10)
+        assert ba.prior['v1__FREE__'] == ('log', 'n', 0., 0.5)
+        assert ba.prior['v2__FREE__'] == ('log', 'b', 0., 1.)
+        assert ba.prior['v3__FREE__'] == ('reg', 'b', 0, 10)
 
     def test_updates_box(self):
         # In this test, the variables have box constraints, so the prior contribution should be constant.
