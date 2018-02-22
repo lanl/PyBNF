@@ -1350,17 +1350,21 @@ class BayesAlgorithm(Algorithm):
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
-        self.prior = dict()  # {variable: ('n', mean, sigma), variable2: ('b', min, max)}
-        # n for normally distributed priors, b for box priors (which are weird, but should be allowed)
+        self.prior = dict()  # Maps each variable to a 4-tuple (space, dist, val1, val2)
+        # space is 'reg' for regular space, 'log' for log space. dist is 'n' for normal, 'b' for box.
+        # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
+        # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
         for (name, type, val1, val2) in self.config.variables_specs:
-            if type in ('lognormrandom_var', 'normrandom_var'):
-                self.prior[name] = ('n', val1, val2)
-            elif type in ('random_var', 'loguniform_var'):
-                self.prior[name] = ('b', val1, val2)
-            elif type in ('loguniform_var'):
-                self.prior[name] = ('b', np.log10(val1), np.log10(val2))
+            if type == 'normrandom_var':
+                self.prior[name] = ('reg', 'n', val1, val2)
+            elif type == 'lognormrandom_var':
+                self.prior[name] = ('log', 'n', val1, val2)
+            elif type == 'random_var':
+                self.prior[name] = ('reg', 'b', val1, val2)
+            elif type == 'loguniform_var':
+                self.prior[name] = ('log', 'n', np.log10(val1), np.log10(val2))
             else:
-                raise NotImplementedError('Bayesian MCMC cannot handle variable type %s' % type)
+                raise PybnfError('Bayesian MCMC cannot handle variable type %s' % type)
 
 
     def start_run(self):
@@ -1467,11 +1471,10 @@ class BayesAlgorithm(Algorithm):
                     self.output_results()
                 if self.iteration[index] % 10 == 0:
                     print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                    logging.info('Completed %i iterations' % self.iteration[index])
                 else:
-                    logging.info('Completed %i iterations' % self.iteration[index])
-                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                print2('Current objective values: ' + str(self.ln_current_P))
+                    print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                logging.info('Completed %i iterations' % self.iteration[index])
+                print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Finished replicate number %i' % index)
                 print2('Finished replicate number %i' % index)
@@ -1526,10 +1529,15 @@ class BayesAlgorithm(Algorithm):
         """
         total = 0.
         for v in self.prior:
-            (typ, x1, x2) = self.prior[v]
-            if typ == 'n':
+            (space, dist, x1, x2) = self.prior[v]
+            if space == 'log':
+                val = np.log10(pset[v])
+            else:
+                val = pset[v]
+
+            if dist == 'n':
                 # Normal with mean x1 and value x2
-                total += -1. / (2. * x2 ** 2.) * (x1 - pset[v])**2.
+                total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
             else:
                 # Uniform from x1 to x2
                 if x1 <= pset[v] <= x2:
