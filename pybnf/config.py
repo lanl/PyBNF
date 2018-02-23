@@ -104,7 +104,7 @@ class Configuration(object):
             'local_min_limit': 5,
 
             'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 10000, 'hist_bins': 10,
-            'credible_intervals': [68., 95.],
+            'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': np.inf,
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
             'simplex_shrink': 0.5,
@@ -128,7 +128,7 @@ class Configuration(object):
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
                         'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
-                                'credible_intervals'},
+                                'credible_intervals', 'beta', 'beta_range', 'exchange_every'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations'}}
         ignored_params = set()
