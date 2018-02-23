@@ -1363,7 +1363,7 @@ class BayesAlgorithm(Algorithm):
                     print1("Warning: You are running MCMC with replica exchange... You didn't specify beta_range, and "
                            "specified %i beta values. So I am going to run %i replicas, and ignore your "
                            "'population_size' setting." % (len(config.config['beta']), len(config.config['beta'])))
-                self.betas = config.config['beta']
+                self.betas = sorted(config.config['beta'])
                 self.num_parallel = len(self.betas)
 
         self.wait_for_sync = [False] * self.num_parallel

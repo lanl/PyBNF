@@ -53,6 +53,13 @@ class TestBayes:
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
+        cls.config_replica = config.Configuration({
+            'population_size': 4, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            ('lognormrandom_var', 'v1__FREE__'): [1., 0.5], ('lognormrandom_var', 'v2__FREE__'): [1., 0.5], ('normrandom_var', 'v3__FREE__'): [50, 3],
+            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7]})
+
     @classmethod
     def teardown_class(cls):
         shutil.rmtree('noseoutput1')
@@ -141,4 +148,47 @@ class TestBayes:
                     parts = line.split('\t')
                     assert parts[0] in ba.variables
                     assert float(parts[1]) < float(parts[2])
+
+    def test_replica_exchange_run(self):
+        ba = algorithms.BayesAlgorithm(self.config_replica)
+        start_params = ba.start_run()
+        assert len(start_params) == 4
+        for chain in range(4):
+            ps = start_params[chain]
+            # Send in the first 5 results, which should get this chain to the synchronization point.
+            for i in range(5):
+                res = algorithms.Result(ps, self.data1s, ps.name)
+                res.score = 42.
+                nextlist = ba.got_result(res)
+                if i<4:
+                    assert len(nextlist) == 1
+                    ps = nextlist[0]
+                else:
+                    if chain < 3:
+                        assert len(nextlist) == 0
+                        assert ba.wait_for_sync[chain] is True
+                    else:
+                        assert len(nextlist) == 4
+                        assert not np.any(ba.wait_for_sync)
+
+    def test_replica_exchange_function(self):
+        count = 0
+        for iters in range(20):
+            ba = algorithms.BayesAlgorithm(self.config_replica)
+            psets = []
+            for i in range(4):
+                p = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
+                p.name = 'iter0run%i' % i
+                psets.append(p)
+            ba.current_pset = psets
+            ba.ln_current_P = [-5000., -1., -2., 3.]
+            ba.replica_exchange()
+            assert ba.ln_current_P[0] == -5000.
+            assert ba.ln_current_P[1] == -2.
+            print(ba.ln_current_P)
+            if ba.ln_current_P[2] == 3:
+                count+=1
+        assert 0 < count < 20
+
+
 
