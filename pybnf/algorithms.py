@@ -1480,7 +1480,6 @@ class BayesAlgorithm(Algorithm):
         if proposed_pset is None:
             if np.all(self.wait_for_sync):
                 # Do the replica exchange, then propose n new psets so all chains resume
-                logging.info('Performing replica exchange at iteration %i' % self.iteration[index])
                 self.wait_for_sync = [False] * self.num_parallel
                 return self.replica_exchange()
             elif min(self.iteration) >= self.max_iterations:
@@ -1662,6 +1661,7 @@ class BayesAlgorithm(Algorithm):
         Then proposes n new parameter sets to resume all chains after the exchange.
         :return: List of n PSets to run
         """
+        logging.info('Performing replica exchange on iteration %i' % self.iteration[0])
         for j in range(self.num_parallel - 1):
             # Consider exchanging index j (higher T) with j+1 (lower T)
             ln_p_exchange = min(0., -(self.betas[j+1]-self.betas[j]) * (self.ln_current_P[j+1]-self.ln_current_P[j]))
@@ -1671,6 +1671,7 @@ class BayesAlgorithm(Algorithm):
             # better. So you need a - sign.
             if np.random.random() < np.exp(ln_p_exchange):
                 # Do the exchange
+                logging.debug('Exchanging individuals %i and %i' % (j, j+1))
                 hold_pset = self.current_pset[j]
                 hold_p = self.ln_current_P[j]
                 self.current_pset[j] = self.current_pset[j+1]
