@@ -1692,6 +1692,10 @@ class BayesAlgorithm(Algorithm):
                 elif min(self.iteration) >= self.max_iterations:
                     return 'STOP'
             else:
+                # Iteration number got off by 1 because try_to_choose_new_pset() was called twice: once a while ago
+                # when it reached the exchange point and returned None, and a second time just now.
+                # Need to correct for that here.
+                self.iteration[j] -= 1
                 proposed_pset.name = 'iter%irun%i' % (self.iteration[j], j)
                 proposed.append(proposed_pset)
         return proposed
