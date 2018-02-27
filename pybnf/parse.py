@@ -19,7 +19,7 @@ multnumkeys = ['credible_intervals', 'beta', 'beta_range']
 var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'normrandom_var', 'static_list_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
-                                 'scheduler_address']
+                                 'scheduler_address', 'cluster_type']
 slvkeylist = ['static_list_var']
 
 def parse(s):

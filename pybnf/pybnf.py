@@ -83,26 +83,6 @@ def main():
                             print('Quitting')
                             exit()
 
-        # Set up cluster if necessary
-        ctype = 'slurm'
-        scheduler_node = None
-        if ctype == 'slurm':
-            logging.debug('Detected selection of SLURM cluster')
-            get_hosts_cmd = 'scontrol show hostname $SLURM_JOB_NODELIST'
-            try:
-                proc = subprocess.run(get_hosts_cmd, shell=True, stdout=subprocess.PIPE, timeout=10)
-            except subprocess.TimeoutExpired:
-                logging.debug('Could not retrieve host names in 10s')
-                raise PybnfError('Failed to find node names.  Exiting')
-            nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
-            scheduler_node = nodes[0]
-            logging.info('Node %s is being used as the scheduler node' % scheduler_node)
-            logging.info('Node(s) %s is/are being used as compute nodes' % ','.join(nodes))
-            node_string = ' '.join(nodes)
-            logging.debug('Starting dask-ssh subprocess')
-            dask_ssh_proc = subprocess.Popen('dask-ssh %s' % node_string, shell=True)
-            time.sleep(10) # TODO gotta be a smarter way to wait for dask-ssh to set things up
-
         os.makedirs(conf_dict['output_dir'] + '/Results')
         os.mkdir(conf_dict['output_dir'] + '/Simulations')
         shutil.copy(results.conf_file, conf_dict['output_dir'] + '/Results')
@@ -123,6 +103,31 @@ def main():
             alg = algs.SimplexAlgorithm(config)
         else:
             raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
+
+        # Set up cluster if necessary
+        if config.config['cluster_type']:
+            ctype = config.config['cluster_type']
+            if re.match('slurm', ctype, flags=re.IGNORECASE):
+                logging.debug('Detected selection of SLURM cluster')
+                get_hosts_cmd = 'scontrol show hostname $SLURM_JOB_NODELIST'
+                try:
+                    proc = subprocess.run(get_hosts_cmd, shell=True, stdout=subprocess.PIPE, timeout=10)
+                except subprocess.TimeoutExpired:
+                    logging.debug('Could not retrieve host names in 10s')
+                    raise PybnfError('Failed to find node names.  Exiting')
+                nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
+                scheduler_node = nodes[0]
+                logging.info('Node %s is being used as the scheduler node' % scheduler_node)
+                logging.info('Node(s) %s is/are being used as compute nodes' % ','.join(nodes))
+                node_string = ' '.join(nodes)
+                logging.debug('Starting dask-ssh subprocess')
+                dask_ssh_proc = subprocess.Popen('dask-ssh %s' % node_string, shell=True)
+                time.sleep(10) # TODO gotta be a smarter way to wait for dask-ssh to set things up
+            elif re.match('((torque)|(pbs))', ctype, flags=re.IGNORECASE):
+                pass
+            else:
+                logging.error("Unknown cluster type: %s" % config.config['cluster_type'])
+                raise PybnfError("Unknown cluster type: %s" % config.config['cluster_type'])
 
         # Run the algorithm!
         logging.debug('Algorithm initialization')

@@ -112,7 +112,9 @@ class Configuration(object):
 
             'wall_time_gen': 3600,
             'wall_time_sim': 3600,
-            'normalization': None
+            'normalization': None,
+
+            'cluster_type': None
         }
         return default
 
@@ -319,7 +321,6 @@ class Configuration(object):
                     else:
                         variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
         return variables, variables_specs
-
 
     def _check_variable_correspondence(self):
         """
