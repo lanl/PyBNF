@@ -612,7 +612,7 @@ class Algorithm(object):
                        "Using all of the workers in your scheduler.")
             client = Client('%s:8786' % scheduler_node)
 
-            logging.debug('Starting dask-ssh subprocess')
+            logging.debug('Starting dask-ssh subprocess using nodes %s' % node_string)
             dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True)
             time.sleep(10)  # TODO gotta be a smarter way to wait for dask-ssh to set things up
         elif 'parallel_count' in self.config.config:
