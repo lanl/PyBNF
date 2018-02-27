@@ -1351,32 +1351,8 @@ class BayesAlgorithm(Algorithm):
             self.credible_intervals = config.config['credible_intervals']
             self.num_bins = config.config['hist_bins']
 
-            # Parallel tempering options - need to check that they are not contradictory.
-            self.exchange_every = config.config['exchange_every']
-            if self.exchange_every == np.inf:
-                # Regular MCMC
-                self.betas = [config.config['beta'][0]] * self.num_parallel
-                if len(config.config['beta']) > 1:
-                    print1("Warning: You specified multiple values for 'beta', but you did not set 'exchange_every'. I'm"
-                           " assuming you are not doing replica exchange, so I'm only using your first beta value of %s"
-                           % config.config['beta'][0])
-                if 'beta_range' in config.config:
-                    print1("Warning: You specified 'beta_range', but you did not set 'exchange_every'. I'm"
-                           " assuming you are not doing replica exchange, and ignoring your 'beta_range' setting.")
-            else:
-                if 'beta_range' in config.config:
-                    if len(config.config['beta_range']) != 2:
-                        raise PybnfError("Wrong number of entries in beta_range",
-                                         "Config key 'beta_range' must have exactly 2 numbers: the min and the max.")
-                    self.betas = list(np.linspace(config.config['beta_range'][0], config.config['beta_range'][1],
-                                                  self.num_parallel))
-                else:
-                    if len(config.config['beta']) != config.config['population_size']:
-                        print1("Warning: You are running MCMC with replica exchange... You didn't specify beta_range, and "
-                               "specified %i beta values. So I am going to run %i replicas, and ignore your "
-                               "'population_size' setting." % (len(config.config['beta']), len(config.config['beta'])))
-                    self.betas = sorted(config.config['beta'])
-                    self.num_parallel = len(self.betas)
+        self.exchange_every = config.config['exchange_every']
+        self.betas = config.config['beta_list']
 
         self.wait_for_sync = [False] * self.num_parallel
 
@@ -1423,8 +1399,8 @@ class BayesAlgorithm(Algorithm):
                 print2('Running parallel tempering on %i replicates for %i iterations, with replica exchanges performed '
                        'every %i iterations' % (self.num_parallel, self.max_iterations, self.exchange_every))
 
-        print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
-               % (self.sample_every, self.burn_in))
+            print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
+                   % (self.sample_every, self.burn_in))
 
         if self.config.config['initialization'] == 'lh':
             first_pset = self.random_latin_hypercube_psets(self.num_parallel)

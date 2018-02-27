@@ -79,12 +79,15 @@ def main():
             alg = algs.DifferentialEvolution(config)
         elif conf_dict['fit_type'] == 'ss':
             alg = algs.ScatterSearch(config)
-        elif conf_dict['fit_type'] == 'bmc':
+        elif conf_dict['fit_type'] == 'bmc' or conf_dict['fit_type'] == 'pt':
+            # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
             alg = algs.BayesAlgorithm(config)
+        elif conf_dict['fit_type'] == 'sa':
+            alg = algs.BayesAlgorithm(config, sa=True)
         elif conf_dict['fit_type'] == 'sim':
             alg = algs.SimplexAlgorithm(config)
         else:
-            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, sim' % conf_dict['fit_type'])
+            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
 
         # Run the algorithm!
         logging.debug('Algorithm initialization')

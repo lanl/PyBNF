@@ -70,7 +70,8 @@ class Configuration(object):
 
         if verbosity >= 1:
             self.check_unused_keys(d)
-
+        if d['fit_type'] in ('bmc', 'pt', 'sa'):
+            self.postprocess_mcmc_keys(d)
         self.config = self.default_config()
         for k, v in d.items():
             self.config[k] = v
@@ -104,7 +105,7 @@ class Configuration(object):
             'local_min_limit': 5,
 
             'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 10000, 'hist_bins': 10,
-            'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': np.inf,
+            'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01,
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
             'simplex_shrink': 0.5,
@@ -128,17 +129,77 @@ class Configuration(object):
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
                         'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
-                                'credible_intervals', 'beta', 'beta_range', 'exchange_every'},
+                                'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations'}}
         ignored_params = set()
+        thisalg = conf_dict['fit_type']
+        if thisalg in ('pt', 'sa'):
+            thisalg = 'bmc'
         for alg in alg_specific:
-            if (conf_dict['fit_type'] != alg
+            if (thisalg != alg
                and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)):
                 ignored_params = ignored_params.union(alg_specific[alg])
         for k in ignored_params.intersection(set(conf_dict.keys())):
             print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                             % (k, conf_dict['fit_type']))
+
+    @staticmethod
+    def postprocess_mcmc_keys(conf_dict):
+        """
+        Algorithms 'bmc', 'pt', and 'sa' have similar but non-identical valid config keys. This helper method
+        does post-processing of config keys for these 3 algorithms
+
+        :param conf_dict:
+        :return:
+        """
+        # Check keys that only work for a subset of the 3 algorithms
+        if conf_dict['fit_type'] != 'pt' and 'exchange_every' in conf_dict:
+            if 'exchange_every' in conf_dict:
+                print1('Warning: Configuration key exchange_every is not used in fit_type %s, so I am ignoring it'
+                       % conf_dict['fit_type'])
+            conf_dict['exchange_every'] = np.inf
+        if conf_dict['fit_type'] != 'sa':
+            for k in ['cooling', 'beta_max']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+        if conf_dict['fit_type'] == 'sa':
+            for k in ['burn_in', 'sample_every', 'output_hist_every', 'hist_bins', 'credible_intervals']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+
+        # Create the starting list of betas based on the various available options. Warn if tried to do something weird
+        if 'beta' not in conf_dict and 'beta_range' not in conf_dict:
+            conf_dict['beta'] = [1.]
+        if 'beta_range' in conf_dict:
+            if len(conf_dict['beta_range']) != 2:
+                raise PybnfError("Wrong number of entries in beta_range",
+                                 "Config key 'beta_range' must have exactly 2 numbers: the min and the max.")
+            if 'beta' in conf_dict:
+                print1("Warning: Ignoring config key 'beta' because it is overridden by config key 'beta_range'")
+            if conf_dict['fit_type'] != 'pt':
+                print1("Warning: You used 'beta_range' with the method %s. This is an odd thing to do. Usually, you "
+                       "would want all your replicates starting at the same beta value." % conf_dict['fit_type'])
+            betalist = np.linspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], conf_dict['population_size'])
+        elif len(conf_dict['beta']) > 1:
+            betalist = conf_dict['beta']
+            if conf_dict['fit_type'] != 'pt':
+                print1("Warning: You specified multiple beta values with the method %s. This is an odd thing to do. "
+                       "Usually, you would specify one beta value to use with all your replicates. " % conf_dict['fit_type'])
+            if len(betalist) != conf_dict['population_size']:
+                print1("Warning: You specified %i beta values, so I will run %i replicates instead of using your "
+                       "population_size setting" % (len(betalist), len(betalist)))
+                conf_dict['population_size'] = len(betalist)
+        else:
+            betalist = conf_dict['beta'] * conf_dict['population_size']  # n copies of the single beta value
+            if conf_dict['fit_type'] == 'pt':
+                print1("Warning: You specified a single beta value with the method pt. This makes the algorithm's "
+                       "replica exchanges accomplish nothing. To make good use of this algorithm, set the key "
+                       "'beta_range' or specify multiple values with the 'beta' key.")
+        betalist.sort()
+        conf_dict['beta_list'] = betalist
 
     @staticmethod
     def _req_user_params():
