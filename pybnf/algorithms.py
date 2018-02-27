@@ -1325,28 +1325,42 @@ class BayesAlgorithm(Algorithm):
     that gives the probability distribution of each variable.
     This distribution depends on the prior, which is specified according to the variable initialization rules.
 
+    With sa=True, this instead acts as a simulated annealing algorithm with n indepdendent chains.
+
     """
 
-    def __init__(self, config): #expdata, objective, priorfile, gamma=0.1):
+    def __init__(self, config, sa=False): #expdata, objective, priorfile, gamma=0.1):
         super(BayesAlgorithm, self).__init__(config)
+        self.sa = sa
         self.step_size = config.config['step_size']
         self.num_parallel = config.config['population_size']
         self.max_iterations = config.config['max_iterations']
-        self.burn_in = config.config['burn_in'] # todo: 'auto' option
-        self.sample_every = config.config['sample_every']
-        self.output_hist_every = config.config['output_hist_every']
-        # A list of the % credible intervals to save, eg [68. 95]
-        self.credible_intervals = config.config['credible_intervals']
-        self.num_bins = config.config['hist_bins']
+
+        self.current_pset = None  # List of n PSets corresponding to the n independent runs
+        self.ln_current_P = None  # List of n probabilities of those n PSets.
+        self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
+
+        if sa:
+            self.cooling = config.config['cooling']
+            self.beta_max = config.config['beta_max']
+        else:
+            self.burn_in = config.config['burn_in'] # todo: 'auto' option
+            self.sample_every = config.config['sample_every']
+            self.output_hist_every = config.config['output_hist_every']
+            # A list of the % credible intervals to save, eg [68. 95]
+            self.credible_intervals = config.config['credible_intervals']
+            self.num_bins = config.config['hist_bins']
+
+        self.exchange_every = config.config['exchange_every']
+        self.betas = config.config['beta_list']
+
+        self.wait_for_sync = [False] * self.num_parallel
 
         self.prior = None
         self.load_priors()
 
-        self.current_pset = None # List of n PSets corresponding to the n independent runs
-        self.ln_current_P = None # List of n probabilities of those n PSets.
-        self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
-
         self.samples_file = None # Initialize later.
+
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1374,10 +1388,19 @@ class BayesAlgorithm(Algorithm):
 
         :return: list of PSets
         """
-        print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.' %
-               (self.num_parallel, self.max_iterations))
-        print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
-               % (self.sample_every, self.burn_in))
+        if self.sa:
+            print2('Running simulated annealing on %i independent replicates in parallel, for %i iterations each or '
+                   'until 1/T reaches %s' % (self.num_parallel, self.max_iterations, self.beta_max))
+        else:
+            if self.exchange_every == np.inf:
+                print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
+                       % (self.num_parallel, self.max_iterations))
+            else:
+                print2('Running parallel tempering on %i replicates for %i iterations, with replica exchanges performed '
+                       'every %i iterations' % (self.num_parallel, self.max_iterations, self.exchange_every))
+
+            print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
+                   % (self.sample_every, self.burn_in))
 
         if self.config.config['initialization'] == 'lh':
             first_pset = self.random_latin_hypercube_psets(self.num_parallel)
@@ -1391,10 +1414,11 @@ class BayesAlgorithm(Algorithm):
 
         # Set up the output files
         # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
-        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
-        with open(self.samples_file, 'w') as f:
-            f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
-        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+        if not self.sa:
+            self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+            with open(self.samples_file, 'w') as f:
+                f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
+            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
 
         return first_pset
 
@@ -1432,14 +1456,52 @@ class BayesAlgorithm(Algorithm):
 
         # Decide whether to accept move.
 
-        if np.random.rand() < np.exp(ln_p_accept) or np.isnan(self.ln_current_P[index]):
+        if np.random.rand() < np.exp(ln_p_accept*self.betas[index]) or np.isnan(self.ln_current_P[index]):
             # Accept the move, so update our current PSet and P
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
+            # For simulated annealing, reduce the temperature if this was an unfavorable move.
+            if self.sa and ln_p_accept < 0.:
+                self.betas[index] += self.cooling
+                if self.betas[index] >= self.beta_max:
+                    print2('Finished replicate %i because beta_max was reached.' % index)
+                    logging.info('Finished replicate %i because beta_max was reached.' % index)
+                    if min(self.betas) >= self.beta_max:
+                        logging.info('All annealing replicates have reached the maximum beta value')
+                        return 'STOP'
+                    else:
+                        return []
 
         # Record the current PSet (clarification: what if failed? Sample old again?)
 
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
+        proposed_pset = self.try_to_choose_new_pset(index)
+
+        if proposed_pset is None:
+            if np.all(self.wait_for_sync):
+                # Do the replica exchange, then propose n new psets so all chains resume
+                self.wait_for_sync = [False] * self.num_parallel
+                return self.replica_exchange()
+            elif min(self.iteration) >= self.max_iterations:
+                return 'STOP'
+            else:
+                return []
+
+        proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
+        return [proposed_pset]
+
+    def try_to_choose_new_pset(self, index):
+        """
+        Helper function
+        Advances the iteration number, and tries to choose a new parameter set for chain index i
+        If that fails (e.g. due to a box constraint), keeps advancing iteration number and trying again.
+
+        If it hits an iteration where it has to stop and wait (a replica exchange iteration or the end), returns None
+        Otherwise returns the new PSet.
+
+        :param index:
+        :return:
+        """
         proposed_pset = None
         # This part is a loop in case a box constraint makes a move automatically rejected.
         loop_count = 0
@@ -1448,23 +1510,23 @@ class BayesAlgorithm(Algorithm):
             if loop_count == 20:
                 logging.warning('Instance %i spent 20 iterations at the same point' % index)
                 print1('One of your samples is stuck at the same point for 20+ iterations because it keeps '
-                                'hitting box constraints. Consider using looser box constraints or a smaller '
-                                'step_size.')
+                       'hitting box constraints. Consider using looser box constraints or a smaller '
+                       'step_size.')
             if loop_count == 1000:
                 logging.warning('Instance %i terminated after 1000 iterations at the same point' % index)
                 print1('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
-                              'because it kept hitting box constraints. Consider using looser box constraints or a '
-                              'smaller step_size.' % index)
+                       'because it kept hitting box constraints. Consider using looser box constraints or a '
+                       'smaller step_size.' % index)
                 self.iteration[index] = self.max_iterations
 
-            proposed_pset = self.choose_new_pset(self.current_pset[index])
             self.iteration[index] += 1
             # Check if it's time to do various things
-            if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
-                self.sample_pset(self.current_pset[index], lnposterior)
-            if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
-               and self.iteration[index] == min(self.iteration)):
-                self.update_histograms('_%i' % self.iteration[index])
+            if not self.sa:
+                if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
+                    self.sample_pset(self.current_pset[index], self.ln_current_P[index])
+                if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
+                    and self.iteration[index] == min(self.iteration)):
+                    self.update_histograms('_%i' % self.iteration[index])
 
             if self.iteration[index] == min(self.iteration):
                 if self.iteration[index] % self.config.config['output_every'] == 0:
@@ -1474,21 +1536,20 @@ class BayesAlgorithm(Algorithm):
                 else:
                     print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                 logging.info('Completed %i iterations' % self.iteration[index])
+                if self.sa:
+                    logging.debug('Current betas: ' + str(self.betas))
                 print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Finished replicate number %i' % index)
                 print2('Finished replicate number %i' % index)
-                if self.iteration[index] == min(self.iteration):
-                    self.update_histograms('_final')
-                    return 'STOP'
-                else:
-                    # Others of the parallel runs are still going.
-                    # Should *not* stop until they are all done, or we bias the distribution for fast-running simulations.
-                    return []
+                return None
+            if self.iteration[index] % self.exchange_every == 0:
+                # Need to wait for the rest of the chains to catch up to do replica exchange
+                self.wait_for_sync[index] = True
+                return None
+            proposed_pset = self.choose_new_pset(self.current_pset[index])
+        return proposed_pset
 
-        proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
-
-        return [proposed_pset]
 
     def choose_new_pset(self, oldpset):
         """
@@ -1596,6 +1657,52 @@ class BayesAlgorithm(Algorithm):
                 min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
                 max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
                 file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+
+    def replica_exchange(self):
+        """
+        Performs replica exchange for parallel tempering.
+        Then proposes n new parameter sets to resume all chains after the exchange.
+        :return: List of n PSets to run
+        """
+        logging.info('Performing replica exchange on iteration %i' % self.iteration[0])
+        for j in range(self.num_parallel - 1):
+            # Consider exchanging index j (higher T) with j+1 (lower T)
+            ln_p_exchange = min(0., -(self.betas[j+1]-self.betas[j]) * (self.ln_current_P[j+1]-self.ln_current_P[j]))
+            # Scratch work: Should there be a - sign in front? You want to always accept if moving the better answer
+            # to the lower temperature. j+1 has lower T so higher beta, so the first term is positive. The second term
+            # is positive if j+1 is better. But you want a positive final answer when j, currently at higher T, is
+            # better. So you need a - sign.
+            if np.random.random() < np.exp(ln_p_exchange):
+                # Do the exchange
+                logging.debug('Exchanging individuals %i and %i' % (j, j+1))
+                hold_pset = self.current_pset[j]
+                hold_p = self.ln_current_P[j]
+                self.current_pset[j] = self.current_pset[j+1]
+                self.ln_current_P[j] = self.ln_current_P[j+1]
+                self.current_pset[j+1] = hold_pset
+                self.ln_current_P[j+1] = hold_p
+        # Propose new psets - it's more complicated because of going out of box, and other counters.
+        proposed = []
+        for j in range(self.num_parallel):
+            proposed_pset = self.try_to_choose_new_pset(j)
+            if proposed_pset is None:
+                if np.all(self.wait_for_sync):
+                    logging.error('Aborting because no changes were made between one replica exchange and the next.')
+                    print0("I seem to have gone from one replica exchange to the next replica exchange without "
+                           "proposing a single valid move. Something is probably wrong for this to happen, so I'm "
+                           "going to stop.")
+                    return 'STOP'
+                elif min(self.iteration) >= self.max_iterations:
+                    return 'STOP'
+            else:
+                # Iteration number got off by 1 because try_to_choose_new_pset() was called twice: once a while ago
+                # when it reached the exchange point and returned None, and a second time just now.
+                # Need to correct for that here.
+                self.iteration[j] -= 1
+                proposed_pset.name = 'iter%irun%i' % (self.iteration[j], j)
+                proposed.append(proposed_pset)
+        return proposed
+
 
     def cleanup(self):
         """Called when quitting due to error.

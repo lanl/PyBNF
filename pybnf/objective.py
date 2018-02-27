@@ -36,7 +36,7 @@ class ObjectiveFunction(object):
                     # Need to check for that here.
                     if suffix in exp_data_dict:
                         val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
-                        logging.debug('Evaluated %s with value %s' % (sim_data_dict[model][suffix].data, val))
+                        # logging.debug('Evaluated %s with value %s' % (sim_data_dict[model][suffix].data, val))
                         if val is None:
                             return None
                         total += val
@@ -142,8 +142,8 @@ class SummationObjective(ObjectiveFunction):
 class ChiSquareObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        logging.debug('This evaluation is at sim_row %s, column %s which is number %s' % (sim_row, col_name, sim_data.cols[col_name]))
-        logging.debug('Im reading the sim_data %s' % sim_data.data)
+        # logging.debug('This evaluation is at sim_row %s, column %s which is number %s' % (sim_row, col_name, sim_data.cols[col_name]))
+        # logging.debug('Im reading the sim_data %s' % sim_data.data)
 
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]

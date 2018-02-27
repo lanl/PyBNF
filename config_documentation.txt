@@ -7,7 +7,7 @@ Please update this file whenever you add support for new .conf keys in the code
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp
 bng_command - path to BNG2.pl . Default: value of the BNGPATH environment variable
 output_dir - Directory where to save the output. Default: bnf_out
-fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search. Future options: sa - Simulated Annealing. Default: de
+fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
 scheduler_address - If running on a cluster, input the IP address and port of the scheduler (which you received when you ran dask-scheduler or dask-ssh)
 parallel_count - How many jobs to run in parallel. Default: Use all available cores.
@@ -96,10 +96,20 @@ reserve_size: Scatter Search maintains a latin-hypercube-distributed "reserve" o
 step_size: When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. Default: 0.2
 burn_in: Ignore this many iterations at the start, to let the system equilibrate. Default: 10000
 sample_every: Every x iterations, save the current PSet into the sampled population. Default: 100
+beta: 1 over the "temperature" used for sampling. beta = 1 samples the true probability landscape. At lower beta (higher temperature), unfavorable moves are more often accepted, and parameter space is sampled more broadly. Default: 1
 
 output_hist_every: Every x iterations, save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Default: 10000 
 hist_bins: Number of bins used when writing the histogram files. Default: 10
 credible_intervals: Specify one or more numbers here. For each n, algorithm will save a file giving bounds for each variable such that in n% of the samples the variable lies within the bounds.  Default: 68 95
 
+The following additional options configure Parallel Tempering, an extension of Bayesian MCMC when replica exchange occurs.
+exchange_every: Every x iterations, perform replica exchange, swapping replicas that are adjacent in temperature with a statistically correct probability
+beta_range=min max : The range of values of beta to use. The replicates will use population_size evenly spaced beta values within this range.
+beta: Alternatively to specifying beta_range, you may specify population_size beta values here to use
 
+***Simulated Annealing settings***
 
+step_size: When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. (same key as MCMC above) Default: 0.2
+beta: 1 over the starting "temperature" for all replicates. This value increases (i.e., temperature decreases) over the course of the run.
+beta_max: Stop the algorithm if all replicates reach this beta = 1/temperature value. Default: Inf
+cooling: Each time a move to a higher energy state is accepted, increase beta = 1/temperature by this value. Default: 0.01
