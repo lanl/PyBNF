@@ -1463,9 +1463,14 @@ class BayesAlgorithm(Algorithm):
             # For simulated annealing, reduce the temperature if this was an unfavorable move.
             if self.sa and ln_p_accept < 0.:
                 self.betas[index] += self.cooling
-                if min(self.betas) >= self.beta_max:
-                    logging.info('All annealing replicates have reached the maximum beta value')
-                    return 'STOP'
+                if self.betas[index] >= self.beta_max:
+                    print2('Finished replicate %i because beta_max was reached.' % index)
+                    logging.info('Finished replicate %i because beta_max was reached.' % index)
+                    if min(self.betas) >= self.beta_max:
+                        logging.info('All annealing replicates have reached the maximum beta value')
+                        return 'STOP'
+                    else:
+                        return []
 
         # Record the current PSet (clarification: what if failed? Sample old again?)
 
@@ -1531,6 +1536,8 @@ class BayesAlgorithm(Algorithm):
                 else:
                     print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                 logging.info('Completed %i iterations' % self.iteration[index])
+                if self.sa:
+                    logging.debug('Current betas: ' + str(self.betas))
                 print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logging.info('Finished replicate number %i' % index)
