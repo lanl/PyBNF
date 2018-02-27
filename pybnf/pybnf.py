@@ -49,24 +49,33 @@ def main():
             print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
             exit(0)
         logging.info('Loading configuration file: %s' % results.conf_file)
-        conf_dict = load_config(results.conf_file)
-        if 'verbosity' in conf_dict:
-            printing.verbosity = conf_dict['verbosity']
+
+        config = load_config(results.conf_file)
+        if 'verbosity' in config.config:
+            printing.verbosity = config.config['verbosity']
+        if results.scheduler_address is not None:
+            config.config['scheduler_address'] = results.scheduler_addres
 
         # Create output folders, checking for overwrites.
-        if os.path.exists(conf_dict['output_dir']):
-            if os.path.isdir(conf_dict['output_dir']):
-                if os.path.exists(conf_dict['output_dir'] + '/Results') or os.path.exists(
-                                conf_dict['output_dir'] + '/Simulations') or os.path.exists(
-                            conf_dict['output_dir'] + '/Initialize'):
-                    if results.overwrite:
+        if os.path.exists(config.config['output_dir']):
+            if os.path.isdir(config.config['output_dir']):
+                if os.path.exists(config.config['output_dir'] + '/Results') or os.path.exists(
+                                config.config['output_dir'] + '/Simulations') or os.path.exists(
+                            config.config['output_dir'] + '/Initialize'):
+                    logging.info("Output directory has subdirectories... querying user for overwrite permission")
+                    ans = 'x'
+                    while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                        ans = input('It looks like your output_dir already contains Results/, Simulations/, and/or '
+                                    'Initialize/ folders from a previous run. \n'
+                                    'Overwrite them with the current run? [y/n] (n) ')
+                    if ans.lower() == 'y' or ans.lower() == 'yes':
                         logging.info("Overwriting existing output directory")
-                        if os.path.exists(conf_dict['output_dir'] + '/Results'):
-                            shutil.rmtree(conf_dict['output_dir'] + '/Results')
-                        if os.path.exists(conf_dict['output_dir'] + '/Simulations'):
-                            shutil.rmtree(conf_dict['output_dir'] + '/Simulations')
-                        if os.path.exists(conf_dict['output_dir'] + '/Initialize'):
-                            shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
+                        if os.path.exists(config.config['output_dir'] + '/Results'):
+                            shutil.rmtree(config.config['output_dir'] + '/Results')
+                        if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                            shutil.rmtree(config.config['output_dir'] + '/Simulations')
+                        if os.path.exists(config.config['output_dir'] + '/Initialize'):
+                            shutil.rmtree(config.config['output_dir'] + '/Initialize')
                     else:
                         logging.info("Output directory has subdirectories... querying user for overwrite permission")
                         ans = 'x'
@@ -76,37 +85,36 @@ def main():
                                         'Overwrite them with the current run? [y/n] (n) ')
                         if ans.lower() == 'y' or ans.lower() == 'yes':
                             logging.info("Overwriting existing output directory")
-                            if os.path.exists(conf_dict['output_dir'] + '/Results'):
-                                shutil.rmtree(conf_dict['output_dir'] + '/Results')
-                            if os.path.exists(conf_dict['output_dir'] + '/Simulations'):
-                                shutil.rmtree(conf_dict['output_dir'] + '/Simulations')
-                            if os.path.exists(conf_dict['output_dir'] + '/Initialize'):
-                                shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
+                            if os.path.exists(config.config['output_dir'] + '/Results'):
+                                shutil.rmtree(config.config['output_dir'] + '/Results')
+                            if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                                shutil.rmtree(config.config['output_dir'] + '/Simulations')
+                            if os.path.exists(config.config['output_dir'] + '/Initialize'):
+                                shutil.rmtree(config.config['output_dir'] + '/Initialize')
                         else:
                             logging.info("Overwrite rejected... exiting")
                             print('Quitting')
                             exit()
 
-        os.makedirs(conf_dict['output_dir'] + '/Results')
-        os.mkdir(conf_dict['output_dir'] + '/Simulations')
-        shutil.copy(results.conf_file, conf_dict['output_dir'] + '/Results')
+        os.makedirs(config.config['output_dir'] + '/Results')
+        os.mkdir(config.config['output_dir'] + '/Simulations')
+        shutil.copy(results.conf_file, config.config['output_dir'] + '/Results')
 
-        config = Configuration(conf_dict)
-        if conf_dict['fit_type'] == 'pso':
+        if config.config['fit_type'] == 'pso':
             alg = algs.ParticleSwarm(config)
-        elif conf_dict['fit_type'] == 'de':
+        elif config.config['fit_type'] == 'de':
             alg = algs.DifferentialEvolution(config)
-        elif conf_dict['fit_type'] == 'ss':
+        elif config.config['fit_type'] == 'ss':
             alg = algs.ScatterSearch(config)
-        elif conf_dict['fit_type'] == 'bmc' or conf_dict['fit_type'] == 'pt':
+        elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
             # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
             alg = algs.BayesAlgorithm(config)
-        elif conf_dict['fit_type'] == 'sa':
+        elif config.config['fit_type'] == 'sa':
             alg = algs.BayesAlgorithm(config, sa=True)
-        elif conf_dict['fit_type'] == 'sim':
+        elif config.config['fit_type'] == 'sim':
             alg = algs.SimplexAlgorithm(config)
         else:
-            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
+            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
         # override cluster type value in configuration file if specified with cmdline args
         if results.cluster_type:

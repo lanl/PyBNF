@@ -2,6 +2,7 @@ import pyparsing as pp
 import re
 from string import punctuation
 from .printing import PybnfError, print1
+from .config import Configuration
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
                'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
@@ -91,7 +92,7 @@ def load_config(path):
         raise PybnfError('Configuration file %s not found' % path)
     param_dict = ploop(infile.readlines())
     infile.close()
-    return param_dict
+    return Configuration(param_dict)
 
 
 def flatten(vs):
