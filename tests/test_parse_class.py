@@ -13,7 +13,8 @@ class TestParse:
                  'random_var = var3__FREE__ 4 5', 'model = another.bngl: d1.exp, d2.exp',
                  'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3',
                  'normalization=init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)',
-                 'normalization=zero: (data2.exp:xyz)']
+                 'normalization=zero: (data2.exp:xyz)',
+                 'cluster_type = slurm']
 
     @classmethod
     def teardown_class(cls):
@@ -70,6 +71,7 @@ class TestParse:
         assert d[('var', 'a')] == [1., 2.]
         assert d[('logvar', 'b')] == [3.]
         assert d['normalization'] == {'data1.exp': 'init', 'data2.exp': [('init', [4,6,7,8]), ('zero', ['xyz'])], 'data3.exp': [('init', ['var1', 'var2'])]}
+        assert d['cluster_type'] == 'slurm'
 
         d2 = parse.ploop(['credible_intervals=68'])
         assert d2['credible_intervals'] == [68.0]
