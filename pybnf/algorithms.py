@@ -610,11 +610,12 @@ class Algorithm(object):
                 logging.warning("Ignoring 'parallel_count' option in favor of 'cluster_type'")
                 print1("Option 'parallel_count' is not used when 'cluster_type' is specified.  "
                        "Using all of the workers in your scheduler.")
-            client = Client('%s:8786' % scheduler_node)
 
             logging.debug('Starting dask-ssh subprocess using nodes %s' % node_string)
             dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True)
             time.sleep(10)  # TODO gotta be a smarter way to wait for dask-ssh to set things up
+
+            client = Client('%s:8786' % scheduler_node)
         elif 'parallel_count' in self.config.config:
             lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
             client = Client(lc)
