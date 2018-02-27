@@ -1325,55 +1325,63 @@ class BayesAlgorithm(Algorithm):
     that gives the probability distribution of each variable.
     This distribution depends on the prior, which is specified according to the variable initialization rules.
 
+    With sa=True, this instead acts as a simulated annealing algorithm with n indepdendent chains.
+
     """
 
-    def __init__(self, config): #expdata, objective, priorfile, gamma=0.1):
+    def __init__(self, config, sa=False): #expdata, objective, priorfile, gamma=0.1):
         super(BayesAlgorithm, self).__init__(config)
+        self.sa = sa
         self.step_size = config.config['step_size']
         self.num_parallel = config.config['population_size']
         self.max_iterations = config.config['max_iterations']
-        self.burn_in = config.config['burn_in'] # todo: 'auto' option
-        self.sample_every = config.config['sample_every']
-        self.output_hist_every = config.config['output_hist_every']
-        # A list of the % credible intervals to save, eg [68. 95]
-        self.credible_intervals = config.config['credible_intervals']
-        self.num_bins = config.config['hist_bins']
 
-        # Parallel tempering options - need to check that they are not contradictory.
-        self.exchange_every = config.config['exchange_every']
-        if self.exchange_every == np.inf:
-            # Regular MCMC
-            self.betas = [config.config['beta'][0]] * self.num_parallel
-            if len(config.config['beta']) > 1:
-                print1("Warning: You specified multiple values for 'beta', but you did not set 'exchange_every'. I'm"
-                       " assuming you are not doing replica exchange, so I'm only using your first beta value of %s"
-                       % config.config['beta'][0])
-            if 'beta_range' in config.config:
-                print1("Warning: You specified 'beta_range', but you did not set 'exchange_every'. I'm"
-                       " assuming you are not doing replica exchange, and ignoring your 'beta_range' setting.")
+        self.current_pset = None  # List of n PSets corresponding to the n independent runs
+        self.ln_current_P = None  # List of n probabilities of those n PSets.
+        self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
+
+        if sa:
+            self.cooling = config.config['cooling']
+            self.beta_max = config.config['beta_max']
         else:
-            if 'beta_range' in config.config:
-                if len(config.config['beta_range']) != 2:
-                    raise PybnfError("Wrong number of entries in beta_range",
-                                     "Config key 'beta_range' must have exactly 2 numbers: the min and the max.")
-                self.betas = list(np.linspace(config.config['beta_range'][0], config.config['beta_range'][1],
-                                              self.num_parallel))
+            self.burn_in = config.config['burn_in'] # todo: 'auto' option
+            self.sample_every = config.config['sample_every']
+            self.output_hist_every = config.config['output_hist_every']
+            # A list of the % credible intervals to save, eg [68. 95]
+            self.credible_intervals = config.config['credible_intervals']
+            self.num_bins = config.config['hist_bins']
+
+            # Parallel tempering options - need to check that they are not contradictory.
+            self.exchange_every = config.config['exchange_every']
+            if self.exchange_every == np.inf:
+                # Regular MCMC
+                self.betas = [config.config['beta'][0]] * self.num_parallel
+                if len(config.config['beta']) > 1:
+                    print1("Warning: You specified multiple values for 'beta', but you did not set 'exchange_every'. I'm"
+                           " assuming you are not doing replica exchange, so I'm only using your first beta value of %s"
+                           % config.config['beta'][0])
+                if 'beta_range' in config.config:
+                    print1("Warning: You specified 'beta_range', but you did not set 'exchange_every'. I'm"
+                           " assuming you are not doing replica exchange, and ignoring your 'beta_range' setting.")
             else:
-                if len(config.config['beta']) != config.config['population_size']:
-                    print1("Warning: You are running MCMC with replica exchange... You didn't specify beta_range, and "
-                           "specified %i beta values. So I am going to run %i replicas, and ignore your "
-                           "'population_size' setting." % (len(config.config['beta']), len(config.config['beta'])))
-                self.betas = sorted(config.config['beta'])
-                self.num_parallel = len(self.betas)
+                if 'beta_range' in config.config:
+                    if len(config.config['beta_range']) != 2:
+                        raise PybnfError("Wrong number of entries in beta_range",
+                                         "Config key 'beta_range' must have exactly 2 numbers: the min and the max.")
+                    self.betas = list(np.linspace(config.config['beta_range'][0], config.config['beta_range'][1],
+                                                  self.num_parallel))
+                else:
+                    if len(config.config['beta']) != config.config['population_size']:
+                        print1("Warning: You are running MCMC with replica exchange... You didn't specify beta_range, and "
+                               "specified %i beta values. So I am going to run %i replicas, and ignore your "
+                               "'population_size' setting." % (len(config.config['beta']), len(config.config['beta'])))
+                    self.betas = sorted(config.config['beta'])
+                    self.num_parallel = len(self.betas)
 
         self.wait_for_sync = [False] * self.num_parallel
 
         self.prior = None
         self.load_priors()
-
-        self.current_pset = None # List of n PSets corresponding to the n independent runs
-        self.ln_current_P = None # List of n probabilities of those n PSets.
-        self.iteration = [0]*self.num_parallel # Iteration number that each PSet is on
 
         self.samples_file = None # Initialize later.
 
@@ -1404,12 +1412,16 @@ class BayesAlgorithm(Algorithm):
 
         :return: list of PSets
         """
-        if self.exchange_every == np.inf:
-            print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
-                   % (self.num_parallel, self.max_iterations))
+        if self.sa:
+            print2('Running simulated annealing on %i independent replicates in parallel, for %i iterations each or '
+                   'until 1/T reaches %s' % (self.num_parallel, self.max_iterations, self.beta_max))
         else:
-            print2('Running parallel tempering on %i replicates for %i iterations, with replica exchanges performed '
-                   'every %i iterations' % (self.num_parallel, self.max_iterations, self.exchange_every))
+            if self.exchange_every == np.inf:
+                print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
+                       % (self.num_parallel, self.max_iterations))
+            else:
+                print2('Running parallel tempering on %i replicates for %i iterations, with replica exchanges performed '
+                       'every %i iterations' % (self.num_parallel, self.max_iterations, self.exchange_every))
 
         print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
                % (self.sample_every, self.burn_in))
@@ -1426,10 +1438,11 @@ class BayesAlgorithm(Algorithm):
 
         # Set up the output files
         # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
-        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
-        with open(self.samples_file, 'w') as f:
-            f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
-        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+        if not self.sa:
+            self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+            with open(self.samples_file, 'w') as f:
+                f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
+            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
 
         return first_pset
 
@@ -1471,6 +1484,12 @@ class BayesAlgorithm(Algorithm):
             # Accept the move, so update our current PSet and P
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
+            # For simulated annealing, reduce the temperature if this was an unfavorable move.
+            if self.sa and ln_p_accept < 0.:
+                self.betas[index] += self.cooling
+                if min(self.betas) >= self.beta_max:
+                    logging.info('All annealing replicates have reached the maximum beta value')
+                    return 'STOP'
 
         # Record the current PSet (clarification: what if failed? Sample old again?)
 
@@ -1521,11 +1540,12 @@ class BayesAlgorithm(Algorithm):
 
             self.iteration[index] += 1
             # Check if it's time to do various things
-            if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
-                self.sample_pset(self.current_pset[index], self.ln_current_P[index])
-            if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
-                and self.iteration[index] == min(self.iteration)):
-                self.update_histograms('_%i' % self.iteration[index])
+            if not self.sa:
+                if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
+                    self.sample_pset(self.current_pset[index], self.ln_current_P[index])
+                if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
+                    and self.iteration[index] == min(self.iteration)):
+                    self.update_histograms('_%i' % self.iteration[index])
 
             if self.iteration[index] == min(self.iteration):
                 if self.iteration[index] % self.config.config['output_every'] == 0:
