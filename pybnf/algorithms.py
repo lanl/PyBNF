@@ -578,19 +578,16 @@ class Algorithm(object):
 
         logging.debug('Initializing dask Client object')
         if scheduler_node is not None:
+            if 'parallel_count' in self.config.config:
+                logging.warning("Ignoring 'parallel_count' option in favor of 'cluster_type'")
+                print1("Option 'parallel_count' is not used when 'cluster_type' is specified.  "
+                       "Using all of the workers in your scheduler.")
             client = Client('%s:8786' % scheduler_node)
+        elif 'parallel_count' in self.config.config:
+            lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
+            client = Client(lc)
         else:
-            if 'scheduler_address' in self.config.config:
-                if 'parallel_count' in self.config.config:
-                    print1("Warning: 'parallel_count' option is not supported when you have also specified "
-                           "'scheduler_address'. I will just use all of the workers in your scheduler.")
-                client = Client(self.config.config['scheduler_address'])
-            else:
-                if 'parallel_count' in self.config.config:
-                    lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
-                    client = Client(lc)
-                else:
-                    client = Client()
+            client = Client()
         client.run(init_logging)
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
