@@ -279,6 +279,8 @@ class Algorithm(object):
         self.job_id_counter = 0
         self.output_counter = 0
         self.job_group_dir = dict()
+        self.fail_count = 0
+        self.success_count = 0
 
         logging.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
@@ -606,10 +608,17 @@ class Algorithm(object):
                     continue
                 res = group.average_results()
             if isinstance(res, FailedSimulation):
-                tb = '\n'+res.traceback if res.fail_type == 2 else ''
+                if res.fail_type == 1:
+                    self.fail_count += 1
+                tb = '\n'+res.traceback if res.fail_type == 1 else ''
                 logging.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
                 print1('Job %s failed' % res.name)
+                if self.success_count == 0 and self.fail_count >= 10:
+                    raise PybnfError('Aborted because all jobs are failing',
+                                     'Your BioNetGen simulations are failing to run. See the BioNetGen log files in '
+                                     'the Simulations directory.')
             else:
+                self.success_count += 1
                 logging.debug('Job %s complete' % res.name)
             pending.remove(f)
             res.normalize(self.config.config['normalization'])
