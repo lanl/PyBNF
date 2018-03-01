@@ -63,6 +63,19 @@ class TestData:
             ' 2 4   2   10\n'
         ]
 
+        cls.data1c = [
+            '# x    obs1    obs2    obs3\n',
+            ' # 0 5   6   5\n',
+            ' 1 7   1   6\n',
+            ' 2 5   0   10\n'
+        ]
+        cls.d1c = data.Data()
+        cls.d1c.data = cls.d1c._read_file_lines(cls.data1c, '\s+')
+
+    def test_comment_ignore(self):
+        assert self.d1c.data.shape == (2, 4)
+        assert self.d1c.data[0, 0] == 1
+
     def test_number_reader(self):
         assert data.Data._to_number(self.str0) == math.inf
         assert not math.isfinite(data.Data._to_number(self.str1))
