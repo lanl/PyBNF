@@ -22,6 +22,7 @@ import shutil
 import copy
 import sys
 import traceback
+import pickle
 
 
 class Result(object):
@@ -579,6 +580,28 @@ class Algorithm(object):
         #         os.remove(noname_filepath)
         #     os.rename(filepath, noname_filepath)
 
+    def backup(self, pending_psets=()):
+        """
+        Create a backup of this algorithm object that can be reloaded later to resume the run
+
+        :param pending_psets: Iterable of PSets that are currently submitted as jobs, and will need to get re-submitted
+        when resuming the algorithm
+        :return:
+        """
+
+        # Pickle the algorithm
+        picklepath = '%s/Simulations/alg.bp' % self.config.config['output_dir']
+        f = open(picklepath, 'wb')
+        pickle.dump((self, pending_psets), f)
+        f.close()
+
+    def get_backup_every(self):
+        """
+        Returns a number telling after how many individual simulation returns should we back up the algorithm.
+        Makes a good guess, but could be overridden in a subclass
+        """
+        return self.config.cofig['backup_every'] * self.config.config['population_size'] * self.config.config['smoothing']
+
     def run(self, scheduler_node=None):
         """Main loop for executing the algorithm"""
 
@@ -597,8 +620,11 @@ class Algorithm(object):
         else:
             client = Client()
         client.run(init_logging)
+        backup_every = self.get_backup_every()
+        sim_count = 0
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()
+        pending_psets = set(psets)
         jobs = []
         for p in psets:
             jobs += self.make_job(p)
@@ -607,14 +633,19 @@ class Algorithm(object):
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
+            if sim_count % backup_every == 0:
+                self.backup(pending_psets)
             f, res = next(pool)
             # Handle if this result is one of multiple instances for smoothing
+            sim_count += 1
+            pending.remove(f)
             if self.config.config['smoothing'] > 1:
                 group = self.job_group_dir.pop(res.name)
                 done = group.job_finished(res)
                 if not done:
                     continue
                 res = group.average_results()
+            pending_psets.remove(res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type == 1:
                     self.fail_count += 1
@@ -628,7 +659,6 @@ class Algorithm(object):
             else:
                 self.success_count += 1
                 logging.debug('Job %s complete' % res.name)
-            pending.remove(f)
             res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
             response = self.got_result(res)
