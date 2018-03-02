@@ -18,6 +18,7 @@ import os
 import shutil
 import time
 import traceback
+import pickle
 
 
 __version__ = "0.1"
@@ -59,45 +60,61 @@ def main():
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
 
-        # Create output folders, checking for overwrites.
-        init_output_directory(config, results)
-
-        if config.config['fit_type'] == 'pso':
-            alg = algs.ParticleSwarm(config)
-        elif config.config['fit_type'] == 'de':
-            alg = algs.DifferentialEvolution(config)
-        elif config.config['fit_type'] == 'ss':
-            alg = algs.ScatterSearch(config)
-        elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
-            # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
-            alg = algs.BayesAlgorithm(config)
-        elif config.config['fit_type'] == 'sa':
-            alg = algs.BayesAlgorithm(config, sa=True)
-        elif config.config['fit_type'] == 'sim':
-            alg = algs.SimplexAlgorithm(config)
+        continue_run = False
+        if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp'):
+            ans = 'x'
+            while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
+            if ans.lower() in ('y', 'yes', ''):
+                continue_run = True
+        if continue_run:
+            # Restart the loaded algorithm
+            f = open(config.config['output_dir'] + '/Simulations/alg_backup.bp', 'rb')
+            alg, pending = pickle.load(f)
+            config = alg.config
+            f.close()
+            alg.run(resume=pending)
         else:
-            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
+            # Create output folders, checking for overwrites.
+            init_output_directory(config, results)
+    
+            config = Configuration(config.config)
+            if config.config['fit_type'] == 'pso':
+                alg = algs.ParticleSwarm(config)
+            elif config.config['fit_type'] == 'de':
+                alg = algs.DifferentialEvolution(config)
+            elif config.config['fit_type'] == 'ss':
+                alg = algs.ScatterSearch(config)
+            elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
+                # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
+                alg = algs.BayesAlgorithm(config)
+            elif config.config['fit_type'] == 'sa':
+                alg = algs.BayesAlgorithm(config, sa=True)
+            elif config.config['fit_type'] == 'sim':
+                alg = algs.SimplexAlgorithm(config)
+            else:
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
-        # override cluster type value in configuration file if specified with cmdline args
-        if results.cluster_type:
-            config.config['cluster_type'] = results.cluster_type
+            # override cluster type value in configuration file if specified with cmdline args
+            if results.cluster_type:
+                config.config['cluster_type'] = results.cluster_type
 
-        # Set up cluster
-        if config.config['scheduler_node'] and config.config['worker_nodes']:
-            scheduler_node = config.config['scheduler_node']
-            node_string = ' '.join(config.config['worker_nodes'])
-        elif config.config['scheduler_node']:
-            dummy, node_string = get_scheduler(config)
-            scheduler_node = config.config['scheduler_node']
-        else:
-            scheduler_node, node_string = get_scheduler(config)
+            # Set up cluster
+            if config.config['scheduler_node'] and config.config['worker_nodes']:
+                scheduler_node = config.config['scheduler_node']
+                node_string = ' '.join(config.config['worker_nodes'])
+            elif config.config['scheduler_node']:
+                dummy, node_string = get_scheduler(config)
+                scheduler_node = config.config['scheduler_node']
+            else:
+                scheduler_node, node_string = get_scheduler(config)
 
-        if node_string:
-            dask_ssh_proc = setup_cluster(node_string)
+            if node_string:
+                dask_ssh_proc = setup_cluster(node_string)
 
-        # Run the algorithm!
-        logging.debug('Algorithm initialization')
-        alg.run(scheduler_node)
+            # Run the algorithm!
+            logging.debug('Algorithm initialization')
+            alg.run(scheduler_node)
 
         if config.config['refine'] == 1:
             logging.debug('Refinement requested for best fit parameter set')

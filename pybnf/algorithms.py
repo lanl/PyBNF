@@ -590,7 +590,7 @@ class Algorithm(object):
         """
 
         # Pickle the algorithm
-        picklepath = '%s/Simulations/alg.bp' % self.config.config['output_dir']
+        picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
         f = open(picklepath, 'wb')
         pickle.dump((self, pending_psets), f)
         f.close()
@@ -600,9 +600,10 @@ class Algorithm(object):
         Returns a number telling after how many individual simulation returns should we back up the algorithm.
         Makes a good guess, but could be overridden in a subclass
         """
-        return self.config.cofig['backup_every'] * self.config.config['population_size'] * self.config.config['smoothing']
+        return self.config.config['backup_every'] * self.config.config['population_size'] * \
+            self.config.config['smoothing']
 
-    def run(self, scheduler_node=None):
+    def run(self, scheduler_node=None, resume=None):
         """Main loop for executing the algorithm"""
 
         logging.debug('Initializing dask Client object')
@@ -623,7 +624,10 @@ class Algorithm(object):
         backup_every = self.get_backup_every()
         sim_count = 0
         logging.debug('Generating initial parameter sets')
-        psets = self.start_run()
+        if resume:
+            psets = resume
+        else:
+            psets = self.start_run()
         pending_psets = set(psets)
         jobs = []
         for p in psets:
@@ -633,7 +637,7 @@ class Algorithm(object):
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
-            if sim_count % backup_every == 0:
+            if sim_count % backup_every == 0 and sim_count != 0:
                 self.backup(pending_psets)
             f, res = next(pool)
             # Handle if this result is one of multiple instances for smoothing
@@ -645,7 +649,10 @@ class Algorithm(object):
                 if not done:
                     continue
                 res = group.average_results()
-            pending_psets.remove(res.pset)
+            try:
+                pending_psets.remove(res.pset)
+            except KeyError:
+                logging.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type == 1:
                     self.fail_count += 1
@@ -670,6 +677,7 @@ class Algorithm(object):
                 new_jobs = []
                 for ps in response:
                     new_jobs += self.make_job(ps)
+                    pending_psets.add(ps)
                 logging.debug('Submitting %d new Jobs' % len(new_jobs))
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
                 pending.update(new_futures)
@@ -705,9 +713,16 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
                         exit()
-        if self.config.config['delete_old_files'] == 1 \
-                and (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1):
-            shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
+
+        if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
+            # End of fitting; delete unneeded files
+            try:
+                os.remove('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'])
+                logging.info('Deleted pickled algorithm')
+            except OSError:
+                logging.warning('Tried to delete pickled algorithm, but it was not found')
+            if self.config.config['delete_old_files'] == 1:
+                shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
 
