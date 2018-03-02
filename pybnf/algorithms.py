@@ -1375,6 +1375,13 @@ class ScatterSearch(Algorithm):
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
+    def get_backup_every(self):
+        """
+        Overrides base method because Scatter Search runs n*(n-1) PSets per iteration.
+        """
+        return self.config.config['backup_every'] * self.config.config['population_size'] * \
+            (self.config.config['population_size']-1) * self.config.config['smoothing']
+
 
 class BayesAlgorithm(Algorithm):
 
