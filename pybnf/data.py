@@ -91,7 +91,7 @@ class Data(object):
 
         data = []
         for i, l in enumerate(lines[1:]):
-            if re.match('^\s*$', l):
+            if re.match('^\s*$', l) or re.match('\s*#', l):
                 continue
             try:
                 num_list = [self._to_number(x) for x in re.split(sep, l.strip())]
