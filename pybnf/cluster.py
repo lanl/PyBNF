@@ -25,7 +25,7 @@ def get_scheduler(config):
             logging.debug('Detected selection of SLURM cluster')
             get_hosts_cmd = ['scontrol', 'show', 'hostname', '$SLURM_JOB_NODELIST']
             try:
-                proc = run(get_hosts_cmd, stdout=PIPE, timeout=10)
+                proc = run(' '.join(get_hosts_cmd), shell=True, stdout=PIPE, timeout=10)
             except TimeoutExpired:
                 logging.debug('Could not retrieve host names in 10s')
                 raise PybnfError('Failed to find node names.  Exiting')
@@ -44,7 +44,7 @@ def get_scheduler(config):
 
 def setup_cluster(node_string):
     logging.info('Starting dask-ssh subprocess using nodes %s' % node_string)
-    dask_ssh_proc = Popen(['dask-ssh', node_string])
+    dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True)
     time.sleep(10)
     return dask_ssh_proc
 
