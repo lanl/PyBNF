@@ -315,31 +315,6 @@ class Algorithm(object):
                 print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
                 exit()
 
-    def _get_scheduler(self):
-        scheduler_node, node_string = None, None
-        # Set up cluster if necessary
-        if self.config.config['cluster_type']:
-            ctype = self.config.config['cluster_type']
-            if re.match('slurm', ctype, flags=re.IGNORECASE):
-                logging.debug('Detected selection of SLURM cluster')
-                get_hosts_cmd = 'scontrol show hostname $SLURM_JOB_NODELIST'
-                try:
-                    proc = run(get_hosts_cmd, shell=True, stdout=PIPE, timeout=10)
-                except TimeoutExpired:
-                    logging.debug('Could not retrieve host names in 10s')
-                    raise PybnfError('Failed to find node names.  Exiting')
-                nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
-                scheduler_node = nodes[0]
-                logging.info('Node %s is being used as the scheduler node' % scheduler_node)
-                logging.info('Node(s) %s is/are being used as compute nodes' % ','.join(nodes))
-                node_string = ' '.join(nodes)
-            elif re.match('((torque)|(pbs))', ctype, flags=re.IGNORECASE):
-                raise PybnfError("TORQUE cluster support is not yet implemented")
-            else:
-                logging.error("Unknown cluster type: %s" % self.config.config['cluster_type'])
-                raise PybnfError("Unknown cluster type: %s" % self.config.config['cluster_type'])
-        return scheduler_node, node_string
-
     def _initialize_models(self):
         """
         Checks initial BNGLModel instances from the Configuration object for models that
@@ -599,21 +574,16 @@ class Algorithm(object):
         #         os.remove(noname_filepath)
         #     os.rename(filepath, noname_filepath)
 
-    def run(self):
+    def run(self, scheduler_node=None):
         """Main loop for executing the algorithm"""
 
         logging.debug('Initializing dask Client object')
-        scheduler_node, node_string = self._get_scheduler()
 
         if scheduler_node:
             if 'parallel_count' in self.config.config:
                 logging.warning("Ignoring 'parallel_count' option in favor of 'cluster_type'")
                 print1("Option 'parallel_count' is not used when 'cluster_type' is specified.  "
                        "Using all of the workers in your scheduler.")
-
-            logging.debug('Starting dask-ssh subprocess using nodes %s' % node_string)
-            dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True)
-            time.sleep(10)  # TODO gotta be a smarter way to wait for dask-ssh to set things up
 
             client = Client('%s:8786' % scheduler_node)
         elif 'parallel_count' in self.config.config:
@@ -703,9 +673,6 @@ class Algorithm(object):
             shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
-        if scheduler_node:
-            logging.info("Shutting down dask-ssh process")
-            dask_ssh_proc.terminate()
 
     def cleanup(self):
         """
