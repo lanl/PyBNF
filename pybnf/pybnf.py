@@ -24,6 +24,11 @@ def main():
     node_string = None
     alg = None
 
+    if os.path.isfile('bnf_debug.log'):
+        os.remove('bnf_debug.log')
+    if os.path.isfile('bnf_errors.log'):
+        os.remove('bnf_errors.log')
+
     try:
         init_logging()
 

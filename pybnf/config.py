@@ -16,11 +16,6 @@ import logging
 def init_logging():
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
-    if os.path.isfile('bnf_debug.log'):
-        os.remove('bnf_debug.log')
-    if os.path.isfile('bnf_errors.log'):
-        os.remove('bnf_errors.log')
-
     dfh = logging.FileHandler('bnf_debug.log', mode='a')
     dfh.setLevel(logging.DEBUG)
     efh = logging.FileHandler('bnf_errors.log', mode='a')
