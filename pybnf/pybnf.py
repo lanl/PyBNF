@@ -8,6 +8,7 @@ from .parse import load_config
 from .config import Configuration, init_logging
 import pybnf.printing as printing
 from .printing import print0, print1, PybnfError
+from .cluster import _get_scheduler, _setup_cluster, _teardown_cluster
 import pybnf.algorithms as algs
 import os
 import shutil
@@ -97,9 +98,14 @@ def main():
         else:
             raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
 
+        # Set up cluster
+        scheduler_node, node_string = _get_scheduler()
+        if node_string:
+            dask_ssh_proc = _setup_cluster(node_string)
+
         # Run the algorithm!
         logging.debug('Algorithm initialization')
-        alg.run()
+        alg.run(scheduler_node)
 
         if config.config['refine'] == 1:
             logging.debug('Refinement requested for best fit parameter set')
@@ -113,7 +119,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run()
+                simplex.run(scheduler_node)
         print0('Fitting complete')
         success = True
 
@@ -135,14 +141,15 @@ def main():
                'Details have been saved to bnf_errors.log.\n'
                'Please report this bug to help us improve PyBNF.' % exceptiondata[-1])
     finally:
+        # Stop dask-ssh regardless of success
+        if node_string:
+            _teardown_cluster(dask_ssh_proc)
+
         # After any error, try to clean up.
         try:
-            success
-        except NameError:
-            try:
-                alg.cleanup()
-                logging.info('Completed cleanup after exception')
-            except:
-                logging.exception('During cleanup, another exception occurred')
-            finally:
-                exit(1)
+            alg.cleanup()
+            logging.info('Completed cleanup after exception')
+        except:
+            logging.exception('During cleanup, another exception occurred')
+        finally:
+            exit(1)
