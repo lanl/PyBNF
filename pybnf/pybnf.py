@@ -8,7 +8,7 @@ from .parse import load_config
 from .config import Configuration, init_logging
 import pybnf.printing as printing
 from .printing import print0, print1, PybnfError
-from .cluster import _get_scheduler, _setup_cluster, _teardown_cluster
+from .cluster import get_scheduler, setup_cluster, teardown_cluster
 import pybnf.algorithms as algs
 import os
 import shutil
@@ -20,6 +20,9 @@ __version__ = "0.1"
 
 def main():
     success = False
+    scheduler_node = None
+    node_string = None
+    alg = None
 
     try:
         init_logging()
@@ -99,9 +102,9 @@ def main():
             raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
 
         # Set up cluster
-        scheduler_node, node_string = _get_scheduler()
+        scheduler_node, node_string = get_scheduler()
         if node_string:
-            dask_ssh_proc = _setup_cluster(node_string)
+            dask_ssh_proc = setup_cluster(node_string)
 
         # Run the algorithm!
         logging.debug('Algorithm initialization')
@@ -143,12 +146,13 @@ def main():
     finally:
         # Stop dask-ssh regardless of success
         if node_string:
-            _teardown_cluster(dask_ssh_proc)
+            teardown_cluster(dask_ssh_proc)
 
         # After any error, try to clean up.
         try:
-            alg.cleanup()
-            logging.info('Completed cleanup after exception')
+            if alg:
+                alg.cleanup()
+                logging.info('Completed cleanup after exception')
         except:
             logging.exception('During cleanup, another exception occurred')
         finally:

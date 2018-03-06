@@ -10,7 +10,7 @@ import re
 import time
 
 
-def _get_scheduler(config):
+def get_scheduler(config):
     """
     :param config: PyBNF configuration
     :type config: pybnf.config.Configuration
@@ -42,13 +42,13 @@ def _get_scheduler(config):
     return scheduler_node, node_string
 
 
-def _setup_cluster(node_string):
+def setup_cluster(node_string):
     logging.info('Starting dask-ssh subprocess using nodes %s' % node_string)
     dask_ssh_proc = Popen(['dask-ssh', node_string])
     time.sleep(10)
     return dask_ssh_proc
 
 
-def _teardown_cluster(dsp):
+def teardown_cluster(dsp):
     logging.info('Closing dask-ssh subprocess')
     dsp.terminate()
