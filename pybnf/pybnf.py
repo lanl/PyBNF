@@ -31,6 +31,8 @@ def main():
         parser.add_argument('-a', action='store', dest='scheduler_address',
                             help='The IP address and port of the dask-scheduler to use if running on a cluster')
 
+        parser.add_argument('-o', '--overwrite', action='store_true', help='automatically overwrites existing folders if necessary')
+
         # Load the conf file and create the algorithm
         results = parser.parse_args()
         if results.conf_file is None:
@@ -49,13 +51,7 @@ def main():
                 if os.path.exists(conf_dict['output_dir'] + '/Results') or os.path.exists(
                                 conf_dict['output_dir'] + '/Simulations') or os.path.exists(
                             conf_dict['output_dir'] + '/Initialize'):
-                    logging.info("Output directory has subdirectories... querying user for overwrite permission")
-                    ans = 'x'
-                    while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                        ans = input('It looks like your output_dir already contains Results/, Simulations/, and/or '
-                                    'Initialize/ folders from a previous run. \n'
-                                    'Overwrite them with the current run? [y/n] (n) ')
-                    if ans.lower() == 'y' or ans.lower() == 'yes':
+                    if results.overwrite:
                         logging.info("Overwriting existing output directory")
                         if os.path.exists(conf_dict['output_dir'] + '/Results'):
                             shutil.rmtree(conf_dict['output_dir'] + '/Results')
@@ -64,9 +60,24 @@ def main():
                         if os.path.exists(conf_dict['output_dir'] + '/Initialize'):
                             shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
                     else:
-                        logging.info("Overwrite rejected... exiting")
-                        print('Quitting')
-                        exit()
+                        logging.info("Output directory has subdirectories... querying user for overwrite permission")
+                        ans = 'x'
+                        while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                            ans = input('It looks like your output_dir already contains Results/, Simulations/, and/or '
+                                        'Initialize/ folders from a previous run. \n'
+                                        'Overwrite them with the current run? [y/n] (n) ')
+                        if ans.lower() == 'y' or ans.lower() == 'yes':
+                            logging.info("Overwriting existing output directory")
+                            if os.path.exists(conf_dict['output_dir'] + '/Results'):
+                                shutil.rmtree(conf_dict['output_dir'] + '/Results')
+                            if os.path.exists(conf_dict['output_dir'] + '/Simulations'):
+                                shutil.rmtree(conf_dict['output_dir'] + '/Simulations')
+                            if os.path.exists(conf_dict['output_dir'] + '/Initialize'):
+                                shutil.rmtree(conf_dict['output_dir'] + '/Initialize')
+                        else:
+                            logging.info("Overwrite rejected... exiting")
+                            print('Quitting')
+                            exit()
 
         os.makedirs(conf_dict['output_dir'] + '/Results')
         os.mkdir(conf_dict['output_dir'] + '/Simulations')
