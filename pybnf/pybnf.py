@@ -73,6 +73,9 @@ def main():
             alg, pending = pickle.load(f)
             config = alg.config
             f.close()
+            if isinstance(alg, algs.SimplexAlgorithm):
+                # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
+                alg.config.config['refine'] = 0
             alg.run(resume=pending)
         else:
             # Create output folders, checking for overwrites.

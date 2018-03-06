@@ -589,6 +589,7 @@ class Algorithm(object):
         :return:
         """
 
+        logging.info('Saving a backup of the algorithm')
         # Pickle the algorithm
         picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
         f = open(picklepath, 'wb')
