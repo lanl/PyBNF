@@ -985,7 +985,7 @@ class DifferentialEvolution(Algorithm):
         # Calculate the fitness of this individual, and replace if it is better than the previous one.
         island, j = self.island_map.pop(pset)
         fitness = score
-        if fitness < self.fitnesses[island][j]:
+        if fitness <= self.fitnesses[island][j]:
             self.individuals[island][j] = pset
             self.fitnesses[island][j] = fitness
 
