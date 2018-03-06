@@ -178,10 +178,10 @@ class Job:
     def execute(self, models):
         """Executes model simulations"""
         for model in models:
-            cmd = '%s %s.bngl --outdir %s' % (self.bng_program, model, self.folder)
+            cmd = [self.bng_program, '%s.bngl' % model, '--outdir', self.folder]
             log_file = '%s.log' % model
             with open(log_file, 'w') as lf:
-                run(cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
+                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
 
     def load_simdata(self):
         """
@@ -340,10 +340,10 @@ class Algorithm(object):
 
                 gnm_name = '%s_gen_net' % m.name
                 m.save(gnm_name, gen_only=True)
-                gn_cmd = "%s %s.bngl" % (self.config.config['bng_command'], gnm_name)
+                gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
                 try:
                     with open('%s.log' % gnm_name, 'w') as lf:
-                        run(gn_cmd, shell=True, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
+                        run(gn_cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
                     logging.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
                     logging.error(c.stdout)
