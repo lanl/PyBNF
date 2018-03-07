@@ -20,7 +20,6 @@ __version__ = "0.1"
 
 def main():
     success = False
-    scheduler_node = None
     node_string = None
     alg = None
 
@@ -155,9 +154,11 @@ def main():
 
         # After any error, try to clean up.
         try:
-            if alg:
-                alg.cleanup()
-                logging.info('Completed cleanup after exception')
+            if not success:
+                logging.info('Fitting unsuccessful.  Attempting cleanup')
+                if alg:
+                    alg.cleanup()
+                    logging.info('Completed cleanup after exception')
         except:
             logging.exception('During cleanup, another exception occurred')
         finally:
