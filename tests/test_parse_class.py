@@ -78,3 +78,7 @@ class TestParse:
 
         d3 = parse.ploop(['normalization=zero'])
         assert d3['normalization'] == 'zero'
+
+    def test_node_parse(self):
+        assert parse.parse('worker_nodes = cn196 192.168.1.1') == ['worker_nodes', 'cn196', '192.168.1.1']
+        assert parse.parse('scheduler_node = this_machine') == ['scheduler_node', 'this_machine']

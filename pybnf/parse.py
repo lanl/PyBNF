@@ -19,7 +19,8 @@ multnumkeys = ['credible_intervals', 'beta', 'beta_range']
 var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'normrandom_var', 'static_list_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
-                                 'cluster_type']
+              'cluster_type', 'scheduler_node']
+multstrkeys = ['worker_nodes']
 slvkeylist = ['static_list_var']
 
 def parse(s):
@@ -43,11 +44,15 @@ def parse(s):
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
     numgram = numkeys - equals - num - comment
 
-    # multiple str and num value
+    # variable definition grammar
     strnumkeys = pp.oneOf(' '.join(var_def_keys), caseless=True)
     bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
     varnums = bng_parameter - num - num
     strnumgram = strnumkeys - equals - varnums - comment
+
+    # multiple string value grammar
+    multstrkey = pp.oneOf(' '.join(multstrkeys), caseless=True)
+    multstrgram = multstrkey - equals - pp.OneOrMore(string)
 
     # var and logvar alt grammar (only one number given)
     varkeys = pp.oneOf(' '.join(var_def_keys_1or2nums), caseless=True)
@@ -74,7 +79,7 @@ def parse(s):
     # Will handle with separate code.
 
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | vargram | normgram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | multstrgram | vargram | normgram).parseString(s, parseAll=True).asList()
 
     return line
 

@@ -11,7 +11,8 @@ fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimiz
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
 parallel_count - How many jobs to run in parallel. Default: Use all available cores.
 cluster_type - Type of cluster used for running the fit.  Defaults to None (local fitting run).  Currently supports 'slurm' and will support 'torque'/'pbs'
-
+scheduler_node - Node used for setting up distributed Client.  Defaults to None (local fitting run); takes a string identifying a machine on a network
+worker_nodes - Nodes used for computation. Defaults to schedular_node value; takes one or more strings separated by whitespace identifying machines on a network
 
 ***Parameter specification***
 
