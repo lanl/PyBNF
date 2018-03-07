@@ -45,6 +45,7 @@ class TestConfig(object):
                                              ('pase__FREE__', 'random_var', 6., 7.),
                                              ]
         assert c.config['normalization']['p1_5'] == 'init'
+        assert c.config['cluster_type'] is None
 
     def test_config_normalization(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},

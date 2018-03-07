@@ -4,9 +4,9 @@
 from distributed import as_completed
 from distributed import Client, LocalCluster
 from subprocess import run
-from subprocess import CalledProcessError
-from subprocess import TimeoutExpired
-from subprocess import STDOUT
+from subprocess import CalledProcessError, TimeoutExpired
+from subprocess import STDOUT, PIPE
+from subprocess import Popen
 
 from .config import init_logging
 from .data import Data
@@ -22,6 +22,7 @@ import re
 import shutil
 import copy
 import sys
+import time
 import traceback
 
 
@@ -573,21 +574,23 @@ class Algorithm(object):
         #         os.remove(noname_filepath)
         #     os.rename(filepath, noname_filepath)
 
-    def run(self):
+    def run(self, scheduler_node=None):
         """Main loop for executing the algorithm"""
 
         logging.debug('Initializing dask Client object')
-        if 'scheduler_address' in self.config.config:
+
+        if scheduler_node:
             if 'parallel_count' in self.config.config:
-                print1("Warning: 'parallel_count' option is not supported when you have also specified "
-                       "'scheduler_address'. I will just use all of the workers in your scheduler.")
-            client = Client(self.config.config['scheduler_address'])
+                logging.warning("Ignoring 'parallel_count' option and using all processes available to scheduler node")
+                print1("Option 'parallel_count' is not used when a 'scheduler_node' or 'cluster_type' is specified.  "
+                       "Using all of the workers available.")
+
+            client = Client('%s:8786' % scheduler_node)
+        elif 'parallel_count' in self.config.config:
+            lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
+            client = Client(lc)
         else:
-            if 'parallel_count' in self.config.config:
-                lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
-                client = Client(lc)
-            else:
-                client = Client()
+            client = Client()
         client.run(init_logging)
         logging.debug('Generating initial parameter sets')
         psets = self.start_run()

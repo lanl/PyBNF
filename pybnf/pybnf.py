@@ -7,16 +7,27 @@ import argparse
 from .parse import load_config
 from .config import Configuration, init_logging
 import pybnf.printing as printing
-from .printing import print0, print1, print2, PybnfError
+from .printing import print0, print1, PybnfError
+from .cluster import get_scheduler, setup_cluster, teardown_cluster
 import pybnf.algorithms as algs
 import os
 import shutil
 import traceback
 
+
 __version__ = "0.1"
 
 
 def main():
+    success = False
+    node_string = None
+    alg = None
+
+    if os.path.isfile('bnf_debug.log'):
+        os.remove('bnf_debug.log')
+    if os.path.isfile('bnf_errors.log'):
+        os.remove('bnf_errors.log')
+
     try:
         init_logging()
 
@@ -27,11 +38,10 @@ def main():
 
         parser.add_argument('-c', action='store', dest='conf_file',
                             help='Path to the BioNetFit configuration file', metavar='config.conf')
-
-        parser.add_argument('-a', action='store', dest='scheduler_address',
-                            help='The IP address and port of the dask-scheduler to use if running on a cluster')
-
-        parser.add_argument('-o', '--overwrite', action='store_true', help='automatically overwrites existing folders if necessary')
+        parser.add_argument('-o', '--overwrite', action='store_true',
+                            help='automatically overwrites existing folders if necessary')
+        parser.add_argument('-t', '--cluster_type', action='store',
+                            help='optional string denoting the type of cluster')
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
@@ -42,8 +52,6 @@ def main():
         conf_dict = load_config(results.conf_file)
         if 'verbosity' in conf_dict:
             printing.verbosity = conf_dict['verbosity']
-        if results.scheduler_address is not None:
-            conf_dict['scheduler_address'] = results.scheduler_address
 
         # Create output folders, checking for overwrites.
         if os.path.exists(conf_dict['output_dir']):
@@ -100,9 +108,26 @@ def main():
         else:
             raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
 
+        # override cluster type value in configuration file if specified with cmdline args
+        if results.cluster_type:
+            config.config['cluster_type'] = results.cluster_type
+
+        # Set up cluster
+        if config.config['scheduler_node'] and config.config['worker_nodes']:
+            scheduler_node = config.config['scheduler_node']
+            node_string = ' '.join(config.config['worker_nodes'])
+        elif config.config['scheduler_node']:
+            dummy, node_string = get_scheduler(config)
+            scheduler_node = config.config['scheduler_node']
+        else:
+            scheduler_node, node_string = get_scheduler(config)
+
+        if node_string:
+            dask_ssh_proc = setup_cluster(node_string)
+
         # Run the algorithm!
         logging.debug('Algorithm initialization')
-        alg.run()
+        alg.run(scheduler_node)
 
         if config.config['refine'] == 1:
             logging.debug('Refinement requested for best fit parameter set')
@@ -116,7 +141,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run()
+                simplex.run(scheduler_node)
         print0('Fitting complete')
         success = True
 
@@ -138,14 +163,18 @@ def main():
                'Details have been saved to bnf_errors.log.\n'
                'Please report this bug to help us improve PyBNF.' % exceptiondata[-1])
     finally:
+        # Stop dask-ssh regardless of success
+        if node_string:
+            teardown_cluster(dask_ssh_proc)
+
         # After any error, try to clean up.
         try:
-            success
-        except NameError:
-            try:
-                alg.cleanup()
-                logging.info('Completed cleanup after exception')
-            except:
-                logging.exception('During cleanup, another exception occurred')
-            finally:
-                exit(1)
+            if not success:
+                logging.info('Fitting unsuccessful.  Attempting cleanup')
+                if alg:
+                    alg.cleanup()
+                    logging.info('Completed cleanup after exception')
+        except:
+            logging.exception('During cleanup, another exception occurred')
+        finally:
+            exit(1)

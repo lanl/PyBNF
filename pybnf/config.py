@@ -16,16 +16,16 @@ import logging
 def init_logging():
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
-    dfh = logging.FileHandler('bnf_debug.log', mode='w')
+    dfh = logging.FileHandler('bnf_debug.log', mode='a')
     dfh.setLevel(logging.DEBUG)
-    efh = logging.FileHandler('bnf_errors.log', mode='w')
+    efh = logging.FileHandler('bnf_errors.log', mode='a')
     efh.setLevel(logging.ERROR)
     dfh.setFormatter(fmt)
     efh.setFormatter(fmt)
 
     dlog = logging.getLogger('distributed')
     stdout_handler = dlog.handlers[0]  # Before we add anything, distributed has a handler going to stdout
-    dlog.setLevel(logging.DEBUG)
+    dlog.setLevel(logging.INFO)
     dlog.addHandler(dfh)
     dlog.addHandler(efh)
     dlog.removeHandler(stdout_handler)  # Remove the logging to stdout
@@ -37,7 +37,7 @@ def init_logging():
 
     tornado = logging.getLogger('tornado.application')
     stdout_handler = tornado.handlers[0]  # Before we add anything, tornado has a handler going to stdout
-    tornado.setLevel(logging.ERROR)
+    tornado.setLevel(logging.WARNING)
     tornado.addHandler(dfh)
     tornado.removeHandler(stdout_handler)  # Stop tornado from going to stdout
     # Don't clog our error log with all the tornado stuff, just send it to the debug log
@@ -112,7 +112,11 @@ class Configuration(object):
 
             'wall_time_gen': 3600,
             'wall_time_sim': 3600,
-            'normalization': None
+            'normalization': None,
+
+            'cluster_type': None,
+            'scheduler_node': None,
+            'worker_nodes': None
         }
         return default
 
@@ -319,7 +323,6 @@ class Configuration(object):
                     else:
                         variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
         return variables, variables_specs
-
 
     def _check_variable_correspondence(self):
         """
