@@ -581,9 +581,9 @@ class Algorithm(object):
 
         if scheduler_node:
             if 'parallel_count' in self.config.config:
-                logging.warning("Ignoring 'parallel_count' option in favor of 'cluster_type'")
-                print1("Option 'parallel_count' is not used when 'cluster_type' is specified.  "
-                       "Using all of the workers in your scheduler.")
+                logging.warning("Ignoring 'parallel_count' option and using all processes available to scheduler node")
+                print1("Option 'parallel_count' is not used when a 'scheduler_node' or 'cluster_type' is specified.  "
+                       "Using all of the workers available.")
 
             client = Client('%s:8786' % scheduler_node)
         elif 'parallel_count' in self.config.config:
