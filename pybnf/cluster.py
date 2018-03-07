@@ -3,7 +3,7 @@
 
 from .printing import PybnfError
 
-from subprocess import run, TimeoutExpired, Popen, PIPE, DEVNULL, STDOUT
+from subprocess import run, TimeoutExpired, Popen, PIPE, DEVNULL, STDOUT, CalledProcessError
 
 import logging
 import re
@@ -25,10 +25,13 @@ def get_scheduler(config):
             logging.debug('Detected selection of SLURM cluster')
             get_hosts_cmd = ['scontrol', 'show', 'hostname', '$SLURM_JOB_NODELIST']
             try:
-                proc = run(' '.join(get_hosts_cmd), shell=True, stdout=PIPE, timeout=10)
+                proc = run(' '.join(get_hosts_cmd), shell=True, stdout=PIPE, timeout=10, check=True)
             except TimeoutExpired:
-                logging.debug('Could not retrieve host names in 10s')
-                raise PybnfError('Failed to find node names.  Exiting')
+                logging.error('Could not retrieve host names in 10s')
+                raise PybnfError('Failed to find node names in a reasonable time.  Exiting')
+            except CalledProcessError:
+                logging.error('User specified SLURM cluster, but command %s failed' % ' '.join(get_hosts_cmd))
+                raise PybnfError('Command to find node names failed.  Exiting')
             nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
             scheduler_node = nodes[0]
             logging.info('Node %s is being used as the scheduler node' % scheduler_node)
