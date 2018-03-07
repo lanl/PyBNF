@@ -38,7 +38,10 @@ def main():
 
         parser.add_argument('-c', action='store', dest='conf_file',
                             help='Path to the BioNetFit configuration file', metavar='config.conf')
-        parser.add_argument('-o', '--overwrite', action='store_true', help='automatically overwrites existing folders if necessary')
+        parser.add_argument('-o', '--overwrite', action='store_true',
+                            help='automatically overwrites existing folders if necessary')
+        parser.add_argument('-t', '--cluster_type', action='store',
+                            help='optional string denoting the type of cluster')
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
@@ -105,6 +108,9 @@ def main():
         else:
             raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % conf_dict['fit_type'])
 
+        # override cluster type value in configuration file if specified with cmdline args
+        if results.cluster_type:
+            config.config['cluster_type'] = results.cluster_type
         # Set up cluster
         scheduler_node, node_string = get_scheduler(config)
         if node_string:
