@@ -1,7 +1,9 @@
-import numpy as np
-import pybnf.data as data
-import warnings
+"""pybnf.objective: defines objective functions used for evaluating points in parameter space"""
+
+
 from .printing import PybnfError, print1
+
+import numpy as np
 import logging
 
 
@@ -142,9 +144,6 @@ class SummationObjective(ObjectiveFunction):
 class ChiSquareObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        # logging.debug('This evaluation is at sim_row %s, column %s which is number %s' % (sim_row, col_name, sim_data.cols[col_name]))
-        # logging.debug('Im reading the sim_data %s' % sim_data.data)
-
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         try:

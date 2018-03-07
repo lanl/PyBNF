@@ -5,8 +5,7 @@ from distributed import as_completed
 from distributed import Client, LocalCluster
 from subprocess import run
 from subprocess import CalledProcessError, TimeoutExpired
-from subprocess import STDOUT, PIPE
-from subprocess import Popen
+from subprocess import STDOUT
 
 from .config import init_logging
 from .data import Data
@@ -22,7 +21,6 @@ import re
 import shutil
 import copy
 import sys
-import time
 import traceback
 
 
@@ -66,7 +64,6 @@ class Result(object):
                     self.simdata[m][suff].normalize(settings)
                 elif suff in settings:
                     self.simdata[m][suff].normalize(settings[suff])
-
 
 
 class FailedSimulation(Result):
@@ -302,7 +299,7 @@ class Algorithm(object):
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normrandom_var' or v[1]=='var':
+            elif v[1] == 'normrandom_var' or v[1] == 'var':
                 self.variable_space[v[0]] = ('regular', 0., np.inf)
             elif v[1] == 'lognormrandom_var' or v[1] == 'logvar':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
@@ -352,10 +349,11 @@ class Algorithm(object):
                            '%s/%s.log' % (m.name, os.getcwd(), gnm_name))
                     exit(1)
                 except TimeoutExpired:
-                    logging.debug("Network generation exceeded %d seconds... exiting" % self.config.config['wall_time_gen'])
+                    logging.debug("Network generation exceeded %d seconds... exiting" %
+                                  self.config.config['wall_time_gen'])
                     print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
                     exit(1)
-                except Exception as e:
+                except:
                     tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
                     logging.debug("Other exception occurred:\n%s" % tb)
                     print0("Unknown error occurred during network generation, see log... exiting")
@@ -363,7 +361,8 @@ class Algorithm(object):
                 finally:
                     os.chdir(home_dir)
 
-                logging.info('Output for network generation of model %s logged in %s/%s.log' % (m.name, init_dir, gnm_name))
+                logging.info('Output for network generation of model %s logged in %s/%s.log' %
+                             (m.name, init_dir, gnm_name))
                 final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
             else:
                 logging.info('Model %s does not require network generation' % m.name)
@@ -419,19 +418,19 @@ class Algorithm(object):
         # TODO CONFIRM THIS IS REDUNDANT WITH CODE IN __INIT__
         logging.debug("Generating a randomly distributed PSet")
         param_dict = dict()
-        for (name, type, val1, val2) in self.config.variables_specs:
-            if type == 'random_var':
+        for (name, vartype, val1, val2) in self.config.variables_specs:
+            if vartype == 'random_var':
                 param_dict[name] = np.random.uniform(val1, val2)
-            elif type == 'normrandom_var':
+            elif vartype == 'normrandom_var':
                 param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
-            elif type == 'loguniform_var':
+            elif vartype == 'loguniform_var':
                 param_dict[name] = exp10(np.random.uniform(np.log10(val1), np.log10(val2)))
-            elif type == 'lognormrandom_var':
+            elif vartype == 'lognormrandom_var':
                 param_dict[name] = exp10(np.random.normal(val1, val2))
-            elif type == 'static_list_var':
+            elif vartype == 'static_list_var':
                 param_dict[name] = np.random.choice(val1)
             else:
-                raise RuntimeError('Unrecognized variable type: %s' % type)
+                raise RuntimeError('Unrecognized variable type: %s' % vartype)
         return PSet(param_dict)
 
     def random_latin_hypercube_psets(self, n):
@@ -529,8 +528,8 @@ class Algorithm(object):
         if self.config.config['smoothing'] == 1:
             # Create a single job
             return [Job(self.model_list, params, job_id, self.config.config['bng_command'],
-                       self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
-                        bool(self.config.config['delete_old_files']))]
+                    self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
+                    bool(self.config.config['delete_old_files']))]
         else:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
@@ -651,7 +650,8 @@ class Algorithm(object):
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name), gen_only=False)
+            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name),
+                         gen_only=False)
             if self.config.config['delete_old_files'] == 0:
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':
@@ -666,8 +666,8 @@ class Algorithm(object):
                                     '%s/Results' % self.config.config['output_dir'])
                     except FileNotFoundError:
                         logging.error('Cannot find files corresponding to best fit parameter set... exiting')
-                        print0('Could not find your best fit gdat file. This could happen if all of the simulations in your'
-                              '\nrun failed, or if that gdat file was somehow deleted during the run.')
+                        print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
+                               ' in your run failed, or if that gdat file was somehow deleted during the run.')
                         exit()
         if self.config.config['delete_old_files'] == 1:
             shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
@@ -680,7 +680,6 @@ class Algorithm(object):
         :return:
         """
         self.output_results('end')
-
 
 
 class ParticleSwarm(Algorithm):
@@ -696,8 +695,8 @@ class ParticleSwarm(Algorithm):
     def __init__(self, config):
 
         # Former params that are now part of the config
-        #variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
-        #wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.)
+        # variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
+        # wf=0.1, nmax=30, n_stop=np.inf, absolute_tol=0., relative_tol=0.)
         """
         Initial configuration of particle swarm optimizer
         :param conf_dict: The fitting configuration
@@ -946,14 +945,13 @@ class DifferentialEvolution(Algorithm):
             self.proposed_individuals = [[self.random_pset() for i in range(self.num_per_island)]
                                          for j in range(self.num_islands)]
 
-
         # Initialize the individual list to empty, will be filled with the proposed_individuals once their fitnesses
         # are computed.
         self.individuals = [[None
                              for i in range(self.num_per_island)]
                             for j in range(self.num_islands)]
 
-        # Set all fitnesses to Inf, guaraneeting a replacement by the first proposed individual
+        # Set all fitnesses to Inf, guaranteeing a replacement by the first proposed individual
         self.fitnesses = [[np.Inf
                            for i in range(self.num_per_island)]
                           for j in range(self.num_islands)]
@@ -1128,7 +1126,7 @@ class ScatterSearch(Algorithm):
 
     """
 
-    def __init__(self, config): #variables, popsize, maxiters, saveevery):
+    def __init__(self, config):  # variables, popsize, maxiters, saveevery):
 
         super(ScatterSearch, self).__init__(config)
 
@@ -1243,7 +1241,6 @@ class ScatterSearch(Algorithm):
                             self.refs[i] = (new_pset, np.inf)  # For simplicity, assume its score is awful
                             self.stuckcounter[new_pset] = 0
 
-
             # 2) Sort the refs list by quality.
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logging.info('Iteration %i' % self.iteration)
@@ -1341,7 +1338,7 @@ class BayesAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config, sa=False): #expdata, objective, priorfile, gamma=0.1):
+    def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
         super(BayesAlgorithm, self).__init__(config)
         self.sa = sa
         self.step_size = config.config['step_size']
@@ -1373,7 +1370,6 @@ class BayesAlgorithm(Algorithm):
 
         self.samples_file = None # Initialize later.
 
-
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
         self.prior = dict()  # Maps each variable to a 4-tuple (space, dist, val1, val2)
@@ -1391,7 +1387,6 @@ class BayesAlgorithm(Algorithm):
                 self.prior[name] = ('log', 'b', np.log10(val1), np.log10(val2))
             else:
                 raise PybnfError('Bayesian MCMC cannot handle variable type %s' % type)
-
 
     def start_run(self):
         """
@@ -1454,20 +1449,13 @@ class BayesAlgorithm(Algorithm):
         # Calculate the acceptance probability
         lnprior = self.ln_prior(pset) # Need something clever for box constraints
         lnlikelihood = -score
-        # lnlikelihood = -self.objective.evaluate_multiple(simdata, self.exp_data)
 
         # Because the P's are so small to start, we express posterior, p_accept, and current_P in ln space
         lnposterior = lnprior + lnlikelihood
 
         ln_p_accept = min(0., lnposterior - self.ln_current_P[index])
-        # print("lnprior:"+str(lnprior))
-        # print("lnlikelihood:" + str(lnlikelihood))
-        # print("lnposterior:" + str(lnposterior))
-        # print("current_P" + str(self.current_P))
-        # print("ln_p_accept:"+str(ln_p_accept))
 
         # Decide whether to accept move.
-
         if np.random.rand() < np.exp(ln_p_accept*self.betas[index]) or np.isnan(self.ln_current_P[index]):
             # Accept the move, so update our current PSet and P
             self.current_pset[index] = pset
@@ -1485,7 +1473,6 @@ class BayesAlgorithm(Algorithm):
                         return []
 
         # Record the current PSet (clarification: what if failed? Sample old again?)
-
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
         proposed_pset = self.try_to_choose_new_pset(index)
 
@@ -1561,7 +1548,6 @@ class BayesAlgorithm(Algorithm):
                 return None
             proposed_pset = self.choose_new_pset(self.current_pset[index])
         return proposed_pset
-
 
     def choose_new_pset(self, oldpset):
         """
@@ -1715,12 +1701,12 @@ class BayesAlgorithm(Algorithm):
                 proposed.append(proposed_pset)
         return proposed
 
-
     def cleanup(self):
         """Called when quitting due to error.
         Save the histograms in addition to the usual algorithm cleanup"""
         super().cleanup()
         self.update_histograms('_end')
+
 
 class SimplexAlgorithm(Algorithm):
 
@@ -2026,9 +2012,6 @@ class SimplexAlgorithm(Algorithm):
         return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
 
 
-
-
-
 def latin_hypercube(nsamples, ndims):
     """
     Latin hypercube sampling.
@@ -2068,6 +2051,7 @@ def latin_hypercube(nsamples, ndims):
         population[:, j] = samples[order, j]
 
     return population
+
 
 def exp10(n):
     """

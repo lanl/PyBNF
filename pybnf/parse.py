@@ -1,8 +1,14 @@
-import pyparsing as pp
-import re
-from string import punctuation
+"""pybnf.parse: grammar and methods for parsing the configuration file"""
+
+
 from .printing import PybnfError, print1
 from .config import Configuration
+
+from string import punctuation
+
+import pyparsing as pp
+import re
+
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
                'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
@@ -23,6 +29,7 @@ strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'i
               'cluster_type', 'scheduler_node']
 multstrkeys = ['worker_nodes']
 slvkeylist = ['static_list_var']
+
 
 def parse(s):
     equals = pp.Suppress('=')
@@ -100,7 +107,6 @@ def flatten(vs):
 
 
 def ploop(ls):  # parse loop
-
     d = {}
     models = set()
     exp_data = set()
@@ -206,7 +212,6 @@ def ploop(ls):  # parse loop
                 message += '%s should be specified in the format %s' % (key, fmt)
 
             raise PybnfError("Misconfigured config key '%s' at line: %s" % (line.strip(), i), message)
-
 
     d['models'] = models
     d['exp_data'] = exp_data
