@@ -111,8 +111,17 @@ def main():
         # override cluster type value in configuration file if specified with cmdline args
         if results.cluster_type:
             config.config['cluster_type'] = results.cluster_type
+
         # Set up cluster
-        scheduler_node, node_string = get_scheduler(config)
+        if config.config['scheduler_node'] and config.config['worker_nodes']:
+            scheduler_node = config.config['scheduler_node']
+            node_string = ' '.join(config.config['worker_nodes'])
+        elif config.config['scheduler_node']:
+            dummy, node_string = get_scheduler(config)
+            scheduler_node = config.config['scheduler_node']
+        else:
+            scheduler_node, node_string = get_scheduler(config)
+
         if node_string:
             dask_ssh_proc = setup_cluster(node_string)
 

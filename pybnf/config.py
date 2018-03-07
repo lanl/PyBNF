@@ -114,7 +114,9 @@ class Configuration(object):
             'wall_time_sim': 3600,
             'normalization': None,
 
-            'cluster_type': None
+            'cluster_type': None,
+            'scheduler_node': None,
+            'worker_nodes': None
         }
         return default
 
