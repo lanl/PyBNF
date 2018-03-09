@@ -160,8 +160,9 @@ class Job:
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    raise PybnfError('Over 1000 failures at directory creation',
-                                     'Unable to write to output directory %s' % self.output_dir)
+                    logging.error('Job %s failed because it was unable to write to the Simulations folder' %
+                                  self.job_id)
+                    return FailedSimulation(self.params, self.job_id, 1)
         try:
             model_files = self._write_models()
             self.execute(model_files)
@@ -672,7 +673,8 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations in your'
                               '\nrun failed, or if that gdat file was somehow deleted during the run.')
                         exit()
-        if self.config.config['delete_old_files'] == 1:
+        if self.config.config['delete_old_files'] == 1 \
+                and (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1):
             shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
