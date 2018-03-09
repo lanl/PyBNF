@@ -1,6 +1,7 @@
 from .printing import PybnfError
 import pyparsing as pp
 import numpy as np
+import re
 
 class ConstraintSet:
     """
@@ -8,6 +9,7 @@ class ConstraintSet:
     """
     def __init__(self):
         self.constraints = []
+        self.base_suffix = 'idk'  # Todo
 
     def total_penalty(self, sim_data_dict):
         """
@@ -26,10 +28,67 @@ class ConstraintSet:
             linenum = 0
             for line in f:
                 linenum += 1
+                if re.match(r'\s*(#|$)', line):  # Blank or comment
+                    continue
+                # Parse the line
                 try:
                     p = self.parse_constraint_line(line)
                 except pp.ParseBaseException:
                     raise PybnfError("Unable to parse constraint '%s' at line %i of %s" % (line, linenum, filename))
+                # Convert all the attributes of the parsed line into args to use to create the constraint
+                try:
+                    quant1 = float(p.ineq[0])
+                except ValueError:
+                    quant1 = p.ineq[0]
+                sign = p.ineq[1]
+                try:
+                    quant2 = float(p.ineq[2])
+                except ValueError:
+                    quant2 = p.ineq[2]
+                if p.weight_expr:
+                    weight = float(p.weight_expr.weight)
+                    altpenalty = p.weight_expr.altpenalty if p.weight_expr.altpenalty else None
+                    minpenalty = float(p.weight_expr.min) if p.weight_expr.min else 0.
+                else:
+                    weight = 1.
+                    altpenalty = None
+                    minpenalty = 0.
+
+                # Check the constraint type based on the parse object, extract the constraint-type-specific args, and
+                # make the constraint
+                if p.enforce[0] == 'at':
+                    if len(p.enforce) == 2:
+                        atval = p.enforce[1]
+                        atvar = None
+                    else:
+                        atvar = p.enforce[1]
+                        atval = p.enforce[2]
+                    con = AtConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
+                                           minpenalty=minpenalty, atvar=atvar, atval=atval)
+                elif p.enforce[0] == 'always':
+                    con = AlwaysConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
+                                           minpenalty=minpenalty)
+                elif p.enforce[0] == 'once':
+                    con = OnceConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty, minpenalty)
+                elif p.enforce[0] == 'between':
+                    if len(p.enforce[1]) == 1:
+                        startval = p.enforce[1][0]
+                        startvar = None
+                    else:
+                        startvar = p.enforce[1][0]
+                        startval = p.enforce[1][1]
+                    if len(p.enforce[2]) == 1:
+                        endval = p.enforce[2][0]
+                        endvar = None
+                    else:
+                        endvar = p.enforce[2][0]
+                        endval = p.enforce[2][1]
+                    con = BetweenConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
+                                           minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
+                                           endval=endval)
+                else:
+                    raise RuntimeError('Unknown enforcement keyword %s' % p.enforce[0])
+                self.constraints.append(con)
 
 
     def parse_constraint_line(self, line):
@@ -43,19 +102,20 @@ class ConstraintSet:
         ineq0 = obs + iop + (obs ^ const)
         ineq1 = const + iop + obs
         ineq = ineq0 ^ ineq1
-        equals = pp.Literal('=')
+        equals = pp.Suppress('=')
         obs_crit = obs - equals - const
-        enforce_crit = const ^ obs_crit
+        enforce_crit = const | obs_crit
         enforce_at = pp.CaselessLiteral('at') - enforce_crit - pp.Optional(pp.oneOf('everytime first', caseless=True))
-        enforce_between = enforce_crit - pp.Suppress(',') - enforce_crit
+        enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
-        min = pp.CaselessLiteral('min') - const
-        penalty = pp.CaselessLiteral('altpenalty') - const
-        wt_expr = const - pp.Optional(penalty) - pp.Optional(min)
+        min = pp.CaselessLiteral('min') - const.setResultsName('min')
+        penalty = pp.CaselessLiteral('altpenalty') - pp.Group(ineq).setResultsName('altpenalty')
+        wt_expr = const.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
         weight = pp.CaselessLiteral('weight') - wt_expr
+        comment = pp.Suppress(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables)))
         constraint = pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce') + \
-                     pp.Optional(pp.Group(weight).setResultsName('weight'))
+                     pp.Optional(pp.Group(weight).setResultsName('weight_expr')) + pp.Optional(comment)
 
         return constraint.parseString(line, parseAll=True)
 
@@ -68,7 +128,7 @@ class Constraint:
     Abstract class representing an optimization constraint with a penalty for violating the constraint
     """
 
-    def __init__(self, quant1, sign, quant2, base_suffix):
+    def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
         """
         Create a constraint of the form (quant1) (sign) (quant2)
         :param quant1: String observable name or float. String could be in the form suffix.Observable to refer to any
@@ -119,32 +179,26 @@ class Constraint:
             self.target_val = parts[1]
         self.sign = sign
 
-    def str_info(self, penalty=None):
-        return (' ({:.3g}) '.format(penalty)) + self.target_var + self.sign + float(self.target_val)
-
 
 class AtConstraint(Constraint):
-    def __init__(self, inequality, when_condition, never_penalty=1e5):
+    def __init__(self, quant1, sign, quant2, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.):
         """
         Creates a new constraint of the form
 
-        X1>value when X2=value
-
-        :param inequality: String specifying the inequality, eg 'X1>4'
-        :param when_condition: String specifying the when condition eg 'X2=3'
-        :param never_penalty: The large penalty for never satisfying the when condition within the data
+        X1>value at X2=value
         """
 
-        super().__init__()
-        self.never_penalty = never_penalty
-        self._parse_inequality(inequality)
+        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
 
-        parts = when_condition.split('=')
-        if len(parts) != 2:
-            raise ParseError("Unable to parse 'when' condition " + when_condition)
-        self.when_var = parts[0]
-        self.when_val = float(parts[1])
-        self.weight = 1.0
+        # self.never_penalty = never_penalty
+        # self._parse_inequality(inequality)
+        #
+        # parts = when_condition.split('=')
+        # if len(parts) != 2:
+        #     raise ParseError("Unable to parse 'when' condition " + when_condition)
+        # self.when_var = parts[0]
+        # self.when_val = float(parts[1])
+        # self.weight = 1.0
 
     def penalty(self, data):
         """
@@ -194,25 +248,27 @@ class AtConstraint(Constraint):
 
 
 class BetweenConstraint(Constraint):
-    def __init__(self, inequality, when_condition):
+    def __init__(self, quant1, sign, quant2, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
+                 minpenalty=0.):
         """
         Creates a new constraint of the form
 
-        X1>value until X2=value
+        X1 < X2 between X3=value  X4=value
 
-        :param inequality: String specifying the inequality, eg 'X1>4'
-        :param when_condition: String specifying the when condition eg 'X2=3'
         """
 
-        super().__init__()
-        self._parse_inequality(inequality)
+        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
 
-        parts = when_condition.split('=')
-        if len(parts) != 2:
-            raise ParseError("Unable to parse 'until' condition " + when_condition)
-        self.when_var = parts[0]
-        self.when_val = float(parts[1])
-        self.weight = 1.0
+
+        # super().__init__()
+        # self._parse_inequality(inequality)
+        #
+        # parts = when_condition.split('=')
+        # if len(parts) != 2:
+        #     raise ParseError("Unable to parse 'until' condition " + when_condition)
+        # self.when_var = parts[0]
+        # self.when_val = float(parts[1])
+        # self.weight = 1.0
 
     def penalty(self, data):
         """
@@ -261,10 +317,20 @@ class BetweenConstraint(Constraint):
 
 
 class AlwaysConstraint(Constraint):
-    def __init__(self, inequality):
-        super().__init__()
-        self._parse_inequality(inequality)
-        self.weight = 1.0
+    def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
+        """
+        Creates a new constraint of the form
+
+        X1>X2 always
+        """
+
+        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
+
+
+    # def __init__(self, inequality):
+    #     super().__init__()
+    #     self._parse_inequality(inequality)
+    #     self.weight = 1.0
 
     def penalty(self, data):
         """
@@ -288,12 +354,15 @@ class AlwaysConstraint(Constraint):
         return super().str_info(penalty) + ' always'
 
 
-
 class OnceConstraint(Constraint):
-    def __init__(self, inequality):
-        super().__init__()
-        self._parse_inequality(inequality)
-        self.weight = 1.0
+    def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
+        """
+        Creates a new constraint of the form
+
+        X1>X2 once
+        """
+
+        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
 
     def penalty(self, data):
         """
