@@ -57,14 +57,15 @@ class ConstraintSet:
                 # Check the constraint type based on the parse object, extract the constraint-type-specific args, and
                 # make the constraint
                 if p.enforce[0] == 'at':
-                    if len(p.enforce) == 2:
-                        atval = p.enforce[1]
+                    if len(p.enforce[1]) == 1:
+                        atval = p.enforce[1][0]
                         atvar = None
                     else:
-                        atvar = p.enforce[1]
-                        atval = p.enforce[2]
+                        atvar = p.enforce[1][0]
+                        atval = p.enforce[1][1]
+                    repeat = (len(p.enforce) == 3 and p.enforce[2] == 'everytime')
                     con = AtConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty, atvar=atvar, atval=atval)
+                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat)
                 elif p.enforce[0] == 'always':
                     con = AlwaysConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty)
@@ -105,7 +106,7 @@ class ConstraintSet:
         equals = pp.Suppress('=')
         obs_crit = obs - equals - const
         enforce_crit = const | obs_crit
-        enforce_at = pp.CaselessLiteral('at') - enforce_crit - pp.Optional(pp.oneOf('everytime first', caseless=True))
+        enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True))
         enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
@@ -181,7 +182,8 @@ class Constraint:
 
 
 class AtConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
+                 repeat=False):
         """
         Creates a new constraint of the form
 
