@@ -58,11 +58,11 @@ class ConstraintSet:
                 # make the constraint
                 if p.enforce[0] == 'at':
                     if len(p.enforce[1]) == 1:
-                        atval = p.enforce[1][0]
+                        atval = float(p.enforce[1][0])
                         atvar = None
                     else:
                         atvar = p.enforce[1][0]
-                        atval = p.enforce[1][1]
+                        atval = float(p.enforce[1][1])
                     repeat = (len(p.enforce) == 3 and p.enforce[2] == 'everytime')
                     con = AtConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat)
@@ -73,17 +73,17 @@ class ConstraintSet:
                     con = OnceConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty, minpenalty)
                 elif p.enforce[0] == 'between':
                     if len(p.enforce[1]) == 1:
-                        startval = p.enforce[1][0]
+                        startval = float(p.enforce[1][0])
                         startvar = None
                     else:
                         startvar = p.enforce[1][0]
-                        startval = p.enforce[1][1]
+                        startval = float(p.enforce[1][1])
                     if len(p.enforce[2]) == 1:
-                        endval = p.enforce[2][0]
+                        endval = float(p.enforce[2][0])
                         endvar = None
                     else:
                         endvar = p.enforce[2][0]
-                        endval = p.enforce[2][1]
+                        endval = float(p.enforce[2][1])
                     con = BetweenConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
                                            endval=endval)
@@ -121,9 +121,6 @@ class ConstraintSet:
         return constraint.parseString(line, parseAll=True)
 
 
-
-
-
 class Constraint:
     """
     Abstract class representing an optimization constraint with a penalty for violating the constraint
@@ -137,48 +134,52 @@ class Constraint:
         :param sign: One of '<', '<=', '>', '>='
         :param quant2: String observable name or float
         :param base_suffix: Suffix to assume for observables that dont use the 'suffix.Observable' notation
+        :param weight: Weight of the constraint, to multiply the extent of violation
+        :param altpenalty: a 3-tuple [quantity, sign, quantity], giving an inequality to use instead of the regular
+        constraint inequality to calculate the penalty
+        :param minpenalty: The minimum penalty that must be applied if the constraint is violated, regardless of how
+        low the extent of violation is.
         """
+        # Flip the inequality if it's a '>', so we can always assume a '<'
+        if sign in ('>', '>='):
+            self.quant1 = quant2
+            self.quant2 = quant1
+        else:
+            self.quant1 = quant1
+            self.quant2 = quant2
+        if '=' in sign:
+            self.or_equal = True
+        else:
+            self.or_equal = False
 
-        self.quant1 = quant1
-        self.sign = sign
-        self.quant2 = quant2
+        self.base_suffix = base_suffix
+        self.weight = weight
+        self.min_penalty = minpenalty
+
+        if altpenalty:
+            # Also force the altpenalty to be a '<'.
+            # Never matters whether this is an 'or equal' or not.
+            alt1, altsign, alt2 = altpenalty
+            if altsign in ('>', '>='):
+                self.alt1 = alt2
+                self.alt2 = alt1
+            else:
+                self.alt1 = alt1
+                self.alt2 = alt2
+        else:
+            self.alt1 = None
+            self.alt2 = None
 
     def penalty(self, sim_data_dict):
         """
         penalty function for violating the constraint. Returns 0 if constraint is satisfied, or a positive value
-        if the constraint is volated. Implementation depends on the type of constraint.
+        if the constraint is violated. Implementation depends on the type of constraint.
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
         """
 
         raise NotImplementedError('Subclasses of Constraint must override penalty()')
-
-    def _parse_inequality(self, ineq):
-        """
-        Set this constraint's inequality according to the specified inequality string
-        Updates the target_var, target_val, and sign fields.
-
-        :param ineq: String representing the inequality
-        :return:
-        """
-        sign = None
-        for asign in ['<=', '>=', '<', '>']:
-            if asign in ineq:
-                sign = asign
-                break
-        if sign is None:
-            raise ParseError('Unable to parse inequality ' + ineq)
-        parts = ineq.split(sign)
-        if len(parts) != 2:
-            raise ParseError('Unable to parse inequality ' + ineq)
-        self.target_var = parts[0]
-        try:
-            self.target_val = float(parts[1])
-        except ValueError:
-            # Alternate option to give a variable name here.
-            self.target_val = parts[1]
-        self.sign = sign
 
 
 class AtConstraint(Constraint):
@@ -188,38 +189,21 @@ class AtConstraint(Constraint):
         Creates a new constraint of the form
 
         X1>value at X2=value
+
+        :param atvar: Variable checked to determine the 'at' condition, or None for the independent variable
+        :param atval: Value that the atvar must take to activate the 'at' condition
+        :param repeat: If True, enforce the constraint every time the 'at' condition is met. If False, only enforce
+        the first time
         """
 
         super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
-
-        # self.never_penalty = never_penalty
-        # self._parse_inequality(inequality)
-        #
-        # parts = when_condition.split('=')
-        # if len(parts) != 2:
-        #     raise ParseError("Unable to parse 'when' condition " + when_condition)
-        # self.when_var = parts[0]
-        # self.when_val = float(parts[1])
-        # self.weight = 1.0
+        self.atvar = atvar
+        self.atval = atval
+        self.repeat = repeat
 
     def penalty(self, data):
         """
-        Compute the when penalty.
-        If the when condition is never met, the penalty is the large never_penalty times the closest approach to the
-        when condition.
-
-        In the normal case, the penalty is 0 if the constraint is met, or the distance from the constraint if it
-        is failed, at the index where the when condition is first met.
-
-        Edge cases where the the when condition is hit exactly at a particular index are not currently implemented
-        correctly
-
-        Now supports declaring a weight of the constraint by setting the .weight attribute. This is a constant
-        multiplier on the penalty function
-
-        :param data:
-        :type data: TysonData
-        :return: float penalty falue
+        Compute the penalty
         """
 
         # Find the index where the when condition is met
@@ -245,9 +229,6 @@ class AtConstraint(Constraint):
 
         return max(0., diff) * self.weight
 
-    def str_info(self, penalty=None):
-        return super().str_info(penalty) + ' when ' + self.when_var + '=' + str(self.when_val)
-
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
@@ -257,41 +238,22 @@ class BetweenConstraint(Constraint):
 
         X1 < X2 between X3=value  X4=value
 
+        :param startvar: Variable checked to determine the start of the interval, or None for the independent variable
+        :param startval: Value that the startvar must take to trigger the start of the interval
+        :param endvar: Variable checked to determine the end of the interval, or None for the independent variable
+        :param endval: Value that the endvar must take to trigger the start of the interval
         """
 
         super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
 
-
-        # super().__init__()
-        # self._parse_inequality(inequality)
-        #
-        # parts = when_condition.split('=')
-        # if len(parts) != 2:
-        #     raise ParseError("Unable to parse 'until' condition " + when_condition)
-        # self.when_var = parts[0]
-        # self.when_val = float(parts[1])
-        # self.weight = 1.0
+        self.startvar = startvar
+        self.startval = startval
+        self.endvar = endvar
+        self.endval = endval
 
     def penalty(self, data):
         """
-        Compute the until penalty.
-
-        The until constraint indicates that the constraint must be satisfied at every time point until the condition
-        is satisfied.
-        If the until condition is never met, there's no penalty for that, but then the constraint must be satisfied
-        for the entire simulation.
-
-        The penalty is given by the worst violation of the constraint within the time range that the constraint is active.
-
-        Edge cases where the the when condition is hit exactly at a particular index are not currently implemented
-        correctly
-
-        Now supports declaring a weight of the constraint by setting the .weight attribute. This is a constant
-        multiplier on the penalty function
-
-        :param data:
-        :type data: TysonData
-        :return: float penalty falue
+        Compute the penalty
         """
 
         # Find the index where the when condition is met
@@ -314,9 +276,6 @@ class BetweenConstraint(Constraint):
 
         return max(0., worstdiff) * self.weight
 
-    def str_info(self, penalty=None):
-        return super().str_info(penalty) + ' until ' + self.when_var + '=' + str(self.when_val)
-
 
 class AlwaysConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
@@ -338,10 +297,6 @@ class AlwaysConstraint(Constraint):
         """
         Compute the always penalty
         The penalty is given by the worst miss of the constraint over the entire data column
-
-
-        :param data: TysonData object
-        :return:
         """
 
         diffs = data[self.target_var] - self.target_val
@@ -368,11 +323,7 @@ class OnceConstraint(Constraint):
 
     def penalty(self, data):
         """
-        Compute the notalways penalty
-        The penalty is given by the smallest miss of the opposite of the constraint, over the entire data column
-
-        :param data: TysonData object
-        :return: float
+        Compute the penalty
         """
 
         diffs = data[self.target_var] - self.target_val
@@ -383,9 +334,6 @@ class OnceConstraint(Constraint):
         bestdiff = np.min(diffs)
 
         return max(0., bestdiff) * self.weight
-
-    def str_info(self, penalty=None):
-        return super().str_info(penalty) + ' notalways'
 
 class ParseError(Exception):
     pass

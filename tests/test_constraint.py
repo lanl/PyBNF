@@ -1,4 +1,5 @@
 from .context import constraint
+import copy
 
 
 class TestConstraint:
@@ -14,6 +15,7 @@ class TestConstraint:
         cls.line3 = 'A<16 between B=3.14, 702 weight 8 min 9'
         cls.line4 = 'A<16 always weight 6'
         cls.line5 = 'A<16 once weight 6'
+        cls.f1 = 'bngl_files/p1_5.con'
 
     @classmethod
     def teardown_class(cls):
@@ -49,3 +51,27 @@ class TestConstraint:
         p = self.cset.parse_constraint_line(self.line4)
         assert p.enforce[0] == 'always'
         assert p.weight_expr.weight == '6'
+
+    def test_load_file(self):
+        cs = copy.deepcopy(self.cset)
+        cs._load_constraint_file(self.f1)
+
+        assert cs.constraints[0].quant1 == 'Ag_free'
+        assert cs.constraints[0].or_equal is False
+        assert cs.constraints[0].atvar is None
+        assert cs.constraints[0].atval == 6.
+
+        assert cs.constraints[1].quant2 == 42.
+        assert cs.constraints[1].atvar == 'RP'
+        assert cs.constraints[1].min_penalty == 3.4e-7
+        assert cs.constraints[1].alt1 == 'R0'
+        assert cs.constraints[1].alt2 == '42'
+
+        assert cs.constraints[2].startvar == 'RP'
+        assert cs.constraints[2].startval == 3.14
+        assert cs.constraints[2].endvar is None
+        assert cs.constraints[2].endval == 702.
+
+        assert isinstance(cs.constraints[3], constraint.AlwaysConstraint)
+        assert isinstance(cs.constraints[4], constraint.OnceConstraint)
+        assert cs.constraints[4].weight == 6.

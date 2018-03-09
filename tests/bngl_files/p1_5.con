@@ -1,0 +1,8 @@
+   
+# Comment 1
+        
+Ag_free<RP at 6 weight 1 # Comment 2
+42>=Ag_free At RP=17 everytime Weight 5 AltPenalty R0<=42 Min 3.4e-7#Comment 
+Ag_free < 16 between RP=3.14, 702 weight 8 min 9
+Ag_free<16 always weight 6
+Ag_free<16 once weight 6
