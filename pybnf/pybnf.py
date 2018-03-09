@@ -55,8 +55,6 @@ def main():
         config = load_config(results.conf_file)
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
-        if results.scheduler_address is not None:
-            config.config['scheduler_address'] = results.scheduler_addres
 
         # Create output folders, checking for overwrites.
         init_output_directory(results.conf_file, config)
