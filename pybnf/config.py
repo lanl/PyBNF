@@ -5,7 +5,7 @@ from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
 from .pset import BNGLModel, ModelError
-from .printing import verbosity, print0, print1, print2, PybnfError
+from .printing import verbosity, print1, PybnfError
 
 import numpy as np
 import os
@@ -38,9 +38,9 @@ def init_logging():
     tornado = logging.getLogger('tornado.application')
     stdout_handler = tornado.handlers[0]  # Before we add anything, tornado has a handler going to stdout
     tornado.setLevel(logging.WARNING)
-    tornado.addHandler(dfh)
-    tornado.removeHandler(stdout_handler)  # Stop tornado from going to stdout
     # Don't clog our error log with all the tornado stuff, just send it to the debug log
+    tornado.addHandler(dfh)
+    tornado.removeHandler(stdout_handler)  # Stop tornado from going to stdou
 
 
 class Configuration(object):

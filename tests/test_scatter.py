@@ -112,20 +112,6 @@ class TestScatter:
         assert ss.stuckcounter[notout[0]] == 1
         assert ss.stuckcounter[newref[0]] == 0
 
-    def test_full(self):
-        conf_dict = parse.load_config(self.config_path)
-        myconfig = config.Configuration(conf_dict)
-        ss = algorithms.ScatterSearch(myconfig)
-        ss.run()
-
-        best_fit = ss.trajectory.best_fit()
-        # print(best_fit)
-
-        # The data is most sensitive to the x^2 coefficent, so this gets fit the best.
-        # Here's a reasonable test that the fitting went okay.
-        # Typically v1 fits to within 0.02, so the required margin of 0.1 should essentially never fail.
-        assert abs(best_fit['v1__FREE__'] - 0.5) < 0.1
-
     def test_exp10(self):
         assert algorithms.exp10(2.) == 100.
 

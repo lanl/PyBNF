@@ -1,6 +1,5 @@
-"""
-Printing commands that respect the application-wide verbosity setting.
-"""
+"""pybnf.printing: contains printing commands that respect the application-wide verbosity setting."""
+
 
 verbosity = 1
 

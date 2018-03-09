@@ -1,10 +1,13 @@
-import logging
+"""pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
+
+
+from .printing import print1
+
 import numpy as np
 import re
 import copy
 import warnings
-import logging
-from .printing import print1
+
 
 class Model(object):
     """
@@ -211,7 +214,8 @@ class BNGLModel(Model):
         """
         # Check that the PSet has definitions for the right parameters for this model
         if set(pset.keys()) != set(self.param_names):
-            raise ValueError('Parameter names in the PSet do not match those in the Model\n%s\n%s' % (pset.keys(), self.param_names))
+            raise ValueError('Parameter names in the PSet do not match those in the Model\n%s\n%s' %
+                             (pset.keys(), self.param_names))
 
         newmodel = copy.deepcopy(self)
         newmodel.param_set = pset
