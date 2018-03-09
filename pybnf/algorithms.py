@@ -338,10 +338,9 @@ class Algorithm(object):
                 logging.debug('Model %s requires network generation' % m.name)
 
                 if not os.path.isdir(init_dir):
-                    if not os.path.isdir(init_dir):
-                        logging.debug('Creating initialization directory: %s' % init_dir)
-                        os.mkdir(init_dir)
-                    os.chdir(init_dir)
+                    logging.debug('Creating initialization directory: %s' % init_dir)
+                    os.mkdir(init_dir)
+                os.chdir(init_dir)
 
                 gnm_name = '%s_gen_net' % m.name
                 m.save(gnm_name, gen_only=True)
