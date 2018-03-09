@@ -2079,7 +2079,8 @@ def exp10(n):
         with np.errstate(over='raise'):
             ans = 10.**n
     except (OverflowError, FloatingPointError):
-        logging.exception('Overflow error in exp10()')
+        logging.error('Overflow error in exp10()')
+        logging.error(''.join(traceback.format_stack()))  # Log the entire traceback
         raise PybnfError('Overflow when calculating 10^%d\n'
                          'Details are saved in bnf_errors.log\n'
                          'This may be because you declared a lognormrandom_var or a logvar, and specified the '
