@@ -14,4 +14,7 @@ class TestConstraint:
         pass
 
     def test_grammar(self):
-        print(self.cset.parse_constraint_line('A<B at 6 weight 1'))
+        p = self.cset.parse_constraint_line('A<B at 6 weight 1')
+        assert list(p.ineq) == ['A','<','B']
+        assert list(p.enforce) == ['at', '6']
+        assert list(p.weight) == ['weight', '1']

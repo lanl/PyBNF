@@ -23,8 +23,14 @@ class ConstraintSet:
         Parse the constraint file filename and load them all into my constraint list
         """
         with open(filename) as f:
+            linenum = 0
             for line in f:
-                p = self.parse_constraint_line(line)
+                linenum += 1
+                try:
+                    p = self.parse_constraint_line(line)
+                except pp.ParseBaseException:
+                    raise PybnfError("Unable to parse constraint '%s' at line %i of %s" % (line, linenum, filename))
+
 
     def parse_constraint_line(self, line):
         obs = pp.Word(pp.alphas, pp.alphanums+'_.')
@@ -34,8 +40,8 @@ class ConstraintSet:
                          pp.Optional(point + pp.Optional(pp.Word(pp.nums))) +
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
         iop = pp.oneOf("< <= > >=")
-        ineq0 = obs - iop - (obs ^ const)
-        ineq1 = const - iop - obs
+        ineq0 = obs + iop + (obs ^ const)
+        ineq1 = const + iop + obs
         ineq = ineq0 ^ ineq1
         equals = pp.Literal('=')
         obs_crit = obs - equals - const
@@ -48,7 +54,8 @@ class ConstraintSet:
         penalty = pp.CaselessLiteral('altpenalty') - const
         wt_expr = const - pp.Optional(penalty) - pp.Optional(min)
         weight = pp.CaselessLiteral('weight') - wt_expr
-        constraint = ineq - enforce - pp.Optional(weight)
+        constraint = pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce') + \
+                     pp.Optional(pp.Group(weight).setResultsName('weight'))
 
         return constraint.parseString(line, parseAll=True)
 
