@@ -1,4 +1,4 @@
-"""pybnf.data: """
+"""pybnf.data: class with methods to manage experimental and simulation data"""
 
 
 import math
