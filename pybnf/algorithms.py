@@ -159,6 +159,9 @@ class Job:
                 logging.info('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
+                if failures > 1000:
+                    raise PybnfError('Over 1000 failures at directory creation',
+                                     'Unable to write to output directory %s' % self.output_dir)
         try:
             model_files = self._write_models()
             self.execute(model_files)
@@ -1741,6 +1744,16 @@ class SimplexAlgorithm(Algorithm):
             self.max_iterations = config.config['max_iterations']
         self.start_point = config.config['simplex_start_point']
         self.start_steps = {v[0]: v[3] for v in config.variables_specs}
+        # Set the start step for each variable to a variable-specific value, or else an algorithm-wide value
+        self.start_steps = dict()
+        for v in config.variables_specs:
+            if v[1] in ('var', 'logvar') and v[3] is not None:
+                self.start_steps[v[0]] = v[3]
+            elif 'simplex_log_step' in config.config and v[1][:3]=='log':
+                self.start_steps[v[0]] = config.config['simplex_log_step']
+            else:
+                self.start_steps[v[0]] = config.config['simplex_step']
+
         self.parallel_count = min(config.config['population_size'], len(self.variables))
         self.iteration = 0
         self.alpha = config.config['simplex_reflection']
