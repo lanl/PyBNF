@@ -148,6 +148,7 @@ def main():
 
 
 def init_output_directory(config, cmdline_args):
+
     """
     Creates (or overwrites) output directories for a fitting run
 
@@ -163,6 +164,7 @@ def init_output_directory(config, cmdline_args):
                             config.config['output_dir'] + '/Simulations') or os.path.exists(
                         config.config['output_dir'] + '/Initialize'):
                 if cmdline_args.overwrite:
+                    logging.info('Overwriting existing output directory')
                     if os.path.exists(config.config['output_dir'] + '/Results'):
                         shutil.rmtree(config.config['output_dir'] + '/Results')
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
@@ -192,4 +194,3 @@ def init_output_directory(config, cmdline_args):
     os.makedirs(config.config['output_dir'] + '/Results')
     os.mkdir(config.config['output_dir'] + '/Simulations')
     shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
-
