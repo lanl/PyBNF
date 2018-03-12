@@ -134,6 +134,14 @@ def main():
         if node_string:
             teardown_cluster(dask_ssh_proc)
 
+        # Attempt to remove dask-worker-space directory if necessary
+        # (exists in directory where workers were instantiated)
+        # Tries current and home directories
+        if os.path.isdir('dask-worker-space'):
+            shutil.rmtree('dask-worker-space')
+        if os.path.isdir(os.environ['HOME'] + '/dask-worker-space'):
+            shutil.rmtree(os.environ['HOME'] + '/dask-worker-space')
+
         # After any error, try to clean up.
         try:
             if not success:
