@@ -156,6 +156,10 @@ class Job:
                 logging.info('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
+                if failures > 1000:
+                    logging.error('Job %s failed because it was unable to write to the Simulations folder' %
+                                  self.job_id)
+                    return FailedSimulation(self.params, self.job_id, 1)
         try:
             model_files = self._write_models()
             self.execute(model_files)
@@ -331,10 +335,9 @@ class Algorithm(object):
                 logging.debug('Model %s requires network generation' % m.name)
 
                 if not os.path.isdir(init_dir):
-                    if not os.path.isdir(init_dir):
-                        logging.debug('Creating initialization directory: %s' % init_dir)
-                        os.mkdir(init_dir)
-                    os.chdir(init_dir)
+                    logging.debug('Creating initialization directory: %s' % init_dir)
+                    os.mkdir(init_dir)
+                os.chdir(init_dir)
 
                 gnm_name = '%s_gen_net' % m.name
                 m.save(gnm_name, gen_only=True)
@@ -669,7 +672,8 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
                         exit()
-        if self.config.config['delete_old_files'] == 1:
+        if self.config.config['delete_old_files'] == 1 \
+                and (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1):
             shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
@@ -1727,6 +1731,16 @@ class SimplexAlgorithm(Algorithm):
             self.max_iterations = config.config['max_iterations']
         self.start_point = config.config['simplex_start_point']
         self.start_steps = {v[0]: v[3] for v in config.variables_specs}
+        # Set the start step for each variable to a variable-specific value, or else an algorithm-wide value
+        self.start_steps = dict()
+        for v in config.variables_specs:
+            if v[1] in ('var', 'logvar') and v[3] is not None:
+                self.start_steps[v[0]] = v[3]
+            elif 'simplex_log_step' in config.config and v[1][:3]=='log':
+                self.start_steps[v[0]] = config.config['simplex_log_step']
+            else:
+                self.start_steps[v[0]] = config.config['simplex_step']
+
         self.parallel_count = min(config.config['population_size'], len(self.variables))
         self.iteration = 0
         self.alpha = config.config['simplex_reflection']
@@ -2063,7 +2077,8 @@ def exp10(n):
         with np.errstate(over='raise'):
             ans = 10.**n
     except (OverflowError, FloatingPointError):
-        logging.exception('Overflow error in exp10()')
+        logging.error('Overflow error in exp10()')
+        logging.error(''.join(traceback.format_stack()))  # Log the entire traceback
         raise PybnfError('Overflow when calculating 10^%d\n'
                          'Details are saved in bnf_errors.log\n'
                          'This may be because you declared a lognormrandom_var or a logvar, and specified the '

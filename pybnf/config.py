@@ -315,10 +315,8 @@ class Configuration(object):
                         # 2nd number (step size) may be absent, must fill in appropriately
                         if len(self.config[k]) >= 2:
                             stepsize = self.config[k][1] # easy, it was right there
-                        elif k[0] == 'logvar' and 'simplex_log_step' in k:
-                            stepsize = self.config['simplex_log_step']  # This one is preferred if it's there
                         else:
-                            stepsize = self.config['simplex_step']  # This is always there because it had a default set
+                            stepsize = None  # Will sort out within SimplexAlgorithm
                         variables_specs.append((k[1], k[0], self.config[k][0], stepsize))
                     else:
                         variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
