@@ -2019,6 +2019,9 @@ def latin_hypercube(nsamples, ndims):
     Returns a nsamples by ndims array, with entries in the range [0,1]
     You'll have to rescale them to your actual param ranges.
     """
+    if ndims == 0:
+        # Weird edge case - needed for other code counting on result having a number of rows
+        return np.zeros((nsamples, 0))
     value_table = np.transpose(np.array([[i/nsamples + 1/nsamples * np.random.random() for i in range(nsamples)]
                                          for dim in range(ndims)]))
     for dim in range(ndims):
