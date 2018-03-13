@@ -347,7 +347,7 @@ class Configuration(object):
         :return:
         """
         seedoc = "\nSee the documentation for the syntax options for the 'normalization' key"
-        valid = ('init', 'peak', 'zero')
+        valid = ('init', 'peak', 'zero', 'unit')
         if type(self.config['normalization']) == dict:
             # Iterate through the keys, which should be .exp file names. Check that these are actual exp files that
             # are used in the fitting, then add to the dictionary just the suffix, for easier lookup later
@@ -362,7 +362,7 @@ class Configuration(object):
                 def checkval(v):
                     if v not in valid:
                         raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
-                                         "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                         "Invalid normalization type '%s'. Options are: init, peak, zero, unit" %
                                          self.config['normalization'][ef] + seedoc)
                 if type(val) == str:
                     # This exp file has a single normalization type for all columns
@@ -408,7 +408,7 @@ class Configuration(object):
         elif type(self.config['normalization']) == str:
             if self.config['normalization'] not in valid:
                 raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
-                                 "Invalid normalization type '%s'. Options are: init, peak, zero" %
+                                 "Invalid normalization type '%s'. Options are: init, peak, zero, unit" %
                                  self.config['normalization'] + seedoc)
 
 
