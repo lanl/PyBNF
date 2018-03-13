@@ -8,6 +8,8 @@ from .cluster import get_scheduler, setup_cluster, teardown_cluster
 import pybnf.algorithms as algs
 import pybnf.printing as printing
 
+from subprocess import run
+
 import logging
 import logging.config
 import logging.handlers
@@ -140,9 +142,9 @@ def main():
         # (exists in directory where workers were instantiated)
         # Tries current and home directories
         if os.path.isdir('dask-worker-space'):
-            shutil.rmtree('dask-worker-space')
+            run(['rm', '-rf', 'dask-worker-space'])
         if os.path.isdir(os.environ['HOME'] + '/dask-worker-space'):
-            shutil.rmtree(os.environ['HOME'] + '/dask-worker-space')
+            run(['rm', '-rf', os.environ['HOME'] + '/dask-worker-space'])
 
         # After any error, try to clean up.
         try:

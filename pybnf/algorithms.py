@@ -173,8 +173,11 @@ class Job:
         # except Exception:
         #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         if self.delete_folder:
-            shutil.rmtree(self.folder)
-
+            try:
+                run(['rm', '-rf'], check=True, timeout=60)
+            except CalledProcessError or TimeoutExpired:
+                # fail flag set to 1 since timeout in this case is due to directory removal
+                res = FailedSimulation(self.params, self.job_id, 1)
         return res
 
     def execute(self, models):
