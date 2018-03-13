@@ -2029,42 +2029,18 @@ class SimplexAlgorithm(Algorithm):
 def latin_hypercube(nsamples, ndims):
     """
     Latin hypercube sampling.
-    This code was dug out of the scipy.optimize.differentialevolution source code, and converted to work in the
-    general case (which surprisingly, does not exist within scipy)
-
-    Initializes the population with Latin Hypercube Sampling.
-    Latin Hypercube Sampling ensures that each parameter is uniformly
-    sampled over its range.
 
     Returns a nsamples by ndims array, with entries in the range [0,1]
     You'll have to rescale them to your actual param ranges.
     """
-    rng = np.random
-
-    # Each parameter range needs to be sampled uniformly. The scaled
-    # parameter range ([0, 1)) needs to be split into
-    # `self.num_population_members` segments, each of which has the following
-    # size:
-    segsize = 1.0 / nsamples
-
-    # Within each segment we sample from a uniform random distribution.
-    # We need to do this sampling for each parameter.
-    samples = (segsize * rng.random_sample((nsamples, ndims))
-
-    # Offset each segment to cover the entire parameter range [0, 1)
-               + np.linspace(0., 1., nsamples,
-                             endpoint=False)[:, np.newaxis])
-
-    # Create an array for population of candidate solutions.
-    population = np.zeros_like(samples)
-
-    # Initialize population of candidate solutions by permutation of the
-    # random samples.
-    for j in range(ndims):
-        order = rng.permutation(range(nsamples))
-        population[:, j] = samples[order, j]
-
-    return population
+    if ndims == 0:
+        # Weird edge case - needed for other code counting on result having a number of rows
+        return np.zeros((nsamples, 0))
+    value_table = np.transpose(np.array([[i/nsamples + 1/nsamples * np.random.random() for i in range(nsamples)]
+                                         for dim in range(ndims)]))
+    for dim in range(ndims):
+        np.random.shuffle(value_table[:, dim])
+    return value_table
 
 
 def exp10(n):
