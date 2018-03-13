@@ -13,34 +13,37 @@ import re
 import logging
 
 
-def init_logging():
+def init_logging(pres):
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
-    dfh = logging.FileHandler('bnf_debug.log', mode='a')
-    dfh.setLevel(logging.DEBUG)
     efh = logging.FileHandler('bnf_errors.log', mode='a')
     efh.setLevel(logging.ERROR)
-    dfh.setFormatter(fmt)
     efh.setFormatter(fmt)
 
     dlog = logging.getLogger('distributed')
     stdout_handler = dlog.handlers[0]  # Before we add anything, distributed has a handler going to stdout
     dlog.setLevel(logging.INFO)
-    dlog.addHandler(dfh)
     dlog.addHandler(efh)
     dlog.removeHandler(stdout_handler)  # Remove the logging to stdout
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
-    root.addHandler(dfh)
     root.addHandler(efh)
 
     tornado = logging.getLogger('tornado.application')
     stdout_handler = tornado.handlers[0]  # Before we add anything, tornado has a handler going to stdout
     tornado.setLevel(logging.WARNING)
-    # Don't clog our error log with all the tornado stuff, just send it to the debug log
-    tornado.addHandler(dfh)
     tornado.removeHandler(stdout_handler)  # Stop tornado from going to stdou
+
+    if pres.debug_logging:
+        dfh = logging.FileHandler('bnf_debug.log', mode='a')
+        dfh.setLevel(logging.DEBUG)
+        dfh.setFormatter(fmt)
+
+        dlog.addHandler(dfh)
+        root.addHandler(dfh)
+        # Don't clog our error log with all the tornado stuff, just send it to the debug log
+        tornado.addHandler(dfh)
 
 
 class Configuration(object):

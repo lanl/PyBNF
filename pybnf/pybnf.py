@@ -35,11 +35,6 @@ def main():
         os.remove('bnf_errors.log')
 
     try:
-        init_logging()
-
-        print0("PyBNF v%s" % __version__)
-        logging.info('Running PyBNF v%s' % __version__)
-
         parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
 
         parser.add_argument('-c', action='store', dest='conf_file',
@@ -50,9 +45,16 @@ def main():
                             help='optional string denoting the type of cluster')
         parser.add_argument('-r', '--resume', action='store_true',
                             help='automatically resume the previously stopped fitting run')
+        parser.add_argument('-d', '--debug_logging', action='store_true',
+                            help='outputs debugging log (file could be very large)')
+        results = parser.parse_args()
+
+        init_logging(results)
+
+        print0("PyBNF v%s" % __version__)
+        logging.info('Running PyBNF v%s' % __version__)
 
         # Load the conf file and create the algorithm
-        results = parser.parse_args()
         if results.conf_file is None:
             print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
             exit(0)
