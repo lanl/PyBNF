@@ -57,7 +57,7 @@ def main():
             printing.verbosity = config.config['verbosity']
 
         # Create output folders, checking for overwrites.
-        init_output_directory(results.conf_file, config)
+        init_output_directory(config, results)
 
         if config.config['fit_type'] == 'pso':
             alg = algs.ParticleSwarm(config)
@@ -147,14 +147,14 @@ def main():
             exit(1)
 
 
-def init_output_directory(conf_file, config):
+def init_output_directory(config, cmdline_args):
     """
     Creates (or overwrites) output directories for a fitting run
 
-    :param conf_file: The fitting run's configuration file
-    :type conf_file: str
     :param config: The current fitting run's configuration
     :type config: Configuration
+    :param cmdline_args: The command line arguments
+    :type cmdline_args: Namespace
     :return:
     """
     if os.path.exists(config.config['output_dir']):
@@ -162,14 +162,7 @@ def init_output_directory(conf_file, config):
             if os.path.exists(config.config['output_dir'] + '/Results') or os.path.exists(
                             config.config['output_dir'] + '/Simulations') or os.path.exists(
                         config.config['output_dir'] + '/Initialize'):
-                logging.info("Output directory has subdirectories... querying user for overwrite permission")
-                ans = 'x'
-                while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                    ans = input('It looks like your output_dir already contains Results/, Simulations/, and/or '
-                                'Initialize/ folders from a previous run. \n'
-                                'Overwrite them with the current run? [y/n] (n) ')
-                if ans.lower() == 'y' or ans.lower() == 'yes':
-                    logging.info("Overwriting existing output directory")
+                if cmdline_args.overwrite:
                     if os.path.exists(config.config['output_dir'] + '/Results'):
                         shutil.rmtree(config.config['output_dir'] + '/Results')
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
@@ -198,5 +191,5 @@ def init_output_directory(conf_file, config):
 
     os.makedirs(config.config['output_dir'] + '/Results')
     os.mkdir(config.config['output_dir'] + '/Simulations')
-    shutil.copy(conf_file, config.config['output_dir'] + '/Results')
+    shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
 
