@@ -280,7 +280,7 @@ class Algorithm(object):
         :type cmdline_args: Namespace object
         """
         self.config = config
-        self.parse_results = cmdline_args
+        self.cmdline_args = cmdline_args
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
         logging.debug('Instantiating Trajectory object')
