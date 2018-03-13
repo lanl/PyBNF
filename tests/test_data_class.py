@@ -144,6 +144,11 @@ class TestData:
         d1._subtract_baseline()
         npt.assert_allclose(d1.data, np.array([[0, 0, 0, 0], [1, -1, -1, 1], [2, 1, -2, 5]]))
 
+    def test_unit_scale(self):
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_unit_scale()
+        npt.assert_allclose(d1.data, np.array([[0, 0, 0, 0], [1, -1.0, -0.5, 0.2], [2, 1.0, -1.0, 1.0]]))
+
     def test_max_normalization(self):
         d0 = copy.deepcopy(self.d0)
         d0.normalize_to_peak()
