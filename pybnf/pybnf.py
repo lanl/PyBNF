@@ -47,31 +47,31 @@ def main():
                             help='automatically resume the previously stopped fitting run')
         parser.add_argument('-d', '--debug_logging', action='store_true',
                             help='outputs debugging log (file could be very large)')
-        results = parser.parse_args()
+        cmdline_args = parser.parse_args()
 
-        init_logging(results)
+        init_logging(cmdline_args)
 
         print0("PyBNF v%s" % __version__)
         logging.info('Running PyBNF v%s' % __version__)
 
         # Load the conf file and create the algorithm
-        if results.conf_file is None:
+        if cmdline_args.conf_file is None:
             print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
             exit(0)
-        logging.info('Loading configuration file: %s' % results.conf_file)
+        logging.info('Loading configuration file: %s' % cmdline_args.conf_file)
 
-        config = load_config(results.conf_file)
+        config = load_config(cmdline_args.conf_file)
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
 
-        if results.resume and results.overwrite:
+        if cmdline_args.resume and cmdline_args.overwrite:
             raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
                              "run, or --overwrite to overwrite the previous run with a new one.")
 
         continue_run = False
         if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not results.overwrite:
             ans = 'x'
-            if results.resume:
+            if cmdline_args.resume:
                 ans = 'y'
                 logging.info('Automatically will resume previous run.')
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
@@ -79,8 +79,9 @@ def main():
             if ans.lower() in ('y', 'yes', ''):
                 logging.info('Resuming a previous run')
                 continue_run = True
-        elif results.resume:
+        elif cmdline_args.resume:
             raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir'] + '/Simulations'))
+
         if continue_run:
             # Restart the loaded algorithm
             logging.info('Reloading algorithm')
@@ -93,7 +94,7 @@ def main():
                 alg.config.config['refine'] = 0
         else:
             # Create output folders, checking for overwrites.
-            init_output_directory(config, results)
+            init_output_directory(config, cmdline_args)
             pending = None
     
             if config.config['fit_type'] == 'pso':
@@ -113,8 +114,8 @@ def main():
                 raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
         # override cluster type value in configuration file if specified with cmdline args
-        if results.cluster_type:
-            config.config['cluster_type'] = results.cluster_type
+        if cmdline_args.cluster_type:
+            config.config['cluster_type'] = cmdline_args.cluster_type
 
         # Set up cluster
         if config.config['scheduler_node'] and config.config['worker_nodes']:
