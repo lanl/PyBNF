@@ -2053,6 +2053,20 @@ def latin_hypercube(nsamples, ndims):
     return population
 
 
+def latin(nsamples, ndims):
+    """
+    Latin hypercube sampling.
+
+    Returns a nsamples by ndims array, with entries in the range [0,1]
+    You'll have to rescale them to your actual param ranges.
+    """
+    value_table = np.transpose(np.array([[i/nsamples + 1/nsamples * np.random.random() for i in range(nsamples)]
+                            for dim in range(ndims)]))
+    for dim in range(ndims):
+        np.random.shuffle(value_table[:, dim])
+    return value_table
+
+
 def exp10(n):
     """
     Raise 10 to the power of a possibly user-defined value, and raise a helpful error if it overflows

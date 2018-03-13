@@ -115,6 +115,19 @@ class TestScatter:
     def test_exp10(self):
         assert algorithms.exp10(2.) == 100.
 
+    def test_latin(self):
+        import numpy as np
+        import matplotlib.pyplot as plt
+        np.random.seed(42)
+        d1 = algorithms.latin(20, 2)
+        d2 = algorithms.latin_hypercube(20, 2)
+        plt.figure()
+        plt.scatter(d1[:,0], d1[:,1],c='k',marker='o')
+        plt.gcf().show()
+        plt.figure()
+        plt.scatter(d2[:, 0], d2[:, 1], c='k', marker='o')
+        plt.gcf().show()
+
     @raises(printing.PybnfError)
     def test_exp10_overflow(self):
         algorithms.exp10(100000.)
