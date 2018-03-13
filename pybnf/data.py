@@ -186,6 +186,14 @@ class Data(object):
                 col /= std
             self.data[:, c] = col
 
+    def _subtract_baseline(self, idx=0, cols='all'):
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
+        for c in cols:
+            col = self.data[:, c]
+            self.data[:, c] = col - self.data[0, c]
+
     @staticmethod
     def average(datas):
         """
