@@ -14,6 +14,7 @@ import logging.handlers
 import argparse
 import os
 import shutil
+import time
 import traceback
 
 
@@ -133,6 +134,7 @@ def main():
         # Stop dask-ssh regardless of success
         if node_string:
             teardown_cluster(dask_ssh_proc)
+            time.sleep(10)  # wait for teardown before continuing
 
         # Attempt to remove dask-worker-space directory if necessary
         # (exists in directory where workers were instantiated)
