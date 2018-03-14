@@ -13,6 +13,9 @@ import re
 import logging
 
 
+logger = logging.getLogger(__name__)
+
+
 def init_logging(pres):
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
@@ -268,7 +271,7 @@ class Configuration(object):
                               "You specified that model %s.bngl corresponds to data file %s.exp, but I can't find the "
                               "corresponding action in the model file. One of the actions in %s.bngl needs to include "
                               "the argument 'suffix=>\"%s\" '." % (model.name, ef, model.name, ef))
-            logging.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
+            logger.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
             mapping[model.name] = efs_per_m
         return mapping
 
@@ -399,7 +402,7 @@ class Configuration(object):
                                                  "Specified normalization for column %s in file %s, but that file does "
                                                  "not contain that column name." % (c, ef) + seedoc)
                             if c[-3:] == '_SD':
-                                logging.info('Removing %s from the normalization list' % c)
+                                logger.info('Removing %s from the normalization list' % c)
                                 print1("Warning: You specified a normalization for %s, but I can't normalize a "
                                        "standard deviation separately, because it's not an output of the simulation. "
                                        "I'm ignoring your %s setting and assuming it's on the same scale as its data "

@@ -4,7 +4,6 @@
 from .printing import PybnfError, print1
 
 import numpy as np
-import logging
 
 
 class ObjectiveFunction(object):
