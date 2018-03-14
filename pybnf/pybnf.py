@@ -2,7 +2,7 @@
 
 
 from .parse import load_config
-from .config import Configuration, init_logging
+from .config import init_logging
 from .printing import print0, print1, PybnfError
 from .cluster import get_scheduler, setup_cluster, teardown_cluster
 import pybnf.algorithms as algs
@@ -22,9 +22,6 @@ import pickle
 __version__ = "0.1"
 
 
-logger = logging.getLogger(__name__)
-
-
 def main():
 
     success = False
@@ -36,26 +33,28 @@ def main():
     if os.path.isfile('bnf.log'):
         os.remove('bnf.log')
 
+    parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
+
+    parser.add_argument('-c', action='store', dest='conf_file',
+                        help='Path to the BioNetFit configuration file', metavar='config.conf')
+    parser.add_argument('-o', '--overwrite', action='store_true',
+                        help='automatically overwrites existing folders if necessary')
+    parser.add_argument('-t', '--cluster_type', action='store',
+                        help='optional string denoting the type of cluster')
+    parser.add_argument('-r', '--resume', action='store_true',
+                        help='automatically resume the previously stopped fitting run')
+    parser.add_argument('-d', '--debug_logging', action='store_true',
+                        help='outputs debugging log (file could be very large)')
+    cmdline_args = parser.parse_args()
+
+
+    init_logging(cmdline_args)
+    logger = logging.getLogger(__name__)
+
+    print0("PyBNF v%s" % __version__)
+    logger.info('Running PyBNF v%s' % __version__)
+
     try:
-        parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
-
-        parser.add_argument('-c', action='store', dest='conf_file',
-                            help='Path to the BioNetFit configuration file', metavar='config.conf')
-        parser.add_argument('-o', '--overwrite', action='store_true',
-                            help='automatically overwrites existing folders if necessary')
-        parser.add_argument('-t', '--cluster_type', action='store',
-                            help='optional string denoting the type of cluster')
-        parser.add_argument('-r', '--resume', action='store_true',
-                            help='automatically resume the previously stopped fitting run')
-        parser.add_argument('-d', '--debug_logging', action='store_true',
-                            help='outputs debugging log (file could be very large)')
-        cmdline_args = parser.parse_args()
-
-        init_logging(cmdline_args)
-
-        print0("PyBNF v%s" % __version__)
-        logger.info('Running PyBNF v%s' % __version__)
-
         # Load the conf file and create the algorithm
         if cmdline_args.conf_file is None:
             print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
@@ -96,7 +95,42 @@ def main():
                 alg.config.config['refine'] = 0
         else:
             # Create output folders, checking for overwrites.
-            init_output_directory(config, cmdline_args)
+            if os.path.exists(config.config['output_dir']):
+                if os.path.isdir(config.config['output_dir']):
+                    if os.path.exists(config.config['output_dir'] + '/Results') or os.path.exists(
+                                    config.config['output_dir'] + '/Simulations') or os.path.exists(
+                                config.config['output_dir'] + '/Initialize'):
+                        if cmdline_args.overwrite:
+                            if os.path.exists(config.config['output_dir'] + '/Results'):
+                                shutil.rmtree(config.config['output_dir'] + '/Results')
+                            if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                                shutil.rmtree(config.config['output_dir'] + '/Simulations')
+                            if os.path.exists(config.config['output_dir'] + '/Initialize'):
+                                shutil.rmtree(config.config['output_dir'] + '/Initialize')
+                        else:
+                            logger.info("Output directory has subdirectories... querying user for overwrite permission")
+                            ans = 'x'
+                            while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                                ans = input(
+                                    'It looks like your output_dir already contains Results/, Simulations/, and/or '
+                                    'Initialize/ folders from a previous run. \n'
+                                    'Overwrite them with the current run? [y/n] (n) ')
+                            if ans.lower() == 'y' or ans.lower() == 'yes':
+                                logger.info("Overwriting existing output directory")
+                                if os.path.exists(config.config['output_dir'] + '/Results'):
+                                    shutil.rmtree(config.config['output_dir'] + '/Results')
+                                if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                                    shutil.rmtree(config.config['output_dir'] + '/Simulations')
+                                if os.path.exists(config.config['output_dir'] + '/Initialize'):
+                                    shutil.rmtree(config.config['output_dir'] + '/Initialize')
+                            else:
+                                logger.info("Overwrite rejected... exiting")
+                                print('Quitting')
+                                exit()
+
+            os.makedirs(config.config['output_dir'] + '/Results')
+            os.mkdir(config.config['output_dir'] + '/Simulations')
+            shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
             pending = None
     
             if config.config['fit_type'] == 'pso':
@@ -195,52 +229,3 @@ def main():
             logger.exception('During cleanup, another exception occurred')
         finally:
             exit(1)
-
-
-def init_output_directory(config, cmdline_args):
-
-    """
-    Creates (or overwrites) output directories for a fitting run
-
-    :param config: The current fitting run's configuration
-    :type config: Configuration
-    :param cmdline_args: The command line arguments
-    :type cmdline_args: Namespace
-    :return:
-    """
-    if os.path.exists(config.config['output_dir']):
-        if os.path.isdir(config.config['output_dir']):
-            if os.path.exists(config.config['output_dir'] + '/Results') or os.path.exists(
-                            config.config['output_dir'] + '/Simulations') or os.path.exists(
-                        config.config['output_dir'] + '/Initialize'):
-                if cmdline_args.overwrite:
-                    logging.info('Overwriting existing output directory')
-                    if os.path.exists(config.config['output_dir'] + '/Results'):
-                        shutil.rmtree(config.config['output_dir'] + '/Results')
-                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                        shutil.rmtree(config.config['output_dir'] + '/Simulations')
-                    if os.path.exists(config.config['output_dir'] + '/Initialize'):
-                        shutil.rmtree(config.config['output_dir'] + '/Initialize')
-                else:
-                    logger.info("Output directory has subdirectories... querying user for overwrite permission")
-                    ans = 'x'
-                    while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                        ans = input('It looks like your output_dir already contains Results/, Simulations/, and/or '
-                                    'Initialize/ folders from a previous run. \n'
-                                    'Overwrite them with the current run? [y/n] (n) ')
-                    if ans.lower() == 'y' or ans.lower() == 'yes':
-                        logger.info("Overwriting existing output directory")
-                        if os.path.exists(config.config['output_dir'] + '/Results'):
-                            shutil.rmtree(config.config['output_dir'] + '/Results')
-                        if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                            shutil.rmtree(config.config['output_dir'] + '/Simulations')
-                        if os.path.exists(config.config['output_dir'] + '/Initialize'):
-                            shutil.rmtree(config.config['output_dir'] + '/Initialize')
-                    else:
-                        logger.info("Overwrite rejected... exiting")
-                        print('Quitting')
-                        exit()
-
-    os.makedirs(config.config['output_dir'] + '/Results')
-    os.mkdir(config.config['output_dir'] + '/Simulations')
-    shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
