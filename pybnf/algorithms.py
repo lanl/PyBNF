@@ -271,7 +271,7 @@ class JobGroup:
 
 
 class Algorithm(object):
-    def __init__(self, config, cmdline_args):
+    def __init__(self, config, cmdline_args=None):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
         Trajectory instance to track the fitting progress, and performs various additional
@@ -759,7 +759,7 @@ class ParticleSwarm(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args):
+    def __init__(self, config, cmdline_args=None):
 
         # Former params that are now part of the config
         # variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
@@ -945,7 +945,7 @@ class DifferentialEvolution(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args):
+    def __init__(self, config, cmdline_args=None):
         """
         Initializes algorithm based on the config object.
 
@@ -1193,7 +1193,7 @@ class ScatterSearch(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args):  # variables, popsize, maxiters, saveevery):
+    def __init__(self, config, cmdline_args=None):  # variables, popsize, maxiters, saveevery):
 
         super(ScatterSearch, self).__init__(config, cmdline_args)
 
@@ -1412,7 +1412,7 @@ class BayesAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args, sa=False):  # expdata, objective, priorfile, gamma=0.1):
+    def __init__(self, config, cmdline_args=None, sa=False):  # expdata, objective, priorfile, gamma=0.1):
         super(BayesAlgorithm, self).__init__(config, cmdline_args)
         self.sa = sa
         self.step_size = config.config['step_size']
@@ -1790,7 +1790,7 @@ class SimplexAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args):
+    def __init__(self, config, cmdline_args=None):
         super(SimplexAlgorithm, self).__init__(config, cmdline_args)
         if 'simplex_start_point' not in config.config:
             # We need to set up the initial point ourselfs
