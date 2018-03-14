@@ -30,12 +30,10 @@ def init_logging(pres=None):
     dlog = logging.getLogger('distributed')
     dlog.handlers[:] = []  # remove any existing handlers
     dlog.setLevel(logging.WARNING)
-    dlog.addHandler(fh)
 
     tlog = logging.getLogger('tornado')
     tlog.handlers[:] = []  # remove any existing handlers
     tlog.setLevel(logging.ERROR)
-    tlog.addHandler(fh)
 
     if pres:
         if pres.debug_logging:
