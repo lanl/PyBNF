@@ -23,29 +23,26 @@ def init_logging(pres):
     fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
 
-    plog = logging.getLogger('pybnf')
-    plog.setLevel(10)
-    plog.addHandler(fh)
-    plog.propagate = False
+    root = logging.getLogger()
+    root.setLevel(10)
+    root.addHandler(fh)
 
     dlog = logging.getLogger('distributed')
     dlog.handlers[:] = []  # remove any existing handlers
     dlog.setLevel(logging.WARNING)
     dlog.addHandler(fh)
-    dlog.propagate = False
 
     tlog = logging.getLogger('tornado')
     tlog.handlers[:] = []  # remove any existing handlers
     tlog.setLevel(logging.ERROR)
     tlog.addHandler(fh)
-    tlog.propagate = False
 
     if pres.debug_logging:
         dfh = logging.FileHandler('bnf_debug.log', mode='a')
         dfh.setLevel(logging.DEBUG)
         dfh.setFormatter(fmt)
 
-        plog.addHandler(dfh)
+        root.addHandler(dfh)
         dlog.addHandler(dfh)
         tlog.addHandler(dfh)
 
