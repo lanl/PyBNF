@@ -271,7 +271,7 @@ class JobGroup:
 
 
 class Algorithm(object):
-    def __init__(self, config, cmdline_args=None):
+    def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
         Trajectory instance to track the fitting progress, and performs various additional
@@ -279,11 +279,8 @@ class Algorithm(object):
 
         :param config: The fitting configuration
         :type config: Configuration
-        :param cmdline_args: Command line arguments
-        :type cmdline_args: Namespace object
         """
         self.config = config
-        self.cmdline_args = cmdline_args
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
         logger.debug('Instantiating Trajectory object')
@@ -759,7 +756,7 @@ class ParticleSwarm(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args=None):
+    def __init__(self, config):
 
         # Former params that are now part of the config
         # variable_list, num_particles, max_evals, cognitive=1.5, social=1.5, w0=1.,
@@ -794,7 +791,7 @@ class ParticleSwarm(Algorithm):
 
         """
 
-        super(ParticleSwarm, self).__init__(config, cmdline_args)
+        super(ParticleSwarm, self).__init__(config)
 
         # Set default values for non-essential parameters - no longer here; now done in Config.
 
@@ -945,7 +942,7 @@ class DifferentialEvolution(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args=None):
+    def __init__(self, config):
         """
         Initializes algorithm based on the config object.
 
@@ -959,7 +956,7 @@ class DifferentialEvolution(Algorithm):
         num_to_migrate
 
         """
-        super(DifferentialEvolution, self).__init__(config, cmdline_args)
+        super(DifferentialEvolution, self).__init__(config)
 
         self.num_islands = config.config['islands']
         self.num_per_island = int(config.config['population_size'] / self.num_islands)
@@ -1193,9 +1190,9 @@ class ScatterSearch(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args=None):  # variables, popsize, maxiters, saveevery):
+    def __init__(self, config):  # variables, popsize, maxiters, saveevery):
 
-        super(ScatterSearch, self).__init__(config, cmdline_args)
+        super(ScatterSearch, self).__init__(config)
 
         self.popsize = config.config['population_size']
         self.maxiters = config.config['max_iterations']
@@ -1412,8 +1409,8 @@ class BayesAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args=None, sa=False):  # expdata, objective, priorfile, gamma=0.1):
-        super(BayesAlgorithm, self).__init__(config, cmdline_args)
+    def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
+        super(BayesAlgorithm, self).__init__(config)
         self.sa = sa
         self.step_size = config.config['step_size']
         self.num_parallel = config.config['population_size']
@@ -1790,8 +1787,8 @@ class SimplexAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config, cmdline_args=None):
-        super(SimplexAlgorithm, self).__init__(config, cmdline_args)
+    def __init__(self, config):
+        super(SimplexAlgorithm, self).__init__(config)
         if 'simplex_start_point' not in config.config:
             # We need to set up the initial point ourselfs
             self._parse_start_point()

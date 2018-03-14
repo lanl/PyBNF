@@ -170,7 +170,6 @@ def main():
         logger.debug('Algorithm initialization')
         alg.run(scheduler_node, resume=pending)
 
-
         if config.config['refine'] == 1:
             logger.debug('Refinement requested for best fit parameter set')
             if config.config['fit_type'] == 'sim':
