@@ -3,7 +3,7 @@
 
 from .printing import PybnfError
 
-from subprocess import run, TimeoutExpired, Popen, PIPE, STDOUT, CalledProcessError
+from subprocess import run, TimeoutExpired, Popen, PIPE, STDOUT, CalledProcessError, DEVNULL
 
 import logging
 import re
@@ -50,8 +50,7 @@ def get_scheduler(config):
 
 def setup_cluster(node_string):
     logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
-    with open('bnf_cluster.log', 'w') as clog:
-        dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True, stdout=clog, stderr=STDOUT)
+    dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True, stdout=DEVNULL, stderr=STDOUT)
     time.sleep(10)
     return dask_ssh_proc
 
