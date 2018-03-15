@@ -147,17 +147,16 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        logger.debug("Worker running Job %s" % self.job_id)
-
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
         failures = 0
         while not made_folder:
             try:
                 os.mkdir(self.folder)
+                logger.info('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
-                logger.info('Failed to create folder %s, trying again.' % self.folder)
+                logger.warning('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
@@ -179,9 +178,11 @@ class Job:
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
+                logger.info('Removing folder %s' % self.folder)
             except CalledProcessError or TimeoutExpired:
                 # fail flag set to 1 since timeout in this case is due to directory removal
                 res = FailedSimulation(self.params, self.job_id, 1)
+
         return res
 
     def execute(self, models):
