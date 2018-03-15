@@ -147,20 +147,24 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
+        # Seeing these logs for cluster-based fitting requires configuring dask to log to the
+        # "pybnf.algorithms.job" logger
+        jlogger = logging.getLogger('pybnf.algorithms.job')
+
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
         failures = 0
         while not made_folder:
             try:
                 os.mkdir(self.folder)
-                logger.info('Created folder %s for simulation' % self.folder)
+                jlogger.info('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
-                logger.warning('Failed to create folder %s, trying again.' % self.folder)
+                jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    logger.error('Job %s failed because it was unable to write to the Simulations folder' %
+                    jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
                                   self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
@@ -178,7 +182,7 @@ class Job:
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
-                logger.info('Removing folder %s' % self.folder)
+                jlogger.info('Removing folder %s' % self.folder)
             except CalledProcessError or TimeoutExpired:
                 # fail flag set to 1 since timeout in this case is due to directory removal
                 res = FailedSimulation(self.params, self.job_id, 1)
