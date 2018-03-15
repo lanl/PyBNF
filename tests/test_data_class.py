@@ -108,7 +108,7 @@ class TestData:
     def test_row_access(self):
         assert np.array_equal(self.d0.get_row('time',0.), np.array([0.00000000e+00,1.20000000e+01,8.00000000e+00,6.00000000e+00,0.00000000e+00,1.60000000e+01]))
         assert np.array_equal(self.d1.get_row('obs3',10.), np.array([2., 4., 2., 10.]))
-        assert self.d1.get_row('x',3.) == None
+        assert self.d1.get_row('x',3.) is None
 
     @raises(KeyError)
     def test_column_access_failure(self):
@@ -138,6 +138,16 @@ class TestData:
         d1b.normalize_to_init(cols=[1, 3])
         npt.assert_allclose(d1b.data, np.array(
             [[0., 1., 4., 1.], [1., 2. / 3., 3., 6. / 5.], [2., 4. / 3., 2., 10. / 5.]]))
+
+    def test_subtract_baseline(self):
+        d1 = copy.deepcopy(self.d1)
+        d1._subtract_baseline()
+        npt.assert_allclose(d1.data, np.array([[0, 0, 0, 0], [1, -1, -1, 1], [2, 1, -2, 5]]))
+
+    def test_unit_scale(self):
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_unit_scale()
+        npt.assert_allclose(d1.data, np.array([[0, 0, 0, 0], [1, -1.0, -0.5, 0.2], [2, 1.0, -1.0, 1.0]]))
 
     def test_max_normalization(self):
         d0 = copy.deepcopy(self.d0)

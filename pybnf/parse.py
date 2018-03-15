@@ -202,7 +202,8 @@ def ploop(ls):  # parse loop
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'"
             elif key == 'normalization':
-                fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init'. 'peak', or 'zero')"\
+                fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
+                      "'unit', or 'zero')"\
                     % (key, key)
 
             message = "Parsing configuration key '%s' on line %s.\n" % (key, i)

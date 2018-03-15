@@ -186,6 +186,37 @@ class Data(object):
                 col /= std
             self.data[:, c] = col
 
+    def _subtract_baseline(self, idx=0, cols='all'):
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
+        for c in cols:
+            col = self.data[:, c]
+            self.data[:, c] = col - self.data[0, c]
+
+    def normalize_to_unit_scale(self, idx=0, cols='all'):
+        """
+        Scales data so that the range of values is between (min-init)/(max-init) and 1.  If the maximum value is 0
+        (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value
+        so that the range of values is between 0 and -1
+
+        :param idx: Index of independent variable
+        :type idx: int
+        :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
+        :type: list or str
+        :return:
+        """
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
+        self._subtract_baseline(idx, cols)
+        for c in cols:
+            cmax = np.max(self.data[:, c])
+            if cmax == 0.0:
+                self.data[:, c] = self.data[:, c] / np.abs(np.min(self.data[:, c]))
+            else:
+                self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
+
     @staticmethod
     def average(datas):
         """
@@ -203,7 +234,7 @@ class Data(object):
 
     def normalize(self, method):
         """
-        Normalize the data according to the specified method: 'init', 'peak', or 'zero'
+        Normalize the data according to the specified method: 'init', 'peak', 'unit', or 'zero'
         The method could also be a list of ordered pairs [('init', [columns]), ('peak', [columns])], where columns
         is a list of integers or column labels
 
@@ -217,6 +248,8 @@ class Data(object):
                 self.normalize_to_peak(cols=cols)
             elif m == 'zero':
                 self.normalize_to_zero(cols=cols)
+            elif m == 'unit':
+                self.normalize_to_unit_scale(cols=cols)
             else:
                 # Should have caught a user-defined invalid setting in config before getting here.
                 raise ValueError('Invalid method %s for Data.normalize()' % m)
