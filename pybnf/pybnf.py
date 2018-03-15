@@ -8,12 +8,15 @@ from .cluster import get_scheduler, setup_cluster, teardown_cluster
 import pybnf.algorithms as algs
 import pybnf.printing as printing
 
+from subprocess import run
+
 import logging
 import logging.config
 import logging.handlers
 import argparse
 import os
 import shutil
+import time
 import traceback
 
 
@@ -133,6 +136,15 @@ def main():
         # Stop dask-ssh regardless of success
         if node_string:
             teardown_cluster(dask_ssh_proc)
+            time.sleep(10)  # wait for teardown before continuing
+
+        # Attempt to remove dask-worker-space directory if necessary
+        # (exists in directory where workers were instantiated)
+        # Tries current and home directories
+        if os.path.isdir('dask-worker-space'):
+            run(['rm', '-rf', 'dask-worker-space'])
+        if os.path.isdir(os.environ['HOME'] + '/dask-worker-space'):
+            run(['rm', '-rf', os.environ['HOME'] + '/dask-worker-space'])
 
         # After any error, try to clean up.
         try:
@@ -148,6 +160,7 @@ def main():
 
 
 def init_output_directory(config, cmdline_args):
+
     """
     Creates (or overwrites) output directories for a fitting run
 
@@ -163,6 +176,7 @@ def init_output_directory(config, cmdline_args):
                             config.config['output_dir'] + '/Simulations') or os.path.exists(
                         config.config['output_dir'] + '/Initialize'):
                 if cmdline_args.overwrite:
+                    logging.info('Overwriting existing output directory')
                     if os.path.exists(config.config['output_dir'] + '/Results'):
                         shutil.rmtree(config.config['output_dir'] + '/Results')
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
@@ -192,4 +206,3 @@ def init_output_directory(config, cmdline_args):
     os.makedirs(config.config['output_dir'] + '/Results')
     os.mkdir(config.config['output_dir'] + '/Simulations')
     shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
-
