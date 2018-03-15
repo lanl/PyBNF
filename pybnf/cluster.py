@@ -48,9 +48,9 @@ def get_scheduler(config):
     return scheduler_node, node_string
 
 
-def setup_cluster(node_string):
+def setup_cluster(node_string, out_dir):
     logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
-    dask_ssh_proc = Popen('dask-ssh %s' % node_string, shell=True, stdout=DEVNULL, stderr=STDOUT)
+    dask_ssh_proc = Popen('dask-ssh %s --log-directory %s' % (node_string, out_dir), shell=True, stdout=DEVNULL, stderr=STDOUT)
     time.sleep(10)
     return dask_ssh_proc
 

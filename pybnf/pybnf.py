@@ -164,7 +164,7 @@ def main():
             scheduler_node, node_string = get_scheduler(config)
 
         if node_string:
-            dask_ssh_proc = setup_cluster(node_string)
+            dask_ssh_proc = setup_cluster(node_string, config.config['output_dir'])
 
         # Run the algorithm!
         logger.debug('Algorithm initialization')

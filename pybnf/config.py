@@ -16,7 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def init_logging(debug=False):
+def init_logging(cargs):
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
     fh = logging.FileHandler('bnf.log', mode='a')
@@ -35,7 +35,7 @@ def init_logging(debug=False):
     tlog.handlers[:] = []  # remove any existing handlers
     tlog.setLevel(logging.ERROR)
 
-    if debug:
+    if cargs.debug_logging:
         dfh = logging.FileHandler('bnf_debug.log', mode='a')
         dfh.setLevel(logging.DEBUG)
         dfh.setFormatter(fmt)
