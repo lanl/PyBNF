@@ -48,6 +48,8 @@ def main():
                             help='automatically overwrites existing folders if necessary')
         parser.add_argument('-t', '--cluster_type', action='store',
                             help='optional string denoting the type of cluster')
+        parser.add_argument('-r', '--resume', action='store_true',
+                            help='automatically resume the previously stopped fitting run')
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
@@ -60,15 +62,26 @@ def main():
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
 
+        if results.resume and results.overwrite:
+            raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
+                             "run, or --overwrite to overwrite the previous run with a new one.")
+
         continue_run = False
-        if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp'):
+        if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not results.overwrite:
             ans = 'x'
+            if results.resume:
+                ans = 'y'
+                logging.info('Automatically will resume previous run.')
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
                 ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
             if ans.lower() in ('y', 'yes', ''):
+                logging.info('Resuming a previous run')
                 continue_run = True
+        elif results.resume:
+            raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir'] + '/Simulations'))
         if continue_run:
             # Restart the loaded algorithm
+            logging.info('Reloading algorithm')
             f = open(config.config['output_dir'] + '/Simulations/alg_backup.bp', 'rb')
             alg, pending = pickle.load(f)
             config = alg.config
