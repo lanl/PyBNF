@@ -76,12 +76,11 @@ def main():
             if isinstance(alg, algs.SimplexAlgorithm):
                 # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
                 alg.config.config['refine'] = 0
-            alg.run(resume=pending)
         else:
             # Create output folders, checking for overwrites.
             init_output_directory(config, results)
+            pending = None
     
-            config = Configuration(config.config)
             if config.config['fit_type'] == 'pso':
                 alg = algs.ParticleSwarm(config)
             elif config.config['fit_type'] == 'de':
@@ -98,26 +97,26 @@ def main():
             else:
                 raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
-            # override cluster type value in configuration file if specified with cmdline args
-            if results.cluster_type:
-                config.config['cluster_type'] = results.cluster_type
+        # override cluster type value in configuration file if specified with cmdline args
+        if results.cluster_type:
+            config.config['cluster_type'] = results.cluster_type
 
-            # Set up cluster
-            if config.config['scheduler_node'] and config.config['worker_nodes']:
-                scheduler_node = config.config['scheduler_node']
-                node_string = ' '.join(config.config['worker_nodes'])
-            elif config.config['scheduler_node']:
-                dummy, node_string = get_scheduler(config)
-                scheduler_node = config.config['scheduler_node']
-            else:
-                scheduler_node, node_string = get_scheduler(config)
+        # Set up cluster
+        if config.config['scheduler_node'] and config.config['worker_nodes']:
+            scheduler_node = config.config['scheduler_node']
+            node_string = ' '.join(config.config['worker_nodes'])
+        elif config.config['scheduler_node']:
+            dummy, node_string = get_scheduler(config)
+            scheduler_node = config.config['scheduler_node']
+        else:
+            scheduler_node, node_string = get_scheduler(config)
 
-            if node_string:
-                dask_ssh_proc = setup_cluster(node_string)
+        if node_string:
+            dask_ssh_proc = setup_cluster(node_string)
 
-            # Run the algorithm!
-            logging.debug('Algorithm initialization')
-            alg.run(scheduler_node)
+        # Run the algorithm!
+        logging.debug('Algorithm initialization')
+        alg.run(scheduler_node, resume=pending)
 
         if config.config['refine'] == 1:
             logging.debug('Refinement requested for best fit parameter set')
