@@ -22,6 +22,7 @@ import shutil
 import copy
 import sys
 import traceback
+import pickle
 
 
 class Result(object):
@@ -579,7 +580,35 @@ class Algorithm(object):
         #         os.remove(noname_filepath)
         #     os.rename(filepath, noname_filepath)
 
-    def run(self, scheduler_node=None):
+    def backup(self, pending_psets=()):
+        """
+        Create a backup of this algorithm object that can be reloaded later to resume the run
+
+        :param pending_psets: Iterable of PSets that are currently submitted as jobs, and will need to get re-submitted
+        when resuming the algorithm
+        :return:
+        """
+
+        logging.info('Saving a backup of the algorithm')
+        # Pickle the algorithm
+        picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
+        try:
+            f = open(picklepath, 'wb')
+            pickle.dump((self, pending_psets), f)
+            f.close()
+        except IOError:
+            logging.exception('Failed to save backup of algorithm')
+            print1('Failed to save backup of the algorithm.\nSee log for more information')
+
+    def get_backup_every(self):
+        """
+        Returns a number telling after how many individual simulation returns should we back up the algorithm.
+        Makes a good guess, but could be overridden in a subclass
+        """
+        return self.config.config['backup_every'] * self.config.config['population_size'] * \
+            self.config.config['smoothing']
+
+    def run(self, scheduler_node=None, resume=None):
         """Main loop for executing the algorithm"""
 
         logging.debug('Initializing dask Client object')
@@ -597,8 +626,14 @@ class Algorithm(object):
         else:
             client = Client()
         client.run(init_logging)
+        backup_every = self.get_backup_every()
+        sim_count = 0
         logging.debug('Generating initial parameter sets')
-        psets = self.start_run()
+        if resume:
+            psets = resume
+        else:
+            psets = self.start_run()
+        pending_psets = set(psets)
         jobs = []
         for p in psets:
             jobs += self.make_job(p)
@@ -607,14 +642,22 @@ class Algorithm(object):
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
+            if sim_count % backup_every == 0 and sim_count != 0:
+                self.backup(pending_psets)
             f, res = next(pool)
             # Handle if this result is one of multiple instances for smoothing
+            sim_count += 1
+            pending.remove(f)
             if self.config.config['smoothing'] > 1:
                 group = self.job_group_dir.pop(res.name)
                 done = group.job_finished(res)
                 if not done:
                     continue
                 res = group.average_results()
+            try:
+                pending_psets.remove(res.pset)
+            except KeyError:
+                logging.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type == 1:
                     self.fail_count += 1
@@ -628,7 +671,6 @@ class Algorithm(object):
             else:
                 self.success_count += 1
                 logging.debug('Job %s complete' % res.name)
-            pending.remove(f)
             res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
             response = self.got_result(res)
@@ -640,6 +682,7 @@ class Algorithm(object):
                 new_jobs = []
                 for ps in response:
                     new_jobs += self.make_job(ps)
+                    pending_psets.add(ps)
                 logging.debug('Submitting %d new Jobs' % len(new_jobs))
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
                 pending.update(new_futures)
@@ -675,9 +718,16 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
                         exit()
-        if self.config.config['delete_old_files'] == 1 \
-                and (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1):
-            shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
+
+        if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
+            # End of fitting; delete unneeded files
+            try:
+                os.remove('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'])
+                logging.info('Deleted pickled algorithm')
+            except OSError:
+                logging.warning('Tried to delete pickled algorithm, but it was not found')
+            if self.config.config['delete_old_files'] == 1:
+                shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logging.info("Fitting complete")
 
@@ -1329,6 +1379,13 @@ class ScatterSearch(Algorithm):
             return paramset[param]
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
+
+    def get_backup_every(self):
+        """
+        Overrides base method because Scatter Search runs n*(n-1) PSets per iteration.
+        """
+        return self.config.config['backup_every'] * self.config.config['population_size'] * \
+            (self.config.config['population_size']-1) * self.config.config['smoothing']
 
 
 class BayesAlgorithm(Algorithm):

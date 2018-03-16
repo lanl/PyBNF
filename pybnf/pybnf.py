@@ -18,6 +18,7 @@ import os
 import shutil
 import time
 import traceback
+import pickle
 
 
 __version__ = "0.1"
@@ -47,6 +48,8 @@ def main():
                             help='automatically overwrites existing folders if necessary')
         parser.add_argument('-t', '--cluster_type', action='store',
                             help='optional string denoting the type of cluster')
+        parser.add_argument('-r', '--resume', action='store_true',
+                            help='automatically resume the previously stopped fitting run')
 
         # Load the conf file and create the algorithm
         results = parser.parse_args()
@@ -59,24 +62,53 @@ def main():
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
 
-        # Create output folders, checking for overwrites.
-        init_output_directory(config, results)
+        if results.resume and results.overwrite:
+            raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
+                             "run, or --overwrite to overwrite the previous run with a new one.")
 
-        if config.config['fit_type'] == 'pso':
-            alg = algs.ParticleSwarm(config)
-        elif config.config['fit_type'] == 'de':
-            alg = algs.DifferentialEvolution(config)
-        elif config.config['fit_type'] == 'ss':
-            alg = algs.ScatterSearch(config)
-        elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
-            # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
-            alg = algs.BayesAlgorithm(config)
-        elif config.config['fit_type'] == 'sa':
-            alg = algs.BayesAlgorithm(config, sa=True)
-        elif config.config['fit_type'] == 'sim':
-            alg = algs.SimplexAlgorithm(config)
+        continue_run = False
+        if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not results.overwrite:
+            ans = 'x'
+            if results.resume:
+                ans = 'y'
+                logging.info('Automatically will resume previous run.')
+            while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
+            if ans.lower() in ('y', 'yes', ''):
+                logging.info('Resuming a previous run')
+                continue_run = True
+        elif results.resume:
+            raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir'] + '/Simulations'))
+        if continue_run:
+            # Restart the loaded algorithm
+            logging.info('Reloading algorithm')
+            f = open(config.config['output_dir'] + '/Simulations/alg_backup.bp', 'rb')
+            alg, pending = pickle.load(f)
+            config = alg.config
+            f.close()
+            if isinstance(alg, algs.SimplexAlgorithm):
+                # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
+                alg.config.config['refine'] = 0
         else:
-            raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
+            # Create output folders, checking for overwrites.
+            init_output_directory(config, results)
+            pending = None
+    
+            if config.config['fit_type'] == 'pso':
+                alg = algs.ParticleSwarm(config)
+            elif config.config['fit_type'] == 'de':
+                alg = algs.DifferentialEvolution(config)
+            elif config.config['fit_type'] == 'ss':
+                alg = algs.ScatterSearch(config)
+            elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
+                # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
+                alg = algs.BayesAlgorithm(config)
+            elif config.config['fit_type'] == 'sa':
+                alg = algs.BayesAlgorithm(config, sa=True)
+            elif config.config['fit_type'] == 'sim':
+                alg = algs.SimplexAlgorithm(config)
+            else:
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
         # override cluster type value in configuration file if specified with cmdline args
         if results.cluster_type:
@@ -97,7 +129,7 @@ def main():
 
         # Run the algorithm!
         logging.debug('Algorithm initialization')
-        alg.run(scheduler_node)
+        alg.run(scheduler_node, resume=pending)
 
         if config.config['refine'] == 1:
             logging.debug('Refinement requested for best fit parameter set')
