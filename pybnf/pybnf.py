@@ -74,18 +74,18 @@ def main():
             ans = 'x'
             if cmdline_args.resume:
                 ans = 'y'
-                logging.info('Automatically will resume previous run.')
+                logger.info('Automatically will resume previous run.')
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
                 ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
             if ans.lower() in ('y', 'yes', ''):
-                logging.info('Resuming a previous run')
+                logger.info('Resuming a previous run')
                 continue_run = True
         elif cmdline_args.resume:
             raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir'] + '/Simulations'))
 
         if continue_run:
             # Restart the loaded algorithm
-            logging.info('Reloading algorithm')
+            logger.info('Reloading algorithm')
             f = open(config.config['output_dir'] + '/Simulations/alg_backup.bp', 'rb')
             alg, pending = pickle.load(f)
             config = alg.config

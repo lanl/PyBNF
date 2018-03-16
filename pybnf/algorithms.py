@@ -597,7 +597,7 @@ class Algorithm(object):
         :return:
         """
 
-        logging.info('Saving a backup of the algorithm')
+        logger.info('Saving a backup of the algorithm')
         # Pickle the algorithm
         picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
         try:
@@ -605,7 +605,7 @@ class Algorithm(object):
             pickle.dump((self, pending_psets), f)
             f.close()
         except IOError:
-            logging.exception('Failed to save backup of algorithm')
+            logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
 
     def get_backup_every(self):
@@ -667,7 +667,7 @@ class Algorithm(object):
             try:
                 pending_psets.remove(res.pset)
             except KeyError:
-                logging.warning('%s was missing when trying to remove from pending_psets' % res.pset)
+                logger.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type == 1:
                     self.fail_count += 1
@@ -735,9 +735,9 @@ class Algorithm(object):
             # End of fitting; delete unneeded files
             try:
                 os.remove('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'])
-                logging.info('Deleted pickled algorithm')
+                logger.info('Deleted pickled algorithm')
             except OSError:
-                logging.warning('Tried to delete pickled algorithm, but it was not found')
+                logger.warning('Tried to delete pickled algorithm, but it was not found')
             if self.config.config['delete_old_files'] == 1:
                 shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
