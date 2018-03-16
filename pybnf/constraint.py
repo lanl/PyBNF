@@ -170,6 +170,66 @@ class Constraint:
             self.alt1 = None
             self.alt2 = None
 
+        # Key tuples need to be initialized after we receive the first data result, so we can figure out the keys.
+        self.qkeys1 = None
+        self.qkeys2 = None
+        self.akeys1 = None
+        self.akeys2 = None
+
+    def find_keys(self, sim_data_dict):
+        """
+        Function to be called on the first evaluation of the penalty.
+        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
+
+        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
+        possible the input is poorly defined by referring to a suffix that exists in multiple models.
+        :param sim_data_dict:
+        :return:
+        """
+
+        keylist = []
+        for q in (self.quant1, self.quant2, self.alt1, self.alt2):
+            key = self.get_key(q, sim_data_dict)
+            keylist.append(key)
+        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2 = keylist
+
+    def get_key(self, q, sim_data_dict):
+        """
+        Converts a string from a constraint file ('Observable' or 'suffix.observable') into a tuple of the 3 keys you
+        would need to index into the sim_data_dict to get the right column of data.
+
+        :param q:
+        :return:
+        """
+        if not isinstance(q, str):
+            return None
+        if '.' not in q:
+            return (self.base_model, self.base_suffix, q)
+        else:
+            parts = q.split('.')
+            if len(parts) > 2:
+                raise PybnfError('Parsing constraint variable %s' % q,
+                                 "Parsing constraint variable %s - The format should be 'suffix.Observable' Should "
+                                 "not contain multiple '.' characters.")
+            options = []
+            for m in sim_data_dict:
+                if parts[0] in sim_data_dict[m]:
+                    options.append(m)
+            if len(options) == 0:
+                raise PybnfError("Could not find any experimental data corresponding to the suffix '%s' specified "
+                                 "in your constraint file" % parts[0])
+            if len(options) > 1:
+                raise PybnfError("Suffix '%s' in your constraint file appears in multiple model files. Please "
+                                 "change your suffix names so it isn't ambiguous" % parts[0])
+            return (options[0], parts[0], parts[1])
+
+    def index(self, sim_data_dict, keys):
+        """
+        Shortcut function for applying all 3 indices to the data object
+        :return:
+        """
+        return sim_data_dict[keys[0]][keys[1]][keys[2]]
+
     def penalty(self, sim_data_dict):
         """
         penalty function for violating the constraint. Returns 0 if constraint is satisfied, or a positive value
@@ -201,33 +261,60 @@ class AtConstraint(Constraint):
         self.atval = atval
         self.repeat = repeat
 
-    def penalty(self, data):
+        self.atkeys = None
+
+    def find_keys(self, sim_data_dict):
+        """
+        Function to be called on the first evaluation of the penalty.
+        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
+
+        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
+        possible the input is poorly defined by referring to a suffix that exists in multiple models.
+        :param sim_data_dict:
+        :return:
+        """
+
+        keylist = []
+        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.atvar):
+            key = self.get_key(q, sim_data_dict)
+            keylist.append(key)
+        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys = keylist
+
+    def penalty(self, sim_data_dict):
         """
         Compute the penalty
         """
 
+        # Load the keys if we haven't yet done so
+        if not self.atkeys:
+            self.find_keys(sim_data_dict)
+
         # Find the index where the when condition is met
-        when_col = data[self.when_var] < self.when_val
-        first_true = find_first(True, when_col)
-        first_false = find_first(False, when_col)
+        atdata = self.index(sim_data_dict, self.atkeys)
+        at_col = atdata[self.atval] < self.when_val
+        # Make array that is True at every point where the atvar crosses the atval
+        flip_points = at_col[:-1] != at_col[1:]
+        flip_inds = np.nonzero(flip_points)[0]
 
-        if first_true == -1:
-            # When_var is never lower than when_val
-            return self.never_penalty * np.min(data[self.when_var] - self.when_val)
+        if not self.repeat:
+            flip_inds = [flip_inds[:1]]
 
-        if first_false == -1:
-            # When_var is never higher than when_val
-            return self.never_penalty * np.min(self.when_val - data[self.when_var])
+        penalty = 0.
+        for fi in flip_inds:
+            # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
+            if isinstance(self.quant1, str):
+                q1 = self.index(sim_data_dict, self.qkeys1)[fi]
+            else:
+                q1 = self.quant1
+            if isinstance(self.quant2, str):
+                q2 = self.index(sim_data_dict, self.qkeys1)[fi]
+            else:
+                q2 = self.quant2
+            if q2 < q1 or (q2 == q1 and not self.or_equal):
+                # Failed constraint q1 < q2 at this point
+                penalty += max(self.min_penalty, q1-q2)
 
-        keyindex = max(first_false, first_true)
-
-        # Check the appropriate index
-        diff = data[self.target_var][keyindex] - self.target_val  # positive if data > target
-
-        if self.sign == '>' or self.sign == '>=':
-            diff = -diff
-
-        return max(0., diff) * self.weight
+        return penalty * self.weight
 
 
 class BetweenConstraint(Constraint):
@@ -251,30 +338,69 @@ class BetweenConstraint(Constraint):
         self.endvar = endvar
         self.endval = endval
 
-    def penalty(self, data):
+        self.startkeys = None
+        self.endkeys = None
+
+    def find_keys(self, sim_data_dict):
+        """
+        Function to be called on the first evaluation of the penalty.
+        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
+
+        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
+        possible the input is poorly defined by referring to a suffix that exists in multiple models.
+        :param sim_data_dict:
+        :return:
+        """
+
+        keylist = []
+        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.startvar, self.endvar):
+            key = self.get_key(q, sim_data_dict)
+            keylist.append(key)
+        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.startkeys, self.endkeys = keylist
+
+    def penalty(self, sim_data_dict):
         """
         Compute the penalty
         """
 
-        # Find the index where the when condition is met
-        when_col = data[self.when_var] < self.when_val
-        first_true = find_first(True, when_col)
-        first_false = find_first(False, when_col)
+        if not self.startkeys:
+            self.find_keys(sim_data_dict)
 
-        if first_true == -1 or first_false == -1:
-            keyindex = len(data[self.when_var])
+        # Find the indices bounding the condition
+        startdat = self.index(sim_data_dict, self.startkeys)
+        startcol = startdat < self.startval
+        start = np.nonzero(startcol[:-1] != startcol[1:])[0]
+        if len(start) == 0:
+            # Interval never started
+            return 0.
         else:
-            keyindex = max(first_false, first_true)
+            start = start[0]
 
-        # Check the appropriate indices (everything up to keyindex). Like an AlwaysConstraint for just this range.
-        diffs = data[self.target_var][:keyindex] - self.target_val  # positive if data > target
+        enddat = self.index(sim_data_dict, self.endkeys)
+        endcol = enddat < self.endval
+        end = np.nonzero(endcol[start:-1] != endcol[start+1:])[0]
+        if end == -1:
+            # Interval never ended
+            end = len(startcol) - 1
+        else:
+            end = end[0]
+            end += start
 
-        if self.sign == '>' or self.sign == '>=':
-            diffs = -diffs
+        if isinstance(self.quant1, str):
+            q1 = self.index(sim_data_dict, self.qkeys1)[start:end]
+        else:
+            q1 = self.quant1
+        if isinstance(self.quant2, str):
+            q2 = self.index(sim_data_dict, self.qkeys1)[start:end]
+        else:
+            q2 = self.quant2
 
-        worstdiff = np.max(diffs)
+        penalty = np.max(q1 - q2)
+        if penalty > 0 or (penalty == 0. and not self.or_equal):
+            penalty = max(self.min_penalty, penalty)
+        penalty = max(0., penalty)
 
-        return max(0., worstdiff) * self.weight
+        return penalty * self.weight
 
 
 class AlwaysConstraint(Constraint):
@@ -287,28 +413,30 @@ class AlwaysConstraint(Constraint):
 
         super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
 
-
-    # def __init__(self, inequality):
-    #     super().__init__()
-    #     self._parse_inequality(inequality)
-    #     self.weight = 1.0
-
-    def penalty(self, data):
+    def penalty(self, sim_data_dict):
         """
         Compute the always penalty
         The penalty is given by the worst miss of the constraint over the entire data column
         """
+        if not self.qkeys1 and not self.qkeys2:
+            self.find_keys(sim_data_dict)
 
-        diffs = data[self.target_var] - self.target_val
-        if self.sign == '>' or self.sign == '>=':
-            diffs = -diffs
+        # Todo - if q1 and q2 are on different time scales
+        if isinstance(self.quant1, str):
+            q1 = self.index(sim_data_dict, self.qkeys1)
+        else:
+            q1 = self.quant1
+        if isinstance(self.quant2, str):
+            q2 = self.index(sim_data_dict, self.qkeys1)
+        else:
+            q2 = self.quant2
 
-        worstdiff = np.max(diffs)
+        penalty = np.max(q1-q2)
+        if penalty > 0 or (penalty == 0. and not self.or_equal):
+            penalty = max(self.min_penalty, penalty)
+        penalty = max(0., penalty)
 
-        return max(0., worstdiff) * self.weight
-
-    def str_info(self, penalty=None):
-        return super().str_info(penalty) + ' always'
+        return penalty * self.weight
 
 
 class OnceConstraint(Constraint):
@@ -321,22 +449,26 @@ class OnceConstraint(Constraint):
 
         super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
 
-    def penalty(self, data):
+    def penalty(self, sim_data_dict):
         """
         Compute the penalty
         """
+        if not self.qkeys1 and not self.qkeys2:
+            self.find_keys(sim_data_dict)
 
-        diffs = data[self.target_var] - self.target_val
+        # Todo - if q1 and q2 are on different time scales
+        if isinstance(self.quant1, str):
+            q1 = self.index(sim_data_dict, self.qkeys1)
+        else:
+            q1 = self.quant1
+        if isinstance(self.quant2, str):
+            q2 = self.index(sim_data_dict, self.qkeys1)
+        else:
+            q2 = self.quant2
 
-        if self.sign == '<' or self.sign == '<=':
-            diffs = -diffs
+        penalty = np.min(q1 - q2)
+        if penalty > 0 or (penalty == 0. and not self.or_equal):
+            penalty = max(self.min_penalty, penalty)
+        penalty = max(0., penalty)
 
-        bestdiff = np.min(diffs)
-
-        return max(0., bestdiff) * self.weight
-
-class ParseError(Exception):
-    pass
-
-def find_first(x, y):
-    raise NotImplementedError('This was some function that Im not planning to transfer over to PyBNF')
+        return penalty * self.weight
