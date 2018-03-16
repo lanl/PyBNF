@@ -592,9 +592,13 @@ class Algorithm(object):
         logging.info('Saving a backup of the algorithm')
         # Pickle the algorithm
         picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
-        f = open(picklepath, 'wb')
-        pickle.dump((self, pending_psets), f)
-        f.close()
+        try:
+            f = open(picklepath, 'wb')
+            pickle.dump((self, pending_psets), f)
+            f.close()
+        except IOError:
+            logging.exception('Failed to save backup of algorithm')
+            print1('Failed to save backup of the algorithm.\nSee log for more information')
 
     def get_backup_every(self):
         """
