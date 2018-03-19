@@ -1,5 +1,6 @@
-from .context import constraint
+from .context import constraint, data
 import copy
+import numpy as np
 
 
 class TestConstraint:
@@ -8,14 +9,20 @@ class TestConstraint:
 
     @classmethod
     def setup_class(cls):
-        cls.cset = constraint.ConstraintSet()
 
         cls.line1 = 'A<B at 6 weight 1'
         cls.line2 = '42>=A At B=17 everytime Weight 5 AltPenalty C<=42 Min 3.4e-7#Comment  '
         cls.line3 = 'A<16 between B=3.14, 702 weight 8 min 9'
         cls.line4 = 'A<16 always weight 6'
         cls.line5 = 'A<16 once weight 6'
+
         cls.f1 = 'bngl_files/p1_5.con'
+        cls.f2 = 'bngl_files/con_test.con'
+        cls.dat2 = 'bngl_files/con_test.gdat'
+
+        cls.model = 'a.bngl'
+        cls.suf = 'b'
+        cls.cset = constraint.ConstraintSet(cls.model, cls.suf)
 
     @classmethod
     def teardown_class(cls):
@@ -75,3 +82,24 @@ class TestConstraint:
         assert isinstance(cs.constraints[3], constraint.AlwaysConstraint)
         assert isinstance(cs.constraints[4], constraint.OnceConstraint)
         assert cs.constraints[4].weight == 6.
+
+    def test_penalties(self):
+        d = data.Data()
+        d.load_data('bngl_files/con_test.gdat')
+        d_dict = {self.model: {self.suf: d}}
+
+        cs = copy.deepcopy(self.cset)
+        cs._load_constraint_file(self.f1)
+
+        assert cs.constraints[0].penalty(d_dict) == 0
+        assert cs.constraints[1].penalty(d_dict) == 4
+        np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), 0.4)
+        np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), 0.4)
+        assert cs.constraints[4].penalty(d_dict) == 0
+        assert cs.constraints[5].penalty(d_dict) == 10
+        assert cs.constraints[6].penalty(d_dict) == 0
+        assert cs.constraints[7].penalty(d_dict) == 25
+        assert cs.constraints[8].penalty(d_dict) == 20
+        assert cs.constraints[9].penalty(d_dict) == 30
+
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 89.8)

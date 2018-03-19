@@ -7,9 +7,10 @@ class ConstraintSet:
     """
     Represents the set of all constraints provided in one con file
     """
-    def __init__(self):
+    def __init__(self, base_model, base_suffix):
         self.constraints = []
-        self.base_suffix = 'idk'  # Todo
+        self.base_suffix = base_suffix
+        self.base_model = base_model
 
     def total_penalty(self, sim_data_dict):
         """
@@ -47,7 +48,15 @@ class ConstraintSet:
                     quant2 = p.ineq[2]
                 if p.weight_expr:
                     weight = float(p.weight_expr.weight)
-                    altpenalty = p.weight_expr.altpenalty if p.weight_expr.altpenalty else None
+                    if p.weight_expr.altpenalty:
+                        altpenalty = p.weight_expr.altpenalty
+                        for i in (0, 2):
+                            try:
+                                altpenalty[i] = float(altpenalty[i])
+                            except ValueError:
+                                pass  # If float conversion fails, it's a variable name, so leave it
+                    else:
+                        altpenalty = None
                     minpenalty = float(p.weight_expr.min) if p.weight_expr.min else 0.
                 else:
                     weight = 1.
@@ -64,13 +73,13 @@ class ConstraintSet:
                         atvar = p.enforce[1][0]
                         atval = float(p.enforce[1][1])
                     repeat = (len(p.enforce) == 3 and p.enforce[2] == 'everytime')
-                    con = AtConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
+                    con = AtConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat)
                 elif p.enforce[0] == 'always':
-                    con = AlwaysConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
+                    con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty)
                 elif p.enforce[0] == 'once':
-                    con = OnceConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty, minpenalty)
+                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty, minpenalty)
                 elif p.enforce[0] == 'between':
                     if len(p.enforce[1]) == 1:
                         startval = float(p.enforce[1][0])
@@ -84,7 +93,7 @@ class ConstraintSet:
                     else:
                         endvar = p.enforce[2][0]
                         endval = float(p.enforce[2][1])
-                    con = BetweenConstraint(quant1, sign, quant2, self.base_suffix, weight, altpenalty=altpenalty,
+                    con = BetweenConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
                                            endval=endval)
                 else:
@@ -126,7 +135,7 @@ class Constraint:
     Abstract class representing an optimization constraint with a penalty for violating the constraint
     """
 
-    def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
         """
         Create a constraint of the form (quant1) (sign) (quant2)
         :param quant1: String observable name or float. String could be in the form suffix.Observable to refer to any
@@ -152,6 +161,7 @@ class Constraint:
         else:
             self.or_equal = False
 
+        self.base_model = base_model
         self.base_suffix = base_suffix
         self.weight = weight
         self.min_penalty = minpenalty
@@ -243,7 +253,7 @@ class Constraint:
 
 
 class AtConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
                  repeat=False):
         """
         Creates a new constraint of the form
@@ -256,7 +266,7 @@ class AtConstraint(Constraint):
         the first time
         """
 
-        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
         self.atvar = atvar
         self.atval = atval
         self.repeat = repeat
@@ -318,7 +328,7 @@ class AtConstraint(Constraint):
 
 
 class BetweenConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
                  minpenalty=0.):
         """
         Creates a new constraint of the form
@@ -331,7 +341,7 @@ class BetweenConstraint(Constraint):
         :param endval: Value that the endvar must take to trigger the start of the interval
         """
 
-        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
 
         self.startvar = startvar
         self.startval = startval
@@ -404,14 +414,14 @@ class BetweenConstraint(Constraint):
 
 
 class AlwaysConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
         """
         Creates a new constraint of the form
 
         X1>X2 always
         """
 
-        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
 
     def penalty(self, sim_data_dict):
         """
@@ -440,14 +450,14 @@ class AlwaysConstraint(Constraint):
 
 
 class OnceConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
         """
         Creates a new constraint of the form
 
         X1>X2 once
         """
 
-        super().__init__(quant1, sign, quant2, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
 
     def penalty(self, sim_data_dict):
         """
