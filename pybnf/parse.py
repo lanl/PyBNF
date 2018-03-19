@@ -6,8 +6,12 @@ from .config import Configuration
 
 from string import punctuation
 
+import logging
 import pyparsing as pp
 import re
+
+
+logger = logging.getLogger(__name__)
 
 
 numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
@@ -114,6 +118,7 @@ def ploop(ls):  # parse loop
         if re.match('\s*$', line) or re.match('\s*#', line):
             continue
         try:
+            logger.debug('Parsing line %s' % line.strip())
             l = parse(line)
 
             # Find parameter assignments that reference distinct parameters
