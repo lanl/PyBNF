@@ -13,34 +13,36 @@ import re
 import logging
 
 
-def init_logging():
+logger = logging.getLogger(__name__)
+
+
+def init_logging(cargs):
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
-    dfh = logging.FileHandler('bnf_debug.log', mode='a')
-    dfh.setLevel(logging.DEBUG)
-    efh = logging.FileHandler('bnf_errors.log', mode='a')
-    efh.setLevel(logging.ERROR)
-    dfh.setFormatter(fmt)
-    efh.setFormatter(fmt)
-
-    dlog = logging.getLogger('distributed')
-    stdout_handler = dlog.handlers[0]  # Before we add anything, distributed has a handler going to stdout
-    dlog.setLevel(logging.INFO)
-    dlog.addHandler(dfh)
-    dlog.addHandler(efh)
-    dlog.removeHandler(stdout_handler)  # Remove the logging to stdout
+    fh = logging.FileHandler('bnf.log', mode='a')
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
 
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    root.addHandler(dfh)
-    root.addHandler(efh)
+    root.setLevel(10)
+    root.addHandler(fh)
 
-    tornado = logging.getLogger('tornado.application')
-    stdout_handler = tornado.handlers[0]  # Before we add anything, tornado has a handler going to stdout
-    tornado.setLevel(logging.WARNING)
-    # Don't clog our error log with all the tornado stuff, just send it to the debug log
-    tornado.addHandler(dfh)
-    tornado.removeHandler(stdout_handler)  # Stop tornado from going to stdou
+    dlog = logging.getLogger('distributed')
+    dlog.handlers[:] = []  # remove any existing handlers
+    dlog.setLevel(logging.WARNING)
+
+    tlog = logging.getLogger('tornado')
+    tlog.handlers[:] = []  # remove any existing handlers
+    tlog.setLevel(logging.ERROR)
+
+    if cargs.debug_logging:
+        dfh = logging.FileHandler('bnf_debug.log', mode='a')
+        dfh.setLevel(logging.DEBUG)
+        dfh.setFormatter(fmt)
+
+        root.addHandler(dfh)
+        dlog.addHandler(dfh)
+        tlog.addHandler(dfh)
 
 
 class Configuration(object):
@@ -264,7 +266,7 @@ class Configuration(object):
                               "You specified that model %s.bngl corresponds to data file %s.exp, but I can't find the "
                               "corresponding action in the model file. One of the actions in %s.bngl needs to include "
                               "the argument 'suffix=>\"%s\" '." % (model.name, ef, model.name, ef))
-            logging.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
+            logger.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
             mapping[model.name] = efs_per_m
         return mapping
 
@@ -395,7 +397,7 @@ class Configuration(object):
                                                  "Specified normalization for column %s in file %s, but that file does "
                                                  "not contain that column name." % (c, ef) + seedoc)
                             if c[-3:] == '_SD':
-                                logging.info('Removing %s from the normalization list' % c)
+                                logger.info('Removing %s from the normalization list' % c)
                                 print1("Warning: You specified a normalization for %s, but I can't normalize a "
                                        "standard deviation separately, because it's not an output of the simulation. "
                                        "I'm ignoring your %s setting and assuming it's on the same scale as its data "
