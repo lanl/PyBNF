@@ -1,12 +1,15 @@
 """pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
 
 
-from .printing import print1
+from .printing import print1, PybnfError
 
+import logging
 import numpy as np
 import re
 import copy
-import warnings
+
+
+logger = logging.getLogger(__name__)
 
 
 class Model(object):
@@ -193,22 +196,6 @@ class BNGLModel(Model):
                 return act_type, match.group(1)
         return None
 
-    def set_param_set(self, pset):
-        """
-        Assign a set of parameters to the model
-
-        :param pset: A PSet object containing the parameters to be set.
-        """
-
-        warnings.warn('set_param_set() is deprecated. For work with the parallel scheduler, instead use '
-                      'copy_with_param_set() to create a new Model instance.', DeprecationWarning)
-
-        # Check that the PSet has definitions for the right parameters for this model
-        if pset.keys_to_string() != '\t'.join(self.param_names):
-            raise ValueError('Parameter names in the PSet do not match those in the Model')
-
-        self.param_set = pset
-
     def copy_with_param_set(self, pset):
         """
         Returns a copy of this model containing the specified parameter set.
@@ -218,9 +205,12 @@ class BNGLModel(Model):
         :return: BNGLModel
         """
         # Check that the PSet has definitions for the right parameters for this model
-        if set(pset.keys()) != set(self.param_names):
-            raise ValueError('Parameter names in the PSet do not match those in the Model\n%s\n%s' %
+        if not set(pset.keys()) <= set(self.param_names):
+            raise PybnfError('Parameter names in the PSet do not match those in the Model\n%s\n%s' %
                              (pset.keys(), self.param_names))
+
+        if set(pset.keys()) != set(self.param_names):
+            logger.warn('Model %s does not contain all defined free parameters' % self.name)
 
         newmodel = copy.deepcopy(self)
         newmodel.param_set = pset
