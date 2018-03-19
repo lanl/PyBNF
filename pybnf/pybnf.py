@@ -48,7 +48,7 @@ def main():
     cmdline_args = parser.parse_args()
 
 
-    init_logging(cmdline_args)
+    init_logging(cmdline_args.debug_logging)
     logger = logging.getLogger(__name__)
 
     print0("PyBNF v%s" % __version__)
@@ -168,7 +168,7 @@ def main():
 
         # Run the algorithm!
         logger.debug('Algorithm initialization')
-        alg.run(scheduler_node, resume=pending)
+        alg.run(scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
 
         if config.config['refine'] == 1:
             logger.debug('Refinement requested for best fit parameter set')
