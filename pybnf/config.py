@@ -16,7 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def init_logging(cargs):
+def init_logging(debug=False):
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
     fh = logging.FileHandler('bnf.log', mode='a')
@@ -30,12 +30,19 @@ def init_logging(cargs):
     dlog = logging.getLogger('distributed')
     dlog.handlers[:] = []  # remove any existing handlers
     dlog.setLevel(logging.WARNING)
+    dlog.addHandler(fh)
 
     tlog = logging.getLogger('tornado')
     tlog.handlers[:] = []  # remove any existing handlers
-    tlog.setLevel(logging.ERROR)
+    tlog.setLevel(logging.CRITICAL)
+    tlog.addHandler(fh)
 
-    if cargs.debug_logging:
+    talog = logging.getLogger('tornado.application')
+    talog.handlers[:] = []
+    talog.setLevel(logging.ERROR)
+    talog.addHandler(fh)
+
+    if debug:
         dfh = logging.FileHandler('bnf_debug.log', mode='a')
         dfh.setLevel(logging.DEBUG)
         dfh.setFormatter(fmt)
@@ -43,6 +50,7 @@ def init_logging(cargs):
         root.addHandler(dfh)
         dlog.addHandler(dfh)
         tlog.addHandler(dfh)
+        talog.addHandler(dfh)
 
 
 class Configuration(object):
