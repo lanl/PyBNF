@@ -205,12 +205,12 @@ class BNGLModel(Model):
         :return: BNGLModel
         """
         # Check that the PSet has definitions for the right parameters for this model
-        if not set(pset.keys()) <= set(self.param_names):
+        if not set(pset.keys()) >= set(self.param_names):
             raise PybnfError('Parameter names in the PSet do not match those in the Model\n%s\n%s' %
                              (pset.keys(), self.param_names))
 
         if set(pset.keys()) != set(self.param_names):
-            logger.warn('Model %s does not contain all defined free parameters' % self.name)
+            logger.warning('Model %s does not contain all defined free parameters' % self.name)
 
         newmodel = copy.deepcopy(self)
         newmodel.param_set = pset
