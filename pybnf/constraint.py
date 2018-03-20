@@ -246,7 +246,7 @@ class Constraint:
 
     def get_penalty(self, sim_data_dict, imin, imax, once=False):
         """
-        Helper function for calculating the penalty, that can be called from the subclasses
+        Helper function for calculating the penalty, that can be called from the subclasses.
         Enforces the constraint for the entire interval unless the once option is set.
 
         :param sim_data_dict: The dictionary of data objects
@@ -256,8 +256,6 @@ class Constraint:
         :return:
         """
         if isinstance(self.quant1, str):
-            logging.debug('Thing: '+str(self.index(sim_data_dict, self.qkeys1)))
-            logging.debug('Inds %s, %s' % (imin, imax))
             q1 = self.index(sim_data_dict, self.qkeys1)[imin:imax]
         else:
             q1 = self.quant1
@@ -271,10 +269,30 @@ class Constraint:
         else:
             penalty = np.max(q1 - q2)
         if penalty > 0 or (penalty == 0. and not self.or_equal):
+            # Failed constraint
+            if self.alt1:
+                # Replace the penalty with the alt penalty
+                if isinstance(self.alt1, str):
+                    a1 = self.index(sim_data_dict, self.akeys1)[imin:imax]
+                else:
+                    a1 = self.alt1
+                if isinstance(self.alt2, str):
+                    a2 = self.index(sim_data_dict, self.akeys2)[imin:imax]
+                else:
+                    a2 = self.alt2
+
+                if once:
+                    penalty = np.min(a1 - a2)
+                else:
+                    penalty = np.max(a1 - a2)
+                penalty = max(0., penalty)
+            # Apply the minimum penalty
             penalty = max(self.min_penalty, penalty)
+
+        # If constraint satisfied or penalty is negative for any other reason, return 0.
         penalty = max(0., penalty)
 
-        return penalty
+        return penalty * self.weight
 
     def penalty(self, sim_data_dict):
         """
@@ -358,7 +376,7 @@ class AtConstraint(Constraint):
             penalty += self.get_penalty(sim_data_dict, fi, fi+1)
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
 
-        return penalty * self.weight
+        return penalty
 
 
 class BetweenConstraint(Constraint):
@@ -442,7 +460,7 @@ class BetweenConstraint(Constraint):
 
         penalty = self.get_penalty(sim_data_dict, start, end)
 
-        return penalty * self.weight
+        return penalty
 
 
 class AlwaysConstraint(Constraint):
@@ -466,7 +484,7 @@ class AlwaysConstraint(Constraint):
         # Todo - if q1 and q2 are on different time scales
         penalty = self.get_penalty(sim_data_dict, 0, None)  # Note: Indexing by 0:None takes the entire column
 
-        return penalty * self.weight
+        return penalty
 
 
 class OnceConstraint(Constraint):
@@ -490,4 +508,4 @@ class OnceConstraint(Constraint):
         # Note: Indexing by 0:None takes the entire column
         penalty = self.get_penalty(sim_data_dict, 0, None, once=True)
 
-        return penalty * self.weight
+        return penalty

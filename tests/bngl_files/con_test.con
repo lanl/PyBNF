@@ -28,7 +28,7 @@ A>5 at 4.1 weight 5 altpenalty B<3
 # Should get 20 because the min 4 is bigger than the altpenalty 2
 A>5 at 4.1 weight 5 altpenalty B<6 min 4
 
-# Evaluates at time 1,2,3,4,5,6 for penalties (0,1,2,3,4,5)*2 = 30 
+# Evaluates at time 1,2,3,4,5 for penalties (0,1,2,3,4)*2 = 20 
 A < 2 at C=5.5 everytime weight 2
 
 
