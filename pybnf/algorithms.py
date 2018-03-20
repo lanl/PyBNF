@@ -25,6 +25,9 @@ import traceback
 import pickle
 
 
+logger = logging.getLogger(__name__)
+
+
 class Result(object):
     """
     Container for the results of a single evaluation in the fitting algorithm
@@ -144,7 +147,9 @@ class Job:
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
 
-        logging.debug("Worker running Job %s" % self.job_id)
+        # Seeing these logs for cluster-based fitting requires configuring dask to log to the
+        # "pybnf.algorithms.job" logger
+        jlogger = logging.getLogger('pybnf.algorithms.job')
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
@@ -152,13 +157,14 @@ class Job:
         while not made_folder:
             try:
                 os.mkdir(self.folder)
+                jlogger.info('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
-                logging.info('Failed to create folder %s, trying again.' % self.folder)
+                jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    logging.error('Job %s failed because it was unable to write to the Simulations folder' %
+                    jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
                                   self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
@@ -176,9 +182,11 @@ class Job:
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
+                jlogger.info('Removing folder %s' % self.folder)
             except CalledProcessError or TimeoutExpired:
                 # fail flag set to 1 since timeout in this case is due to directory removal
                 res = FailedSimulation(self.params, self.job_id, 1)
+
         return res
 
     def execute(self, models):
@@ -280,7 +288,7 @@ class Algorithm(object):
         self.config = config
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
-        logging.debug('Instantiating Trajectory object')
+        logger.debug('Instantiating Trajectory object')
         self.trajectory = Trajectory(config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
@@ -288,12 +296,12 @@ class Algorithm(object):
         self.fail_count = 0
         self.success_count = 0
 
-        logging.debug('Creating output directory')
+        logger.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        logging.debug('Initializing models')
+        logger.debug('Initializing models')
         self.model_list = self._initialize_models()
 
         # Generate a list of variable names
@@ -302,7 +310,7 @@ class Algorithm(object):
         # Set the space (log or regular) in which each variable moves, as well as the box constraints on the variable.
         # Currently, this is set based on what distribution the variable is initialized with, but these could be made
         # into a separate, custom options
-        logging.debug('Evaluating variable space')
+        logger.debug('Evaluating variable space')
         self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
         for v in self.config.variables_specs:
             if v[1] == 'random_var':
@@ -316,7 +324,7 @@ class Algorithm(object):
             elif v[1] == 'static_list_var':
                 self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
             else:
-                logging.info('Variable type not recognized... exiting')
+                logger.info('Variable type not recognized... exiting')
                 print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
                 exit()
 
@@ -329,17 +337,17 @@ class Algorithm(object):
         """
         home_dir = os.getcwd()
         os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
-        logging.debug('Copying list of models')
+        logger.debug('Copying list of models')
         init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
         final_model_list = []
         init_dir = os.getcwd() + '/Initialize'
 
         for m in init_model_list:
             if m.generates_network:
-                logging.debug('Model %s requires network generation' % m.name)
+                logger.debug('Model %s requires network generation' % m.name)
 
                 if not os.path.isdir(init_dir):
-                    logging.debug('Creating initialization directory: %s' % init_dir)
+                    logger.debug('Creating initialization directory: %s' % init_dir)
                     os.mkdir(init_dir)
                 os.chdir(init_dir)
 
@@ -350,29 +358,29 @@ class Algorithm(object):
                     with open('%s.log' % gnm_name, 'w') as lf:
                         run(gn_cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
-                    logging.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
-                    logging.error(c.stdout)
+                    logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                    logger.error(c.stdout)
                     print0('Error: Initial network generation failed for model %s... see BioNetGen error log at '
                            '%s/%s.log' % (m.name, os.getcwd(), gnm_name))
                     exit(1)
                 except TimeoutExpired:
-                    logging.debug("Network generation exceeded %d seconds... exiting" %
+                    logger.debug("Network generation exceeded %d seconds... exiting" %
                                   self.config.config['wall_time_gen'])
                     print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
                     exit(1)
                 except:
                     tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
-                    logging.debug("Other exception occurred:\n%s" % tb)
+                    logger.debug("Other exception occurred:\n%s" % tb)
                     print0("Unknown error occurred during network generation, see log... exiting")
                     exit(1)
                 finally:
                     os.chdir(home_dir)
 
-                logging.info('Output for network generation of model %s logged in %s/%s.log' %
+                logger.info('Output for network generation of model %s logged in %s/%s.log' %
                              (m.name, init_dir, gnm_name))
                 final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
             else:
-                logging.info('Model %s does not require network generation' % m.name)
+                logger.info('Model %s does not require network generation' % m.name)
                 final_model_list.append(m)
         os.chdir(home_dir)
         return final_model_list
@@ -407,13 +415,13 @@ class Algorithm(object):
         instance"""
         score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
         if score is None:
-            logging.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-            logging.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+            logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+            logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
             print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
             res.score = np.inf
         else:
             res.score = score
-            logging.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
+            logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
         self.trajectory.add(res.pset, res.score, res.name)
 
     def random_pset(self):
@@ -423,7 +431,7 @@ class Algorithm(object):
         :return:
         """
         # TODO CONFIRM THIS IS REDUNDANT WITH CODE IN __INIT__
-        logging.debug("Generating a randomly distributed PSet")
+        logger.debug("Generating a randomly distributed PSet")
         param_dict = dict()
         for (name, vartype, val1, val2) in self.config.variables_specs:
             if vartype == 'random_var':
@@ -449,7 +457,7 @@ class Algorithm(object):
         :param n: Number of psets to generate
         :return:
         """
-        logging.debug("Generating PSets using Latin hypercube sampling")
+        logger.debug("Generating PSets using Latin hypercube sampling")
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         num_uniform_vars = len([x for x in self.config.variables_specs
                                if x[1] == 'random_var' or x[1] == 'loguniform_var'])
@@ -531,7 +539,7 @@ class Algorithm(object):
         else:
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
-        logging.debug('Creating Job %s' % job_id)
+        logger.debug('Creating Job %s' % job_id)
         if self.config.config['smoothing'] == 1:
             # Create a single job
             return [Job(self.model_list, params, job_id, self.config.config['bng_command'],
@@ -567,14 +575,14 @@ class Algorithm(object):
             name = str(self.output_counter)
         self.output_counter += 1
         filepath = '%s/Results/sorted_params_%s.txt' % (self.config.config['output_dir'], name)
-        logging.info('Outputting results to file %s' % filepath)
+        logger.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
 
         # If the user has asked for fewer output files, each time we're here, move the new file to
         # Results/sorted_params.txt, overwriting the previous one.
         # Disabled this feature because it's more likely the user would just want the old Simulation folders deleted
         # if self.config.config['delete_old_files'] == 1:
-        #     logging.debug("Overwriting previous 'sorted_params.txt'")
+        #     logger.debug("Overwriting previous 'sorted_params.txt'")
         #     noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
         #     if os.path.isfile(noname_filepath):
         #         os.remove(noname_filepath)
@@ -589,7 +597,7 @@ class Algorithm(object):
         :return:
         """
 
-        logging.info('Saving a backup of the algorithm')
+        logger.info('Saving a backup of the algorithm')
         # Pickle the algorithm
         picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
         try:
@@ -597,7 +605,7 @@ class Algorithm(object):
             pickle.dump((self, pending_psets), f)
             f.close()
         except IOError:
-            logging.exception('Failed to save backup of algorithm')
+            logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
 
     def get_backup_every(self):
@@ -608,14 +616,14 @@ class Algorithm(object):
         return self.config.config['backup_every'] * self.config.config['population_size'] * \
             self.config.config['smoothing']
 
-    def run(self, scheduler_node=None, resume=None):
+    def run(self, scheduler_node=None, resume=None, debug=False):
         """Main loop for executing the algorithm"""
 
-        logging.debug('Initializing dask Client object')
+        logger.debug('Initializing dask Client object')
 
         if scheduler_node:
             if 'parallel_count' in self.config.config:
-                logging.warning("Ignoring 'parallel_count' option and using all processes available to scheduler node")
+                logger.warning("Ignoring 'parallel_count' option and using all processes available to scheduler node")
                 print1("Option 'parallel_count' is not used when a 'scheduler_node' or 'cluster_type' is specified.  "
                        "Using all of the workers available.")
 
@@ -623,21 +631,25 @@ class Algorithm(object):
         elif 'parallel_count' in self.config.config:
             lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
             client = Client(lc)
+            client.run(init_logging, debug)
         else:
             client = Client()
-        client.run(init_logging)
+            client.run(init_logging, debug)
+
         backup_every = self.get_backup_every()
         sim_count = 0
-        logging.debug('Generating initial parameter sets')
+
+        logger.debug('Generating initial parameter sets')
         if resume:
             psets = resume
         else:
             psets = self.start_run()
         pending_psets = set(psets)
+
         jobs = []
         for p in psets:
             jobs += self.make_job(p)
-        logging.info('Submitting initial set of %d Jobs' % len(jobs))
+        logger.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = [client.submit(job.run_simulation) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
@@ -657,12 +669,12 @@ class Algorithm(object):
             try:
                 pending_psets.remove(res.pset)
             except KeyError:
-                logging.warning('%s was missing when trying to remove from pending_psets' % res.pset)
+                logger.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type == 1:
                     self.fail_count += 1
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
-                logging.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
+                logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
@@ -670,12 +682,13 @@ class Algorithm(object):
                                      'the Simulations directory.')
             else:
                 self.success_count += 1
-                logging.debug('Job %s complete' % res.name)
+                logger.debug('Job %s complete' % res.name)
+
             res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
             response = self.got_result(res)
             if response == 'STOP':
-                logging.info("Stop criterion satisfied")
+                logger.info("Stop criterion satisfied")
                 print1('Stop criterion satisfied')
                 break
             else:
@@ -683,11 +696,12 @@ class Algorithm(object):
                 for ps in response:
                     new_jobs += self.make_job(ps)
                     pending_psets.add(ps)
-                logging.debug('Submitting %d new Jobs' % len(new_jobs))
+                logger.debug('Submitting %d new Jobs' % len(new_jobs))
+
                 new_futures = [client.submit(j.run_simulation) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
-        logging.info("Cancelling %d pending jobs" % len(pending))
+        logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending))
         client.close()
         self.output_results('final')
@@ -695,7 +709,7 @@ class Algorithm(object):
         # Copy the best simulations into the results folder
         best_name = self.trajectory.best_fit_name()
         best_pset = self.trajectory.best_fit()
-        logging.info('Copying simulation results from best fit parameter set to Results/ folder')
+        logger.info('Copying simulation results from best fit parameter set to Results/ folder')
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
@@ -714,7 +728,7 @@ class Algorithm(object):
                                     (self.config.config['output_dir'], best_name, m, best_name, suf, ext),
                                     '%s/Results' % self.config.config['output_dir'])
                     except FileNotFoundError:
-                        logging.error('Cannot find files corresponding to best fit parameter set... exiting')
+                        logger.error('Cannot find files corresponding to best fit parameter set... exiting')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
                         exit()
@@ -723,13 +737,13 @@ class Algorithm(object):
             # End of fitting; delete unneeded files
             try:
                 os.remove('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'])
-                logging.info('Deleted pickled algorithm')
+                logger.info('Deleted pickled algorithm')
             except OSError:
-                logging.warning('Tried to delete pickled algorithm, but it was not found')
+                logger.warning('Tried to delete pickled algorithm, but it was not found')
             if self.config.config['delete_old_files'] == 1:
                 shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
-        logging.info("Fitting complete")
+        logger.info("Fitting complete")
 
     def cleanup(self):
         """
@@ -954,7 +968,7 @@ class DifferentialEvolution(Algorithm):
         self.num_islands = config.config['islands']
         self.num_per_island = int(config.config['population_size'] / self.num_islands)
         if config.config['population_size'] % config.config['islands'] != 0:
-            logging.warning('Reduced population_size to %i to evenly distribute it over %i islands' %
+            logger.warning('Reduced population_size to %i to evenly distribute it over %i islands' %
                             (self.num_islands * self.num_per_island, self.num_islands))
         self.migrate_every = config.config['migrate_every']
         if self.num_islands == 1:
@@ -1084,7 +1098,7 @@ class DifferentialEvolution(Algorithm):
                                                                              size=self.num_to_migrate, replace=False)
                     self.migration_perms[migration_num] = [np.random.permutation(self.num_islands)
                                                            for i in range(self.num_to_migrate)]
-                    logging.debug('Island %i just set up the migration.' % island)
+                    logger.debug('Island %i just set up the migration.' % island)
 
                 # Send the required PSets to migration_transit
                 for j in self.migration_indices[migration_num]:
@@ -1095,7 +1109,7 @@ class DifferentialEvolution(Algorithm):
 
             if self.migration_done[island] < min(self.migration_ready):
                 # This island performs a migration
-                logging.debug('Island %i is migrating!' % island)
+                logger.debug('Island %i is migrating!' % island)
                 migration_num = self.migration_done[island] + 1
 
                 # Fetch the appropriate new individuals from migration_transit
@@ -1105,7 +1119,7 @@ class DifferentialEvolution(Algorithm):
                     self.individuals[island][j], self.fitnesses[island][j] = \
                         self.migration_transit[migration_num][newisland][migrater_index]
 
-                    logging.debug('Island %i gained new individual with fitness %f' % (island, self.fitnesses[island][j]))
+                    logger.debug('Island %i gained new individual with fitness %f' % (island, self.fitnesses[island][j]))
 
                 self.migration_done[island] = migration_num
                 if min(self.migration_done) == migration_num:
@@ -1133,7 +1147,7 @@ class DifferentialEvolution(Algorithm):
             self.waiting_count[island] = self.num_per_island
 
             if self.iter_num[island] % 20 == 0:
-                logging.info('Island %i completed %i iterations' % (island, self.iter_num[island]))
+                logger.info('Island %i completed %i iterations' % (island, self.iter_num[island]))
                 # print(sorted(self.fitnesses[island]))
 
             # Convergence check
@@ -1196,14 +1210,14 @@ class ScatterSearch(Algorithm):
         if 'init_size' in config.config:
             self.init_size = config.config['init_size']
             if self.init_size < self.popsize:
-                logging.warning('init_size less than population_size. Setting it equal to population_size.')
+                logger.warning('init_size less than population_size. Setting it equal to population_size.')
                 print1("Scatter search parameter 'init_size' cannot be less than 'population_size'. "
                        "Automatically setting it equal to population_size.")
                 self.init_size = self.popsize
         else:
             self.init_size = 10*len(self.variables)
             if self.init_size < self.popsize:
-                logging.warning('init_size less than population_size. Setting it equal to population_size.')
+                logger.warning('init_size less than population_size. Setting it equal to population_size.')
                 self.init_size = self.popsize
 
         self.local_min_limit = config.config['local_min_limit']
@@ -1300,7 +1314,7 @@ class ScatterSearch(Algorithm):
 
             # 2) Sort the refs list by quality.
             self.refs = sorted(self.refs, key=lambda x: x[1])
-            logging.info('Iteration %i' % self.iteration)
+            logger.info('Iteration %i' % self.iteration)
             if self.iteration % 10 == 0:
                 print1('Completed iteration %i of %i' % (self.iteration, self.maxiters))
             else:
@@ -1529,9 +1543,9 @@ class BayesAlgorithm(Algorithm):
                 self.betas[index] += self.cooling
                 if self.betas[index] >= self.beta_max:
                     print2('Finished replicate %i because beta_max was reached.' % index)
-                    logging.info('Finished replicate %i because beta_max was reached.' % index)
+                    logger.info('Finished replicate %i because beta_max was reached.' % index)
                     if min(self.betas) >= self.beta_max:
-                        logging.info('All annealing replicates have reached the maximum beta value')
+                        logger.info('All annealing replicates have reached the maximum beta value')
                         return 'STOP'
                     else:
                         return []
@@ -1571,12 +1585,12 @@ class BayesAlgorithm(Algorithm):
         while proposed_pset is None:
             loop_count += 1
             if loop_count == 20:
-                logging.warning('Instance %i spent 20 iterations at the same point' % index)
+                logger.warning('Instance %i spent 20 iterations at the same point' % index)
                 print1('One of your samples is stuck at the same point for 20+ iterations because it keeps '
                        'hitting box constraints. Consider using looser box constraints or a smaller '
                        'step_size.')
             if loop_count == 1000:
-                logging.warning('Instance %i terminated after 1000 iterations at the same point' % index)
+                logger.warning('Instance %i terminated after 1000 iterations at the same point' % index)
                 print1('Instance %i was terminated after it spent 1000 iterations stuck at the same point '
                        'because it kept hitting box constraints. Consider using looser box constraints or a '
                        'smaller step_size.' % index)
@@ -1598,12 +1612,12 @@ class BayesAlgorithm(Algorithm):
                     print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                 else:
                     print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                logging.info('Completed %i iterations' % self.iteration[index])
+                logger.info('Completed %i iterations' % self.iteration[index])
                 if self.sa:
-                    logging.debug('Current betas: ' + str(self.betas))
+                    logger.debug('Current betas: ' + str(self.betas))
                 print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
-                logging.info('Finished replicate number %i' % index)
+                logger.info('Finished replicate number %i' % index)
                 print2('Finished replicate number %i' % index)
                 return None
             if self.iteration[index] % self.exchange_every == 0:
@@ -1635,7 +1649,7 @@ class BayesAlgorithm(Algorithm):
             # The same could happen if normrandom_var's try to go below 0
             new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
             if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
-                logging.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
+                logger.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
                               (k, oldpset[k], delta_vector_normalized[k], self.variable_space[k][1],
                                self.variable_space[k][2]))
                 return None
@@ -1666,7 +1680,7 @@ class BayesAlgorithm(Algorithm):
                 if x1 <= val <= x2:
                     total += -np.log(x2-x1)
                 else:
-                    logging.warning('Box-constrained parameter %s reached a value outside the box.')
+                    logger.warning('Box-constrained parameter %s reached a value outside the box.')
                     total += -np.inf
         return total
 
@@ -1726,7 +1740,7 @@ class BayesAlgorithm(Algorithm):
         Then proposes n new parameter sets to resume all chains after the exchange.
         :return: List of n PSets to run
         """
-        logging.info('Performing replica exchange on iteration %i' % self.iteration[0])
+        logger.info('Performing replica exchange on iteration %i' % self.iteration[0])
         for j in range(self.num_parallel - 1):
             # Consider exchanging index j (higher T) with j+1 (lower T)
             ln_p_exchange = min(0., -(self.betas[j+1]-self.betas[j]) * (self.ln_current_P[j+1]-self.ln_current_P[j]))
@@ -1736,7 +1750,7 @@ class BayesAlgorithm(Algorithm):
             # better. So you need a - sign.
             if np.random.random() < np.exp(ln_p_exchange):
                 # Do the exchange
-                logging.debug('Exchanging individuals %i and %i' % (j, j+1))
+                logger.debug('Exchanging individuals %i and %i' % (j, j+1))
                 hold_pset = self.current_pset[j]
                 hold_p = self.ln_current_P[j]
                 self.current_pset[j] = self.current_pset[j+1]
@@ -1749,7 +1763,7 @@ class BayesAlgorithm(Algorithm):
             proposed_pset = self.try_to_choose_new_pset(j)
             if proposed_pset is None:
                 if np.all(self.wait_for_sync):
-                    logging.error('Aborting because no changes were made between one replica exchange and the next.')
+                    logger.error('Aborting because no changes were made between one replica exchange and the next.')
                     print0("I seem to have gone from one replica exchange to the next replica exchange without "
                            "proposing a single valid move. Something is probably wrong for this to happen, so I'm "
                            "going to stop.")
@@ -2113,10 +2127,10 @@ def exp10(n):
         with np.errstate(over='raise'):
             ans = 10.**n
     except (OverflowError, FloatingPointError):
-        logging.error('Overflow error in exp10()')
-        logging.error(''.join(traceback.format_stack()))  # Log the entire traceback
+        logger.error('Overflow error in exp10()')
+        logger.error(''.join(traceback.format_stack()))  # Log the entire traceback
         raise PybnfError('Overflow when calculating 10^%d\n'
-                         'Details are saved in bnf_errors.log\n'
+                         'Logs are saved in bnf.log\n'
                          'This may be because you declared a lognormrandom_var or a logvar, and specified the '
                          'arguments in regular space instead of log10 space.' % n)
     return ans

@@ -4,7 +4,6 @@
 from .printing import PybnfError, print1
 
 import numpy as np
-import logging
 
 
 class ObjectiveFunction(object):
@@ -38,7 +37,6 @@ class ObjectiveFunction(object):
                     # Need to check for that here.
                     if suffix in exp_data_dict:
                         val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
-                        # logging.debug('Evaluated %s with value %s' % (sim_data_dict[model][suffix].data, val))
                         if val is None:
                             return None
                         total += val
@@ -155,7 +153,6 @@ class ChiSquareObjective(SummationObjective):
                  "data file must include a _SD column corresponding to each experimental variable, giving the standard "
                  "deviations of that variable. " % col_name)
         exp_sigma = exp_data.data[exp_row, sd_col]
-        logging.debug('sim_val: %s, exp_val: %s, exp_sigma: %s, result: %s' % (sim_val, exp_val, exp_sigma, 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.))
         return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
 
     def _check_columns(self, exp_cols, compare_cols):
