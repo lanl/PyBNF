@@ -91,27 +91,15 @@ class TestConstraint:
         cs = copy.deepcopy(self.cset)
         cs._load_constraint_file(self.f2)
 
-        print('start?')
         assert cs.constraints[0].penalty(d_dict) == 0
-        print(':D 1')
         assert cs.constraints[1].penalty(d_dict) == 4
-        print(':D 2')
         np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), 0.4)
-        print(':D 3')
         np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), 0.4)
-        print(':D 4')
         assert cs.constraints[4].penalty(d_dict) == 0
-        print(':D 5')
         assert cs.constraints[5].penalty(d_dict) == 10
-        print(':D 6')
         assert cs.constraints[6].penalty(d_dict) == 0
-        print(':D 7')
         assert cs.constraints[7].penalty(d_dict) == 25
-        print(':D 8')
         assert cs.constraints[8].penalty(d_dict) == 20
-        print(':D 9')
-        print(cs.constraints[9].penalty(d_dict))
         assert cs.constraints[9].penalty(d_dict) == 20
-        print(':D 10')
 
         np.testing.assert_almost_equal(cs.total_penalty(d_dict), 79.8)
