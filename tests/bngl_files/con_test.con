@@ -38,3 +38,12 @@ D <= 5 at B=8 everytime weight 3
 # Should apply from time= 2 to 4 inclusive. Each should get penalty of 1.
 A<4 between C=6,C=6
 A>4 between C=6,C=6
+
+# First point does not occur, so penalty is automatically 0
+D>5000 between B=10,time=7 weight 2
+
+# Second point does not occur after the first point, so interval lasts until the end
+# Penalty 0.8 * 2 = 1.6
+D<5 between A=5,A=4 weight 2
+
+

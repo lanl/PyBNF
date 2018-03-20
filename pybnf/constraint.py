@@ -461,13 +461,13 @@ class BetweenConstraint(Constraint):
 
         enddat = self.index(sim_data_dict, self.endkeys)
         endcol = enddat < self.endval
-        # Note: First [0] strips a useless extra dimension, second [0] extracts the first flip point.
-        end = np.nonzero(endcol[start+1:-1] != endcol[start+2:])[0][0]
-
-        if end == -1:
+        # Note: [0] strips a useless extra dimension
+        end = np.nonzero(endcol[start+1:-1] != endcol[start+2:])[0]
+        if len(end) == 0:
             # Interval never ended
             end = len(startcol) - 1
         else:
+            end = end[0]  # Take the first point satisfying the end condition
             end += start + 1
         if end < len(endcol) - 1 and np.isclose(enddat[end+1], self.endval, atol=0.) \
                 and not (np.isclose(enddat[end], self.endval, atol=0.)):
