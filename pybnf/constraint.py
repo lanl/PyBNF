@@ -2,6 +2,7 @@ from .printing import PybnfError
 import pyparsing as pp
 import numpy as np
 import re
+import logging
 
 class ConstraintSet:
     """
@@ -196,11 +197,13 @@ class Constraint:
         :param sim_data_dict:
         :return:
         """
+        logging.debug('Generic Find Keys')
 
         keylist = []
         for q in (self.quant1, self.quant2, self.alt1, self.alt2):
             key = self.get_key(q, sim_data_dict)
             keylist.append(key)
+        logging.debug('Found these keys:' + str(keylist))
         self.qkeys1, self.qkeys2, self.akeys1, self.akeys2 = keylist
 
     def get_key(self, q, sim_data_dict):
@@ -238,6 +241,7 @@ class Constraint:
         Shortcut function for applying all 3 indices to the data object
         :return:
         """
+        logging.info('Here are the keys:' + str(keys))
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
     def penalty(self, sim_data_dict):
@@ -284,11 +288,18 @@ class AtConstraint(Constraint):
         :return:
         """
 
+        logging.info('Doing the one-shot key finding (For At)')
+        logging.info("Here's what we have: " + str((self.quant1, self.quant2, self.alt1, self.alt2, self.atvar)))
         keylist = []
         for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.atvar):
             key = self.get_key(q, sim_data_dict)
             keylist.append(key)
+        logging.info('Here are the keys: ' + str(keylist))
         self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys = keylist
+        if self.atkeys is None:
+            # No name was specified for atvar; we default to the independent variable of the default suffix
+            self.atkeys = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
 
     def penalty(self, sim_data_dict):
         """
@@ -301,7 +312,7 @@ class AtConstraint(Constraint):
 
         # Find the index where the when condition is met
         atdata = self.index(sim_data_dict, self.atkeys)
-        at_col = atdata[self.atval] < self.when_val
+        at_col = atdata < self.atval
         # Make array that is True at every point where the atvar crosses the atval
         flip_points = at_col[:-1] != at_col[1:]
         flip_inds = np.nonzero(flip_points)[0]
@@ -311,15 +322,17 @@ class AtConstraint(Constraint):
 
         penalty = 0.
         for fi in flip_inds:
+            logging.debug('Flip index %i' % fi)
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
             if isinstance(self.quant1, str):
                 q1 = self.index(sim_data_dict, self.qkeys1)[fi]
             else:
                 q1 = self.quant1
             if isinstance(self.quant2, str):
-                q2 = self.index(sim_data_dict, self.qkeys1)[fi]
+                q2 = self.index(sim_data_dict, self.qkeys2)[fi]
             else:
                 q2 = self.quant2
+            logging.debug('q1 %s q2 %s' % (q1,q2))
             if q2 < q1 or (q2 == q1 and not self.or_equal):
                 # Failed constraint q1 < q2 at this point
                 penalty += max(self.min_penalty, q1-q2)
@@ -342,6 +355,7 @@ class BetweenConstraint(Constraint):
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        logging.debug('Creating a between constraint')
 
         self.startvar = startvar
         self.startval = startval
@@ -367,6 +381,15 @@ class BetweenConstraint(Constraint):
             key = self.get_key(q, sim_data_dict)
             keylist.append(key)
         self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.startkeys, self.endkeys = keylist
+        if self.startkeys is None:
+            # No name was specified for startvar; we default to the independent variable of the default suffix
+            self.startkeys = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
+        if self.endkeys is None:
+            # Same for endvar
+            self.endkeys = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
+
 
     def penalty(self, sim_data_dict):
         """
@@ -401,7 +424,7 @@ class BetweenConstraint(Constraint):
         else:
             q1 = self.quant1
         if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys1)[start:end]
+            q2 = self.index(sim_data_dict, self.qkeys2)[start:end]
         else:
             q2 = self.quant2
 
@@ -437,7 +460,7 @@ class AlwaysConstraint(Constraint):
         else:
             q1 = self.quant1
         if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys1)
+            q2 = self.index(sim_data_dict, self.qkeys2)
         else:
             q2 = self.quant2
 
@@ -463,6 +486,7 @@ class OnceConstraint(Constraint):
         """
         Compute the penalty
         """
+        logging.debug('Computing Once penalty')
         if not self.qkeys1 and not self.qkeys2:
             self.find_keys(sim_data_dict)
 
@@ -472,7 +496,7 @@ class OnceConstraint(Constraint):
         else:
             q1 = self.quant1
         if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys1)
+            q2 = self.index(sim_data_dict, self.qkeys2)
         else:
             q2 = self.quant2
 
