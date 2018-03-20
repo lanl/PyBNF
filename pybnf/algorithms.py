@@ -313,16 +313,14 @@ class Algorithm(object):
         logger.debug('Evaluating variable space')
         self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
         for v in self.config.variables_specs:
-            if v[1] == 'random_var':
+            if v[1] == 'uniform_var':
                 self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normrandom_var' or v[1] == 'var':
+            elif v[1] == 'normal_var' or v[1] == 'var':
                 self.variable_space[v[0]] = ('regular', 0., np.inf)
-            elif v[1] == 'lognormrandom_var' or v[1] == 'logvar':
+            elif v[1] == 'lognormal_var' or v[1] == 'logvar':
                 self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
             elif v[1] == 'loguniform_var':
                 self.variable_space[v[0]] = ('log', v[2], v[3])
-            elif v[1] == 'static_list_var':
-                self.variable_space[v[0]] = ('static', )  # Todo: what is the actual way to mutate this type of param?
             else:
                 logger.info('Variable type not recognized... exiting')
                 print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
@@ -434,16 +432,14 @@ class Algorithm(object):
         logger.debug("Generating a randomly distributed PSet")
         param_dict = dict()
         for (name, vartype, val1, val2) in self.config.variables_specs:
-            if vartype == 'random_var':
+            if vartype == 'uniform_var':
                 param_dict[name] = np.random.uniform(val1, val2)
-            elif vartype == 'normrandom_var':
+            elif vartype == 'normal_var':
                 param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
             elif vartype == 'loguniform_var':
                 param_dict[name] = exp10(np.random.uniform(np.log10(val1), np.log10(val2)))
-            elif vartype == 'lognormrandom_var':
+            elif vartype == 'lognormal_var':
                 param_dict[name] = exp10(np.random.normal(val1, val2))
-            elif vartype == 'static_list_var':
-                param_dict[name] = np.random.choice(val1)
             else:
                 raise RuntimeError('Unrecognized variable type: %s' % vartype)
         return PSet(param_dict)
@@ -451,7 +447,7 @@ class Algorithm(object):
     def random_latin_hypercube_psets(self, n):
         """
         Generates n random PSets with a latin hypercube distribution
-        More specifically, the random_var and loguniform_var variables follow the latin hypercube distribution,
+        More specifically, the uniform_var and loguniform_var variables follow the latin hypercube distribution,
         while lognorm and static_list variables are randomized normally.
 
         :param n: Number of psets to generate
@@ -460,7 +456,7 @@ class Algorithm(object):
         logger.debug("Generating PSets using Latin hypercube sampling")
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         num_uniform_vars = len([x for x in self.config.variables_specs
-                               if x[1] == 'random_var' or x[1] == 'loguniform_var'])
+                               if x[1] == 'uniform_var' or x[1] == 'loguniform_var'])
         rands = latin_hypercube(n, num_uniform_vars)
         psets = []
         for row in rands:
@@ -469,18 +465,16 @@ class Algorithm(object):
             param_dict = dict()
             rowindex = 0
             for (name, type, val1, val2) in self.config.variables_specs:
-                if type == 'random_var':
+                if type == 'uniform_var':
                     param_dict[name] = val1 + row[rowindex]*(val2-val1)
                     rowindex += 1
                 elif type == 'loguniform_var':
                     param_dict[name] = exp10(np.log10(val1) + row[rowindex]*(np.log10(val2)-np.log10(val1)))
                     rowindex += 1
-                elif type == 'lognormrandom_var':
+                elif type == 'lognormal_var':
                     param_dict[name] = exp10(np.random.normal(val1, val2))
-                elif type == 'normrandom_var':
+                elif type == 'normal_var':
                     param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
-                elif type == 'static_list_var':
-                    param_dict[name] = np.random.choice(val1)
                 else:
                     raise RuntimeError('Unrecognized variable type: %s' % type)
             psets.append(PSet(param_dict))
@@ -1455,11 +1449,11 @@ class BayesAlgorithm(Algorithm):
         # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
         # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
         for (name, type, val1, val2) in self.config.variables_specs:
-            if type == 'normrandom_var':
+            if type == 'normal_var':
                 self.prior[name] = ('reg', 'n', val1, val2)
-            elif type == 'lognormrandom_var':
+            elif type == 'lognormal_var':
                 self.prior[name] = ('log', 'n', val1, val2)
-            elif type == 'random_var':
+            elif type == 'uniform_var':
                 self.prior[name] = ('reg', 'b', val1, val2)
             elif type == 'loguniform_var':
                 self.prior[name] = ('log', 'b', np.log10(val1), np.log10(val2))
@@ -1646,7 +1640,7 @@ class BayesAlgorithm(Algorithm):
             # For box constraints, need special treatment to keep correct statistics
             # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
             # and retry.
-            # The same could happen if normrandom_var's try to go below 0
+            # The same could happen if normal_var's try to go below 0
             new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
             if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
                 logger.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
@@ -2131,6 +2125,6 @@ def exp10(n):
         logger.error(''.join(traceback.format_stack()))  # Log the entire traceback
         raise PybnfError('Overflow when calculating 10^%d\n'
                          'Logs are saved in bnf.log\n'
-                         'This may be because you declared a lognormrandom_var or a logvar, and specified the '
+                         'This may be because you declared a lognormal_var or a logvar, and specified the '
                          'arguments in regular space instead of log10 space.' % n)
     return ans

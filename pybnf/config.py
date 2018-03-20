@@ -296,8 +296,6 @@ class Configuration(object):
         Loads the variable names from the config dict, and stores them in more easily accessible data structures.
         :return: 2-tuple (variables, variables_specs), where variables in a list of the variable names, and
          variables_specs is a list of 4-tuples (variable_name, variable_type, min_value, max_value).
-         For static_list_var variables, variables_specs instead takes the form (variable_name, static_list_var,
-         [list of possible values], None)
          For var and logvar variables (for Simplex algorithm), variables_specs takes the form (variable_name,
          variable_type, init_value, init_step) where init_step may be read from the global setting.
         """
@@ -317,12 +315,10 @@ class Configuration(object):
                         raise PybnfError('Tried to use Simplex variable type %s in another algorithm.' % k[0],
                                "You've specified variable %s with keyword %s, but that keyword "
                                "is only to be used with the Simplex algorithm (fit_type = sim)\n"
-                               "Valid keywords for other algorithms are: random_var, normrandom_var, \n"
-                               "lognormrandom_var, loguniform_var." % (k[1], k[0]))
+                               "Valid keywords for other algorithms are: uniform_var, normal_var, \n"
+                               "lognormal_var, loguniform_var." % (k[1], k[0]))
                     variables.append(k[1])
-                    if k[0] == 'static_list_var':
-                        variables_specs.append((k[1], k[0], self.config[k], None))
-                    elif k[0] in ('var', 'logvar'):
+                    if k[0] in ('var', 'logvar'):
                         # 2nd number (step size) may be absent, must fill in appropriately
                         if len(self.config[k]) >= 2:
                             stepsize = self.config[k][1] # easy, it was right there
