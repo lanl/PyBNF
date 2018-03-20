@@ -499,8 +499,6 @@ class Algorithm(object):
         elif self.variable_space[param][0] == 'log':
             return max(self.variable_space[param][1], min(self.variable_space[param][2],
                                                           exp10(np.log10(paramset[param]) + value)))
-        elif self.variable_space[param][0] == 'static':
-            return paramset[param]
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
@@ -513,8 +511,6 @@ class Algorithm(object):
             return paramset1[param] - paramset2[param]
         elif self.variable_space[param][0] == 'log':
             return np.log10(paramset1[param] / paramset2[param])
-        elif self.variable_space[param][0] == 'static':
-            return 0.  # Don't know what to do here...
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
@@ -1383,8 +1379,6 @@ class ScatterSearch(Algorithm):
             ub = np.log10(paramset[param]) + upper
             pick = np.random.uniform(lb, ub)
             return max(self.variable_space[param][1], min(self.variable_space[param][2], exp10(pick)))
-        elif self.variable_space[param][0] == 'static':
-            return paramset[param]
         else:
             raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
