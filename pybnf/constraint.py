@@ -244,6 +244,38 @@ class Constraint:
         logging.info('Here are the keys:' + str(keys))
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
+    def get_penalty(self, sim_data_dict, imin, imax, once=False):
+        """
+        Helper function for calculating the penalty, that can be called from the subclasses
+        Enforces the constraint for the entire interval unless the once option is set.
+
+        :param sim_data_dict: The dictionary of data objects
+        :param imin: First index at which to check the constraint
+        :param imax: Last index at which to check the constraint (exclusive)
+        :param once: If true, enforce that the constraint holds once at some point during the time interval
+        :return:
+        """
+        if isinstance(self.quant1, str):
+            logging.debug('Thing: '+str(self.index(sim_data_dict, self.qkeys1)))
+            logging.debug('Inds %s, %s' % (imin, imax))
+            q1 = self.index(sim_data_dict, self.qkeys1)[imin:imax]
+        else:
+            q1 = self.quant1
+        if isinstance(self.quant2, str):
+            q2 = self.index(sim_data_dict, self.qkeys2)[imin:imax]
+        else:
+            q2 = self.quant2
+
+        if once:
+            penalty = np.min(q1-q2)
+        else:
+            penalty = np.max(q1 - q2)
+        if penalty > 0 or (penalty == 0. and not self.or_equal):
+            penalty = max(self.min_penalty, penalty)
+        penalty = max(0., penalty)
+
+        return penalty
+
     def penalty(self, sim_data_dict):
         """
         penalty function for violating the constraint. Returns 0 if constraint is satisfied, or a positive value
@@ -318,24 +350,13 @@ class AtConstraint(Constraint):
         flip_inds = np.nonzero(flip_points)[0]
 
         if not self.repeat:
-            flip_inds = [flip_inds[:1]]
+            flip_inds = flip_inds[:1]
 
         penalty = 0.
         for fi in flip_inds:
-            logging.debug('Flip index %i' % fi)
+            logging.debug('Flip index %s' % fi)
+            penalty += self.get_penalty(sim_data_dict, fi, fi+1)
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
-            if isinstance(self.quant1, str):
-                q1 = self.index(sim_data_dict, self.qkeys1)[fi]
-            else:
-                q1 = self.quant1
-            if isinstance(self.quant2, str):
-                q2 = self.index(sim_data_dict, self.qkeys2)[fi]
-            else:
-                q2 = self.quant2
-            logging.debug('q1 %s q2 %s' % (q1,q2))
-            if q2 < q1 or (q2 == q1 and not self.or_equal):
-                # Failed constraint q1 < q2 at this point
-                penalty += max(self.min_penalty, q1-q2)
 
         return penalty * self.weight
 
@@ -419,19 +440,7 @@ class BetweenConstraint(Constraint):
             end = end[0]
             end += start
 
-        if isinstance(self.quant1, str):
-            q1 = self.index(sim_data_dict, self.qkeys1)[start:end]
-        else:
-            q1 = self.quant1
-        if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys2)[start:end]
-        else:
-            q2 = self.quant2
-
-        penalty = np.max(q1 - q2)
-        if penalty > 0 or (penalty == 0. and not self.or_equal):
-            penalty = max(self.min_penalty, penalty)
-        penalty = max(0., penalty)
+        penalty = self.get_penalty(sim_data_dict, start, end)
 
         return penalty * self.weight
 
@@ -455,19 +464,7 @@ class AlwaysConstraint(Constraint):
             self.find_keys(sim_data_dict)
 
         # Todo - if q1 and q2 are on different time scales
-        if isinstance(self.quant1, str):
-            q1 = self.index(sim_data_dict, self.qkeys1)
-        else:
-            q1 = self.quant1
-        if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys2)
-        else:
-            q2 = self.quant2
-
-        penalty = np.max(q1-q2)
-        if penalty > 0 or (penalty == 0. and not self.or_equal):
-            penalty = max(self.min_penalty, penalty)
-        penalty = max(0., penalty)
+        penalty = self.get_penalty(sim_data_dict, 0, None)  # Note: Indexing by 0:None takes the entire column
 
         return penalty * self.weight
 
@@ -490,19 +487,7 @@ class OnceConstraint(Constraint):
         if not self.qkeys1 and not self.qkeys2:
             self.find_keys(sim_data_dict)
 
-        # Todo - if q1 and q2 are on different time scales
-        if isinstance(self.quant1, str):
-            q1 = self.index(sim_data_dict, self.qkeys1)
-        else:
-            q1 = self.quant1
-        if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys2)
-        else:
-            q2 = self.quant2
-
-        penalty = np.min(q1 - q2)
-        if penalty > 0 or (penalty == 0. and not self.or_equal):
-            penalty = max(self.min_penalty, penalty)
-        penalty = max(0., penalty)
+        # Note: Indexing by 0:None takes the entire column
+        penalty = self.get_penalty(sim_data_dict, 0, None, once=True)
 
         return penalty * self.weight
