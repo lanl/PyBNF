@@ -448,7 +448,7 @@ class Algorithm(object):
         """
         Generates n random PSets with a latin hypercube distribution
         More specifically, the uniform_var and loguniform_var variables follow the latin hypercube distribution,
-        while lognorm and static_list variables are randomized normally.
+        while lognorm are randomized normally.
 
         :param n: Number of psets to generate
         :return:
