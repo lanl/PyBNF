@@ -126,7 +126,7 @@ def main():
                             else:
                                 logger.info("Overwrite rejected... exiting")
                                 print('Quitting')
-                                exit()
+                                exit(0)
 
             os.makedirs(config.config['output_dir'] + '/Results')
             os.mkdir(config.config['output_dir'] + '/Simulations')

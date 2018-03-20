@@ -326,7 +326,7 @@ class Algorithm(object):
             else:
                 logger.info('Variable type not recognized... exiting')
                 print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
-                exit()
+                exit(1)
 
     def _initialize_models(self):
         """
@@ -731,7 +731,7 @@ class Algorithm(object):
                         logger.error('Cannot find files corresponding to best fit parameter set... exiting')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
-                        exit()
+                        exit(1)
 
         if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
             # End of fitting; delete unneeded files
