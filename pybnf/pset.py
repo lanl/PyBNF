@@ -58,6 +58,7 @@ class BNGLModel(Model):
 
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
 
+        # TODO BNGL file reading is rather convoluted and could probably be cleaned up
         # Read the file
         with open(self.file_path) as file:
             self.bngl_file_text = file.read()
@@ -77,7 +78,7 @@ class BNGLModel(Model):
                 line = line[:commenti]
 
             if re.match(r'^\s*$', line):
-                continue # Blank line - must handle before line continuation
+                continue  # Blank line - must handle before line continuation
 
             # Handle case where '\' is used to continue on the next line
             line = continuation + line
@@ -92,6 +93,10 @@ class BNGLModel(Model):
             params = re.findall('[A-Za-z_]\w*__FREE__', line)
             for p in params:
                 param_names_set.add(p)
+
+            # Make sure setOption (if present) doesn't get passed to the actions block
+            if re.match('\s*setOption', line):
+                continue
 
             # Check if this is the 'begin parameters' line
             if re.match('begin\s+parameters', line.strip()):

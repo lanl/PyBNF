@@ -145,6 +145,12 @@ class TestModel:
         assert len(m1.suffixes) == 2
         assert m1.suffixes[1] == ('parameter_scan', 'thing')
 
+    def test_actions(self):
+        m0 = pset.BNGLModel(self.file1)
+        assert len(m0.actions) == 2
+        for a in m0.actions:
+            assert re.search('setOption', a) is None
+
     def test_network_check(self):
         model0 = pset.BNGLModel(self.file1)
         assert model0.generates_network

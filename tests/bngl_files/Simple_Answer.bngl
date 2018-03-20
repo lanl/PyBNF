@@ -5,6 +5,8 @@
 # authors: Chylek LA, Hlavacek WS (Los Alamos National Laboratory)
 # software compatibility: RuleBender (version 2.1.0), BioNetGen (version 2.3)
 
+setOption("SpeciesLabel", "HNauty")
+
 begin model
 
 begin parameters
