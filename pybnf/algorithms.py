@@ -1594,6 +1594,28 @@ class ScatterSearch(Algorithm):
             (self.config.config['population_size']-1) * self.config.config['smoothing']
 
 
+class DreamAlgorithm(Algorithm):
+    """
+    Implements a variant of the DREAM algorithm as described in Vrugt (2016) Environmental Modelling
+    and Software.
+
+    Adapts Bayesian MCMC to use methods from differential evolution for accelerated convergence and
+    more efficient sampling of parameter space
+    """
+
+    def __init__(self, config):
+        super(DreamAlgorithm, self).__init__(config)
+        pass
+
+    # same as Bayesian Algorithm?
+    def start_run(self):
+        pass
+
+    # sync for each generation
+    def got_result(self, res):
+        pass
+
+
 class BayesAlgorithm(Algorithm):
 
     """
