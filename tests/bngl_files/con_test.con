@@ -31,4 +31,10 @@ A>5 at 4.1 weight 5 altpenalty B<6 min 4
 # Evaluates at time 1,2,3,4,5 for penalties (0,1,2,3,4)*2 = 20 
 A < 2 at C=5.5 everytime weight 2
 
+# Triggers at time 2 and 4 (requires equality of at condition to work)
+# Penalty 3 * (0.2 + 0.4) = 1.8
+D <= 5 at B=8 everytime weight 3
 
+# Should apply from time= 2 to 4 inclusive. Each should get penalty of 1.
+A<4 between C=6,C=6
+A>4 between C=6,C=6

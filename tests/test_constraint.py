@@ -101,5 +101,8 @@ class TestConstraint:
         assert cs.constraints[7].penalty(d_dict) == 25
         assert cs.constraints[8].penalty(d_dict) == 20
         assert cs.constraints[9].penalty(d_dict) == 20
+        np.testing.assert_almost_equal(cs.constraints[10].penalty(d_dict), 1.8)
+        assert cs.constraints[11].penalty(d_dict) == 1
+        assert cs.constraints[12].penalty(d_dict) == 1
 
-        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 79.8)
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 83.6)

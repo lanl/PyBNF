@@ -374,6 +374,10 @@ class AtConstraint(Constraint):
 
         penalty = 0.
         for fi in flip_inds:
+            # Make sure we pick the correct end of the interval if there's a point equal to the "at"
+            if np.isclose(atdata[fi+1], self.atval, atol=0.) and not (np.isclose(atdata[fi], self.atval, atol=0.)):
+                fi += 1
+
             penalty += self.get_penalty(sim_data_dict, fi, fi+1)
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
 
@@ -450,18 +454,26 @@ class BetweenConstraint(Constraint):
             return 0.
         else:
             start = start[0]
+            # If a point is exactly equal, make sure we pick the right end of the interval
+            if start < len(startdat) - 1 and np.isclose(startdat[start+1], self.startval, atol=0.) \
+                    and not (np.isclose(startdat[start], self.startval, atol=0.)):
+                start += 1
 
         enddat = self.index(sim_data_dict, self.endkeys)
         endcol = enddat < self.endval
-        end = np.nonzero(endcol[start:-1] != endcol[start+1:])[0]
+        # Note: First [0] strips a useless extra dimension, second [0] extracts the first flip point.
+        end = np.nonzero(endcol[start+1:-1] != endcol[start+2:])[0][0]
+
         if end == -1:
             # Interval never ended
             end = len(startcol) - 1
         else:
-            end = end[0]
-            end += start
+            end += start + 1
+        if end < len(endcol) - 1 and np.isclose(enddat[end+1], self.endval, atol=0.) \
+                and not (np.isclose(enddat[end], self.endval, atol=0.)):
+            end += 1
 
-        penalty = self.get_penalty(sim_data_dict, start, end)
+        penalty = self.get_penalty(sim_data_dict, start, end+1)
 
         return penalty
 
