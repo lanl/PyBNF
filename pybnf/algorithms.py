@@ -354,6 +354,7 @@ class Algorithm(object):
                 gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
                 try:
                     with open('%s.log' % gnm_name, 'w') as lf:
+                        print2('Generating network for model %s.bngl' % gnm_name)
                         run(gn_cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
                 except CalledProcessError as c:
                     logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
