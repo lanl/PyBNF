@@ -1,0 +1,120 @@
+begin model
+
+begin parameters
+
+K1 0.04 # /uM
+K2 20 # /uM
+K3 K3__FREE__ # /uM
+K5 K5__FREE__ # /uM
+
+K4=K1*K3/K2 # /uM
+K6=K4*K5/K2 # /uM
+
+kf1 1 # /uM/s
+kf2 10 # /uM/s
+kf3 10 # /uM/s
+kf4 1 # /uM/s
+kf5 10 # /uM/s
+kf6 1 # /uM/s
+
+kr1=((1/2)*kf1)/K1 # /s
+kr2=kf2/K2 # /s
+kr3=(2*kf3)/K3 # /s
+kr4=kf4/K4 # /s
+kr5=(kf5/K5)/2 # /s
+kr6=((1/2)*kf6)/K6 # /s
+
+Rtot 50 # uM
+
+Ifree 1 # uM, Ifree \in [1e-4,1e2] uM
+Itot = \
+Ifree*(8*Ifree^4*K1*K3^2*K5^2+8*Ifree^3*K1*K3^2*K5^2*Rtot+16*Ifree^3*K1*K3^2*K5+12*Ifree^2*K1*K3^2*K5*Rtot+8*Ifree^2*K1*K3^2+16*Ifree^2*K1*K3*K5-Ifree^2*K2^2*K3+2*Ifree^2*K2*K3*K5+4*Ifree*K1*K3^2*Rtot+8*Ifree*K1*K3*K5*Rtot+16*Ifree*K1*K3-2*Ifree*K2^2+Ifree*K2*K3*sqrt(8*Ifree^2*K1*K3*K5*Rtot+Ifree^2*K2^2+8*Ifree*K1*K3*Rtot+2*Ifree*K2+8*K1*Rtot+1)-2*Ifree*K3*K5*sqrt(8*Ifree^2*K1*K3*K5*Rtot+Ifree^2*K2^2+8*Ifree*K1*K3*Rtot+2*Ifree*K2+8*K1*Rtot+1)+2*Ifree*K3*K5+4*K1*K3*Rtot+8*K1+2*K2*sqrt(8*Ifree^2*K1*K3*K5*Rtot+Ifree^2*K2^2+8*Ifree*K1*K3*Rtot+2*Ifree*K2+8*K1*Rtot+1)-2*K2-K3*sqrt(8*Ifree^2*K1*K3*K5*Rtot+Ifree^2*K2^2+8*Ifree*K1*K3*Rtot+2*Ifree*K2+8*K1*Rtot+1)+K3)/(8*K1*(Ifree^4*K3^2*K5^2+2*Ifree^3*K3^2*K5+Ifree^2*K3^2+2*Ifree^2*K3*K5+2*Ifree*K3+1))
+
+end parameters
+
+begin molecule types
+
+R(r,i)
+I(r)
+
+#I
+#R
+#RR
+#RI
+#RIR
+#RIRI
+
+end molecule types
+
+begin seed species
+
+R(r,i) Rtot
+I(r) Itot
+
+#R Rtot
+#RR 0
+#RI 0
+#RIR 0
+#RIRI 0
+#I Itot
+
+end seed species
+
+begin observables
+
+Species I I(r)
+Species RI R(r,i!1).I(r!1)
+Species RIR R(r!1,i!2).I(r!2).R(r!1,i)
+Species RIRI R(r!1,i!2).I(r!2).R(r!1,i!3).I(r!3)
+Species RR R(r!1,i).R(r!1,i)
+
+#Species xI I
+#Species xRI RI
+#Species xRIR RIR
+#Species xRIRI RIRI
+#Species xRR RR
+
+end observables
+
+begin functions
+
+Ybar()=(RI+RIR+2*RIRI)/Rtot
+Activity()=RR+RIR
+
+#Ybar()=(xRI+xRIR+2*xRIRI)/Rtot
+#Activity()=xRR+xRIR
+
+end functions
+
+begin reaction rules
+
+R(r,i)+R(r,i)<->R(r!1,i).R(r!1,i) kf1,kr1
+R(r,i)+I(r)<->R(r,i!1).I(r!1) kf2,kr2
+R(r!1,i).R(r!1,i)+I(r)<->R(r!1,i!2).R(r!1,i).I(r!2) kf3,kr3
+R(r,i!1).I(r!1)+R(r,i)<->R(r!2,i!1).I(r!1).R(r!2,i) kf4,kr4
+R(r!2,i!1).I(r!1).R(r!2,i)+I(r)<->R(r!2,i!1).I(r!1).R(r!2,i!3).I(r!3) kf5,kr5
+R(r,i!1).I(r!1)+R(r,i!2).I(r!2)<->R(r!3,i!1).I(r!1).R(r!3,i!2).I(r!2) kf6,kr6
+
+#R+R<->RR kf1,kr1
+#R+I<->RI kf2,kr2
+#RR+I<->RIR kf3,kr3
+#RI+R<->RIR kf4,kr4
+#RIR+I<->RIRI kf5,kr5
+#RI+RI<->RIRI kf6,kr6
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+#simulate({method=>"ode",t_start=>0,t_end=>10000,n_steps=>100,print_functions=>1})
+parameter_scan({parameter=>"Ifree",par_scan_vals=>[0.000100372016637506,0.000314491602654335,0.000985383889389087,0.00318698147548864,0.00998564087315122,0.0312876069140816,0.101192057959632,0.317061005145963,0.993434494871831,3.1126883457236,10.0672237527048,31.5432272692313,98.833125298427],\
+                method=>"ode",t_start=>0,t_end=>100000,n_steps=>100,steady_state=>1,\
+                print_functions=>1, suffix=>"raf"})
+
+# Fig. 2B: Plot Ybar() vs. Ifree
+# Fig. 2C: Plot Activity() vs. Ifree
+
+end actions
