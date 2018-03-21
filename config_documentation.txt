@@ -16,9 +16,9 @@ worker_nodes - Nodes used for computation. Defaults to None; takes one or more s
 
 ***Parameter specification***
 
-uniform_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]
+uniform_var = name__FREE___ min max ([uUbB])- a uniformly distributed variable with bounds [min, max] with optional constraint specification (u|U means unbounded after initial sampling, b|B means bounded, left absent means bounded)
 normal_var = name__FREE___ mu sigma - a normal-distributed variable in regular space with mean mu, std dev sigma. A box constraint to keep >= 0 is also assumed.
-loguniform_var = name__FREE___ min max - a log-uniform distributed variable with bounds [min, max]. Bounds should be in regular space, eg [0.01, 100]
+loguniform_var = name__FREE___ min max ([uUbB]) - a log-uniform distributed variable with bounds [min, max]. Bounds should be in regular space, eg [0.01, 100]
 lognormal_var = name__FREE__ mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space.
 
 The following are to be used only with the simplex algorithm. Simplex should not use any of the other parameter specifications.
