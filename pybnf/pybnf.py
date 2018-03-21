@@ -227,4 +227,4 @@ def main():
         except:
             logger.exception('During cleanup, another exception occurred')
         finally:
-            exit(1)
+            exit(0 if success else 1)
