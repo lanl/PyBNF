@@ -33,8 +33,8 @@ def get_scheduler(config):
                 logger.error('Could not retrieve host names in 10s')
                 raise PybnfError('Failed to find node names in a reasonable time.  Exiting')
             except CalledProcessError:
-                logger.error('User specified SLURM cluster, but command %s failed' % ' '.join(get_hosts_cmd))
-                raise PybnfError('Command to find node names failed.  Exiting')
+                logger.error('User specified SLURM cluster, but command "%s" failed' % ' '.join(get_hosts_cmd))
+                raise PybnfError('Command to find node names failed.  Confirm use of SLURM cluster.  Exiting')
             nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
             scheduler_node = nodes[0]
             logger.info('Node %s is being used as the scheduler node' % scheduler_node)
