@@ -27,7 +27,8 @@ numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range']
-var_def_keys = ['uniform_var', 'lognormal_var', 'loguniform_var', 'normal_var', 'mutate']
+b_var_def_keys = ['uniform_var', 'loguniform_var']
+var_def_keys = ['lognormal_var', 'normal_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node']
@@ -56,9 +57,9 @@ def parse(s):
     numgram = numkeys - equals - num - comment
 
     # variable definition grammar
-    strnumkeys = pp.oneOf(' '.join(var_def_keys), caseless=True)
+    strnumkeys = pp.oneOf(' '.join(var_def_keys + b_var_def_keys), caseless=True)
     bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
-    varnums = bng_parameter - num - num
+    varnums = bng_parameter - num - num - pp.Optional(pp.Word("ubBU"))
     strnumgram = strnumkeys - equals - varnums - comment
 
     # multiple string value grammar
@@ -117,7 +118,14 @@ def ploop(ls):  # parse loop
             l = parse(line)
 
             # Find parameter assignments that reference distinct parameters
-            if l[0] in var_def_keys or l[0] in var_def_keys_1or2nums:
+            if l[0] in b_var_def_keys:
+                key = (l[0], l[1])
+                values = [float(x) for x in l[2:4]]
+                if len(l) == 5:
+                    values.append(re.fullmatch('b', l[4], flags=re.IGNORECASE) is not None)
+                else:
+                    values.append(True)
+            elif l[0] in var_def_keys_1or2nums or l[0] in var_def_keys:
                 key = (l[0], l[1])
                 values = [float(x) for x in l[2:]]
             elif l[0] in numkeys_int:
@@ -193,12 +201,13 @@ def ploop(ls):  # parse loop
                 fmt = "'%s=x1 x2 ...' where x1, x2, ... is a list of numbers" % key
             elif key in var_def_keys:
                 fmt = "'%s=v x y' where v is a variable name, and x and y are numbers" % key
+            elif key in b_var_def_keys:
+                fmt = "'%s=v x y z' where v is a variable name, x and y are numbers, and z is optional and specifies " \
+                      "whether or not the variable should be bounded ('u' is unbounded, 'b' or left blank is bounded)" % key
             elif key in var_def_keys_1or2nums:
                 fmt = "'%s=v x' or '%s=v x y' where v is a variable name, and x and y are decimal numbers" % (key, key)
             elif key in strkeylist:
                 fmt = "'%s=s' where s is a string" % key
-            elif key in slvkeylist:
-                fmt = "'%s=v x1 x2 ...' where v is a variable name, and x1, x2, ... is a list of numbers" % key
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'"
             elif key == 'normalization':
