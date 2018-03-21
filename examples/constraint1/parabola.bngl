@@ -1,0 +1,49 @@
+# Implementation of the parabola from the Mitra constrained optimization manuscript Fig. 1
+
+begin model
+
+  begin parameters
+
+# Original values used 
+# (a,b,c,d,e) = 0.5, 3, 5, 1, 1.5
+
+    a a__FREE__
+    b b__FREE__
+    c c__FREE__
+    d d__FREE__
+    e e__FREE__
+
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    counter() 0
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+
+    par()=a*((x)^2)-(b*(x))+c
+    line() = d*(x)+e
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>1000,suffix=>"par",print_functions=>1})
+
+end actions
+
+
