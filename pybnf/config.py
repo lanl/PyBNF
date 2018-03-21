@@ -264,12 +264,8 @@ class Configuration(object):
         return md
 
     @staticmethod
-    def _exp_file_prefix(ef):
-        return re.sub(".exp", "", re.split('/', ef)[-1])
-
-    @staticmethod
-    def _con_file_prefix(ef):
-        return re.sub(".con", "", re.split('/', ef)[-1])
+    def _file_prefix(ef, ext="exp"):
+        return re.sub("\."+ext, "", re.split('/', ef)[-1])
 
     def _load_exp_data(self):
         """
@@ -281,14 +277,14 @@ class Configuration(object):
         csets = set()
         for m in self.config['models']:
             for ef in self.config[m]:
-                if re.search(".exp$", ef):
+                if re.search("exp$", ef):
                     try:
                         d = Data(file_name=ef)
                     except FileNotFoundError:
                         raise PybnfError('Experimental data file %s was not found.' % ef)
-                    ed[self._exp_file_prefix(ef)] = d
+                    ed[self._file_prefix(ef)] = d
                 else:
-                    cs = ConstraintSet(m, self._con_file_prefix(ef))
+                    cs = ConstraintSet(self._file_prefix(m, 'bngl'), self._file_prefix(ef, 'con'))
                     cs.load_constraint_file(ef)
                     csets.add(cs)
         return ed, csets
@@ -297,7 +293,7 @@ class Configuration(object):
         mapping = dict()
         for model in self.models.values():
             suffs = {s[1] for s in model.suffixes}
-            efs_per_m = {self._exp_file_prefix(ef) for ef in self.config[model.file_path]}
+            efs_per_m = {self._file_prefix(ef) for ef in self.config[model.file_path] if re.search("\.exp$", ef)}
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
                     if ef not in suffs:
@@ -396,7 +392,7 @@ class Configuration(object):
                                      "The exp file %s given under the 'normalization' keyword is not associated with "
                                      "any model." % ef + seedoc)
                 val = self.config['normalization'][ef]
-                suff = self._exp_file_prefix(ef)
+                suff = self._file_prefix(ef)
                 def checkval(v):
                     if v not in valid:
                         raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
