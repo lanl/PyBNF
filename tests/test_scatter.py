@@ -46,7 +46,7 @@ class TestScatter:
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.
         cls.config = config.Configuration({
             'population_size': 7, 'max_iterations': 20, 'fit_type': 'ss',
-            ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('uniform_var', 'v1__FREE__'): [0, 10, True], ('uniform_var', 'v2__FREE__'): [0, 10, True], ('uniform_var', 'v3__FREE__'): [0, 10, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 

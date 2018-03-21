@@ -45,7 +45,7 @@ class TestDiffEvolution:
         cls.config = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'islands': 2, 'migrate_every': 3, 'num_to_migrate': 2,
             'mutation_rate': 1.0, 'fit_type': 'de',
-            ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('uniform_var', 'v1__FREE__'): [0, 10, True], ('uniform_var', 'v2__FREE__'): [0, 10, True], ('uniform_var', 'v3__FREE__'): [0, 10, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
             'output_dir': 'test_init'})

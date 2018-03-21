@@ -33,30 +33,30 @@ class TestBayes:
         cls.config = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('lognormal_var', 'v1__FREE__'): [0., 0.5], ('loguniform_var', 'v2__FREE__'): [1., 10.], ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('lognormal_var', 'v1__FREE__'): [0., 0.5, True], ('loguniform_var', 'v2__FREE__'): [1., 10., True], ('uniform_var', 'v3__FREE__'): [0, 10, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'bmc'})
 
         cls.config_box = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10],
-            ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('uniform_var', 'v1__FREE__'): [0, 10, True], ('uniform_var', 'v2__FREE__'): [0, 10, True],
+            ('uniform_var', 'v3__FREE__'): [0, 10, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'bmc'})
 
         cls.config_normal = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput2/',
-            ('lognormal_var', 'v1__FREE__'): [0., 0.5], ('lognormal_var', 'v2__FREE__'): [0., 0.5],
-            ('lognormal_var', 'v3__FREE__'): [0., 0.5],
+            ('lognormal_var', 'v1__FREE__'): [0., 0.5, True], ('lognormal_var', 'v2__FREE__'): [0., 0.5, True],
+            ('lognormal_var', 'v3__FREE__'): [0., 0.5, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'bmc'})
 
         cls.config_replica = config.Configuration({
             'population_size': 4, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('lognormal_var', 'v1__FREE__'): [1., 0.5], ('lognormal_var', 'v2__FREE__'): [1., 0.5], ('normal_var', 'v3__FREE__'): [50, 3],
+            ('lognormal_var', 'v1__FREE__'): [1., 0.5, True], ('lognormal_var', 'v2__FREE__'): [1., 0.5, True], ('normal_var', 'v3__FREE__'): [50, 3, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7], 'fit_type': 'pt'})
 
