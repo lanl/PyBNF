@@ -49,40 +49,57 @@ class TestConfig(object):
 
     def test_config_normalization(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
-                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
-                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                   ('uniform_var', 'koff__FREE__'): [4., 5.],
-                   ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                   ('normal_var', 'kase__FREE__'): [28., 5.],
-                   ('uniform_var', 'pase__FREE__'): [6., 7.],
-                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
-                   'normalization': {'bngl_files/p1_5.exp': [('init', [1])], 'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
+                                  'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                                  'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
+                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE__'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
+                                  'normalization': {'bngl_files/p1_5.exp': [('init', [1])],
+                                                    'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
         assert c.config['normalization']['p1_5'] == [('init', ['R_free'])]
         assert c.config['normalization']['thing'] == [('peak', ['Ag_total'])]
 
     @raises(printing.PybnfError)
     def test_normalization_err(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
-                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
-                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                   ('uniform_var', 'koff__FREE__'): [4., 5.],
-                   ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                   ('normal_var', 'kase__FREE__'): [28., 5.],
-                   ('uniform_var', 'pase__FREE__'): [6., 7.],
-                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
-                   'normalization': {'bngl_files/p1_5.exp': [('init', [1])], 'bngl_files/thing.exp': [('peak', ['R_free'])]}})
+                                  'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                                  'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
+                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE__'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
+                                  'normalization': {'bngl_files/p1_5.exp': [('init', [1])],
+                                                    'bngl_files/thing.exp': [('peak', ['R_free'])]}})
 
     @raises(printing.PybnfError)
     def test_normalization_err2(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
-                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
-                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                   ('uniform_var', 'koff__FREE__'): [4., 5.],
-                   ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                   ('normal_var', 'kase__FREE__'): [28., 5.],
-                   ('uniform_var', 'pase__FREE__'): [6., 7.],
-                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
-                   'normalization': {'bngl_files/p1_5.exp': [('init', [2])], 'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
+                                  'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                                  'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
+                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE__'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
+                                  'normalization': {'bngl_files/p1_5.exp': [('init', [2])],
+                                                    'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
+
+    @raises(printing.PybnfError)
+    def test_incorrect_bng_command(self):
+        c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
+                                  'bng_command': "/incorrect/path/to/BNG2.pl",
+                                  'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                                  'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
+                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE__'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
+                                  'normalization': {'bngl_files/p1_5.exp': [('init', [2])],
+                                                    'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
 
     @raises(config.UnspecifiedConfigurationKeyError)
     def test_bad_config_init(self):
