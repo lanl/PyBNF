@@ -326,7 +326,9 @@ class Configuration(object):
                             stepsize = None  # Will sort out within SimplexAlgorithm
                         variables_specs.append((k[1], k[0], self.config[k][0], stepsize))
                     else:
-                        variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
+                        lower_bound = self.config[k][0] if self.config[k][2] else 0.0
+                        upper_bound = self.config[k][1] if self.config[k][2] else np.inf
+                        variables_specs.append((k[1], k[0], lower_bound, upper_bound))
         return variables, variables_specs
 
     def _check_variable_correspondence(self):
