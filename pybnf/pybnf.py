@@ -126,7 +126,7 @@ def main():
                             else:
                                 logger.info("Overwrite rejected... exiting")
                                 print('Quitting')
-                                exit()
+                                exit(0)
 
             os.makedirs(config.config['output_dir'] + '/Results')
             os.mkdir(config.config['output_dir'] + '/Simulations')
@@ -227,4 +227,4 @@ def main():
         except:
             logger.exception('During cleanup, another exception occurred')
         finally:
-            exit(1)
+            exit(0 if success else 1)
