@@ -43,14 +43,14 @@ class TestParticleSwarm:
         cls.params2 = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
 
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-                      ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
+                      ('uniform_var', 'v1__FREE__'): [0, 10, True], ('uniform_var', 'v2__FREE__'): [0, 10, True], ('uniform_var', 'v3__FREE__'): [0, 10, True],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'fit_type': 'pso', 'output_dir': 'test_pso'})
 
         cls.config2 = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-                           ('uniform_var', 'v1__FREE__'): [0, 10], ('loguniform_var', 'v2__FREE__'): [0.01, 1e5],
-                           ('lognormal_var', 'v3__FREE__'): [0, 1],
+                           ('uniform_var', 'v1__FREE__'): [0, 10, True], ('loguniform_var', 'v2__FREE__'): [0.01, 1e5, True],
+                           ('lognormal_var', 'v3__FREE__'): [0, 1, True],
                            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
                            'fit_type': 'pso', 'output_dir': 'test_pso2'})
@@ -59,7 +59,7 @@ class TestParticleSwarm:
 
         cls.lh_config = config.Configuration(
             {'population_size': 10, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-            ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('uniform_var', 'v1__FREE__'): [0, 10, True], ('uniform_var', 'v2__FREE__'): [0, 10, True], ('uniform_var', 'v3__FREE__'): [0, 10, True],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': 'test_pso_lh',
             'initialization': 'lh', 'fit_type': 'pso'})

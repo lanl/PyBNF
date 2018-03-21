@@ -9,7 +9,7 @@ class TestParse:
     @classmethod
     def setup_class(cls):
         cls.s = ['job_name =  world #test test', 'verbosity = 3', 'model = thing.bngl: data.exp', 'mutate = derp 1 3',
-                 ' #derp = derp', 'uniform_var = var__FREE__ 1 5', 'lognormal_var= var2__FREE__ 0.01 1.0e5',
+                 ' #derp = derp', 'uniform_var = var__FREE__ 1 5 U', 'lognormal_var= var2__FREE__ 0.01 1.0e5',
                  'uniform_var = var3__FREE__ 4 5', 'model = another.bngl: d1.exp, d2.exp',
                  'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3',
                  'normalization=init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)',
@@ -25,14 +25,17 @@ class TestParse:
         assert parse.parse(self.s[1]) == ['verbosity', '3']
         assert parse.parse(self.s[2]) == ['model', 'thing.bngl', 'data.exp']
         assert parse.parse(self.s[3]) == ['mutate', 'derp', '1', '3']
-        assert parse.parse(self.s[5]) == ['uniform_var', 'var__FREE__', '1', '5']
+        assert parse.parse(self.s[5]) == ['uniform_var', 'var__FREE__', '1', '5', 'U']
         assert parse.parse(self.s[6]) == ['lognormal_var', 'var2__FREE__', '0.01', '1.0E5']
         assert parse.parse(self.s[7]) == ['uniform_var', 'var3__FREE__', '4', '5']
         assert parse.parse(self.s[8]) == ['model', 'another.bngl', 'd1.exp', 'd2.exp']
         assert parse.parse(self.s[9]) == ['credible_intervals', '68', '95', '99.7']
         assert parse.parse(self.s[10]) == ['var', 'a', '1', '2']
         assert parse.parse(self.s[11]) == ['logvar', 'b', '3']
-        assert parse.parse(self.s[12]) == ['normalization', 'init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)']
+        assert parse.parse(self.s[12]) == ['normalization',
+                                           'init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)']
+        assert parse.parse(self.s[13]) == ['normalization', 'zero: (data2.exp:xyz)']
+        assert parse.parse(self.s[14]) == ['cluster_type', 'slurm']
 
     def test_normalize_parse(self):
         assert parse.parse_normalization_def('init') == 'init'
@@ -64,7 +67,8 @@ class TestParse:
         assert type(d['verbosity']) == int
         assert d['thing.bngl'] == ['data.exp']
         assert d[('mutate', 'derp')] == [1., 3.]
-        assert d[('uniform_var', 'var3__FREE__')] == [4., 5.]
+        assert d[('uniform_var', 'var__FREE__')] == [1., 5., False]
+        assert d[('uniform_var', 'var3__FREE__')] == [4., 5., True]
         assert d['another.bngl'] == ['d1.exp', 'd2.exp']
         assert d['models'] == {'thing.bngl', 'another.bngl'}
         assert d['credible_intervals'] == [68., 95., 99.7]
