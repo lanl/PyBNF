@@ -27,12 +27,11 @@ numkeys_float = ['extra_weight', 'swap_rate', 'min_objfunc_value', 'cognitive', 
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range']
-var_def_keys = ['random_var', 'lognormrandom_var', 'loguniform_var', 'normrandom_var', 'static_list_var', 'mutate']
+var_def_keys = ['uniform_var', 'lognormal_var', 'loguniform_var', 'normal_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node']
 multstrkeys = ['worker_nodes']
-slvkeylist = ['static_list_var']
 
 
 def parse(s):
@@ -70,10 +69,6 @@ def parse(s):
     varkeys = pp.oneOf(' '.join(var_def_keys_1or2nums), caseless=True)
     vargram = varkeys - equals - bng_parameter - num - pp.Optional(num) - comment
 
-    # static_list_var grammar
-    slvkey = pp.oneOf(' '.join(slvkeylist), caseless=True)
-    slvgram = slvkey - equals - bng_parameter - pp.OneOrMore(num) - comment
-
     # multiple num value
     multnumkey = pp.oneOf(' '.join(multnumkeys), caseless=True)
     multnumgram = multnumkey - equals - pp.OneOrMore(num) - comment
@@ -91,7 +86,7 @@ def parse(s):
     # Will handle with separate code.
 
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | slvgram | multnumgram | multstrgram | vargram | normgram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram).parseString(s, parseAll=True).asList()
 
     return line
 

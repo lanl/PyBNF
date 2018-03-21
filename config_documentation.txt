@@ -16,11 +16,10 @@ worker_nodes - Nodes used for computation. Defaults to None; takes one or more s
 
 ***Parameter specification***
 
-random_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]
-normrandom_var = name__FREE___ mu sigma - a normal-distributed variable in regular space with mean mu, std dev sigma. A box constraint to keep >= 0 is also assumed. 
+uniform_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]
+normal_var = name__FREE___ mu sigma - a normal-distributed variable in regular space with mean mu, std dev sigma. A box constraint to keep >= 0 is also assumed.
 loguniform_var = name__FREE___ min max - a log-uniform distributed variable with bounds [min, max]. Bounds should be in regular space, eg [0.01, 100]
-lognormrandom_var = name__FREE__ mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space. 
-static_list_var = name__FREE__ a1 a2 a3... - must take one of the values a1, a2, a3, ... , This is only partially implemented. 
+lognormal_var = name__FREE__ mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space.
 
 The following are to be used only with the simplex algorithm. Simplex should not use any of the other parameter specifications.
 If you are using another algorithm with the flag refine, you still should not use these, you must set step size with simplex_step or simplex_log_step.
