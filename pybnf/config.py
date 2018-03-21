@@ -6,6 +6,7 @@ from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquar
     AveNormSumOfSquaresObjective
 from .pset import BNGLModel, ModelError
 from .printing import verbosity, print1, PybnfError
+from .constraint import ConstraintSet
 
 import numpy as np
 import os
@@ -105,7 +106,7 @@ class Configuration(object):
 
         self.models = self._load_models()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
-        self.exp_data = self._load_exp_data()
+        self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
         self._check_variable_correspondence()
@@ -266,18 +267,31 @@ class Configuration(object):
     def _exp_file_prefix(ef):
         return re.sub(".exp", "", re.split('/', ef)[-1])
 
+    @staticmethod
+    def _con_file_prefix(ef):
+        return re.sub(".con", "", re.split('/', ef)[-1])
+
     def _load_exp_data(self):
         """
         Loads experimental data files in a dictionary keyed on data file prefix
+        Also loads constraint files (which at this point are stored in the same structures as the exp files) and stores
+        them in a set.
         """
         ed = {}
-        for ef in self.config['exp_data']:
-            try:
-                d = Data(file_name=ef)
-            except FileNotFoundError:
-                raise PybnfError('Experimental data file %s was not found.' % ef)
-            ed[self._exp_file_prefix(ef)] = d
-        return ed
+        csets = set()
+        for m in self.config['models']:
+            for ef in self.config[m]:
+                if re.search(".exp$", ef):
+                    try:
+                        d = Data(file_name=ef)
+                    except FileNotFoundError:
+                        raise PybnfError('Experimental data file %s was not found.' % ef)
+                    ed[self._exp_file_prefix(ef)] = d
+                else:
+                    cs = ConstraintSet(m, self._con_file_prefix(ef))
+                    cs.load_constraint_file(ef)
+                    csets.add(cs)
+        return ed, csets
 
     def _check_actions(self):
         mapping = dict()

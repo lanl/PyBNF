@@ -25,7 +25,7 @@ class ConstraintSet:
         """
         return sum([c.penalty(sim_data_dict) for c in self.constraints])
 
-    def _load_constraint_file(self, filename):
+    def load_constraint_file(self, filename):
         """
         Parse the constraint file filename and load them all into my constraint list
         """

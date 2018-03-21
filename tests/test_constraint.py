@@ -61,7 +61,7 @@ class TestConstraint:
 
     def test_load_file(self):
         cs = copy.deepcopy(self.cset)
-        cs._load_constraint_file(self.f1)
+        cs.load_constraint_file(self.f1)
 
         assert cs.constraints[0].quant1 == 'Ag_free'
         assert cs.constraints[0].or_equal is False
@@ -89,7 +89,7 @@ class TestConstraint:
         d_dict = {self.model: {self.suf: d}}
 
         cs = copy.deepcopy(self.cset)
-        cs._load_constraint_file(self.f2)
+        cs.load_constraint_file(self.f2)
 
         assert cs.constraints[0].penalty(d_dict) == 0
         assert cs.constraints[1].penalty(d_dict) == 4
