@@ -1836,13 +1836,13 @@ class SimplexAlgorithm(Algorithm):
         self.pending[self.start_point.name] = 0
         i = 1
         for v in self.variables:
-            new_dict = dict()
+            new_vars = []
             for p in self.variables:
                 if p == v:
-                    new_dict[p] = self.add(self.start_point, p, self.start_steps[p])
+                    new_vars.append(self.start_point[p].add(self.start_steps[p]))
                 else:
-                    new_dict[p] = self.start_point[p]
-            new_pset = PSet(new_dict)
+                    new_vars.append(self.start_point[p])
+            new_pset = PSet(new_vars)
             new_pset.name = 'simplex_init%i' % i
             self.pending[new_pset.name] = i
             i += 1
