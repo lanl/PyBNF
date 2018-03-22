@@ -1631,7 +1631,7 @@ class BayesAlgorithm(Algorithm):
             v = self.variables[i]
             fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
             # For log-space variables, we want the histogram in log space
-            if self.variable_space[v][0] == 'log':
+            if v.log_space:
                 histdata = np.log10(dat_array[:, i])
                 header = 'log10_lower_bound\tlog10_upper_bound\tcount'
             else:
@@ -1938,7 +1938,7 @@ class SimplexAlgorithm(Algorithm):
                 new_dict = dict()
                 this_centroid = dict()
                 for v in a.keys():
-                    if self.variable_space[v][0] == 'log':
+                    if v.log_space:
                         # Calc centroid in regular space.
                         centroid = exp10((sums[v] - np.log10(a[v])) / (len(self.simplex) - 1))
                     else:
@@ -1972,7 +1972,7 @@ class SimplexAlgorithm(Algorithm):
         # return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}
         sums = dict()
         for p in self.simplex[0][1].keys():
-            if self.variable_space[p][0] == 'regular':
+            if not p.log_space:
                 sums[p] = sum(point[1][p] for point in self.simplex)
             else:
                 sums[p] = sum(np.log10(point[1][p]) for point in self.simplex)
@@ -1988,14 +1988,15 @@ class SimplexAlgorithm(Algorithm):
         :param c:
         :param d:
         :param v:
+        :type v: FreeParameter
         :return:
         """
 
-        if self.variable_space[v][0] == 'log':
+        if v.log_space:
             result = 10 ** (np.log10(a) + b*(np.log10(c) - np.log10(d)))
         else:
             result = a + b*(c-d)
-        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+        return max(v.lower_bound, min(v.upper_bound, result))
 
     def ab_plus_cd(self, a, b, c, d, v):
         """
@@ -2006,13 +2007,14 @@ class SimplexAlgorithm(Algorithm):
         :param c:
         :param d:
         :param v:
+        :type v: FreeParameter
         :return:
         """
-        if self.variable_space[v][0] == 'log':
+        if v.log_space:
             result = 10 ** (a * np.log10(b) + c*np.log10(d))
         else:
             result = a * b + c * d
-        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+        return max(v.lower_bound, min(v.upper_bound, result))
 
 
 def latin_hypercube(nsamples, ndims):
