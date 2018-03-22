@@ -355,7 +355,7 @@ class Configuration(object):
                     else:
                         if len(self.config[k]) == 3:
                             if re.fullmatch('u', self.config[k][2], flags=re.IGNORECASE):
-                                variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1], False))
+                                variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1], bounded=False))
                             else:
                                 variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1]))
                         else:

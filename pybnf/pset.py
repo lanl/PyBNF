@@ -331,7 +331,7 @@ class FreeParameter(object):
     Class representing a free parameter in a model
     """
 
-    def __init__(self, name, type, p1, p2, bounded=True):
+    def __init__(self, name, type, p1, p2, value=None, bounded=True):
         """
         Initializes a FreeParameter object based on information parsed from the configuration file
 
@@ -343,6 +343,8 @@ class FreeParameter(object):
         :type p1: float
         :param p2: The second value governing the parameter (upper bound or standard deviation or step size)
         :type p2: float
+        :param value: The parameter's numerical value
+        :type value: float
         :param bounded: Determines whether the parameter should be bounded after initial sampling
          (only relevant if parameter's initial distribution is bounded)
         """
@@ -354,9 +356,13 @@ class FreeParameter(object):
 
         self.lower_bound = 0.0 if not self.bounded else self._p1
         self.upper_bound = np.inf if not self.bounded else self._p2
-        self.log_space = re.search('log', self.type) is not None
 
-        self.value = None
+        if value:
+            if not self.lower_bound <= value < self.upper_bound:
+                raise PybnfError("Free parameter %s cannot be assigned the value %s" % (self.name, value))
+        self.value = value
+
+        self.log_space = re.search('log', self.type) is not None
 
         self._distribution = None
         if re.search('normal', self.type):
@@ -372,11 +378,9 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
-        if not self.lower_bound <= new_value < self.upper_bound:
-            raise PybnfError("Free parameter %s cannot be assigned the value %s" % (self.name, new_value))
-        self.value = new_value
+        return FreeParameter(self.name, self.type, self._p1, self._p2, new_value, self.bounded)
 
-    def sample_value(self, set_to_value=False):
+    def sample_value(self):
         """
         Samples a value for this parameter based on its defined initial distribution
 
@@ -392,12 +396,7 @@ class FreeParameter(object):
 
         val = max(self.lower_bound, min(self.upper_bound, val))
 
-        if set_to_value:
-            self.value = val
-        else:
-            f = FreeParameter(self.name, self.type, self._p1, self._p2, self.bounded)
-            f.set_value(val)
-            return f
+        return self.set_value(val)
 
     def __hash__(self):
         return hash((self.name, self.value))

@@ -10,15 +10,11 @@ class TestPSet:
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""
-        cls.p0 = pset.FreeParameter('var0__FREE__', 'normal_var', 0, 1)
-        cls.p1 = pset.FreeParameter('var1__FREE__', 'lognormal_var', 1, 2)
-        cls.p2 = pset.FreeParameter('var2__FREE__', 'loguniform_var', 0.01, 100)
-        cls.p3 = pset.FreeParameter('var2__FREE__', 'uniform_var', 0, 10)
-        cls.p4 = pset.FreeParameter('var2__FREE__', 'uniform_var', 0, 10, False)
-        cls.p0.set_value(1.0)
-        cls.p1.set_value(0.1)
-        cls.p2.set_value(99.0)
-        cls.p3.set_value(5.0)
+        cls.p0 = pset.FreeParameter('var0__FREE__', 'normal_var', 0, 1, value=1.0)
+        cls.p1 = pset.FreeParameter('var1__FREE__', 'lognormal_var', 1, 2, value=0.1)
+        cls.p2 = pset.FreeParameter('var2__FREE__', 'loguniform_var', 0.01, 100, value=99.0)
+        cls.p3 = pset.FreeParameter('var2__FREE__', 'uniform_var', 0, 10, value=5.0)
+        cls.p4 = pset.FreeParameter('var2__FREE__', 'uniform_var', 0, 10, bounded=False)
 
         cls.fps0 = [cls.p0, cls.p1, cls.p2]
         cls.fps1 = [cls.p3, cls.p4, cls.p2]
