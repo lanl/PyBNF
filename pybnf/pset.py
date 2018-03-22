@@ -398,6 +398,20 @@ class FreeParameter(object):
 
         return self.set_value(val)
 
+    def add(self, summand):
+        """
+        Adds a value to the existing value and returns a new FreeParameter instance.  Since free parameters
+        can exist in regular or logarithmic space, the value to add is expected to already be transformed
+        to the appropriate space
+
+        :param summand: Value to add
+        :return:
+        """
+        if self.log_space:
+            return self.set_value(10**(np.log10(self.value) + summand))
+        else:
+            return self.set_value(self.value + summand)
+
     def __hash__(self):
         return hash((self.name, self.value))
 

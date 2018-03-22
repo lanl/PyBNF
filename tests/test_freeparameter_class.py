@@ -56,3 +56,11 @@ class TestFreeParameter:
         p0s = self.p0.set_value(p6.value)
         print(p0s, p6)
         assert p6 == p0s
+
+    def test_add(self):
+        p7 = self.p0.set_value(1)
+        p7a = p7.add(1)
+        assert p7a.value == 2
+        p8 = self.p2.set_value(1)
+        p8a = p8.add(1)
+        assert p8a.value == 10
