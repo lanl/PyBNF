@@ -1421,17 +1421,15 @@ class BayesAlgorithm(Algorithm):
         # space is 'reg' for regular space, 'log' for log space. dist is 'n' for normal, 'b' for box.
         # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
         # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
-        for (name, type, val1, val2) in self.config.variables_specs:
-            if type == 'normal_var':
-                self.prior[name] = ('reg', 'n', val1, val2)
-            elif type == 'lognormal_var':
-                self.prior[name] = ('log', 'n', val1, val2)
-            elif type == 'uniform_var':
-                self.prior[name] = ('reg', 'b', val1, val2)
-            elif type == 'loguniform_var':
-                self.prior[name] = ('log', 'b', np.log10(val1), np.log10(val2))
-            else:
-                raise PybnfError('Bayesian MCMC cannot handle variable type %s' % type)
+        for var in self.variables:
+            if var.type == 'normal_var':
+                self.prior[var.name] = ('reg', 'n', var.p1, var.p2)
+            elif var.type == 'lognormal_var':
+                self.prior[var.name] = ('log', 'n', var.p1, var.p2)
+            elif var.type == 'uniform_var':
+                self.prior[var.name] = ('reg', 'b', var.p1, var.p2)
+            elif var.type == 'loguniform_var':
+                self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
 
     def start_run(self):
         """
