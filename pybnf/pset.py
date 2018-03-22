@@ -252,7 +252,7 @@ class BNGLModel(Model):
 
         return '\n'.join(self.model_lines) + '\n'
 
-    def save(self, file_prefix, gen_only=False):
+    def save(self, file_prefix, gen_only=False, pset=None):
         """
         Saves a runnable BNGL file of the model, including definitions of the __FREE__ parameter values that are defined
         by this model's pset, to the specified location.
@@ -263,7 +263,7 @@ class BNGLModel(Model):
 
         # Call model_text(), then write the output to the file.
         if self.param_set is None:
-            self.param_set = PSet({k: 1.0 for k in self.param_names})
+            self.param_set = pset
 
         text = self.model_text(gen_only)
         f = open(file_prefix + '.bngl', 'w')
@@ -387,10 +387,10 @@ class FreeParameter(object):
         :return: new FreeParameter instance or None
         """
         if self.log_space:
-            if re.fullmatch('lognormal_var'):
-                val = np.exp10(self._distribution(self.p1, self.p2))
+            if re.fullmatch('lognormal_var', self.type):
+                val = 10**(self._distribution(self.p1, self.p2))
             else:
-                val = np.exp10(self._distribution(np.log10(self.p1), np.log10(self.p2)))
+                val = 10**(self._distribution(np.log10(self.p1), np.log10(self.p2)))
         else:
             val = self._distribution(self.p1, self.p2)
 

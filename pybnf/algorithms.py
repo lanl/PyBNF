@@ -332,7 +332,8 @@ class Algorithm(object):
                 os.chdir(init_dir)
 
                 gnm_name = '%s_gen_net' % m.name
-                m.save(gnm_name, gen_only=True)
+                ones_pset = PSet([var.set_value(1) for var in self.variables])
+                m.save(gnm_name, gen_only=True, pset=ones_pset)
                 gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
                 try:
                     with open('%s.log' % gnm_name, 'w') as lf:
@@ -413,7 +414,7 @@ class Algorithm(object):
         """
         logger.debug("Generating a randomly distributed PSet")
         pset_vars = []
-        for var in self.config.variables:
+        for var in self.variables:
             pset_vars.append(var.sample_value())
         return PSet(pset_vars)
 
@@ -429,7 +430,7 @@ class Algorithm(object):
         logger.debug("Generating PSets using Latin hypercube sampling")
         uniform_vars = []
         other_vars = []
-        for var in self.config.variables:
+        for var in self.variables:
             if var.type == 'uniform_var' or var.type == 'loguniform_var':
                 uniform_vars.append(var)
             else:
@@ -445,12 +446,14 @@ class Algorithm(object):
             # Convert the 0 to 1 random numbers to the required variable range
             pset_vars = []
             rowindex = 0
-            for var in self.config.variables:
+            for var in self.variables:
                 if var.type == 'uniform_var':
-                    pset_vars.append(var.set_value(var.p1 + row[rowindex]*(var.p2-var.p1)))
+                    rescaled_val = var.p1 + row[rowindex]*(var.p2-var.p1)
+                    pset_vars.append(var.set_value(rescaled_val))
                     rowindex += 1
                 elif var.type == 'loguniform_var':
-                    pset_vars.append(var.set_value(exp10(np.log10(var.p1) + row[rowindex]*(np.log10(var.p2)-np.log10(var.p1)))))
+                    rescaled_val = exp10(np.log10(var.p1) + row[rowindex]*(np.log10(var.p2)-np.log10(var.p1)))
+                    pset_vars.append(var.set_value(rescaled_val))
                     rowindex += 1
                 else:
                     pset_vars.append(var.sample_value())
