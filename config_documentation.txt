@@ -4,7 +4,7 @@ Please update this file whenever you add support for new .conf keys in the code
 
 ***Fundamental model specification***
 
-model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp
+model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list.
 bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise bng_command requires specification in the configuration file
 output_dir - Directory where to save the output. Default: bnf_out
 fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de

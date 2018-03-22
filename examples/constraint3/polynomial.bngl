@@ -5,7 +5,7 @@ begin model
   begin parameters
 
 # Original values used 
-# (a,b,c,d,e) = 0.5, 3, 5, 1, 1.5
+# (a,b,c,d,e,f,g) = 0.3, 1, 27, 70, 21, 5, 0.8
 
     a a__FREE__
     b b__FREE__

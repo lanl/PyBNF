@@ -4,9 +4,6 @@ begin model
 
   begin parameters
 
-# Original values used 
-# (a,b,c,d,e) = 0.5, 3, 5, 1, 1.5
-
     a 0.3
     b 1
     c 27
