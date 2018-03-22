@@ -858,8 +858,7 @@ class ParticleSwarm(Algorithm):
         # This could come up in practice if all parameters have hit a box constraint.
         # As a simple workaround, perturb the parameters slightly
         while new_pset in self.pset_map:
-            retry = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.variables])
-            new_pset = PSet(retry)
+            new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.variables])
 
         self.pset_map[new_pset] = p
 
@@ -1123,7 +1122,6 @@ class DifferentialEvolution(Algorithm):
             raise NotImplementedError('Please select one of the strategies from our extensive list of options: rand1')
 
         # Iterate through parameters; decide whether to mutate or leave the same.
-        new_pset_dict = dict()
         new_pset_vars = []
         for p in base.keys():
             if np.random.random() < self.mutation_rate:
@@ -1132,7 +1130,7 @@ class DifferentialEvolution(Algorithm):
             else:
                 new_pset_vars.append(base[p])
 
-        return PSet(new_pset_dict)
+        return PSet(new_pset_vars)
 
 
 class ScatterSearch(Algorithm):
@@ -1710,31 +1708,30 @@ class SimplexAlgorithm(Algorithm):
 
     def __init__(self, config):
         super(SimplexAlgorithm, self).__init__(config)
-        if 'simplex_start_point' not in config.config:
+        if 'simplex_start_point' not in self.config.config:
             # We need to set up the initial point ourselfs
             self._parse_start_point()
-        if 'simplex_max_iterations' in config.config:
-            self.max_iterations = config.config['simplex_max_iterations']
+        if 'simplex_max_iterations' in self.config.config:
+            self.max_iterations = self.config.config['simplex_max_iterations']
         else:
-            self.max_iterations = config.config['max_iterations']
-        self.start_point = config.config['simplex_start_point']
-        self.start_steps = {v[0]: v[3] for v in config.variables_specs}
+            self.max_iterations = self.config.config['max_iterations']
+        self.start_point = self.config.config['simplex_start_point']
         # Set the start step for each variable to a variable-specific value, or else an algorithm-wide value
         self.start_steps = dict()
-        for v in config.variables_specs:
-            if v[1] in ('var', 'logvar') and v[3] is not None:
-                self.start_steps[v[0]] = v[3]
-            elif 'simplex_log_step' in config.config and v[1][:3]=='log':
-                self.start_steps[v[0]] = config.config['simplex_log_step']
+        for v in self.variables:
+            if v.type in ('var', 'logvar') and v.p2 is not None:
+                self.start_steps[v.name] = v.p2
+            elif 'simplex_log_step' in self.config.config and v.log_space:
+                self.start_steps[v.name] = self.config.config['simplex_log_step']
             else:
-                self.start_steps[v[0]] = config.config['simplex_step']
+                self.start_steps[v.name] = self.config.config['simplex_step']
 
-        self.parallel_count = min(config.config['population_size'], len(self.variables))
+        self.parallel_count = min(self.config.config['population_size'], len(self.variables))
         self.iteration = 0
-        self.alpha = config.config['simplex_reflection']
-        self.gamma = config.config['simplex_expansion']
-        self.beta = config.config['simplex_contraction']
-        self.tau = config.config['simplex_shrink']
+        self.alpha = self.config.config['simplex_reflection']
+        self.gamma = self.config.config['simplex_expansion']
+        self.beta = self.config.config['simplex_contraction']
+        self.tau = self.config.config['simplex_shrink']
 
         self.simplex = []  # (score, PSet) points making up the simplex. Sorted after each iteration.
 
@@ -1757,14 +1754,14 @@ class SimplexAlgorithm(Algorithm):
         Parses the info out of the variable specs, and sets the appropriate PSet into the config.
         """
         start_dict = dict()
-        for vinfo in self.config.variables_specs:
-            if vinfo[1] == 'var':
-                start_dict[vinfo[0]] = vinfo[2]
-            elif vinfo[1] == 'logvar':
-                start_dict[vinfo[0]] = exp10(vinfo[2])
+        for v in self.variables:
+            if v.type == 'var':
+                start_dict[v.name] = v.p1
+            elif v.type == 'logvar':
+                start_dict[v.name] = exp10(v.p1)
             else:
                 raise RuntimeError('Internal error in SimplexAlgorithm: Encountered variable type %s while trying'
-                                   'to parse start point' % vinfo[1])
+                                   'to parse start point' % v.type)
         start_pset = PSet(start_dict)
         self.config.config['simplex_start_point'] = start_pset
 
