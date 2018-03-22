@@ -358,8 +358,8 @@ class FreeParameter(object):
         self.upper_bound = np.inf if not self.bounded else self.p2
 
         if value:
-            if not self.lower_bound <= value < self.upper_bound:
-                raise PybnfError("Free parameter %s cannot be assigned the value %s" % (self.name, value))
+            if not self.lower_bound <= value <= self.upper_bound:  # not quite precise, but works well
+                raise OutOfBoundsException("Free parameter %s cannot be assigned the value %s" % (self.name, value))
         self.value = value
 
         self.log_space = re.search('log', self.type) is not None
@@ -602,3 +602,7 @@ class Trajectory(object):
         :return: str
         """
         return self.names[self.best_fit()]
+
+
+class OutOfBoundsException(Exception):
+    pass

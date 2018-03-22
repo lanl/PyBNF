@@ -12,6 +12,7 @@ from .data import Data
 from .pset import PSet
 from .pset import Trajectory
 from .pset import NetModel
+from .pset import OutOfBoundsException
 from .printing import print0, print1, print2, PybnfError
 
 import logging
@@ -1608,20 +1609,22 @@ class BayesAlgorithm(Algorithm):
         delta_vector = {k: np.random.normal() for k in keys}
         delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
         delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in keys}
-        new_dict = dict()
+        new_vars = []
         for k in keys:
             # For box constraints, need special treatment to keep correct statistics
             # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
             # and retry.
             # The same could happen if normal_var's try to go below 0
-            new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
-            if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
+            try:
+                new_var = oldpset[k].add(delta_vector_normalized[k])
+            except OutOfBoundsException:
                 logger.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
-                              (k, oldpset[k], delta_vector_normalized[k], self.variable_space[k][1],
-                               self.variable_space[k][2]))
+                              (k, oldpset[k], delta_vector_normalized[k], new_var.lower_bound,
+                               new_var.upper_bound))
                 return None
+            new_vars.append(new_var)
 
-        return PSet(new_dict)
+        return PSet(new_vars)
 
     def ln_prior(self, pset):
         """
