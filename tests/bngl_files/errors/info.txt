@@ -10,6 +10,11 @@ blank: OK
 bng_badcommand: OK
 bng_error: OK
 chisq_no_sd: Prints correct error message, followed by a bunch of tornado.application Cacelled Job tracebacks
+constraint_invalid_suffix: OK
+constraint_missing_file: OK
+constraint_suffix: OK
+constraint_syntax: OK
+constraint_variable: OK
 data_not_found: OK
 data_not_found_2: OK
 data_not_specified: OK

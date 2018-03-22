@@ -220,6 +220,16 @@ class Constraint:
         if not isinstance(q, str):
             return None
         if '.' not in q:
+            if self.base_model not in sim_data_dict:
+                raise PybnfError('Constraint file is associated with model %s, but that model was not found' %
+                                 self.base_model)
+            if self.base_suffix not in sim_data_dict[self.base_model]:
+                raise PybnfError("Constraint file %s.con refers to suffix '%s' in model '%s', but that model does not "
+                                 "produce output with that suffix" %
+                                 (self.base_suffix, self.base_suffix, self.base_model))
+            if q not in sim_data_dict[self.base_model][self.base_suffix].cols:
+                raise PybnfError("Observable '%s' specified in constraint file was not found in the output of model "
+                                 "'%s', suffix '%s'" % (q, self.base_model, self.base_suffix))
             return (self.base_model, self.base_suffix, q)
         else:
             parts = q.split('.')
@@ -237,6 +247,9 @@ class Constraint:
             if len(options) > 1:
                 raise PybnfError("Suffix '%s' in your constraint file appears in multiple model files. Please "
                                  "change your suffix names so it isn't ambiguous" % parts[0])
+            if parts[1] not in sim_data_dict[options[0]][parts[0]].cols:
+                raise PybnfError("Obserable '%s' in constraint file - The output with suffix %s does not contain an "
+                                 "observable %s" % (q, parts[0], parts[1]))
             return (options[0], parts[0], parts[1])
 
     def index(self, sim_data_dict, keys):

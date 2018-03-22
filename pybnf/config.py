@@ -285,7 +285,10 @@ class Configuration(object):
                     ed[self._file_prefix(ef)] = d
                 else:
                     cs = ConstraintSet(self._file_prefix(m, 'bngl'), self._file_prefix(ef, 'con'))
-                    cs.load_constraint_file(ef)
+                    try:
+                        cs.load_constraint_file(ef)
+                    except FileNotFoundError:
+                        raise PybnfError('Constraint file %s was not found' % ef)
                     csets.add(cs)
         return ed, csets
 
