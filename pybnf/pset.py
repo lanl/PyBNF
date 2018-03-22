@@ -352,11 +352,13 @@ class FreeParameter(object):
         self._p2 = p2
         self.bounded = bounded if re.search('uniform', self.type) else False
 
-        self.lower_bound = 0.0 if not bounded else self._p1
-        self.upper_bound = np.inf if not bounded else self._p2
+        self.lower_bound = 0.0 if not self.bounded else self._p1
+        self.upper_bound = np.inf if not self.bounded else self._p2
         self.log_space = re.search('log', self.type) is not None
 
         self.value = None
+
+        self._distribution = np.random.normal if re.search('normal', self.type) else np.random.uniform
 
     def set_value(self, new_value):
         """
@@ -366,9 +368,29 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
-        if new_value < 0.0 or not np.isfinite(new_value):
+        if not self.lower_bound < new_value < self.upper_bound:
             raise PybnfError("Free parameter %s cannot be assigned the value %s" % (self.name, new_value))
         self.value = new_value
+
+    def sample_value(self, set_to_value=True):
+        """
+        Samples a value for this parameter based on its defined initial distribution
+
+        :return:
+        """
+        if self.log_space:
+            if re.fullmatch('lognormal_var'):
+                val = np.exp10(self._distribution(self._p1, self._p2))
+            else:
+                val = np.exp10(self._distribution(np.log10(self._p1), np.log10(self._p2)))
+        else:
+            val = self._distribution(self._p1, self._p2)
+
+        if set_to_value:
+            self.value = val
+        else:
+            return val
+
 
 
 class PSet(object):
