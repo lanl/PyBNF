@@ -1864,7 +1864,7 @@ class SimplexAlgorithm(Algorithm):
             self.pending[new_pset.name] = i
             i += 1
             init_psets.append(new_pset)
-        self.simplex = [None]*len(init_psets)
+        self.simplex = []
         self.stages = [-1]*len(init_psets)
         return init_psets
 
@@ -1876,7 +1876,7 @@ class SimplexAlgorithm(Algorithm):
 
         if self.stages[index] == -1:
             # Point is part of initialization
-            self.simplex[index] = (score, pset)
+            self.simplex.append((score, pset))
             self.stages[index] = 3
         elif self.stages[index] == 2:
             # Point is the 2nd point run within one iteration
@@ -1997,7 +1997,7 @@ class SimplexAlgorithm(Algorithm):
                     self.stages = [-1] * len(new_simplex)
                     self.first_points = []
                     self.second_points = []
-                    self.simplex = [self.simplex[0]] + ([None] * len(new_simplex))
+                    self.simplex = [self.simplex[0]]
                     return new_simplex
 
             ###
