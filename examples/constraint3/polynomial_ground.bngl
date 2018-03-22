@@ -46,4 +46,5 @@ generate_network({overwrite=>1})
 simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>1000,suffix=>"wt",print_functions=>1})
 # "Mutate" a parameter, and simulate a second time
 setParameter("d",27)
+resetConcentrations()
 simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>1000,suffix=>"mut",print_functions=>1})

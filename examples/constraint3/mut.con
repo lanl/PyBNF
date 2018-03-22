@@ -2,4 +2,4 @@ y2>0 always weight 100
 y1>0 always weight 100
 y2<70 at 3 weight 60
 y2>25 at 2 weight 60
-y1>y2 between y2=17,y1=3000 weight 25
+y1>y2 between y2=30,y1=3000 weight 25
