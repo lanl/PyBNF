@@ -461,39 +461,15 @@ class Algorithm(object):
             psets.append(PSet(pset_vars))
         return psets
 
-    def add(self, paramset, param, value):
-        """
-        Helper function to add a value to a param in a parameter set,
-        taking into account
-        1) Whether this parameter is to be moved in regular or log space
-        2) Box constraints on the parameter
-        :param paramset:
-        :type paramset: PSet
-        :param param: name of the parameter
-        :type param: str
-        :param value: value to be added
-        :type value: float
-        :return: The result of the addition
-        """
-        if self.variable_space[param][0] == 'regular':
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], paramset[param] + value))
-        elif self.variable_space[param][0] == 'log':
-            return max(self.variable_space[param][1], min(self.variable_space[param][2],
-                                                          exp10(np.log10(paramset[param]) + value)))
-        else:
-            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
-
     def diff(self, paramset1, paramset2, param):
         """
         Helper function to calculate paramset1[param] - paramset2[param], taking into account whether
         param is in regular or log space
         """
-        if self.variable_space[param][0] == 'regular':
-            return paramset1[param] - paramset2[param]
-        elif self.variable_space[param][0] == 'log':
-            return np.log10(paramset1[param] / paramset2[param])
+        if not param.log_space:
+            return paramset1[param.name] - paramset2[param.name]
         else:
-            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
+            return np.log10(paramset1[param.name] / paramset2[param.name])
 
     def make_job(self, params):
         """
