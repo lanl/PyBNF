@@ -1104,8 +1104,7 @@ class DifferentialEvolution(Algorithm):
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
-                    retry_dict = {v: self.add(new_pset, v, np.random.uniform(-1e-6, 1e-6)) for v in self.variables}
-                    new_pset = PSet(retry_dict)
+                    new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.variables])
                 self.proposed_individuals[island][jj] = new_pset
                 self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:
@@ -1149,11 +1148,13 @@ class DifferentialEvolution(Algorithm):
 
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_dict = dict()
+        new_pset_vars = []
         for p in base.keys():
             if np.random.random() < self.mutation_rate:
-                new_pset_dict[p] = self.add(base, p, self.mutation_factor * self.diff(others[0], others[1], p))
+                update_val = self.mutation_factor * self.diff(others[0], others[1], p)
+                new_pset_vars.append(base[p].add(update_val))
             else:
-                new_pset_dict[p] = base[p]
+                new_pset_vars.append(base[p])
 
         return PSet(new_pset_dict)
 
