@@ -399,6 +399,15 @@ class FreeParameter(object):
             f.set_value(val)
             return f
 
+    def __hash__(self):
+        return hash((self.name, self.value))
+
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return (self.name, self.type, self.value, self._p1, self._p2) == \
+                   (other.name, other.type, other.value, other._p1, other._p2)
+        return False
+
 
 class PSet(object):
     """
@@ -406,25 +415,21 @@ class PSet(object):
 
     """
 
-    def __init__(self, param_dict, allow_negative=False):
+    def __init__(self, fps):
         """
         Creates a Pset based on the given dictionary
 
-        :param param_dict: A dictionary containing the parameters to initialize, in the form of str:float pairs,
-            {"paramname1:paramvalue1, ...}
+        :param fps: A list of FreeParameter instances whose values are not None
         """
 
-        # Check input values are the correct type
-        for key in param_dict:
-            value = param_dict[key]
-            if type(key) != str:
-                raise TypeError("Parameter key " + str(key) + " is not of type str")
-            if not allow_negative and value < 0:
-                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
-            if np.isnan(value) or np.isinf(value):
-                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
+        self._param_dict = {}
+        for fp in fps:
+            if fp.value is None:
+                raise PybnfError("Parameter %s has no value" % fp.name)
+            elif fp.name in self._param_dict.keys():
+                raise PybnfError("Parameters must have unique names")
+            self._param_dict[fp.name] = fp
 
-        self._param_dict = param_dict
         self.name = None  # Can be set by Algorithms to give it a meaningful label in output file.
 
     def __getitem__(self, item):
@@ -437,7 +442,7 @@ class PSet(object):
         :param item: The str name of the parameter to look up
         :return: float
         """
-        return self._param_dict[item]
+        return self._param_dict[item].value
 
     def __len__(self):
         return len(self._param_dict)
@@ -452,8 +457,7 @@ class PSet(object):
 
         :return: int
         """
-        unique_str = ''.join([self.keys_to_string(), self.values_to_string()])
-        return hash(unique_str)
+        return hash(frozenset(self._param_dict.values()))
 
     def __str__(self):
         """

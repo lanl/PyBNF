@@ -53,3 +53,9 @@ class TestFreeParameter:
     def test_sample_value(self):
         self.p0.sample_value(set_to_value=True)
         assert self.p0.value is not None
+
+    def test_freeparameter_equality(self):
+        p6 = self.p0.sample_value()
+        self.p0.set_value(p6.value)
+        print(self.p0, p6)
+        assert p6 == self.p0
