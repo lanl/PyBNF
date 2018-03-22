@@ -197,8 +197,6 @@ def ploop(ls):  # parse loop
                 fmt = "'%s=v x' or '%s=v x y' where v is a variable name, and x and y are decimal numbers" % (key, key)
             elif key in strkeylist:
                 fmt = "'%s=s' where s is a string" % key
-            elif key in slvkeylist:
-                fmt = "'%s=v x1 x2 ...' where v is a variable name, and x1, x2, ... is a list of numbers" % key
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'"
             elif key == 'normalization':
