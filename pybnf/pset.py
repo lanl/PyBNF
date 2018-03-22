@@ -326,6 +326,51 @@ class ModelError(Exception):
         self.message = message
 
 
+class FreeParameter(object):
+    """
+    Class representing a free parameter in a model
+    """
+
+    def __init__(self, name, type, p1, p2, bounded=True):
+        """
+        Initializes a FreeParameter object based on information parsed from the configuration file
+
+        :param name: The name of the parameter as it appears in the model
+        :type name: str
+        :param type: The type of the parameter as defined in the configuration file
+        :type type: str
+        :param p1: The first value governing the variable (lower bound or mean or initial value)
+        :type p1: float
+        :param p2: The second value governing the parameter (upper bound or standard deviation or step size)
+        :type p2: float
+        :param bounded: Determines whether the parameter should be bounded after initial sampling
+         (only relevant if parameter's initial distribution is bounded)
+        """
+        self.name = name
+        self.type = type
+        self._p1 = p1
+        self._p2 = p2
+        self.bounded = bounded if re.search('uniform', self.type) else False
+
+        self.lower_bound = 0.0 if not bounded else self._p1
+        self.upper_bound = np.inf if not bounded else self._p2
+        self.log_space = re.search('log', self.type) is not None
+
+        self.value = None
+
+    def set_value(self, new_value):
+        """
+        Assigns a value to the parameter
+
+        :param new_value: A numeric value assigned to the FreeParameter
+        :type new_value: float
+        :return:
+        """
+        if new_value < 0.0 or not np.isfinite(new_value):
+            raise PybnfError("Free parameter %s cannot be assigned the value %s" % (self.name, new_value))
+        self.value = new_value
+
+
 class PSet(object):
     """
     Class representing a parameter set
