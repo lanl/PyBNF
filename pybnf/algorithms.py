@@ -1753,16 +1753,13 @@ class SimplexAlgorithm(Algorithm):
         as opposed to a refinement at the end of the run)
         Parses the info out of the variable specs, and sets the appropriate PSet into the config.
         """
-        start_dict = dict()
+        start_vars = []
         for v in self.variables:
             if v.type == 'var':
-                start_dict[v.name] = v.p1
+                start_vars.append(v.set_value(v.p1))
             elif v.type == 'logvar':
-                start_dict[v.name] = exp10(v.p1)
-            else:
-                raise RuntimeError('Internal error in SimplexAlgorithm: Encountered variable type %s while trying'
-                                   'to parse start point' % v.type)
-        start_pset = PSet(start_dict)
+                start_vars.append(v.set_value(exp10(v.p1)))
+        start_pset = PSet(start_vars)
         self.config.config['simplex_start_point'] = start_pset
 
     def start_run(self):
