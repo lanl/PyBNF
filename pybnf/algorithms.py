@@ -306,25 +306,7 @@ class Algorithm(object):
 
         # Generate a list of variable names
         self.variables = self.config.variables
-
-        # Set the space (log or regular) in which each variable moves, as well as the box constraints on the variable.
-        # Currently, this is set based on what distribution the variable is initialized with, but these could be made
-        # into a separate, custom options
-        logger.debug('Evaluating variable space')
         self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
-        for v in self.config.variables_specs:
-            if v[1] == 'uniform_var':
-                self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normal_var' or v[1] == 'var':
-                self.variable_space[v[0]] = ('regular', 0., np.inf)
-            elif v[1] == 'lognormal_var' or v[1] == 'logvar':
-                self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
-            elif v[1] == 'loguniform_var':
-                self.variable_space[v[0]] = ('log', v[2], v[3])
-            else:
-                logger.info('Variable type not recognized... exiting')
-                print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
-                exit(1)
 
     def _initialize_models(self):
         """
@@ -429,21 +411,11 @@ class Algorithm(object):
 
         :return:
         """
-        # TODO CONFIRM THIS IS REDUNDANT WITH CODE IN __INIT__
         logger.debug("Generating a randomly distributed PSet")
-        param_dict = dict()
-        for (name, vartype, val1, val2) in self.config.variables_specs:
-            if vartype == 'uniform_var':
-                param_dict[name] = np.random.uniform(val1, val2)
-            elif vartype == 'normal_var':
-                param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
-            elif vartype == 'loguniform_var':
-                param_dict[name] = exp10(np.random.uniform(np.log10(val1), np.log10(val2)))
-            elif vartype == 'lognormal_var':
-                param_dict[name] = exp10(np.random.normal(val1, val2))
-            else:
-                raise RuntimeError('Unrecognized variable type: %s' % vartype)
-        return PSet(param_dict)
+        pset_vars = []
+        for var in self.config.variables:
+            pset_vars.append(var.sample_value())
+        return PSet(pset_vars)
 
     def random_latin_hypercube_psets(self, n):
         """
@@ -455,30 +427,34 @@ class Algorithm(object):
         :return:
         """
         logger.debug("Generating PSets using Latin hypercube sampling")
+        uniform_vars = []
+        other_vars = []
+        for var in self.config.variables:
+            if var.type == 'uniform_var' or var.type == 'loguniform_var':
+                uniform_vars.append(var)
+            else:
+                other_vars.append(var)
+
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
-        num_uniform_vars = len([x for x in self.config.variables_specs
-                               if x[1] == 'uniform_var' or x[1] == 'loguniform_var'])
+        num_uniform_vars = len(uniform_vars)
         rands = latin_hypercube(n, num_uniform_vars)
         psets = []
+
         for row in rands:
             # Initialize the variables
             # Convert the 0 to 1 random numbers to the required variable range
-            param_dict = dict()
+            pset_vars = []
             rowindex = 0
-            for (name, type, val1, val2) in self.config.variables_specs:
-                if type == 'uniform_var':
-                    param_dict[name] = val1 + row[rowindex]*(val2-val1)
+            for var in self.config.variables:
+                if var.type == 'uniform_var':
+                    pset_vars.append(var.set_value(var.p1 + row[rowindex]*(var.p2-var.p1)))
                     rowindex += 1
-                elif type == 'loguniform_var':
-                    param_dict[name] = exp10(np.log10(val1) + row[rowindex]*(np.log10(val2)-np.log10(val1)))
+                elif var.type == 'loguniform_var':
+                    pset_vars.append(var.set_value(exp10(np.log10(var.p1) + row[rowindex]*(np.log10(var.p2)-np.log10(var.p1)))))
                     rowindex += 1
-                elif type == 'lognormal_var':
-                    param_dict[name] = exp10(np.random.normal(val1, val2))
-                elif type == 'normal_var':
-                    param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
                 else:
-                    raise RuntimeError('Unrecognized variable type: %s' % type)
-            psets.append(PSet(param_dict))
+                    pset_vars.append(var.sample_value())
+            psets.append(PSet(pset_vars))
         return psets
 
     def add(self, paramset, param, value):
