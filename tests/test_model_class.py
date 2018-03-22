@@ -2,6 +2,7 @@ from .context import pset
 from nose.tools import raises
 from os import remove
 from os.path import exists
+from pybnf.printing import PybnfError
 
 import re
 
@@ -70,12 +71,6 @@ class TestModel:
         model1 = pset.BNGLModel(self.file1, ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
-    def test_set_param_set(self):
-        model1 = pset.BNGLModel(self.file1)
-        ps1 = pset.PSet(self.dict1)
-        model1.set_param_set(ps1)
-        assert model1.param_set['kase__FREE__'] == 3.8
-
     def test_copy_with_param_set(self):
         model1 = pset.BNGLModel(self.file1)
         ps1 = pset.PSet(self.dict1)
@@ -92,7 +87,7 @@ class TestModel:
 
         assert re.search('Nchannel\s+20\s',nmodel1b_lines[6])
 
-    @raises(ValueError)
+    @raises(PybnfError)
     def test_set_param_set_error(self):
         model1 = pset.BNGLModel(self.file1)
         ps2 = pset.PSet(self.dict2)
