@@ -5,7 +5,7 @@ from nose.tools import raises
 import numpy as np
 
 
-class TestModel:
+class TestFreeParameter:
     def __init__(self):
         pass
 
@@ -44,12 +44,12 @@ class TestModel:
         self.p3.set_value(11)
 
     def test_distribution(self):
-        xs = [self.p3.sample_value(set_to_value=False) for x in range(1000000)]
+        xs = [self.p3.sample_value(set_to_value=False).value for x in range(100000)]
         for x in xs:
             assert self.p3.lower_bound <= x < self.p3.upper_bound
-        ys = [self.p0.sample_value(set_to_value=False) for x in range(100000)]
-        assert np.isclose(0, np.mean(ys), atol=1e-2)
+        ys = [self.p0.sample_value(set_to_value=False).value for x in range(100000)]
+        assert np.all(np.array(ys)>=0.0)
 
     def test_sample_value(self):
-        self.p0.sample_value()
+        self.p0.sample_value(set_to_value=True)
         assert self.p0.value is not None

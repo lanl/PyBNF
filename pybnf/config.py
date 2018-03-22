@@ -324,7 +324,7 @@ class Configuration(object):
     def _load_variables(self):
         """
         Loads the variable names from the config dict into FreeParameter instances.
-        
+
         :return: a list of FreeParameter instances
         """
         variables = []

@@ -372,15 +372,15 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
-        if not self.lower_bound < new_value < self.upper_bound:
+        if not self.lower_bound <= new_value < self.upper_bound:
             raise PybnfError("Free parameter %s cannot be assigned the value %s" % (self.name, new_value))
         self.value = new_value
 
-    def sample_value(self, set_to_value=True):
+    def sample_value(self, set_to_value=False):
         """
         Samples a value for this parameter based on its defined initial distribution
 
-        :return:
+        :return: new FreeParameter instance or None
         """
         if self.log_space:
             if re.fullmatch('lognormal_var'):
@@ -390,10 +390,14 @@ class FreeParameter(object):
         else:
             val = self._distribution(self._p1, self._p2)
 
+        val = max(self.lower_bound, min(self.upper_bound, val))
+
         if set_to_value:
             self.value = val
         else:
-            return val
+            f = FreeParameter(self.name, self.type, self._p1, self._p2, self.bounded)
+            f.set_value(val)
+            return f
 
 
 class PSet(object):
