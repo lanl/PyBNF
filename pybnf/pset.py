@@ -358,7 +358,11 @@ class FreeParameter(object):
 
         self.value = None
 
-        self._distribution = np.random.normal if re.search('normal', self.type) else np.random.uniform
+        self._distribution = None
+        if re.search('normal', self.type):
+            self._distribution = np.random.normal
+        elif re.search('uniform', self.type):
+            self._distribution = np.random.uniform
 
     def set_value(self, new_value):
         """
@@ -390,7 +394,6 @@ class FreeParameter(object):
             self.value = val
         else:
             return val
-
 
 
 class PSet(object):
