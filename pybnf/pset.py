@@ -350,12 +350,12 @@ class FreeParameter(object):
         """
         self.name = name
         self.type = type
-        self._p1 = p1
-        self._p2 = p2
+        self.p1 = p1
+        self.p2 = p2
         self.bounded = bounded if re.search('uniform', self.type) else False
 
-        self.lower_bound = 0.0 if not self.bounded else self._p1
-        self.upper_bound = np.inf if not self.bounded else self._p2
+        self.lower_bound = 0.0 if not self.bounded else self.p1
+        self.upper_bound = np.inf if not self.bounded else self.p2
 
         if value:
             if not self.lower_bound <= value < self.upper_bound:
@@ -378,7 +378,7 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
-        return FreeParameter(self.name, self.type, self._p1, self._p2, new_value, self.bounded)
+        return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
 
     def sample_value(self):
         """
@@ -388,11 +388,11 @@ class FreeParameter(object):
         """
         if self.log_space:
             if re.fullmatch('lognormal_var'):
-                val = np.exp10(self._distribution(self._p1, self._p2))
+                val = np.exp10(self._distribution(self.p1, self.p2))
             else:
-                val = np.exp10(self._distribution(np.log10(self._p1), np.log10(self._p2)))
+                val = np.exp10(self._distribution(np.log10(self.p1), np.log10(self.p2)))
         else:
-            val = self._distribution(self._p1, self._p2)
+            val = self._distribution(self.p1, self.p2)
 
         val = max(self.lower_bound, min(self.upper_bound, val))
 
@@ -403,8 +403,8 @@ class FreeParameter(object):
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
-            return (self.name, self.type, self.value, self._p1, self._p2) == \
-                   (other.name, other.type, other.value, other._p1, other._p2)
+            return (self.name, self.type, self.value, self.p1, self.p2) == \
+                   (other.name, other.type, other.value, other.p1, other.p2)
         return False
 
 
