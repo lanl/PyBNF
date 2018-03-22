@@ -307,7 +307,6 @@ class Algorithm(object):
 
         # Generate a list of variable names
         self.variables = self.config.variables
-        self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
 
     def _initialize_models(self):
         """
