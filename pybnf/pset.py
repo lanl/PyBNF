@@ -412,6 +412,19 @@ class FreeParameter(object):
         else:
             return self.set_value(self.value + summand)
 
+    def add_rand(self, lb, ub):
+        """
+        Like FreeParameter.add but instead adds a uniformly distributed random value according to the
+        bounds provided
+
+        :param lb:
+        :param ub:
+        :return:
+        """
+        p = self.value if not self.log_space else np.log10(self.value)
+        r = np.random.uniform(lb+p, ub+p)
+        return self.add(r)
+
     def __hash__(self):
         return hash((self.name, self.value))
 

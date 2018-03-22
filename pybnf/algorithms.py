@@ -1282,7 +1282,7 @@ class ScatterSearch(Algorithm):
                 for hi in range(self.popsize): # helper index
                     if pi == hi:
                         continue
-                    newdict = dict()
+                    new_vars = []
                     for v in self.variables:
                         # d = (self.refs[hi][0][v] - self.refs[pi][0][v]) / 2.
                         d = self.diff(self.refs[hi][0], self.refs[pi][0], v)
@@ -1292,9 +1292,8 @@ class ScatterSearch(Algorithm):
                         # c2 = self.refs[pi][0][v] + d*(1 - alpha*beta)
                         # newval = np.random.uniform(c1, c2)
                         # newdict[v] = max(min(newval, var[2]), var[1])
-                        newdict[v] = self.rand_uniform_offset(
-                            self.refs[pi][0], v, -d*(1 + alpha*beta), d*(1 - alpha * beta))
-                    newpset = PSet(newdict, allow_negative=True)
+                        new_vars.append(v.add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta)))
+                    newpset = PSet(new_vars)
                     # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really
                     # care about the number of PSets queried.
                     if newpset not in self.pending:
@@ -1306,38 +1305,6 @@ class ScatterSearch(Algorithm):
 
         else:
             return []
-
-    def rand_uniform_offset(self, paramset, param, lower, upper):
-        """
-        Performs a particular random sampling required for scatter search,
-        taking into account
-        1) Whether this parameter is to be moved in regular or log space
-        2) Box constraints on the parameter
-        This could not be achieved with the Algorithm add and diff methods.
-
-        :param paramset: PSet containing the initial value of the target param
-        :type paramset: PSet
-        :param param: name of the parameter
-        :type param: str
-        :param lower: The lower bound for the random pick is this + the current value of the param. You probably want to
-        pass a negative value here. This is assumed to be in log space if the param is in log space
-        :type lower: float
-        :param upper: The upper bound for the random pick is this + the current value of the param.
-        This is assumed to be in log space if the param is in log space
-        :return: The chosen random value
-        """
-        if self.variable_space[param][0] == 'regular':
-            lb = paramset[param] + lower
-            ub = paramset[param] + upper
-            pick = np.random.uniform(lb, ub)
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], pick))
-        elif self.variable_space[param][0] == 'log':
-            lb = np.log10(paramset[param]) + lower
-            ub = np.log10(paramset[param]) + upper
-            pick = np.random.uniform(lb, ub)
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], exp10(pick)))
-        else:
-            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
     def get_backup_every(self):
         """
