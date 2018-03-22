@@ -1972,10 +1972,6 @@ class SimplexAlgorithm(Algorithm):
                 if self.iteration == self.max_iterations:
                     return 'STOP'  # Quit after the final simplex update
 
-                if np.random.random() < 0.2:
-                    logger.debug('I will pretend this iteration was unproductive')
-                    productive = False
-
                 if not productive:
                     # None of the points in the last iteration improved the simplex.
                     # Now we have to contract the simplex
