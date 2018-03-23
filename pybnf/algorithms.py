@@ -1062,7 +1062,7 @@ class DifferentialEvolution(Algorithm):
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
-                    new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.variables])
+                    new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in new_pset])
                 self.proposed_individuals[island][jj] = new_pset
                 self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:
@@ -1098,20 +1098,20 @@ class DifferentialEvolution(Algorithm):
         # Choose a starting parameter set (either the best one, or a random one, or the one we want to replace)
         # and others to cross over
         if self.strategy in ['rand1']:
-            picks = np.random.choice(self.individuals[island], 3, replace=False)
-            base = picks[0]
-            others = picks[1:]
+            picks = np.random.choice(np.arange(len(self.individuals[island])), 3, replace=False)
+            base = self.individuals[island][picks[0]]
+            others = [self.individuals[island][p] for p in picks[1:]]
         else:
             raise NotImplementedError('Please select one of the strategies from our extensive list of options: rand1')
 
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
-        for p in base.keys():
+        for p in base:
             if np.random.random() < self.mutation_rate:
-                update_val = self.mutation_factor * others[0][p.name].diff(others[1][p.name])
-                new_pset_vars.append(base[p].add(update_val))
+                update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                new_pset_vars.append(p.add(update_val))
             else:
-                new_pset_vars.append(base[p])
+                new_pset_vars.append(p)
 
         return PSet(new_pset_vars)
 
