@@ -56,7 +56,6 @@ class BNGLModel(Model):
 
 
     """
-    bng_command = ''
 
     def __init__(self, bngl_file, pset=None):
         """
@@ -68,6 +67,7 @@ class BNGLModel(Model):
         self.file_path = bngl_file
         self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
+        self.bng_command = ''
 
         self.generates_network = False
         self.generate_network_line = None
@@ -296,9 +296,10 @@ class BNGLModel(Model):
         file = '%s/%s' % (folder, filename)
         self.save(file)
 
+        logger.debug('Executing the comand "%s" on file "%s"' % (self.bng_command, file))
         # Run BioNetGen
         cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
-        log_file = '%s.log' % filename
+        log_file = '%s.log' % file
         with open(log_file, 'w') as lf:
             run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
 
@@ -333,6 +334,7 @@ class NetModel(BNGLModel):
         self.actions = acts
         self.suffixes = suffs
         self.param_set = None
+        self.bng_command = ''
 
         if not (ls or nf):
             raise ModelError("Must specify a file name or a list of strings corresponding to the .net file's lines")
@@ -365,7 +367,9 @@ class NetModel(BNGLModel):
                     if m.group(3) in self.param_set.keys():
                         lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(self.param_set[m.group(3)]))
 
-        return NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel = NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel.bng_command = self.bng_command
+        return newmodel
 
     def save(self, file_prefix):
         with open(file_prefix + '.net', 'w') as wf:
@@ -387,6 +391,7 @@ class SbmlModel(Model):
         if pset:
             self._set_param_set(pset)
         self.stochastic = False
+        self.copasi_command = ''
 
     def copy_with_param_set(self, pset):
 
