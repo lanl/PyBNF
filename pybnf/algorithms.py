@@ -1528,22 +1528,20 @@ class BayesAlgorithm(Algorithm):
         :return: the new PSet
         """
 
-        keys = oldpset.keys()
-        delta_vector = {k: np.random.normal() for k in keys}
+        delta_vector = {k: np.random.normal() for k in oldpset.keys()}
         delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
-        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in keys}
+        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
         new_vars = []
-        for k in keys:
+        for v in oldpset:
             # For box constraints, need special treatment to keep correct statistics
             # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
             # and retry.
             # The same could happen if normal_var's try to go below 0
             try:
-                new_var = oldpset[k].add(delta_vector_normalized[k])
+                new_var = v.add(delta_vector_normalized[v.name])
             except OutOfBoundsException:
                 logger.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
-                              (k, oldpset[k], delta_vector_normalized[k], new_var.lower_bound,
-                               new_var.upper_bound))
+                             (v.name, oldpset[v.name], delta_vector_normalized[v.name], v.lower_bound, v.upper_bound))
                 return None
             new_vars.append(new_var)
 
@@ -1609,7 +1607,7 @@ class BayesAlgorithm(Algorithm):
 
         for i in range(len(self.variables)):
             v = self.variables[i]
-            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
             # For log-space variables, we want the histogram in log space
             if v.log_space:
                 histdata = np.log10(dat_array[:, i])
@@ -1627,7 +1625,7 @@ class BayesAlgorithm(Algorithm):
                 want = n * (interval/100)
                 min_index = int(np.round(n/2 - want/2))
                 max_index = int(np.round(n/2 + want/2 - 1))
-                file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
 
     def replica_exchange(self):
         """
