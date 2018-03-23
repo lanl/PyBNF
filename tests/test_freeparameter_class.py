@@ -1,5 +1,4 @@
 from .context import pset
-from .context import printing
 from nose.tools import raises
 
 import numpy as np
@@ -36,7 +35,7 @@ class TestFreeParameter:
         print(self.p4.bounded)
         assert not self.p4.bounded
 
-    @raises(printing.PybnfError)
+    @raises(pset.OutOfBoundsException)
     def test_check_erroneous_assignment(self):
         self.p3.set_value(11)
 
@@ -64,3 +63,12 @@ class TestFreeParameter:
         p8 = self.p2.set_value(1)
         p8a = p8.add(1)
         assert p8a.value == 10
+
+    def test_diff(self):
+        p9 = self.p0.set_value(1)
+        p10 = self.p0.set_value(2)
+        assert p9.diff(p10) == -1
+
+        p11 = self.p2.set_value(10)
+        p12 = self.p2.set_value(100)
+        assert p12.diff(p11) == 1

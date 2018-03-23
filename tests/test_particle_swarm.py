@@ -39,8 +39,11 @@ class TestParticleSwarm:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.params = pset.PSet({'v1__FREE__': 3.14,'v2__FREE__': 1.0, 'v3__FREE__': 0.1})
-        cls.params2 = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
+        cls.p0 = pset.FreeParameter('v1__FREE__', 'uniform_var', 0, 10, 3.14)
+        cls.p1 = pset.FreeParameter('v2__FREE__', 'uniform_var', 0, 10, 1.0)
+        cls.p2 = pset.FreeParameter('v3__FREE__', 'uniform_var', 0, 10, 0.1)
+
+        cls.params = pset.PSet([cls.p0, cls.p1, cls.p2])
 
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
                       ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
@@ -79,28 +82,6 @@ class TestParticleSwarm:
         assert 0 <= params['v1__FREE__'] <= 10
         assert 0.01 < params['v2__FREE__'] < 1e5
         assert 1e-4 < params['v3__FREE__'] < 1e4
-
-    def test_add(self):
-        ps = algorithms.ParticleSwarm(self.config)
-        npt.assert_almost_equal(ps.add(self.params, 'v1__FREE__', 1.), 4.14)
-        npt.assert_almost_equal(ps.add(self.params, 'v1__FREE__', -4.), 0.)
-        ps2 = algorithms.ParticleSwarm(self.config2)
-        npt.assert_almost_equal(ps2.add(self.params, 'v1__FREE__', 1.), 4.14)
-        npt.assert_almost_equal(ps2.add(self.params, 'v2__FREE__', -1.), 0.1)
-        npt.assert_almost_equal(ps2.add(self.params, 'v3__FREE__', 2.), 10.)
-        npt.assert_almost_equal(ps2.add(self.params, 'v2__FREE__', 30.), 1e5)
-        npt.assert_almost_equal(ps2.add(self.params, 'v3__FREE__', 30.), 1e29)
-        rmtree('test_pso2')
-        rmtree('test_pso')
-
-    def test_diff(self):
-        ps = algorithms.ParticleSwarm(self.config)
-        npt.assert_almost_equal(ps.diff(self.params, self.params2, 'v1__FREE__'), -1.)
-        ps2 = algorithms.ParticleSwarm(self.config2)
-        npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v2__FREE__'), -1.)
-        npt.assert_almost_equal(ps2.diff(self.params, self.params2, 'v3__FREE__'), -1.)
-        rmtree('test_pso2')
-        rmtree('test_pso')
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
