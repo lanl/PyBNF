@@ -8,6 +8,8 @@ import numpy as np
 import re
 import copy
 import xml.etree.ElementTree as ET
+from subprocess import run, STDOUT
+from .data import Data
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,19 @@ class Model(object):
         """
         NotImplementedError("save is not implemented")
 
+    def execute(self, folder, filename, timeout):
+        """
+        Executes the model, working in folder/filename, with a max runtime of timeout.
+        Loads the resulting data, and returns a dictionary mapping suffixes to data objects. For model types without a
+        notion of suffixes, the dictionary will contain one key mapping to one Data object
+
+        :param folder: The folder to save to, eg 'Simulations/init22'
+        :param filename: The name of the model file to create, not including the extension, eg 'init22'
+        :param timeout: Maximum runtime in seconds
+        :return: dict of Data
+        """
+        raise NotImplementedError("Subclasses of Model must override execute()")
+
 
 class BNGLModel(Model):
     """
@@ -41,6 +56,7 @@ class BNGLModel(Model):
 
 
     """
+    bng_command = ''
 
     def __init__(self, bngl_file, pset=None):
         """
@@ -269,6 +285,46 @@ class BNGLModel(Model):
         f = open(file_prefix + '.bngl', 'w')
         f.write(text)
         f.close()
+
+    def execute(self, folder, filename, timeout):
+        """
+
+        :param folder: Folder in which to do all the file creation
+        :return: Data object
+        """
+        # Create the modified BNGL file
+        file = '%s/%s' % (folder, filename)
+        self.save(file)
+
+        # Run BioNetGen
+        cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
+        log_file = '%s.log' % filename
+        with open(log_file, 'w') as lf:
+            run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+
+        # Load the data file(s)
+        ds = self._load_simdata(folder, filename)
+        return ds
+
+    def _load_simdata(self, folder, filename):
+        """
+        Function to load simulation data after executing all simulations for an evaluation
+
+        Returns a nested dictionary structure.  Top-level keys are model names and values are
+        dictionaries whose keys are action suffixes and values are Data instances
+
+        :return: dict of Data
+        """
+        ds = {}
+        for suff in self.suffixes:
+            if suff[0] == 'simulate':
+                data_file = '%s/%s_%s.gdat' % (folder, filename, suff[1])
+                data = Data(file_name=data_file)
+            else:  # suff[0] == 'parameter_scan'
+                data_file = '%s/%s_%s.scan' % (folder, filename, suff[1])
+                data = Data(file_name=data_file)
+            ds[suff[1]] = data
+        return ds
 
 
 class NetModel(Model):

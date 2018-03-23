@@ -135,15 +135,23 @@ class Job:
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
 
-    def _write_models(self):
-        """Writes models to file"""
-        model_files = []
-        for i, model in enumerate(self.models):
+    #D! def _write_models(self):
+    #     """Writes models to file"""
+    #     model_files = []
+    #     for i, model in enumerate(self.models):
+    #         model_file_prefix = self._name_with_id(model)
+    #         model_with_params = model.copy_with_param_set(self.params)
+    #         model_with_params.save('%s/%s' % (self.folder, model_file_prefix))
+    #         model_files.append('%s/%s' % (self.folder, model_file_prefix))
+    #     return model_files
+
+    def _run_models(self):
+        ds = {}
+        for model in self.models:
             model_file_prefix = self._name_with_id(model)
-            model_with_params = model.copy_with_param_set(self.params)
-            model_with_params.save('%s/%s' % (self.folder, model_file_prefix))
-            model_files.append('%s/%s' % (self.folder, model_file_prefix))
-        return model_files
+            ds[model.name] = model.execute(self.folder, model_file_prefix, self.timeout)
+        return ds
+
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
@@ -169,9 +177,10 @@ class Job:
                                   self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
-            model_files = self._write_models()
-            self.execute(model_files)
-            simdata = self.load_simdata()
+            #D! model_files = self._write_models()
+            # self.execute(model_files)
+            # simdata = self.load_simdata()
+            simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
             res = FailedSimulation(self.params, self.job_id, 1)
@@ -190,35 +199,35 @@ class Job:
 
         return res
 
-    def execute(self, models):
-        """Executes model simulations"""
-        for model in models:
-            cmd = [self.bng_program, '%s.bngl' % model, '--outdir', self.folder]
-            log_file = '%s.log' % model
-            with open(log_file, 'w') as lf:
-                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
-
-    def load_simdata(self):
-        """
-        Function to load simulation data after executing all simulations for an evaluation
-
-        Returns a nested dictionary structure.  Top-level keys are model names and values are
-        dictionaries whose keys are action suffixes and values are Data instances
-
-        :return: dict of dict
-        """
-        ds = {}
-        for model in self.models:
-            ds[model.name] = {}
-            for suff in model.suffixes:
-                if suff[0] == 'simulate':
-                    data_file = '%s/%s_%s.gdat' % (self.folder, self._name_with_id(model), suff[1])
-                    data = Data(file_name=data_file)
-                else:  # suff[0] == 'parameter_scan'
-                    data_file = '%s/%s_%s.scan' % (self.folder, self._name_with_id(model), suff[1])
-                    data = Data(file_name=data_file)
-                ds[model.name][suff[1]] = data
-        return ds
+    #D! def execute(self, models):
+    #     """Executes model simulations"""
+    #     for model in models:
+    #         cmd = [self.bng_program, '%s.bngl' % model, '--outdir', self.folder]
+    #         log_file = '%s.log' % model
+    #         with open(log_file, 'w') as lf:
+    #             run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
+    #
+    # def load_simdata(self):
+    #     """
+    #     Function to load simulation data after executing all simulations for an evaluation
+    #
+    #     Returns a nested dictionary structure.  Top-level keys are model names and values are
+    #     dictionaries whose keys are action suffixes and values are Data instances
+    #
+    #     :return: dict of dict
+    #     """
+    #     ds = {}
+    #     for model in self.models:
+    #         ds[model.name] = {}
+    #         for suff in model.suffixes:
+    #             if suff[0] == 'simulate':
+    #                 data_file = '%s/%s_%s.gdat' % (self.folder, self._name_with_id(model), suff[1])
+    #                 data = Data(file_name=data_file)
+    #             else:  # suff[0] == 'parameter_scan'
+    #                 data_file = '%s/%s_%s.scan' % (self.folder, self._name_with_id(model), suff[1])
+    #                 data = Data(file_name=data_file)
+    #             ds[model.name][suff[1]] = data
+    #     return ds
 
 
 class JobGroup:
