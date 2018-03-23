@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import re
 import copy
-
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +317,44 @@ class NetModel(Model):
         with open(file_prefix + '.bngl', 'w') as wf:
             wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
+
+
+class SbmlModel(Model):
+
+    def __init__(self, file, pset=None):
+        self.file_path = file
+        self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
+        self.xml = ET.parse(file)
+        self.param_set = None
+        if pset:
+            self._set_param_set(pset)
+
+    def copy_with_param_set(self, pset):
+
+        newmodel = copy.deepcopy(self)
+        newmodel._set_param_set(pset)
+        return newmodel
+
+    def _set_param_set(self, pset):
+        self.param_set = pset
+        root = self.xml.getroot()
+
+        # The xml file is full of "namespaces" designed to make it difficult to parse, so extra acrobatics are required
+        # here
+        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
+        space = {'sbml': ns}
+
+        params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
+        for p in params:
+            pname = p.get('name')
+            if pname in self.param_set.keys():
+                p.set('value', str(self.param_set[pname]))
+
+    def model_text(self):
+        return ET.tostring(self.xml.root)
+
+    def save(self, file_prefix):
+        self.xml.write('%s.xml' % file_prefix, encoding='unicode')
 
 
 class ModelError(Exception):
