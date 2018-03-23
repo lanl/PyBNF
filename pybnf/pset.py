@@ -327,7 +327,7 @@ class BNGLModel(Model):
         return ds
 
 
-class NetModel(Model):
+class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
         self.name = name
         self.actions = acts

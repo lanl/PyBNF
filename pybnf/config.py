@@ -260,6 +260,13 @@ class Configuration(object):
 
         model_types = set([type(m) for m in self.models])
 
+        # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
+        home_dir = os.getcwd()
+
+        def absolute(dir):
+            # Convert relative path to absolute path
+            return dir if dir[0] == '/' else home_dir + '/' + dir
+
         # For each model type that exists in the run, check that the simulator is available, and pass the simulator
         # path to the appropriate Model subclass
         if BNGLModel in model_types:
@@ -278,7 +285,7 @@ class Configuration(object):
                     raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
                                      'variable is correctly set')
-            BNGLModel.bng_command = self.config['bng_command']
+            BNGLModel.bng_command = absolute(self.config['bng_command'])
 
         if SbmlModel in model_types:
             if self.config['copasi_command'] == '':
@@ -295,7 +302,7 @@ class Configuration(object):
             except subprocess.CalledProcessError or PermissionError:
                 raise PybnfError('Copasi failed to execute. Please check that the "copasi_command" parameter in the '
                                  'configuration file points to the CopasiSE executable')
-            SbmlModel.copasi_command = self.config['copasi_command']
+            SbmlModel.copasi_command = absolute(self.config['copasi_command'])
 
 
 

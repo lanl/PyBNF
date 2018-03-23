@@ -27,9 +27,9 @@ class TestJob(object):
             'pase__FREE__': 1
         }
         cls.pset = pset.PSet(d)
-        cls.bngpath = environ['BNGPATH'] + '/BNG2.pl'
-        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', cls.bngpath, '.', timeout=None)
-        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', cls.bngpath, '.', timeout=0)
+        pset.BNGLModel.bng_command = environ['BNGPATH'] + '/BNG2.pl'
+        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', '.', timeout=None)
+        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', '.', timeout=0)
 
     @classmethod
     def teardown_class(cls):
@@ -42,9 +42,7 @@ class TestJob(object):
     def test_job_components(self):
         mkdir('sim_x')
         self.job.folder = getcwd() + '/sim_x'
-        model_files = self.job._write_models()
-        self.job.execute(model_files)
-        sim_data = self.job.load_simdata()
+        sim_data = self.job._run_models()
         assert len(sim_data.keys()) == 1
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
@@ -67,9 +65,9 @@ class TestJob(object):
     def test_net_job(self):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
         mkdir('sim_net')
-        job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', self.bngpath, '.', timeout=None)
+        job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', '.', timeout=None)
         job.folder = getcwd() + '/sim_net'
-        job.execute(job._write_models())
+        job._run_models()
         assert isfile('sim_net/TrickyWP_p1_5_test.net')
         assert isfile('sim_net/TrickyWP_p1_5_test.bngl')
         assert isfile('sim_net/TrickyWP_p1_5_test.cdat')
