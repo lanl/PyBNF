@@ -30,7 +30,7 @@ multnumkeys = ['credible_intervals', 'beta', 'beta_range']
 b_var_def_keys = ['uniform_var', 'loguniform_var']
 var_def_keys = ['lognormal_var', 'normal_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
-strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
+strkeylist = ['bng_command', 'copasi_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node']
 multstrkeys = ['worker_nodes']
 
@@ -76,7 +76,7 @@ def parse(s):
 
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
-    bngl_file = pp.Regex(".*?\.bngl")
+    bngl_file = pp.Regex(".*?\.(bngl|xml)")
     exp_file = pp.Regex(".*?\.(exp|con)")
     mdmgram = mdmkey - equals - bngl_file - colon - pp.delimitedList(exp_file) - comment
 
@@ -209,7 +209,8 @@ def ploop(ls):  # parse loop
             elif key in strkeylist:
                 fmt = "'%s=s' where s is a string" % key
             elif key == 'model':
-                fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'"
+                fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'" \
+                      " Supported modelfile extensions are .bngl and .xml"
             elif key == 'normalization':
                 fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
                       "'unit', or 'zero')"\

@@ -377,6 +377,8 @@ class NetModel(Model):
 
 class SbmlModel(Model):
 
+    copasi_command = ''
+
     def __init__(self, file, pset=None):
         self.file_path = file
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
@@ -384,6 +386,7 @@ class SbmlModel(Model):
         self.param_set = None
         if pset:
             self._set_param_set(pset)
+        self.stochastic = False
 
     def copy_with_param_set(self, pset):
 
