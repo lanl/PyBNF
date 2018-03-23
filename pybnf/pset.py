@@ -378,6 +378,7 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
+        new_value = max(self.lower_bound, min(self.upper_bound, new_value))
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
 
     def sample_value(self):
@@ -393,8 +394,6 @@ class FreeParameter(object):
                 val = 10**(self._distribution(np.log10(self.p1), np.log10(self.p2)))
         else:
             val = self._distribution(self.p1, self.p2)
-
-        val = max(self.lower_bound, min(self.upper_bound, val))
 
         return self.set_value(val)
 
