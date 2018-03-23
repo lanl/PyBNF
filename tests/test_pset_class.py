@@ -26,6 +26,15 @@ class TestPSet:
         assert ps1['var1__FREE__'] == 0.1
         assert ps1['var2__FREE__'] == 99.0
 
+    def test_iteration(self):
+        ps1 = pset.PSet(self.fps0)
+        for p in ps1:
+            assert p in ps1.fps
+
+    def test_get_freeparameter(self):
+        p1 = pset.PSet(self.fps0)
+        assert p1.get_param('var0__FREE__') == self.p0
+
     @raises(printing.PybnfError)
     def test_faulty_initialization(self):
         ps2 = pset.PSet(self.fps1)

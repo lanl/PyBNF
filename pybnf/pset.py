@@ -467,6 +467,8 @@ class PSet(object):
         """
 
         self._param_dict = {}
+        self.fps = fps
+
         for fp in fps:
             if fp.value is None:
                 raise PybnfError("Parameter %s has no value" % fp.name)
@@ -475,6 +477,18 @@ class PSet(object):
             self._param_dict[fp.name] = fp
 
         self.name = None  # Can be set by Algorithms to give it a meaningful label in output file.
+
+    def __iter__(self):
+        self.idx = 0
+        return self
+
+    def __next__(self):
+        if self.idx == self.__len__():
+            raise StopIteration
+        res = self.fps[self.idx]
+        self.idx += 1
+        return res
+
 
     def __getitem__(self, item):
         """
@@ -487,6 +501,15 @@ class PSet(object):
         :return: float
         """
         return self._param_dict[item].value
+
+    def get_param(self, name):
+        """
+        Gets the full FreeParameter based on its name
+
+        :param name:
+        :return:
+        """
+        return self._param_dict[name]
 
     def __len__(self):
         return len(self._param_dict)
