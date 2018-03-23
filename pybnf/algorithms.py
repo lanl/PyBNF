@@ -782,7 +782,7 @@ class ParticleSwarm(Algorithm):
             p = new_params_list[i]
             p.name = 'iter0p%i' % i
             # Todo: Smart way to initialize velocity?
-            new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
+            new_velocity = {v.name: np.random.uniform(-1, 1) for v in self.variables}
             self.swarm.append([p, new_velocity])
             self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
 
@@ -828,19 +828,20 @@ class ParticleSwarm(Algorithm):
         # Update own position and velocity
         # The order matters - updating velocity first seems to make the best use of our current info.
         w = self.w0 + (self.wf - self.w0) * self.nv / (self.nv + self.nmax)
-        self.swarm[p][1] = {v.name:
-                                w * self.swarm[p][1][v.name] + self.c1 * np.random.random() * (
-                                self.bests[p][0][v.name].diff(self.swarm[p][0][v.name])) +
-                                self.c2 * np.random.random() * self.global_best[0][v.name].diff(self.swarm[p][0][v.name])
-                            for v in self.variables}
-        new_pset = PSet([v.add(self.swarm[p][1][v.name]) for v in self.variables])
+        self.swarm[p][1] = \
+            {v.name:
+                w * self.swarm[p][1][v.name] +
+                self.c1 * np.random.random() * self.bests[p][0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name)) +
+                self.c2 * np.random.random() * self.global_best[0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name))
+            for v in self.variables}
+        new_pset = PSet([v.add(self.swarm[p][1][v.name]) for v in self.swarm[p][0]])
         self.swarm[p][0] = new_pset
 
         # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
         # This could come up in practice if all parameters have hit a box constraint.
         # As a simple workaround, perturb the parameters slightly
         while new_pset in self.pset_map:
-            new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.variables])
+            new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.swarm[p][0]])
 
         self.pset_map[new_pset] = p
 
