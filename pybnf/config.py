@@ -4,7 +4,7 @@
 from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
-from .pset import BNGLModel, ModelError
+from .pset import BNGLModel, ModelError, SbmlModel
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -88,23 +88,8 @@ class Configuration(object):
         for k, v in d.items():
             self.config[k] = v
 
-        if self.config['bng_command'] == '':
-            raise PybnfError('Path to BNG2.pl not defined.  Please specify using the "bng_command" parameter '
-                             'in the configuration file or set the BNGPATH environmental variable')
-        elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
-            raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
-                             'name at the end of the path (e.g. /path/to/BNG2.pl)')
-        else:  # check to make sure BNG2.pl is available
-            try:
-                logger.info('Checking to make sure bng_command is appropriately set')
-                subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError:
-                raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
-                                 'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
-                                 'variable is correctly set')
-
         self.models = self._load_models()
+        self._load_simulators()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
@@ -246,8 +231,15 @@ class Configuration(object):
         """
         md = {}
         for mf in self.config['models']:
+            # Initialize model type based on extension
             try:
-                model = BNGLModel(mf)
+                if re.search('\.bngl$', mf):
+                    model = BNGLModel(mf)
+                elif re.search('\.xml$', mf):
+                    model = SbmlModel(mf)
+                else:
+                    # Should not get here - should be caught in parsing
+                    raise ValueError('Unrecognized model suffix in %s' % mf)
             except FileNotFoundError:
                 raise PybnfError('Model file %s was not found.' % mf)
             except ModelError as e:
@@ -262,6 +254,50 @@ class Configuration(object):
                        'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
 
         return md
+
+
+    def _load_simulators(self):
+
+        model_types = set([type(m) for m in self.models])
+
+        # For each model type that exists in the run, check that the simulator is available, and pass the simulator
+        # path to the appropriate Model subclass
+        if BNGLModel in model_types:
+            if self.config['bng_command'] == '':
+                raise PybnfError('Path to BNG2.pl not defined.  Please specify using the "bng_command" parameter '
+                                 'in the configuration file or set the BNGPATH environmental variable')
+            elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
+                raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
+                                 'name at the end of the path (e.g. /path/to/BNG2.pl)')
+            else:  # check to make sure BNG2.pl is available
+                try:
+                    logger.info('Checking to make sure bng_command is appropriately set')
+                    subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError:
+                    raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
+                                     'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
+                                     'variable is correctly set')
+            BNGLModel.bng_command = self.config['bng_command']
+
+        if SbmlModel in model_types:
+            if self.config['copasi_command'] == '':
+                raise PybnfError('Path to CopasiSE not defined. Please specify using the "copasi_command" parameter in '
+                                 'the configuration file.')
+            if re.search(r'CopasiSE', self.config['copasi_command']) is None:
+                print1('Warning: The "copasi_command" should be a path to the CopasiSE executable '
+                       '(e.g. /path/to/CopasiSE). I don\'t see CopasiSE in your path, so it might be entered wrong.')
+
+            try:
+                logger.info('Checking to make sure copasi_command is appropriately set')
+                subprocess.run([self.config['copasi_command'], '--help'], shell=True, check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError or PermissionError:
+                raise PybnfError('Copasi failed to execute. Please check that the "copasi_command" parameter in the '
+                                 'configuration file points to the CopasiSE executable')
+            SbmlModel.copasi_command = self.config['copasi_command']
+
+
 
     @staticmethod
     def _file_prefix(ef, ext="exp"):
