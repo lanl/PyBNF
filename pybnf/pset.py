@@ -425,6 +425,24 @@ class FreeParameter(object):
         r = np.random.uniform(lb+p, ub+p)
         return self.add(r)
 
+    def diff(self, other):
+        """
+        Calculates the difference between two FreeParameter instances.  Both instances must occupy the same space
+        (log or regular) and if they are both in log space, the difference will be calculated based on their
+        logarithms.
+        :param other: A FreeParameter from which the difference will be calculated
+        :return:
+        """
+        if not isinstance(other, FreeParameter):
+            raise PybnfError("Cannot compare FreeParameter with another object")
+        if not self.log_space == other.log_space:
+            raise PybnfError("Cannot calculate diff between two FreeParameter instances that are not varying in the same"
+                             "space")
+        if self.log_space:
+            return np.log10(self.value / other.value)
+        else:
+            return self.value - other.value
+
     def __hash__(self):
         return hash((self.name, self.value))
 

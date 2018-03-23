@@ -301,12 +301,12 @@ class Algorithm(object):
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
 
+        # Generate a list of variable names
+        self.variables = self.config.variables
+
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
         logger.debug('Initializing models')
         self.model_list = self._initialize_models()
-
-        # Generate a list of variable names
-        self.variables = self.config.variables
 
     def _initialize_models(self):
         """
@@ -455,16 +455,6 @@ class Algorithm(object):
                     pset_vars.append(var.sample_value())
             psets.append(PSet(pset_vars))
         return psets
-
-    def diff(self, paramset1, paramset2, param):
-        """
-        Helper function to calculate paramset1[param] - paramset2[param], taking into account whether
-        param is in regular or log space
-        """
-        if not param.log_space:
-            return paramset1[param.name] - paramset2[param.name]
-        else:
-            return np.log10(paramset1[param.name] / paramset2[param.name])
 
     def make_job(self, params):
         """
@@ -840,8 +830,8 @@ class ParticleSwarm(Algorithm):
         w = self.w0 + (self.wf - self.w0) * self.nv / (self.nv + self.nmax)
         self.swarm[p][1] = {v.name:
                                 w * self.swarm[p][1][v.name] + self.c1 * np.random.random() * (
-                                self.diff(self.bests[p][0], self.swarm[p][0], v)) +
-                                self.c2 * np.random.random() * self.diff(self.global_best[0], self.swarm[p][0], v)
+                                self.bests[p][0][v.name].diff(self.swarm[p][0][v.name])) +
+                                self.c2 * np.random.random() * self.global_best[0][v.name].diff(self.swarm[p][0][v.name])
                             for v in self.variables}
         new_pset = PSet([v.add(self.swarm[p][1][v.name]) for v in self.variables])
         self.swarm[p][0] = new_pset
@@ -1117,7 +1107,7 @@ class DifferentialEvolution(Algorithm):
         new_pset_vars = []
         for p in base.keys():
             if np.random.random() < self.mutation_rate:
-                update_val = self.mutation_factor * self.diff(others[0], others[1], p)
+                update_val = self.mutation_factor * others[0][p.name].diff(others[1][p.name])
                 new_pset_vars.append(base[p].add(update_val))
             else:
                 new_pset_vars.append(base[p])
@@ -1274,7 +1264,7 @@ class ScatterSearch(Algorithm):
                     new_vars = []
                     for v in self.variables:
                         # d = (self.refs[hi][0][v] - self.refs[pi][0][v]) / 2.
-                        d = self.diff(self.refs[hi][0], self.refs[pi][0], v)
+                        d = self.refs[hi][0][v.name].diff(self.refs[pi][0][v.name])
                         alpha = np.sign(hi-pi)
                         beta = (abs(hi-pi) - 1) / (self.popsize - 2)
                         # c1 = self.refs[pi][0][v] - d*(1 + alpha*beta)
