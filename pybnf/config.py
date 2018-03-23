@@ -11,6 +11,7 @@ import numpy as np
 import os
 import re
 import logging
+import subprocess
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,22 @@ class Configuration(object):
         self.config = self.default_config()
         for k, v in d.items():
             self.config[k] = v
+
+        if self.config['bng_command'] == '':
+            raise PybnfError('Path to BNG2.pl not defined.  Please specify using the "bng_command" parameter '
+                             'in the configuration file or set the BNGPATH environmental variable')
+        elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
+            raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
+                             'name at the end of the path (e.g. /path/to/BNG2.pl)')
+        else:  # check to make sure BNG2.pl is available
+            try:
+                logger.info('Checking to make sure bng_command is appropriately set')
+                subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError:
+                raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
+                                 'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
+                                 'variable is correctly set')
 
         self.models = self._load_models()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
