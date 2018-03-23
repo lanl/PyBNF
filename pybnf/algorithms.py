@@ -428,16 +428,12 @@ class Algorithm(object):
         :return:
         """
         logger.debug("Generating PSets using Latin hypercube sampling")
-        uniform_vars = []
-        other_vars = []
+        num_uniform_vars = 0
         for var in self.variables:
             if var.type == 'uniform_var' or var.type == 'loguniform_var':
-                uniform_vars.append(var)
-            else:
-                other_vars.append(var)
+                num_uniform_vars += 1
 
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
-        num_uniform_vars = len(uniform_vars)
         rands = latin_hypercube(n, num_uniform_vars)
         psets = []
 
@@ -745,31 +741,27 @@ class ParticleSwarm(Algorithm):
 
         super(ParticleSwarm, self).__init__(config)
 
-        # Set default values for non-essential parameters - no longer here; now done in Config.
-
-        conf_dict = config.config  # Dictionary from the Configuration object
-
         # This default value gets special treatment because if missing, it should take the value of particle_weight,
         # disabling the adaptive weight change entirely.
-        if 'particle_weight_final' not in conf_dict:
-            conf_dict['particle_weight_final'] = conf_dict['particle_weight']
+        if 'particle_weight_final' not in self.config.config:
+            self.config.config['particle_weight_final'] = self.config.config['particle_weight']
 
         # Save config parameters
-        self.c1 = conf_dict['cognitive']
-        self.c2 = conf_dict['social']
-        self.max_evals = conf_dict['population_size'] * conf_dict['max_iterations']
-        self.output_every = conf_dict['population_size'] * conf_dict['output_every']
+        self.c1 = self.config.config['cognitive']
+        self.c2 = self.config.config['social']
+        self.max_evals = self.config.config['population_size'] * self.config.config['max_iterations']
+        self.output_every = self.config.config['population_size'] * self.config.config['output_every']
 
-        self.num_particles = conf_dict['population_size']
+        self.num_particles = self.config.config['population_size']
         # Todo: Nice error message if a required key is missing
 
-        self.w0 = conf_dict['particle_weight']
+        self.w0 = self.config.config['particle_weight']
 
-        self.wf = conf_dict['particle_weight_final']
-        self.nmax = conf_dict['adaptive_n_max']
-        self.n_stop = conf_dict['adaptive_n_stop']
-        self.absolute_tol = conf_dict['adaptive_abs_tol']
-        self.relative_tol = conf_dict['adaptive_rel_tol']
+        self.wf = self.config.config['particle_weight_final']
+        self.nmax = self.config.config['adaptive_n_max']
+        self.n_stop = self.config.config['adaptive_n_stop']
+        self.absolute_tol = self.config.config['adaptive_abs_tol']
+        self.relative_tol = self.config.config['adaptive_rel_tol']
 
         self.nv = 0  # Counter that controls the current weight. Counts number of "unproductive" iterations.
         self.num_evals = 0  # Counter for the total number of results received
@@ -846,8 +838,8 @@ class ParticleSwarm(Algorithm):
         # Update own position and velocity
         # The order matters - updating velocity first seems to make the best use of our current info.
         w = self.w0 + (self.wf - self.w0) * self.nv / (self.nv + self.nmax)
-        self.swarm[p][1] = {v:
-                                w * self.swarm[p][1][v] + self.c1 * np.random.random() * (
+        self.swarm[p][1] = {v.name:
+                                w * self.swarm[p][1][v.name] + self.c1 * np.random.random() * (
                                 self.diff(self.bests[p][0], self.swarm[p][0], v)) +
                                 self.c2 * np.random.random() * self.diff(self.global_best[0], self.swarm[p][0], v)
                             for v in self.variables}
