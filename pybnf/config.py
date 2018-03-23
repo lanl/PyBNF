@@ -109,7 +109,7 @@ class Configuration(object):
         default = {
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
-            'backup_every': 1,
+            'backup_every': 1, 'copasi_command': '',
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,
@@ -230,14 +230,24 @@ class Configuration(object):
         Loads models specified in configuration file in a dictionary keyed on
         Model.name
         """
+        # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
+        home_dir = os.getcwd()
+
+        def absolute(dir):
+            # Convert relative path to absolute path
+            return dir if dir[0] == '/' else home_dir + '/' + dir
+
         md = {}
         for mf in self.config['models']:
             # Initialize model type based on extension
             try:
                 if re.search('\.bngl$', mf):
                     model = BNGLModel(mf)
+                    model.bng_command = absolute(self.config['bng_command'])
+                    logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
                     model = SbmlModel(mf)
+                    model.copasi_command = absolute(self.config['copasi_command'])
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
@@ -259,14 +269,8 @@ class Configuration(object):
 
     def _load_simulators(self):
 
-        model_types = set([type(m) for m in self.models])
-
-        # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
-        home_dir = os.getcwd()
-
-        def absolute(dir):
-            # Convert relative path to absolute path
-            return dir if dir[0] == '/' else home_dir + '/' + dir
+        model_types = set([type(m) for m in self.models.values()])
+        logger.debug('Here are all your sweet model types: %s' % model_types)
 
         # For each model type that exists in the run, check that the simulator is available, and pass the simulator
         # path to the appropriate Model subclass
@@ -286,7 +290,6 @@ class Configuration(object):
                     raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
                                      'variable is correctly set')
-            BNGLModel.bng_command = absolute(self.config['bng_command'])
 
         if SbmlModel in model_types:
             if self.config['copasi_command'] == '':
@@ -303,7 +306,6 @@ class Configuration(object):
             except subprocess.CalledProcessError or PermissionError:
                 raise PybnfError('Copasi failed to execute. Please check that the "copasi_command" parameter in the '
                                  'configuration file points to the CopasiSE executable')
-            SbmlModel.copasi_command = absolute(self.config['copasi_command'])
 
 
 
