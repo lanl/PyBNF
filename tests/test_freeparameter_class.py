@@ -21,6 +21,7 @@ class TestFreeParameter:
         pass
 
     def test_check_init(self):
+        print(self.p0.value)
         assert self.p0.value is None
         assert self.p0.type == 'normal_var'
         assert not self.p0.bounded
@@ -37,7 +38,7 @@ class TestFreeParameter:
 
     @raises(pset.OutOfBoundsException)
     def test_check_erroneous_assignment(self):
-        self.p3.set_value(11)
+        pset.FreeParameter('var2__FREE__', 'loguniform_var', 0.01, 100, value=1000)
 
     def test_distribution(self):
         xs = [self.p3.sample_value().value for x in range(100000)]
@@ -72,3 +73,9 @@ class TestFreeParameter:
         p11 = self.p2.set_value(10)
         p12 = self.p2.set_value(100)
         assert p12.diff(p11) == 1
+
+    def test_reflect(self):
+        self.p3._reflect(9, 2) == 9
+        self.p3._reflect(1, 11) == 8
+        self.p3._reflect(3, -4) == 1
+        self.p3._reflect(5, 20) == 5

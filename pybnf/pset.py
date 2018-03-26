@@ -378,8 +378,27 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
-        new_value = max(self.lower_bound, min(self.upper_bound, new_value))
+        if new_value < self.lower_bound or new_value > self.upper_bound:
+            if self.value is None:
+                self.value = self.lower_bound
+            # reflective number line, can never realize self.lower_bound or self.upper_bound this way
+            adj = self._reflect(self.value, new_value - self.value)
+            logging.warning('Assigned value %f is out of defined bounds.  Adjusted to %f' % (new_value, adj))
+            new_value = adj
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
+
+    def _reflect(self, init, add):
+        """Takes a value and returns a new value based on reflecting against the boundary conditions"""
+        while True:
+            if init + add > self.upper_bound:
+                add = -((init+add) - self.upper_bound)
+                init = self.upper_bound
+            elif init + add < self.lower_bound:
+                add = self.lower_bound - (init + add)
+                init = self.lower_bound
+            else:
+                break
+        return init + add
 
     def sample_value(self):
         """
@@ -394,7 +413,6 @@ class FreeParameter(object):
                 val = 10**(self._distribution(np.log10(self.p1), np.log10(self.p2)))
         else:
             val = self._distribution(self.p1, self.p2)
-
         return self.set_value(val)
 
     def add(self, summand):
@@ -406,6 +424,8 @@ class FreeParameter(object):
         :param summand: Value to add
         :return:
         """
+        if self.value is None:
+            logger.error('Cannot add to FreeParameter with "None" value')
         if self.log_space:
             return self.set_value(10**(np.log10(self.value) + summand))
         else:
