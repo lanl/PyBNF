@@ -1754,11 +1754,11 @@ class SimplexAlgorithm(Algorithm):
         i = 1
         for v in self.variables:
             new_vars = []
-            for p in self.variables:
-                if p == v:
-                    new_vars.append(self.start_point[p].add(self.start_steps[p]))
+            for p in self.start_point:
+                if p.name == v.name:
+                    new_vars.append(p.add(self.start_steps[p.name]))
                 else:
-                    new_vars.append(self.start_point[p])
+                    new_vars.append(p)
             new_pset = PSet(new_vars)
             new_pset.name = 'simplex_init%i' % i
             self.pending[new_pset.name] = i
@@ -1792,8 +1792,8 @@ class SimplexAlgorithm(Algorithm):
                 self.cases[index] = 1
                 new_vars = []
                 for v in self.variables:
-                    new_var = self.a_plus_b_times_c_minus_d(pset[v], self.gamma, pset[v], self.centroids[index][v],
-                                                                v)
+                    new_var = v.set_value(self.a_plus_b_times_c_minus_d(pset[v.name], self.gamma, pset[v.name], self.centroids[index][v.name],
+                                                                v))
                     new_vars.append(new_var)
                 new_pset = PSet(new_vars)
                 new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
@@ -1823,8 +1823,8 @@ class SimplexAlgorithm(Algorithm):
                     # I think the equation for this in Lee et al p. 178 is wrong; I am instead using the analog to the
                     # equation on p. 176
                     # new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])
-                    new_var = self.a_plus_b_times_c_minus_d(self.centroids[index][v], self.beta, a_hat[v],
-                                                                self.centroids[index][v], v)
+                    new_var = v.set_value(self.a_plus_b_times_c_minus_d(self.centroids[index][v.name], self.beta, a_hat[v.name],
+                                                                self.centroids[index][v.name], v))
                     new_vars.append(new_var)
                 new_pset = PSet(new_vars)
                 new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
@@ -1882,8 +1882,8 @@ class SimplexAlgorithm(Algorithm):
                         new_vars = []
                         for v in self.variables:
                             # new_dict[v] = self.tau * self.simplex[i-1][1][v] + (1 - self.tau) * self.simplex[i][1][v]
-                            new_var = self.ab_plus_cd(self.tau, self.simplex[i-1][1][v.name], 1 - self.tau,
-                                                      self.simplex[i][1][v.name], v)
+                            new_var = v.set_value(self.ab_plus_cd(self.tau, self.simplex[i-1][1][v.name], 1 - self.tau,
+                                                      self.simplex[i][1][v.name], v))
                             new_vars.append(new_var)
                         new_pset = PSet(new_vars)
                         new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, i)
@@ -1916,12 +1916,12 @@ class SimplexAlgorithm(Algorithm):
                 for v in self.variables:
                     if v.log_space:
                         # Calc centroid in regular space.
-                        centroid = exp10((sums[v.name] - np.log10(a[v])) / (len(self.simplex) - 1))
+                        centroid = exp10((sums[v.name] - np.log10(a[v.name])) / (len(self.simplex) - 1))
                     else:
-                        centroid = (sums[v.name] - a[v]) / (len(self.simplex) - 1)
-                    this_centroid[v] = centroid
+                        centroid = (sums[v.name] - a[v.name]) / (len(self.simplex) - 1)
+                    this_centroid[v.name] = centroid
                     # new_dict[v] = centroid + self.alpha * (centroid - a[v])
-                    new_var = self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v], v)
+                    new_var = v.set_value(self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v.name], v))
                     new_vars.append(new_var)
                 self.centroids.append(this_centroid)
                 new_pset = PSet(new_vars)
@@ -1948,11 +1948,11 @@ class SimplexAlgorithm(Algorithm):
         """
         # return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}
         sums = dict()
-        for p in self.simplex[0][1].keys():
+        for p in self.simplex[0][1]:
             if not p.log_space:
-                sums[p] = sum(point[1][p] for point in self.simplex)
+                sums[p.name] = sum(point[1][p.name] for point in self.simplex)
             else:
-                sums[p] = sum(np.log10(point[1][p]) for point in self.simplex)
+                sums[p.name] = sum(np.log10(point[1][p.name]) for point in self.simplex)
         return sums
 
     def a_plus_b_times_c_minus_d(self, a, b, c, d, v):

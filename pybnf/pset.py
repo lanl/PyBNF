@@ -451,6 +451,9 @@ class FreeParameter(object):
                    (other.name, other.type, other.value, other.p1, other.p2)
         return False
 
+    def __lt__(self, other):
+        return self.name < other.name
+
 
 class PSet(object):
     """
