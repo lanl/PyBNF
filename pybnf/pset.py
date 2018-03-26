@@ -420,8 +420,7 @@ class FreeParameter(object):
         :param ub:
         :return:
         """
-        p = self.value if not self.log_space else np.log10(self.value)
-        r = np.random.uniform(lb+p, ub+p)
+        r = np.random.uniform(lb, ub)
         return self.add(r)
 
     def diff(self, other):
@@ -453,6 +452,12 @@ class FreeParameter(object):
 
     def __lt__(self, other):
         return self.name < other.name
+
+    def __str__(self):
+        return "FreeParameter: %s = %s" % (self.name, self.value)
+
+    def __repr__(self):
+        return self.__str__()
 
 
 class PSet(object):

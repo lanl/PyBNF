@@ -1265,14 +1265,14 @@ class ScatterSearch(Algorithm):
                     new_vars = []
                     for v in self.variables:
                         # d = (self.refs[hi][0][v] - self.refs[pi][0][v]) / 2.
-                        d = self.refs[hi][0][v.name].diff(self.refs[pi][0][v.name])
+                        d = self.refs[hi][0].get_param(v.name).diff(self.refs[pi][0].get_param(v.name))
                         alpha = np.sign(hi-pi)
                         beta = (abs(hi-pi) - 1) / (self.popsize - 2)
                         # c1 = self.refs[pi][0][v] - d*(1 + alpha*beta)
                         # c2 = self.refs[pi][0][v] + d*(1 - alpha*beta)
                         # newval = np.random.uniform(c1, c2)
                         # newdict[v] = max(min(newval, var[2]), var[1])
-                        new_vars.append(v.add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta)))
+                        new_vars.append(self.refs[pi][0].get_param(v.name).add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta)))
                     newpset = PSet(new_vars)
                     # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really
                     # care about the number of PSets queried.
@@ -1280,6 +1280,8 @@ class ScatterSearch(Algorithm):
                         newpset.name = 'iter%ip%ih%i' % (self.iteration, pi, hi)
                         query_psets.append(newpset)
                         self.pending[newpset] = self.refs[pi][0]
+                    else:
+                        print(newpset)
             self.received = {r[0]: [] for r in self.refs}
             return query_psets
 
