@@ -6,6 +6,7 @@ from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquar
     AveNormSumOfSquaresObjective
 from .pset import BNGLModel, ModelError
 from .printing import verbosity, print1, PybnfError
+from .constraint import ConstraintSet
 
 import numpy as np
 import os
@@ -105,7 +106,7 @@ class Configuration(object):
 
         self.models = self._load_models()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
-        self.exp_data = self._load_exp_data()
+        self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
         self.variables, self.variables_specs = self._load_variables()
         self._check_variable_correspondence()
@@ -263,27 +264,39 @@ class Configuration(object):
         return md
 
     @staticmethod
-    def _exp_file_prefix(ef):
-        return re.sub(".exp", "", re.split('/', ef)[-1])
+    def _file_prefix(ef, ext="exp"):
+        return re.sub("\."+ext, "", re.split('/', ef)[-1])
 
     def _load_exp_data(self):
         """
         Loads experimental data files in a dictionary keyed on data file prefix
+        Also loads constraint files (which at this point are stored in the same structures as the exp files) and stores
+        them in a set.
         """
         ed = {}
-        for ef in self.config['exp_data']:
-            try:
-                d = Data(file_name=ef)
-            except FileNotFoundError:
-                raise PybnfError('Experimental data file %s was not found.' % ef)
-            ed[self._exp_file_prefix(ef)] = d
-        return ed
+        csets = set()
+        for m in self.config['models']:
+            for ef in self.config[m]:
+                if re.search("exp$", ef):
+                    try:
+                        d = Data(file_name=ef)
+                    except FileNotFoundError:
+                        raise PybnfError('Experimental data file %s was not found.' % ef)
+                    ed[self._file_prefix(ef)] = d
+                else:
+                    cs = ConstraintSet(self._file_prefix(m, 'bngl'), self._file_prefix(ef, 'con'))
+                    try:
+                        cs.load_constraint_file(ef)
+                    except FileNotFoundError:
+                        raise PybnfError('Constraint file %s was not found' % ef)
+                    csets.add(cs)
+        return ed, csets
 
     def _check_actions(self):
         mapping = dict()
         for model in self.models.values():
             suffs = {s[1] for s in model.suffixes}
-            efs_per_m = {self._exp_file_prefix(ef) for ef in self.config[model.file_path]}
+            efs_per_m = {self._file_prefix(ef) for ef in self.config[model.file_path] if re.search("\.exp$", ef)}
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
                     if ef not in suffs:
@@ -382,7 +395,7 @@ class Configuration(object):
                                      "The exp file %s given under the 'normalization' keyword is not associated with "
                                      "any model." % ef + seedoc)
                 val = self.config['normalization'][ef]
-                suff = self._exp_file_prefix(ef)
+                suff = self._file_prefix(ef)
                 def checkval(v):
                     if v not in valid:
                         raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],

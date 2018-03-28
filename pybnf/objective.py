@@ -9,18 +9,22 @@ import numpy as np
 class ObjectiveFunction(object):
     """
     Abstract class representing an objective function
+    Subclasses customize how the objective value is calculated from the quantitative exp data
+    The base class includes all the support we need for constraints.
     """
 
-    def evaluate_multiple(self, sim_data_dict, exp_data_dict):
+    def evaluate_multiple(self, sim_data_dict, exp_data_dict, constraints=()):
         """
         Compute the value of the objective function on several data sets, and return the total.
-
-        You may also call this function with single Data objects instead of iterables.
+        Optionally may pass an iterable of ConstraintSets whose penalties will be added to the total
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
         :param exp_data_dict: Dictionary mapping suffix strings to experimental Data objects
         :type exp_data_dict: dict
+        :param constraints: Iterable of ConstraintSet objects containing the constraints that we should evaluate using
+        the simulated data
+        :type constraints: Iterable of ConstraintSet
         :return:
         """
         total = 0.
@@ -40,6 +44,8 @@ class ObjectiveFunction(object):
                         if val is None:
                             return None
                         total += val
+            for cset in constraints:
+                total += cset.total_penalty(sim_data_dict)
 
             return total
 

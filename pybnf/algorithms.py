@@ -412,7 +412,7 @@ class Algorithm(object):
         """
         Evaluates the objective function for a Result, and adds the information from the Result to the Trajectory
         instance"""
-        score = self.objective.evaluate_multiple(res.simdata, self.exp_data)
+        score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
         if score is None:
             logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
             logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)

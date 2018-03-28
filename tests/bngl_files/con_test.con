@@ -1,0 +1,49 @@
+
+# Satisfied 
+B<10 always weight 2
+
+# Penalty 2*2=4
+# Uses the convention (for now) of going to the earlier time point if the "at" condition is between 2 time points
+B<C at A=5.5 weight 2
+
+# Penalty 0.2*2=0.4
+6<D once weight 2
+
+# Should go between times 2 and 4
+# Penalty 0.2*2=0.4
+5.4<D between A=3.5,B=6 weight 2
+
+# Satisfied because A=5
+A>=5 at 4.1 weight 5 min 2
+
+# Triggers the min penalty, should be 10
+A>5 at 4.1 weight 5 min 2
+
+# Constraint is failed, but the altpenalty is 0
+A>5 at 4.1 weight 5 altpenalty B<9
+
+# Should get 25 from the altpenalty
+A>5 at 4.1 weight 5 altpenalty B<3
+
+# Should get 20 because the min 4 is bigger than the altpenalty 2
+A>5 at 4.1 weight 5 altpenalty B<6 min 4
+
+# Evaluates at time 1,2,3,4,5 for penalties (0,1,2,3,4)*2 = 20 
+A < 2 at C=5.5 everytime weight 2
+
+# Triggers at time 2 and 4 (requires equality of at condition to work)
+# Penalty 3 * (0.2 + 0.4) = 1.8
+D <= 5 at B=8 everytime weight 3
+
+# Should apply from time= 2 to 4 inclusive. Each should get penalty of 1.
+A<4 between C=6,C=6
+A>4 between C=6,C=6
+
+# First point does not occur, so penalty is automatically 0
+D>5000 between B=10,time=7 weight 2
+
+# Second point does not occur after the first point, so interval lasts until the end
+# Penalty 0.8 * 2 = 1.6
+D<5 between A=5,A=4 weight 2
+
+

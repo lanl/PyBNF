@@ -13,6 +13,7 @@ class Data(object):
     def __init__(self, file_name=None, arr=None):
         self.cols = dict()  # dict of column headers to column indices
         self.data = None  # Numpy array for data
+        self.indvar = None # Name of the independent variable
         if file_name is not None:
             self.load_data(file_name)
         elif arr is not None:
@@ -87,6 +88,7 @@ class Data(object):
         header = re.split(sep, lines[0].strip().strip('#').strip())
         header = [h.strip('()') for h in header]  # Ignore parentheses added to functions in BNG 2.3
         ncols = len(header)
+        self.indvar = header[0]
 
         for c in header:
             l = len(self.cols)

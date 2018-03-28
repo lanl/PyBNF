@@ -1,0 +1,4 @@
+y<5 at time=0 weight 2
+xxxxx.y>0 always
+y>70 once weight 4 # Not satisfied by quant data alone... will we see a solution that adapts to this
+y<20 between x=-5,x=4
