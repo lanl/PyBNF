@@ -106,8 +106,8 @@ class ConstraintSet:
                 self.constraints.append(con)
         logger.info('Loaded %i constraints' % len(self.constraints))
 
-
-    def parse_constraint_line(self, line):
+    @staticmethod
+    def parse_constraint_line(line):
         obs = pp.Word(pp.alphas, pp.alphanums+'_.')
         point = pp.Literal(".")
         e = pp.CaselessLiteral("E")
