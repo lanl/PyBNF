@@ -259,7 +259,7 @@ class Constraint:
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
-    def get_penalty(self, sim_data_dict, imin, imax, once=False):
+    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
         Enforces the constraint for the entire interval unless the once option is set.
@@ -268,21 +268,40 @@ class Constraint:
         :param imin: First index at which to check the constraint
         :param imax: Last index at which to check the constraint (exclusive)
         :param once: If true, enforce that the constraint holds once at some point during the time interval
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
+        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+        case)
         :return:
         """
+
+        def length_error():
+            raise PybnfError('Applying constraint %s<%s. Constraints involving observables that have different time '
+                             'points in their simulation outputs are not currently supported' %
+                             (self.quant1, self.quant2))
+
         if isinstance(self.quant1, str):
-            q1 = self.index(sim_data_dict, self.qkeys1)[imin:imax]
+            q1_col = self.index(sim_data_dict, self.qkeys1)
+            if require_length and len(q1_col) != require_length:
+                length_error()
+            q1 = q1_col[imin:imax]
         else:
             q1 = self.quant1
         if isinstance(self.quant2, str):
-            q2 = self.index(sim_data_dict, self.qkeys2)[imin:imax]
+            q2_col = self.index(sim_data_dict, self.qkeys2)
+            if require_length and len(q2_col) != require_length:
+                length_error()
+            q2 = q2_col[imin:imax]
         else:
             q2 = self.quant2
 
-        if once:
-            penalty = np.min(q1-q2)
-        else:
-            penalty = np.max(q1 - q2)
+        try:
+            if once:
+                penalty = np.min(q1-q2)
+            else:
+                penalty = np.max(q1 - q2)
+        except ValueError:
+            length_error()
+
         if penalty > 0 or (penalty == 0. and not self.or_equal):
             # Failed constraint
             if self.alt1:
@@ -391,7 +410,7 @@ class AtConstraint(Constraint):
             if np.isclose(atdata[fi+1], self.atval, atol=0.) and not (np.isclose(atdata[fi], self.atval, atol=0.)):
                 fi += 1
 
-            penalty += self.get_penalty(sim_data_dict, fi, fi+1)
+            penalty += self.get_penalty(sim_data_dict, fi, fi+1, require_length=len(at_col))
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
 
         return penalty
@@ -474,6 +493,10 @@ class BetweenConstraint(Constraint):
 
         enddat = self.index(sim_data_dict, self.endkeys)
         endcol = enddat < self.endval
+        if len(startcol) != len(endcol):
+            raise PybnfError('Applying constraint %s<%s. Constraints involving observables that have different time '
+                             'points in their simulation outputs are not currently supported' %
+                             (self.quant1, self.quant2))
         # Note: [0] strips a useless extra dimension
         end = np.nonzero(endcol[start+1:-1] != endcol[start+2:])[0]
         if len(end) == 0:
@@ -486,7 +509,7 @@ class BetweenConstraint(Constraint):
                 and not (np.isclose(enddat[end], self.endval, atol=0.)):
             end += 1
 
-        penalty = self.get_penalty(sim_data_dict, start, end+1)
+        penalty = self.get_penalty(sim_data_dict, start, end+1, require_length=len(endcol))
 
         return penalty
 
