@@ -144,7 +144,12 @@ class Configuration(object):
 
             'cluster_type': None,
             'scheduler_node': None,
-            'worker_nodes': None
+            'worker_nodes': None,
+
+            'gamma_prob': 0.1,
+            'zeta': 1e-6,
+            'lambda': 0.1,
+            'crossover_number': 3
         }
         return default
 
