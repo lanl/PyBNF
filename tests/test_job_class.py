@@ -20,12 +20,12 @@ class TestJob(object):
     @classmethod
     def setup_class(cls):
         cls.model = pset.BNGLModel('bngl_files/Tricky.bngl')
-        d = {
-            'koff__FREE__': 0.1,
-            '__koff2__FREE__': 0.1,
-            'kase__FREE__': 1,
-            'pase__FREE__': 1
-        }
+        d = [
+            pset.FreeParameter('koff__FREE__', 'normal_var', 0, 1, value=0.1),
+            pset.FreeParameter('__koff2__FREE__', 'normal_var', 0, 1, value=0.1),
+            pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=1),
+            pset.FreeParameter('pase__FREE__', 'normal_var', 0, 1, value=1),
+        ]
         cls.pset = pset.PSet(d)
         cls.bngpath = environ['BNGPATH'] + '/BNG2.pl'
         cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', cls.bngpath, '.', timeout=None)
@@ -38,6 +38,7 @@ class TestJob(object):
         rmtree('sim_x')
         rmtree('sim_1')
         rmtree('sim_to')
+        rmtree('sim_to_rerun1')
 
     def test_job_components(self):
         mkdir('sim_x')
@@ -67,7 +68,7 @@ class TestJob(object):
     def test_net_job(self):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
         mkdir('sim_net')
-        job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', self.bngpath, '.', timeout=None)
+        job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', self.bngpath, '.', timeout=None)
         job.folder = getcwd() + '/sim_net'
         job.execute(job._write_models())
         assert isfile('sim_net/TrickyWP_p1_5_test.net')
