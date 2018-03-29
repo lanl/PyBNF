@@ -331,6 +331,7 @@ class Configuration(object):
         for k in self.config.keys():
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
+                    print(self.config[k])
                     if self.config['fit_type'] == 'sim' and k[0] not in ('var', 'logvar'):
                         raise PybnfError('Invalid Simplex variable type %s' % k[0],
                                "You've specified the Simplex algorithm (fit_type = sim), "
@@ -354,10 +355,8 @@ class Configuration(object):
                         variables.append(FreeParameter(k[1], k[0], self.config[k][0], stepsize))
                     else:
                         if len(self.config[k]) == 3:
-                            if re.fullmatch('u', self.config[k][2], flags=re.IGNORECASE):
-                                variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1], bounded=False))
-                            else:
-                                variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1]))
+                            variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
+                                                           bounded=self.config[k][2]))
                         else:
                             variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1]))
         return variables
