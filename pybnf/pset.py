@@ -500,6 +500,8 @@ class SbmlModel(Model):
             # For the Model=?? attribute of tablestring, we need to get a name from somewhere else in the file
             model_elem = root.findall('cps:Model', namespaces=space)[0]
             model_name = model_elem.get('name')
+            obj = etree.Element('Object', cn='CN=Root,Model=%s,Reference=Time' % model_name)
+            report_table.append(obj)
             for s in self.species:
                 obj = etree.Element('Object', cn=tablestring % (model_name, s))
                 report_table.append(obj)

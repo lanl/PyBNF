@@ -29,10 +29,10 @@ class TestSbmlModel:
             os.remove('%s.xml' % cls.savefile)
         except OSError:
             pass
-        # try:
-        #     shutil.rmtree(cls.folder)
-        # except OSError:
-        #     pass
+        try:
+            shutil.rmtree(cls.folder)
+        except OSError:
+            pass
 
     def test_init(self):
         m = pset.SbmlModel(self.file)
@@ -74,6 +74,5 @@ class TestSbmlModel:
         dat = result['timecourse']
         assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
         assert abs(dat['R'][-1] - 0.358949) < 0.01
-
-
+        assert dat.cols['Time'] == 0
 
