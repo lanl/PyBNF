@@ -3,7 +3,7 @@ import os
 import xml.etree.ElementTree as ET
 import re
 import numpy as np
-
+import shutil
 
 
 class TestSbmlModel:
@@ -15,7 +15,13 @@ class TestSbmlModel:
         """Define constants to be used in tests"""
         cls.file = 'bngl_files/raf.xml'
         cls.savefile = 'raf_test'
+        cls.savefile2 = 'raf_test_exec'
         cls.params = {'K3':8000., 'K5': 0.3}
+        cls.folder = 'raf_test'
+        try:
+            shutil.rmtree(cls.folder)
+        except OSError:
+            pass
 
     @classmethod
     def teardown_class(cls):
@@ -23,6 +29,10 @@ class TestSbmlModel:
             os.remove('%s.xml' % cls.savefile)
         except OSError:
             pass
+        # try:
+        #     shutil.rmtree(cls.folder)
+        # except OSError:
+        #     pass
 
     def test_init(self):
         m = pset.SbmlModel(self.file)
@@ -51,5 +61,19 @@ class TestSbmlModel:
                 num_found += 1
         assert num_found == 2
         assert set(m.species) == {'R', 'I', 'RR', 'RI', 'RIR', 'RIRI'}
+
+    def test_execute(self):
+        os.mkdir(self.folder)
+        fullpath = os.getcwd()+'/'+self.folder
+        ps = pset.PSet(self.params)
+        action = pset.Action('timecourse', 'time', 1000, 10)
+        m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
+        # Todo: Make portable to other computers, such as with env variable
+        m.copasi_command = '/home/emitra/Programs/COPASI-4.22.170-Linux-64bit/bin/CopasiSE'
+        result = m.execute(fullpath, self.savefile2, 1000)
+        dat = result['timecourse']
+        assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
+        assert abs(dat['R'][-1] - 0.358949) < 0.01
+
 
 

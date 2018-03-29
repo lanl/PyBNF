@@ -86,7 +86,8 @@ class Data(object):
         """Helper function that reads lines from BNGL gdat files"""
 
         header = re.split(sep, lines[0].strip().strip('#').strip())
-        header = [h.strip('()') for h in header]  # Ignore parentheses added to functions in BNG 2.3
+        # Ignore parentheses added to functions in BNG 2.3, and [] added to species names in COPASI
+        header = [h.strip('()[]') for h in header]
         ncols = len(header)
         self.indvar = header[0]
 
