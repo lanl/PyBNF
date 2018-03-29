@@ -1601,6 +1601,9 @@ class BayesianAlgorithm(Algorithm):
         super(BayesianAlgorithm, self).__init__(config)
         self.num_parallel = config.config['population_size']
         self.max_iterations = config.config['max_iterations']
+        self.step_size = config.config['step_size']
+
+        self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
 
         self.current_pset = None  # List of n PSets corresponding to the n independent runs
         self.ln_current_P = None  # List of n probabilities of those n PSets.
@@ -1634,7 +1637,24 @@ class BayesianAlgorithm(Algorithm):
                 self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
 
     def start_run(self):
-        NotImplementedError("start_run() must be implemented in BayesianAlgorithm subclass")
+        if self.config.config['initialization'] == 'lh':
+            first_psets = self.random_latin_hypercube_psets(self.num_parallel)
+        else:
+            first_psets = [self.random_pset() for i in range(self.num_parallel)]
+
+        self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
+        self.current_pset = [None]*self.num_parallel
+        for i in range(len(first_psets)):
+            first_psets[i].name = 'iter0run%i' % i
+
+        # Set up the output files
+        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
+        if not self.sa:
+            with open(self.samples_file, 'w') as f:
+                f.write('# Name\tLn_probability\t'+first_psets[0].keys_to_string()+'\n')
+            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+
+        return first_psets
 
     def got_result(self, res):
         NotImplementedError("got_result() must be implemented in BayesianAlgorithm subclass")
@@ -1735,11 +1755,7 @@ class DreamAlgorithm(BayesianAlgorithm):
 
     def __init__(self, config):
         super(DreamAlgorithm, self).__init__(config)
-        pass
-
-    # same as Bayesian Algorithm?
-    def start_run(self):
-        pass
+        self.all_idcs = np.arange(len(self.variables))
 
     # sync for each generation
     def got_result(self, res):
@@ -1763,9 +1779,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
     def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
         super(BasicBayesMCMCAlgorithm, self).__init__(config)
         self.sa = sa
-        self.step_size = config.config['step_size']
-
-        self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
 
         if sa:
             self.cooling = config.config['cooling']
@@ -1829,24 +1842,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
                    % (self.sample_every, self.burn_in))
 
-        if self.config.config['initialization'] == 'lh':
-            first_pset = self.random_latin_hypercube_psets(self.num_parallel)
-        else:
-            first_pset = [self.random_pset() for i in range(self.num_parallel)]
-
-        self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
-        self.current_pset = [None]*self.num_parallel
-        for i in range(len(first_pset)):
-            first_pset[i].name = 'iter0run%i' % i
-
-        # Set up the output files
-        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
-        if not self.sa:
-            with open(self.samples_file, 'w') as f:
-                f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
-            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
-
-        return first_pset
+        return super(BasicBayesMCMCAlgorithm, self).start_run()
 
     def got_result(self, res):
         """
@@ -1862,7 +1858,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         score = res.score
 
         # Figure out which parallel run this is from based on the .name field.
-        m = re.search('(?<=run)\d+',pset.name)
+        m = re.search('(?<=run)\d+', pset.name)
         index = int(m.group(0))
 
         # Calculate the acceptance probability
