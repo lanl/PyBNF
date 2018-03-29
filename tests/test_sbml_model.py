@@ -69,7 +69,7 @@ class TestSbmlModel:
         action = pset.Action('timecourse', 'time', 1000, 10)
         m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
         # Todo: Make portable to other computers, such as with env variable
-        m.copasi_command = '/home/emitra/Programs/COPASI-4.22.170-Linux-64bit/bin/CopasiSE'
+        m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
         result = m.execute(fullpath, self.savefile2, 1000)
         dat = result['timecourse']
         assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
