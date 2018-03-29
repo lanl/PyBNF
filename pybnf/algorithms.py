@@ -1594,7 +1594,137 @@ class ScatterSearch(Algorithm):
             (self.config.config['population_size']-1) * self.config.config['smoothing']
 
 
-class DreamAlgorithm(Algorithm):
+class BayesianAlgorithm(Algorithm):
+    """Superclass for Bayesian MCMC algorithms"""
+
+    def __init__(self, config):
+        super(BayesianAlgorithm, self).__init__(config)
+        self.num_parallel = config.config['population_size']
+        self.max_iterations = config.config['max_iterations']
+
+        self.current_pset = None  # List of n PSets corresponding to the n independent runs
+        self.ln_current_P = None  # List of n probabilities of those n PSets.
+
+        self.burn_in = config.config['burn_in']  # todo: 'auto' option
+        self.sample_every = config.config['sample_every']
+        self.output_hist_every = config.config['output_hist_every']
+        # A list of the % credible intervals to save, eg [68. 95]
+        self.credible_intervals = config.config['credible_intervals']
+        self.num_bins = config.config['hist_bins']
+
+        self.prior = None
+        self.load_priors()
+
+        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+
+    def load_priors(self):
+        """Builds the data structures for the priors, based on the variables specified in the config."""
+        self.prior = dict()  # Maps each variable to a 4-tuple (space, dist, val1, val2)
+        # space is 'reg' for regular space, 'log' for log space. dist is 'n' for normal, 'b' for box.
+        # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
+        # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
+        for var in self.variables:
+            if var.type == 'normal_var':
+                self.prior[var.name] = ('reg', 'n', var.p1, var.p2)
+            elif var.type == 'lognormal_var':
+                self.prior[var.name] = ('log', 'n', var.p1, var.p2)
+            elif var.type == 'uniform_var':
+                self.prior[var.name] = ('reg', 'b', var.p1, var.p2)
+            elif var.type == 'loguniform_var':
+                self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
+
+    def start_run(self):
+        NotImplementedError("start_run() must be implemented in BayesianAlgorithm subclass")
+
+    def got_result(self, res):
+        NotImplementedError("got_result() must be implemented in BayesianAlgorithm subclass")
+
+    def ln_prior(self, pset):
+        """
+        Returns the value of the prior distribution for the given parameter set
+
+        :param pset:
+        :type pset: PSet
+        :return: float value of ln times the prior distribution
+        """
+        total = 0.
+        for v in self.prior:
+            (space, dist, x1, x2) = self.prior[v]
+            if space == 'log':
+                val = np.log10(pset[v])
+            else:
+                val = pset[v]
+
+            if dist == 'n':
+                # Normal with mean x1 and value x2
+                total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
+            else:
+                # Uniform from x1 to x2
+                if x1 <= val <= x2:
+                    total += -np.log(x2-x1)
+                else:
+                    logger.warning('Box-constrained parameter %s reached a value outside the box.')
+                    total += -np.inf
+        return total
+
+    def sample_pset(self, pset, ln_prob):
+        """
+        Adds this pset to the set of sampled psets for the final distribution.
+        :param pset:
+        :type pset: PSet
+        :param ln_prob - The probability of this PSet to record in the samples file.
+        :type ln_prob: float
+        """
+        with open(self.samples_file, 'a') as f:
+            f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
+
+    def update_histograms(self, file_ext):
+        """
+        Updates the files that contain histogram points for each variable
+        :param file_ext: String to append to the save file names
+        :type file_ext: str
+        :return:
+        """
+        # Read the samples file into an array, ignoring the first row (header)
+        # and first 2 columns (pset names, probabilities)
+        dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
+                                  usecols=range(2, len(self.variables)+2))
+
+        # Open the file(s) to save the credible intervals
+        cred_files = []
+        for i in self.credible_intervals:
+            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
+            f.write('# param\tlower_bound\tupper_bound\n')
+            cred_files.append(f)
+
+        for i in range(len(self.variables)):
+            v = self.variables[i]
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            # For log-space variables, we want the histogram in log space
+            if self.variable_space[v][0] == 'log':
+                histdata = np.log10(dat_array[:, i])
+                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
+            else:
+                histdata = dat_array[:, i]
+                header = 'lower_bound\tupper_bound\tcount'
+            hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
+            result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
+            np.savetxt(fname, result_array, delimiter='\t', header=header)
+
+            sorted_data = sorted(dat_array[:, i])
+            for interval, file in zip(self.credible_intervals, cred_files):
+                min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
+                max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
+                file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+
+    def cleanup(self):
+        """Called when quitting due to error.
+        Save the histograms in addition to the usual algorithm cleanup"""
+        super().cleanup()
+        self.update_histograms('_end')
+
+
+class DreamAlgorithm(BayesianAlgorithm):
     """
     Implements a variant of the DREAM algorithm as described in Vrugt (2016) Environmental Modelling
     and Software.
@@ -1616,7 +1746,7 @@ class DreamAlgorithm(Algorithm):
         pass
 
 
-class BayesAlgorithm(Algorithm):
+class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
     """
     Implements a Bayesian Markov chain Monte Carlo simulation.
@@ -1631,26 +1761,15 @@ class BayesAlgorithm(Algorithm):
     """
 
     def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
-        super(BayesAlgorithm, self).__init__(config)
+        super(BasicBayesMCMCAlgorithm, self).__init__(config)
         self.sa = sa
         self.step_size = config.config['step_size']
-        self.num_parallel = config.config['population_size']
-        self.max_iterations = config.config['max_iterations']
 
-        self.current_pset = None  # List of n PSets corresponding to the n independent runs
-        self.ln_current_P = None  # List of n probabilities of those n PSets.
         self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
 
         if sa:
             self.cooling = config.config['cooling']
             self.beta_max = config.config['beta_max']
-        else:
-            self.burn_in = config.config['burn_in'] # todo: 'auto' option
-            self.sample_every = config.config['sample_every']
-            self.output_hist_every = config.config['output_hist_every']
-            # A list of the % credible intervals to save, eg [68. 95]
-            self.credible_intervals = config.config['credible_intervals']
-            self.num_bins = config.config['hist_bins']
 
         self.exchange_every = config.config['exchange_every']
         self.betas = config.config['beta_list']
@@ -1664,7 +1783,7 @@ class BayesAlgorithm(Algorithm):
         self.staged = []  # Used only when resuming a run and adding iterations
 
     def reset(self, bootstrap=None):
-        super(BayesAlgorithm, self).reset(bootstrap)
+        super(BasicBayesMCMCAlgorithm, self).reset(bootstrap)
 
         self.current_pset = None
         self.ln_current_P = None
@@ -1723,7 +1842,6 @@ class BayesAlgorithm(Algorithm):
         # Set up the output files
         # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
         if not self.sa:
-            self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
             with open(self.samples_file, 'w') as f:
                 f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
             os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)

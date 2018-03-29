@@ -171,9 +171,9 @@ def main():
                 alg = algs.ScatterSearch(config)
             elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
                 # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
-                alg = algs.BayesAlgorithm(config)
+                alg = algs.BasicBayesMCMCAlgorithm(config)
             elif config.config['fit_type'] == 'sa':
-                alg = algs.BayesAlgorithm(config, sa=True)
+                alg = algs.BasicBayesMCMCAlgorithm(config, sa=True)
             elif config.config['fit_type'] == 'sim':
                 alg = algs.SimplexAlgorithm(config)
             elif config.config['fit_type'] == 'ade':
