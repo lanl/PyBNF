@@ -1799,6 +1799,18 @@ class DreamAlgorithm(BayesianAlgorithm):
             if min(self.iteration) >= self.max_iterations:
                 return 'STOP'
 
+            if self.iteration[index] % 10:
+                print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+            else:
+                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+            logger.info('Completed %i iterations' % self.iteration[index])
+            print2('Current -Ln Posteriors: ' % str(self.ln_current_P))
+
+            if self.iteration[index] % self.sample_every == 0:
+                self.sample_pset(self.current_pset[index], self.ln_current_P[index])
+            if self.iteration[index] % self.output_hist_every == 0:
+                self.update_histograms('_%i' % self.iteration[index])
+
             next_gen = []
             for i, p in enumerate(self.current_pset):
                 new_pset = self.calculate_new_pset(i)
