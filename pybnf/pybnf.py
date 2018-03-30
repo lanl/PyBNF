@@ -178,6 +178,8 @@ def main():
                 alg = algs.SimplexAlgorithm(config)
             elif config.config['fit_type'] == 'ade':
                 alg = algs.AsynchronousDifferentialEvolution(config)
+            elif config.config['fit_type'] == 'dream':
+                alg = algs.DreamAlgorithm(config)
             else:
                 raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
