@@ -1804,7 +1804,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             else:
                 print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
             logger.info('Completed %i iterations' % self.iteration[index])
-            print2('Current -Ln Posteriors: ' % str(self.ln_current_P))
+            print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
 
             if self.iteration[index] % self.sample_every == 0:
                 self.sample_pset(self.current_pset[index], self.ln_current_P[index])
