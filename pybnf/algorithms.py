@@ -1789,17 +1789,17 @@ class DreamAlgorithm(BayesianAlgorithm):
 
         # Record that this individual is complete
         self.wait_for_sync[index] = True
+        self.iteration[index] += 1
 
         # Wait for entire generation to finish
         if np.all(self.wait_for_sync):
 
             self.wait_for_sync = [False] * self.num_parallel
-            self.iteration[index] += 1
 
             if min(self.iteration) >= self.max_iterations:
                 return 'STOP'
 
-            if self.iteration[index] % 10:
+            if self.iteration[index] % 10 == 0:
                 print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
             else:
                 print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
@@ -1815,11 +1815,12 @@ class DreamAlgorithm(BayesianAlgorithm):
             for i, p in enumerate(self.current_pset):
                 new_pset = self.calculate_new_pset(i)
                 if new_pset:
-                    new_pset.name = 'iter%irun%i' % (self.iteration[index], index)
+                    new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
                     next_gen.append(new_pset)
                 else:
                     #  If new PSet is outside of variable bounds, keep current PSet and wait for next generation
                     self.wait_for_sync[i] = True
+                    self.iteration[i] += 1
 
             return next_gen
 
