@@ -67,7 +67,7 @@ class Data(object):
         else:
             return float(x)
 
-    def load_data(self, file_name, sep='\s+'):
+    def load_data(self, file_name, sep='\s+', flags=()):
         """
         Loads column data from a text file
 
@@ -75,19 +75,25 @@ class Data(object):
         :type file_name: str
         :param sep: String that separates columns
         :type sep: str
+        :param flags: Additional specifications about how to load the file. Currently, the only flag is 'copasi-scan',
+        which triggers some additional processing to read the output of a Copasi parameter scan.
+        :type flags: Iterable of str
         :return: None
         """
         with open(file_name) as f:
             lines = f.readlines()
 
-        self.data = self._read_file_lines(lines, sep, file_name=file_name)
+        self.data = self._read_file_lines(lines, sep, file_name=file_name, flags=flags)
 
-    def _read_file_lines(self, lines, sep, file_name=''):
+    def _read_file_lines(self, lines, sep, file_name='', flags=()):
         """Helper function that reads lines from BNGL gdat files"""
 
         header = re.split(sep, lines[0].strip().strip('#').strip())
         # Ignore parentheses added to functions in BNG 2.3, and [] added to species names in COPASI
         header = [h.strip('()[]') for h in header]
+        if 'copasi-scan' in flags:
+            header[0] = re.sub('Values\[', '', header[0])
+            header[0] = re.sub('\]\.InitialValue', '', header[0])
         ncols = len(header)
         self.indvar = header[0]
 

@@ -462,6 +462,8 @@ class SbmlModel(Model):
         space = {'cps': ns}
         if len(self.actions) > 1:
             raise PybnfError('Currently only 1 action per SBML file is supported')
+        if len(self.actions) == 0:
+            raise ValueError('Cannot run model with no actions')
 
         model_elem = root.findall('cps:Model', namespaces=space)[0]
         model_name = model_elem.get('name')  # We'll need the value of this thing later for setting various attributes.
@@ -506,7 +508,7 @@ class SbmlModel(Model):
                     raise RuntimeError('Time-Course task unexpectedly missing from cps file')
 
                 # Edit the time course task so it prints one time point at the t where we're param scanning
-                for param in time_task.findall('cps:Problem/cps:Paramter', namespaces=space):
+                for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
                     if param.get('name') == 'StepNumber':
                         param.set('value', '1')
                     elif param.get('name') == 'StepSize':
@@ -517,21 +519,24 @@ class SbmlModel(Model):
                         param.set('value', '1.0e-8')  # Suppress the output at time 0
                 # Edit the scan task so it runs with the chosen specs
                 scan_task.set('scheduled', 'true')
-                report_elem = etree.Element('Report', reference='BNF_Report_1', target='paramscan_output', append='0',
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target='scan_output', append='0',
                                             confirmOverwrite='0')
                 scan_task.insert(0, report_elem)
                 param_parent = scan_task.findall('cps:Problem/cps:ParameterGroup', namespaces=space)[0]
                 param_subparent = etree.Element('ParameterGroup', name='ScanItem')
                 param_parent.append(param_subparent)
                 param_subparent.append(etree.Element('Parameter', name='Number of steps', type='unsignedInteger',
-                                                     value=action.stepnumber))
+                                                     value=str(action.stepnumber)))
                 param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
                 param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
                                                      value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (
                                                      model_name, action.variable)))
-                param_subparent.append(etree.Element('Parameter', name='Minimum', type='float', value=action.var_min))
-                param_subparent.append(etree.Element('Parameter', name='Maximum', type='float', value=action.var_max))
-                param_subparent.append(etree.Element('Parameter', name='log', type='bool', value=action.logspace))
+                param_subparent.append(etree.Element('Parameter', name='Minimum', type='float',
+                                                     value=str(action.var_min)))
+                param_subparent.append(etree.Element('Parameter', name='Maximum', type='float',
+                                                     value=str(action.var_max)))
+                param_subparent.append(etree.Element('Parameter', name='log', type='bool',
+                                                     value=str(action.logspace)))
                 # action-type-specific Report settings
                 task_type = 'scan'
                 first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
@@ -571,9 +576,15 @@ class SbmlModel(Model):
         with open(log_file, 'w') as lf:
             run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
 
-        # Tab-delimited, header row with no '#', extra [] around each variable
-        res = Data(file_name='%s/timecourse_output' % folder)
-        return {'timecourse': res}
+        if task_type == 'timeCourse':
+            # Tab-delimited, header row with no '#', extra [] around each variable
+            res = Data(file_name='%s/timecourse_output' % folder)
+        elif task_type == 'scan':
+            res = Data()
+            res.load_data('%s/scan_output' % folder, flags=('copasi-scan',))
+        else:
+            raise RuntimeError('Unknown task type')
+        return {task_type.lower(): res}
 
 
 class Action:
@@ -598,7 +609,7 @@ class ParamScan(Action):
         self.var_min = var_min
         self.var_max = var_max
         self.step = step
-        self.stepnumber = int(np.round((var_max-var_min) / step)) + 1
+        self.stepnumber = int(np.round((var_max-var_min) / step))
         self.time = time
         self.logspace = int(logspace)
 

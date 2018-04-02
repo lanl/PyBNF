@@ -18,8 +18,13 @@ class TestSbmlModel:
         cls.savefile2 = 'raf_test_exec'
         cls.params = {'K3':8000., 'K5': 0.3}
         cls.folder = 'raf_test'
+        cls.folder_scan = 'raf_test_scan'
         try:
             shutil.rmtree(cls.folder)
+        except OSError:
+            pass
+        try:
+            shutil.rmtree(cls.folder_scan)
         except OSError:
             pass
 
@@ -31,6 +36,10 @@ class TestSbmlModel:
             pass
         try:
             shutil.rmtree(cls.folder)
+        except OSError:
+            pass
+        try:
+            shutil.rmtree(cls.folder_scan)
         except OSError:
             pass
 
@@ -68,11 +77,23 @@ class TestSbmlModel:
         ps = pset.PSet(self.params)
         action = pset.TimeCourse(1000, 10)
         m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
-        # Todo: Make portable to other computers, such as with env variable
         m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
         result = m.execute(fullpath, self.savefile2, 1000)
         dat = result['timecourse']
         assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
         assert abs(dat['R'][-1] - 0.358949) < 0.01
         assert dat.cols['Time'] == 0
+
+    def test_param_scan(self):
+        os.mkdir(self.folder_scan)
+        fullpath = os.getcwd() + '/' + self.folder_scan
+        ps = pset.PSet(self.params)
+        action = pset.ParamScan('K3', 500, 10000, 500, 1000, logspace=False)
+        m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
+        m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
+        result = m.execute(fullpath, self.savefile2, 1000)
+        dat = result['scan']
+        assert dat.indvar == 'K3'
+        assert abs(dat['I'][0] - 0.236666) < 0.01
+        assert abs(dat['R'][-1] - 0.315964) < 0.01
 
