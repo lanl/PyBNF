@@ -27,7 +27,8 @@ class TestJob(object):
             'pase__FREE__': 1
         }
         cls.pset = pset.PSet(d)
-        pset.BNGLModel.bng_command = environ['BNGPATH'] + '/BNG2.pl'
+        cls.bng_command = environ['BNGPATH'] + '/BNG2.pl'
+        cls.model.bng_command = cls.bng_command
         cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', '.', timeout=None)
         cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', '.', timeout=0)
 
@@ -64,6 +65,7 @@ class TestJob(object):
 
     def test_net_job(self):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
+        netmodel.bng_command = self.bng_command
         mkdir('sim_net')
         job = algorithms.Job([netmodel], pset.PSet({'f': 0.5}), 'test', '.', timeout=None)
         job.folder = getcwd() + '/sim_net'
