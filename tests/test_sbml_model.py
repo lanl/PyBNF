@@ -66,7 +66,7 @@ class TestSbmlModel:
         os.mkdir(self.folder)
         fullpath = os.getcwd()+'/'+self.folder
         ps = pset.PSet(self.params)
-        action = pset.Action('timecourse', 'time', 1000, 10)
+        action = pset.TimeCourse(1000, 10)
         m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
         # Todo: Make portable to other computers, such as with env variable
         m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
