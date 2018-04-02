@@ -460,35 +460,88 @@ class SbmlModel(Model):
         # root = cps.getroot()
         ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
         space = {'cps': ns}
+        if len(self.actions) > 1:
+            raise PybnfError('Currently only 1 action per SBML file is supported')
+
+        model_elem = root.findall('cps:Model', namespaces=space)[0]
+        model_name = model_elem.get('name')  # We'll need the value of this thing later for setting various attributes.
         for action in self.actions:
             # Todo: Support more than 1 action
-            if action.action != 'timecourse':
-                raise NotImplementedError('Only implemented action type is "timecourse"')
-            # Find the time course task in the xml file
-            tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
-            time_task = None
-            for t in tasks:
-                if t.get('name') == 'Time-Course':
-                    time_task = t
-                    break
-            if not time_task:
-                raise RuntimeError('Time-Course task unexpectedly missing from cps file')
-            # Update attributes of time course task
-            time_task.set('scheduled', 'true')
-            for param in time_task.findall('cps:Problem/cps:Paramter', namespaces=space):
-                if param.get('name') == 'StepNumber':
-                    param.set('value', str(action.stepnumber))
-                elif param.get('name') == 'StepSize':
-                    param.set('value', str(action.step))
-                elif param.get('name') == 'Duration':
-                    param.set('value', str(action.time))
-            report_elem = etree.Element('Report', reference='BNF_Report_1', target='timecourse_output', append='1',
-                                        confirmOverwrite='1')
-            time_task.insert(0, report_elem)
+            if isinstance(action, TimeCourse):
+                # Find the time course task in the xml file
+                tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
+                time_task = None
+                for t in tasks:
+                    if t.get('name') == 'Time-Course':
+                        time_task = t
+                        break
+                if not time_task:
+                    raise RuntimeError('Time-Course task unexpectedly missing from cps file')
+                # Update attributes of time course task
+                time_task.set('scheduled', 'true')
+                for param in time_task.findall('cps:Problem/cps:Paramter', namespaces=space):
+                    if param.get('name') == 'StepNumber':
+                        param.set('value', str(action.stepnumber))
+                    elif param.get('name') == 'StepSize':
+                        param.set('value', str(action.step))
+                    elif param.get('name') == 'Duration':
+                        param.set('value', str(action.time))
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target='timecourse_output', append='1',
+                                            confirmOverwrite='1')
+                time_task.insert(0, report_elem)
+                # action-type-specific Report settings
+                task_type = 'timeCourse'
+                first_col_string = 'CN=Root,Model=%s,Reference=Time' % model_name
+            elif isinstance(action, ParamScan):
+                tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
+                # Find the 2 tasks that we need to edit
+                time_task = None
+                scan_task = None
+                for t in tasks:
+                    if t.get('name') == 'Time-Course':
+                        time_task = t
+                    if t.get('name') == 'Scan':
+                        scan_task = t
+                if not time_task or not scan_task:
+                    raise RuntimeError('Time-Course task unexpectedly missing from cps file')
+
+                # Edit the time course task so it prints one time point at the t where we're param scanning
+                for param in time_task.findall('cps:Problem/cps:Paramter', namespaces=space):
+                    if param.get('name') == 'StepNumber':
+                        param.set('value', '1')
+                    elif param.get('name') == 'StepSize':
+                        param.set('value', str(action.time))
+                    elif param.get('name') == 'Duration':
+                        param.set('value', str(action.time))
+                    elif param.get('name') == 'OutputStartTime':
+                        param.set('value', '1.0e-8')  # Suppress the output at time 0
+                # Edit the scan task so it runs with the chosen specs
+                scan_task.set('scheduled', 'true')
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target='paramscan_output', append='0',
+                                            confirmOverwrite='0')
+                scan_task.insert(0, report_elem)
+                param_parent = scan_task.findall('cps:Problem/cps:ParameterGroup', namespaces=space)[0]
+                param_subparent = etree.Element('ParameterGroup', name='ScanItem')
+                param_parent.append(param_subparent)
+                param_subparent.append(etree.Element('Parameter', name='Number of steps', type='unsignedInteger',
+                                                     value=action.stepnumber))
+                param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
+                param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
+                                                     value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (
+                                                     model_name, action.variable)))
+                param_subparent.append(etree.Element('Parameter', name='Minimum', type='float', value=action.var_min))
+                param_subparent.append(etree.Element('Parameter', name='Maximum', type='float', value=action.var_max))
+                param_subparent.append(etree.Element('Parameter', name='log', type='bool', value=action.logspace))
+                # action-type-specific Report settings
+                task_type = 'scan'
+                first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
+                                                                                                  action.variable)
+            else:
+                raise NotImplementedError('Only implemented action types are Time Course and Param Scan')
 
             # Create the report object
             report_list = root.findall('cps:ListOfReports', namespaces=space)[0]
-            report = etree.Element('Report', key='BNF_Report_1', name='TimeCourse', taskType='timeCourse', separator='\t',
+            report = etree.Element('Report', key='BNF_Report_1', name='BNF_Report', taskType=task_type, separator='\t',
                                 precision='6')
             report_list.append(report)
             comment = etree.Element('Comment')
@@ -500,11 +553,12 @@ class SbmlModel(Model):
             # For the Model=?? attribute of tablestring, we need to get a name from somewhere else in the file
             model_elem = root.findall('cps:Model', namespaces=space)[0]
             model_name = model_elem.get('name')
-            obj = etree.Element('Object', cn='CN=Root,Model=%s,Reference=Time' % model_name)
+            obj = etree.Element('Object', cn=first_col_string)
             report_table.append(obj)
             for s in self.species:
                 obj = etree.Element('Object', cn=tablestring % (model_name, s))
                 report_table.append(obj)
+
 
         cps.write('%s.cps' % file)
 
@@ -526,13 +580,27 @@ class Action:
     """
     Represents a simulation action performed within a model
     """
+    pass
 
-    def __init__(self, action, variable, time, step):
-        self.action = action
-        self.variable = variable
+
+class TimeCourse(Action):
+
+    def __init__(self, time, step):
         self.time = time
         self.step = step
-        self.stepnumber = int(round(time/step))
+        self.stepnumber = int(np.round(time/step))
+
+
+class ParamScan(Action):
+
+    def __init__(self, variable, var_min, var_max, step, time, logspace=False):
+        self.variable = variable
+        self.var_min = var_min
+        self.var_max = var_max
+        self.step = step
+        self.stepnumber = int(np.round((var_max-var_min) / step)) + 1
+        self.time = time
+        self.logspace = int(logspace)
 
 
 class ModelError(Exception):
