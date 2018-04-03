@@ -396,6 +396,7 @@ class SbmlModel(Model):
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.xml = ET.parse(file)
         self.actions = list(actions)
+        self.suffixes = []
         self.species = []
         self.param_set = None
         if pset:
@@ -438,6 +439,7 @@ class SbmlModel(Model):
 
     def add_action(self, action):
         self.actions.append(action)
+        self.suffixes.append((action.bng_codeword, action.suffix))
 
     def execute(self, folder, filename, timeout):
         # Create the modified XML file
@@ -480,7 +482,7 @@ class SbmlModel(Model):
                     if t.get('name') == 'Time-Course':
                         time_task = t
                         break
-                if not time_task:
+                if time_task is None:
                     raise RuntimeError('Time-Course task unexpectedly missing from cps file')
                 # Update attributes of time course task
                 time_task.set('scheduled', 'true')
@@ -587,7 +589,7 @@ class SbmlModel(Model):
             res.load_data('%s/scan_output' % folder, flags=('copasi-scan',))
         else:
             raise RuntimeError('Unknown task type')
-        return {task_type.lower(): res}
+        return {action.suffix: res}
 
 
 class Action:
@@ -603,6 +605,8 @@ class TimeCourse(Action):
         self.time = time
         self.step = step
         self.stepnumber = int(np.round(time/step))
+        self.suffix = 'time_course'
+        self.bng_codeword = 'simulate'
 
 
 class ParamScan(Action):
@@ -615,6 +619,8 @@ class ParamScan(Action):
         self.stepnumber = int(np.round((var_max-var_min) / step))
         self.time = time
         self.logspace = int(logspace)
+        self.suffix = 'param_scan'
+        self.bng_codeword = 'parameter_scan'
 
 
 class ModelError(Exception):
