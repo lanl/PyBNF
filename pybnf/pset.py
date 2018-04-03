@@ -517,8 +517,8 @@ class SbmlModel(Model):
                         time_task = t
                     if t.get('name') == 'Scan':
                         scan_task = t
-                if not time_task or not scan_task:
-                    raise RuntimeError('Time-Course task unexpectedly missing from cps file')
+                if time_task is None or scan_task is None:
+                    raise RuntimeError('Time-Course and/or Scan tasks unexpectedly missing from cps file')
 
                 # Edit the time course task so it prints one time point at the t where we're param scanning
                 for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
