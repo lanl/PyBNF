@@ -1173,7 +1173,7 @@ class DifferentialEvolution(Algorithm):
         new_pset_dict = dict()
         for p in base.keys():
             if np.random.random() < self.mutation_rate:
-                new_pset_dict[p] = self.add(base, p, self.mutation_rate * self.diff(others[0], others[1], p))
+                new_pset_dict[p] = self.add(base, p, self.mutation_factor * self.diff(others[0], others[1], p))
             else:
                 new_pset_dict[p] = base[p]
 
