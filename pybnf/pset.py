@@ -476,6 +476,12 @@ class SbmlModel(Model):
         model_name = model_elem.get('name')  # We'll need the value of this thing later for setting various attributes.
         for action in self.actions:
             # Todo: Support more than 1 action
+            # Set the save file to be the same as for a BNGL file
+            if action.bng_codeword == 'simulate':
+                ext = 'gdat'
+            else:
+                ext = 'scan'
+            target_file = '%s_%s_%s.%s' % (self.name, self.param_set.name, action.suffix, ext)
             if isinstance(action, TimeCourse):
                 # Find the time course task in the xml file
                 tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
@@ -488,14 +494,14 @@ class SbmlModel(Model):
                     raise RuntimeError('Time-Course task unexpectedly missing from cps file')
                 # Update attributes of time course task
                 time_task.set('scheduled', 'true')
-                for param in time_task.findall('cps:Problem/cps:Paramter', namespaces=space):
+                for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
                     if param.get('name') == 'StepNumber':
                         param.set('value', str(action.stepnumber))
                     elif param.get('name') == 'StepSize':
                         param.set('value', str(action.step))
                     elif param.get('name') == 'Duration':
                         param.set('value', str(action.time))
-                report_elem = etree.Element('Report', reference='BNF_Report_1', target='timecourse_output', append='1',
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target=target_file, append='1',
                                             confirmOverwrite='1')
                 time_task.insert(0, report_elem)
                 # action-type-specific Report settings
@@ -526,7 +532,7 @@ class SbmlModel(Model):
                         param.set('value', '1.0e-8')  # Suppress the output at time 0
                 # Edit the scan task so it runs with the chosen specs
                 scan_task.set('scheduled', 'true')
-                report_elem = etree.Element('Report', reference='BNF_Report_1', target='scan_output', append='0',
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target=target_file, append='0',
                                             confirmOverwrite='0')
                 scan_task.insert(0, report_elem)
                 param_parent = scan_task.findall('cps:Problem/cps:ParameterGroup', namespaces=space)[0]
@@ -575,7 +581,7 @@ class SbmlModel(Model):
         cps.write('%s.cps' % file)
 
         # Run Copasi
-        # Todo: The save file was specified in the cps file (timecourse_output), but I don't know what directory it goes to
+        # Todo: The save file was specified in the cps file (target_file), but I don't know what directory it goes to
         # It might be your current directory, but previously that gave us problems in parallel so gah.
 
         cmd = [self.copasi_command, '%s.cps' % file]
@@ -586,10 +592,10 @@ class SbmlModel(Model):
         if task_type == 'timeCourse':
             # Tab-delimited, header row with no '#', extra [] around each variable
             res = Data()
-            res.load_data('%s/timecourse_output' % folder, flags=('time',))
+            res.load_data('%s/%s' % (folder, target_file), flags=('time',))
         elif task_type == 'scan':
             res = Data()
-            res.load_data('%s/scan_output' % folder, flags=('copasi-scan',))
+            res.load_data('%s/%s' % (folder, target_file), flags=('copasi-scan',))
         else:
             raise RuntimeError('Unknown task type')
         return {action.suffix: res}
