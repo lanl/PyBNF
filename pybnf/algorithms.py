@@ -610,8 +610,7 @@ class Algorithm(object):
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name),
-                         gen_only=False)
+            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name))
             if self.config.config['delete_old_files'] == 0:
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':
@@ -628,7 +627,6 @@ class Algorithm(object):
                         logger.error('Cannot find files corresponding to best fit parameter set... exiting')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
-                        exit(1)
 
         if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
             # End of fitting; delete unneeded files

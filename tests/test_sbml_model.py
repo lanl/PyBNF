@@ -82,7 +82,7 @@ class TestSbmlModel:
         dat = result['time_course']
         assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
         assert abs(dat['R'][-1] - 0.358949) < 0.01
-        assert dat.cols['Time'] == 0
+        assert dat.cols['time'] == 0
 
     def test_param_scan(self):
         os.mkdir(self.folder_scan)
