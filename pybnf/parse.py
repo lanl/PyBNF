@@ -86,8 +86,14 @@ def parse(s):
     normgram = normkey - equals - anything  # The set of legal grammars for normalization is too complicated,
     # Will handle with separate code.
 
+    timecourse_key = pp.CaselessLiteral('time_course')
+    timecourse_gram = timecourse_key - equals - pp.Optional(bngl_file - colon) - num - num
+    paramscan_key = pp.CaselessLiteral('param_scan')
+    paramscan_gram = paramscan_key - equals - pp.Optional(bngl_file - colon) - bng_parameter - num - num - num - num
+
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram |
+            timecourse_gram | paramscan_gram).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -148,6 +154,18 @@ def ploop(ls):  # parse loop
                 d[key] = values  # individual data files remain in list
                 models.add(key)
                 exp_data.update(values)
+            elif l[0] == 'time_course' or l[0] == 'param_scan':
+                # Multiple declarations allowed; dict entry should contain a list of all the declarations.
+                # All numbers should get cast to floats
+                for xi in range(1, len(l)):
+                    try:
+                        l[xi] = float(l[xi])
+                    except ValueError:
+                        pass
+                if l[0] in d:
+                    d[l[0]].append(l[1:])
+                else:
+                    d[l[0]] = [l[1:]]
             elif l[0] == 'normalization':
                 # Normalization defined with way too many possible options
                 # At the end of all this, the config dict has one of the following formats:
@@ -215,6 +233,11 @@ def ploop(ls):  # parse loop
                 fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
                       "'unit', or 'zero')"\
                     % (key, key)
+            elif key == 'time_course':
+                fmt = "time_course=time_end time_step, where time_end and time_step are numbers"
+            elif key == 'param_scan':
+                fmt = "param_scan=param min max step time, where param is a string, and min, max, step, and time are " \
+                      "all numbers"
 
             message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
             if fmt == '':
