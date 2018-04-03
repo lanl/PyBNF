@@ -75,8 +75,10 @@ class Data(object):
         :type file_name: str
         :param sep: String that separates columns
         :type sep: str
-        :param flags: Additional specifications about how to load the file. Currently, the only flag is 'copasi-scan',
-        which triggers some additional processing to read the output of a Copasi parameter scan.
+        :param flags: Additional specifications about how to load the file. Current options: 'copasi-scan' -
+        triggers some additional processing to read the output of a Copasi parameter scan. 'time' - force the name of
+        the independent variable to be 'time', instead of the actual header contents (in Copasi, the header instead
+        says 'Time'.)
         :type flags: Iterable of str
         :return: None
         """
@@ -94,6 +96,8 @@ class Data(object):
         if 'copasi-scan' in flags:
             header[0] = re.sub('Values\[', '', header[0])
             header[0] = re.sub('\]\.InitialValue', '', header[0])
+        if 'time' in flags:
+            header[0] = 'time'
         ncols = len(header)
         self.indvar = header[0]
 

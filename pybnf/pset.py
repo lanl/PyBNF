@@ -585,7 +585,8 @@ class SbmlModel(Model):
 
         if task_type == 'timeCourse':
             # Tab-delimited, header row with no '#', extra [] around each variable
-            res = Data(file_name='%s/timecourse_output' % folder)
+            res = Data()
+            res.load_data('%s/timecourse_output' % folder, flags=('time',))
         elif task_type == 'scan':
             res = Data()
             res.load_data('%s/scan_output' % folder, flags=('copasi-scan',))
