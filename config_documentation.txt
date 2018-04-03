@@ -4,11 +4,9 @@ Please update this file whenever you add support for new .conf keys in the code
 
 ***Fundamental model specification***
 
-<<<<<<< HEAD
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list.
 bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise, if the run includes any .bngl files, bng_command requires specification in the configuration file
 copasi_command - path to CopasiSE, including the CopasiSE file name. Required if fitting includes any SBML (.xml) model files
->>>>>>> Edited Config and Parse to support multiple simulators
 output_dir - Directory where to save the output. Default: bnf_out
 fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
@@ -16,6 +14,10 @@ parallel_count - How many jobs to run in parallel. Default: Use all available co
 cluster_type - Type of cluster used for running the fit.  Defaults to None (local fitting run).  Currently supports 'slurm' and will support 'torque'/'pbs'
 scheduler_node - Node used for setting up distributed Client.  Defaults to None (local fitting run); takes a string identifying a machine on a network
 worker_nodes - Nodes used for computation. Defaults to None; takes one or more strings separated by whitespace identifying machines on a network
+
+Action commands below configure simulations to run that are not already specified in the model file. These commands are required to configure runs with SBML files, which do not support declaration of simulation actions in the files themselves.
+time_course = [ model.xml: ] end_time time_step - Run a time course with the specified end time and time step. A model name may optionally be specified. If not, the action is assumed to apply to all models in the fitting run.
+param_scan = [ model.xml: ] param_name min_value max_value step sim_time - Run a parameter scan. The specified parameter param_name is scanned from min_value to max_value in increments of step. Each simulation is run for sim_time, and the final values are recorded. A model name may optionally be specified. If not, the action is assumed to apply to all models in the fitting run.
 
 ***Parameter specification***
 

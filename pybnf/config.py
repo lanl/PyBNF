@@ -4,7 +4,7 @@
 from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
-from .pset import BNGLModel, ModelError, SbmlModel
+from .pset import BNGLModel, ModelError, SbmlModel, TimeCourse, ParamScan
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -311,6 +311,38 @@ class Configuration(object):
                                  'configuration file points to the CopasiSE executable or that the COPASIDIR '
                                  'enviornmental variable is correctly set')
 
+
+    def _load_actions(self):
+
+        if 'time_course' in self.config:
+            for tc in self.config['time_course']:
+                if isinstance(tc[0], str):
+                    action = TimeCourse(tc[1], tc[2])
+                    try:
+                        self.models[tc[0]].add_action(action) #Todo: Use/disuse of suffix might be wrong.
+                    except KeyError:
+                        raise PybnfError('Time course declared for model %s, but that model was not found.' % tc[0])
+                else:
+                    # Apply to all models (hopefully just 1)
+                    if len(self.models) > 1:
+                        print1('Warning: Applying the same time course action to all models in this fitting run.')
+                    for m in self.models:
+                        self.models[m].add_action(TimeCourse(tc[0], tc[1]))
+
+        if 'param_scan' in self.config:
+            for pscan in self.config['param_scan']:
+                if isinstance(pscan[1], str):
+                    action = ParamScan(pscan[1], pscan[2], pscan[3], pscan[4], pscan[5])
+                    try:
+                        self.models[pscan[0]].add_action(action)
+                    except KeyError:
+                        raise PybnfError('Param scan declared for model %s, but that model was not found.' % pscan[0])
+                else:
+                    # Apply to all models (hopefully just 1)
+                    if len(self.models) > 1:
+                        print1('Warning: Applying the same param scan action to all models in this fitting run.')
+                    for m in self.models:
+                        self.models[m].add_action(ParamScan(pscan[0], pscan[1], pscan[2], pscan[3], pscan[4]))
 
 
     @staticmethod
