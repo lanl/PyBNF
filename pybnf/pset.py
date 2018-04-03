@@ -1,7 +1,7 @@
 """pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
 
 
-from .printing import print1, PybnfError
+from .printing import print0, print1, PybnfError
 
 import logging
 import numpy as np
@@ -79,6 +79,7 @@ class BNGLModel(Model):
         self.generate_network_line_index = -1
         self.action_line_indices = []
         self.actions = []
+        self.config_actions = []
 
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
 
@@ -332,13 +333,15 @@ class BNGLModel(Model):
         return ds
 
     def add_action(self, action):
-        pass  # Todo
+        self.config_actions.append(action)
+        print0('Warning: Adding actions to BNGL models with config options is not yet supported')
 
 
 class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
         self.name = name
         self.actions = acts
+        self.config_actions = []
         self.suffixes = suffs
         self.param_set = None
         self.bng_command = ''
