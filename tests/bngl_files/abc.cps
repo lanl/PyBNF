@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- generated with COPASI 4.22 (Build 170) (http://www.copasi.org) at 2018-04-03 17:46:56 UTC -->
+<!-- generated with COPASI 4.22 (Build 170) (http://www.copasi.org) at 2018-04-03 22:13:57 UTC -->
 <?oxygen RNGSchema="http://www.copasi.org/static/schema/CopasiML.rng" type="xml"?>
 <COPASI xmlns="http://www.copasi.org/static/schema" versionMajor="4" versionMinor="22" versionDevel="170" copasiSourcesModified="0">
   <ListOfFunctions>
@@ -283,9 +283,18 @@ Reaction scheme where the products are created from the reactants and the change
       </Method>
     </Task>
     <Task key="Task_24" name="Scan" type="scan" scheduled="false" updateModel="false">
+      <Report reference="Report_18" target="abc_copasiscan.txt" append="0" confirmOverwrite="1"/>
       <Problem>
         <Parameter name="Subtask" type="unsignedInteger" value="1"/>
         <ParameterGroup name="ScanItems">
+          <ParameterGroup name="ScanItem">
+            <Parameter name="Number of steps" type="unsignedInteger" value="10"/>
+            <Parameter name="Type" type="unsignedInteger" value="1"/>
+            <Parameter name="Object" type="cn" value="CN=Root,Model=New Model,Vector=Values[kAB],Reference=InitialValue"/>
+            <Parameter name="Minimum" type="float" value="0.0050000000000000001"/>
+            <Parameter name="Maximum" type="float" value="0.02"/>
+            <Parameter name="log" type="bool" value="0"/>
+          </ParameterGroup>
         </ParameterGroup>
         <Parameter name="Output in subtask" type="bool" value="1"/>
         <Parameter name="Adjust initial conditions" type="bool" value="0"/>
@@ -434,10 +443,10 @@ Reaction scheme where the products are created from the reactants and the change
         <Parameter name="PositiveDirection" type="bool" value="1"/>
         <Parameter name="NumOutCrossingsLimit" type="unsignedInteger" value="0"/>
         <Parameter name="LimitUntilConvergence" type="bool" value="0"/>
-        <Parameter name="ConvergenceTolerance" type="float" value="9.9999999999999995e-07"/>
+        <Parameter name="ConvergenceTolerance" type="float" value="0"/>
         <Parameter name="Threshold" type="float" value="0"/>
         <Parameter name="DelayOutputUntilConvergence" type="bool" value="0"/>
-        <Parameter name="OutputConvergenceTolerance" type="float" value="9.9999999999999995e-07"/>
+        <Parameter name="OutputConvergenceTolerance" type="float" value="0"/>
         <ParameterText name="TriggerExpression" type="expression">
           
         </ParameterText>
@@ -585,9 +594,32 @@ Reaction scheme where the products are created from the reactants and the change
         <Object cn="CN=Root,Vector=TaskList[Linear Noise Approximation],Object=Result"/>
       </Footer>
     </Report>
+    <Report key="Report_18" name="Scan Report" taskType="scan" separator="&#x09;" precision="6">
+      <Comment>
+      </Comment>
+      <Table printTitle="1">
+        <Object cn="CN=Root,Model=New Model,Reference=Time"/>
+        <Object cn="CN=Root,Model=New Model,Vector=Compartments[compartment],Vector=Metabolites[A],Reference=Concentration"/>
+        <Object cn="CN=Root,Model=New Model,Vector=Compartments[compartment],Vector=Metabolites[B],Reference=Concentration"/>
+        <Object cn="CN=Root,Model=New Model,Vector=Compartments[compartment],Vector=Metabolites[C],Reference=Concentration"/>
+        <Object cn="CN=Root,Model=New Model,Vector=Values[kAB],Reference=Value"/>
+      </Table>
+    </Report>
   </ListOfReports>
   <GUI>
   </GUI>
+  <SBMLReference file="abc.xml">
+    <SBMLMap SBMLid="A" COPASIkey="Metabolite_5"/>
+    <SBMLMap SBMLid="B" COPASIkey="Metabolite_4"/>
+    <SBMLMap SBMLid="C" COPASIkey="Metabolite_3"/>
+    <SBMLMap SBMLid="compartment" COPASIkey="Compartment_0"/>
+    <SBMLMap SBMLid="kAB" COPASIkey="ModelValue_9"/>
+    <SBMLMap SBMLid="kBA" COPASIkey="ModelValue_8"/>
+    <SBMLMap SBMLid="kBC" COPASIkey="ModelValue_7"/>
+    <SBMLMap SBMLid="kCB" COPASIkey="ModelValue_6"/>
+    <SBMLMap SBMLid="reaction" COPASIkey="Reaction_5"/>
+    <SBMLMap SBMLid="reaction_1" COPASIkey="Reaction_4"/>
+  </SBMLReference>
   <ListOfUnitDefinitions>
     <UnitDefinition key="Unit_0" name="meter" symbol="m">
       <Expression>
