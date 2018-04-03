@@ -309,7 +309,7 @@ class Configuration(object):
 
             try:
                 logger.info('Checking to make sure copasi_command is appropriately set')
-                subprocess.run([self.config['copasi_command'], '--help'], shell=True, check=True,
+                subprocess.run([self.config['copasi_command'], '--help'], check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             except subprocess.CalledProcessError or PermissionError:
                 raise PybnfError('Copasi failed to execute. Please check that the "copasi_command" parameter in the '
@@ -462,6 +462,9 @@ class Configuration(object):
         """
         model_vars = set()
         for m in self.models.values():
+            if isinstance(m, SbmlModel):
+                print1("Warning: Skipping check of variable correspondence because it is not implemented for SBML")  # Todo
+                return
             model_vars.update(m.param_names)
 
         variables_names = {v.name for v in self.variables}
