@@ -90,6 +90,7 @@ class Configuration(object):
 
         self.models = self._load_models()
         self._load_simulators()
+        self._load_actions()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
@@ -258,6 +259,9 @@ class Configuration(object):
                 raise PybnfError('Model file %s was not found.' % mf)
             except ModelError as e:
                 raise PybnfError('In model file %s: %s' % (mf, e.message))
+            if model.name in md:
+                raise PybnfError('Multiple models with the name "%s". Please give all your models different names. '
+                                 % model.name)
             md[model.name] = model
 
         if self.config['smoothing'] > 1:
@@ -319,7 +323,8 @@ class Configuration(object):
                 if isinstance(tc[0], str):
                     action = TimeCourse(tc[1], tc[2])
                     try:
-                        self.models[tc[0]].add_action(action) #Todo: Use/disuse of suffix might be wrong.
+                        model_key = self._file_prefix(tc[0], '(bngl|xml)')
+                        self.models[model_key].add_action(action)
                     except KeyError:
                         raise PybnfError('Time course declared for model %s, but that model was not found.' % tc[0])
                 else:
@@ -334,7 +339,8 @@ class Configuration(object):
                 if isinstance(pscan[1], str):
                     action = ParamScan(pscan[1], pscan[2], pscan[3], pscan[4], pscan[5])
                     try:
-                        self.models[pscan[0]].add_action(action)
+                        model_key = self._file_prefix(pscan[0], '(bngl|xml)')
+                        self.models[model_key].add_action(action)
                     except KeyError:
                         raise PybnfError('Param scan declared for model %s, but that model was not found.' % pscan[0])
                 else:
