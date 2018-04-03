@@ -363,7 +363,6 @@ class NetModel(BNGLModel):
         :type pset: PSet
         :return: NetModel
         """
-        self.param_set = pset
         lines_copy = copy.deepcopy(self.netfile_lines)
         in_params_block = False
         for i, l in enumerate(lines_copy):
@@ -374,11 +373,12 @@ class NetModel(BNGLModel):
             elif in_params_block:
                 m = re.match('(\s+)(\d)+\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
-                    if m.group(3) in self.param_set.keys():
-                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(self.param_set[m.group(3)]))
+                    if m.group(3) in pset.keys():
+                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
 
         newmodel = NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
         newmodel.bng_command = self.bng_command
+        newmodel.param_set = pset
         return newmodel
 
     def save(self, file_prefix):
@@ -426,6 +426,8 @@ class SbmlModel(Model):
                 p.set('value', str(self.param_set[pname]))
 
         # Todo: Potentially usable to set initial conditions.(would need to traverse even if copied from previous model)
+        # Currently this check is unnecessary because this method is only called on model instances with
+        # param_set = None
         if len(self.species) == 0:
             species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
             for s in species:

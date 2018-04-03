@@ -132,7 +132,8 @@ class Job:
         ds = {}
         for model in self.models:
             model_file_prefix = self._name_with_id(model)
-            ds[model.name] = model.execute(self.folder, model_file_prefix, self.timeout)
+            model_with_params = model.copy_with_param_set(self.params)
+            ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
         return ds
 
     def run_simulation(self):
