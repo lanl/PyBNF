@@ -1590,8 +1590,9 @@ class BayesAlgorithm(Algorithm):
             if not self.sa:
                 if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
                     self.sample_pset(self.current_pset[index], self.ln_current_P[index])
-                if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
-                    and self.iteration[index] == min(self.iteration)):
+                if (self.iteration[index] > self.burn_in
+                   and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
+                   and self.iteration[index] == min(self.iteration)):
                     self.update_histograms('_%i' % self.iteration[index])
 
             if self.iteration[index] == min(self.iteration):
