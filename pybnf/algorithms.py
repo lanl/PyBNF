@@ -571,13 +571,12 @@ class Algorithm(object):
 
         # If the user has asked for fewer output files, each time we're here, move the new file to
         # Results/sorted_params.txt, overwriting the previous one.
-        # Disabled this feature because it's more likely the user would just want the old Simulation folders deleted
-        # if self.config.config['delete_old_files'] == 1:
-        #     logger.debug("Overwriting previous 'sorted_params.txt'")
-        #     noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
-        #     if os.path.isfile(noname_filepath):
-        #         os.remove(noname_filepath)
-        #     os.rename(filepath, noname_filepath)
+        if self.config.config['delete_old_files'] >= 2:
+            logger.debug("Overwriting previous 'sorted_params.txt'")
+            noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
+            if os.path.isfile(noname_filepath):
+                os.remove(noname_filepath)
+            os.rename(filepath, noname_filepath)
 
     def backup(self, pending_psets=()):
         """
@@ -731,7 +730,7 @@ class Algorithm(object):
                 logger.info('Deleted pickled algorithm')
             except OSError:
                 logger.warning('Tried to delete pickled algorithm, but it was not found')
-            if self.config.config['delete_old_files'] == 1:
+            if self.config.config['delete_old_files'] >= 1:
                 shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
         logger.info("Fitting complete")
