@@ -389,7 +389,13 @@ class FreeParameter(object):
 
     def _reflect(self, init, add):
         """Takes a value and returns a new value based on reflecting against the boundary conditions"""
+        num_reflections = 0
         while True:
+            if num_reflections >= 1000:
+                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %, parameter = %s" % (init, add, self.name))
+                raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, init, add))
+
+            num_reflections += 1
             if init + add > self.upper_bound:
                 add = -((init+add) - self.upper_bound)
                 init = self.upper_bound
