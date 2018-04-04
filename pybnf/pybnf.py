@@ -189,7 +189,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(scheduler_node, log_prefix)
+                simplex.run(log_prefix, scheduler_node)
         print0('Fitting complete')
         success = True
 
