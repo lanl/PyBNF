@@ -378,7 +378,7 @@ class Configuration(object):
                         raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef,
                               "You specified that model %s corresponds to data file %s.exp, but I can't find the "
                               "corresponding action in the model file or config file. One of the actions in %s.bngl "
-                              "needs to include the argument 'suffix=>\"%s\" ', or your config file needs to include"
+                              "needs to include the argument 'suffix=>\"%s\" ', or your config file needs to include "
                               "an action with the suffix %s." % (model.name, ef, model.name, ef, ef))
             logger.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
             mapping[model.name] = efs_per_m
@@ -450,7 +450,7 @@ class Configuration(object):
         model_vars = set()
         for m in self.models.values():
             if isinstance(m, SbmlModel):
-                print1("Warning: Skipping check of variable correspondence because it is not implemented for SBML")  # Todo
+                logger.warning("Skipping check of variable correspondence because it is not implemented for SBML")  # Todo
                 return
             model_vars.update(m.param_names)
 
