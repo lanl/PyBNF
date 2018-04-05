@@ -579,8 +579,6 @@ class SbmlModel(Model):
             cps.write('%s.cps' % file)
 
             # Run Copasi
-            # Todo: The save file was specified in the cps file (target_file), but I don't know what directory it goes to
-            # It might be your current directory, but previously that gave us problems in parallel so gah.
 
             cmd = [self.copasi_command, '%s.cps' % file]
             log_file = '%s.log' % file
