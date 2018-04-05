@@ -642,10 +642,10 @@ class TimeCourse(Action):
                                  '"%s" is not a valid attribute for "time_course". Possible attributes are: %s' %
                                  (k, ','.join(num_keys.union(str_keys))))
 
-        if self.end is None:
+        if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')
 
-        self.stepnumber = int(np.round((self.end - self.start)/self.step))
+        self.stepnumber = int(np.round(self.time/self.step))
         self.bng_codeword = 'simulate'
 
 

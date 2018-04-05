@@ -15,7 +15,8 @@ class TestParse:
                  'normalization=init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)',
                  'normalization=zero: (data2.exp:xyz)',
                  'cluster_type = slurm',
-                 'time_course = thing.bngl: 100 10', 'param_scan=another.bngl: var2__FREE__ 10 30 1 100']
+                 'time_course = model: thing.bngl, time: 100, step: 10',
+                 'param_scan=model:another.bngl, param:var2__FREE__, min:10, max:30, step:1, time:100']
 
     @classmethod
     def teardown_class(cls):
@@ -34,8 +35,8 @@ class TestParse:
         assert parse.parse(self.s[10]) == ['var', 'a', '1', '2']
         assert parse.parse(self.s[11]) == ['logvar', 'b', '3']
         assert parse.parse(self.s[12]) == ['normalization', 'init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)']
-        assert parse.parse(self.s[15]) == ['time_course', 'thing.bngl', '100', '10']
-        assert parse.parse(self.s[16]) == ['param_scan', 'another.bngl', 'var2__FREE__', '10', '30', '1', '100']
+        assert parse.parse(self.s[15]) == ['time_course', 'model', 'thing.bngl', 'time', '100', 'step', '10']
+        assert parse.parse(self.s[16]) == ['param_scan', 'model', 'another.bngl', 'param', 'var2__FREE__', 'min', '10', 'max', '30', 'step', '1', 'time', '100']
 
     def test_normalize_parse(self):
         assert parse.parse_normalization_def('init') == 'init'
@@ -75,8 +76,9 @@ class TestParse:
         assert d[('logvar', 'b')] == [3.]
         assert d['normalization'] == {'data1.exp': 'init', 'data2.exp': [('init', [4,6,7,8]), ('zero', ['xyz'])], 'data3.exp': [('init', ['var1', 'var2'])]}
         assert d['cluster_type'] == 'slurm'
-        assert d['time_course'] == [['thing.bngl', 100., 10.]]
-        assert d['param_scan'] == [['another.bngl', 'var2__FREE__', 10., 30., 1., 100.]]
+        print(d['time_course'])
+        assert d['time_course'] == [{'model': 'thing.bngl', 'time': '100', 'step': '10'}]
+        assert d['param_scan'] == [{'model': 'another.bngl', 'param': 'var2__FREE__', 'min': '10', 'max': '30', 'step': '1', 'time': '100'}]
 
         d2 = parse.ploop(['credible_intervals=68'])
         assert d2['credible_intervals'] == [68.0]
