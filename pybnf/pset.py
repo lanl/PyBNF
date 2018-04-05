@@ -393,9 +393,6 @@ class FreeParameter(object):
         :return:
         """
         logger.debug("Attempting to set parameter %s equal to %s" % (self.name, new_value))
-        if new_value < 0.0:
-            logger.error("Cannot set parameter %s to have a negative value of %s" % (self.name, new_value))
-            raise PybnfError("Cannot set a parameter to be negative")
         if new_value < self.lower_bound or new_value > self.upper_bound:
             if self.value is None:
                 self.value = self.lower_bound
