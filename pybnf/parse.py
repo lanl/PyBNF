@@ -32,6 +32,7 @@ var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'copasi_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node']
 multstrkeys = ['worker_nodes']
+dictkeys = ['time_course', 'param_scan']
 
 
 def parse(s):
@@ -85,14 +86,16 @@ def parse(s):
     normgram = normkey - equals - anything  # The set of legal grammars for normalization is too complicated,
     # Will handle with separate code.
 
-    timecourse_key = pp.CaselessLiteral('time_course')
-    timecourse_gram = timecourse_key - equals - pp.Optional(bngl_file - colon) - num - num
-    paramscan_key = pp.CaselessLiteral('param_scan')
-    paramscan_gram = paramscan_key - equals - pp.Optional(bngl_file - colon) - bng_parameter - num - num - num - num
+    # Grammar for dictionary-like specification of simulation actions
+    # We are intentionally over-permissive here, because the Action class will be able to give more helpful error
+    # messages than a failed parse.
+    dict_entry = pp.Word(pp.alphas) - colon - pp.Word(pp.alphanums + punctuation)
+    dict_key = pp.oneOf(' '.join(dictkeys), caseless=True)
+    dictgram = dict_key - equals - pp.delimitedList(dict_entry)
 
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram |
-            timecourse_gram | paramscan_gram).parseString(s, parseAll=True).asList()
+    line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram
+            ).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -146,14 +149,15 @@ def ploop(ls):  # parse loop
                 d[key] = values  # individual data files remain in list
                 models.add(key)
                 exp_data.update(values)
-            elif l[0] == 'time_course' or l[0] == 'param_scan':
-                # Multiple declarations allowed; dict entry should contain a list of all the declarations.
-                # All numbers should get cast to floats
-                for xi in range(1, len(l)):
-                    try:
-                        l[xi] = float(l[xi])
-                    except ValueError:
-                        pass
+            elif l[0] in dictkeys:
+                # Multiple declarations allowed; config dict entry should contain a list of all the declarations.
+                # Convert the line into a dict of key-value pairs. Keep everything as strings, check later
+                entry = dict()
+                for xi in range(0, len(values), 2):
+                    if values[xi] in entry:
+                        raise PybnfError('For config key %s, attribute %s is specified multiple times' %
+                                         (l[0], values[xi]))
+                    entry[values[xi]] = values[xi+1]
                 if l[0] in d:
                     d[l[0]].append(l[1:])
                 else:
@@ -222,11 +226,9 @@ def ploop(ls):  # parse loop
                 fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
                       "'unit', or 'zero')"\
                     % (key, key)
-            elif key == 'time_course':
-                fmt = "time_course=time_end time_step, where time_end and time_step are numbers"
-            elif key == 'param_scan':
-                fmt = "param_scan=param min max step time, where param is a string, and min, max, step, and time are " \
-                      "all numbers"
+            elif key in dictkeys:
+                fmt = "'%s=key1: value1, key2: value2,...' where key1, key2, etc are attributes of the %s (see " \
+                      "documentation for available options)" % (key, key)
 
             message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
             if fmt == '':

@@ -543,17 +543,17 @@ class SbmlModel(Model):
                 param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
                 param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
                                                      value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (
-                                                     model_name, action.variable)))
+                                                     model_name, action.param)))
                 param_subparent.append(etree.Element('Parameter', name='Minimum', type='float',
-                                                     value=str(action.var_min)))
+                                                     value=str(action.min)))
                 param_subparent.append(etree.Element('Parameter', name='Maximum', type='float',
-                                                     value=str(action.var_max)))
+                                                     value=str(action.max)))
                 param_subparent.append(etree.Element('Parameter', name='log', type='bool',
                                                      value=str(action.logspace)))
                 # action-type-specific Report settings
                 task_type = 'scan'
                 first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
-                                                                                                  action.variable)
+                                                                                                  action.param)
             else:
                 raise NotImplementedError('Only implemented action types are Time Course and Param Scan')
 
@@ -610,25 +610,92 @@ class Action:
 
 class TimeCourse(Action):
 
-    def __init__(self, time, step):
-        self.time = time
-        self.step = step
-        self.stepnumber = int(np.round(time/step))
+    def __init__(self, d):
+        """
+        :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
+        of this action.
+        Valid dict keys are time:number, step:number, model:str (unused here), suffix: str,
+        values: list of numbers (not implemented)
+        Raises a PyBNF error if anything is wrong with the dict.
+        """
+        # Available keys and default values
+        num_keys = {'time', 'step'}
+        str_keys = {'model', 'suffix'}
+        # Default values
+        self.time = None  # Required
+        self.step = 1.
+        self.model = ''
         self.suffix = 'time_course'
+
+        # Transfer all the keys in the dict to my attributes of the same name
+        for k in d:
+            if k in num_keys:
+                try:
+                    num = float(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in str_keys:
+                self.__setattr__(k, d[k])
+            else:
+                raise PybnfError('"%s" is not a valid attribute for "time_course".' % k,
+                                 '"%s" is not a valid attribute for "time_course". Possible attributes are: %s' %
+                                 (k, ','.join(num_keys.union(str_keys))))
+
+        if self.end is None:
+            raise PybnfError('For key "time_course" a value for "end" must be specified.')
+
+        self.stepnumber = int(np.round((self.end - self.start)/self.step))
         self.bng_codeword = 'simulate'
 
 
 class ParamScan(Action):
 
-    def __init__(self, variable, var_min, var_max, step, time, logspace=False):
-        self.variable = variable
-        self.var_min = var_min
-        self.var_max = var_max
-        self.step = step
-        self.stepnumber = int(np.round((var_max-var_min) / step))
-        self.time = time
-        self.logspace = int(logspace)
+    def __init__(self, d):
+        """
+        :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
+        of this action.
+        Valid dict keys are min:number, max:number, step:number, time:number, model:str (unused here), suffix: str,
+        logspace: 0 or 1, param: str, values: list of numbers (not implemented)
+        Raises a PyBNF error if anything is wrong with the dict.
+        """
+        # Available keys and default values
+        num_keys = {'min', 'max', 'step', 'time', 'logspace'}
+        str_keys = {'model', 'suffix', 'param'}
+        required_keys = {'min', 'max', 'step', 'time', 'param'}
+        # Default values
+        self.min = None
+        self.max = None
+        self.step = None
+        self.time = None
+        self.logspace = 0.
+        self.param = None
+        self.model = ''
         self.suffix = 'param_scan'
+
+        # Transfer all the keys in the dict to my attributes of the same name
+        for k in d:
+            if k in num_keys:
+                try:
+                    num = float(d[k])
+                except ValueError:
+                    raise PybnfError('For key "param_scan", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in str_keys:
+                self.__setattr__(k, d[k])
+            else:
+                raise PybnfError('"%s" is not a valid attribute for "param_scan".' % k,
+                                 '"%s" is not a valid attribute for "param_scan". Possible attributes are: %s' %
+                                 (k, ','.join(num_keys.union(str_keys))))
+
+        for k in required_keys:
+            if self.__getattribute__(k) is None:
+                raise PybnfError('For key "param_scan" a value for "%s" must be specified.' % k)
+        self.logspace = int(self.logspace)
+        if self.logspace not in (0, 1):
+            raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
+
+        self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'
 
 

@@ -16,9 +16,9 @@ scheduler_node - Node used for setting up distributed Client.  Defaults to None 
 worker_nodes - Nodes used for computation. Defaults to None; takes one or more strings separated by whitespace identifying machines on a network
 
 Action commands below configure simulations to run that are not already specified in the model file. These commands are required to configure runs with SBML files, which do not support declaration of simulation actions in the files themselves.
-time_course = [ model.xml: ] end_time time_step - Run a time course with the specified end time and time step. A model name may optionally be specified. If not, the action is assumed to apply to all models in the fitting run.
-param_scan = [ model.xml: ] param_name min_value max_value step sim_time - Run a parameter scan. The specified parameter param_name is scanned from min_value to max_value in increments of step. Each simulation is run for sim_time, and the final values are recorded. A model name may optionally be specified. If not, the action is assumed to apply to all models in the fitting run.
-
+time_course = key1: value1, key2: value2,... - Run a time course with the specified attributes. The following keys are available. time: the simulation time; step: the simulation time step (default 1); model: the model to run on (default is all of the models in the fitting run); suffix: The suffix of the data file to save. You should map the model to a .exp file of the same name (default: time_course)
+For example you could write, 'timecourse = model: m1.xml, time: 60, step:5'
+param_scan = key1: value1, key2: value2,... - Run a parameter scan with the specified attributes. The following keys are available. param: name of the parameter to scan, min: minimum value of the parameter, max: maximum value of the parameter, step: change in parameter value between consecutive simulations in the scan, time: amount of time that each simulation in the scan is run, logspace: 0 or 1. If 1, scan the parameter in log space,  model: the model to run on (default is all of the models in the fitting run); suffix: The suffix of the data file to save. You should map the model to a .exp file of the same name (default: param_scan)
 ***Parameter specification***
 
 uniform_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]
