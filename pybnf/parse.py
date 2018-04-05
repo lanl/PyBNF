@@ -34,6 +34,7 @@ strkeylist = ['bng_command', 'copasi_command', 'job_name', 'output_dir', 'fit_ty
               'cluster_type', 'scheduler_node']
 multstrkeys = ['worker_nodes']
 dictkeys = ['time_course', 'param_scan']
+punctuation_safe = re.sub('[:,]', '', punctuation)
 
 
 def parse(s):
@@ -90,9 +91,9 @@ def parse(s):
     # Grammar for dictionary-like specification of simulation actions
     # We are intentionally over-permissive here, because the Action class will be able to give more helpful error
     # messages than a failed parse.
-    dict_entry = pp.Word(pp.alphas) - colon - pp.Word(pp.alphanums + punctuation)
+    dict_entry = pp.Word(pp.alphas) - colon - pp.Word(pp.alphanums + punctuation_safe)
     dict_key = pp.oneOf(' '.join(dictkeys), caseless=True)
-    dictgram = dict_key - equals - pp.delimitedList(dict_entry)
+    dictgram = dict_key - equals - pp.delimitedList(dict_entry) - comment
 
     # check each grammar and output somewhat legible error message
     line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram
@@ -167,9 +168,9 @@ def ploop(ls):  # parse loop
                                          (l[0], values[xi]))
                     entry[values[xi]] = values[xi+1]
                 if l[0] in d:
-                    d[l[0]].append(l[1:])
+                    d[l[0]].append(entry)
                 else:
-                    d[l[0]] = [l[1:]]
+                    d[l[0]] = [entry]
             elif l[0] == 'normalization':
                 # Normalization defined with way too many possible options
                 # At the end of all this, the config dict has one of the following formats:
