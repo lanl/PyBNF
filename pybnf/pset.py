@@ -454,26 +454,27 @@ class SbmlModel(Model):
         # Edit the Copasi file to include the required actions
         # Python thinks Copasi XML is invalid because of more "namespace" nonsense
         # To get around this, need to do some more complicated stuff...
-        # cps = ET.parse('%s.cps' % file)  # Fails because namespaces
-        # f = open('%s.cps' % file)
-        # text = f.read()
-        # f.close()
-        parser = etree.XMLParser(recover=True)
-        # Write the updated Copasi back to file
-        cps = etree.ElementTree(file='%s.cps' % file, parser=parser)
-        root = cps.getroot()
-        # root = etree.fromstring(bytes(text, 'utf-8'), parser)
 
-        # root = cps.getroot()
+        # Read xml from Copasi file
+        parser = etree.XMLParser(recover=True)
+        cps = etree.ElementTree(file='%s.cps' % file, parser=parser)
+        cps_backup = cps
+        root = cps.getroot()
+
         ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
         space = {'cps': ns}
         if len(self.actions) == 0:
             raise ValueError('Cannot run model with no actions')
 
-        model_elem = root.findall('cps:Model', namespaces=space)[0]
-        model_name = model_elem.get('name')  # We'll need the value of this thing later for setting various attributes.
         results = dict()  # Will contain one key:Data pair for each action we run for this model
         for action in self.actions:
+            if len(self.actions) > 1:
+                # Work with a copy of the xml because we'll need to use it multiple times
+                cps = copy.deepcopy(cps_backup)
+                root = cps.getroot()
+            # We'll need the value of this thing later for setting various attributes.
+            model_elem = root.findall('cps:Model', namespaces=space)[0]
+            model_name = model_elem.get('name')
             # Set the save file to be the same as for a BNGL file
             if action.bng_codeword == 'simulate':
                 ext = 'gdat'
@@ -574,7 +575,6 @@ class SbmlModel(Model):
             for s in self.species:
                 obj = etree.Element('Object', cn=tablestring % (model_name, s))
                 report_table.append(obj)
-
 
             cps.write('%s.cps' % file)
 
