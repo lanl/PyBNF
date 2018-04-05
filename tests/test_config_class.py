@@ -22,7 +22,7 @@ class TestConfig(object):
                    ('uniform_var', 'pase__FREE__'): [6., 7.],
                    'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                    'normalization': {'bngl_files/p1_5.exp': 'init'},
-                   'param_scan': [['Tricky.bngl', 'koff__FREE__', 1, 10, 1, 3600]]}
+                   'param_scan': [{'model': 'Tricky.bngl', 'param': 'koff__FREE__', 'min': '1', 'max': '10', 'step': '1', 'time': '3600'}]}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de',

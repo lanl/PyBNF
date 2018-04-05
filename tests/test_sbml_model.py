@@ -1,4 +1,5 @@
-from .context import pset
+from .context import pset, printing
+from nose.tools import raises
 import os
 import xml.etree.ElementTree as ET
 import re
@@ -75,7 +76,7 @@ class TestSbmlModel:
         os.mkdir(self.folder)
         fullpath = os.getcwd()+'/'+self.folder
         ps = pset.PSet(self.params)
-        action = pset.TimeCourse(1000, 10)
+        action = pset.TimeCourse({'time': '1000', 'step': '10'})
         m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
         m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
         result = m.execute(fullpath, self.savefile2, 1000)
@@ -88,7 +89,7 @@ class TestSbmlModel:
         os.mkdir(self.folder_scan)
         fullpath = os.getcwd() + '/' + self.folder_scan
         ps = pset.PSet(self.params)
-        action = pset.ParamScan('K3', 500, 10000, 500, 1000, logspace=False)
+        action = pset.ParamScan({'param': 'K3', 'min': '500', 'max': '10000', 'step': '500', 'time': '1000'})
         m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
         m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
         result = m.execute(fullpath, self.savefile2, 1000)
@@ -96,4 +97,16 @@ class TestSbmlModel:
         assert dat.indvar == 'K3'
         assert abs(dat['I'][0] - 0.236666) < 0.01
         assert abs(dat['R'][-1] - 0.315964) < 0.01
+
+    @raises(printing.PybnfError)
+    def test_missing_key(self):
+        pset.TimeCourse({'model': 'm'})
+
+    @raises(printing.PybnfError)
+    def test_extra_key(self):
+        pset.ParamScan({'param': 'K3', 'min': '500', 'max': '10000', 'step': '500', 'time': '1000', 'xxx': '0'})
+
+    @raises(printing.PybnfError)
+    def test_invalid_num(self):
+        pset.ParamScan({'param': 'K3', 'min': '500', 'max': '1000f', 'step': '500', 'time': '1000'})
 
