@@ -425,13 +425,15 @@ class SbmlModel(Model):
             if pname in self.param_set.keys():
                 p.set('value', str(self.param_set[pname]))
 
-        # Todo: Potentially usable to set initial conditions.(would need to traverse even if copied from previous model)
         # Currently this check is unnecessary because this method is only called on model instances with
         # param_set = None
         if len(self.species) == 0:
             species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
             for s in species:
-                self.species.append(s.get('name'))
+                sname = s.get('name')
+                self.species.append(sname)
+                if sname in self.param_set.keys():
+                    s.set('initialConcentration', str(self.param_set[sname]))
 
     def model_text(self):
         return ET.tostring(self.xml.root)
@@ -540,9 +542,14 @@ class SbmlModel(Model):
                 param_subparent.append(etree.Element('Parameter', name='Number of steps', type='unsignedInteger',
                                                      value=str(action.stepnumber)))
                 param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
-                param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
-                                                     value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (
-                                                     model_name, action.param)))
+                if action.param in self.species:
+                    param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
+                     value='CN=Root,Model=%s,Vector=Compartments[compartment],Vector=Metabolites[%s],Reference=InitialConcentration' %
+                     (model_name, action.param)))
+                else:
+                    # assume it's a parameter
+                    param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
+                     value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name, action.param)))
                 param_subparent.append(etree.Element('Parameter', name='Minimum', type='float',
                                                      value=str(action.min)))
                 param_subparent.append(etree.Element('Parameter', name='Maximum', type='float',
@@ -551,7 +558,10 @@ class SbmlModel(Model):
                                                      value=str(action.logspace)))
                 # action-type-specific Report settings
                 task_type = 'scan'
-                first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
+                if action.param in self.species:
+                    first_col_string = 'CN=Root,Model=%s,Vector=Compartments[compartment],Vector=Metabolites[%s],Reference=InitialConcentration' % (model_name, action.param)
+                else:
+                    first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
                                                                                                   action.param)
             else:
                 raise NotImplementedError('Only implemented action types are Time Course and Param Scan')
