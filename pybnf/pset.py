@@ -357,6 +357,15 @@ class FreeParameter(object):
         self.lower_bound = 0.0 if not self.bounded else self.p1
         self.upper_bound = np.inf if not self.bounded else self.p2
 
+        # Determine a positive value that can serve as the default for network generation
+        self.default_value = None
+        if self.lower_bound > 0.0:
+            self.default_value = self.lower_bound
+        elif np.isfinite(self.upper_bound):
+            self.default_value = self.upper_bound
+        else:
+            self.default_value = 1.0
+
         if value:
             if not self.lower_bound <= value <= self.upper_bound:  # not quite precise, but works well
                 raise OutOfBoundsException("Free parameter %s cannot be assigned the value %s" % (self.name, value))
@@ -390,20 +399,31 @@ class FreeParameter(object):
     def _reflect(self, init, add):
         """Takes a value and returns a new value based on reflecting against the boundary conditions"""
         num_reflections = 0
+        ub = self.upper_bound
+        lb = self.lower_bound
+        if self.log_space:
+            add = np.log10(add)
+            init = np.log10(init)
+            ub = np.log10(self.upper_bound)
+            lb = np.log10(self.lower_bound)
+
         while True:
             if num_reflections >= 1000:
                 logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter = %s" % (init, add, self.name))
                 raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, init, add))
 
             num_reflections += 1
-            if init + add > self.upper_bound:
-                add = -((init+add) - self.upper_bound)
-                init = self.upper_bound
-            elif init + add < self.lower_bound:
-                add = self.lower_bound - (init + add)
-                init = self.lower_bound
+            if init + add > ub:
+                add = -((init+add) - ub)
+                init = ub
+            elif init + add < lb:
+                add = lb - (init + add)
+                init = lb
             else:
                 break
+        if self.log_space:
+            return 10**(init + add)
+
         return init + add
 
     def sample_value(self):
