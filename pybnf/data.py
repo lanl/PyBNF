@@ -96,6 +96,7 @@ class Data(object):
         if 'copasi-scan' in flags:
             header[0] = re.sub('Values\[', '', header[0])
             header[0] = re.sub('\]\.InitialValue', '', header[0])
+            header[0] = re.sub('\]', '', header[0])  # For scan on initial conditions
         if 'time' in flags:
             header[0] = 'time'
         ncols = len(header)
