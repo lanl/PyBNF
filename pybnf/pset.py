@@ -467,15 +467,13 @@ class SbmlModel(Model):
         # root = cps.getroot()
         ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
         space = {'cps': ns}
-        if len(self.actions) > 1:
-            raise PybnfError('Currently only 1 action per SBML file is supported')
         if len(self.actions) == 0:
             raise ValueError('Cannot run model with no actions')
 
         model_elem = root.findall('cps:Model', namespaces=space)[0]
         model_name = model_elem.get('name')  # We'll need the value of this thing later for setting various attributes.
+        results = dict()  # Will contain one key:Data pair for each action we run for this model
         for action in self.actions:
-            # Todo: Support more than 1 action
             # Set the save file to be the same as for a BNGL file
             if action.bng_codeword == 'simulate':
                 ext = 'gdat'
@@ -578,27 +576,28 @@ class SbmlModel(Model):
                 report_table.append(obj)
 
 
-        cps.write('%s.cps' % file)
+            cps.write('%s.cps' % file)
 
-        # Run Copasi
-        # Todo: The save file was specified in the cps file (target_file), but I don't know what directory it goes to
-        # It might be your current directory, but previously that gave us problems in parallel so gah.
+            # Run Copasi
+            # Todo: The save file was specified in the cps file (target_file), but I don't know what directory it goes to
+            # It might be your current directory, but previously that gave us problems in parallel so gah.
 
-        cmd = [self.copasi_command, '%s.cps' % file]
-        log_file = '%s.log' % file
-        with open(log_file, 'w') as lf:
-            run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+            cmd = [self.copasi_command, '%s.cps' % file]
+            log_file = '%s.log' % file
+            with open(log_file, 'w') as lf:
+                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
 
-        if task_type == 'timeCourse':
-            # Tab-delimited, header row with no '#', extra [] around each variable
-            res = Data()
-            res.load_data('%s/%s' % (folder, target_file), flags=('time',))
-        elif task_type == 'scan':
-            res = Data()
-            res.load_data('%s/%s' % (folder, target_file), flags=('copasi-scan',))
-        else:
-            raise RuntimeError('Unknown task type')
-        return {action.suffix: res}
+            if task_type == 'timeCourse':
+                # Tab-delimited, header row with no '#', extra [] around each variable
+                res = Data()
+                res.load_data('%s/%s' % (folder, target_file), flags=('time',))
+            elif task_type == 'scan':
+                res = Data()
+                res.load_data('%s/%s' % (folder, target_file), flags=('copasi-scan',))
+            else:
+                raise RuntimeError('Unknown task type')
+            results[action.suffix] = res
+        return results
 
 
 class Action:
