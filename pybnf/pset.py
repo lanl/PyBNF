@@ -392,7 +392,7 @@ class FreeParameter(object):
         num_reflections = 0
         while True:
             if num_reflections >= 1000:
-                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %, parameter = %s" % (init, add, self.name))
+                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter = %s" % (init, add, self.name))
                 raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, init, add))
 
             num_reflections += 1
