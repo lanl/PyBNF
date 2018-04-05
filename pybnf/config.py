@@ -114,7 +114,7 @@ class Configuration(object):
         default = {
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
-            'backup_every': 1, 'copasi_command': copasi_command,
+            'backup_every': 1, 'copasi_command': copasi_command, 'time_course': (), 'param_scan': (),
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,
@@ -316,41 +316,27 @@ class Configuration(object):
                                  'configuration file points to the CopasiSE executable or that the COPASIDIR '
                                  'enviornmental variable is correctly set')
 
-
     def _load_actions(self):
 
-        if 'time_course' in self.config:
-            for tc in self.config['time_course']:
-                if isinstance(tc[0], str):
-                    action = TimeCourse(tc[1], tc[2])
+        for (key, ActionType) in (('time_course', TimeCourse), ('param_scan', ParamScan)):
+            # Iterate through all time courses and param scans included in the config dict, create the corresponding
+            # Action objects, and add them to the appropriate model(s).
+            for action_dict in self.config[key]:
+                if 'model' in action_dict:
+                    action = ActionType(action_dict)
                     try:
-                        model_key = self._file_prefix(tc[0], '(bngl|xml)')
+                        # Model lookup - should work if model name included the extension or not.
+                        model_key = self._file_prefix(action_dict['model'], '(bngl|xml)')
                         self.models[model_key].add_action(action)
                     except KeyError:
-                        raise PybnfError('Time course declared for model %s, but that model was not found.' % tc[0])
+                        raise PybnfError('%s declared for model %s, but that model was not found.' %
+                                         (key, action_dict['model']))
                 else:
                     # Apply to all models (hopefully just 1)
                     if len(self.models) > 1:
-                        print1('Warning: Applying the same time course action to all models in this fitting run.')
+                        print1('Warning: Applying the same %s action to all models in this fitting run.' % key)
                     for m in self.models:
-                        self.models[m].add_action(TimeCourse(tc[0], tc[1]))
-
-        if 'param_scan' in self.config:
-            for pscan in self.config['param_scan']:
-                if isinstance(pscan[1], str):
-                    action = ParamScan(pscan[1], pscan[2], pscan[3], pscan[4], pscan[5])
-                    try:
-                        model_key = self._file_prefix(pscan[0], '(bngl|xml)')
-                        self.models[model_key].add_action(action)
-                    except KeyError:
-                        raise PybnfError('Param scan declared for model %s, but that model was not found.' % pscan[0])
-                else:
-                    # Apply to all models (hopefully just 1)
-                    if len(self.models) > 1:
-                        print1('Warning: Applying the same param scan action to all models in this fitting run.')
-                    for m in self.models:
-                        self.models[m].add_action(ParamScan(pscan[0], pscan[1], pscan[2], pscan[3], pscan[4]))
-
+                        self.models[m].add_action(ActionType(action_dict))
 
     @staticmethod
     def _file_prefix(ef, ext="exp"):
