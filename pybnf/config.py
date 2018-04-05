@@ -331,7 +331,6 @@ class Configuration(object):
         for k in self.config.keys():
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
-                    print(self.config[k])
                     if self.config['fit_type'] == 'sim' and k[0] not in ('var', 'logvar'):
                         raise PybnfError('Invalid Simplex variable type %s' % k[0],
                                "You've specified the Simplex algorithm (fit_type = sim), "
@@ -352,13 +351,18 @@ class Configuration(object):
                             stepsize = self.config[k][1] # easy, it was right there
                         else:
                             stepsize = None  # Will sort out within SimplexAlgorithm
-                        variables.append(FreeParameter(k[1], k[0], self.config[k][0], stepsize))
+                        free_param = FreeParameter(k[1], k[0], self.config[k][0], stepsize)
                     else:
                         if len(self.config[k]) == 3:
-                            variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
-                                                           bounded=self.config[k][2]))
+                            free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
+                                                           bounded=self.config[k][2])
                         else:
-                            variables.append(FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1]))
+                            free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1])
+
+                    logger.debug('Adding parameter %s with bounds [%s, %s]' %
+                                 (free_param.name, free_param.lower_bound, free_param.upper_bound))
+                    variables.append(free_param)
+        logger.info('Loaded variables')
         return variables
 
     def _check_variable_correspondence(self):

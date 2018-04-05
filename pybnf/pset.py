@@ -357,6 +357,9 @@ class FreeParameter(object):
         self.lower_bound = 0.0 if not self.bounded else self.p1
         self.upper_bound = np.inf if not self.bounded else self.p2
 
+        if self.lower_bound >= self.upper_bound:
+            raise PybnfError("Parameter %s has a lower bound is greater than its upper bound" % self.name)
+
         # Determine a positive value that can serve as the default for network generation
         self.default_value = None
         if self.lower_bound > 0.0:
@@ -379,6 +382,8 @@ class FreeParameter(object):
         elif re.search('uniform', self.type):
             self._distribution = np.random.uniform
 
+        logger.debug('Instantiated new parameter %s' % self)
+
     def set_value(self, new_value):
         """
         Assigns a value to the parameter
@@ -387,44 +392,54 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
+        logger.debug("Attempting to set parameter %s equal to %s" % (self.name, new_value))
+        if new_value < 0.0:
+            logger.error("Cannot set parameter %s to have a negative value of %s" % (self.name, new_value))
+            raise PybnfError("Cannot set a parameter to be negative")
         if new_value < self.lower_bound or new_value > self.upper_bound:
             if self.value is None:
                 self.value = self.lower_bound
+                logger.info("Assigning parameter %s to take a value equal to its lower bound: %s" % (self.name, self.lower_bound))
             # reflective number line, can never realize self.lower_bound or self.upper_bound this way
-            adj = self._reflect(self.value, new_value - self.value)
-            logger.warning('Assigned value %f is out of defined bounds.  Adjusted to %f' % (new_value, adj))
+            adj = self._reflect(new_value)
+            logger.warning('Assigned value %f is out of defined bounds: [%s, %s].  '
+                           'Adjusted to %f' % (new_value, self.lower_bound, self.upper_bound, adj))
             new_value = adj
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
 
-    def _reflect(self, init, add):
+    def _reflect(self, new):
         """Takes a value and returns a new value based on reflecting against the boundary conditions"""
         num_reflections = 0
         ub = self.upper_bound
         lb = self.lower_bound
-        if self.log_space:
-            add = np.log10(add)
-            init = np.log10(init)
+        cur = self.value
+        if self.log_space:  # transform to log space if needed
+            cur = np.log10(cur)
             ub = np.log10(self.upper_bound)
             lb = np.log10(self.lower_bound)
+            new = np.log10(new)
+            logger.debug("Transforming values to log space: %s %s %s %s" % (cur, new, lb, ub))
+        add = new - cur
 
         while True:
             if num_reflections >= 1000:
-                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter = %s" % (init, add, self.name))
-                raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, init, add))
+                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter = %s" % (cur, add, self.name))
+                raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, cur, add))
 
             num_reflections += 1
-            if init + add > ub:
-                add = -((init+add) - ub)
-                init = ub
-            elif init + add < lb:
-                add = lb - (init + add)
-                init = lb
+            if cur + add > ub:
+                add = -((cur+add) - ub)
+                cur = ub
+            elif cur + add < lb:
+                add = lb - (cur + add)
+                cur = lb
             else:
                 break
-        if self.log_space:
-            return 10**(init + add)
 
-        return init + add
+        if self.log_space:
+            return 10**(cur + add)
+
+        return cur + add
 
     def sample_value(self):
         """
@@ -500,7 +515,7 @@ class FreeParameter(object):
         return self.name < other.name
 
     def __str__(self):
-        return "FreeParameter: %s = %s" % (self.name, self.value)
+        return "FreeParameter: %s = %s -- [%s, %s]" % (self.name, self.value, self.lower_bound, self.upper_bound)
 
     def __repr__(self):
         return self.__str__()

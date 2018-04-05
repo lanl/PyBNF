@@ -841,7 +841,7 @@ class ParticleSwarm(Algorithm):
         # This could come up in practice if all parameters have hit a box constraint.
         # As a simple workaround, perturb the parameters slightly
         while new_pset in self.pset_map:
-            new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in self.swarm[p][0]])
+            new_pset = PSet([v.add_rand(-1e-6, 1e-6) for v in self.swarm[p][0]])
 
         self.pset_map[new_pset] = p
 
