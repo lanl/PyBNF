@@ -1720,8 +1720,10 @@ class BayesAlgorithm(Algorithm):
 
             sorted_data = sorted(dat_array[:, i])
             for interval, file in zip(self.credible_intervals, cred_files):
-                min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
-                max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
+                n = len(sorted_data)
+                want = n * (interval/100)
+                min_index = int(np.round(n/2 - want/2))
+                max_index = int(np.round(n/2 + want/2 - 1))
                 file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
 
     def replica_exchange(self):
