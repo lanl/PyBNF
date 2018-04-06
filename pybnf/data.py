@@ -99,6 +99,8 @@ class Data(object):
             header[0] = re.sub('\]', '', header[0])  # For scan on initial conditions
         if 'time' in flags:
             header[0] = 'time'
+        if header[0] == 'Time':
+            header[0] = 'time'  # Allow either capitalization because Copasi uses capital, BNG uses lowercase
         ncols = len(header)
         self.indvar = header[0]
 
