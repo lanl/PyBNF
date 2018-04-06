@@ -689,6 +689,63 @@ class SbmlModel(Model):
         return results
 
 
+class MutantModel(Model):
+    """
+    Represents a model that consists of another model, with some small number of parameters mutated
+    """
+    def __init__(self, original=None, mutations=()):
+        """
+        :param original: The original model that we mutate
+        :param mutation: List of mutations to make on the original model. Each mutation is represented as a string
+        to be executed
+        """
+        self.model = copy.deepcopy(original)
+
+        # Turn the mutation statements into things that will be executable in copy_with_param_set, by surrounding each
+        # variable name as an index into a dictionary d
+
+        def dreplace(match):
+            return 'd["%s"]' % match.group(0)
+
+        self.mutations = []
+        for m in mutations:
+            self.mutations.append(re.sub('[a-zA-z_][a-zA-z0-9_]*', dreplace, m))
+
+    def copy_with_param_set(self, pset):
+
+        # Apply my mutations to the PSet, then copy my model with that mutated PSet.
+        d = {p: pset[p] for p in pset.keys()}
+        for m in self.mutations:
+            try:
+                exec(m)
+            except KeyError:
+                raise PybnfError('KeyError evaluating the mutation statement "%s". Probably you are referring to a '
+                                 'parameter name that doesn''t exist.' % m)
+            except:
+                raise PybnfError('Error evaluating the mutation statement "%s". Check your syntax - I don''t know what '
+                                 'you did.' % m)
+        new_params = PSet(d)
+        new_model = self.model.copy_with_param_set(new_params)
+
+        new_self = MutantModel()
+        new_self.model = new_model
+        new_self.mutations = self.mutations
+        return new_self
+
+    def save(self, file_prefix):
+        """
+        Saves the model to file
+
+        :return:
+        """
+        return self.model.save(file_prefix)
+
+    def execute(self, folder, filename, timeout):
+        return self.model.execute(folder, filename, timeout)
+
+    def add_action(self, action):
+        return self.model.add_action(action)
+
 class Action:
     """
     Represents a simulation action performed within a model
