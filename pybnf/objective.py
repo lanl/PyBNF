@@ -85,7 +85,11 @@ class SummationObjective(ObjectiveFunction):
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
         # Warn if experiment columns are going unused
         self._check_columns(exp_data.cols, compare_cols)
-        compare_cols.remove(indvar)
+        try:
+            compare_cols.remove(indvar)
+        except KeyError:
+            raise PybnfError('The independent variable "%s" in your exp file was not found in the simulation data.'
+                             % indvar)
 
         func_value = 0.0
         # Iterate through rows of experimental data
