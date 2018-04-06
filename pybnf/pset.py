@@ -407,12 +407,35 @@ class SbmlModel(Model):
             self._set_param_set(pset)
         self.stochastic = False
         self.copasi_command = ''
+        self.param_names = self._load_param_names()
 
     def copy_with_param_set(self, pset):
 
         newmodel = copy.deepcopy(self)
         newmodel._set_param_set(pset)
         return newmodel
+
+    def _load_param_names(self):
+        """
+        Loads the names of all possible parameters and initial condition names for this model, to check correspondence
+        between config params and model params.
+        :return:
+        """
+        names = set()
+
+        # Walk through the xml like in the other class methods
+        root = self.xml.getroot()
+        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
+        space = {'sbml': ns}
+        params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
+        for p in params:
+            pname = p.get('id')
+            names.add(pname)
+        species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
+        for s in species:
+            sname = s.get('id')
+            names.add(sname)
+        return names
 
     def _set_param_set(self, pset):
         self.param_set = pset
@@ -425,20 +448,18 @@ class SbmlModel(Model):
 
         params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
         for p in params:
-            pname = p.get('name')
+            pname = p.get('id')
             if pname in self.param_set.keys():
                 p.set('value', str(self.param_set[pname]))
 
-        # Currently this check is unnecessary because this method is only called on model instances with
-        # param_set = None
-        if len(self.species) == 0:
-            species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
-            for s in species:
-                sname = s.get('id')
-                compartment = s.get('compartment')
-                self.species[sname] = compartment
-                if sname in self.param_set.keys():
-                    s.set('initialConcentration', str(self.param_set[sname]))
+        self.species = dict()
+        species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
+        for s in species:
+            sname = s.get('id')
+            compartment = s.get('compartment')
+            self.species[sname] = compartment
+            if sname in self.param_set.keys():
+                s.set('initialConcentration', str(self.param_set[sname]))
 
     def model_text(self):
         return ET.tostring(self.xml.root)
