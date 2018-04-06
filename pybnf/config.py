@@ -442,13 +442,11 @@ class Configuration(object):
         """
         model_vars = set()
         for m in self.models.values():
-            if isinstance(m, SbmlModel):
-                logger.warning("Skipping check of variable correspondence because it is not implemented for SBML")  # Todo
-                return
             model_vars.update(m.param_names)
 
         extra_in_conf = set(self.variables).difference(model_vars)
         extra_in_model = set(model_vars).difference(self.variables)
+        extra_in_model = {p for p in extra_in_model if p[-8:] == '__FREE__'}
         if len(extra_in_conf) > 0:
             raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '
                              'file: %s' % extra_in_conf)
