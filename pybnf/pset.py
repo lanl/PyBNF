@@ -401,13 +401,14 @@ class SbmlModel(Model):
         # Maps species names to the name of the compartment the species is in. Usually we'll just look at the keys
         # to read the species names, but there's a couple places writing the CPS file where we need the compartment
         self.species = dict()
+        # Set of the possible parameter names, including both parameters and species names
+        # (species names listed in a PSet are treated as initial conditions)
+        self.param_names = set()
 
         self.param_set = None
-        if pset:
-            self._set_param_set(pset)
+        self._set_param_set(pset)
         self.stochastic = False
         self.copasi_command = ''
-        self.param_names = self._load_param_names()
 
     def copy_with_param_set(self, pset):
 
@@ -415,30 +416,15 @@ class SbmlModel(Model):
         newmodel._set_param_set(pset)
         return newmodel
 
-    def _load_param_names(self):
+    def _set_param_set(self, pset):
         """
-        Loads the names of all possible parameters and initial condition names for this model, to check correspondence
-        between config params and model params.
+        Sets the model's parameter set to pset, and updates the appropriate xml
+        If pset is passed as None, still goes through the motions and assembles the model's param_names attribute;
+        this should be done when setting up the config at the start of the run to make sure parameter names are ok.
         :return:
         """
-        names = set()
-
-        # Walk through the xml like in the other class methods
-        root = self.xml.getroot()
-        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
-        space = {'sbml': ns}
-        params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
-        for p in params:
-            pname = p.get('id')
-            names.add(pname)
-        species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
-        for s in species:
-            sname = s.get('id')
-            names.add(sname)
-        return names
-
-    def _set_param_set(self, pset):
         self.param_set = pset
+        param_keys = pset.keys() if pset else ()
         root = self.xml.getroot()
 
         # The xml file is full of "namespaces" designed to make it difficult to parse, so extra acrobatics are required
@@ -446,20 +432,36 @@ class SbmlModel(Model):
         ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
         space = {'sbml': ns}
 
+        # Careful parsing here: The names are stored unpredictably under either 'id' or 'name'
+        # We use 'name' if it's available, otherwise use 'id'
+        # If 'id' and 'name' contain 2 different things (which can occur in exported Sbml from Copasi), use 'name'
+        # and log a warning if this is the initial check (pset=None)
         params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
         for p in params:
-            pname = p.get('id')
-            if pname in self.param_set.keys():
+            pname = p.get('name')
+            if pname is None:
+                pname = p.get('id')
+            elif pset is None and pname != p.get('id'):
+                logger.warning('Parameter has name "%s" and id "%s". For this fitting run, assuming it is named "%s"' %
+                               (pname, p.get('id'), pname))
+            if pname in param_keys:
                 p.set('value', str(self.param_set[pname]))
+            self.param_names.add(pname)
 
         self.species = dict()
         species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
         for s in species:
-            sname = s.get('id')
+            sname = s.get('name')
+            if sname is None:
+                sname = s.get('id')
+            elif pset is None and sname != s.get('id'):
+                logger.warning('Species has name "%s" and id "%s". For this fitting run, assuming it is named "%s"' %
+                               (sname, s.get('id'), sname))
             compartment = s.get('compartment')
             self.species[sname] = compartment
-            if sname in self.param_set.keys():
+            if sname in param_keys:
                 s.set('initialConcentration', str(self.param_set[sname]))
+            self.param_names.add(sname)
 
     def model_text(self):
         return ET.tostring(self.xml.root)
