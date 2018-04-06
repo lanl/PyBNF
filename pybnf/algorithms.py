@@ -1589,8 +1589,9 @@ class BayesAlgorithm(Algorithm):
             if not self.sa:
                 if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
                     self.sample_pset(self.current_pset[index], self.ln_current_P[index])
-                if (self.iteration[index] > self.burn_in and self.iteration[index] % self.output_hist_every == 0
-                    and self.iteration[index] == min(self.iteration)):
+                if (self.iteration[index] > self.burn_in
+                   and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
+                   and self.iteration[index] == min(self.iteration)):
                     self.update_histograms('_%i' % self.iteration[index])
 
             if self.iteration[index] == min(self.iteration):
@@ -1718,8 +1719,10 @@ class BayesAlgorithm(Algorithm):
 
             sorted_data = sorted(dat_array[:, i])
             for interval, file in zip(self.credible_intervals, cred_files):
-                min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
-                max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
+                n = len(sorted_data)
+                want = n * (interval/100)
+                min_index = int(np.round(n/2 - want/2))
+                max_index = int(np.round(n/2 + want/2 - 1))
                 file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
 
     def replica_exchange(self):

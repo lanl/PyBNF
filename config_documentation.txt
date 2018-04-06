@@ -98,7 +98,7 @@ burn_in: Ignore this many iterations at the start, to let the system equilibrate
 sample_every: Every x iterations, save the current PSet into the sampled population. Default: 100
 beta: 1 over the "temperature" used for sampling. beta = 1 samples the true probability landscape. At lower beta (higher temperature), unfavorable moves are more often accepted, and parameter space is sampled more broadly. Default: 1
 
-output_hist_every: Every x iterations, save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Default: 10000 
+output_hist_every: Every x samples (i.e every x*sample_every iterations), save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Default: 100
 hist_bins: Number of bins used when writing the histogram files. Default: 10
 credible_intervals: Specify one or more numbers here. For each n, algorithm will save a file giving bounds for each variable such that in n% of the samples the variable lies within the bounds.  Default: 68 95
 
