@@ -1,17 +1,19 @@
 """pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
 
 
-from .printing import print0, print1, PybnfError
+from .printing import print0, print1, print2, PybnfError
 
 import logging
 import numpy as np
 import re
 import copy
 import xml.etree.ElementTree as ET
-from subprocess import run, STDOUT, DEVNULL
+from subprocess import run, STDOUT, DEVNULL, CalledProcessError, TimeoutExpired
 from .data import Data
 import os
 from lxml import etree
+import traceback
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ class Model(object):
         """
         NotImplementedError("copy_with_param_set is not implemented")
 
-    def save(self, file_prefix, **kwargs):
+    def save(self, file_prefix):
         """
         Saves the model to file
 
@@ -53,6 +55,9 @@ class Model(object):
 
     def add_action(self, action):
         pass
+
+    def initialize(self, init_dir, timeout):
+        return self
 
 
 class BNGLModel(Model):
@@ -274,7 +279,10 @@ class BNGLModel(Model):
 
         return '\n'.join(self.model_lines) + '\n'
 
-    def save(self, file_prefix, gen_only=False):
+    def save(self, file_prefix):
+        self.save_bngl(file_prefix)
+
+    def save_bngl(self, file_prefix, gen_only=False):
         """
         Saves a runnable BNGL file of the model, including definitions of the __FREE__ parameter values that are defined
         by this model's pset, to the specified location.
@@ -335,6 +343,50 @@ class BNGLModel(Model):
     def add_action(self, action):
         self.config_actions.append(action)
         print0('Warning: Adding actions to BNGL models with config options is not yet supported')
+
+    def initialize(self, init_dir, timeout):
+        if self.generates_network:
+            home_dir = os.getcwd()
+            logger.debug('Model %s requires network generation' % self.name)
+
+            if not os.path.isdir(init_dir):
+                logger.debug('Creating initialization directory: %s' % init_dir)
+                os.mkdir(init_dir)
+            os.chdir(init_dir)
+
+            gnm_name = '%s_gen_net' % self.name
+            self.save_bngl(gnm_name, gen_only=True)
+            gn_cmd = [self.bng_command, '%s.bngl' % gnm_name]
+            try:
+                with open('%s.log' % gnm_name, 'w') as lf:
+                    print2('Generating network for model %s.bngl' % gnm_name)
+                    run(gn_cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+            except CalledProcessError as c:
+                logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                logger.error(c.stdout)
+                print0('Error: Initial network generation failed for model %s... see BioNetGen error log at '
+                       '%s/%s.log' % (self.name, os.getcwd(), gnm_name))
+                exit(1)
+            except TimeoutExpired:
+                logger.debug("Network generation exceeded %d seconds... exiting" % timeout)
+                print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
+                exit(1)
+            except:
+                tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
+                logger.debug("Other exception occurred:\n%s" % tb)
+                print0("Unknown error occurred during network generation, see log... exiting")
+                exit(1)
+            finally:
+                os.chdir(home_dir)
+
+            logger.info('Output for network generation of model %s logged in %s/%s.log' %
+                        (self.name, init_dir, gnm_name))
+            netmodel = NetModel(self.name, self.actions, self.suffixes, nf=init_dir + '/' + gnm_name + '.net')
+            netmodel.bng_command = self.bng_command
+            return netmodel
+        else:
+            logger.info('Model %s does not require network generation' % self.name)
+            return self
 
 
 class NetModel(BNGLModel):

@@ -296,57 +296,14 @@ class Algorithm(object):
 
         :return: list of Model instances
         """
-        # Todo: Move to config or BNGL model class?
-        home_dir = os.getcwd()
-        os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
         logger.debug('Copying list of models')
         init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
         final_model_list = []
-        init_dir = os.getcwd() + '/Initialize'
+        init_dir = self.config.config['output_dir'] + '/Initialize'
 
         for m in init_model_list:
-            if isinstance(m, BNGLModel) and m.generates_network:
-                logger.debug('Model %s requires network generation' % m.name)
+            final_model_list.append(m.initialize(init_dir, self.config.config['wall_time_gen']))
 
-                if not os.path.isdir(init_dir):
-                    logger.debug('Creating initialization directory: %s' % init_dir)
-                    os.mkdir(init_dir)
-                os.chdir(init_dir)
-
-                gnm_name = '%s_gen_net' % m.name
-                m.save(gnm_name, gen_only=True)
-                gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
-                try:
-                    with open('%s.log' % gnm_name, 'w') as lf:
-                        print2('Generating network for model %s.bngl' % gnm_name)
-                        run(gn_cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.config.config['wall_time_gen'])
-                except CalledProcessError as c:
-                    logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
-                    logger.error(c.stdout)
-                    print0('Error: Initial network generation failed for model %s... see BioNetGen error log at '
-                           '%s/%s.log' % (m.name, os.getcwd(), gnm_name))
-                    exit(1)
-                except TimeoutExpired:
-                    logger.debug("Network generation exceeded %d seconds... exiting" %
-                                  self.config.config['wall_time_gen'])
-                    print0("Network generation took too long.  Increase 'wall_time_gen' configuration parameter")
-                    exit(1)
-                except:
-                    tb = ''.join(traceback.format_list(traceback.extract_tb(sys.exc_info())))
-                    logger.debug("Other exception occurred:\n%s" % tb)
-                    print0("Unknown error occurred during network generation, see log... exiting")
-                    exit(1)
-                finally:
-                    os.chdir(home_dir)
-
-                logger.info('Output for network generation of model %s logged in %s/%s.log' %
-                             (m.name, init_dir, gnm_name))
-                final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
-                final_model_list[-1].bng_command = m.bng_command
-            else:
-                logger.info('Model %s does not require network generation' % m.name)
-                final_model_list.append(m)
-        os.chdir(home_dir)
         return final_model_list
 
     def start_run(self):
