@@ -397,7 +397,11 @@ class SbmlModel(Model):
         self.xml = ET.parse(file)
         self.actions = list(actions)
         self.suffixes = []
-        self.species = []
+
+        # Maps species names to the name of the compartment the species is in. Usually we'll just look at the keys
+        # to read the species names, but there's a couple places writing the CPS file where we need the compartment
+        self.species = dict()
+
         self.param_set = None
         if pset:
             self._set_param_set(pset)
@@ -430,8 +434,9 @@ class SbmlModel(Model):
         if len(self.species) == 0:
             species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
             for s in species:
-                sname = s.get('name')
-                self.species.append(sname)
+                sname = s.get('id')
+                compartment = s.get('compartment')
+                self.species[sname] = compartment
                 if sname in self.param_set.keys():
                     s.set('initialConcentration', str(self.param_set[sname]))
 
@@ -544,8 +549,8 @@ class SbmlModel(Model):
                 param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
                 if action.param in self.species:
                     param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
-                     value='CN=Root,Model=%s,Vector=Compartments[compartment],Vector=Metabolites[%s],Reference=InitialConcentration' %
-                     (model_name, action.param)))
+                     value='CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=InitialConcentration' %
+                     (model_name, self.species[action.param], action.param)))
                 else:
                     # assume it's a parameter
                     param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
@@ -559,7 +564,8 @@ class SbmlModel(Model):
                 # action-type-specific Report settings
                 task_type = 'scan'
                 if action.param in self.species:
-                    first_col_string = 'CN=Root,Model=%s,Vector=Compartments[compartment],Vector=Metabolites[%s],Reference=InitialConcentration' % (model_name, action.param)
+                    first_col_string = 'CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=InitialConcentration' \
+                                       % (model_name, self.species[action.param], action.param)
                 else:
                     first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
                                                                                                   action.param)
@@ -576,14 +582,14 @@ class SbmlModel(Model):
             report.append(comment)
             report_table = etree.Element('Table', printTitle='1')
             report.append(report_table)
-            tablestring = "CN=Root,Model=%s,Vector=Compartments[compartment],Vector=Metabolites[%s],Reference=Concentration"
+            tablestring = "CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=Concentration"
             # For the Model=?? attribute of tablestring, we need to get a name from somewhere else in the file
             model_elem = root.findall('cps:Model', namespaces=space)[0]
             model_name = model_elem.get('name')
             obj = etree.Element('Object', cn=first_col_string)
             report_table.append(obj)
             for s in self.species:
-                obj = etree.Element('Object', cn=tablestring % (model_name, s))
+                obj = etree.Element('Object', cn=tablestring % (model_name, self.species[s], s))
                 report_table.append(obj)
 
             cps.write('%s.cps' % file)
