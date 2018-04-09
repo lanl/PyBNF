@@ -80,7 +80,7 @@ def parse(s):
     mdmkey = pp.CaselessLiteral("model")
     bngl_file = pp.Regex(".*?\.(bngl|xml)")
     exp_file = pp.Regex(".*?\.(exp|con)")
-    mdmgram = mdmkey - equals - bngl_file - colon - pp.delimitedList(exp_file) - comment
+    mdmgram = mdmkey - equals - bngl_file - pp.Optional(colon - pp.delimitedList(exp_file)) - comment
 
     # normalization mapping grammar
     normkey = pp.CaselessLiteral("normalization")
@@ -97,8 +97,8 @@ def parse(s):
 
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
-    mutgram = mutkey - equals - string - string - pp.OneOrMore(pp.Word(pp.alphanums + punctuation_safe)) - colon - \
-        pp.Group(pp.delimitedList(exp_file)) - comment
+    mutgram = mutkey - equals - string - string - pp.OneOrMore(pp.Word(pp.alphanums + punctuation_safe)) - \
+        pp.Group(pp.Optional(colon - pp.delimitedList(exp_file))) - comment
 
     # check each grammar and output somewhat legible error message
     line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram
@@ -152,7 +152,7 @@ def ploop(ls):  # parse loop
             elif l[0] in multnumkeys:
                 key = l[0]
                 values = [float(x) for x in l[1:]]
-            else:
+            elif l[0] != 'model':
                 key = l[0]
                 values = flatten(l[1:])
 
@@ -160,6 +160,9 @@ def ploop(ls):  # parse loop
             if l[0] == 'model':
                 key = l[1]
                 values = l[2:]
+                if len(values) == 0:
+                    print1('Warning: Model %s has no associated data files. This is only a good idea if you are '
+                           'accessing its outputs in some other .con file.' % l[1])
                 d[key] = values  # individual data files remain in list
                 models.add(key)
                 exp_data.update(values)
@@ -181,6 +184,9 @@ def ploop(ls):  # parse loop
                     d['mutant'].append(l[1:])
                 else:
                     d['mutant'] = [l[1:]]
+                if len(l[-1]) == 0:
+                    print1('Warning: Model %s has no associated data files. This is only a good idea if you are '
+                           'accessing its outputs in some other .con file.' % l[2])
                 exp_data.update(l[-1])
             elif l[0] == 'normalization':
                 # Normalization defined with way too many possible options
