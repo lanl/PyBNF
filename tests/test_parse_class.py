@@ -78,7 +78,6 @@ class TestParse:
         assert d[('logvar', 'b')] == [3.]
         assert d['normalization'] == {'data1.exp': 'init', 'data2.exp': [('init', [4,6,7,8]), ('zero', ['xyz'])], 'data3.exp': [('init', ['var1', 'var2'])]}
         assert d['cluster_type'] == 'slurm'
-        print(d['time_course'])
         assert d['time_course'] == [{'model': 'thing.bngl', 'time': '100', 'step': '10'}]
         assert d['param_scan'] == [{'model': 'another.bngl', 'param': 'var2__FREE__', 'min': '10', 'max': '30', 'step': '1', 'time': '100'}]
         assert d['mutant'] == [['another.bngl', 'm1', 'a4__FREE__=42', 'b5__FREE__*=17', ['data1m1.exp', 'data2m1.exp']]]
@@ -93,3 +92,7 @@ class TestParse:
     def test_node_parse(self):
         assert parse.parse('worker_nodes = cn196 192.168.1.1') == ['worker_nodes', 'cn196', '192.168.1.1']
         assert parse.parse('scheduler_node = this_machine') == ['scheduler_node', 'this_machine']
+
+    def test_no_exp(self):
+        assert parse.parse('model=thing.bngl') == ['model', 'thing.bngl']
+        assert parse.parse('mutant = thing mutant a*=2 b=0') == ['mutant', 'thing', 'mutant', 'a*=2', 'b=0', []]
