@@ -11,7 +11,7 @@ from .config import init_logging
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-from .pset import NetModel, BNGLModel
+from .pset import MutantModel
 from .printing import print0, print1, print2, PybnfError
 
 import logging
@@ -303,6 +303,14 @@ class Algorithm(object):
 
         for m in init_model_list:
             final_model_list.append(m.initialize(init_dir, self.config.config['wall_time_gen']))
+
+        mut_list = []
+        for mut in self.config.mutant_specs:
+            # basemodel, mutname, statement1, statement2, ..., [exp1, exp2] = mut
+            base = [m for m in final_model_list if m.name == mut[0]]
+            assert len(base) == 1
+            mut_list.append(MutantModel(mut[1], base[0], mut[2:-1]))
+        final_model_list += mut_list
 
         return final_model_list
 

@@ -89,6 +89,7 @@ class Configuration(object):
             self.config[k] = v
 
         self.models = self._load_models()
+        self.mutant_specs = self._load_mutants()
         self._load_simulators()
         self._load_actions()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
@@ -272,6 +273,38 @@ class Configuration(object):
                        'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
 
         return md
+
+    def _load_mutants(self):
+        """
+        Load models defined as mutants of other models.
+        We can't actually create them here because the original models still have to get initialized, but we can do
+        some preprocessing
+
+        Returns a list [[basemodelname, mutmodelname, statement1, ... , [exp1, exp2]]]
+        Only modifies the original list object by converting basemodelnames from a path to a bare name.
+        Performs several checks that list entries are valid.
+        """
+        if 'mutant' not in self.config:
+            return []
+        results = []
+        names = set()
+        for m in self.config['mutant']:
+            m[0] = self._file_prefix(m[0], '(bngl|xml)')
+            if m[0] not in self.models:
+                raise PybnfError('Mutant model declared based on model %s, but that model was not found' % m[0])
+            base_suffs = {s[1] for s in self.models[m[0]].suffixes}
+            valid_suffs = {s + m[1] for s in base_suffs}
+            if m[1] in names or m[1] in self.models:
+                raise PybnfError('Duplicate model name %s' % m[1])
+            names.add(m[1])
+            for expfile in m[-1]:
+                expname = self._file_prefix(expfile, '(exp|con)')
+                if expname not in valid_suffs:
+                    raise PybnfError('Invalid experimental file "%s" for mutant model %s. Based on the suffixes found'
+                                     ' in the base model, possible experimental file names are: %s' %
+                                     (expname, m[1], valid_suffs))
+            results.append(m)
+        return results
 
 
     def _load_simulators(self):

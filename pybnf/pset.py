@@ -59,6 +59,14 @@ class Model(object):
     def initialize(self, init_dir, timeout):
         return self
 
+    def append_suffix(self, suf):
+        """
+        Append the suffix 'suf' to all suffixes of this model. Used to create a mutant model off of this model.
+        :param suf:
+        :return:
+        """
+        logger.warning('Model subclass did not override append_suffix()')
+
 
 class BNGLModel(Model):
     """
@@ -388,6 +396,20 @@ class BNGLModel(Model):
             logger.info('Model %s does not require network generation' % self.name)
             return self
 
+    def append_suffix(self, suf):
+        """
+        Append the suffix 'suf' to all suffixes of this model. Used to create a mutant model off of this model.
+        :param suf:
+        :return:
+        """
+        def add_suf(match):
+            return match.group(0) + suf
+
+        for i in range(len(self.actions)):
+            self.actions[i] = re.sub('(?<=suffix=>")[a-zA-Z0-9_\-]+(?=")', add_suf, self.actions[i])
+
+        self.suffixes = [(s[0], s[1]+suf) for s in self.suffixes]
+
 
 class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
@@ -524,6 +546,11 @@ class SbmlModel(Model):
     def add_action(self, action):
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
+
+    def append_suffix(self, suf):
+        self.suffixes = [(s[0], s[1]+suf) for s in self.suffixes]
+        for a in self.actions:
+            a.suffix += suf
 
     def execute(self, folder, filename, timeout):
         # Create the modified XML file
@@ -693,13 +720,14 @@ class MutantModel(Model):
     """
     Represents a model that consists of another model, with some small number of parameters mutated
     """
-    def __init__(self, original=None, mutations=()):
+    def __init__(self, name, original=None, mutations=()):
         """
         :param original: The original model that we mutate
         :param mutation: List of mutations to make on the original model. Each mutation is represented as a string
         to be executed
         """
         self.model = copy.deepcopy(original)
+        self.name = name
 
         # Turn the mutation statements into things that will be executable in copy_with_param_set, by surrounding each
         # variable name as an index into a dictionary d
@@ -727,7 +755,7 @@ class MutantModel(Model):
         new_params = PSet(d)
         new_model = self.model.copy_with_param_set(new_params)
 
-        new_self = MutantModel()
+        new_self = MutantModel(self.name)
         new_self.model = new_model
         new_self.mutations = self.mutations
         return new_self
@@ -745,6 +773,10 @@ class MutantModel(Model):
 
     def add_action(self, action):
         return self.model.add_action(action)
+
+    def append_suffix(self, suf):
+        # Should not get called unless you're doing something crazy
+        return self.model.append_suffix(suf)
 
 class Action:
     """

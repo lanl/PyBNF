@@ -22,7 +22,7 @@ class TestMutantModel:
     def test_mutate(self):
         model1 = pset.BNGLModel(self.file1)
         assert model1.param_names == ('kase__FREE__', 'koff__FREE__', 'pase__FREE__')
-        model_mut = pset.MutantModel(model1, self.mutations)
+        model_mut = pset.MutantModel('testmodel', model1, self.mutations)
         ps = pset.PSet(self.dict1)
         model_mut_copy = model_mut.copy_with_param_set(ps)
         assert model_mut_copy.model.param_set['koff__FREE__'] == 0
