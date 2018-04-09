@@ -728,6 +728,8 @@ class MutantModel(Model):
         """
         self.model = copy.deepcopy(original)
         self.name = name
+        if self.model:
+            self.model.append_suffix(name)
 
         # Turn the mutation statements into things that will be executable in copy_with_param_set, by surrounding each
         # variable name as an index into a dictionary d

@@ -89,9 +89,9 @@ class Configuration(object):
             self.config[k] = v
 
         self.models = self._load_models()
-        self.mutant_specs = self._load_mutants()
         self._load_simulators()
         self._load_actions()
+        self.mutant_specs = self._load_mutants()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
