@@ -94,5 +94,5 @@ class TestParse:
         assert parse.parse('scheduler_node = this_machine') == ['scheduler_node', 'this_machine']
 
     def test_no_exp(self):
-        assert parse.parse('model=thing.bngl') == ['model', 'thing.bngl']
-        assert parse.parse('mutant = thing mutant a*=2 b=0') == ['mutant', 'thing', 'mutant', 'a*=2', 'b=0', []]
+        assert parse.parse('model=thing.bngl: None') == ['model', 'thing.bngl']
+        assert parse.parse('mutant = thing mutant a*=2 b=0 : None') == ['mutant', 'thing', 'mutant', 'a*=2', 'b=0', []]
