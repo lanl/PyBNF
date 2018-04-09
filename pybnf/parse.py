@@ -94,9 +94,14 @@ def parse(s):
     dict_key = pp.oneOf(' '.join(dictkeys), caseless=True)
     dictgram = dict_key - equals - pp.delimitedList(dict_entry) - comment
 
+    # mutant model grammar
+    mutkey = pp.CaselessLiteral('mutant')
+    mutgram = mutkey - equals - string - string - pp.OneOrMore(pp.Word(pp.alphanums + punctuation_safe)) - colon - \
+        pp.Group(pp.delimitedList(exp_file)) - comment
+
     # check each grammar and output somewhat legible error message
     line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram
-            ).parseString(s, parseAll=True).asList()
+            | mutgram).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -163,6 +168,12 @@ def ploop(ls):  # parse loop
                     d[l[0]].append(entry)
                 else:
                     d[l[0]] = [entry]
+            elif l[0] == 'mutant':
+                if 'mutant' in d:
+                    d['mutant'].append(l[1:])
+                else:
+                    d['mutant'] = [l[1:]]
+                exp_data.update(l[-1])
             elif l[0] == 'normalization':
                 # Normalization defined with way too many possible options
                 # At the end of all this, the config dict has one of the following formats:
