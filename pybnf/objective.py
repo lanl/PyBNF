@@ -67,9 +67,10 @@ class SummationObjective(ObjectiveFunction):
     Currently, this describes all objective functions in PyBNF.
     """
 
-    def __init__(self):
+    def __init__(self, ind_var_rounding=0):
         # Keep track of which warnings we've printed, so we only print each one once.
         self.warned = set()
+        self.rounding = ind_var_rounding
 
     def evaluate(self, sim_data, exp_data):
         """
@@ -95,17 +96,53 @@ class SummationObjective(ObjectiveFunction):
         # Iterate through rows of experimental data
         for rownum in range(exp_data.data.shape[0]):
 
-            # Figure out the corresponding row number in the simulation data
-            # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
-            sim_row = np.argmax(np.isclose(sim_data[indvar], exp_data.data[rownum, 0], atol=0.))
-            # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
-            if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
-                warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
-                if warnstr not in self.warned:
-                    print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
-                           " because that " + indvar + " was not in the simulation data.")
-                    self.warned.add(warnstr)
-                continue
+            if self.rounding == 0:
+                # Figure out the corresponding row number in the simulation data
+                # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
+                sim_row = np.argmax(np.isclose(sim_data[indvar], exp_data.data[rownum, 0], atol=0.))
+                # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
+                if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
+                    warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
+                    if warnstr not in self.warned:
+                        print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
+                               " because that " + indvar + " was not in the simulation data.")
+                        self.warned.add(warnstr)
+                    continue
+            elif self.rounding == 1:
+                # Take the closest row to the exp data
+                sim_row = np.argmin(abs(sim_data[indvar] - exp_data.data[rownum, 0]))
+                # Warn if there was really nothing close
+                diff = abs(sim_data[indvar][sim_row] - exp_data.data[rownum, 0])
+                if diff > 1. and diff / exp_data.data[rownum, 0] > 0.1:
+                    warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
+                    if warnstr not in self.warned:
+                        print1("Warning: For exp point %s=%s, used sim data at %s=%s" %
+                               (indvar, exp_data.data[rownum, 0], indvar, sim_data[indvar][sim_row]))
+                        self.warned.add(warnstr)
+
+            elif self.rounding == 2:
+                # Interpolate between the two closest rows
+                row1 = np.argmin(abs(sim_data[indvar] - exp_data.data[rownum, 0]))
+                r1diff = sim_data[indvar][row1] - exp_data.data[rownum, 0]
+                if row1 > 0 and np.sign(r1diff) != \
+                        np.sign(sim_data[indvar][row1-1] - exp_data.data[rownum, 0]):
+                    row2 = row1-1
+                elif row1 + 1 < len(sim_data[indvar]) and np.sign(r1diff) != \
+                        np.sign(sim_data[indvar][row1+1] - exp_data.data[rownum, 0]):
+                    row2 = row1+1
+                else:
+                    warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
+                    if warnstr not in self.warned:
+                        print1("Warning: Ignored %s %s because interpolation failed. That %s may be outside the range "
+                               "spanned by the simulation data" % (indvar, exp_data.data[rownum, 0], indvar))
+                        self.warned.add(warnstr)
+                    continue
+                r2diff = sim_data[indvar][row2] - exp_data.data[rownum, 0]
+                r1weight = abs(r2diff) / (abs(r1diff)+abs(r2diff))
+                sim_row = r1weight * sim_data.data[row1, :] + (1.-r1weight) * sim_data.data[row2, :]
+                # Todo: Not compatible with rest of code; expect sim_row to be an index.
+            else:
+                raise PybnfError('Possible values for ind_var_rounding are 0, 1, or 2.')
 
             for col_name in compare_cols:
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):

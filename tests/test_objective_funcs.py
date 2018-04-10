@@ -31,6 +31,15 @@ class TestObjectiveFunctions:
         cls.d1s = data.Data()
         cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
 
+        cls.data1round = [
+            '# x    obs1    obs3\n',
+            ' 0   3.1 5.1\n',
+            ' 1.1   2   6\n',
+            ' 2.8   4.2   10.2\n'
+        ]
+        cls.d1round = data.Data()
+        cls.d1round.data = cls.d1round._read_file_lines(cls.data1round, '\s+')
+
         cls.data1s_nan = [
             '# x    obs1    obs3\n',
             ' 0   3.1 5.1\n',
@@ -86,3 +95,7 @@ class TestObjectiveFunctions:
         assert self.sos.evaluate(self.d1s_inf, self.d1e) is None
         assert self.norm_sos.evaluate(self.d1s_inf, self.d1e) is None
         assert self.ave_norm_sos.evaluate(self.d1s_inf, self.d1e) is None
+
+    def test_round_ind_var(self):
+        obj = objective.ChiSquareObjective(ind_var_rounding=1)
+        npt.assert_almost_equal(obj.evaluate(self.d1round, self.d1e), 0.797777777777778)  # Value computed by hand
