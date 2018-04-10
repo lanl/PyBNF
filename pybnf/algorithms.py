@@ -11,7 +11,7 @@ from .config import init_logging
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-from .pset import NetModel
+from .pset import NetModel, BNGLModel
 from .printing import print0, print1, print2, PybnfError
 
 import logging
@@ -95,7 +95,7 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
-    def __init__(self, models, params, job_id, bngcommand, output_dir, timeout, delete_folder=False):
+    def __init__(self, models, params, job_id, output_dir, timeout, delete_folder=False):
         """
         Instantiates a Job
 
@@ -105,8 +105,6 @@ class Job:
         :type params: PSet
         :param job_id: Job identification; also the folder name that the job gets saved to
         :type job_id: str
-        :param bngcommand: Command to run BioNetGen
-        :type bngcommand: str
         :param output_dir path to the directory where I should create my simulation folder
         :type output_dir: str
         :param delete_folder: If True, delete the folder and files created after the simulation runs
@@ -117,10 +115,6 @@ class Job:
         self.job_id = job_id
         self.home_dir = os.getcwd()  # This is safe because it is called from the scheduler, not the workers.
         # Force absolute paths for bngcommand and output_dir, because workers do not get the relative path info.
-        if bngcommand[0] == '/':
-            self.bng_program = bngcommand
-        else:
-            self.bng_program = self.home_dir + '/' + bngcommand
         if output_dir[0] == '/':
             self.output_dir = output_dir
         else:
@@ -134,15 +128,13 @@ class Job:
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
 
-    def _write_models(self):
-        """Writes models to file"""
-        model_files = []
-        for i, model in enumerate(self.models):
+    def _run_models(self):
+        ds = {}
+        for model in self.models:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
-            model_with_params.save('%s/%s' % (self.folder, model_file_prefix))
-            model_files.append('%s/%s' % (self.folder, model_file_prefix))
-        return model_files
+            ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
+        return ds
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
@@ -168,9 +160,10 @@ class Job:
                                   self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
-            model_files = self._write_models()
-            self.execute(model_files)
-            simdata = self.load_simdata()
+            #D! model_files = self._write_models()
+            # self.execute(model_files)
+            # simdata = self.load_simdata()
+            simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
             res = FailedSimulation(self.params, self.job_id, 1)
@@ -188,36 +181,6 @@ class Job:
                 res = FailedSimulation(self.params, self.job_id, 1)
 
         return res
-
-    def execute(self, models):
-        """Executes model simulations"""
-        for model in models:
-            cmd = [self.bng_program, '%s.bngl' % model, '--outdir', self.folder]
-            log_file = '%s.log' % model
-            with open(log_file, 'w') as lf:
-                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=self.timeout)
-
-    def load_simdata(self):
-        """
-        Function to load simulation data after executing all simulations for an evaluation
-
-        Returns a nested dictionary structure.  Top-level keys are model names and values are
-        dictionaries whose keys are action suffixes and values are Data instances
-
-        :return: dict of dict
-        """
-        ds = {}
-        for model in self.models:
-            ds[model.name] = {}
-            for suff in model.suffixes:
-                if suff[0] == 'simulate':
-                    data_file = '%s/%s_%s.gdat' % (self.folder, self._name_with_id(model), suff[1])
-                    data = Data(file_name=data_file)
-                else:  # suff[0] == 'parameter_scan'
-                    data_file = '%s/%s_%s.scan' % (self.folder, self._name_with_id(model), suff[1])
-                    data = Data(file_name=data_file)
-                ds[model.name][suff[1]] = data
-        return ds
 
 
 class JobGroup:
@@ -333,6 +296,7 @@ class Algorithm(object):
 
         :return: list of Model instances
         """
+        # Todo: Move to config or BNGL model class?
         home_dir = os.getcwd()
         os.chdir(self.config.config['output_dir'])  # requires creation of this directory prior to function call
         logger.debug('Copying list of models')
@@ -341,7 +305,7 @@ class Algorithm(object):
         init_dir = os.getcwd() + '/Initialize'
 
         for m in init_model_list:
-            if m.generates_network:
+            if isinstance(m, BNGLModel) and m.generates_network:
                 logger.debug('Model %s requires network generation' % m.name)
 
                 if not os.path.isdir(init_dir):
@@ -378,6 +342,7 @@ class Algorithm(object):
                 logger.info('Output for network generation of model %s logged in %s/%s.log' %
                              (m.name, init_dir, gnm_name))
                 final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
+                final_model_list[-1].bng_command = m.bng_command
             else:
                 logger.info('Model %s does not require network generation' % m.name)
                 final_model_list.append(m)
@@ -533,7 +498,7 @@ class Algorithm(object):
         logger.debug('Creating Job %s' % job_id)
         if self.config.config['smoothing'] == 1:
             # Create a single job
-            return [Job(self.model_list, params, job_id, self.config.config['bng_command'],
+            return [Job(self.model_list, params, job_id,
                     self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
                     bool(self.config.config['delete_old_files']))]
         else:
@@ -543,7 +508,7 @@ class Algorithm(object):
             for i in range(self.config.config['smoothing']):
                 thisname = '%s_rep%i' % (job_id, i)
                 newnames.append(thisname)
-                newjobs.append(Job(self.model_list, params, thisname, self.config.config['bng_command'],
+                newjobs.append(Job(self.model_list, params, thisname,
                                    self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
                                    bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
@@ -703,8 +668,7 @@ class Algorithm(object):
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name),
-                         gen_only=False)
+            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name))
             if self.config.config['delete_old_files'] == 0:
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':
@@ -721,7 +685,6 @@ class Algorithm(object):
                         logger.error('Cannot find files corresponding to best fit parameter set... exiting')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
-                        exit(1)
 
         if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
             # End of fitting; delete unneeded files

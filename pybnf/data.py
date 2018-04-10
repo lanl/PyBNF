@@ -67,7 +67,7 @@ class Data(object):
         else:
             return float(x)
 
-    def load_data(self, file_name, sep='\s+'):
+    def load_data(self, file_name, sep='\s+', flags=()):
         """
         Loads column data from a text file
 
@@ -75,18 +75,32 @@ class Data(object):
         :type file_name: str
         :param sep: String that separates columns
         :type sep: str
+        :param flags: Additional specifications about how to load the file. Current options: 'copasi-scan' -
+        triggers some additional processing to read the output of a Copasi parameter scan. 'time' - force the name of
+        the independent variable to be 'time', instead of the actual header contents (in Copasi, the header instead
+        says 'Time'.)
+        :type flags: Iterable of str
         :return: None
         """
         with open(file_name) as f:
             lines = f.readlines()
 
-        self.data = self._read_file_lines(lines, sep, file_name=file_name)
+        self.data = self._read_file_lines(lines, sep, file_name=file_name, flags=flags)
 
-    def _read_file_lines(self, lines, sep, file_name=''):
+    def _read_file_lines(self, lines, sep, file_name='', flags=()):
         """Helper function that reads lines from BNGL gdat files"""
 
         header = re.split(sep, lines[0].strip().strip('#').strip())
-        header = [h.strip('()') for h in header]  # Ignore parentheses added to functions in BNG 2.3
+        # Ignore parentheses added to functions in BNG 2.3, and [] added to species names in COPASI
+        header = [h.strip('()[]') for h in header]
+        if 'copasi-scan' in flags:
+            header[0] = re.sub('Values\[', '', header[0])
+            header[0] = re.sub('\]\.InitialValue', '', header[0])
+            header[0] = re.sub('\]', '', header[0])  # For scan on initial conditions
+        if 'time' in flags:
+            header[0] = 'time'
+        if header[0] == 'Time':
+            header[0] = 'time'  # Allow either capitalization because Copasi uses capital, BNG uses lowercase
         ncols = len(header)
         self.indvar = header[0]
 

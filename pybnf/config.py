@@ -4,7 +4,7 @@
 from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
-from .pset import BNGLModel, ModelError
+from .pset import BNGLModel, ModelError, SbmlModel, TimeCourse, ParamScan
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -88,23 +88,9 @@ class Configuration(object):
         for k, v in d.items():
             self.config[k] = v
 
-        if self.config['bng_command'] == '':
-            raise PybnfError('Path to BNG2.pl not defined.  Please specify using the "bng_command" parameter '
-                             'in the configuration file or set the BNGPATH environmental variable')
-        elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
-            raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
-                             'name at the end of the path (e.g. /path/to/BNG2.pl)')
-        else:  # check to make sure BNG2.pl is available
-            try:
-                logger.info('Checking to make sure bng_command is appropriately set')
-                subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError:
-                raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
-                                 'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
-                                 'variable is correctly set')
-
         self.models = self._load_models()
+        self._load_simulators()
+        self._load_actions()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
@@ -119,11 +105,15 @@ class Configuration(object):
             bng_command = os.environ['BNGPATH'] + '/BNG2.pl'
         except KeyError:
             bng_command = ''
+        try:
+            copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
+        except KeyError:
+            copasi_command = ''
 
         default = {
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
-            'backup_every': 1,
+            'backup_every': 1, 'copasi_command': copasi_command, 'time_course': (), 'param_scan': (),
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,
@@ -244,14 +234,34 @@ class Configuration(object):
         Loads models specified in configuration file in a dictionary keyed on
         Model.name
         """
+        # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
+        home_dir = os.getcwd()
+
+        def absolute(dir):
+            # Convert relative path to absolute path
+            return dir if dir[0] == '/' else home_dir + '/' + dir
+
         md = {}
         for mf in self.config['models']:
+            # Initialize model type based on extension
             try:
-                model = BNGLModel(mf)
+                if re.search('\.bngl$', mf):
+                    model = BNGLModel(mf)
+                    model.bng_command = absolute(self.config['bng_command'])
+                    logger.debug('Set model %s command to %s' % (mf, model.bng_command))
+                elif re.search('\.xml$', mf):
+                    model = SbmlModel(mf)
+                    model.copasi_command = absolute(self.config['copasi_command'])
+                else:
+                    # Should not get here - should be caught in parsing
+                    raise ValueError('Unrecognized model suffix in %s' % mf)
             except FileNotFoundError:
                 raise PybnfError('Model file %s was not found.' % mf)
             except ModelError as e:
                 raise PybnfError('In model file %s: %s' % (mf, e.message))
+            if model.name in md:
+                raise PybnfError('Multiple models with the name "%s". Please give all your models different names. '
+                                 % model.name)
             md[model.name] = model
 
         if self.config['smoothing'] > 1:
@@ -262,6 +272,70 @@ class Configuration(object):
                        'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
 
         return md
+
+
+    def _load_simulators(self):
+
+        model_types = set([type(m) for m in self.models.values()])
+        logger.debug('Here are all your sweet model types: %s' % model_types)
+
+        # For each model type that exists in the run, check that the simulator is available, and pass the simulator
+        # path to the appropriate Model subclass
+        if BNGLModel in model_types:
+            if self.config['bng_command'] == '':
+                raise PybnfError('Path to BNG2.pl not defined.  Please specify using the "bng_command" parameter '
+                                 'in the configuration file or set the BNGPATH environmental variable')
+            elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
+                raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
+                                 'name at the end of the path (e.g. /path/to/BNG2.pl)')
+            else:  # check to make sure BNG2.pl is available
+                try:
+                    logger.info('Checking to make sure bng_command is appropriately set')
+                    subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError:
+                    raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
+                                     'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
+                                     'variable is correctly set')
+
+        if SbmlModel in model_types:
+            if self.config['copasi_command'] == '':
+                raise PybnfError('Path to CopasiSE not defined. Please specify using the "copasi_command" parameter in '
+                                 'the configuration file or set the COPASIDIR environmental variable.')
+            if re.search(r'CopasiSE', self.config['copasi_command']) is None:
+                print1('Warning: The "copasi_command" should be a path to the CopasiSE executable '
+                       '(e.g. /path/to/CopasiSE). I don\'t see CopasiSE in your path, so it might be entered wrong.')
+
+            try:
+                logger.info('Checking to make sure copasi_command is appropriately set')
+                subprocess.run([self.config['copasi_command'], '--help'], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError or PermissionError:
+                raise PybnfError('Copasi failed to execute. Please check that the "copasi_command" parameter in the '
+                                 'configuration file points to the CopasiSE executable or that the COPASIDIR '
+                                 'enviornmental variable is correctly set')
+
+    def _load_actions(self):
+
+        for (key, ActionType) in (('time_course', TimeCourse), ('param_scan', ParamScan)):
+            # Iterate through all time courses and param scans included in the config dict, create the corresponding
+            # Action objects, and add them to the appropriate model(s).
+            for action_dict in self.config[key]:
+                if 'model' in action_dict:
+                    action = ActionType(action_dict)
+                    try:
+                        # Model lookup - should work if model name included the extension or not.
+                        model_key = self._file_prefix(action_dict['model'], '(bngl|xml)')
+                        self.models[model_key].add_action(action)
+                    except KeyError:
+                        raise PybnfError('%s declared for model %s, but that model was not found.' %
+                                         (key, action_dict['model']))
+                else:
+                    # Apply to all models (hopefully just 1)
+                    if len(self.models) > 1:
+                        print1('Warning: Applying the same %s action to all models in this fitting run.' % key)
+                    for m in self.models:
+                        self.models[m].add_action(ActionType(action_dict))
 
     @staticmethod
     def _file_prefix(ef, ext="exp"):
@@ -301,9 +375,10 @@ class Configuration(object):
                 for ef in efs_per_m:
                     if ef not in suffs:
                         raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef,
-                              "You specified that model %s.bngl corresponds to data file %s.exp, but I can't find the "
-                              "corresponding action in the model file. One of the actions in %s.bngl needs to include "
-                              "the argument 'suffix=>\"%s\" '." % (model.name, ef, model.name, ef))
+                              "You specified that model %s corresponds to data file %s.exp, but I can't find the "
+                              "corresponding action in the model file or config file. One of the actions in %s.bngl "
+                              "needs to include the argument 'suffix=>\"%s\" ', or your config file needs to include "
+                              "an action with the suffix %s." % (model.name, ef, model.name, ef, ef))
             logger.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
             mapping[model.name] = efs_per_m
         return mapping
@@ -371,6 +446,7 @@ class Configuration(object):
 
         extra_in_conf = set(self.variables).difference(model_vars)
         extra_in_model = set(model_vars).difference(self.variables)
+        extra_in_model = {p for p in extra_in_model if p[-8:] == '__FREE__'}
         if len(extra_in_conf) > 0:
             raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '
                              'file: %s' % extra_in_conf)

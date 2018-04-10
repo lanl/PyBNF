@@ -1,13 +1,17 @@
 """pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
 
 
-from .printing import print1, PybnfError
+from .printing import print0, print1, PybnfError
 
 import logging
 import numpy as np
 import re
 import copy
-
+import xml.etree.ElementTree as ET
+from subprocess import run, STDOUT, DEVNULL
+from .data import Data
+import os
+from lxml import etree
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,22 @@ class Model(object):
         """
         NotImplementedError("save is not implemented")
 
+    def execute(self, folder, filename, timeout):
+        """
+        Executes the model, working in folder/filename, with a max runtime of timeout.
+        Loads the resulting data, and returns a dictionary mapping suffixes to data objects. For model types without a
+        notion of suffixes, the dictionary will contain one key mapping to one Data object
+
+        :param folder: The folder to save to, eg 'Simulations/init22'
+        :param filename: The name of the model file to create, not including the extension, eg 'init22'
+        :param timeout: Maximum runtime in seconds
+        :return: dict of Data
+        """
+        raise NotImplementedError("Subclasses of Model must override execute()")
+
+    def add_action(self, action):
+        pass
+
 
 class BNGLModel(Model):
     """
@@ -52,12 +72,14 @@ class BNGLModel(Model):
         self.file_path = bngl_file
         self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
+        self.bng_command = ''
 
         self.generates_network = False
         self.generate_network_line = None
         self.generate_network_line_index = -1
         self.action_line_indices = []
         self.actions = []
+        self.config_actions = []
 
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
 
@@ -270,13 +292,59 @@ class BNGLModel(Model):
         f.write(text)
         f.close()
 
+    def execute(self, folder, filename, timeout):
+        """
 
-class NetModel(Model):
+        :param folder: Folder in which to do all the file creation
+        :return: Data object
+        """
+        # Create the modified BNGL file
+        file = '%s/%s' % (folder, filename)
+        self.save(file)
+
+        # Run BioNetGen
+        cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
+        log_file = '%s.log' % file
+        with open(log_file, 'w') as lf:
+            run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+
+        # Load the data file(s)
+        ds = self._load_simdata(folder, filename)
+        return ds
+
+    def _load_simdata(self, folder, filename):
+        """
+        Function to load simulation data after executing all simulations for an evaluation
+
+        Returns a nested dictionary structure.  Top-level keys are model names and values are
+        dictionaries whose keys are action suffixes and values are Data instances
+
+        :return: dict of Data
+        """
+        ds = {}
+        for suff in self.suffixes:
+            if suff[0] == 'simulate':
+                data_file = '%s/%s_%s.gdat' % (folder, filename, suff[1])
+                data = Data(file_name=data_file)
+            else:  # suff[0] == 'parameter_scan'
+                data_file = '%s/%s_%s.scan' % (folder, filename, suff[1])
+                data = Data(file_name=data_file)
+            ds[suff[1]] = data
+        return ds
+
+    def add_action(self, action):
+        self.config_actions.append(action)
+        print0('Warning: Adding actions to BNGL models with config options is not yet supported')
+
+
+class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
         self.name = name
         self.actions = acts
+        self.config_actions = []
         self.suffixes = suffs
         self.param_set = None
+        self.bng_command = ''
 
         if not (ls or nf):
             raise ModelError("Must specify a file name or a list of strings corresponding to the .net file's lines")
@@ -295,7 +363,6 @@ class NetModel(Model):
         :type pset: PSet
         :return: NetModel
         """
-        self.param_set = pset
         lines_copy = copy.deepcopy(self.netfile_lines)
         in_params_block = False
         for i, l in enumerate(lines_copy):
@@ -306,10 +373,13 @@ class NetModel(Model):
             elif in_params_block:
                 m = re.match('(\s+)(\d)+\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
-                    if m.group(3) in self.param_set.keys():
-                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(self.param_set[m.group(3)]))
+                    if m.group(3) in pset.keys():
+                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
 
-        return NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel = NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel.bng_command = self.bng_command
+        newmodel.param_set = pset
+        return newmodel
 
     def save(self, file_prefix):
         with open(file_prefix + '.net', 'w') as wf:
@@ -317,6 +387,352 @@ class NetModel(Model):
         with open(file_prefix + '.bngl', 'w') as wf:
             wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
+
+
+class SbmlModel(Model):
+
+    def __init__(self, file, pset=None, actions=()):
+        self.file_path = file
+        self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
+        self.xml = ET.parse(file)
+        self.actions = list(actions)
+        self.suffixes = []
+
+        # Maps species names to the name of the compartment the species is in. Usually we'll just look at the keys
+        # to read the species names, but there's a couple places writing the CPS file where we need the compartment
+        self.species = dict()
+        # Set of the possible parameter names, including both parameters and species names
+        # (species names listed in a PSet are treated as initial conditions)
+        self.param_names = set()
+
+        self.param_set = None
+        self._set_param_set(pset)
+        self.stochastic = False
+        self.copasi_command = ''
+
+    def copy_with_param_set(self, pset):
+
+        newmodel = copy.deepcopy(self)
+        newmodel._set_param_set(pset)
+        return newmodel
+
+    def _set_param_set(self, pset):
+        """
+        Sets the model's parameter set to pset, and updates the appropriate xml
+        If pset is passed as None, still goes through the motions and assembles the model's param_names attribute;
+        this should be done when setting up the config at the start of the run to make sure parameter names are ok.
+        :return:
+        """
+        self.param_set = pset
+        param_keys = pset.keys() if pset else ()
+        root = self.xml.getroot()
+
+        # The xml file is full of "namespaces" designed to make it difficult to parse, so extra acrobatics are required
+        # here
+        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
+        space = {'sbml': ns}
+
+        # Careful parsing here: The names are stored unpredictably under either 'id' or 'name'
+        # We use 'name' if it's available, otherwise use 'id'
+        # If 'id' and 'name' contain 2 different things (which can occur in exported Sbml from Copasi), use 'name'
+        # and log a warning if this is the initial check (pset=None)
+        params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
+        for p in params:
+            pname = p.get('name')
+            if pname is None:
+                pname = p.get('id')
+            elif pset is None and pname != p.get('id'):
+                logger.warning('Parameter has name "%s" and id "%s". For this fitting run, assuming it is named "%s"' %
+                               (pname, p.get('id'), pname))
+            if pname in param_keys:
+                p.set('value', str(self.param_set[pname]))
+            self.param_names.add(pname)
+
+        self.species = dict()
+        species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
+        for s in species:
+            sname = s.get('name')
+            if sname is None:
+                sname = s.get('id')
+            elif pset is None and sname != s.get('id'):
+                logger.warning('Species has name "%s" and id "%s". For this fitting run, assuming it is named "%s"' %
+                               (sname, s.get('id'), sname))
+            compartment = s.get('compartment')
+            self.species[sname] = compartment
+            if sname in param_keys:
+                s.set('initialConcentration', str(self.param_set[sname]))
+            self.param_names.add(sname)
+
+    def model_text(self):
+        return ET.tostring(self.xml.root)
+
+    def save(self, file_prefix):
+        self.xml.write('%s.xml' % file_prefix, encoding='unicode')
+
+    def add_action(self, action):
+        self.actions.append(action)
+        self.suffixes.append((action.bng_codeword, action.suffix))
+
+    def execute(self, folder, filename, timeout):
+        # Create the modified XML file
+        file = '%s/%s' % (folder, filename)
+        self.save(file)
+
+        # Convert to Copasi file
+        run([self.copasi_command, '-i', '%s.xml' % file], check=True, stderr=STDOUT, stdout=DEVNULL, timeout=timeout)
+
+        # Edit the Copasi file to include the required actions
+        # Python thinks Copasi XML is invalid because of more "namespace" nonsense
+        # To get around this, need to do some more complicated stuff...
+
+        # Read xml from Copasi file
+        parser = etree.XMLParser(recover=True)
+        cps = etree.ElementTree(file='%s.cps' % file, parser=parser)
+        cps_backup = cps
+        root = cps.getroot()
+
+        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
+        space = {'cps': ns}
+        if len(self.actions) == 0:
+            raise ValueError('Cannot run model with no actions')
+
+        results = dict()  # Will contain one key:Data pair for each action we run for this model
+        for action in self.actions:
+            if len(self.actions) > 1:
+                # Work with a copy of the xml because we'll need to use it multiple times
+                cps = copy.deepcopy(cps_backup)
+                root = cps.getroot()
+            # We'll need the value of this thing later for setting various attributes.
+            model_elem = root.findall('cps:Model', namespaces=space)[0]
+            model_name = model_elem.get('name')
+            # Set the save file to be the same as for a BNGL file
+            if action.bng_codeword == 'simulate':
+                ext = 'gdat'
+            else:
+                ext = 'scan'
+            target_file = '%s_%s_%s.%s' % (self.name, self.param_set.name, action.suffix, ext)
+            if isinstance(action, TimeCourse):
+                # Find the time course task in the xml file
+                tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
+                time_task = None
+                for t in tasks:
+                    if t.get('name') == 'Time-Course':
+                        time_task = t
+                        break
+                if time_task is None:
+                    raise RuntimeError('Time-Course task unexpectedly missing from cps file')
+                # Update attributes of time course task
+                time_task.set('scheduled', 'true')
+                for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
+                    if param.get('name') == 'StepNumber':
+                        param.set('value', str(action.stepnumber))
+                    elif param.get('name') == 'StepSize':
+                        param.set('value', str(action.step))
+                    elif param.get('name') == 'Duration':
+                        param.set('value', str(action.time))
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target=target_file, append='1',
+                                            confirmOverwrite='1')
+                time_task.insert(0, report_elem)
+                # action-type-specific Report settings
+                task_type = 'timeCourse'
+                first_col_string = 'CN=Root,Model=%s,Reference=Time' % model_name
+            elif isinstance(action, ParamScan):
+                tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
+                # Find the 2 tasks that we need to edit
+                time_task = None
+                scan_task = None
+                for t in tasks:
+                    if t.get('name') == 'Time-Course':
+                        time_task = t
+                    if t.get('name') == 'Scan':
+                        scan_task = t
+                if time_task is None or scan_task is None:
+                    raise RuntimeError('Time-Course and/or Scan tasks unexpectedly missing from cps file')
+
+                # Edit the time course task so it prints one time point at the t where we're param scanning
+                for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
+                    if param.get('name') == 'StepNumber':
+                        param.set('value', '1')
+                    elif param.get('name') == 'StepSize':
+                        param.set('value', str(action.time))
+                    elif param.get('name') == 'Duration':
+                        param.set('value', str(action.time))
+                    elif param.get('name') == 'OutputStartTime':
+                        param.set('value', '1.0e-8')  # Suppress the output at time 0
+                # Edit the scan task so it runs with the chosen specs
+                scan_task.set('scheduled', 'true')
+                report_elem = etree.Element('Report', reference='BNF_Report_1', target=target_file, append='0',
+                                            confirmOverwrite='0')
+                scan_task.insert(0, report_elem)
+                param_parent = scan_task.findall('cps:Problem/cps:ParameterGroup', namespaces=space)[0]
+                param_subparent = etree.Element('ParameterGroup', name='ScanItem')
+                param_parent.append(param_subparent)
+                param_subparent.append(etree.Element('Parameter', name='Number of steps', type='unsignedInteger',
+                                                     value=str(action.stepnumber)))
+                param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
+                if action.param in self.species:
+                    param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
+                     value='CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=InitialConcentration' %
+                     (model_name, self.species[action.param], action.param)))
+                else:
+                    # assume it's a parameter
+                    param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
+                     value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name, action.param)))
+                param_subparent.append(etree.Element('Parameter', name='Minimum', type='float',
+                                                     value=str(action.min)))
+                param_subparent.append(etree.Element('Parameter', name='Maximum', type='float',
+                                                     value=str(action.max)))
+                param_subparent.append(etree.Element('Parameter', name='log', type='bool',
+                                                     value=str(action.logspace)))
+                # action-type-specific Report settings
+                task_type = 'scan'
+                if action.param in self.species:
+                    first_col_string = 'CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=InitialConcentration' \
+                                       % (model_name, self.species[action.param], action.param)
+                else:
+                    first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
+                                                                                                  action.param)
+            else:
+                raise NotImplementedError('Only implemented action types are Time Course and Param Scan')
+
+            # Create the report object
+            report_list = root.findall('cps:ListOfReports', namespaces=space)[0]
+            report = etree.Element('Report', key='BNF_Report_1', name='BNF_Report', taskType=task_type, separator='\t',
+                                precision='6')
+            report_list.append(report)
+            comment = etree.Element('Comment')
+            comment.text = 'Automatically generated by BioNetFit'
+            report.append(comment)
+            report_table = etree.Element('Table', printTitle='1')
+            report.append(report_table)
+            tablestring = "CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=Concentration"
+            # For the Model=?? attribute of tablestring, we need to get a name from somewhere else in the file
+            model_elem = root.findall('cps:Model', namespaces=space)[0]
+            model_name = model_elem.get('name')
+            obj = etree.Element('Object', cn=first_col_string)
+            report_table.append(obj)
+            for s in self.species:
+                obj = etree.Element('Object', cn=tablestring % (model_name, self.species[s], s))
+                report_table.append(obj)
+
+            cps.write('%s.cps' % file)
+
+            # Run Copasi
+
+            cmd = [self.copasi_command, '%s.cps' % file]
+            log_file = '%s.log' % file
+            with open(log_file, 'w') as lf:
+                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+
+            if task_type == 'timeCourse':
+                # Tab-delimited, header row with no '#', extra [] around each variable
+                res = Data()
+                res.load_data('%s/%s' % (folder, target_file), flags=('time',))
+            elif task_type == 'scan':
+                res = Data()
+                res.load_data('%s/%s' % (folder, target_file), flags=('copasi-scan',))
+            else:
+                raise RuntimeError('Unknown task type')
+            results[action.suffix] = res
+        return results
+
+
+class Action:
+    """
+    Represents a simulation action performed within a model
+    """
+    pass
+
+
+class TimeCourse(Action):
+
+    def __init__(self, d):
+        """
+        :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
+        of this action.
+        Valid dict keys are time:number, step:number, model:str (unused here), suffix: str,
+        values: list of numbers (not implemented)
+        Raises a PyBNF error if anything is wrong with the dict.
+        """
+        # Available keys and default values
+        num_keys = {'time', 'step'}
+        str_keys = {'model', 'suffix'}
+        # Default values
+        self.time = None  # Required
+        self.step = 1.
+        self.model = ''
+        self.suffix = 'time_course'
+
+        # Transfer all the keys in the dict to my attributes of the same name
+        for k in d:
+            if k in num_keys:
+                try:
+                    num = float(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in str_keys:
+                self.__setattr__(k, d[k])
+            else:
+                raise PybnfError('"%s" is not a valid attribute for "time_course".' % k,
+                                 '"%s" is not a valid attribute for "time_course". Possible attributes are: %s' %
+                                 (k, ','.join(num_keys.union(str_keys))))
+
+        if self.time is None:
+            raise PybnfError('For key "time_course" a value for "end" must be specified.')
+
+        self.stepnumber = int(np.round(self.time/self.step))
+        self.bng_codeword = 'simulate'
+
+
+class ParamScan(Action):
+
+    def __init__(self, d):
+        """
+        :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
+        of this action.
+        Valid dict keys are min:number, max:number, step:number, time:number, model:str (unused here), suffix: str,
+        logspace: 0 or 1, param: str, values: list of numbers (not implemented)
+        Raises a PyBNF error if anything is wrong with the dict.
+        """
+        # Available keys and default values
+        num_keys = {'min', 'max', 'step', 'time', 'logspace'}
+        str_keys = {'model', 'suffix', 'param'}
+        required_keys = {'min', 'max', 'step', 'time', 'param'}
+        # Default values
+        self.min = None
+        self.max = None
+        self.step = None
+        self.time = None
+        self.logspace = 0.
+        self.param = None
+        self.model = ''
+        self.suffix = 'param_scan'
+
+        # Transfer all the keys in the dict to my attributes of the same name
+        for k in d:
+            if k in num_keys:
+                try:
+                    num = float(d[k])
+                except ValueError:
+                    raise PybnfError('For key "param_scan", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in str_keys:
+                self.__setattr__(k, d[k])
+            else:
+                raise PybnfError('"%s" is not a valid attribute for "param_scan".' % k,
+                                 '"%s" is not a valid attribute for "param_scan". Possible attributes are: %s' %
+                                 (k, ','.join(num_keys.union(str_keys))))
+
+        for k in required_keys:
+            if self.__getattribute__(k) is None:
+                raise PybnfError('For key "param_scan" a value for "%s" must be specified.' % k)
+        self.logspace = int(self.logspace)
+        if self.logspace not in (0, 1):
+            raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
+
+        self.stepnumber = int(np.round((self.max - self.min) / self.step))
+        self.bng_codeword = 'parameter_scan'
 
 
 class ModelError(Exception):
