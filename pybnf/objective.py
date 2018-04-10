@@ -119,30 +119,8 @@ class SummationObjective(ObjectiveFunction):
                         print1("Warning: For exp point %s=%s, used sim data at %s=%s" %
                                (indvar, exp_data.data[rownum, 0], indvar, sim_data[indvar][sim_row]))
                         self.warned.add(warnstr)
-
-            elif self.rounding == 2:
-                # Interpolate between the two closest rows
-                row1 = np.argmin(abs(sim_data[indvar] - exp_data.data[rownum, 0]))
-                r1diff = sim_data[indvar][row1] - exp_data.data[rownum, 0]
-                if row1 > 0 and np.sign(r1diff) != \
-                        np.sign(sim_data[indvar][row1-1] - exp_data.data[rownum, 0]):
-                    row2 = row1-1
-                elif row1 + 1 < len(sim_data[indvar]) and np.sign(r1diff) != \
-                        np.sign(sim_data[indvar][row1+1] - exp_data.data[rownum, 0]):
-                    row2 = row1+1
-                else:
-                    warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
-                    if warnstr not in self.warned:
-                        print1("Warning: Ignored %s %s because interpolation failed. That %s may be outside the range "
-                               "spanned by the simulation data" % (indvar, exp_data.data[rownum, 0], indvar))
-                        self.warned.add(warnstr)
-                    continue
-                r2diff = sim_data[indvar][row2] - exp_data.data[rownum, 0]
-                r1weight = abs(r2diff) / (abs(r1diff)+abs(r2diff))
-                sim_row = r1weight * sim_data.data[row1, :] + (1.-r1weight) * sim_data.data[row2, :]
-                # Todo: Not compatible with rest of code; expect sim_row to be an index.
             else:
-                raise PybnfError('Possible values for ind_var_rounding are 0, 1, or 2.')
+                raise PybnfError('Possible values for ind_var_rounding are 0 or 1.')
 
             for col_name in compare_cols:
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):
