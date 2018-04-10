@@ -115,6 +115,7 @@ class Configuration(object):
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'copasi_command': copasi_command, 'time_course': (), 'param_scan': (),
+            'ind_var_rounding': 0,
 
             'mutation_rate': 0.5, 'mutation_factor': 1.0, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,
@@ -418,13 +419,13 @@ class Configuration(object):
 
     def _load_obj_func(self):
         if self.config['objfunc'] == 'chi_sq':
-            return ChiSquareObjective()
+            return ChiSquareObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'sos':
-            return SumOfSquaresObjective()
+            return SumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'norm_sos':
-            return NormSumOfSquaresObjective()
+            return NormSumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'ave_norm_sos':
-            return AveNormSumOfSquaresObjective()
+            return AveNormSumOfSquaresObjective(self.config['ind_var_rounding'])
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
               "Objective function %s is not defined. Valid objective function choices are: "
               "chi_sq, sos, norm_sos, ave_norm_sos" % self.config['objfunc'])
