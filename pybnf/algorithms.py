@@ -606,7 +606,7 @@ class Algorithm(object):
         return self.config.config['backup_every'] * self.config.config['population_size'] * \
             self.config.config['smoothing']
 
-    def run(self, scheduler_node=None, resume=None, debug=False):
+    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
         """Main loop for executing the algorithm"""
 
         logger.debug('Initializing dask Client object')
@@ -621,10 +621,10 @@ class Algorithm(object):
         elif 'parallel_count' in self.config.config:
             lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
             client = Client(lc)
-            client.run(init_logging, debug)
+            client.run(init_logging, log_prefix, debug)
         else:
             client = Client()
-            client.run(init_logging, debug)
+            client.run(init_logging, log_prefix, debug)
 
         backup_every = self.get_backup_every()
         sim_count = 0

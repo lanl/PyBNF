@@ -18,10 +18,10 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
-def init_logging(debug=False):
+def init_logging(file_prefix, debug=False):
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
-    fh = logging.FileHandler('bnf.log', mode='a')
+    fh = logging.FileHandler('%s.log' % file_prefix, mode='a')
     fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
 
@@ -45,7 +45,7 @@ def init_logging(debug=False):
     talog.addHandler(fh)
 
     if debug:
-        dfh = logging.FileHandler('bnf_debug.log', mode='a')
+        dfh = logging.FileHandler('%s_debug.log' % file_prefix, mode='a')
         dfh.setLevel(logging.DEBUG)
         dfh.setFormatter(fmt)
 

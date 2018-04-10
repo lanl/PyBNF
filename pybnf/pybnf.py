@@ -28,11 +28,6 @@ def main():
     node_string = None
     alg = None
 
-    if os.path.isfile('bnf_debug.log'):
-        os.remove('bnf_debug.log')
-    if os.path.isfile('bnf.log'):
-        os.remove('bnf.log')
-
     parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
 
     parser.add_argument('-c', action='store', dest='conf_file',
@@ -45,10 +40,22 @@ def main():
                         help='automatically resume the previously stopped fitting run')
     parser.add_argument('-d', '--debug_logging', action='store_true',
                         help='outputs debugging log (file could be very large)')
+    parser.add_argument('-l', '--log_prefix', action='store',
+                        help='specifies a custom prefix for the log files (will overwrite if files already exist')
     cmdline_args = parser.parse_args()
 
+    if cmdline_args.log_prefix:
+        log_prefix = cmdline_args.log_prefix
+    else:
+        log_prefix = 'bnf_%s' % time.strftime('%Y%m%d-%H%M%S')
 
-    init_logging(cmdline_args.debug_logging)
+    # Overwrite log file if it exists
+    if os.path.isfile('%s_debug.log' % log_prefix):
+        os.remove('%s_debug.log' % log_prefix)
+    if os.path.isfile('%s.log' % log_prefix):
+        os.remove('%s.log' % log_prefix)
+
+    init_logging(log_prefix, cmdline_args.debug_logging)
     logger = logging.getLogger(__name__)
 
     print0("PyBNF v%s" % __version__)
@@ -168,7 +175,7 @@ def main():
 
         # Run the algorithm!
         logger.debug('Algorithm initialization')
-        alg.run(scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
+        alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
 
         if config.config['refine'] == 1:
             logger.debug('Refinement requested for best fit parameter set')
@@ -182,7 +189,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(scheduler_node)
+                simplex.run(log_prefix, scheduler_node)
         print0('Fitting complete')
         success = True
 
@@ -201,8 +208,8 @@ def main():
         logger.exception('Internal error')
         exceptiondata = traceback.format_exc().splitlines()
         print0('Sorry, an unknown error occurred: %s\n'
-               'Logs have been saved to bnf.log.\n'
-               'Please report this bug to help us improve PyBNF.' % exceptiondata[-1])
+               'Logs have been saved to %s.log.\n'
+               'Please report this bug to help us improve PyBNF.' % (exceptiondata[-1]), log_prefix)
     finally:
         # Stop dask-ssh regardless of success
         if node_string:
