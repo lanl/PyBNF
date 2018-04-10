@@ -15,13 +15,15 @@ class TestConfig(object):
     def setup_class(cls):
         cls.cf0 = {'models': {'bngl_files/Tricky.bngl'},
                    'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
-                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
+                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp', 'bngl_files/p1_5mut.exp'},
                    ('uniform_var', 'koff__FREE__'): [4., 5.],
                    ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
                    ('normal_var', 'kase__FREE__'): [28., 5.],
                    ('uniform_var', 'pase__FREE__'): [6., 7.],
                    'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
-                   'normalization': {'bngl_files/p1_5.exp': 'init'}}
+                   'normalization': {'bngl_files/p1_5.exp': 'init'},
+                   'param_scan': [{'model': 'Tricky.bngl', 'param': 'koff__FREE__', 'min': '1', 'max': '10', 'step': '1', 'time': '3600'}],
+                   'mutant': [['Tricky', 'mut', 'koff__FREE__=42', ['bngl_files/p1_5mut.exp']]]}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de',
@@ -46,6 +48,9 @@ class TestConfig(object):
                                              ]
         assert c.config['normalization']['p1_5'] == 'init'
         assert c.config['cluster_type'] is None
+        assert isinstance(c.models['Tricky'].config_actions[0], pset.ParamScan)
+        assert c.models['Tricky'].config_actions[0].time == 3600.
+        assert c.mutant_specs == [['Tricky', 'mut', 'koff__FREE__=42', ['bngl_files/p1_5mut.exp']]]
 
     def test_config_normalization(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
