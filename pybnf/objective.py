@@ -97,9 +97,9 @@ class SummationObjective(ObjectiveFunction):
 
             # Figure out the corresponding row number in the simulation data
             # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
-            sim_row = np.argmax(np.isclose(sim_data.data[:, 0], exp_data.data[rownum, 0], atol=0.))
+            sim_row = np.argmax(np.isclose(sim_data[indvar], exp_data.data[rownum, 0], atol=0.))
             # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
-            if sim_row == 0 and not np.isclose(sim_data.data[0, 0], exp_data.data[rownum, 0], atol=0.):
+            if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
                 warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
                 if warnstr not in self.warned:
                     print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
