@@ -208,9 +208,9 @@ def ploop(ls):  # parse loop
             else:
                 if key in d:
                     if d[key] == values:
-                        print1("Warning: Config key '%s' is specified multiple times" % key)
+                        print1("Warning: Config key '%s' is specified multiple times" % (key,))
                     else:
-                        raise PybnfError("Config key '%s' is specified multiple times with different values." % key)
+                        raise PybnfError("Config key '%s' is specified multiple times with different values." % (key,))
                 d[key] = values
 
         except pp.ParseBaseException:
