@@ -834,7 +834,17 @@ class ParticleSwarm(Algorithm):
                 self.c1 * np.random.random() * self.bests[p][0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name)) +
                 self.c2 * np.random.random() * self.global_best[0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name))
             for v in self.variables}
-        new_pset = PSet([v.add(self.swarm[p][1][v.name]) for v in self.swarm[p][0]])
+
+        # Manually check to determine if reflection occurred (i.e. attempted assigning of variable outside its bounds)
+        # If so, update based on reflection protocol and set velocity to 0
+        new_vars = []
+        for v in self.swarm[p][0]:
+            new_val = v.value + self.swarm[p][1][v.name]
+            if new_val < v.lower_bound or v.upper_bound < new_val:
+                self.swarm[p][1][v.name] = 0.0
+            new_vars.append(v.add(self.swarm[p][1][v.name]))
+
+        new_pset = PSet(new_vars)
         self.swarm[p][0] = new_pset
 
         # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
