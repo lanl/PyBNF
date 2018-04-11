@@ -336,7 +336,7 @@ class Configuration(object):
                         raise PybnfError('Experimental data file %s was not found.' % ef)
                     ed[self._file_prefix(ef)] = d
                 else:
-                    cs = ConstraintSet(self._file_prefix(m, 'bngl'), self._file_prefix(ef, 'con'))
+                    cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, 'con'))
                     try:
                         cs.load_constraint_file(ef)
                     except FileNotFoundError:
