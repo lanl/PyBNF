@@ -399,7 +399,7 @@ class FreeParameter(object):
                 logger.info("Assigning parameter %s to take a value equal to its lower bound: %s" % (self.name, self.lower_bound))
             # reflective number line, can never realize self.lower_bound or self.upper_bound this way
             adj = self._reflect(new_value)
-            logger.warning('Assigned value %f is out of defined bounds: [%s, %s].  '
+            logger.debug('Assigned value %f is out of defined bounds: [%s, %s].  '
                            'Adjusted to %f' % (new_value, self.lower_bound, self.upper_bound, adj))
             new_value = adj
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
