@@ -195,8 +195,8 @@ class Configuration(object):
         :param conf_dict:
         :return:
         """
-        # Check keys that only work for a subset of the 3 algorithms
-        if conf_dict['fit_type'] != 'pt':
+        # Check keys that only work for a subset of the 4 algorithms
+        if conf_dict['fit_type'] != 'pt' and 'exchange_every' in conf_dict:
             if 'exchange_every' in conf_dict:
                 print1('Warning: Configuration key exchange_every is not used in fit_type %s, so I am ignoring it'
                        % conf_dict['fit_type'])
@@ -208,6 +208,11 @@ class Configuration(object):
                            % (k, conf_dict['fit_type']))
         if conf_dict['fit_type'] == 'sa':
             for k in ['burn_in', 'sample_every', 'output_hist_every', 'hist_bins', 'credible_intervals']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+        if conf_dict['fit_type'] in ['bmc', 'sa', 'pt']:
+            for k in ['crossover_numer', 'zeta', 'lambda', 'gamma_prob']:
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
