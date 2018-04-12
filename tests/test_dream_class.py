@@ -42,7 +42,7 @@ class TestDream:
         dream = algorithms.DreamAlgorithm(self.config)
         start_psets = dream.start_run()
         assert len(dream.variables) == 3
-        assert sorted(dream.variables) == ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
+        assert sorted([v.name for v in dream.variables]) == ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
         assert len(start_psets) == 20
         assert dream.prior['v1__FREE__'] == ('reg', 'b', 0., 0.5)
         assert dream.prior['v2__FREE__'] == ('log', 'b', 0., 1.)

@@ -1066,7 +1066,6 @@ class PSet(object):
         self.idx += 1
         return res
 
-
     def __getitem__(self, item):
         """
         Returns the value of the specified parameter.

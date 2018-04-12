@@ -1615,6 +1615,8 @@ class BayesianAlgorithm(Algorithm):
         self.credible_intervals = config.config['credible_intervals']
         self.num_bins = config.config['hist_bins']
 
+        self.wait_for_sync = [False] * self.num_parallel
+
         self.prior = None
         self.load_priors()
 
@@ -1719,9 +1721,9 @@ class BayesianAlgorithm(Algorithm):
 
         for i in range(len(self.variables)):
             v = self.variables[i]
-            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
             # For log-space variables, we want the histogram in log space
-            if self.variable_space[v][0] == 'log':
+            if v.type == 'log':
                 histdata = np.log10(dat_array[:, i])
                 header = 'log10_lower_bound\tlog10_upper_bound\tcount'
             else:
@@ -1737,7 +1739,10 @@ class BayesianAlgorithm(Algorithm):
                 want = n * (interval/100)
                 min_index = int(np.round(n/2 - want/2))
                 max_index = int(np.round(n/2 + want/2 - 1))
-                file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
+
+        for file in cred_files:
+            file.close()
 
     def cleanup(self):
         """Called when quitting due to error.
@@ -1858,21 +1863,22 @@ class DreamAlgorithm(BayesianAlgorithm):
         # Sample whether to jump to the mode (when gamma = 1)
         gamma = 1 if np.random.uniform() < self.g_prob else self.step_size
 
-        new_pset = {}
+        new_vars = []
         for i, d in enumerate(np.random.permutation(ds)):
             k = self.variables[i]
-            diff = self.diff(x1, x2, self.variables[i]) if d else 0.0
+            diff = x1.get_param(k.name).diff(x2.get_param(k.name)) if d else 0.0
             zeta = np.random.normal(0, self.config.config['zeta'])
             lamb = np.random.uniform(-self.config.config['lambda'], self.config.config['lambda'])
 
             # Differential evolution calculation (while satisfying detailed balance)
-            new_pset[k] = self.add(x0, k, zeta + (1. + lamb) * gamma * diff)
-
-            if new_pset[k] == self.variable_space[k][1] or new_pset[k] == self.variable_space[k][2]:
-                logger.debug("Variable %s is outside of bounds [%s, %s]" % (k, self.variable_space[k][1], self.variable_space[k][2]))
+            try:
+                new_var = x0.get_param(k.name).add(zeta + (1. + lamb) * gamma * diff)
+                new_vars.append(new_var)
+            except OutOfBoundsException:
+                logger.debug("Variable %s is outside of bounds")
                 return None
 
-        return PSet(new_pset)
+        return PSet(new_vars)
 
 
 class BasicBayesMCMCAlgorithm(BayesianAlgorithm):

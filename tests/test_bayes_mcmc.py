@@ -61,7 +61,7 @@ class TestBayes:
     @classmethod
     def teardown_class(cls):
         shutil.rmtree('noseoutput1')
-        shutil.rmtree('noseoutput2')
+        # shutil.rmtree('noseoutput2')
 
     def test_start(self):
         ba = algorithms.BasicBayesMCMCAlgorithm(self.config)
