@@ -209,7 +209,7 @@ def main():
         exceptiondata = traceback.format_exc().splitlines()
         print0('Sorry, an unknown error occurred: %s\n'
                'Logs have been saved to %s.log.\n'
-               'Please report this bug to help us improve PyBNF.' % (exceptiondata[-1]), log_prefix)
+               'Please report this bug to help us improve PyBNF.' % (exceptiondata[-1], log_prefix))
     finally:
         # Stop dask-ssh regardless of success
         if node_string:
