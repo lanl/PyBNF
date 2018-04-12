@@ -1761,6 +1761,8 @@ class DreamAlgorithm(BayesianAlgorithm):
         self.all_idcs = np.arange(self.n_dim)
         self.ncr = [(1+x)/self.config.config['crossover_number'] for x in range(self.config.config['crossover_number'])]
         self.g_prob = self.config.config['gamma_prob']
+        self.acceptances = [0]*self.num_parallel
+        self.acceptance_rates = [0.0]*self.num_parallel
 
     def got_result(self, res):
         """
@@ -1788,10 +1790,12 @@ class DreamAlgorithm(BayesianAlgorithm):
         if ln_p_accept:  # accept update based on MH criterion
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
+            self.acceptances[index] += 1
 
         # Record that this individual is complete
         self.wait_for_sync[index] = True
         self.iteration[index] += 1
+        self.acceptance_rates[index] = self.acceptances[index] / self.iteration[index]
 
         # Wait for entire generation to finish
         if np.all(self.wait_for_sync):
@@ -1803,6 +1807,7 @@ class DreamAlgorithm(BayesianAlgorithm):
 
             if self.iteration[index] % 10 == 0:
                 print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
             else:
                 print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
             logger.info('Completed %i iterations' % self.iteration[index])
@@ -1821,6 +1826,7 @@ class DreamAlgorithm(BayesianAlgorithm):
                     next_gen.append(new_pset)
                 else:
                     #  If new PSet is outside of variable bounds, keep current PSet and wait for next generation
+                    logger.debug('Proposed PSet %s is invalid.  Rejecting and waiting until next iteration' % i)
                     self.wait_for_sync[i] = True
                     self.iteration[i] += 1
 
@@ -1863,6 +1869,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             new_pset[k] = self.add(x0, k, zeta + (1. + lamb) * gamma * diff)
 
             if new_pset[k] == self.variable_space[k][1] or new_pset[k] == self.variable_space[k][2]:
+                logger.debug("Variable %s is outside of bounds [%s, %s]" % (k, self.variable_space[k][1], self.variable_space[k][2]))
                 return None
 
         return PSet(new_pset)
