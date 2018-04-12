@@ -1872,7 +1872,8 @@ class DreamAlgorithm(BayesianAlgorithm):
 
             # Differential evolution calculation (while satisfying detailed balance)
             try:
-                new_var = x0.get_param(k.name).add(zeta + (1. + lamb) * gamma * diff)
+                # Do not reflect the parameter (need to reject if outside bounds)
+                new_var = x0.get_param(k.name).add(zeta + (1. + lamb) * gamma * diff, False)
                 new_vars.append(new_var)
             except OutOfBoundsException:
                 logger.debug("Variable %s is outside of bounds")

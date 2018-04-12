@@ -897,15 +897,19 @@ class FreeParameter(object):
         elif re.search('uniform', self.type):
             self._distribution = np.random.uniform
 
-    def set_value(self, new_value):
+    def set_value(self, new_value, reflect=True):
         """
         Creates a copy of the parameter with the given value
 
         :param new_value: A numeric value assigned to the FreeParameter
         :type new_value: float
+        :param reflect: Determines whether to reflect the parameter value if it is outside of the defined bounds
+        :type reflect: bool
         :return: FreeParameter
         """
         if new_value < self.lower_bound or new_value > self.upper_bound:
+            if not reflect:
+                raise OutOfBoundsException("Parameter %s is outside of bounds" % self)
             if self.value is None:
                 self.value = self.lower_bound
                 logger.info("Assigning parameter %s to take a value equal to its lower bound: %s" % (self.name, self.lower_bound))
@@ -965,7 +969,7 @@ class FreeParameter(object):
             val = self._distribution(self.p1, self.p2)
         return self.set_value(val)
 
-    def add(self, summand):
+    def add(self, summand, reflect=True):
         """
         Adds a value to the existing value and returns a new FreeParameter instance.  Since free parameters
         can exist in regular or logarithmic space, the value to add is expected to already be transformed
@@ -977,11 +981,11 @@ class FreeParameter(object):
         if self.value is None:
             logger.error('Cannot add to FreeParameter with "None" value')
         if self.log_space:
-            return self.set_value(10**(np.log10(self.value) + summand))
+            return self.set_value(10**(np.log10(self.value) + summand), reflect)
         else:
-            return self.set_value(self.value + summand)
+            return self.set_value(self.value + summand, reflect)
 
-    def add_rand(self, lb, ub):
+    def add_rand(self, lb, ub, reflect=True):
         """
         Like FreeParameter.add but instead adds a uniformly distributed random value according to the
         bounds provided
@@ -991,7 +995,7 @@ class FreeParameter(object):
         :return:
         """
         r = np.random.uniform(lb, ub)
-        return self.add(r)
+        return self.add(r, reflect)
 
     def diff(self, other):
         """
