@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from subprocess import run, STDOUT, DEVNULL
 from .data import Data
 import os
-from lxml import etree
+import roadrunner as rr
 
 logger = logging.getLogger(__name__)
 
@@ -392,40 +392,36 @@ class NetModel(BNGLModel):
 class SbmlModel(Model):
 
     def __init__(self, file, pset=None, actions=()):
-        self.file_path = file
-        self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
-        self.xml = ET.parse(file)
+        self.file = file
+        self.param_set = pset
+        self.name = re.sub(".xml", "", self.file[self.file.rfind("/") + 1:])
         self.actions = list(actions)
-        self.suffixes = []
+        self.suffixes = [a.suffix for a in actions]
 
         # Maps species names to the name of the compartment the species is in. Usually we'll just look at the keys
         # to read the species names, but there's a couple places writing the CPS file where we need the compartment
-        self.species = dict()
         # Set of the possible parameter names, including both parameters and species names
         # (species names listed in a PSet are treated as initial conditions)
         self.param_names = set()
-
-        self.param_set = None
-        self._set_param_set(pset)
         self.stochastic = False
-        self.copasi_command = ''
 
     def copy_with_param_set(self, pset):
 
         newmodel = copy.deepcopy(self)
-        newmodel._set_param_set(pset)
+        newmodel.param_set = pset
         return newmodel
 
-    def _set_param_set(self, pset):
+    def model_text(self):
         """
-        Sets the model's parameter set to pset, and updates the appropriate xml
-        If pset is passed as None, still goes through the motions and assembles the model's param_names attribute;
-        this should be done when setting up the config at the start of the run to make sure parameter names are ok.
+        Generates the XML text of the model by traversing the xml tree and editing parameters.
+        Should only be used when saving the model to disk, which is not often done.
         :return:
         """
-        self.param_set = pset
-        param_keys = pset.keys() if pset else ()
-        root = self.xml.getroot()
+        logger.info('Generating model text for %s' % self.name)
+
+        myxml = ET.parse(self.file)
+        param_keys = self.param_set.keys() if self.param_set else ()
+        root = myxml.getroot()
 
         # The xml file is full of "namespaces" designed to make it difficult to parse, so extra acrobatics are required
         # here
@@ -434,207 +430,59 @@ class SbmlModel(Model):
 
         # Careful parsing here: The names are stored unpredictably under either 'id' or 'name'
         # We use 'name' if it's available, otherwise use 'id'
-        # If 'id' and 'name' contain 2 different things (which can occur in exported Sbml from Copasi), use 'name'
-        # and log a warning if this is the initial check (pset=None)
         params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
         for p in params:
             pname = p.get('name')
             if pname is None:
                 pname = p.get('id')
-            elif pset is None and pname != p.get('id'):
-                logger.warning('Parameter has name "%s" and id "%s". For this fitting run, assuming it is named "%s"' %
-                               (pname, p.get('id'), pname))
             if pname in param_keys:
                 p.set('value', str(self.param_set[pname]))
-            self.param_names.add(pname)
 
-        self.species = dict()
         species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
         for s in species:
             sname = s.get('name')
             if sname is None:
                 sname = s.get('id')
-            elif pset is None and sname != s.get('id'):
-                logger.warning('Species has name "%s" and id "%s". For this fitting run, assuming it is named "%s"' %
-                               (sname, s.get('id'), sname))
-            compartment = s.get('compartment')
-            self.species[sname] = compartment
             if sname in param_keys:
                 s.set('initialConcentration', str(self.param_set[sname]))
-            self.param_names.add(sname)
-
-    def model_text(self):
-        return ET.tostring(self.xml.root)
+        return ET.tostring(root)
 
     def save(self, file_prefix):
-        self.xml.write('%s.xml' % file_prefix, encoding='unicode')
+        with open('%s.xml' % file_prefix, 'w') as out:
+            out.write(self.model_text())
 
     def add_action(self, action):
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     def execute(self, folder, filename, timeout):
-        # Create the modified XML file
-        file = '%s/%s' % (folder, filename)
-        self.save(file)
+        # Load the original xml file with Roadrunner
+        runner = rr.RoadRunner(self.file)
 
-        # Convert to Copasi file
-        run([self.copasi_command, '-i', '%s.xml' % file], check=True, stderr=STDOUT, stdout=DEVNULL, timeout=timeout)
-
-        # Edit the Copasi file to include the required actions
-        # Python thinks Copasi XML is invalid because of more "namespace" nonsense
-        # To get around this, need to do some more complicated stuff...
-
-        # Read xml from Copasi file
-        parser = etree.XMLParser(recover=True)
-        cps = etree.ElementTree(file='%s.cps' % file, parser=parser)
-        cps_backup = cps
-        root = cps.getroot()
-
-        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
-        space = {'cps': ns}
-        if len(self.actions) == 0:
-            raise ValueError('Cannot run model with no actions')
-
-        results = dict()  # Will contain one key:Data pair for each action we run for this model
-        for action in self.actions:
-            if len(self.actions) > 1:
-                # Work with a copy of the xml because we'll need to use it multiple times
-                cps = copy.deepcopy(cps_backup)
-                root = cps.getroot()
-            # We'll need the value of this thing later for setting various attributes.
-            model_elem = root.findall('cps:Model', namespaces=space)[0]
-            model_name = model_elem.get('name')
-            # Set the save file to be the same as for a BNGL file
-            if action.bng_codeword == 'simulate':
-                ext = 'gdat'
+        # Do parameter modifications
+        not_found = []
+        for p in self.param_set.keys():
+            if hasattr(runner, p):
+                setattr(runner, p, self.param_set[p])
             else:
-                ext = 'scan'
-            target_file = '%s_%s_%s.%s' % (self.name, self.param_set.name, action.suffix, ext)
-            if isinstance(action, TimeCourse):
-                # Find the time course task in the xml file
-                tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
-                time_task = None
-                for t in tasks:
-                    if t.get('name') == 'Time-Course':
-                        time_task = t
-                        break
-                if time_task is None:
-                    raise RuntimeError('Time-Course task unexpectedly missing from cps file')
-                # Update attributes of time course task
-                time_task.set('scheduled', 'true')
-                for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
-                    if param.get('name') == 'StepNumber':
-                        param.set('value', str(action.stepnumber))
-                    elif param.get('name') == 'StepSize':
-                        param.set('value', str(action.step))
-                    elif param.get('name') == 'Duration':
-                        param.set('value', str(action.time))
-                report_elem = etree.Element('Report', reference='BNF_Report_1', target=target_file, append='1',
-                                            confirmOverwrite='1')
-                time_task.insert(0, report_elem)
-                # action-type-specific Report settings
-                task_type = 'timeCourse'
-                first_col_string = 'CN=Root,Model=%s,Reference=Time' % model_name
-            elif isinstance(action, ParamScan):
-                tasks = root.findall('cps:ListOfTasks/cps:Task', namespaces=space)
-                # Find the 2 tasks that we need to edit
-                time_task = None
-                scan_task = None
-                for t in tasks:
-                    if t.get('name') == 'Time-Course':
-                        time_task = t
-                    if t.get('name') == 'Scan':
-                        scan_task = t
-                if time_task is None or scan_task is None:
-                    raise RuntimeError('Time-Course and/or Scan tasks unexpectedly missing from cps file')
+                not_found.append(p)
+        # Assume those that weren't found as parameters are initial conditions
+        for p in not_found:
+            try:
+                runner.model['init([%s])' % p] = self.param_set[p]
+            except RuntimeError:
+                pass  # The parameter does not appear in this model (might appear in another model, so not an error)
 
-                # Edit the time course task so it prints one time point at the t where we're param scanning
-                for param in time_task.findall('cps:Problem/cps:Parameter', namespaces=space):
-                    if param.get('name') == 'StepNumber':
-                        param.set('value', '1')
-                    elif param.get('name') == 'StepSize':
-                        param.set('value', str(action.time))
-                    elif param.get('name') == 'Duration':
-                        param.set('value', str(action.time))
-                    elif param.get('name') == 'OutputStartTime':
-                        param.set('value', '1.0e-8')  # Suppress the output at time 0
-                # Edit the scan task so it runs with the chosen specs
-                scan_task.set('scheduled', 'true')
-                report_elem = etree.Element('Report', reference='BNF_Report_1', target=target_file, append='0',
-                                            confirmOverwrite='0')
-                scan_task.insert(0, report_elem)
-                param_parent = scan_task.findall('cps:Problem/cps:ParameterGroup', namespaces=space)[0]
-                param_subparent = etree.Element('ParameterGroup', name='ScanItem')
-                param_parent.append(param_subparent)
-                param_subparent.append(etree.Element('Parameter', name='Number of steps', type='unsignedInteger',
-                                                     value=str(action.stepnumber)))
-                param_subparent.append(etree.Element('Parameter', name='Type', type='unsignedInteger', value='1'))
-                if action.param in self.species:
-                    param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
-                     value='CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=InitialConcentration' %
-                     (model_name, self.species[action.param], action.param)))
-                else:
-                    # assume it's a parameter
-                    param_subparent.append(etree.Element('Parameter', name='Object', type='cn',
-                     value='CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name, action.param)))
-                param_subparent.append(etree.Element('Parameter', name='Minimum', type='float',
-                                                     value=str(action.min)))
-                param_subparent.append(etree.Element('Parameter', name='Maximum', type='float',
-                                                     value=str(action.max)))
-                param_subparent.append(etree.Element('Parameter', name='log', type='bool',
-                                                     value=str(action.logspace)))
-                # action-type-specific Report settings
-                task_type = 'scan'
-                if action.param in self.species:
-                    first_col_string = 'CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=InitialConcentration' \
-                                       % (model_name, self.species[action.param], action.param)
-                else:
-                    first_col_string = 'CN=Root,Model=%s,Vector=Values[%s],Reference=InitialValue' % (model_name,
-                                                                                                  action.param)
+        # Run the model actions
+        result_dict = dict()
+        for act in self.actions:
+            if isinstance(act, TimeCourse):
+                res_array = runner.simulate(0., act.time, steps=act.stepnumber)
+                res = Data(named_arr=res_array)
+                result_dict[act.suffix] = res
             else:
-                raise NotImplementedError('Only implemented action types are Time Course and Param Scan')
-
-            # Create the report object
-            report_list = root.findall('cps:ListOfReports', namespaces=space)[0]
-            report = etree.Element('Report', key='BNF_Report_1', name='BNF_Report', taskType=task_type, separator='\t',
-                                precision='6')
-            report_list.append(report)
-            comment = etree.Element('Comment')
-            comment.text = 'Automatically generated by BioNetFit'
-            report.append(comment)
-            report_table = etree.Element('Table', printTitle='1')
-            report.append(report_table)
-            tablestring = "CN=Root,Model=%s,Vector=Compartments[%s],Vector=Metabolites[%s],Reference=Concentration"
-            # For the Model=?? attribute of tablestring, we need to get a name from somewhere else in the file
-            model_elem = root.findall('cps:Model', namespaces=space)[0]
-            model_name = model_elem.get('name')
-            obj = etree.Element('Object', cn=first_col_string)
-            report_table.append(obj)
-            for s in self.species:
-                obj = etree.Element('Object', cn=tablestring % (model_name, self.species[s], s))
-                report_table.append(obj)
-
-            cps.write('%s.cps' % file)
-
-            # Run Copasi
-
-            cmd = [self.copasi_command, '%s.cps' % file]
-            log_file = '%s.log' % file
-            with open(log_file, 'w') as lf:
-                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
-
-            if task_type == 'timeCourse':
-                # Tab-delimited, header row with no '#', extra [] around each variable
-                res = Data()
-                res.load_data('%s/%s' % (folder, target_file), flags=('time',))
-            elif task_type == 'scan':
-                res = Data()
-                res.load_data('%s/%s' % (folder, target_file), flags=('copasi-scan',))
-            else:
-                raise RuntimeError('Unknown task type')
-            results[action.suffix] = res
-        return results
+                raise NotImplementedError
+        return result_dict
 
 
 class Action:

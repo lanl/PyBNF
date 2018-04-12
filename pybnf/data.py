@@ -10,7 +10,7 @@ from .printing import PybnfError
 class Data(object):
     """Top level class for managing data"""
 
-    def __init__(self, file_name=None, arr=None):
+    def __init__(self, file_name=None, arr=None, named_arr=None):
         self.cols = dict()  # dict of column headers to column indices
         self.data = None  # Numpy array for data
         self.indvar = None # Name of the independent variable
@@ -18,6 +18,11 @@ class Data(object):
             self.load_data(file_name)
         elif arr is not None:
             self.data = arr
+        elif named_arr is not None:
+            # Initialize with RoadRunner named array
+            self.data = named_arr
+            self.indvar = named_arr.colnames[0]
+            self.cols = {named_arr.colnames[i].strip('[]'): i for i in range(len(named_arr.colnames))}
 
     def __getitem__(self, col_header):
         """
