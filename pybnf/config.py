@@ -4,7 +4,7 @@
 from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
-from .pset import BNGLModel, ModelError
+from .pset import BNGLModel, ModelError, FreeParameter
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -108,7 +108,7 @@ class Configuration(object):
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
-        self.variables, self.variables_specs = self._load_variables()
+        self.variables = self._load_variables()
         self._check_variable_correspondence()
         self._postprocess_normalization()
 
@@ -323,14 +323,11 @@ class Configuration(object):
 
     def _load_variables(self):
         """
-        Loads the variable names from the config dict, and stores them in more easily accessible data structures.
-        :return: 2-tuple (variables, variables_specs), where variables in a list of the variable names, and
-         variables_specs is a list of 4-tuples (variable_name, variable_type, min_value, max_value).
-         For var and logvar variables (for Simplex algorithm), variables_specs takes the form (variable_name,
-         variable_type, init_value, init_step) where init_step may be read from the global setting.
+        Loads the variable names from the config dict into FreeParameter instances.
+
+        :return: a list of FreeParameter instances
         """
         variables = []
-        variables_specs = []
         for k in self.config.keys():
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
@@ -347,17 +344,26 @@ class Configuration(object):
                                "is only to be used with the Simplex algorithm (fit_type = sim)\n"
                                "Valid keywords for other algorithms are: uniform_var, normal_var, \n"
                                "lognormal_var, loguniform_var." % (k[1], k[0]))
-                    variables.append(k[1])
+
                     if k[0] in ('var', 'logvar'):
                         # 2nd number (step size) may be absent, must fill in appropriately
                         if len(self.config[k]) >= 2:
                             stepsize = self.config[k][1] # easy, it was right there
                         else:
                             stepsize = None  # Will sort out within SimplexAlgorithm
-                        variables_specs.append((k[1], k[0], self.config[k][0], stepsize))
+                        free_param = FreeParameter(k[1], k[0], self.config[k][0], stepsize)
                     else:
-                        variables_specs.append((k[1], k[0], self.config[k][0], self.config[k][1]))
-        return variables, variables_specs
+                        if len(self.config[k]) == 3:
+                            free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
+                                                           bounded=self.config[k][2])
+                        else:
+                            free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1])
+
+                    logger.debug('Adding parameter %s with bounds [%s, %s]' %
+                                 (free_param.name, free_param.lower_bound, free_param.upper_bound))
+                    variables.append(free_param)
+        logger.info('Loaded variables')
+        return variables
 
     def _check_variable_correspondence(self):
         """
@@ -369,8 +375,9 @@ class Configuration(object):
         for m in self.models.values():
             model_vars.update(m.param_names)
 
-        extra_in_conf = set(self.variables).difference(model_vars)
-        extra_in_model = set(model_vars).difference(self.variables)
+        variables_names = {v.name for v in self.variables}
+        extra_in_conf = variables_names.difference(model_vars)
+        extra_in_model = set(model_vars).difference(variables_names)
         if len(extra_in_conf) > 0:
             raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '
                              'file: %s' % extra_in_conf)

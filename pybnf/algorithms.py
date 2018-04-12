@@ -12,6 +12,7 @@ from .data import Data
 from .pset import PSet
 from .pset import Trajectory
 from .pset import NetModel
+from .pset import OutOfBoundsException
 from .printing import print0, print1, print2, PybnfError
 
 import logging
@@ -300,31 +301,12 @@ class Algorithm(object):
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
 
-        # Store a list of all Model objects. Change this as needed for compatibility with other parts
-        logger.debug('Initializing models')
-        self.model_list = self._initialize_models()
-
         # Generate a list of variable names
         self.variables = self.config.variables
 
-        # Set the space (log or regular) in which each variable moves, as well as the box constraints on the variable.
-        # Currently, this is set based on what distribution the variable is initialized with, but these could be made
-        # into a separate, custom options
-        logger.debug('Evaluating variable space')
-        self.variable_space = dict()  # Contains tuples (space, min_value, max_value)
-        for v in self.config.variables_specs:
-            if v[1] == 'uniform_var':
-                self.variable_space[v[0]] = ('regular', v[2], v[3])
-            elif v[1] == 'normal_var' or v[1] == 'var':
-                self.variable_space[v[0]] = ('regular', 0., np.inf)
-            elif v[1] == 'lognormal_var' or v[1] == 'logvar':
-                self.variable_space[v[0]] = ('log', 0., np.inf)  # Questionable if this is the behavior we want.
-            elif v[1] == 'loguniform_var':
-                self.variable_space[v[0]] = ('log', v[2], v[3])
-            else:
-                logger.info('Variable type not recognized... exiting')
-                print0('Error: Unrecognized variable type: %s\nQuitting.' % v[1])
-                exit(1)
+        # Store a list of all Model objects. Change this as needed for compatibility with other parts
+        logger.debug('Initializing models')
+        self.model_list = self._initialize_models()
 
     def _initialize_models(self):
         """
@@ -350,7 +332,8 @@ class Algorithm(object):
                 os.chdir(init_dir)
 
                 gnm_name = '%s_gen_net' % m.name
-                m.save(gnm_name, gen_only=True)
+                default_pset = PSet([var.set_value(var.default_value) for var in self.variables])
+                m.save(gnm_name, gen_only=True, pset=default_pset)
                 gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
                 try:
                     with open('%s.log' % gnm_name, 'w') as lf:
@@ -429,21 +412,11 @@ class Algorithm(object):
 
         :return:
         """
-        # TODO CONFIRM THIS IS REDUNDANT WITH CODE IN __INIT__
         logger.debug("Generating a randomly distributed PSet")
-        param_dict = dict()
-        for (name, vartype, val1, val2) in self.config.variables_specs:
-            if vartype == 'uniform_var':
-                param_dict[name] = np.random.uniform(val1, val2)
-            elif vartype == 'normal_var':
-                param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
-            elif vartype == 'loguniform_var':
-                param_dict[name] = exp10(np.random.uniform(np.log10(val1), np.log10(val2)))
-            elif vartype == 'lognormal_var':
-                param_dict[name] = exp10(np.random.normal(val1, val2))
-            else:
-                raise RuntimeError('Unrecognized variable type: %s' % vartype)
-        return PSet(param_dict)
+        pset_vars = []
+        for var in self.variables:
+            pset_vars.append(var.sample_value())
+        return PSet(pset_vars)
 
     def random_latin_hypercube_psets(self, n):
         """
@@ -455,65 +428,33 @@ class Algorithm(object):
         :return:
         """
         logger.debug("Generating PSets using Latin hypercube sampling")
+        num_uniform_vars = 0
+        for var in self.variables:
+            if var.type == 'uniform_var' or var.type == 'loguniform_var':
+                num_uniform_vars += 1
+
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
-        num_uniform_vars = len([x for x in self.config.variables_specs
-                               if x[1] == 'uniform_var' or x[1] == 'loguniform_var'])
         rands = latin_hypercube(n, num_uniform_vars)
         psets = []
+
         for row in rands:
             # Initialize the variables
             # Convert the 0 to 1 random numbers to the required variable range
-            param_dict = dict()
+            pset_vars = []
             rowindex = 0
-            for (name, type, val1, val2) in self.config.variables_specs:
-                if type == 'uniform_var':
-                    param_dict[name] = val1 + row[rowindex]*(val2-val1)
+            for var in self.variables:
+                if var.type == 'uniform_var':
+                    rescaled_val = var.p1 + row[rowindex]*(var.p2-var.p1)
+                    pset_vars.append(var.set_value(rescaled_val))
                     rowindex += 1
-                elif type == 'loguniform_var':
-                    param_dict[name] = exp10(np.log10(val1) + row[rowindex]*(np.log10(val2)-np.log10(val1)))
+                elif var.type == 'loguniform_var':
+                    rescaled_val = exp10(np.log10(var.p1) + row[rowindex]*(np.log10(var.p2)-np.log10(var.p1)))
+                    pset_vars.append(var.set_value(rescaled_val))
                     rowindex += 1
-                elif type == 'lognormal_var':
-                    param_dict[name] = exp10(np.random.normal(val1, val2))
-                elif type == 'normal_var':
-                    param_dict[name] = max(np.random.normal(val1, val2), self.variable_space[name][1])
                 else:
-                    raise RuntimeError('Unrecognized variable type: %s' % type)
-            psets.append(PSet(param_dict))
+                    pset_vars.append(var.sample_value())
+            psets.append(PSet(pset_vars))
         return psets
-
-    def add(self, paramset, param, value):
-        """
-        Helper function to add a value to a param in a parameter set,
-        taking into account
-        1) Whether this parameter is to be moved in regular or log space
-        2) Box constraints on the parameter
-        :param paramset:
-        :type paramset: PSet
-        :param param: name of the parameter
-        :type param: str
-        :param value: value to be added
-        :type value: float
-        :return: The result of the addition
-        """
-        if self.variable_space[param][0] == 'regular':
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], paramset[param] + value))
-        elif self.variable_space[param][0] == 'log':
-            return max(self.variable_space[param][1], min(self.variable_space[param][2],
-                                                          exp10(np.log10(paramset[param]) + value)))
-        else:
-            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
-
-    def diff(self, paramset1, paramset2, param):
-        """
-        Helper function to calculate paramset1[param] - paramset2[param], taking into account whether
-        param is in regular or log space
-        """
-        if self.variable_space[param][0] == 'regular':
-            return paramset1[param] - paramset2[param]
-        elif self.variable_space[param][0] == 'log':
-            return np.log10(paramset1[param] / paramset2[param])
-        else:
-            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
     def make_job(self, params):
         """
@@ -790,31 +731,27 @@ class ParticleSwarm(Algorithm):
 
         super(ParticleSwarm, self).__init__(config)
 
-        # Set default values for non-essential parameters - no longer here; now done in Config.
-
-        conf_dict = config.config  # Dictionary from the Configuration object
-
         # This default value gets special treatment because if missing, it should take the value of particle_weight,
         # disabling the adaptive weight change entirely.
-        if 'particle_weight_final' not in conf_dict:
-            conf_dict['particle_weight_final'] = conf_dict['particle_weight']
+        if 'particle_weight_final' not in self.config.config:
+            self.config.config['particle_weight_final'] = self.config.config['particle_weight']
 
         # Save config parameters
-        self.c1 = conf_dict['cognitive']
-        self.c2 = conf_dict['social']
-        self.max_evals = conf_dict['population_size'] * conf_dict['max_iterations']
-        self.output_every = conf_dict['population_size'] * conf_dict['output_every']
+        self.c1 = self.config.config['cognitive']
+        self.c2 = self.config.config['social']
+        self.max_evals = self.config.config['population_size'] * self.config.config['max_iterations']
+        self.output_every = self.config.config['population_size'] * self.config.config['output_every']
 
-        self.num_particles = conf_dict['population_size']
+        self.num_particles = self.config.config['population_size']
         # Todo: Nice error message if a required key is missing
 
-        self.w0 = conf_dict['particle_weight']
+        self.w0 = self.config.config['particle_weight']
 
-        self.wf = conf_dict['particle_weight_final']
-        self.nmax = conf_dict['adaptive_n_max']
-        self.n_stop = conf_dict['adaptive_n_stop']
-        self.absolute_tol = conf_dict['adaptive_abs_tol']
-        self.relative_tol = conf_dict['adaptive_rel_tol']
+        self.wf = self.config.config['particle_weight_final']
+        self.nmax = self.config.config['adaptive_n_max']
+        self.n_stop = self.config.config['adaptive_n_stop']
+        self.absolute_tol = self.config.config['adaptive_abs_tol']
+        self.relative_tol = self.config.config['adaptive_rel_tol']
 
         self.nv = 0  # Counter that controls the current weight. Counts number of "unproductive" iterations.
         self.num_evals = 0  # Counter for the total number of results received
@@ -845,7 +782,7 @@ class ParticleSwarm(Algorithm):
             p = new_params_list[i]
             p.name = 'iter0p%i' % i
             # Todo: Smart way to initialize velocity?
-            new_velocity = {xi: np.random.uniform(-1, 1) for xi in self.variables}
+            new_velocity = {v.name: np.random.uniform(-1, 1) for v in self.variables}
             self.swarm.append([p, new_velocity])
             self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
 
@@ -891,20 +828,30 @@ class ParticleSwarm(Algorithm):
         # Update own position and velocity
         # The order matters - updating velocity first seems to make the best use of our current info.
         w = self.w0 + (self.wf - self.w0) * self.nv / (self.nv + self.nmax)
-        self.swarm[p][1] = {v:
-                                w * self.swarm[p][1][v] + self.c1 * np.random.random() * (
-                                self.diff(self.bests[p][0], self.swarm[p][0], v)) +
-                                self.c2 * np.random.random() * self.diff(self.global_best[0], self.swarm[p][0], v)
-                            for v in self.variables}
-        new_pset = PSet({v: self.add(self.swarm[p][0], v, self.swarm[p][1][v]) for v in self.variables})
+        self.swarm[p][1] = \
+            {v.name:
+                w * self.swarm[p][1][v.name] +
+                self.c1 * np.random.random() * self.bests[p][0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name)) +
+                self.c2 * np.random.random() * self.global_best[0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name))
+            for v in self.variables}
+
+        # Manually check to determine if reflection occurred (i.e. attempted assigning of variable outside its bounds)
+        # If so, update based on reflection protocol and set velocity to 0
+        new_vars = []
+        for v in self.swarm[p][0]:
+            new_val = v.value + self.swarm[p][1][v.name]
+            if new_val < v.lower_bound or v.upper_bound < new_val:
+                self.swarm[p][1][v.name] = 0.0
+            new_vars.append(v.add(self.swarm[p][1][v.name]))
+
+        new_pset = PSet(new_vars)
         self.swarm[p][0] = new_pset
 
         # This will cause a crash if new_pset happens to be the same as an already running pset in pset_map.
         # This could come up in practice if all parameters have hit a box constraint.
         # As a simple workaround, perturb the parameters slightly
         while new_pset in self.pset_map:
-            retry_dict = {v: self.add(new_pset, v, np.random.uniform(-1e-6, 1e-6)) for v in self.variables}
-            new_pset = PSet(retry_dict)
+            new_pset = PSet([v.add_rand(-1e-6, 1e-6) for v in self.swarm[p][0]])
 
         self.pset_map[new_pset] = p
 
@@ -1125,8 +1072,7 @@ class DifferentialEvolution(Algorithm):
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
-                    retry_dict = {v: self.add(new_pset, v, np.random.uniform(-1e-6, 1e-6)) for v in self.variables}
-                    new_pset = PSet(retry_dict)
+                    new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in new_pset])
                 self.proposed_individuals[island][jj] = new_pset
                 self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:
@@ -1162,21 +1108,22 @@ class DifferentialEvolution(Algorithm):
         # Choose a starting parameter set (either the best one, or a random one, or the one we want to replace)
         # and others to cross over
         if self.strategy in ['rand1']:
-            picks = np.random.choice(self.individuals[island], 3, replace=False)
-            base = picks[0]
-            others = picks[1:]
+            picks = np.random.choice(np.arange(len(self.individuals[island])), 3, replace=False)
+            base = self.individuals[island][picks[0]]
+            others = [self.individuals[island][p] for p in picks[1:]]
         else:
             raise NotImplementedError('Please select one of the strategies from our extensive list of options: rand1')
 
         # Iterate through parameters; decide whether to mutate or leave the same.
-        new_pset_dict = dict()
-        for p in base.keys():
+        new_pset_vars = []
+        for p in base:
             if np.random.random() < self.mutation_rate:
-                new_pset_dict[p] = self.add(base, p, self.mutation_factor * self.diff(others[0], others[1], p))
+                update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                new_pset_vars.append(p.add(update_val))
             else:
-                new_pset_dict[p] = base[p]
+                new_pset_vars.append(p)
 
-        return PSet(new_pset_dict)
+        return PSet(new_pset_vars)
 
 
 class ScatterSearch(Algorithm):
@@ -1325,62 +1272,31 @@ class ScatterSearch(Algorithm):
                 for hi in range(self.popsize): # helper index
                     if pi == hi:
                         continue
-                    newdict = dict()
+                    new_vars = []
                     for v in self.variables:
                         # d = (self.refs[hi][0][v] - self.refs[pi][0][v]) / 2.
-                        d = self.diff(self.refs[hi][0], self.refs[pi][0], v)
+                        d = self.refs[hi][0].get_param(v.name).diff(self.refs[pi][0].get_param(v.name))
                         alpha = np.sign(hi-pi)
                         beta = (abs(hi-pi) - 1) / (self.popsize - 2)
                         # c1 = self.refs[pi][0][v] - d*(1 + alpha*beta)
                         # c2 = self.refs[pi][0][v] + d*(1 - alpha*beta)
                         # newval = np.random.uniform(c1, c2)
                         # newdict[v] = max(min(newval, var[2]), var[1])
-                        newdict[v] = self.rand_uniform_offset(
-                            self.refs[pi][0], v, -d*(1 + alpha*beta), d*(1 - alpha * beta))
-                    newpset = PSet(newdict, allow_negative=True)
+                        new_vars.append(self.refs[pi][0].get_param(v.name).add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta)))
+                    newpset = PSet(new_vars)
                     # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really
                     # care about the number of PSets queried.
                     if newpset not in self.pending:
                         newpset.name = 'iter%ip%ih%i' % (self.iteration, pi, hi)
                         query_psets.append(newpset)
                         self.pending[newpset] = self.refs[pi][0]
+                    else:
+                        print(newpset)
             self.received = {r[0]: [] for r in self.refs}
             return query_psets
 
         else:
             return []
-
-    def rand_uniform_offset(self, paramset, param, lower, upper):
-        """
-        Performs a particular random sampling required for scatter search,
-        taking into account
-        1) Whether this parameter is to be moved in regular or log space
-        2) Box constraints on the parameter
-        This could not be achieved with the Algorithm add and diff methods.
-
-        :param paramset: PSet containing the initial value of the target param
-        :type paramset: PSet
-        :param param: name of the parameter
-        :type param: str
-        :param lower: The lower bound for the random pick is this + the current value of the param. You probably want to
-        pass a negative value here. This is assumed to be in log space if the param is in log space
-        :type lower: float
-        :param upper: The upper bound for the random pick is this + the current value of the param.
-        This is assumed to be in log space if the param is in log space
-        :return: The chosen random value
-        """
-        if self.variable_space[param][0] == 'regular':
-            lb = paramset[param] + lower
-            ub = paramset[param] + upper
-            pick = np.random.uniform(lb, ub)
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], pick))
-        elif self.variable_space[param][0] == 'log':
-            lb = np.log10(paramset[param]) + lower
-            ub = np.log10(paramset[param]) + upper
-            pick = np.random.uniform(lb, ub)
-            return max(self.variable_space[param][1], min(self.variable_space[param][2], exp10(pick)))
-        else:
-            raise RuntimeError('Unrecognized variable space type: %s' % self.variable_space[param][0])
 
     def get_backup_every(self):
         """
@@ -1442,17 +1358,15 @@ class BayesAlgorithm(Algorithm):
         # space is 'reg' for regular space, 'log' for log space. dist is 'n' for normal, 'b' for box.
         # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
         # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
-        for (name, type, val1, val2) in self.config.variables_specs:
-            if type == 'normal_var':
-                self.prior[name] = ('reg', 'n', val1, val2)
-            elif type == 'lognormal_var':
-                self.prior[name] = ('log', 'n', val1, val2)
-            elif type == 'uniform_var':
-                self.prior[name] = ('reg', 'b', val1, val2)
-            elif type == 'loguniform_var':
-                self.prior[name] = ('log', 'b', np.log10(val1), np.log10(val2))
-            else:
-                raise PybnfError('Bayesian MCMC cannot handle variable type %s' % type)
+        for var in self.variables:
+            if var.type == 'normal_var':
+                self.prior[var.name] = ('reg', 'n', var.p1, var.p2)
+            elif var.type == 'lognormal_var':
+                self.prior[var.name] = ('log', 'n', var.p1, var.p2)
+            elif var.type == 'uniform_var':
+                self.prior[var.name] = ('reg', 'b', var.p1, var.p2)
+            elif var.type == 'loguniform_var':
+                self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
 
     def start_run(self):
         """
@@ -1626,24 +1540,24 @@ class BayesAlgorithm(Algorithm):
         :return: the new PSet
         """
 
-        keys = oldpset.keys()
-        delta_vector = {k: np.random.normal() for k in keys}
+        delta_vector = {k: np.random.normal() for k in oldpset.keys()}
         delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
-        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in keys}
-        new_dict = dict()
-        for k in keys:
+        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
+        new_vars = []
+        for v in oldpset:
             # For box constraints, need special treatment to keep correct statistics
             # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
             # and retry.
             # The same could happen if normal_var's try to go below 0
-            new_dict[k] = self.add(oldpset, k, delta_vector_normalized[k])
-            if new_dict[k] == self.variable_space[k][1] or new_dict[k] == self.variable_space[k][2]:
+            try:
+                new_var = v.add(delta_vector_normalized[v.name])
+            except OutOfBoundsException:
                 logger.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
-                              (k, oldpset[k], delta_vector_normalized[k], self.variable_space[k][1],
-                               self.variable_space[k][2]))
+                             (v.name, oldpset[v.name], delta_vector_normalized[v.name], v.lower_bound, v.upper_bound))
                 return None
+            new_vars.append(new_var)
 
-        return PSet(new_dict)
+        return PSet(new_vars)
 
     def ln_prior(self, pset):
         """
@@ -1705,9 +1619,9 @@ class BayesAlgorithm(Algorithm):
 
         for i in range(len(self.variables)):
             v = self.variables[i]
-            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v, file_ext)
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
             # For log-space variables, we want the histogram in log space
-            if self.variable_space[v][0] == 'log':
+            if v.log_space:
                 histdata = np.log10(dat_array[:, i])
                 header = 'log10_lower_bound\tlog10_upper_bound\tcount'
             else:
@@ -1723,7 +1637,7 @@ class BayesAlgorithm(Algorithm):
                 want = n * (interval/100)
                 min_index = int(np.round(n/2 - want/2))
                 max_index = int(np.round(n/2 + want/2 - 1))
-                file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
+                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
 
     def replica_exchange(self):
         """
@@ -1787,31 +1701,30 @@ class SimplexAlgorithm(Algorithm):
 
     def __init__(self, config):
         super(SimplexAlgorithm, self).__init__(config)
-        if 'simplex_start_point' not in config.config:
+        if 'simplex_start_point' not in self.config.config:
             # We need to set up the initial point ourselfs
             self._parse_start_point()
-        if 'simplex_max_iterations' in config.config:
-            self.max_iterations = config.config['simplex_max_iterations']
+        if 'simplex_max_iterations' in self.config.config:
+            self.max_iterations = self.config.config['simplex_max_iterations']
         else:
-            self.max_iterations = config.config['max_iterations']
-        self.start_point = config.config['simplex_start_point']
-        self.start_steps = {v[0]: v[3] for v in config.variables_specs}
+            self.max_iterations = self.config.config['max_iterations']
+        self.start_point = self.config.config['simplex_start_point']
         # Set the start step for each variable to a variable-specific value, or else an algorithm-wide value
         self.start_steps = dict()
-        for v in config.variables_specs:
-            if v[1] in ('var', 'logvar') and v[3] is not None:
-                self.start_steps[v[0]] = v[3]
-            elif 'simplex_log_step' in config.config and v[1][:3]=='log':
-                self.start_steps[v[0]] = config.config['simplex_log_step']
+        for v in self.variables:
+            if v.type in ('var', 'logvar') and v.p2 is not None:
+                self.start_steps[v.name] = v.p2
+            elif 'simplex_log_step' in self.config.config and v.log_space:
+                self.start_steps[v.name] = self.config.config['simplex_log_step']
             else:
-                self.start_steps[v[0]] = config.config['simplex_step']
+                self.start_steps[v.name] = self.config.config['simplex_step']
 
-        self.parallel_count = min(config.config['population_size'], len(self.variables))
+        self.parallel_count = min(self.config.config['population_size'], len(self.variables))
         self.iteration = 0
-        self.alpha = config.config['simplex_reflection']
-        self.gamma = config.config['simplex_expansion']
-        self.beta = config.config['simplex_contraction']
-        self.tau = config.config['simplex_shrink']
+        self.alpha = self.config.config['simplex_reflection']
+        self.gamma = self.config.config['simplex_expansion']
+        self.beta = self.config.config['simplex_contraction']
+        self.tau = self.config.config['simplex_shrink']
 
         self.simplex = []  # (score, PSet) points making up the simplex. Sorted after each iteration.
 
@@ -1833,16 +1746,13 @@ class SimplexAlgorithm(Algorithm):
         as opposed to a refinement at the end of the run)
         Parses the info out of the variable specs, and sets the appropriate PSet into the config.
         """
-        start_dict = dict()
-        for vinfo in self.config.variables_specs:
-            if vinfo[1] == 'var':
-                start_dict[vinfo[0]] = vinfo[2]
-            elif vinfo[1] == 'logvar':
-                start_dict[vinfo[0]] = exp10(vinfo[2])
-            else:
-                raise RuntimeError('Internal error in SimplexAlgorithm: Encountered variable type %s while trying'
-                                   'to parse start point' % vinfo[1])
-        start_pset = PSet(start_dict)
+        start_vars = []
+        for v in self.variables:
+            if v.type == 'var':
+                start_vars.append(v.set_value(v.p1))
+            elif v.type == 'logvar':
+                start_vars.append(v.set_value(exp10(v.p1)))
+        start_pset = PSet(start_vars)
         self.config.config['simplex_start_point'] = start_pset
 
     def start_run(self):
@@ -1855,13 +1765,13 @@ class SimplexAlgorithm(Algorithm):
         self.pending[self.start_point.name] = 0
         i = 1
         for v in self.variables:
-            new_dict = dict()
-            for p in self.variables:
-                if p == v:
-                    new_dict[p] = self.add(self.start_point, p, self.start_steps[p])
+            new_vars = []
+            for p in self.start_point:
+                if p.name == v.name:
+                    new_vars.append(p.add(self.start_steps[p.name]))
                 else:
-                    new_dict[p] = self.start_point[p]
-            new_pset = PSet(new_dict)
+                    new_vars.append(p)
+            new_pset = PSet(new_vars)
             new_pset.name = 'simplex_init%i' % i
             self.pending[new_pset.name] = i
             i += 1
@@ -1892,12 +1802,12 @@ class SimplexAlgorithm(Algorithm):
                 # Case 1: The point is better than the current global min.
                 # We calculate the expansion point
                 self.cases[index] = 1
-                new_dict = dict()
-                for v in pset.keys():
-                    # new_dict[v] = pset[v] + self.gamma * (pset[v] - self.centroids[index][v])
-                    new_dict[v] = self.a_plus_b_times_c_minus_d(pset[v], self.gamma, pset[v], self.centroids[index][v],
-                                                                v)
-                new_pset = PSet(new_dict)
+                new_vars = []
+                for v in self.variables:
+                    new_var = v.set_value(self.a_plus_b_times_c_minus_d(pset[v.name], self.gamma, pset[v.name], self.centroids[index][v.name],
+                                                                v))
+                    new_vars.append(new_var)
+                new_pset = PSet(new_vars)
                 new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
                 self.pending[new_pset.name] = index
                 self.stages[index] = 2
@@ -1920,14 +1830,15 @@ class SimplexAlgorithm(Algorithm):
                     a_hat = pset
                 else:
                     a_hat = self.simplex[-index-1][1]
-                new_dict = dict()
+                new_vars = []
                 for v in self.variables:
                     # I think the equation for this in Lee et al p. 178 is wrong; I am instead using the analog to the
                     # equation on p. 176
                     # new_dict[v] = self.centroids[index][v] + self.beta * (a_hat[v] - self.centroids[index][v])
-                    new_dict[v] = self.a_plus_b_times_c_minus_d(self.centroids[index][v], self.beta, a_hat[v],
-                                                                self.centroids[index][v], v)
-                new_pset = PSet(new_dict)
+                    new_var = v.set_value(self.a_plus_b_times_c_minus_d(self.centroids[index][v.name], self.beta, a_hat[v.name],
+                                                                self.centroids[index][v.name], v))
+                    new_vars.append(new_var)
+                new_pset = PSet(new_vars)
                 new_pset.name = 'simplex_iter%i_pt%i-2' % (self.iteration, index)
                 self.pending[new_pset.name] = index
                 self.stages[index] = 2
@@ -1980,12 +1891,13 @@ class SimplexAlgorithm(Algorithm):
                     self.simplex = sorted(self.simplex, key=lambda x: x[0])
                     new_simplex = []
                     for i in range(1, len(self.simplex)):
-                        new_dict = dict()
-                        for v in self.simplex[i][1].keys():
+                        new_vars = []
+                        for v in self.variables:
                             # new_dict[v] = self.tau * self.simplex[i-1][1][v] + (1 - self.tau) * self.simplex[i][1][v]
-                            new_dict[v] = self.ab_plus_cd(self.tau, self.simplex[i-1][1][v], 1 - self.tau,
-                                                          self.simplex[i][1][v], v)
-                        new_pset = PSet(new_dict)
+                            new_var = v.set_value(self.ab_plus_cd(self.tau, self.simplex[i-1][1][v.name], 1 - self.tau,
+                                                      self.simplex[i][1][v.name], v))
+                            new_vars.append(new_var)
+                        new_pset = PSet(new_vars)
                         new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, i)
                         self.pending[new_pset.name] = i - 1
                         new_simplex.append(new_pset)
@@ -2011,19 +1923,20 @@ class SimplexAlgorithm(Algorithm):
             sums = self.get_sums() # Returns in log space for log variables
             for ai in range(self.parallel_count):
                 a = self.simplex[-ai-1][1]
-                new_dict = dict()
+                new_vars = []
                 this_centroid = dict()
-                for v in a.keys():
-                    if self.variable_space[v][0] == 'log':
+                for v in self.variables:
+                    if v.log_space:
                         # Calc centroid in regular space.
-                        centroid = exp10((sums[v] - np.log10(a[v])) / (len(self.simplex) - 1))
+                        centroid = exp10((sums[v.name] - np.log10(a[v.name])) / (len(self.simplex) - 1))
                     else:
-                        centroid = (sums[v] - a[v]) / (len(self.simplex) - 1)
-                    this_centroid[v] = centroid
+                        centroid = (sums[v.name] - a[v.name]) / (len(self.simplex) - 1)
+                    this_centroid[v.name] = centroid
                     # new_dict[v] = centroid + self.alpha * (centroid - a[v])
-                    new_dict[v] = self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v], v)
+                    new_var = v.set_value(self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v.name], v))
+                    new_vars.append(new_var)
                 self.centroids.append(this_centroid)
-                new_pset = PSet(new_dict)
+                new_pset = PSet(new_vars)
                 new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, ai)
                 reflections.append(new_pset)
                 self.pending[new_pset.name] = ai
@@ -2047,11 +1960,11 @@ class SimplexAlgorithm(Algorithm):
         """
         # return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}
         sums = dict()
-        for p in self.simplex[0][1].keys():
-            if self.variable_space[p][0] == 'regular':
-                sums[p] = sum(point[1][p] for point in self.simplex)
+        for p in self.simplex[0][1]:
+            if not p.log_space:
+                sums[p.name] = sum(point[1][p.name] for point in self.simplex)
             else:
-                sums[p] = sum(np.log10(point[1][p]) for point in self.simplex)
+                sums[p.name] = sum(np.log10(point[1][p.name]) for point in self.simplex)
         return sums
 
     def a_plus_b_times_c_minus_d(self, a, b, c, d, v):
@@ -2064,14 +1977,15 @@ class SimplexAlgorithm(Algorithm):
         :param c:
         :param d:
         :param v:
+        :type v: FreeParameter
         :return:
         """
 
-        if self.variable_space[v][0] == 'log':
+        if v.log_space:
             result = 10 ** (np.log10(a) + b*(np.log10(c) - np.log10(d)))
         else:
             result = a + b*(c-d)
-        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+        return max(v.lower_bound, min(v.upper_bound, result))
 
     def ab_plus_cd(self, a, b, c, d, v):
         """
@@ -2082,13 +1996,14 @@ class SimplexAlgorithm(Algorithm):
         :param c:
         :param d:
         :param v:
+        :type v: FreeParameter
         :return:
         """
-        if self.variable_space[v][0] == 'log':
+        if v.log_space:
             result = 10 ** (a * np.log10(b) + c*np.log10(d))
         else:
             result = a * b + c * d
-        return max(self.variable_space[v][1], min(self.variable_space[v][2], result))
+        return max(v.lower_bound, min(v.upper_bound, result))
 
 
 def latin_hypercube(nsamples, ndims):

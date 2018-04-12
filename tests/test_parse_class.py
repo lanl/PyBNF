@@ -64,7 +64,7 @@ class TestParse:
         assert type(d['verbosity']) == int
         assert d['thing.bngl'] == ['data.exp']
         assert d[('mutate', 'derp')] == [1., 3.]
-        assert d[('uniform_var', 'var3__FREE__')] == [4., 5.]
+        assert d[('uniform_var', 'var3__FREE__')] == [4., 5., True]
         assert d['another.bngl'] == ['d1.exp', 'd2.exp']
         assert d['models'] == {'thing.bngl', 'another.bngl'}
         assert d['credible_intervals'] == [68., 95., 99.7]

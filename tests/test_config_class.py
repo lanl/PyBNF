@@ -6,6 +6,8 @@ from .context import printing
 
 from nose.tools import raises
 
+import operator
+
 
 class TestConfig(object):
     def __init__(self):
@@ -16,7 +18,7 @@ class TestConfig(object):
         cls.cf0 = {'models': {'bngl_files/Tricky.bngl'},
                    'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                   ('uniform_var', 'koff__FREE__'): [4., 5.],
+                   ('uniform_var', 'koff__FREE__'): [4., 5., 'u'],
                    ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
                    ('normal_var', 'kase__FREE__'): [28., 5.],
                    ('uniform_var', 'pase__FREE__'): [6., 7.],
@@ -38,12 +40,14 @@ class TestConfig(object):
         assert 'p1_5' in c.mapping['Tricky']
         assert 'thing' in c.mapping['Tricky']
         assert isinstance(c.obj, objective.ChiSquareObjective)
-        assert sorted(c.variables) == ['__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__']
-        assert sorted(c.variables_specs) == [('__koff2__FREE__', 'loguniform_var', 0.01, 1e5),
-                                             ('kase__FREE__', 'normal_var', 28., 5.),
-                                             ('koff__FREE__', 'uniform_var', 4., 5.),
-                                             ('pase__FREE__', 'uniform_var', 6., 7.),
-                                             ]
+        sorted_vars = sorted(c.variables, key=operator.attrgetter('name'))
+        assert sorted_vars[0].name == '__koff2__FREE__'
+        assert sorted_vars[0].type == 'loguniform_var'
+        assert sorted_vars[0].bounded
+        assert sorted_vars[0].log_space
+        assert not sorted_vars[1].log_space
+        assert not sorted_vars[1].bounded
+        assert [v.name for v in sorted_vars] == ['__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__']
         assert c.config['normalization']['p1_5'] == 'init'
         assert c.config['cluster_type'] is None
 

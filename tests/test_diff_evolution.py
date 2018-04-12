@@ -9,36 +9,12 @@ class TestDiffEvolution:
 
     @classmethod
     def setup_class(cls):
-        cls.data1e = [
-            '# time    v1_result    v2_result    v3_result  v1_result_SD  v2_result_SD  v3_result_SD\n',
-            ' 0 3   4   5   0.1   0.2   0.3\n',
-            ' 1 2   3   6   0.1   0.1   0.1\n',
-            ' 2 4   2   10  0.3   0.1   1.0\n'
-        ]
-
-        cls.d1e = data.Data()
-        cls.d1e.data = cls.d1e._read_file_lines(cls.data1e, '\s+')
-
         cls.data1s = [
             '# time    v1_result    v2_result    v3_result\n',
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
         cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
-
-        cls.data2s = [
-            '# time    v1_result    v2_result    v3_result\n',
-            ' 1 2.2   3.2   6.2\n',
-        ]
-        cls.d2s = data.Data()
-        cls.d2s.data = cls.d2s._read_file_lines(cls.data2s, '\s+')
-
-        cls.variables = ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
-
-        cls.chi_sq = objective.ChiSquareObjective()
-
-        cls.params = pset.PSet({'v1__FREE__': 3.14, 'v2__FREE__': 1.0, 'v3__FREE__': 0.1})
-        cls.params2 = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
 
         # Note mutation_rate is set to 1.0 because for tests with few params, with a lower mutation_rate might randomly
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.

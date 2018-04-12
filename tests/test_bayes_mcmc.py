@@ -18,15 +18,13 @@ class TestBayes:
         cls.d1s = data.Data()
         cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
 
-        cls.variables = ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
-
-        cls.chi_sq = objective.ChiSquareObjective()
-
-        cls.params = pset.PSet({'v1__FREE__': 3.14, 'v2__FREE__': 1.0, 'v3__FREE__': 0.1})
-        cls.params2 = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
-
         os.makedirs('noseoutput1/Results', exist_ok=True)
         os.makedirs('noseoutput2/Results', exist_ok=True)
+
+        cls.p0 = pset.FreeParameter('v1__FREE__', 'lognormal_var', 1., 0.5, 4.14)
+        cls.p1 = pset.FreeParameter('v2__FREE__', 'lognormal_var', 1., 0.5, 10.0)
+        cls.p2 = pset.FreeParameter('v3__FREE__', 'normal_var', 50, 3, 1.0)
+        cls.pset = pset.PSet([cls.p0, cls.p1, cls.p2])
 
         # Note mutation_rate is set to 1.0 because for tests with few params, with a lower mutation_rate might randomly
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.
@@ -146,7 +144,7 @@ class TestBayes:
                     assert line == '# param\tlower_bound\tupper_bound\n'
                 else:
                     parts = line.split('\t')
-                    assert parts[0] in ba.variables
+                    assert parts[0] in [v.name for v in ba.variables]
                     assert float(parts[1]) < float(parts[2])
 
     def test_replica_exchange_run(self):
@@ -177,7 +175,7 @@ class TestBayes:
             ba = algorithms.BayesAlgorithm(self.config_replica)
             psets = []
             for i in range(4):
-                p = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
+                p = self.pset
                 p.name = 'iter0run%i' % i
                 psets.append(p)
             ba.current_pset = psets

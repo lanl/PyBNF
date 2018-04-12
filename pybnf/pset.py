@@ -252,7 +252,7 @@ class BNGLModel(Model):
 
         return '\n'.join(self.model_lines) + '\n'
 
-    def save(self, file_prefix, gen_only=False):
+    def save(self, file_prefix, gen_only=False, pset=None):
         """
         Saves a runnable BNGL file of the model, including definitions of the __FREE__ parameter values that are defined
         by this model's pset, to the specified location.
@@ -263,7 +263,7 @@ class BNGLModel(Model):
 
         # Call model_text(), then write the output to the file.
         if self.param_set is None:
-            self.param_set = PSet({k: 1.0 for k in self.param_names})
+            self.param_set = pset
 
         text = self.model_text(gen_only)
         f = open(file_prefix + '.bngl', 'w')
@@ -326,32 +326,231 @@ class ModelError(Exception):
         self.message = message
 
 
+class FreeParameter(object):
+    """
+    Class representing a free parameter in a model
+    """
+
+    def __init__(self, name, type, p1, p2, value=None, bounded=True):
+        """
+        Initializes a FreeParameter object based on information parsed from the configuration file
+
+        :param name: The name of the parameter as it appears in the model
+        :type name: str
+        :param type: The type of the parameter as defined in the configuration file
+        :type type: str
+        :param p1: The first value governing the variable (lower bound or mean or initial value)
+        :type p1: float
+        :param p2: The second value governing the parameter (upper bound or standard deviation or step size)
+        :type p2: float
+        :param value: The parameter's numerical value
+        :type value: float
+        :param bounded: Determines whether the parameter should be bounded after initial sampling
+         (only relevant if parameter's initial distribution is bounded)
+        """
+        self.name = name
+        self.type = type
+        self.p1 = p1
+        self.p2 = p2
+        self.bounded = bounded if re.search('uniform', self.type) else False
+
+        self.lower_bound = 0.0 if not self.bounded else self.p1
+        self.upper_bound = np.inf if not self.bounded else self.p2
+
+        if self.lower_bound >= self.upper_bound:
+            raise PybnfError("Parameter %s has a lower bound is greater than its upper bound" % self.name)
+
+        # Determine a positive value that can serve as the default for network generation
+        self.default_value = None
+        if self.lower_bound > 0.0:
+            self.default_value = self.lower_bound
+        elif np.isfinite(self.upper_bound):
+            self.default_value = self.upper_bound
+        else:
+            self.default_value = 1.0
+
+        if value:
+            if not self.lower_bound <= value <= self.upper_bound:  # not quite precise, but works well
+                raise OutOfBoundsException("Free parameter %s cannot be assigned the value %s" % (self.name, value))
+        self.value = value
+
+        self.log_space = re.search('log', self.type) is not None
+
+        self._distribution = None
+        if re.search('normal', self.type):
+            self._distribution = np.random.normal
+        elif re.search('uniform', self.type):
+            self._distribution = np.random.uniform
+
+    def set_value(self, new_value):
+        """
+        Assigns a value to the parameter
+
+        :param new_value: A numeric value assigned to the FreeParameter
+        :type new_value: float
+        :return:
+        """
+        if new_value < self.lower_bound or new_value > self.upper_bound:
+            if self.value is None:
+                self.value = self.lower_bound
+                logger.info("Assigning parameter %s to take a value equal to its lower bound: %s" % (self.name, self.lower_bound))
+            # reflective number line, can never realize self.lower_bound or self.upper_bound this way
+            adj = self._reflect(new_value)
+            logger.debug('Assigned value %f is out of defined bounds: [%s, %s].  '
+                           'Adjusted to %f' % (new_value, self.lower_bound, self.upper_bound, adj))
+            new_value = adj
+        return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
+
+    def _reflect(self, new):
+        """Takes a value and returns a new value based on reflecting against the boundary conditions"""
+        num_reflections = 0
+        ub = self.upper_bound
+        lb = self.lower_bound
+        cur = self.value
+        if self.log_space:  # transform to log space if needed
+            cur = np.log10(cur)
+            ub = np.log10(self.upper_bound)
+            lb = np.log10(self.lower_bound)
+            new = np.log10(new)
+            logger.debug("Transforming values to log space: %s %s %s %s" % (cur, new, lb, ub))
+        add = new - cur
+
+        while True:
+            if num_reflections >= 1000:
+                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter = %s" % (cur, add, self.name))
+                raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, cur, add))
+
+            num_reflections += 1
+            if cur + add > ub:
+                add = -((cur+add) - ub)
+                cur = ub
+            elif cur + add < lb:
+                add = lb - (cur + add)
+                cur = lb
+            else:
+                break
+
+        if self.log_space:
+            return 10**(cur + add)
+
+        return cur + add
+
+    def sample_value(self):
+        """
+        Samples a value for this parameter based on its defined initial distribution
+
+        :return: new FreeParameter instance or None
+        """
+        if self.log_space:
+            if re.fullmatch('lognormal_var', self.type):
+                val = 10**(self._distribution(self.p1, self.p2))
+            else:
+                val = 10**(self._distribution(np.log10(self.p1), np.log10(self.p2)))
+        else:
+            val = self._distribution(self.p1, self.p2)
+        return self.set_value(val)
+
+    def add(self, summand):
+        """
+        Adds a value to the existing value and returns a new FreeParameter instance.  Since free parameters
+        can exist in regular or logarithmic space, the value to add is expected to already be transformed
+        to the appropriate space
+
+        :param summand: Value to add
+        :return:
+        """
+        if self.value is None:
+            logger.error('Cannot add to FreeParameter with "None" value')
+        if self.log_space:
+            return self.set_value(10**(np.log10(self.value) + summand))
+        else:
+            return self.set_value(self.value + summand)
+
+    def add_rand(self, lb, ub):
+        """
+        Like FreeParameter.add but instead adds a uniformly distributed random value according to the
+        bounds provided
+
+        :param lb:
+        :param ub:
+        :return:
+        """
+        r = np.random.uniform(lb, ub)
+        return self.add(r)
+
+    def diff(self, other):
+        """
+        Calculates the difference between two FreeParameter instances.  Both instances must occupy the same space
+        (log or regular) and if they are both in log space, the difference will be calculated based on their
+        logarithms.
+        :param other: A FreeParameter from which the difference will be calculated
+        :return:
+        """
+        if not isinstance(other, FreeParameter):
+            raise PybnfError("Cannot compare FreeParameter with another object")
+        if not self.log_space == other.log_space:
+            raise PybnfError("Cannot calculate diff between two FreeParameter instances that are not varying in the same"
+                             "space")
+        if self.log_space:
+            return np.log10(self.value / other.value)
+        else:
+            return self.value - other.value
+
+    def __hash__(self):
+        return hash((self.name, self.value))
+
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return (self.name, self.type, self.value, self.p1, self.p2) == \
+                   (other.name, other.type, other.value, other.p1, other.p2)
+        return False
+
+    def __lt__(self, other):
+        return self.name < other.name
+
+    def __str__(self):
+        return "FreeParameter: %s = %s -- [%s, %s]" % (self.name, self.value, self.lower_bound, self.upper_bound)
+
+    def __repr__(self):
+        return self.__str__()
+
+
 class PSet(object):
     """
     Class representing a parameter set
 
     """
 
-    def __init__(self, param_dict, allow_negative=False):
+    def __init__(self, fps):
         """
         Creates a Pset based on the given dictionary
 
-        :param param_dict: A dictionary containing the parameters to initialize, in the form of str:float pairs,
-            {"paramname1:paramvalue1, ...}
+        :param fps: A list of FreeParameter instances whose values are not None
         """
 
-        # Check input values are the correct type
-        for key in param_dict:
-            value = param_dict[key]
-            if type(key) != str:
-                raise TypeError("Parameter key " + str(key) + " is not of type str")
-            if not allow_negative and value < 0:
-                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is negative")
-            if np.isnan(value) or np.isinf(value):
-                raise ValueError("Parameter value " + str(value) + " with key " + str(key) + " is invalid")
+        self._param_dict = {}
+        self.fps = fps
 
-        self._param_dict = param_dict
+        for fp in fps:
+            if fp.value is None:
+                raise PybnfError("Parameter %s has no value" % fp.name)
+            elif fp.name in self._param_dict.keys():
+                raise PybnfError("Parameters must have unique names")
+            self._param_dict[fp.name] = fp
+
         self.name = None  # Can be set by Algorithms to give it a meaningful label in output file.
+
+    def __iter__(self):
+        self.idx = 0
+        return self
+
+    def __next__(self):
+        if self.idx == self.__len__():
+            raise StopIteration
+        res = self.fps[self.idx]
+        self.idx += 1
+        return res
+
 
     def __getitem__(self, item):
         """
@@ -363,7 +562,16 @@ class PSet(object):
         :param item: The str name of the parameter to look up
         :return: float
         """
-        return self._param_dict[item]
+        return self._param_dict[item].value
+
+    def get_param(self, name):
+        """
+        Gets the full FreeParameter based on its name
+
+        :param name:
+        :return:
+        """
+        return self._param_dict[name]
 
     def __len__(self):
         return len(self._param_dict)
@@ -378,8 +586,7 @@ class PSet(object):
 
         :return: int
         """
-        unique_str = ''.join([self.keys_to_string(), self.values_to_string()])
-        return hash(unique_str)
+        return hash(frozenset(self._param_dict.values()))
 
     def __str__(self):
         """
@@ -511,3 +718,7 @@ class Trajectory(object):
         :return: str
         """
         return self.names[self.best_fit()]
+
+
+class OutOfBoundsException(Exception):
+    pass

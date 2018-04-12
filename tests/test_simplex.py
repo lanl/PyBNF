@@ -11,36 +11,12 @@ class TestSimplex:
 
     @classmethod
     def setup_class(cls):
-        cls.data1e = [
-            '# time    v1_result    v2_result    v3_result  v1_result_SD  v2_result_SD  v3_result_SD\n',
-            ' 0 3   4   5   0.1   0.2   0.3\n',
-            ' 1 2   3   6   0.1   0.1   0.1\n',
-            ' 2 4   2   10  0.3   0.1   1.0\n'
-        ]
-
-        cls.d1e = data.Data()
-        cls.d1e.data = cls.d1e._read_file_lines(cls.data1e, '\s+')
-
         cls.data1s = [
             '# time    v1_result    v2_result    v3_result\n',
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
         cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
-
-        cls.data2s = [
-            '# time    v1_result    v2_result    v3_result\n',
-            ' 1 2.2   3.2   6.2\n',
-        ]
-        cls.d2s = data.Data()
-        cls.d2s.data = cls.d2s._read_file_lines(cls.data2s, '\s+')
-
-        cls.variables = ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
-
-        cls.chi_sq = objective.ChiSquareObjective()
-
-        cls.params = pset.PSet({'v1__FREE__': 3.14, 'v2__FREE__': 1.0, 'v3__FREE__': 0.1})
-        cls.params2 = pset.PSet({'v1__FREE__': 4.14, 'v2__FREE__': 10.0, 'v3__FREE__': 1.0})
 
         cls.config = config.Configuration({
             'population_size': 2, 'max_iterations': 20, 'fit_type': 'sim', 'simplex_start_step': 1.0,
@@ -49,16 +25,12 @@ class TestSimplex:
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
 
-        # cls.config.config['simplex_start_point'] = pset.PSet({'v1__FREE__': 2., 'v2__FREE__': 3., 'v3__FREE__': 4.})
-
         cls.logconfig = config.Configuration({
             'population_size': 2, 'max_iterations': 20, 'fit_type': 'sim', 'simplex_start_step': 1.0,
             'simplex_reflection': 1., 'simplex_expansion': 1., 'simplex_contraction': 0.5, 'simplex_shrink': 0.5,
             ('logvar', 'v1__FREE__'): [2.], ('logvar', 'v2__FREE__'): [3.], ('logvar', 'v3__FREE__'): [4.],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
-
-        # cls.logconfig.config['simplex_start_point'] = pset.PSet({'v1__FREE__': 10.**2., 'v2__FREE__': 10.**3., 'v3__FREE__': 10.**4.})
 
     @classmethod
     def teardown_class(cls):
@@ -69,7 +41,6 @@ class TestSimplex:
         sim.variables.sort()  # Required for Python <= 3.5 to be sure we are checking the correct indices in the simplex
         first = sim.start_run()
         assert len(first) == 4
-        print(first)
         assert first[0]['v1__FREE__'] == 2.
         assert first[3]['v3__FREE__'] == 5.
 

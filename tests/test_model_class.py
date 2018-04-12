@@ -29,15 +29,23 @@ class TestModel:
         cls.savefile3_prefix = 'bngl_files/NoseTest_Save3'
         cls.savefile4_prefix = 'bngl_files/NoseTest_Save4'
 
-        cls.dict1 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'koff__FREE__': 4.4e-3}
-        cls.dict2 = {'kase__FREE__': 3.8, 'pase__FREE__': 0.16, 'wrongname__FREE__': 4.4e-3}
+        cls.params1 = [
+            pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=3.8),
+            pset.FreeParameter('pase__FREE__', 'normal_var', 0, 1, value=0.16),
+            pset.FreeParameter('koff__FREE__', 'normal_var', 0, 1, value=4.4e-3)
+        ]
+        cls.params2 = [
+            pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=3.8),
+            pset.FreeParameter('pase__FREE__', 'normal_var', 0, 1, value=0.16),
+            pset.FreeParameter('wrongname__FREE__', 'normal_var', 0, 1, value=4.4e-3)
+        ]
 
     @classmethod
     def teardown_class(cls):
         remove(cls.savefile_prefix + '.bngl')
         remove(cls.savefile2_prefix + '.bngl')
         remove(cls.savefile3_prefix + '.bngl')
-        remove(cls.savefile3_prefix +'.net')
+        remove(cls.savefile3_prefix + '.net')
         remove(cls.savefile4_prefix + '.bngl')
         remove(cls.savefile4_prefix + '.net')
 
@@ -61,24 +69,24 @@ class TestModel:
         assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__')
 
     def test_init_with_pset(self):
-        ps1 = pset.PSet(self.dict1)
+        ps1 = pset.PSet(self.params1)
         model1 = pset.BNGLModel(self.file1, ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
     @raises(ValueError)
     def test_init_with_pset_error(self):
-        ps1 = pset.PSet(self.dict2)
+        ps1 = pset.PSet(self.params2)
         model1 = pset.BNGLModel(self.file1, ps1)
         assert model1.param_set['kase__FREE__'] == 3.8
 
     def test_copy_with_param_set(self):
         model1 = pset.BNGLModel(self.file1)
-        ps1 = pset.PSet(self.dict1)
+        ps1 = pset.PSet(self.params1)
         model1b = model1.copy_with_param_set(ps1)
         assert model1b.param_set['kase__FREE__'] == 3.8
 
         nmodel1 = pset.NetModel('TrickyWP_p1_5', [], [], nf=self.file5)
-        ps1 = pset.PSet({'Nchannel':20})
+        ps1 = pset.PSet([pset.FreeParameter('Nchannel', 'normal_var', 0, 1, value=20)])
         nmodel1b = nmodel1.copy_with_param_set(ps1)
         nmodel1b.save(self.savefile4_prefix)
 
@@ -90,11 +98,11 @@ class TestModel:
     @raises(PybnfError)
     def test_set_param_set_error(self):
         model1 = pset.BNGLModel(self.file1)
-        ps2 = pset.PSet(self.dict2)
+        ps2 = pset.PSet(self.params2)
         model1.copy_with_param_set(ps2)
 
     def test_model_text(self):
-        ps1 = pset.PSet(self.dict1)
+        ps1 = pset.PSet(self.params1)
         model1 = pset.BNGLModel(self.file1, ps1)
 
         f_answer = open(self.file1a)  # File containing the correct output for model_text()
@@ -103,7 +111,7 @@ class TestModel:
         assert model1.model_text() == answer
 
     def test_bnglmodel_save(self):
-        ps1 = pset.PSet(self.dict1)
+        ps1 = pset.PSet(self.params1)
         model1 = pset.BNGLModel(self.file1, ps1)
 
         model1.save(self.savefile_prefix)
@@ -158,7 +166,9 @@ class TestModel:
 
     def test_netfile_pcopy_and_save(self):
         netmodel = pset.NetModel('TrickyWP_p1_5', [], [], nf=self.file5)
-        ps = pset.PSet({'Vchannel': 1e-5, 'H_tot': 3.4})
+        params = [pset.FreeParameter('Vchannel', 'normal_var', 0, 1, value=1e-5),
+                  pset.FreeParameter('H_tot', 'normal_var', 0, 1, value=3.4)]
+        ps = pset.PSet(params)
         new_netmodel = netmodel.copy_with_param_set(ps)
         pl0 = new_netmodel.netfile_lines[5]
         pl1 = new_netmodel.netfile_lines[16]

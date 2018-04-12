@@ -10,11 +10,37 @@ class TestTrajectory:
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""
-        cls.ps0 = pset.PSet({'x': 1.0, 'y': 2.0, 'z': 3.14})
-        cls.ps1 = pset.PSet({'x': 3.0, 'y': 700.3, 'z': 5.2e-4})
-        cls.ps2 = pset.PSet({'x': 1.0, 'y': 2.0, 'z': 3.141})
-        cls.ps3 = pset.PSet({'x': 3.2, 'y': 10000.0, 'z': 45.78})
-        cls.ps4 = pset.PSet({'kk': 5.2e-39, 'xx': 3.00, 'yy': 700.3, 'ww': 52e-5})
+        params0 = [
+            pset.FreeParameter('x', 'normal_var', 0, 1, value=1.0),
+            pset.FreeParameter('y', 'normal_var', 0, 1, value=2.0),
+            pset.FreeParameter('z', 'normal_var', 0, 1, value=3.14)
+        ]
+        params1 = [
+            pset.FreeParameter('x', 'normal_var', 0, 1, value=3.0),
+            pset.FreeParameter('y', 'normal_var', 0, 1, value=700.3),
+            pset.FreeParameter('z', 'normal_var', 0, 1, value=5.2e-4)
+        ]
+        params2 = [
+            pset.FreeParameter('x', 'normal_var', 0, 1, value=1.0),
+            pset.FreeParameter('y', 'normal_var', 0, 1, value=2.0),
+            pset.FreeParameter('z', 'normal_var', 0, 1, value=3.141)
+        ]
+        params3 = [
+            pset.FreeParameter('x', 'normal_var', 0, 1, value=3.2),
+            pset.FreeParameter('y', 'normal_var', 0, 1, value=10000.0),
+            pset.FreeParameter('z', 'normal_var', 0, 1, value=45.78)
+        ]
+        params5 = [
+            pset.FreeParameter('kk', 'normal_var', 0, 1, value=5.2e-39),
+            pset.FreeParameter('xx', 'normal_var', 0, 1, value=3.00),
+            pset.FreeParameter('yy', 'normal_var', 0, 1, value=700.3),
+            pset.FreeParameter('ww', 'normal_var', 0, 1, value=52e-5)
+        ]
+        cls.ps0 = pset.PSet(params0)
+        cls.ps1 = pset.PSet(params1)
+        cls.ps2 = pset.PSet(params2)
+        cls.ps3 = pset.PSet(params3)
+        cls.ps4 = pset.PSet(params5)
         cls.obj0 = 0.0
         cls.obj1 = 1.0
         cls.obj2 = float("inf")
