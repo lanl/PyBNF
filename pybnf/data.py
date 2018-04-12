@@ -21,8 +21,7 @@ class Data(object):
         elif named_arr is not None:
             # Initialize with RoadRunner named array
             self.data = named_arr
-            self.indvar = named_arr.colnames[0]
-            self.cols = {named_arr.colnames[i].strip('[]'): i for i in range(len(named_arr.colnames))}
+            self.load_rr_header(named_arr.colnames)
 
     def __getitem__(self, col_header):
         """
@@ -91,6 +90,14 @@ class Data(object):
             lines = f.readlines()
 
         self.data = self._read_file_lines(lines, sep, file_name=file_name, flags=flags)
+
+    def load_rr_header(self, header):
+        """
+        Loads the header from a RoadRunner NamedArray
+        :param header: The colnames attribute of a RoadRunner NamedArray (a list of str)
+        """
+        self.indvar = header[0].strip('[]')
+        self.cols = {header[i].strip('[]'): i for i in range(len(header))}
 
     def _read_file_lines(self, lines, sep, file_name='', flags=()):
         """Helper function that reads lines from BNGL gdat files"""

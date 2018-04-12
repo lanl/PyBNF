@@ -55,27 +55,23 @@ class TestSbmlModel:
         ps = pset.PSet(self.params)
         action = pset.TimeCourse({'time': '1000', 'step': '10'})
         m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
-        m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
         result = m.execute(fullpath, self.savefile2, 1000)
         dat = result['time_course']
-        print(dat.cols)
         assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
         assert abs(dat['R'][-1] - 0.358949) < 0.01
         assert dat.cols['time'] == 0
 
     def test_param_scan(self):
-        pass
-        # os.mkdir(self.folder_scan)
-        # fullpath = os.getcwd() + '/' + self.folder_scan
-        # ps = pset.PSet(self.params)
-        # action = pset.ParamScan({'param': 'K3', 'min': '500', 'max': '10000', 'step': '500', 'time': '1000'})
-        # m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
-        # m.copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
-        # result = m.execute(fullpath, self.savefile2, 1000)
-        # dat = result['param_scan']
-        # assert dat.indvar == 'K3'
-        # assert abs(dat['I'][0] - 0.236666) < 0.01
-        # assert abs(dat['R'][-1] - 0.315964) < 0.01
+        os.mkdir(self.folder_scan)
+        fullpath = os.getcwd() + '/' + self.folder_scan
+        ps = pset.PSet(self.params)
+        action = pset.ParamScan({'param': 'K3', 'min': '500', 'max': '10000', 'step': '500', 'time': '1000'})
+        m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
+        result = m.execute(fullpath, self.savefile2, 1000)
+        dat = result['param_scan']
+        assert dat.indvar == 'K3'
+        assert abs(dat['I'][0] - 0.236666) < 0.01
+        assert abs(dat['R'][-1] - 0.315964) < 0.01
 
     @raises(printing.PybnfError)
     def test_missing_key(self):

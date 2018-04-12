@@ -480,8 +480,26 @@ class SbmlModel(Model):
                 res_array = runner.simulate(0., act.time, steps=act.stepnumber)
                 res = Data(named_arr=res_array)
                 result_dict[act.suffix] = res
+            elif isinstance(act, ParamScan):
+                # Manually run parameter scan with several simulate commands
+                if not hasattr(runner, act.param):
+                    raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
+                points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                res_array = None
+                labels = None
+                for i, x in enumerate(points):
+                    setattr(runner, act.param, x)
+                    i_array = runner.simulate(0., act.time, steps=1)
+                    if res_array is None:  # First iteration
+                        res_array = np.zeros((len(points), 1+i_array.shape[1]))
+                        labels = [act.param] + i_array.colnames
+                    res_array[i, 0] = x
+                    res_array[i, 1:] = i_array[1, :]
+                res = Data(arr=res_array)
+                res.load_rr_header(labels)
+                result_dict[act.suffix] = res
             else:
-                raise NotImplementedError
+                raise NotImplementedError('Unknown action type')
         return result_dict
 
 
