@@ -382,8 +382,6 @@ class FreeParameter(object):
         elif re.search('uniform', self.type):
             self._distribution = np.random.uniform
 
-        logger.debug('Instantiated new parameter %s' % self)
-
     def set_value(self, new_value):
         """
         Assigns a value to the parameter
@@ -392,7 +390,6 @@ class FreeParameter(object):
         :type new_value: float
         :return:
         """
-        logger.debug("Attempting to set parameter %s equal to %s" % (self.name, new_value))
         if new_value < self.lower_bound or new_value > self.upper_bound:
             if self.value is None:
                 self.value = self.lower_bound
