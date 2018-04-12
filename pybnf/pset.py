@@ -10,6 +10,7 @@ import copy
 from subprocess import run, STDOUT
 from .data import Data
 import roadrunner as rr
+rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
 
@@ -398,9 +399,12 @@ class SbmlModel(Model):
         self.stochastic = False
 
         try:
+            rr.Logger.enableConsoleLogging()
             runner = rr.RoadRunner(self.file_path)
+            rr.Logger.disableLogging()
         except RuntimeError:
             raise FileNotFoundError
+
         self.species_names = set(runner.model.getFloatingSpeciesIds())
         self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
 

@@ -273,7 +273,6 @@ class Configuration(object):
     def _load_simulators(self):
 
         model_types = set([type(m) for m in self.models.values()])
-        logger.debug('Here are all your sweet model types: %s' % model_types)
 
         # For each model type that exists in the run, check that the simulator is available, and pass the simulator
         # path to the appropriate Model subclass
