@@ -7,10 +7,8 @@ import logging
 import numpy as np
 import re
 import copy
-import xml.etree.ElementTree as ET
-from subprocess import run, STDOUT, DEVNULL
+from subprocess import run, STDOUT
 from .data import Data
-import os
 import roadrunner as rr
 
 logger = logging.getLogger(__name__)
@@ -422,39 +420,14 @@ class SbmlModel(Model):
 
     def model_text(self):
         """
-        Generates the XML text of the model by traversing the xml tree and editing parameters.
+        Generates the XML text of the model
         Should only be used when saving the model to disk, which is not often done.
         :return:
         """
         logger.info('Generating model text for %s' % self.name)
-
-        myxml = ET.parse(self.file_path)
-        param_keys = self.param_set.keys() if self.param_set else ()
-        root = myxml.getroot()
-
-        # The xml file is full of "namespaces" designed to make it difficult to parse, so extra acrobatics are required
-        # here
-        ns = re.search('(?<={).*(?=})', root.tag).group(0)  # Extract the namespace from the root
-        space = {'sbml': ns}
-
-        # Careful parsing here: The names are stored unpredictably under either 'id' or 'name'
-        # We use 'name' if it's available, otherwise use 'id'
-        params = root.findall('sbml:model/sbml:listOfParameters/sbml:parameter', namespaces=space)
-        for p in params:
-            pname = p.get('name')
-            if pname is None:
-                pname = p.get('id')
-            if pname in param_keys:
-                p.set('value', str(self.param_set[pname]))
-
-        species = root.findall('sbml:model/sbml:listOfSpecies/sbml:species', namespaces=space)
-        for s in species:
-            sname = s.get('name')
-            if sname is None:
-                sname = s.get('id')
-            if sname in param_keys:
-                s.set('initialConcentration', str(self.param_set[sname]))
-        return ET.tostring(root)
+        runner = rr.RoadRunner(self.file_path)
+        self._modify_params(runner)
+        return runner.getCurrentSBML()
 
     def save(self, file_prefix):
         with open('%s.xml' % file_prefix, 'w') as out:
@@ -468,11 +441,8 @@ class SbmlModel(Model):
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
 
-    def execute(self, folder, filename, timeout):
-        # Load the original xml file with Roadrunner
-        runner = rr.RoadRunner(self.file_path)
-
-        # Do parameter modifications
+    def _modify_params(self, runner):
+        """Modify the parameters in this runner instance according to my current PSet"""
         not_found = []
         for p in self.param_set.keys():
             if hasattr(runner, p):
@@ -485,6 +455,13 @@ class SbmlModel(Model):
                 runner.model['init([%s])' % p] = self.param_set[p]
             except RuntimeError:
                 pass  # The parameter does not appear in this model (might appear in another model, so not an error)
+
+    def execute(self, folder, filename, timeout):
+        # Load the original xml file with Roadrunner
+        runner = rr.RoadRunner(self.file_path)
+
+        # Do parameter modifications
+        self._modify_params(runner)
 
         # Run the model actions
         result_dict = dict()
