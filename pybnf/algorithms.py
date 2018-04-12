@@ -611,7 +611,7 @@ class Algorithm(object):
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
             to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name))
-            if self.config.config['delete_old_files'] == 0:
+            if self.config.config['delete_old_files'] == 0 and isinstance(this_model, BNGLModel):
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':
                         ext = 'gdat'

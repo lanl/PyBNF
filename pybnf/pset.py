@@ -52,12 +52,6 @@ class Model(object):
     def add_action(self, action):
         pass
 
-    def get_param_names(self):
-        """
-        Return an iterable of the parameter names in this model.
-        """
-        raise NotImplementedError("Subclasses of Model must override get_param_names()")
-
 
 class BNGLModel(Model):
     """
@@ -242,9 +236,6 @@ class BNGLModel(Model):
         newmodel.param_set = pset
         return newmodel
 
-    def get_param_names(self):
-        return self.param_names
-
     def model_text(self, gen_only=False):
         """
         Returns the text of a runnable BNGL file, which includes the contents of the original BNGL file, and also values
@@ -404,13 +395,14 @@ class SbmlModel(Model):
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.actions = list(actions)
         self.suffixes = [a.suffix for a in actions]
-
-        # Maps species names to the name of the compartment the species is in. Usually we'll just look at the keys
-        # to read the species names, but there's a couple places writing the CPS file where we need the compartment
-        # Set of the possible parameter names, including both parameters and species names
-        # (species names listed in a PSet are treated as initial conditions)
-        self.param_names = set()
         self.stochastic = False
+
+        try:
+            runner = rr.RoadRunner(self.file_path)
+        except RuntimeError:
+            raise FileNotFoundError
+        self.species_names = set(runner.model.getFloatingSpeciesIds())
+        self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
 
     def copy_with_param_set(self, pset):
 
@@ -433,28 +425,19 @@ class SbmlModel(Model):
         with open('%s.xml' % file_prefix, 'w') as out:
             out.write(self.model_text())
 
-    def get_param_names(self):
-        runner = rr.RoadRunner(self.file_path)
-        return runner.model.getGlobalParameterIds() + runner.model.getFloatingSpeciesIds()
-
     def add_action(self, action):
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""
-        not_found = []
         for p in self.param_set.keys():
-            if hasattr(runner, p):
-                setattr(runner, p, self.param_set[p])
-            else:
-                not_found.append(p)
-        # Assume those that weren't found as parameters are initial conditions
-        for p in not_found:
-            try:
+            if p in self.species_names:
+                # Initial condition
                 runner.model['init([%s])' % p] = self.param_set[p]
-            except RuntimeError:
-                pass  # The parameter does not appear in this model (might appear in another model, so not an error)
+            elif p in self.param_names:
+                setattr(runner, p, self.param_set[p])
+            # else The parameter does not appear in this model (might appear in another model, so not an error)
 
     def execute(self, folder, filename, timeout):
         # Load the original xml file with Roadrunner
@@ -472,19 +455,25 @@ class SbmlModel(Model):
                 result_dict[act.suffix] = res
             elif isinstance(act, ParamScan):
                 # Manually run parameter scan with several simulate commands
-                if not hasattr(runner, act.param):
+                if act.param not in self.param_names:
                     raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
+                if act.param in self.species_names:
+                    icscan = True
+                else:
+                    icscan = False
                 points = np.linspace(act.min, act.max, act.stepnumber + 1)
                 res_array = None
                 labels = None
                 for i, x in enumerate(points):
-                    setattr(runner, act.param, x)
-                    # Todo: Wrong because setattr() only sets the transient concentration which then gets reset.
+                    if icscan:
+                        runner.model['init([%s])' % act.param] = x
+                    else:
+                        setattr(runner, act.param, x)
                     runner.reset()  # Reset concentrations to current ICs
                     i_array = runner.simulate(0., act.time, steps=1)
                     if res_array is None:  # First iteration
                         res_array = np.zeros((len(points), 1+i_array.shape[1]))
-                        if '[%s]' % act.param in i_array.colnames:
+                        if icscan:
                             # is an initial condition
                             labels = [act.param + '_0'] + i_array.colnames
                         else:
