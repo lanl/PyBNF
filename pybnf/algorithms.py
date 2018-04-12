@@ -1733,8 +1733,10 @@ class BayesianAlgorithm(Algorithm):
 
             sorted_data = sorted(dat_array[:, i])
             for interval, file in zip(self.credible_intervals, cred_files):
-                min_index = int(np.round(len(sorted_data) * (1.-(interval/100)) / 2.))
-                max_index = int(np.round(len(sorted_data) * (1. - ((1.-(interval/100)) / 2.))))
+                n = len(sorted_data)
+                want = n * (interval/100)
+                min_index = int(np.round(n/2 - want/2))
+                max_index = int(np.round(n/2 + want/2 - 1))
                 file.write('%s\t%s\t%s\n' % (v, sorted_data[min_index], sorted_data[max_index]))
 
     def cleanup(self):
@@ -1808,7 +1810,7 @@ class DreamAlgorithm(BayesianAlgorithm):
 
             if self.iteration[index] % self.sample_every == 0:
                 self.sample_pset(self.current_pset[index], self.ln_current_P[index])
-            if self.iteration[index] % self.output_hist_every == 0:
+            if self.iteration[index] % (self.sample_every * self.output_hist_every) == 0:
                 self.update_histograms('_%i' % self.iteration[index])
 
             next_gen = []
@@ -2142,47 +2144,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         """
         with open(self.samples_file, 'a') as f:
             f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
-
-    def update_histograms(self, file_ext):
-        """
-        Updates the files that contain histogram points for each variable
-        :param file_ext: String to append to the save file names
-        :type file_ext: str
-        :return:
-        """
-        # Read the samples file into an array, ignoring the first row (header)
-        # and first 2 columns (pset names, probabilities)
-        dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
-                                  usecols=range(2, len(self.variables)+2))
-
-        # Open the file(s) to save the credible intervals
-        cred_files = []
-        for i in self.credible_intervals:
-            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
-            f.write('# param\tlower_bound\tupper_bound\n')
-            cred_files.append(f)
-
-        for i in range(len(self.variables)):
-            v = self.variables[i]
-            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
-            # For log-space variables, we want the histogram in log space
-            if v.log_space:
-                histdata = np.log10(dat_array[:, i])
-                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
-            else:
-                histdata = dat_array[:, i]
-                header = 'lower_bound\tupper_bound\tcount'
-            hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
-            result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
-            np.savetxt(fname, result_array, delimiter='\t', header=header)
-
-            sorted_data = sorted(dat_array[:, i])
-            for interval, file in zip(self.credible_intervals, cred_files):
-                n = len(sorted_data)
-                want = n * (interval/100)
-                min_index = int(np.round(n/2 - want/2))
-                max_index = int(np.round(n/2 + want/2 - 1))
-                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
 
     def replica_exchange(self):
         """
