@@ -479,12 +479,20 @@ class SbmlModel(Model):
                 labels = None
                 for i, x in enumerate(points):
                     setattr(runner, act.param, x)
+                    # Todo: Wrong because setattr() only sets the transient concentration which then gets reset.
+                    runner.reset()  # Reset concentrations to current ICs
                     i_array = runner.simulate(0., act.time, steps=1)
                     if res_array is None:  # First iteration
                         res_array = np.zeros((len(points), 1+i_array.shape[1]))
-                        labels = [act.param] + i_array.colnames
+                        if '[%s]' % act.param in i_array.colnames:
+                            # is an initial condition
+                            labels = [act.param + '_0'] + i_array.colnames
+                        else:
+                            labels = [act.param] + i_array.colnames
                     res_array[i, 0] = x
                     res_array[i, 1:] = i_array[1, :]
+                logger.debug(str(labels))
+                logger.debug(str(res_array))
                 res = Data(arr=res_array)
                 res.load_rr_header(labels)
                 result_dict[act.suffix] = res
