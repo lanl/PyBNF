@@ -54,6 +54,12 @@ class Model(object):
     def add_action(self, action):
         pass
 
+    def get_param_names(self):
+        """
+        Return an iterable of the parameter names in this model.
+        """
+        raise NotImplementedError("Subclasses of Model must override get_param_names()")
+
 
 class BNGLModel(Model):
     """
@@ -238,6 +244,9 @@ class BNGLModel(Model):
         newmodel.param_set = pset
         return newmodel
 
+    def get_param_names(self):
+        return self.param_names
+
     def model_text(self, gen_only=False):
         """
         Returns the text of a runnable BNGL file, which includes the contents of the original BNGL file, and also values
@@ -392,9 +401,9 @@ class NetModel(BNGLModel):
 class SbmlModel(Model):
 
     def __init__(self, file, pset=None, actions=()):
-        self.file = file
+        self.file_path = file
         self.param_set = pset
-        self.name = re.sub(".xml", "", self.file[self.file.rfind("/") + 1:])
+        self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.actions = list(actions)
         self.suffixes = [a.suffix for a in actions]
 
@@ -419,7 +428,7 @@ class SbmlModel(Model):
         """
         logger.info('Generating model text for %s' % self.name)
 
-        myxml = ET.parse(self.file)
+        myxml = ET.parse(self.file_path)
         param_keys = self.param_set.keys() if self.param_set else ()
         root = myxml.getroot()
 
@@ -451,13 +460,17 @@ class SbmlModel(Model):
         with open('%s.xml' % file_prefix, 'w') as out:
             out.write(self.model_text())
 
+    def get_param_names(self):
+        runner = rr.RoadRunner(self.file_path)
+        return runner.model.getGlobalParameterIds() + runner.model.getFloatingSpeciesIds()
+
     def add_action(self, action):
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     def execute(self, folder, filename, timeout):
         # Load the original xml file with Roadrunner
-        runner = rr.RoadRunner(self.file)
+        runner = rr.RoadRunner(self.file_path)
 
         # Do parameter modifications
         not_found = []

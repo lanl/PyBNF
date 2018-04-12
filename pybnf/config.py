@@ -427,7 +427,7 @@ class Configuration(object):
         """
         model_vars = set()
         for m in self.models.values():
-            model_vars.update(m.param_names)
+            model_vars.update(m.get_param_names())
 
         variables_names = {v.name for v in self.variables}
         extra_in_conf = variables_names.difference(model_vars)

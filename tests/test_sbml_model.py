@@ -47,7 +47,7 @@ class TestSbmlModel:
     def test_init(self):
         m = pset.SbmlModel(self.file)
         assert m.name == 'raf'
-        assert m.file == self.file
+        assert m.file_path == self.file
 
     def test_execute(self):
         os.mkdir(self.folder)
