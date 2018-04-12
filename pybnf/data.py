@@ -20,7 +20,8 @@ class Data(object):
             self.data = arr
         elif named_arr is not None:
             # Initialize with RoadRunner named array
-            self.data = named_arr
+            # NamedArray is not pickleable, so we need to copy the contents into a regular array.
+            self.data = np.array(named_arr)
             self.load_rr_header(named_arr.colnames)
 
     def __getitem__(self, col_header):
