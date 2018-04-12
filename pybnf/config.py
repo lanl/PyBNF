@@ -106,15 +106,11 @@ class Configuration(object):
             bng_command = os.environ['BNGPATH'] + '/BNG2.pl'
         except KeyError:
             bng_command = ''
-        try:
-            copasi_command = os.environ['COPASIDIR'] + '/bin/CopasiSE'
-        except KeyError:
-            copasi_command = ''
 
         default = {
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
-            'backup_every': 1, 'copasi_command': copasi_command, 'time_course': (), 'param_scan': (),
+            'backup_every': 1, 'time_course': (), 'param_scan': (),
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,
@@ -252,7 +248,6 @@ class Configuration(object):
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
                     model = SbmlModel(mf)
-                    model.copasi_command = absolute(self.config['copasi_command'])
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
@@ -298,23 +293,6 @@ class Configuration(object):
                     raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
                                      'variable is correctly set')
-
-        if SbmlModel in model_types:
-            if self.config['copasi_command'] == '':
-                raise PybnfError('Path to CopasiSE not defined. Please specify using the "copasi_command" parameter in '
-                                 'the configuration file or set the COPASIDIR environmental variable.')
-            if re.search(r'CopasiSE', self.config['copasi_command']) is None:
-                print1('Warning: The "copasi_command" should be a path to the CopasiSE executable '
-                       '(e.g. /path/to/CopasiSE). I don\'t see CopasiSE in your path, so it might be entered wrong.')
-
-            try:
-                logger.info('Checking to make sure copasi_command is appropriately set')
-                subprocess.run([self.config['copasi_command'], '--help'], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            except subprocess.CalledProcessError or PermissionError:
-                raise PybnfError('Copasi failed to execute. Please check that the "copasi_command" parameter in the '
-                                 'configuration file points to the CopasiSE executable or that the COPASIDIR '
-                                 'enviornmental variable is correctly set')
 
     def _load_actions(self):
 
