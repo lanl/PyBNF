@@ -397,6 +397,7 @@ class SbmlModel(Model):
         self.actions = list(actions)
         self.suffixes = [a.suffix for a in actions]
         self.stochastic = False
+        self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
 
         try:
             rr.Logger.enableConsoleLogging()
@@ -433,6 +434,15 @@ class SbmlModel(Model):
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
 
+    def add_mutant(self, mut_set):
+        """
+        Add a mutant to run along with this model
+        :param mut_set: MutationSet that should be applied to this mutant
+        :type mut_set: MutationSet
+        :return:
+        """
+        self.mutants.append(mut_set)
+
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""
         for p in self.param_set.keys():
@@ -453,45 +463,59 @@ class SbmlModel(Model):
         # Run the model actions
         result_dict = dict()
         selection = ['time'] + list(self.species_names)
-        for act in self.actions:
-            if isinstance(act, TimeCourse):
-                res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
-                res = Data(named_arr=res_array)
-                result_dict[act.suffix] = res
-            elif isinstance(act, ParamScan):
-                # Manually run parameter scan with several simulate commands
-                if act.param not in self.param_names:
-                    raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
-                if act.param in self.species_names:
-                    icscan = True
-                else:
-                    icscan = False
-                points = np.linspace(act.min, act.max, act.stepnumber + 1)
-                res_array = None
-                labels = None
-                for i, x in enumerate(points):
-                    if icscan:
-                        runner.model['init([%s])' % act.param] = x
+        for mut in self.mutants:
+            # Apply all mutations
+            for mi in mut:
+                if mi.name in self.species_names:
+                    runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
+                elif mi.name in self.param_names:
+                    setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+
+            for act in self.actions:
+                if isinstance(act, TimeCourse):
+                    res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                    res = Data(named_arr=res_array)
+                    result_dict[act.suffix + mut.suffix] = res
+                elif isinstance(act, ParamScan):
+                    # Manually run parameter scan with several simulate commands
+                    if act.param not in self.param_names:
+                        raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
+                    if act.param in self.species_names:
+                        icscan = True
                     else:
-                        setattr(runner, act.param, x)
-                    runner.reset()  # Reset concentrations to current ICs
-                    i_array = runner.simulate(0., act.time, steps=1, selections=selection)
-                    if res_array is None:  # First iteration
-                        res_array = np.zeros((len(points), 1+i_array.shape[1]))
+                        icscan = False
+                    points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                    res_array = None
+                    labels = None
+                    for i, x in enumerate(points):
                         if icscan:
-                            # is an initial condition
-                            labels = [act.param + '_0'] + i_array.colnames
+                            runner.model['init([%s])' % act.param] = x
                         else:
-                            labels = [act.param] + i_array.colnames
-                    res_array[i, 0] = x
-                    res_array[i, 1:] = i_array[1, :]
-                logger.debug(str(labels))
-                logger.debug(str(res_array))
-                res = Data(arr=res_array)
-                res.load_rr_header(labels)
-                result_dict[act.suffix] = res
-            else:
-                raise NotImplementedError('Unknown action type')
+                            setattr(runner, act.param, x)
+                        runner.reset()  # Reset concentrations to current ICs
+                        i_array = runner.simulate(0., act.time, steps=1, selections=selection)
+                        if res_array is None:  # First iteration
+                            res_array = np.zeros((len(points), 1+i_array.shape[1]))
+                            if icscan:
+                                # is an initial condition
+                                labels = [act.param + '_0'] + i_array.colnames
+                            else:
+                                labels = [act.param] + i_array.colnames
+                        res_array[i, 0] = x
+                        res_array[i, 1:] = i_array[1, :]
+                    logger.debug(str(labels))
+                    logger.debug(str(res_array))
+                    res = Data(arr=res_array)
+                    res.load_rr_header(labels)
+                    result_dict[act.suffix + mut.suffix] = res
+                else:
+                    raise NotImplementedError('Unknown action type')
+            # Undo all mutations
+            for mi in mut:
+                if mi.name in self.species_names:
+                    runner.model['init([%s])' % mi.name] = mi.undo()
+                elif mi.name in self.param_names:
+                    setattr(runner, mi.name, mi.undo())
         return result_dict
 
 
@@ -591,6 +615,74 @@ class ParamScan(Action):
 
         self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'
+
+
+class Mutation:
+
+    def __init__(self, name, operation, value):
+        """
+        Create a mutation
+        :param name: Name of the variable to mutate
+        :type name: str
+        :param operation: Operation to perform on the target variable; one of + - * / =
+        :type operation: str
+        :param value: The value to add/subtract/etc (depending on the operation)
+        :type value: float
+        """
+        self.name = name
+        self.operation = operation
+        self.value = value
+        if operation not in ('+', '-', '*', '/', '='):
+            raise RuntimeError('Invalid mutation operation %s' % operation)
+        self.old = None
+
+    def mutate(self, num):
+        """
+        Applies this mutation
+        :param num:
+        :return: float
+        """
+        self.old = num
+        if self.operation == '=':
+            return self.value
+        elif self.operation == '+':
+            return num + self.value
+        elif self.operation == '-':
+            return num - self.value
+        elif self.operation == '*':
+            return num * self.value
+        elif self.operation == '/':
+            return num / self.value
+
+    def undo(self):
+        """
+        Undo the mutation we just did
+        :return: float
+        """
+        if not self.old:
+            raise RuntimeError('Called undo() on a Mutation that was not performed')
+        old = self.old
+        self.old = None
+        return old
+
+
+class MutationSet:
+    """
+    A set of mutations that represents a mutant model
+    """
+    def __init__(self, mutations=(), suffix=''):
+        """
+
+        :param mutations: The mutations to include in this MutationSet
+        :type mutations: iterable of Mutant
+        :param suffix: The simulation suffix for this mutant. This will be appended to the action suffix
+        :type suffix: str
+        """
+        self.mutations = mutations
+        self.suffix = suffix
+
+    def __iter__(self):
+        return iter(self.mutations)
 
 
 class ModelError(Exception):
