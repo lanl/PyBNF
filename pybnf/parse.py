@@ -98,7 +98,8 @@ def parse(s):
 
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
-    mutgram = mutkey - equals - string - string - pp.OneOrMore(pp.Word(pp.alphanums + punctuation_safe)) - \
+    mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - pp.oneOf('+ - * / =') - num)
+    mutgram = mutkey - equals - string - string - pp.Group(pp.OneOrMore(mut_op)) - \
         pp.Group(colon - (pp.delimitedList(exp_file) ^ nonetoken)) - comment
 
     # check each grammar and output somewhat legible error message
@@ -253,6 +254,10 @@ def ploop(ls):  # parse loop
             elif key in dictkeys:
                 fmt = "'%s=key1: value1, key2: value2,...' where key1, key2, etc are attributes of the %s (see " \
                       "documentation for available options)" % (key, key)
+            elif key == 'mutant':
+                fmt = "'mutant=base model var1=val1 var2*val2 ... : datafile1.exp, datafile2.exp' where mutation " \
+                      "operations (var1=val1 etc) have the format [variable_name][operator][number] and other " \
+                      "arguments are strings"
 
             message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
             if fmt == '':

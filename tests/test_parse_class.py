@@ -17,7 +17,7 @@ class TestParse:
                  'cluster_type = slurm',
                  'time_course = model: thing.bngl, time: 100, step: 10',
                  'param_scan=model:another.bngl, param:var2__FREE__, min:10, max:30, step:1, time:100',
-                 'mutant=another.bngl m1 a4__FREE__=42 b5__FREE__*=17 : data1m1.exp, data2m1.exp']
+                 'mutant=another.bngl m1 a4__FREE__=42 b5__FREE__*17 : data1m1.exp, data2m1.exp']
 
     @classmethod
     def teardown_class(cls):
@@ -38,7 +38,8 @@ class TestParse:
         assert parse.parse(self.s[12]) == ['normalization', 'init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)']
         assert parse.parse(self.s[15]) == ['time_course', 'model', 'thing.bngl', 'time', '100', 'step', '10']
         assert parse.parse(self.s[16]) == ['param_scan', 'model', 'another.bngl', 'param', 'var2__FREE__', 'min', '10', 'max', '30', 'step', '1', 'time', '100']
-        assert parse.parse(self.s[17]) == ['mutant', 'another.bngl', 'm1', 'a4__FREE__=42', 'b5__FREE__*=17', ['data1m1.exp', 'data2m1.exp']]
+        assert parse.parse(self.s[17]) == \
+               ['mutant', 'another.bngl', 'm1', [['a4__FREE__', '=', '42'], ['b5__FREE__', '*', '17']], ['data1m1.exp', 'data2m1.exp']]
 
     def test_normalize_parse(self):
         assert parse.parse_normalization_def('init') == 'init'
@@ -80,7 +81,7 @@ class TestParse:
         assert d['cluster_type'] == 'slurm'
         assert d['time_course'] == [{'model': 'thing.bngl', 'time': '100', 'step': '10'}]
         assert d['param_scan'] == [{'model': 'another.bngl', 'param': 'var2__FREE__', 'min': '10', 'max': '30', 'step': '1', 'time': '100'}]
-        assert d['mutant'] == [['another.bngl', 'm1', 'a4__FREE__=42', 'b5__FREE__*=17', ['data1m1.exp', 'data2m1.exp']]]
+        assert d['mutant'] == [['another.bngl', 'm1', [['a4__FREE__', '=', '42'], ['b5__FREE__', '*', '17']], ['data1m1.exp', 'data2m1.exp']]]
         assert 'data2m1.exp' in d['exp_data']
 
         d2 = parse.ploop(['credible_intervals=68'])
@@ -95,4 +96,4 @@ class TestParse:
 
     def test_no_exp(self):
         assert parse.parse('model=thing.bngl: None') == ['model', 'thing.bngl']
-        assert parse.parse('mutant = thing mutant a*=2 b=0 : None') == ['mutant', 'thing', 'mutant', 'a*=2', 'b=0', []]
+        assert parse.parse('mutant = thing mutant a*2 b=0 : None') == ['mutant', 'thing', 'mutant', [['a', '*', '2'], ['b', '=', '0']], []]
