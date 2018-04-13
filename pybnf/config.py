@@ -5,7 +5,7 @@ from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
 
-from .pset import BNGLModel, ModelError, SbmlModel, FreeParameter, TimeCourse, ParamScan
+from .pset import BNGLModel, ModelError, SbmlModel, FreeParameter, TimeCourse, ParamScan, Mutation, MutationSet
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -90,8 +90,9 @@ class Configuration(object):
             self.config[k] = v
 
         self.models = self._load_models()
-        self._load_simulators()
         self._load_actions()
+        self._load_simulators()
+        self._load_mutants()
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         self.exp_data, self.constraints = self._load_exp_data()
         self.obj = self._load_obj_func()
@@ -269,6 +270,33 @@ class Configuration(object):
 
         return md
 
+    def _load_mutants(self):
+
+        if 'mutant' not in self.config:
+            return
+
+        for base, name, mutations, exps in self.config['mutant']:
+            base = self._file_prefix(base, '(bngl|xml)')
+            if base not in self.models:
+                raise PybnfError('Mutant %s declared corresponding to model %s, but that model was not found' %
+                                 (name, base))
+            mut_objects = [Mutation(var, op, float(val)) for var, op, val in mutations]
+            mut_set = MutationSet(mut_objects, name)
+            self.models[base].add_mutant(mut_set)
+            # Check that the exp files will have simulation outputs
+            for ex in exps:
+                ename = self._file_prefix(ex, '(exp|con)')
+                base_suffix = re.match('.*(?=%s)' % name, ename)
+                suffix_choices = [x[1] for x in self.models[base].suffixes]
+                if len(suffix_choices) == 0:
+                    raise PybnfError("Model %s has no action suffixes, so I can't have mutant model %s with "
+                                     "data file %s based on that model" % (base, name, ex))
+                if not base_suffix or base_suffix not in self.models[base].suffixes:
+                    raise PybnfError('Experimental file name %s in mutant model %s. This file name should consist of '
+                                     'the model suffix it corresponds to, followed by the mutant name (e.g. %s%s.exp)'
+                                     % (ex, name, suffix_choices[0], name))
+            # Stages these exp files to get loaded along with regular model ones
+            self.config['models'][base + name] = exps
 
     def _load_simulators(self):
 
