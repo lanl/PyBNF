@@ -15,8 +15,9 @@ class TestSbmlModel:
         cls.file = 'bngl_files/raf.xml'
         cls.savefile = 'raf_test'
         cls.savefile2 = 'raf_test_exec'
-        cls.params = {'K3':8000., 'K5': 0.3}
         cls.params = [pset.FreeParameter('K3', 'uniform_var', 2000., 10000., 8000.),
+                      pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3)]
+        cls.params2 = [pset.FreeParameter('K3', 'uniform_var', 2000., 10000., 2000.),
                       pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3)]
         cls.folder = 'raf_test'
         cls.folder_scan = 'raf_test_scan'
@@ -72,6 +73,21 @@ class TestSbmlModel:
         assert dat.indvar == 'K3'
         assert abs(dat['I'][0] - 0.236666) < 0.01
         assert abs(dat['R'][-1] - 0.315964) < 0.01
+
+    def test_mutation(self):
+        mut = pset.Mutation('K3', '*', 4)
+        mutset = pset.MutationSet((mut,), suffix='k3x4')
+        ps = pset.PSet(self.params2)
+        action = pset.TimeCourse({'time': '1000', 'step': '10'})
+        m = pset.SbmlModel(self.file, pset=ps, actions=(action,))
+        m.add_mutant(mutset)
+        result = m.execute(os.getcwd(), self.savefile2, 1000)
+        print(result)
+        dat = result['time_coursek3x4']
+        assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
+        assert abs(dat['R'][-1] - 0.358949) < 0.01
+        assert dat.cols['time'] == 0
+
 
     @raises(printing.PybnfError)
     def test_missing_key(self):
