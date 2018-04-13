@@ -296,12 +296,13 @@ class Configuration(object):
                 if len(suffix_choices) == 0:
                     raise PybnfError("Model %s has no action suffixes, so I can't have mutant model %s with "
                                      "data file %s based on that model" % (base, name, ex))
-                if not base_suffix or base_suffix not in self.models[base].suffixes:
+                if not base_suffix or base_suffix.group(0) not in suffix_choices:
                     raise PybnfError('Experimental file name %s in mutant model %s. This file name should consist of '
                                      'the model suffix it corresponds to, followed by the mutant name (e.g. %s%s.exp)'
                                      % (ex, name, suffix_choices[0], name))
             # Stages these exp files to get loaded along with regular model ones
-            self.config['models'][base + name] = exps
+            self.config[base + name] = exps
+            self.config['models'].add(base + name)
 
     def _load_simulators(self):
 
