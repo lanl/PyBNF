@@ -1,8 +1,6 @@
 from .context import pset, printing
 from nose.tools import raises
 import os
-import xml.etree.ElementTree as ET
-import re
 import numpy as np
 import shutil
 
@@ -18,6 +16,8 @@ class TestSbmlModel:
         cls.savefile = 'raf_test'
         cls.savefile2 = 'raf_test_exec'
         cls.params = {'K3':8000., 'K5': 0.3}
+        cls.params = [pset.FreeParameter('K3', 'uniform_var', 2000., 10000., 8000.),
+                      pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3)]
         cls.folder = 'raf_test'
         cls.folder_scan = 'raf_test_scan'
         try:
