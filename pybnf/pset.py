@@ -473,6 +473,7 @@ class SbmlModel(Model):
 
             for act in self.actions:
                 if isinstance(act, TimeCourse):
+                    runner.reset()
                     res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
                     res = Data(named_arr=res_array)
                     result_dict[act.suffix + mut.suffix] = res
