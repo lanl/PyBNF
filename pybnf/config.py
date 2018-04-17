@@ -90,15 +90,24 @@ class Configuration(object):
             self.config[k] = v
 
         self.models = self._load_models()
+        logger.debug('Loaded models')
         self._load_actions()
+        logger.debug('Loaded actions')
         self._load_simulators()
+        logger.debug('Loaded simulators')
         self._load_mutants()
+        logger.debug('Loaded mutants')
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
+        logger.debug('Loaded model:exp mapping')
         self.exp_data, self.constraints = self._load_exp_data()
+        logger.debug('Loaded data')
         self.obj = self._load_obj_func()
+        logger.debug('Loaded objective function')
         self.variables = self._load_variables()
         self._check_variable_correspondence()
+        logger.debug('Loaded variables')
         self._postprocess_normalization()
+        logger.debug('Completed configuration')
 
     @staticmethod
     def default_config():

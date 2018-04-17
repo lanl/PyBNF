@@ -10,6 +10,7 @@ import copy
 from subprocess import run, STDOUT
 from .data import Data
 import heapq
+import traceback
 import roadrunner as rr
 rr.Logger.disableLogging()
 
@@ -416,10 +417,18 @@ class SbmlModel(Model):
             runner = rr.RoadRunner(self.file_path)
             rr.Logger.disableLogging()
         except RuntimeError:
-            raise FileNotFoundError
+            # XML was not found, or had a bug in it, or some other problem in RoadRunner
+            logger.exception('Failed to load model %s in Roadrunner' % self.name)
+            exceptiondata = traceback.format_exc().splitlines()
+            if 'could not open %s as a file' % file in exceptiondata[-1]:
+                message = 'File %s was not found' % file
+            else:
+                message = 'There were errors in parsing this SBML file. See log for details.'
+            raise PybnfError('Failed to load model %s.xml - %s' % (self.name, message))
 
         self.species_names = set(runner.model.getFloatingSpeciesIds()).union(set(runner.model.getBoundarySpeciesIds()))
         self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
+        logger.debug('Loaded model %s with Roadrunner' % self.name)
 
     def copy_with_param_set(self, pset):
 
@@ -666,6 +675,7 @@ class Mutation:
         if operation not in ('+', '-', '*', '/', '='):
             raise RuntimeError('Invalid mutation operation %s' % operation)
         self.old = None
+        logger.debug('Created mutation %s %s %s' % (self.name, self.operation, self.value))
 
     def mutate(self, num):
         """
@@ -711,6 +721,7 @@ class MutationSet:
         """
         self.mutations = mutations
         self.suffix = suffix
+        logger.debug('Created MutationSet with %i mutations' % len(self.mutations))
 
     def __iter__(self):
         return iter(self.mutations)
