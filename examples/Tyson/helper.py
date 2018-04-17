@@ -1,4 +1,6 @@
 import subprocess
+import re
+
 
 def gen_config(filename, outmodel, outact):
     next_index = dict()
@@ -9,19 +11,14 @@ def gen_config(filename, outmodel, outact):
             if line[0:4]=='with':
                 line = line.strip('\n')
                 muts = line.split(' ')
-                gal_flag = False
-                if 'MDT=150' in muts:
-                    gal_flag = True
-                muts = muts = [x for x in muts if x not in ('with', 'MDT=150', 'f=0.48')]
+                muts = [re.sub(r'(?<=[+\-*/])=', '', x) for x in muts if x not in ('with',)]
+                    
             elif line[0]=='$':
                 phen = line[1]
                 if phen not in next_index:
                     next_index[phen] = 0
                 model_line = 'mutant = %s %s%s ' + ' '.join(muts) + ': examples/Tyson/constraints/r%s%s.con\n'
-                if gal_flag:
-                    base = 'yeastG'
-                else:
-                    base = 'yeast'
+                base = 'yeast'
                 outm.write(model_line % (base, phen, next_index[phen], phen, next_index[phen],))
                 action_line = 'time_course = model:%s%s, time:1000, step:1, suffix:r\n' % (phen, next_index[phen])
                 outa.write(action_line)
