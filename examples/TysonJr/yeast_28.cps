@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- generated with COPASI 4.22 (Build 170) (http://www.copasi.org) at 2018-04-17 16:37:22 UTC -->
+<!-- generated with COPASI 4.22 (Build 170) (http://www.copasi.org) at 2018-04-17 16:45:17 UTC -->
 <?oxygen RNGSchema="http://www.copasi.org/static/schema/CopasiML.rng" type="xml"?>
 <COPASI xmlns="http://www.copasi.org/static/schema" versionMajor="4" versionMinor="22" versionDevel="170" copasiSourcesModified="0">
   <ListOfFunctions>
@@ -1340,7 +1340,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
 
         </MiriamAnnotation>
         <Expression>
-          &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Reference=Time>-&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[phi_alpha],Reference=Value>
+          &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Reference=Time>-&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[phi_28],Reference=Value>
         </Expression>
       </Metabolite>
     </ListOfMetabolites>
@@ -1647,7 +1647,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </ModelValue>
       <ModelValue key="ModelValue_126" name="f" simulationType="fixed">
       </ModelValue>
-      <ModelValue key="ModelValue_127" name="phi_alpha" simulationType="fixed">
+      <ModelValue key="ModelValue_127" name="phi_28" simulationType="fixed">
       </ModelValue>
     </ListOfModelValues>
     <ListOfReactions>
@@ -1667,7 +1667,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
           <Product metabolite="Metabolite_0" stoichiometry="1"/>
         </ListOfProducts>
         <ListOfConstants>
-          <Constant key="Parameter_4989" name="mu" value="0.0105022"/>
+          <Constant key="Parameter_4989" name="mu" value="0.00770164"/>
         </ListOfConstants>
         <KineticLaw function="Function_43" unitType="Default" scalingCompartment="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell]">
           <ListOfCallParameters>
@@ -3982,8 +3982,8 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[OffsetTime]" value="0" type="Species" simulationType="assignment"/>
         </ModelParameterGroup>
         <ModelParameterGroup cn="String=Initial Global Quantities" type="Group">
-          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[mdt]" value="66" type="ModelValue" simulationType="fixed"/>
-          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[mu]" value="0.01050223000848402" type="ModelValue" simulationType="assignment"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[mdt]" value="90" type="ModelValue" simulationType="fixed"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[mu]" value="0.0077016353395549476" type="ModelValue" simulationType="assignment"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[ks_n3]" value="1.1100000000000001" type="ModelValue" simulationType="fixed"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[Dn3]" value="0.73199999999999998" type="ModelValue" simulationType="fixed"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[Jn3]" value="4.2699999999999996" type="ModelValue" simulationType="fixed"/>
@@ -4109,11 +4109,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[TEM1T]" value="1.29" type="ModelValue" simulationType="fixed"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[kd_pds_20_i]" value="0.125" type="ModelValue" simulationType="fixed"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[f]" value="0.40000000000000002" type="ModelValue" simulationType="fixed"/>
-          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[phi_alpha]" value="0" type="ModelValue" simulationType="fixed"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[phi_28]" value="0" type="ModelValue" simulationType="fixed"/>
         </ModelParameterGroup>
         <ModelParameterGroup cn="String=Kinetic Parameters" type="Group">
           <ModelParameterGroup cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Reactions[Growth]" type="Reaction">
-            <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Reactions[Growth],ParameterGroup=Parameters,Parameter=mu" value="0.01050223000848402" type="ReactionParameter" simulationType="assignment">
+            <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Reactions[Growth],ParameterGroup=Parameters,Parameter=mu" value="0.0077016353395549476" type="ReactionParameter" simulationType="assignment">
               <InitialExpression>
                 &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[mu],Reference=InitialValue>
               </InitialExpression>
@@ -5099,7 +5099,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       <StateTemplateVariable objectReference="ModelValue_127"/>
     </StateTemplate>
     <InitialState type="initialState">
-      0 1.2586274391129999e+22 4.3660521213250001e+23 3.7698601764820001e+22 3.3483103164919997e+22 3.1254911047830002e+22 8.9127684683600002e+21 1.4453138056800002e+22 3.9565465430489997e+22 8.9729898769300001e+22 7.3470118455400001e+22 4.8357791081710003e+22 1.4212252422519999e+23 5.5825245744390006e+22 2.7701847942200001e+23 1.065918931689e+24 1.56575662282e+23 8.9127684683599997e+23 1.6560887356750001e+24 1.4874687916790001e+24 1.9451514968110002e+23 2.1077492999500002e+22 3.8903029936220005e+23 4.293786431041e+22 4.0830115010460004e+23 6.0040744344289997e+22 3.2218453584950002e+22 2.0721811535692416e+25 5.1245127419632697e+21 1.4613254061860575e+21 0 0 1.6861994399600015e+22 4.293786431041e+22 1257024356.8376269 3.6723041258761773e+22 4.8357791081710003e+22 0 6.5858381481493272e+21 -2.9780481722159167e+23 -2.2565564005264694e+22 -1.2063492343333831e+21 -1.2337690118997716e+22 -1.7837284429266144e+21 -1.4458904355433668e+22 2.7460962307924899e+20 7.3125651998384062e+21 -8.720725407500697e+22 5.4907977337615281e+21 0 0.01050223000848402 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 66 1.1100000000000001 0.73199999999999998 4.2699999999999996 0.79400000000000004 2.2200000000000002 12.9 1.3400000000000001 0.36899999999999999 9.6300000000000008 1.52 0.055300000000000002 3.0099999999999998 1.22 0.19500000000000001 0.0275 6.0999999999999996 23.699999999999999 2.9700000000000002 0.042200000000000001 2.9300000000000002 9.3599999999999994 1e-08 0.996 0.032000000000000001 0.0066299999999999996 0.088999999999999996 0.052400000000000002 0.89900000000000002 0.65000000000000002 1.05 0.39700000000000002 19.5 2.3900000000000001 3.1200000000000001 0.83599999999999997 1.1100000000000001 0.00053799999999999996 0.0178 0.055599999999999997 0.044499999999999998 0.00762 0.031 0.00298 0.13600000000000001 0.66200000000000003 0.28699999999999998 0.0077999999999999996 1.1200000000000001 3 1.8899999999999999 0.058999999999999997 0.074300000000000005 0.038399999999999997 0.80900000000000005 1.8999999999999999 5.04 0.124 0.081699999999999995 0.0055799999999999999 0.038899999999999997 0.042000000000000003 1.4099999999999999 0.028000000000000001 4.6500000000000004 3.3900000000000001 0.022100000000000002 0.35399999999999998 0.124 0.0104 0.0049800000000000001 0.037400000000000003 5.04 0.33400000000000002 0.20999999999999999 0.24099999999999999 32.200000000000003 0.14399999999999999 0.215 3.75 1.5600000000000001 9.7300000000000004 2.3500000000000001 0.106 0.0066299999999999996 83.299999999999997 0.55600000000000005 1.5 6.8799999999999999 0.0088100000000000001 0.055 0.11899999999999999 6.6900000000000004 0.046699999999999998 0.0144 3.04 0.70899999999999996 7.3799999999999999 0.89400000000000002 2.1600000000000001 0.0848 3.8399999999999999 0.063799999999999996 0.32300000000000001 1.9199999999999999 0.044999999999999998 0.011299999999999999 0.0048300000000000001 0.13900000000000001 0.023199999999999998 1.1100000000000001 0.96499999999999997 5.6100000000000003 2.1000000000000001 0.46800000000000003 0.28199999999999997 45.700000000000003 0.80800000000000005 6.4000000000000004 6.2300000000000004 0.86599999999999999 0.26400000000000001 1.02 1.29 0.125 0.40000000000000002 0 
+      0 1.2586274391129999e+22 4.3660521213250001e+23 3.7698601764820001e+22 3.3483103164919997e+22 3.1254911047830002e+22 8.9127684683600002e+21 1.4453138056800002e+22 3.9565465430489997e+22 8.9729898769300001e+22 7.3470118455400001e+22 4.8357791081710003e+22 1.4212252422519999e+23 5.5825245744390006e+22 2.7701847942200001e+23 1.065918931689e+24 1.56575662282e+23 8.9127684683599997e+23 1.6560887356750001e+24 1.4874687916790001e+24 1.9451514968110002e+23 2.1077492999500002e+22 3.8903029936220005e+23 4.293786431041e+22 4.0830115010460004e+23 6.0040744344289997e+22 3.2218453584950002e+22 2.0721811535692416e+25 5.1245127419632697e+21 1.4613254061860575e+21 0 0 1.6861994399600015e+22 4.293786431041e+22 1257024356.8376269 3.6723041258761773e+22 4.8357791081710003e+22 0 6.5858381481493272e+21 -2.9780481722159167e+23 -2.2565564005264694e+22 -1.2063492343333831e+21 -1.2337690118997716e+22 -1.7837284429266144e+21 -1.4458904355433668e+22 2.7460962307924899e+20 7.3125651998384062e+21 -8.720725407500697e+22 5.4907977337615281e+21 0 0.0077016353395549476 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 90 1.1100000000000001 0.73199999999999998 4.2699999999999996 0.79400000000000004 2.2200000000000002 12.9 1.3400000000000001 0.36899999999999999 9.6300000000000008 1.52 0.055300000000000002 3.0099999999999998 1.22 0.19500000000000001 0.0275 6.0999999999999996 23.699999999999999 2.9700000000000002 0.042200000000000001 2.9300000000000002 9.3599999999999994 1e-08 0.996 0.032000000000000001 0.0066299999999999996 0.088999999999999996 0.052400000000000002 0.89900000000000002 0.65000000000000002 1.05 0.39700000000000002 19.5 2.3900000000000001 3.1200000000000001 0.83599999999999997 1.1100000000000001 0.00053799999999999996 0.0178 0.055599999999999997 0.044499999999999998 0.00762 0.031 0.00298 0.13600000000000001 0.66200000000000003 0.28699999999999998 0.0077999999999999996 1.1200000000000001 3 1.8899999999999999 0.058999999999999997 0.074300000000000005 0.038399999999999997 0.80900000000000005 1.8999999999999999 5.04 0.124 0.081699999999999995 0.0055799999999999999 0.038899999999999997 0.042000000000000003 1.4099999999999999 0.028000000000000001 4.6500000000000004 3.3900000000000001 0.022100000000000002 0.35399999999999998 0.124 0.0104 0.0049800000000000001 0.037400000000000003 5.04 0.33400000000000002 0.20999999999999999 0.24099999999999999 32.200000000000003 0.14399999999999999 0.215 3.75 1.5600000000000001 9.7300000000000004 2.3500000000000001 0.106 0.0066299999999999996 83.299999999999997 0.55600000000000005 1.5 6.8799999999999999 0.0088100000000000001 0.055 0.11899999999999999 6.6900000000000004 0.046699999999999998 0.0144 3.04 0.70899999999999996 7.3799999999999999 0.89400000000000002 2.1600000000000001 0.0848 3.8399999999999999 0.063799999999999996 0.32300000000000001 1.9199999999999999 0.044999999999999998 0.011299999999999999 0.0048300000000000001 0.13900000000000001 0.023199999999999998 1.1100000000000001 0.96499999999999997 5.6100000000000003 2.1000000000000001 0.46800000000000003 0.28199999999999997 45.700000000000003 0.80800000000000005 6.4000000000000004 6.2300000000000004 0.86599999999999999 0.26400000000000001 1.02 1.29 0.125 0.40000000000000002 0 
     </InitialState>
   </Model>
   <ListOfTasks>
@@ -5446,16 +5446,19 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
   </ListOfReports>
   <GUI>
   </GUI>
-  <SBMLReference file="yeast.xml">
+  <SBMLReference file="yeast_15.xml">
     <SBMLMap SBMLid="APCP" COPASIkey="Metabolite_16"/>
     <SBMLMap SBMLid="APCPT" COPASIkey="ModelValue_117"/>
     <SBMLMap SBMLid="APCP_Synth" COPASIkey="Reaction_27"/>
     <SBMLMap SBMLid="BCK2" COPASIkey="Metabolite_1"/>
+    <SBMLMap SBMLid="BCK2_peaks" COPASIkey="Metabolite_53"/>
     <SBMLMap SBMLid="BUD" COPASIkey="Metabolite_10"/>
     <SBMLMap SBMLid="BUD_Degr" COPASIkey="Reaction_17"/>
     <SBMLMap SBMLid="BUD_Synth" COPASIkey="Reaction_16"/>
     <SBMLMap SBMLid="Bck2_Degr" COPASIkey="Reaction_4"/>
     <SBMLMap SBMLid="Bck2_Synth" COPASIkey="Reaction_3"/>
+    <SBMLMap SBMLid="Bck2_peak" COPASIkey="Event_6"/>
+    <SBMLMap SBMLid="Bud_emergence" COPASIkey="Event_2"/>
     <SBMLMap SBMLid="CDC14" COPASIkey="Metabolite_30"/>
     <SBMLMap SBMLid="CDC14T" COPASIkey="ModelValue_120"/>
     <SBMLMap SBMLid="CDC15" COPASIkey="Metabolite_21"/>
@@ -5470,6 +5473,8 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     <SBMLMap SBMLid="CDC20T" COPASIkey="Metabolite_14"/>
     <SBMLMap SBMLid="CDC20T_Degr" COPASIkey="Reaction_25"/>
     <SBMLMap SBMLid="CDC20T_Synth" COPASIkey="Reaction_24"/>
+    <SBMLMap SBMLid="CDC20T_peak" COPASIkey="Event_12"/>
+    <SBMLMap SBMLid="CDC20T_peaks" COPASIkey="Metabolite_59"/>
     <SBMLMap SBMLid="CDH1A" COPASIkey="Metabolite_17"/>
     <SBMLMap SBMLid="CDH1A_Synth" COPASIkey="Reaction_28"/>
     <SBMLMap SBMLid="CDH1T" COPASIkey="ModelValue_118"/>
@@ -5478,21 +5483,33 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     <SBMLMap SBMLid="CKIT" COPASIkey="Metabolite_6"/>
     <SBMLMap SBMLid="CKIT_Degr" COPASIkey="Reaction_10"/>
     <SBMLMap SBMLid="CKIT_Synth" COPASIkey="Reaction_9"/>
+    <SBMLMap SBMLid="CKIT_peak" COPASIkey="Event_8"/>
+    <SBMLMap SBMLid="CKIT_peaks" COPASIkey="Metabolite_55"/>
     <SBMLMap SBMLid="CLB2" COPASIkey="Metabolite_28"/>
     <SBMLMap SBMLid="CLB2CLB5" COPASIkey="Metabolite_41"/>
     <SBMLMap SBMLid="CLB2T" COPASIkey="Metabolite_9"/>
+    <SBMLMap SBMLid="CLB2T_peaks" COPASIkey="Metabolite_57"/>
     <SBMLMap SBMLid="CLB5" COPASIkey="Metabolite_27"/>
     <SBMLMap SBMLid="CLB5T" COPASIkey="Metabolite_8"/>
+    <SBMLMap SBMLid="CLB5T_peaks" COPASIkey="Metabolite_56"/>
     <SBMLMap SBMLid="CLN2" COPASIkey="Metabolite_5"/>
+    <SBMLMap SBMLid="CLN2_peaks" COPASIkey="Metabolite_54"/>
     <SBMLMap SBMLid="CLN3" COPASIkey="Metabolite_2"/>
+    <SBMLMap SBMLid="CLN3_peaks" COPASIkey="Metabolite_52"/>
+    <SBMLMap SBMLid="Cell_division" COPASIkey="Event_0"/>
     <SBMLMap SBMLid="Clb2T_Degr" COPASIkey="Reaction_15"/>
     <SBMLMap SBMLid="Clb2T_Synth" COPASIkey="Reaction_14"/>
+    <SBMLMap SBMLid="Clb2T_peak" COPASIkey="Event_10"/>
     <SBMLMap SBMLid="Clb5T_Degr" COPASIkey="Reaction_13"/>
     <SBMLMap SBMLid="Clb5T_Synth" COPASIkey="Reaction_12"/>
+    <SBMLMap SBMLid="Clb5T_peak" COPASIkey="Event_9"/>
     <SBMLMap SBMLid="Cln2_Degr" COPASIkey="Reaction_8"/>
     <SBMLMap SBMLid="Cln2_Synth" COPASIkey="Reaction_7"/>
+    <SBMLMap SBMLid="Cln2_peak" COPASIkey="Event_7"/>
     <SBMLMap SBMLid="Cln3_Degr" COPASIkey="Reaction_2"/>
     <SBMLMap SBMLid="Cln3_Synth" COPASIkey="Reaction_1"/>
+    <SBMLMap SBMLid="Cln3_peak" COPASIkey="Event_5"/>
+    <SBMLMap SBMLid="Constant_flux__irreversible" COPASIkey="Function_6"/>
     <SBMLMap SBMLid="DIV_COUNT" COPASIkey="Metabolite_37"/>
     <SBMLMap SBMLid="Dn3" COPASIkey="ModelValue_3"/>
     <SBMLMap SBMLid="ESP1" COPASIkey="Metabolite_31"/>
@@ -5502,6 +5519,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     <SBMLMap SBMLid="FLAG_UDNA" COPASIkey="Metabolite_39"/>
     <SBMLMap SBMLid="FuncSafety" COPASIkey="Metabolite_26"/>
     <SBMLMap SBMLid="Growth" COPASIkey="Reaction_0"/>
+    <SBMLMap SBMLid="Heav" COPASIkey="Function_49"/>
     <SBMLMap SBMLid="Jn3" COPASIkey="ModelValue_4"/>
     <SBMLMap SBMLid="Jspn" COPASIkey="ModelValue_55"/>
     <SBMLMap SBMLid="MCM1" COPASIkey="Metabolite_33"/>
@@ -5513,17 +5531,54 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     <SBMLMap SBMLid="ORI" COPASIkey="Metabolite_11"/>
     <SBMLMap SBMLid="ORI_Degr" COPASIkey="Reaction_19"/>
     <SBMLMap SBMLid="ORI_Synth" COPASIkey="Reaction_18"/>
+    <SBMLMap SBMLid="ORI_activation" COPASIkey="Event_3"/>
+    <SBMLMap SBMLid="OffsetTime" COPASIkey="Metabolite_71"/>
+    <SBMLMap SBMLid="Origin_relicensing" COPASIkey="Event_1"/>
     <SBMLMap SBMLid="PDS1T" COPASIkey="Metabolite_20"/>
     <SBMLMap SBMLid="PDS1T_Degr" COPASIkey="Reaction_32"/>
     <SBMLMap SBMLid="PDS1T_Synth" COPASIkey="Reaction_31"/>
+    <SBMLMap SBMLid="PDS1T_peak" COPASIkey="Event_13"/>
+    <SBMLMap SBMLid="PDS1T_peaks" COPASIkey="Metabolite_60"/>
     <SBMLMap SBMLid="POLOA" COPASIkey="Metabolite_24"/>
     <SBMLMap SBMLid="POLOA_Synth" COPASIkey="Reaction_37"/>
     <SBMLMap SBMLid="POLOT" COPASIkey="Metabolite_23"/>
     <SBMLMap SBMLid="POLOT_Degr" COPASIkey="Reaction_36"/>
     <SBMLMap SBMLid="POLOT_Synth" COPASIkey="Reaction_35"/>
+    <SBMLMap SBMLid="POLOT_peak" COPASIkey="Event_14"/>
+    <SBMLMap SBMLid="POLOT_peaks" COPASIkey="Metabolite_61"/>
     <SBMLMap SBMLid="PPX" COPASIkey="Metabolite_19"/>
     <SBMLMap SBMLid="PPXT" COPASIkey="ModelValue_121"/>
     <SBMLMap SBMLid="PPX_Synth" COPASIkey="Reaction_30"/>
+    <SBMLMap SBMLid="Rate_Law_for_APCP_Synth_1" COPASIkey="Function_47"/>
+    <SBMLMap SBMLid="Rate_Law_for_BUD_Synth_1" COPASIkey="Function_63"/>
+    <SBMLMap SBMLid="Rate_Law_for_Bck2_Synth_1" COPASIkey="Function_51"/>
+    <SBMLMap SBMLid="Rate_Law_for_CDC15_Synth_1" COPASIkey="Function_70"/>
+    <SBMLMap SBMLid="Rate_Law_for_CDC20A_APCP_Synth_1" COPASIkey="Function_52"/>
+    <SBMLMap SBMLid="Rate_Law_for_CDC20A_APC_Synth_1" COPASIkey="Function_68"/>
+    <SBMLMap SBMLid="Rate_Law_for_CDC20T_Synth_1" COPASIkey="Function_45"/>
+    <SBMLMap SBMLid="Rate_Law_for_CDH1A_Synth_1" COPASIkey="Function_61"/>
+    <SBMLMap SBMLid="Rate_Law_for_CKIP_Synth_1" COPASIkey="Function_53"/>
+    <SBMLMap SBMLid="Rate_Law_for_CKIT_Degr_1" COPASIkey="Function_54"/>
+    <SBMLMap SBMLid="Rate_Law_for_CKIT_Synth_1" COPASIkey="Function_50"/>
+    <SBMLMap SBMLid="Rate_Law_for_Clb2T_Degr_1" COPASIkey="Function_55"/>
+    <SBMLMap SBMLid="Rate_Law_for_Clb2T_Synth_1" COPASIkey="Function_57"/>
+    <SBMLMap SBMLid="Rate_Law_for_Clb5T_Degr_1" COPASIkey="Function_62"/>
+    <SBMLMap SBMLid="Rate_Law_for_Clb5T_Synth_1" COPASIkey="Function_56"/>
+    <SBMLMap SBMLid="Rate_Law_for_Cln2_Synth_1" COPASIkey="Function_48"/>
+    <SBMLMap SBMLid="Rate_Law_for_Cln3_Synth_1" COPASIkey="Function_40"/>
+    <SBMLMap SBMLid="Rate_Law_for_Growth_1" COPASIkey="Function_43"/>
+    <SBMLMap SBMLid="Rate_Law_for_NET1deP_Synth_1" COPASIkey="Function_67"/>
+    <SBMLMap SBMLid="Rate_Law_for_ORI_Synth_1" COPASIkey="Function_60"/>
+    <SBMLMap SBMLid="Rate_Law_for_PDS1T_Degr_1" COPASIkey="Function_69"/>
+    <SBMLMap SBMLid="Rate_Law_for_POLOA_Synth_1" COPASIkey="Function_59"/>
+    <SBMLMap SBMLid="Rate_Law_for_POLOT_Degr_1" COPASIkey="Function_71"/>
+    <SBMLMap SBMLid="Rate_Law_for_POLOT_Synth_1" COPASIkey="Function_65"/>
+    <SBMLMap SBMLid="Rate_Law_for_PPX_Synth_1" COPASIkey="Function_66"/>
+    <SBMLMap SBMLid="Rate_Law_for_SBFdeP_Synth_1" COPASIkey="Function_42"/>
+    <SBMLMap SBMLid="Rate_Law_for_SPN_Synth_1" COPASIkey="Function_64"/>
+    <SBMLMap SBMLid="Rate_Law_for_SWI5T_Synth_1" COPASIkey="Function_58"/>
+    <SBMLMap SBMLid="Rate_Law_for_TEM1_Synth_1" COPASIkey="Function_46"/>
+    <SBMLMap SBMLid="Rate_Law_for_WHI5deP_Synth_1" COPASIkey="Function_44"/>
     <SBMLMap SBMLid="SBF" COPASIkey="Metabolite_29"/>
     <SBMLMap SBMLid="SBFT" COPASIkey="ModelValue_115"/>
     <SBMLMap SBMLid="SBFdeP" COPASIkey="Metabolite_4"/>
@@ -5531,10 +5586,14 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     <SBMLMap SBMLid="SPN" COPASIkey="Metabolite_12"/>
     <SBMLMap SBMLid="SPN_Degr" COPASIkey="Reaction_21"/>
     <SBMLMap SBMLid="SPN_Synth" COPASIkey="Reaction_20"/>
+    <SBMLMap SBMLid="SPN_completion" COPASIkey="Event_4"/>
     <SBMLMap SBMLid="SWI5A" COPASIkey="Metabolite_34"/>
     <SBMLMap SBMLid="SWI5T" COPASIkey="Metabolite_13"/>
     <SBMLMap SBMLid="SWI5T_Degr" COPASIkey="Reaction_23"/>
     <SBMLMap SBMLid="SWI5T_Synth" COPASIkey="Reaction_22"/>
+    <SBMLMap SBMLid="SWI5T_peaks" COPASIkey="Metabolite_58"/>
+    <SBMLMap SBMLid="Sigmoid" COPASIkey="Function_41"/>
+    <SBMLMap SBMLid="Swi5T_peak" COPASIkey="Event_11"/>
     <SBMLMap SBMLid="TEM1" COPASIkey="Metabolite_22"/>
     <SBMLMap SBMLid="TEM1T" COPASIkey="ModelValue_124"/>
     <SBMLMap SBMLid="TEM1_Synth" COPASIkey="Reaction_34"/>
@@ -5543,6 +5602,16 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     <SBMLMap SBMLid="WHI5deP" COPASIkey="Metabolite_3"/>
     <SBMLMap SBMLid="WHI5deP_Synth" COPASIkey="Reaction_5"/>
     <SBMLMap SBMLid="cell" COPASIkey="Compartment_0"/>
+    <SBMLMap SBMLid="dBCK2" COPASIkey="Metabolite_43"/>
+    <SBMLMap SBMLid="dCDC20T" COPASIkey="Metabolite_49"/>
+    <SBMLMap SBMLid="dCKIT" COPASIkey="Metabolite_45"/>
+    <SBMLMap SBMLid="dCLB2T" COPASIkey="Metabolite_47"/>
+    <SBMLMap SBMLid="dCLB5T" COPASIkey="Metabolite_46"/>
+    <SBMLMap SBMLid="dCLN2" COPASIkey="Metabolite_44"/>
+    <SBMLMap SBMLid="dCLN3" COPASIkey="Metabolite_42"/>
+    <SBMLMap SBMLid="dPDS1T" COPASIkey="Metabolite_50"/>
+    <SBMLMap SBMLid="dPOLOT" COPASIkey="Metabolite_51"/>
+    <SBMLMap SBMLid="dSWI5T" COPASIkey="Metabolite_48"/>
     <SBMLMap SBMLid="e_bud_b2" COPASIkey="ModelValue_51"/>
     <SBMLMap SBMLid="e_bud_b5" COPASIkey="ModelValue_50"/>
     <SBMLMap SBMLid="e_bud_n2" COPASIkey="ModelValue_49"/>
