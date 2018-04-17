@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- generated with COPASI 4.22 (Build 170) (http://www.copasi.org) at 2018-04-17 16:37:22 UTC -->
+<!-- generated with COPASI 4.22 (Build 170) (http://www.copasi.org) at 2018-04-17 17:02:42 UTC -->
 <?oxygen RNGSchema="http://www.copasi.org/static/schema/CopasiML.rng" type="xml"?>
 <COPASI xmlns="http://www.copasi.org/static/schema" versionMajor="4" versionMinor="22" versionDevel="170" copasiSourcesModified="0">
   <ListOfFunctions>
@@ -816,9 +816,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Metabolite>
       <Metabolite key="Metabolite_15" name="CDC20A_APCP" simulationType="reactions" compartment="Compartment_0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Metabolite_15">
     <dcterms:created>
       <rdf:Description>
@@ -827,7 +825,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
       </Metabolite>
       <Metabolite key="Metabolite_16" name="APCP" simulationType="reactions" compartment="Compartment_0">
@@ -1207,9 +1204,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Metabolite>
       <Metabolite key="Metabolite_46" name="dCLB5T" simulationType="assignment" compartment="Compartment_0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Metabolite_46">
     <dcterms:created>
       <rdf:Description>
@@ -1218,7 +1213,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <Expression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[ks_b5],Reference=Value>+&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[ks_b5_bf],Reference=Value>*&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[SBF],Reference=Concentration>-(&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[kd_b5],Reference=Value>+&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[kd_b5_20],Reference=Value>*&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[CDC20A_APCP],Reference=Concentration>+&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[kd_b5_20_i],Reference=Value>*&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[CDC20A_APC],Reference=Concentration>)*&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[CLB5T],Reference=Concentration>
@@ -1324,12 +1318,10 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Metabolite>
       <Metabolite key="Metabolite_61" name="POLOT_peaks" simulationType="reactions" compartment="Compartment_0">
       </Metabolite>
-      <Metabolite key="Metabolite_71" name="OffsetTime" simulationType="assignment" compartment="Compartment_0">
+      <Metabolite key="Metabolite_62" name="OffsetTime" simulationType="assignment" compartment="Compartment_0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about="#Metabolite_71">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="#Metabolite_62">
     <dcterms:created>
       <rdf:Description>
         <dcterms:W3CDTF>2018-04-17T10:33:29Z</dcterms:W3CDTF>
@@ -1337,10 +1329,53 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <Expression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Reference=Time>-&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[phi_alpha],Reference=Value>
+        </Expression>
+      </Metabolite>
+      <Metabolite key="Metabolite_63" name="VDiv1" simulationType="reactions" compartment="Compartment_0">
+      </Metabolite>
+      <Metabolite key="Metabolite_64" name="VDiv2" simulationType="reactions" compartment="Compartment_0">
+      </Metabolite>
+      <Metabolite key="Metabolite_65" name="VDiv3" simulationType="reactions" compartment="Compartment_0">
+      </Metabolite>
+      <Metabolite key="Metabolite_66" name="DIff1" simulationType="assignment" compartment="Compartment_0">
+        <MiriamAnnotation>
+<rdf:RDF
+   xmlns:dcterms="http://purl.org/dc/terms/"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="#Metabolite_66">
+    <dcterms:created>
+      <rdf:Description>
+        <dcterms:W3CDTF>2018-04-17T10:58:30Z</dcterms:W3CDTF>
+      </rdf:Description>
+    </dcterms:created>
+  </rdf:Description>
+</rdf:RDF>
+
+        </MiriamAnnotation>
+        <Expression>
+          abs(&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv2],Reference=Concentration>-&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv1],Reference=Concentration>)
+        </Expression>
+      </Metabolite>
+      <Metabolite key="Metabolite_67" name="Diff2" simulationType="assignment" compartment="Compartment_0">
+        <MiriamAnnotation>
+<rdf:RDF
+   xmlns:dcterms="http://purl.org/dc/terms/"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="#Metabolite_67">
+    <dcterms:created>
+      <rdf:Description>
+        <dcterms:W3CDTF>2018-04-17T10:59:30Z</dcterms:W3CDTF>
+      </rdf:Description>
+    </dcterms:created>
+  </rdf:Description>
+</rdf:RDF>
+
+        </MiriamAnnotation>
+        <Expression>
+          abs(&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv3],Reference=Concentration>-&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv2],Reference=Concentration>)
         </Expression>
       </Metabolite>
     </ListOfMetabolites>
@@ -3527,13 +3562,26 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
               0
             </Expression>
           </Assignment>
+          <Assignment targetKey="Metabolite_63">
+            <Expression>
+              &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[V],Reference=Concentration>
+            </Expression>
+          </Assignment>
+          <Assignment targetKey="Metabolite_64">
+            <Expression>
+              &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv1],Reference=Concentration>
+            </Expression>
+          </Assignment>
+          <Assignment targetKey="Metabolite_65">
+            <Expression>
+              &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv2],Reference=Concentration>
+            </Expression>
+          </Assignment>
         </ListOfAssignments>
       </Event>
       <Event key="Event_1" name="Origin relicensing" delayAssignment="true" fireAtInitialTime="0" persistentTrigger="1">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_1">
     <dcterms:created>
       <rdf:Description>
@@ -3542,7 +3590,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[CLB2],Reference=Concentration>+&lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[CLB5],Reference=Concentration> lt 0.20000000000000001
@@ -3565,9 +3612,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_2" name="Bud emergence" delayAssignment="true" fireAtInitialTime="0" persistentTrigger="1">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_2">
     <dcterms:created>
       <rdf:Description>
@@ -3576,7 +3621,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[BUD],Reference=Concentration> ge 1
@@ -3594,9 +3638,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_3" name="ORI activation" delayAssignment="true" fireAtInitialTime="0" persistentTrigger="1">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_3">
     <dcterms:created>
       <rdf:Description>
@@ -3605,7 +3647,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[ORI],Reference=Concentration> ge 1
@@ -3623,9 +3664,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_4" name="SPN completion" delayAssignment="true" fireAtInitialTime="0" persistentTrigger="1">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_4">
     <dcterms:created>
       <rdf:Description>
@@ -3634,7 +3673,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[SPN],Reference=Concentration> ge 1
@@ -3652,9 +3690,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_5" name="Cln3 peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_5">
     <dcterms:created>
       <rdf:Description>
@@ -3663,7 +3699,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dCLN3],Reference=Concentration> lt 0
@@ -3701,9 +3736,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_7" name="Cln2 peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_7">
     <dcterms:created>
       <rdf:Description>
@@ -3712,7 +3745,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dCLN2],Reference=Concentration> lt 0
@@ -3727,9 +3759,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_8" name="CKIT peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_8">
     <dcterms:created>
       <rdf:Description>
@@ -3738,7 +3768,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dCKIT],Reference=Concentration> lt 0
@@ -3753,9 +3782,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_9" name="Clb5T peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_9">
     <dcterms:created>
       <rdf:Description>
@@ -3764,7 +3791,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dCLB5T],Reference=Concentration> lt 0
@@ -3779,9 +3805,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_10" name="Clb2T peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_10">
     <dcterms:created>
       <rdf:Description>
@@ -3790,7 +3814,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dCLB2T],Reference=Concentration> lt 0
@@ -3805,9 +3828,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_11" name="Swi5T peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_11">
     <dcterms:created>
       <rdf:Description>
@@ -3816,7 +3837,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dPOLOT],Reference=Concentration> lt 0
@@ -3831,9 +3851,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_12" name="CDC20T peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_12">
     <dcterms:created>
       <rdf:Description>
@@ -3842,7 +3860,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dCDC20T],Reference=Concentration> lt 0
@@ -3857,9 +3874,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_13" name="PDS1T peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_13">
     <dcterms:created>
       <rdf:Description>
@@ -3868,7 +3883,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dPDS1T],Reference=Concentration> lt 0
@@ -3883,9 +3897,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       </Event>
       <Event key="Event_14" name="POLOT peak" fireAtInitialTime="0" persistentTrigger="0">
         <MiriamAnnotation>
-<rdf:RDF
-   xmlns:dcterms="http://purl.org/dc/terms/"
-   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="#Event_14">
     <dcterms:created>
       <rdf:Description>
@@ -3894,7 +3906,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
     </dcterms:created>
   </rdf:Description>
 </rdf:RDF>
-
         </MiriamAnnotation>
         <TriggerExpression>
           &lt;CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[dPOLOT],Reference=Concentration> lt 0
@@ -3980,6 +3991,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[PDS1T_peaks]" value="0" type="Species" simulationType="reactions"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[POLOT_peaks]" value="0" type="Species" simulationType="reactions"/>
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[OffsetTime]" value="0" type="Species" simulationType="assignment"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv1]" value="0" type="Species" simulationType="reactions"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv2]" value="0" type="Species" simulationType="reactions"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[VDiv3]" value="0" type="Species" simulationType="reactions"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[DIff1]" value="0" type="Species" simulationType="assignment"/>
+          <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Compartments[cell],Vector=Metabolites[Diff2]" value="0" type="Species" simulationType="assignment"/>
         </ModelParameterGroup>
         <ModelParameterGroup cn="String=Initial Global Quantities" type="Group">
           <ModelParameter cn="CN=Root,Model=Yeast Cell Cycle_1_1,Vector=Values[mdt]" value="66" type="ModelValue" simulationType="fixed"/>
@@ -4953,7 +4969,9 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       <StateTemplateVariable objectReference="Metabolite_49"/>
       <StateTemplateVariable objectReference="Metabolite_50"/>
       <StateTemplateVariable objectReference="Metabolite_51"/>
-      <StateTemplateVariable objectReference="Metabolite_71"/>
+      <StateTemplateVariable objectReference="Metabolite_62"/>
+      <StateTemplateVariable objectReference="Metabolite_66"/>
+      <StateTemplateVariable objectReference="Metabolite_67"/>
       <StateTemplateVariable objectReference="ModelValue_1"/>
       <StateTemplateVariable objectReference="Metabolite_37"/>
       <StateTemplateVariable objectReference="Metabolite_38"/>
@@ -4969,6 +4987,9 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       <StateTemplateVariable objectReference="Metabolite_59"/>
       <StateTemplateVariable objectReference="Metabolite_60"/>
       <StateTemplateVariable objectReference="Metabolite_61"/>
+      <StateTemplateVariable objectReference="Metabolite_63"/>
+      <StateTemplateVariable objectReference="Metabolite_64"/>
+      <StateTemplateVariable objectReference="Metabolite_65"/>
       <StateTemplateVariable objectReference="Compartment_0"/>
       <StateTemplateVariable objectReference="ModelValue_0"/>
       <StateTemplateVariable objectReference="ModelValue_2"/>
@@ -5099,7 +5120,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) "Usi
       <StateTemplateVariable objectReference="ModelValue_127"/>
     </StateTemplate>
     <InitialState type="initialState">
-      0 1.2586274391129999e+22 4.3660521213250001e+23 3.7698601764820001e+22 3.3483103164919997e+22 3.1254911047830002e+22 8.9127684683600002e+21 1.4453138056800002e+22 3.9565465430489997e+22 8.9729898769300001e+22 7.3470118455400001e+22 4.8357791081710003e+22 1.4212252422519999e+23 5.5825245744390006e+22 2.7701847942200001e+23 1.065918931689e+24 1.56575662282e+23 8.9127684683599997e+23 1.6560887356750001e+24 1.4874687916790001e+24 1.9451514968110002e+23 2.1077492999500002e+22 3.8903029936220005e+23 4.293786431041e+22 4.0830115010460004e+23 6.0040744344289997e+22 3.2218453584950002e+22 2.0721811535692416e+25 5.1245127419632697e+21 1.4613254061860575e+21 0 0 1.6861994399600015e+22 4.293786431041e+22 1257024356.8376269 3.6723041258761773e+22 4.8357791081710003e+22 0 6.5858381481493272e+21 -2.9780481722159167e+23 -2.2565564005264694e+22 -1.2063492343333831e+21 -1.2337690118997716e+22 -1.7837284429266144e+21 -1.4458904355433668e+22 2.7460962307924899e+20 7.3125651998384062e+21 -8.720725407500697e+22 5.4907977337615281e+21 0 0.01050223000848402 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 66 1.1100000000000001 0.73199999999999998 4.2699999999999996 0.79400000000000004 2.2200000000000002 12.9 1.3400000000000001 0.36899999999999999 9.6300000000000008 1.52 0.055300000000000002 3.0099999999999998 1.22 0.19500000000000001 0.0275 6.0999999999999996 23.699999999999999 2.9700000000000002 0.042200000000000001 2.9300000000000002 9.3599999999999994 1e-08 0.996 0.032000000000000001 0.0066299999999999996 0.088999999999999996 0.052400000000000002 0.89900000000000002 0.65000000000000002 1.05 0.39700000000000002 19.5 2.3900000000000001 3.1200000000000001 0.83599999999999997 1.1100000000000001 0.00053799999999999996 0.0178 0.055599999999999997 0.044499999999999998 0.00762 0.031 0.00298 0.13600000000000001 0.66200000000000003 0.28699999999999998 0.0077999999999999996 1.1200000000000001 3 1.8899999999999999 0.058999999999999997 0.074300000000000005 0.038399999999999997 0.80900000000000005 1.8999999999999999 5.04 0.124 0.081699999999999995 0.0055799999999999999 0.038899999999999997 0.042000000000000003 1.4099999999999999 0.028000000000000001 4.6500000000000004 3.3900000000000001 0.022100000000000002 0.35399999999999998 0.124 0.0104 0.0049800000000000001 0.037400000000000003 5.04 0.33400000000000002 0.20999999999999999 0.24099999999999999 32.200000000000003 0.14399999999999999 0.215 3.75 1.5600000000000001 9.7300000000000004 2.3500000000000001 0.106 0.0066299999999999996 83.299999999999997 0.55600000000000005 1.5 6.8799999999999999 0.0088100000000000001 0.055 0.11899999999999999 6.6900000000000004 0.046699999999999998 0.0144 3.04 0.70899999999999996 7.3799999999999999 0.89400000000000002 2.1600000000000001 0.0848 3.8399999999999999 0.063799999999999996 0.32300000000000001 1.9199999999999999 0.044999999999999998 0.011299999999999999 0.0048300000000000001 0.13900000000000001 0.023199999999999998 1.1100000000000001 0.96499999999999997 5.6100000000000003 2.1000000000000001 0.46800000000000003 0.28199999999999997 45.700000000000003 0.80800000000000005 6.4000000000000004 6.2300000000000004 0.86599999999999999 0.26400000000000001 1.02 1.29 0.125 0.40000000000000002 0 
+      0 1.2586274391129999e+22 4.3660521213250001e+23 3.7698601764820001e+22 3.3483103164919997e+22 3.1254911047830002e+22 8.9127684683600002e+21 1.4453138056800002e+22 3.9565465430489997e+22 8.9729898769300001e+22 7.3470118455400001e+22 4.8357791081710003e+22 1.4212252422519999e+23 5.5825245744390006e+22 2.7701847942200001e+23 1.065918931689e+24 1.56575662282e+23 8.9127684683599997e+23 1.6560887356750001e+24 1.4874687916790001e+24 1.9451514968110002e+23 2.1077492999500002e+22 3.8903029936220005e+23 4.293786431041e+22 4.0830115010460004e+23 6.0040744344289997e+22 3.2218453584950002e+22 2.0721811535692416e+25 5.1245127419632697e+21 1.4613254061860575e+21 0 0 1.6861994399600015e+22 4.293786431041e+22 1257024356.8376269 3.6723041258761773e+22 4.8357791081710003e+22 0 6.5858381481493272e+21 -2.9780481722159167e+23 -2.2565564005264694e+22 -1.2063492343333831e+21 -1.2337690118997716e+22 -1.7837284429266144e+21 -1.4458904355433668e+22 2.7460962307924899e+20 7.3125651998384062e+21 -8.720725407500697e+22 5.4907977337615281e+21 0 0 0 0.01050223000848402 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 66 1.1100000000000001 0.73199999999999998 4.2699999999999996 0.79400000000000004 2.2200000000000002 12.9 1.3400000000000001 0.36899999999999999 9.6300000000000008 1.52 0.055300000000000002 3.0099999999999998 1.22 0.19500000000000001 0.0275 6.0999999999999996 23.699999999999999 2.9700000000000002 0.042200000000000001 2.9300000000000002 9.3599999999999994 1e-08 0.996 0.032000000000000001 0.0066299999999999996 0.088999999999999996 0.052400000000000002 0.89900000000000002 0.65000000000000002 1.05 0.39700000000000002 19.5 2.3900000000000001 3.1200000000000001 0.83599999999999997 1.1100000000000001 0.00053799999999999996 0.0178 0.055599999999999997 0.044499999999999998 0.00762 0.031 0.00298 0.13600000000000001 0.66200000000000003 0.28699999999999998 0.0077999999999999996 1.1200000000000001 3 1.8899999999999999 0.058999999999999997 0.074300000000000005 0.038399999999999997 0.80900000000000005 1.8999999999999999 5.04 0.124 0.081699999999999995 0.0055799999999999999 0.038899999999999997 0.042000000000000003 1.4099999999999999 0.028000000000000001 4.6500000000000004 3.3900000000000001 0.022100000000000002 0.35399999999999998 0.124 0.0104 0.0049800000000000001 0.037400000000000003 5.04 0.33400000000000002 0.20999999999999999 0.24099999999999999 32.200000000000003 0.14399999999999999 0.215 3.75 1.5600000000000001 9.7300000000000004 2.3500000000000001 0.106 0.0066299999999999996 83.299999999999997 0.55600000000000005 1.5 6.8799999999999999 0.0088100000000000001 0.055 0.11899999999999999 6.6900000000000004 0.046699999999999998 0.0144 3.04 0.70899999999999996 7.3799999999999999 0.89400000000000002 2.1600000000000001 0.0848 3.8399999999999999 0.063799999999999996 0.32300000000000001 1.9199999999999999 0.044999999999999998 0.011299999999999999 0.0048300000000000001 0.13900000000000001 0.023199999999999998 1.1100000000000001 0.96499999999999997 5.6100000000000003 2.1000000000000001 0.46800000000000003 0.28199999999999997 45.700000000000003 0.80800000000000005 6.4000000000000004 6.2300000000000004 0.86599999999999999 0.26400000000000001 1.02 1.29 0.125 0.40000000000000002 0 
     </InitialState>
   </Model>
   <ListOfTasks>
