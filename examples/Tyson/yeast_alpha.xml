@@ -2560,7 +2560,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
       <species id="VDiv1" name="VDiv1" compartment="cell" initialConcentration="0" boundaryCondition="false" constant="false"/>
       <species id="VDiv2" name="VDiv2" compartment="cell" initialConcentration="0" boundaryCondition="false" constant="false"/>
       <species id="VDiv3" name="VDiv3" compartment="cell" initialConcentration="0" boundaryCondition="false" constant="false"/>
-      <species metaid="COPASI48" id="DIff1" name="DIff1" compartment="cell" initialConcentration="0" boundaryCondition="true" constant="false">
+      <species metaid="COPASI48" id="Diff1" name="Diff1" compartment="cell" initialConcentration="0" boundaryCondition="true" constant="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -2791,7 +2791,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </apply>
         </math>
       </assignmentRule>
-      <assignmentRule variable="DIff1">
+      <assignmentRule variable="Diff1">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <apply>
             <abs/>

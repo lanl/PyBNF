@@ -89,6 +89,7 @@ class Configuration(object):
         for k, v in d.items():
             self.config[k] = v
 
+        self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
         logger.debug('Loaded models')
         self._load_actions()
@@ -270,6 +271,7 @@ class Configuration(object):
                 raise PybnfError('Multiple models with the name "%s". Please give all your models different names. '
                                  % model.name)
             md[model.name] = model
+            self._data_map[model.name] = self.config[mf]  # List of exp files associated with this model
 
         if self.config['smoothing'] > 1:
             # Check for misuse of 'smoothing' feature
@@ -310,8 +312,7 @@ class Configuration(object):
                                      'the model suffix it corresponds to, followed by the mutant name (e.g. %s%s.exp)'
                                      % (ex, name, suffix_choices[0], name))
             # Stages these exp files to get loaded along with regular model ones
-            self.config[base + name] = exps
-            self.config['models'].add(base + name)
+            self._data_map[base] += exps
 
     def _load_simulators(self):
 
@@ -370,8 +371,8 @@ class Configuration(object):
         """
         ed = {}
         csets = set()
-        for m in self.config['models']:
-            for ef in self.config[m]:
+        for m in self._data_map:
+            for ef in self._data_map[m]:
                 if re.search("exp$", ef):
                     try:
                         d = Data(file_name=ef)
