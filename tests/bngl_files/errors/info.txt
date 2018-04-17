@@ -46,6 +46,8 @@ normalization_mixed_types: OK
 normalize_badfile: OK
 normalize_badtype: OK
 overflow: OK
+xml_notfound: OK
+xml_wrongformat: OK
 
 
 specifying a conf file that does not exist: OK
