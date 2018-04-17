@@ -1,9 +1,0 @@
-V>20 once weight 2
-DIV_COUNT<3 always weight 5
-SPN<2.5 always weight 10
-ESP1<1 always weight 10
-ESP1<0.1 between 0,V=8 weight 50
-ORI>5 once weight 2
-ORI>5 at V=8 weight 2
-SPN>1 once weight 10
-SPN>1 at V=8 weight 10
