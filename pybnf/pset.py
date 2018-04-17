@@ -7,10 +7,12 @@ import logging
 import numpy as np
 import re
 import copy
-from subprocess import run, STDOUT
+from subprocess import run, STDOUT, CalledProcessError, TimeoutExpired
 from .data import Data
 import traceback
 import roadrunner as rr
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
 rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
@@ -305,8 +307,13 @@ class BNGLModel(Model):
         # Run BioNetGen
         cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
         log_file = '%s.log' % file
-        with open(log_file, 'w') as lf:
-            run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+        try:
+            with open(log_file, 'w') as lf:
+                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+        except CalledProcessError:
+            raise FailedSimulationError(1)
+        except TimeoutExpired:
+            raise FailedSimulationError(0)
 
         # Load the data file(s)
         ds = self._load_simdata(folder, filename)
@@ -463,6 +470,26 @@ class SbmlModel(Model):
             # else The parameter does not appear in this model (might appear in another model, so not an error)
 
     def execute(self, folder, filename, timeout):
+        """
+        Wrapper function that calls the real execution function _execute() while enforcing a timeout
+        """
+        # Create a ThreadPoolExecutor to run _execute in a new thread that can be timed out
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self._execute)
+            try:
+                # This is where we run _execute() or let it time out. This call blocks until the future completes or
+                # raises TimeoutError if timed out.
+                # The return exc is None if call succeeded or an Exception object if it raised an Exception
+                exc = future.exception(timeout=timeout)
+            except TimeoutError:
+                raise FailedSimulationError(0)
+            if exc:
+                raise FailedSimulationError(1)
+            # At this point, we know the call already finished and didn't throw an error, so we can safely
+            # return the result
+            return future.result()
+
+    def _execute(self):
         # Load the original xml file with Roadrunner
         runner = rr.RoadRunner(self.file_path)
 
@@ -702,6 +729,17 @@ class ModelError(Exception):
     # user exception handler.
     def __init__(self, message):
         self.message = message
+
+
+class FailedSimulationError(Exception):
+    """
+    Raised when a simulation fails to run
+    """
+    def __init__(self, code=0):
+        """
+        :param code: 0 indicates timeout; 1 indicates some other error
+        """
+        self.code = code
 
 
 class FreeParameter(object):

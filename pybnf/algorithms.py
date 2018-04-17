@@ -14,6 +14,7 @@ from .pset import Trajectory
 
 from .pset import NetModel, BNGLModel
 from .pset import OutOfBoundsException
+from .pset import FailedSimulationError
 from .printing import print0, print1, print2, PybnfError
 
 import logging
@@ -167,10 +168,8 @@ class Job:
             # simdata = self.load_simdata()
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
-        except CalledProcessError:
-            res = FailedSimulation(self.params, self.job_id, 1)
-        except TimeoutExpired:
-            res = FailedSimulation(self.params, self.job_id, 0)
+        except FailedSimulationError as e:
+            res = FailedSimulation(self.params, self.job_id, e.code)
         # This block is making bugs hard to diagnose
         # except Exception:
         #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
