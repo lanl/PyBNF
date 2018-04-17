@@ -1,0 +1,4 @@
+V>20 once weight 2
+DIV_COUNT<3 always weight 5
+SPN<2.5 always weight 10
+ESP1<1 always weight 10

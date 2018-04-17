@@ -1,13 +1,19 @@
 """pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
 
 
-from .printing import print1, PybnfError
+from .printing import print0, print1, PybnfError
 
 import logging
 import numpy as np
 import re
 import copy
+from subprocess import run, STDOUT, CalledProcessError, TimeoutExpired
+from .data import Data
+import traceback
+import roadrunner as rr
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
+rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,22 @@ class Model(object):
         """
         NotImplementedError("save is not implemented")
 
+    def execute(self, folder, filename, timeout):
+        """
+        Executes the model, working in folder/filename, with a max runtime of timeout.
+        Loads the resulting data, and returns a dictionary mapping suffixes to data objects. For model types without a
+        notion of suffixes, the dictionary will contain one key mapping to one Data object
+
+        :param folder: The folder to save to, eg 'Simulations/init22'
+        :param filename: The name of the model file to create, not including the extension, eg 'init22'
+        :param timeout: Maximum runtime in seconds
+        :return: dict of Data
+        """
+        raise NotImplementedError("Subclasses of Model must override execute()")
+
+    def add_action(self, action):
+        pass
+
 
 class BNGLModel(Model):
     """
@@ -52,12 +74,14 @@ class BNGLModel(Model):
         self.file_path = bngl_file
         self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
+        self.bng_command = ''
 
         self.generates_network = False
         self.generate_network_line = None
         self.generate_network_line_index = -1
         self.action_line_indices = []
         self.actions = []
+        self.config_actions = []
 
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
 
@@ -270,13 +294,64 @@ class BNGLModel(Model):
         f.write(text)
         f.close()
 
+    def execute(self, folder, filename, timeout):
+        """
 
-class NetModel(Model):
+        :param folder: Folder in which to do all the file creation
+        :return: Data object
+        """
+        # Create the modified BNGL file
+        file = '%s/%s' % (folder, filename)
+        self.save(file)
+
+        # Run BioNetGen
+        cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
+        log_file = '%s.log' % file
+        try:
+            with open(log_file, 'w') as lf:
+                run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
+        except CalledProcessError:
+            raise FailedSimulationError(1)
+        except TimeoutExpired:
+            raise FailedSimulationError(0)
+
+        # Load the data file(s)
+        ds = self._load_simdata(folder, filename)
+        return ds
+
+    def _load_simdata(self, folder, filename):
+        """
+        Function to load simulation data after executing all simulations for an evaluation
+
+        Returns a nested dictionary structure.  Top-level keys are model names and values are
+        dictionaries whose keys are action suffixes and values are Data instances
+
+        :return: dict of Data
+        """
+        ds = {}
+        for suff in self.suffixes:
+            if suff[0] == 'simulate':
+                data_file = '%s/%s_%s.gdat' % (folder, filename, suff[1])
+                data = Data(file_name=data_file)
+            else:  # suff[0] == 'parameter_scan'
+                data_file = '%s/%s_%s.scan' % (folder, filename, suff[1])
+                data = Data(file_name=data_file)
+            ds[suff[1]] = data
+        return ds
+
+    def add_action(self, action):
+        self.config_actions.append(action)
+        print0('Warning: Adding actions to BNGL models with config options is not yet supported')
+
+
+class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
         self.name = name
         self.actions = acts
+        self.config_actions = []
         self.suffixes = suffs
         self.param_set = None
+        self.bng_command = ''
 
         if not (ls or nf):
             raise ModelError("Must specify a file name or a list of strings corresponding to the .net file's lines")
@@ -295,7 +370,6 @@ class NetModel(Model):
         :type pset: PSet
         :return: NetModel
         """
-        self.param_set = pset
         lines_copy = copy.deepcopy(self.netfile_lines)
         in_params_block = False
         for i, l in enumerate(lines_copy):
@@ -306,10 +380,13 @@ class NetModel(Model):
             elif in_params_block:
                 m = re.match('(\s+)(\d)+\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
-                    if m.group(3) in self.param_set.keys():
-                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(self.param_set[m.group(3)]))
+                    if m.group(3) in pset.keys():
+                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
 
-        return NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel = NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel.bng_command = self.bng_command
+        newmodel.param_set = pset
+        return newmodel
 
     def save(self, file_prefix):
         with open(file_prefix + '.net', 'w') as wf:
@@ -319,11 +396,350 @@ class NetModel(Model):
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
 
 
+class SbmlModel(Model):
+
+    def __init__(self, file, pset=None, actions=()):
+        self.file_path = file
+        self.param_set = pset
+        self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
+        self.actions = list(actions)
+        self.suffixes = [a.suffix for a in actions]
+        self.stochastic = False
+        self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
+
+        try:
+            rr.Logger.enableConsoleLogging()
+            runner = rr.RoadRunner(self.file_path)
+            rr.Logger.disableLogging()
+        except RuntimeError:
+            # XML was not found, or had a bug in it, or some other problem in RoadRunner
+            logger.exception('Failed to load model %s in Roadrunner' % self.name)
+            exceptiondata = traceback.format_exc().splitlines()
+            if 'could not open %s as a file' % file in exceptiondata[-1]:
+                message = 'File %s was not found' % file
+            else:
+                message = 'There were errors in parsing this SBML file. See log for details.'
+            raise PybnfError('Failed to load model %s.xml - %s' % (self.name, message))
+
+        self.species_names = set(runner.model.getFloatingSpeciesIds()).union(set(runner.model.getBoundarySpeciesIds()))
+        self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
+        logger.debug('Loaded model %s with Roadrunner' % self.name)
+
+    def copy_with_param_set(self, pset):
+
+        newmodel = copy.deepcopy(self)
+        newmodel.param_set = pset
+        return newmodel
+
+    def model_text(self):
+        """
+        Generates the XML text of the model
+        Should only be used when saving the model to disk, which is not often done.
+        :return:
+        """
+        logger.info('Generating model text for %s' % self.name)
+        runner = rr.RoadRunner(self.file_path)
+        self._modify_params(runner)
+        return runner.getCurrentSBML()
+
+    def save(self, file_prefix):
+        with open('%s.xml' % file_prefix, 'w') as out:
+            out.write(self.model_text())
+
+    def add_action(self, action):
+        self.actions.append(action)
+        self.suffixes.append((action.bng_codeword, action.suffix))
+
+    def add_mutant(self, mut_set):
+        """
+        Add a mutant to run along with this model
+        :param mut_set: MutationSet that should be applied to this mutant
+        :type mut_set: MutationSet
+        :return:
+        """
+        self.mutants.append(mut_set)
+
+    def _modify_params(self, runner):
+        """Modify the parameters in this runner instance according to my current PSet"""
+        for p in self.param_set.keys():
+            if p in self.species_names:
+                # Initial condition
+                runner.model['init([%s])' % p] = self.param_set[p]
+            elif p in self.param_names:
+                setattr(runner, p, self.param_set[p])
+            # else The parameter does not appear in this model (might appear in another model, so not an error)
+
+    def execute(self, folder, filename, timeout):
+        """
+        Wrapper function that calls the real execution function _execute() while enforcing a timeout
+        """
+        # Create a ThreadPoolExecutor to run _execute in a new thread that can be timed out
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self._execute)
+            try:
+                # This is where we run _execute() or let it time out. This call blocks until the future completes or
+                # raises TimeoutError if timed out.
+                # The return exc is None if call succeeded or an Exception object if it raised an Exception
+                exc = future.exception(timeout=timeout)
+            except TimeoutError:
+                raise FailedSimulationError(0)
+            if exc:
+                raise FailedSimulationError(1)
+            # At this point, we know the call already finished and didn't throw an error, so we can safely
+            # return the result
+            return future.result()
+
+    def _execute(self):
+        # Load the original xml file with Roadrunner
+        runner = rr.RoadRunner(self.file_path)
+
+        # Do parameter modifications
+        self._modify_params(runner)
+
+        # Run the model actions
+        result_dict = dict()
+        selection = ['time'] + list(self.species_names)
+        for mut in self.mutants:
+            # Apply all mutations
+            for mi in mut:
+                if mi.name in self.species_names:
+                    runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
+                elif mi.name in self.param_names:
+                    setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+
+            for act in self.actions:
+                if isinstance(act, TimeCourse):
+                    runner.reset()
+                    res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                    res = Data(named_arr=res_array)
+                    result_dict[act.suffix + mut.suffix] = res
+                elif isinstance(act, ParamScan):
+                    # Manually run parameter scan with several simulate commands
+                    if act.param not in self.param_names:
+                        raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
+                    if act.param in self.species_names:
+                        icscan = True
+                    else:
+                        icscan = False
+                    points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                    res_array = None
+                    labels = None
+                    for i, x in enumerate(points):
+                        if icscan:
+                            runner.model['init([%s])' % act.param] = x
+                        else:
+                            setattr(runner, act.param, x)
+                        runner.reset()  # Reset concentrations to current ICs
+                        i_array = runner.simulate(0., act.time, steps=1, selections=selection)
+                        if res_array is None:  # First iteration
+                            res_array = np.zeros((len(points), 1+i_array.shape[1]))
+                            if icscan:
+                                # is an initial condition
+                                labels = [act.param + '_0'] + i_array.colnames
+                            else:
+                                labels = [act.param] + i_array.colnames
+                        res_array[i, 0] = x
+                        res_array[i, 1:] = i_array[1, :]
+                    logger.debug(str(labels))
+                    logger.debug(str(res_array))
+                    res = Data(arr=res_array)
+                    res.load_rr_header(labels)
+                    result_dict[act.suffix + mut.suffix] = res
+                else:
+                    raise NotImplementedError('Unknown action type')
+            # Undo all mutations
+            for mi in mut:
+                if mi.name in self.species_names:
+                    runner.model['init([%s])' % mi.name] = mi.undo()
+                elif mi.name in self.param_names:
+                    setattr(runner, mi.name, mi.undo())
+        return result_dict
+
+
+class Action:
+    """
+    Represents a simulation action performed within a model
+    """
+    pass
+
+
+class TimeCourse(Action):
+
+    def __init__(self, d):
+        """
+        :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
+        of this action.
+        Valid dict keys are time:number, step:number, model:str (unused here), suffix: str,
+        values: list of numbers (not implemented)
+        Raises a PyBNF error if anything is wrong with the dict.
+        """
+        # Available keys and default values
+        num_keys = {'time', 'step'}
+        str_keys = {'model', 'suffix'}
+        # Default values
+        self.time = None  # Required
+        self.step = 1.
+        self.model = ''
+        self.suffix = 'time_course'
+
+        # Transfer all the keys in the dict to my attributes of the same name
+        for k in d:
+            if k in num_keys:
+                try:
+                    num = float(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in str_keys:
+                self.__setattr__(k, d[k])
+            else:
+                raise PybnfError('"%s" is not a valid attribute for "time_course".' % k,
+                                 '"%s" is not a valid attribute for "time_course". Possible attributes are: %s' %
+                                 (k, ','.join(num_keys.union(str_keys))))
+
+        if self.time is None:
+            raise PybnfError('For key "time_course" a value for "end" must be specified.')
+
+        self.stepnumber = int(np.round(self.time/self.step))
+        self.bng_codeword = 'simulate'
+
+
+class ParamScan(Action):
+
+    def __init__(self, d):
+        """
+        :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
+        of this action.
+        Valid dict keys are min:number, max:number, step:number, time:number, model:str (unused here), suffix: str,
+        logspace: 0 or 1, param: str, values: list of numbers (not implemented)
+        Raises a PyBNF error if anything is wrong with the dict.
+        """
+        # Available keys and default values
+        num_keys = {'min', 'max', 'step', 'time', 'logspace'}
+        str_keys = {'model', 'suffix', 'param'}
+        required_keys = {'min', 'max', 'step', 'time', 'param'}
+        # Default values
+        self.min = None
+        self.max = None
+        self.step = None
+        self.time = None
+        self.logspace = 0.
+        self.param = None
+        self.model = ''
+        self.suffix = 'param_scan'
+
+        # Transfer all the keys in the dict to my attributes of the same name
+        for k in d:
+            if k in num_keys:
+                try:
+                    num = float(d[k])
+                except ValueError:
+                    raise PybnfError('For key "param_scan", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in str_keys:
+                self.__setattr__(k, d[k])
+            else:
+                raise PybnfError('"%s" is not a valid attribute for "param_scan".' % k,
+                                 '"%s" is not a valid attribute for "param_scan". Possible attributes are: %s' %
+                                 (k, ','.join(num_keys.union(str_keys))))
+
+        for k in required_keys:
+            if self.__getattribute__(k) is None:
+                raise PybnfError('For key "param_scan" a value for "%s" must be specified.' % k)
+        self.logspace = int(self.logspace)
+        if self.logspace not in (0, 1):
+            raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
+
+        self.stepnumber = int(np.round((self.max - self.min) / self.step))
+        self.bng_codeword = 'parameter_scan'
+
+
+class Mutation:
+
+    def __init__(self, name, operation, value):
+        """
+        Create a mutation
+        :param name: Name of the variable to mutate
+        :type name: str
+        :param operation: Operation to perform on the target variable; one of + - * / =
+        :type operation: str
+        :param value: The value to add/subtract/etc (depending on the operation)
+        :type value: float
+        """
+        self.name = name
+        self.operation = operation
+        self.value = value
+        if operation not in ('+', '-', '*', '/', '='):
+            raise RuntimeError('Invalid mutation operation %s' % operation)
+        self.old = None
+        logger.debug('Created mutation %s %s %s' % (self.name, self.operation, self.value))
+
+    def mutate(self, num):
+        """
+        Applies this mutation
+        :param num:
+        :return: float
+        """
+        self.old = num
+        if self.operation == '=':
+            return self.value
+        elif self.operation == '+':
+            return num + self.value
+        elif self.operation == '-':
+            return num - self.value
+        elif self.operation == '*':
+            return num * self.value
+        elif self.operation == '/':
+            return num / self.value
+
+    def undo(self):
+        """
+        Undo the mutation we just did
+        :return: float
+        """
+        if not self.old:
+            raise RuntimeError('Called undo() on a Mutation that was not performed')
+        old = self.old
+        self.old = None
+        return old
+
+
+class MutationSet:
+    """
+    A set of mutations that represents a mutant model
+    """
+    def __init__(self, mutations=(), suffix=''):
+        """
+
+        :param mutations: The mutations to include in this MutationSet
+        :type mutations: iterable of Mutant
+        :param suffix: The simulation suffix for this mutant. This will be appended to the action suffix
+        :type suffix: str
+        """
+        self.mutations = mutations
+        self.suffix = suffix
+        logger.debug('Created MutationSet with %i mutations' % len(self.mutations))
+
+    def __iter__(self):
+        return iter(self.mutations)
+
+
 class ModelError(Exception):
     # These are sometimes but not always user-generated, so need to be able to pass the info back to the
     # user exception handler.
     def __init__(self, message):
         self.message = message
+
+
+class FailedSimulationError(Exception):
+    """
+    Raised when a simulation fails to run
+    """
+    def __init__(self, code=0):
+        """
+        :param code: 0 indicates timeout; 1 indicates some other error
+        """
+        self.code = code
 
 
 class FreeParameter(object):
