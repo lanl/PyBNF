@@ -43,6 +43,8 @@ verbosity: Specifies the amount of information output to the terminal. 0 - Quiet
 smoothing: Number of replicates to run for each parameter set (useful for stochastic runs). Default: 1
 normalization = type [: d1.exp, d2.exp] - Indicates that simulation data must be normalized in order to compare with exp files. Choices are: 'init', 'peak', 'zero', 'unit'. If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, like this (data1.exp: 1,3-5) or (data1.exp: var1,var2) Multiple lines with this key can be used. Default: No normalization
 min_objective: Stop fitting if an objective function lower than this value is reached. Default: None; always run for the maximum iterations
+bootstrap: Whether (>0) or not (0) to estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.  Default: 0
+bootstrap_max_obj: The maximum value of a fitting run's objective function to be considered valid in the bootstrapping procedure.  Default: None
 
 ***Settings that apply to multiple Algorithms***
 
