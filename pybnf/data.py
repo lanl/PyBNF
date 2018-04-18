@@ -1,10 +1,14 @@
 """pybnf.data: class with methods to manage experimental and simulation data"""
 
 
+import logging
 import math
 import numpy as np
 import re
 from .printing import PybnfError
+
+
+logger = logging.getLogger(__name__)
 
 
 class Data(object):
@@ -332,3 +336,7 @@ class Data(object):
                     # Convert to int indices
                     cols_i = [self.cols[c] for c in cols_i]
                 normalize_once(mi, cols_i)
+
+    def weights_to_file(self, file_name):
+        logger.info("Saving weights in file %s" % file_name)
+        np.savetxt(file_name, self.weights, fmt='%d', header='\t'.join(sorted(self.cols, key=self.cols.get)))

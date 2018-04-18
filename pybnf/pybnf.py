@@ -216,8 +216,9 @@ def main():
 
                 alg.reset()
                 # TODO output files containing bootstrapped data (on success?)
-                for data in alg.exp_data.values():
+                for name, data in alg.exp_data.items():
                     data.gen_bootstrap_weights()
+                    data.weights_to_file(config.config['output_dir']+ '/Results/%s_weights_%s.txt' % (name, completed_bootstrap_runs))
                 logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
                 print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
                 alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
