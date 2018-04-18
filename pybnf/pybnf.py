@@ -118,12 +118,8 @@ def main():
                                     config.config['output_dir'] + '/Simulations') or os.path.exists(
                                 config.config['output_dir'] + '/Initialize'):
                         if cmdline_args.overwrite:
-                            if os.path.exists(config.config['output_dir'] + '/Results'):
-                                shutil.rmtree(config.config['output_dir'] + '/Results')
-                            if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                                shutil.rmtree(config.config['output_dir'] + '/Simulations')
-                            if os.path.exists(config.config['output_dir'] + '/Initialize'):
-                                shutil.rmtree(config.config['output_dir'] + '/Initialize')
+                            logger.info('Overwriting existing output directory')
+                            shutil.rmtree(config.config['output_dir'])
                         else:
                             logger.info("Output directory has subdirectories... querying user for overwrite permission")
                             ans = 'x'
@@ -133,13 +129,8 @@ def main():
                                     'Initialize/ folders from a previous run. \n'
                                     'Overwrite them with the current run? [y/n] (n) ')
                             if ans.lower() == 'y' or ans.lower() == 'yes':
-                                logger.info("Overwriting existing output directory")
-                                if os.path.exists(config.config['output_dir'] + '/Results'):
-                                    shutil.rmtree(config.config['output_dir'] + '/Results')
-                                if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                                    shutil.rmtree(config.config['output_dir'] + '/Simulations')
-                                if os.path.exists(config.config['output_dir'] + '/Initialize'):
-                                    shutil.rmtree(config.config['output_dir'] + '/Initialize')
+                                logger.info('Overwriting existing output directory')
+                                shutil.rmtree(config.config['output_dir'])
                             else:
                                 logger.info("Overwrite rejected... exiting")
                                 print('Quitting')
@@ -200,7 +191,70 @@ def main():
                 simplex = algs.SimplexAlgorithm(config)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
                 simplex.run(log_prefix, scheduler_node)
+
         print0('Fitting complete')
+
+        # Bootstrapping (optional)
+        if config.config['bootstrap'] > 0:
+            if config.config['bootstrap_max_obj']:
+                bootstrap_max_obj = config.config['bootstrap_max_obj']
+            else:
+                bootstrap_max_obj = alg.trajectory.trajectory[alg.trajectory.best_fit()]
+
+            shutil.move(config.config['output_dir'] + '/Results', config.config['output_dir'] + '/Results-base')
+            if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                shutil.move(config.config['output_dir'] + '/Simulations',
+                            config.config['output_dir'] + '/Simulations-base')
+
+
+            num_to_bootstrap = config.config['bootstrap']
+            completed_bootstrap_runs = 0
+            consec_failed_bootstrap_runs = 0
+            while completed_bootstrap_runs < num_to_bootstrap:
+                os.mkdir(config.config['output_dir'] + '/Results')
+                os.mkdir(config.config['output_dir'] + '/Simulations')
+
+                alg.reset()
+                # TODO output files containing bootstrapped data (on success?)
+                for data in alg.exp_data.values():
+                    data.gen_bootstrap_weights()
+                logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
+                print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
+                alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
+
+                if config.config['refine'] == 1:
+                    logger.debug('Refinement requested for best fit parameter set')
+                    if config.config['fit_type'] == 'sim':
+                        logger.debug('Cannot refine further if Simplex algorithm was used for original fit')
+                        print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
+                              "\nSkipping refine.")
+                    else:
+                        logger.debug('Refining further using the Simplex algorithm')
+                        print1("Refining the best fit by the Simplex algorithm")
+                        config.config['simplex_start_point'] = alg.trajectory.best_fit()
+                        simplex = algs.SimplexAlgorithm(config)
+                        simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+                        simplex.run(log_prefix, scheduler_node)
+
+                if alg.trajectory.trajectory[alg.trajectory.best_fit()] <= bootstrap_max_obj:
+                    completed_bootstrap_runs += 1
+                    consec_failed_bootstrap_runs = 0
+                    shutil.move(config.config['output_dir'] + '/Results', config.config['output_dir'] + '/Results-boot%s' % completed_bootstrap_runs)
+                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                        shutil.move(config.config['output_dir'] + '/Simulations',
+                                    config.config['output_dir'] + '/Simulations-boot%s' % completed_bootstrap_runs)
+                else:
+                    consec_failed_bootstrap_runs += 1
+                    print0("Bootstrap run %s did not achieve maximum allowable objective function value.  Retrying")
+                    shutil.rmtree(config.config['output_dir'] + '/Results')
+                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
+                        shutil.rmtree(config.config['output_dir'] + '/Simulations')
+                    if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
+                        raise PybnfError("Bootstrap runs failing to achieve maximum allowable objective function values")
+
+            # TODO output bootstrapping stats
+            print0('Bootstrapping complete')
+
         success = True
 
     except PybnfError as e:
