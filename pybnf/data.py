@@ -11,10 +11,19 @@ class Data(object):
     """Top level class for managing data"""
 
     def __init__(self, file_name=None, arr=None, named_arr=None):
+        """
+        Initializes a Data instance.  Must specify either a file name or an array
+
+        :param file_name:
+        :param arr:
+        """
         self.cols = dict()  # dict of column headers to column indices
         self.headers = dict()  # dict of column indices to headers
-        self.data = None  # Numpy array for data
+        self._data = None  # Numpy array for data
+        self._observers = []  # For implementing the observer pattern
+        self.weights = None  # Numpy array for bootstrapping weights
         self.indvar = None  # Name of the independent variable
+        self.bind_to(self.update_weights)
         if file_name is not None:
             self.load_data(file_name)
         elif arr is not None:
@@ -24,6 +33,22 @@ class Data(object):
             # NamedArray is not pickleable, so we need to copy the contents into a regular array.
             self.data = np.array(named_arr)
             self.load_rr_header(named_arr.colnames)
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, data):
+        self._data = data
+        for callback in self._observers:
+            callback(self._data)
+
+    def bind_to(self, callback):
+        self._observers.append(callback)
+
+    def update_weights(self, data):
+        self.weights = np.ones(data.shape)
 
     def _valid_indices(self):
         """Finds indices in Data.data that are valid for bootstrap sampling"""

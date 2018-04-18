@@ -80,6 +80,19 @@ class TestData:
         cls.d1d = data.Data()
         cls.d1d.data = cls.d1d._read_file_lines(cls.data1d, '\s+')
 
+    def test_observer_pattern(self):
+        d = data.Data()
+        assert d.weights is None
+        assert d.data is None
+        d.data = np.arange(6).reshape(2,3)
+        assert d.weights.shape == d.data.shape
+        assert d.weights[0, 0] == 1
+        assert d.weights[0, 1] == 1
+        assert d.weights[0, 2] == 1
+        assert d.weights[1, 0] == 1
+        assert d.weights[1, 1] == 1
+        assert d.weights[1, 2] == 1
+
     def test_valid_indices(self):
         vidcs = self.d1d._valid_indices()
         assert vidcs == [(0, 2), (0, 3), (1, 1), (1, 3)]
