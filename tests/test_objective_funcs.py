@@ -1,4 +1,5 @@
 from .context import data, objective, printing
+import numpy as np
 import numpy.testing as npt
 from nose.tools import raises
 
@@ -59,6 +60,12 @@ class TestObjectiveFunctions:
 
     def test_chi_square(self):
         npt.assert_almost_equal(self.chi_sq.evaluate(self.d1s, self.d1e), 0.797777777777778)  # Value computed by hand
+
+    def test_weighted_chi_square(self):
+        self.d1e.weights = np.array([[0, 0, 0, 2, 0, 0, 0], [0, 2, 1, 0, 0, 0, 0], [0, 1, 1, 1, 0, 0, 0]])
+        chi_sq_eval = self.chi_sq.evaluate(self.d1s, self.d1e)
+        npt.assert_almost_equal(chi_sq_eval, 0.1111111 + 0.2222222 + 0.02)
+        self.d1e.weights = np.ones(self.d1e.data.shape)
 
     @raises(printing.PybnfError)
     def test_chi_square_no_sd(self):
