@@ -12,8 +12,9 @@ class Data(object):
 
     def __init__(self, file_name=None, arr=None, named_arr=None):
         self.cols = dict()  # dict of column headers to column indices
+        self.headers = dict()  # dict of column indices to headers
         self.data = None  # Numpy array for data
-        self.indvar = None # Name of the independent variable
+        self.indvar = None  # Name of the independent variable
         if file_name is not None:
             self.load_data(file_name)
         elif arr is not None:
@@ -23,6 +24,16 @@ class Data(object):
             # NamedArray is not pickleable, so we need to copy the contents into a regular array.
             self.data = np.array(named_arr)
             self.load_rr_header(named_arr.colnames)
+
+    def _valid_indices(self):
+        valid_indices = []
+        for i in range(self.data.shape[0]):
+            for j in range(1, self.data.shape[1]):
+                if re.search('_SD$', self.headers[j]):
+                    continue
+                if np.isfinite(self.data[i, j]):
+                    valid_indices.append((i, j))
+        return valid_indices
 
     def __getitem__(self, col_header):
         """
@@ -109,6 +120,7 @@ class Data(object):
         for c in header:
             l = len(self.cols)
             self.cols[c] = l
+            self.headers[l] = c
 
         data = []
         for i, l in enumerate(lines[1:]):

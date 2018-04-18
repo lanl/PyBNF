@@ -1,5 +1,4 @@
 from .context import data, objective, printing
-import numpy as np
 import numpy.testing as npt
 from nose.tools import raises
 

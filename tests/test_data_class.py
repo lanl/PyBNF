@@ -72,6 +72,18 @@ class TestData:
         cls.d1c = data.Data()
         cls.d1c.data = cls.d1c._read_file_lines(cls.data1c, '\s+')
 
+        cls.data1d = [
+            '# x    obs1    obs2    obs3\n',
+            ' 1 NaN   1   6\n',
+            ' 2 5   Inf   10\n'
+        ]
+        cls.d1d = data.Data()
+        cls.d1d.data = cls.d1d._read_file_lines(cls.data1d, '\s+')
+
+    def test_valid_indices(self):
+        vidcs = self.d1d._valid_indices()
+        assert vidcs == [(0,2), (0,3), (1,1), (1,3)]
+
     def test_comment_ignore(self):
         assert self.d1c.data.shape == (2, 4)
         assert self.d1c.data[0, 0] == 1
