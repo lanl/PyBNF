@@ -61,7 +61,7 @@ class Data(object):
                     valid_indices.append((i, j))
         return valid_indices
 
-    def _gen_bootstrap_weights(self):
+    def gen_bootstrap_weights(self):
         """
         Generates a integer weight for each point in the set of dependent variables.  Equivalent
         to sampling with replacement.  Weights are used when calculating the objective function

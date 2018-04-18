@@ -98,7 +98,7 @@ class TestData:
         assert vidcs == [(0, 2), (0, 3), (1, 1), (1, 3)]
 
     def test_gen_bootstrap_weights(self):
-        self.d1d._gen_bootstrap_weights()
+        self.d1d.gen_bootstrap_weights()
         print(self.d1d.weights)
         assert self.d1d.weights[0, 0] == 0
         assert self.d1d.weights[0, 1] == 0

@@ -251,7 +251,7 @@ class Algorithm(object):
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
         logger.debug('Instantiating Trajectory object')
-        self.trajectory = Trajectory(config.config['num_to_output'])
+        self.trajectory = Trajectory(self.config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
         self.job_group_dir = dict()
@@ -269,6 +269,20 @@ class Algorithm(object):
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
         logger.debug('Initializing models')
         self.model_list = self._initialize_models()
+
+    def reset(self):
+        """
+        Resets the Algorithm, keeping loaded variables and models
+
+        :return:
+        """
+        logger.info('Resetting Algorithm for another run')
+        self.trajectory = Trajectory(self.config.config['num_to_output'])
+        self.job_id_counter = 0
+        self.output_counter = 0
+        self.job_group_dir = dict()
+        self.fail_count = 0
+        self.success_count = 0
 
     def _initialize_models(self):
         """
@@ -740,6 +754,16 @@ class ParticleSwarm(Algorithm):
         self.global_best = [None, np.inf]  # The best result for the whole swarm
         self.last_best = np.inf
 
+    def reset(self):
+        super(ParticleSwarm, self).reset()
+        self.nv = 0
+        self.num_evals = 0
+        self.swarm = []
+        self.pset_map = dict()
+        self.bests = [[None, np.inf]] * self.num_particles
+        self.global_best = [None, np.inf]
+        self.last_best = np.inf
+
     def start_run(self):
         """
         Start the run by initializing n particles at random positions and velocities
@@ -913,6 +937,21 @@ class DifferentialEvolution(Algorithm):
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
 
         self.strategy = 'rand1'  # Customizable later
+
+    def reset(self):
+        super(DifferentialEvolution, self).reset()
+        self.island_map = dict()
+        self.iter_num = [0] * self.num_islands
+        self.waiting_count = []
+        self.individuals = []
+        self.proposed_individuals = []
+        self.fitnesses = []
+        self.migration_ready = [0] * self.num_islands
+        self.migration_done = [0] * self.num_islands
+
+        self.migration_transit = dict()
+        self.migration_indices = dict()
+        self.migration_perms = dict()
 
     def start_run(self):
         if self.num_islands == 1:
@@ -1145,6 +1184,16 @@ class ScatterSearch(Algorithm):
         self.local_mins = [] # (Pset, score) pairs that were stuck for 5 gens, and so replaced.
         self.reserve = []
 
+    def reset(self):
+        super(ScatterSearch, self).reset()
+        self.pending = dict()
+        self.received = dict()
+        self.refs = []
+        self.stuckcounter = dict()
+        self.iteration = 0
+        self.local_mins = []
+        self.reserve = []
+
     def start_run(self):
         print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
                (self.popsize, self.popsize * (self.popsize - 1), self.max_iterations))
@@ -1330,6 +1379,16 @@ class BayesAlgorithm(Algorithm):
 
         self.samples_file = None # Initialize later.
         self.staged = []  # Used only when resuming a run and adding iterations
+
+    def reset(self):
+        super(BayesAlgorithm, self).reset()
+
+        self.current_pset = None
+        self.ln_current_P = None
+        self.iteration = [0] * self.num_parallel
+
+        self.wait_for_sync = [False] * self.num_parallel
+        self.samples_file = None
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1735,6 +1794,18 @@ class SimplexAlgorithm(Algorithm):
         self.centroids = []  # Contains dicts containing the centroid of all simplex points except the one that I am
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
+
+    def reset(self):
+        super(SimplexAlgorithm, self).reset()
+        self.iteration = 0
+        self.simplex = []
+
+        self.stages = []
+        self.first_points = []
+        self.second_points = []
+        self.cases = []
+        self.centroids = []
+        self.pending = dict()
 
     def _parse_start_point(self):
         """
