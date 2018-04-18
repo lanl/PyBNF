@@ -26,6 +26,7 @@ class Data(object):
             self.load_rr_header(named_arr.colnames)
 
     def _valid_indices(self):
+        """Finds indices in Data.data that are valid for bootstrap sampling"""
         valid_indices = []
         for i in range(self.data.shape[0]):
             for j in range(1, self.data.shape[1]):
@@ -34,6 +35,20 @@ class Data(object):
                 if np.isfinite(self.data[i, j]):
                     valid_indices.append((i, j))
         return valid_indices
+
+    def _gen_bootstrap_weights(self):
+        """
+        Generates a integer weight for each point in the set of dependent variables.  Equivalent
+        to sampling with replacement.  Weights are used when calculating the objective function
+        for bootstrapped data.  Used for experimental data sets
+
+        :return:
+        """
+        indices = np.array(self._valid_indices())
+        samples = indices[np.random.choice(indices.shape[0], size=indices.shape[0], replace=True)]
+        self.weights = np.zeros(self.data.shape)
+        for s in samples:
+            self.weights[s[0], s[1]] += 1
 
     def __getitem__(self, col_header):
         """
