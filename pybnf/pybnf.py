@@ -5,6 +5,7 @@ from .parse import load_config
 from .config import init_logging
 from .printing import print0, print1, PybnfError
 from .cluster import get_scheduler, setup_cluster, teardown_cluster
+from .pset import Trajectory
 import pybnf.algorithms as algs
 import pybnf.printing as printing
 
@@ -196,6 +197,7 @@ def main():
 
         # Bootstrapping (optional)
         if config.config['bootstrap'] > 0:
+
             if config.config['bootstrap_max_obj']:
                 bootstrap_max_obj = config.config['bootstrap_max_obj']
             else:
@@ -206,8 +208,8 @@ def main():
                 shutil.move(config.config['output_dir'] + '/Simulations',
                             config.config['output_dir'] + '/Simulations-base')
 
-
             num_to_bootstrap = config.config['bootstrap']
+            bootstrapped_psets = Trajectory(num_to_bootstrap)
             completed_bootstrap_runs = 0
             consec_failed_bootstrap_runs = 0
             while completed_bootstrap_runs < num_to_bootstrap:
@@ -237,8 +239,12 @@ def main():
                         simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
                         simplex.run(log_prefix, scheduler_node)
 
-                if alg.trajectory.trajectory[alg.trajectory.best_fit()] <= bootstrap_max_obj:
+                best_fit_pset = alg.trajectory.best_fit()
+                best_fit_obj = alg.trajectory.trajectory[best_fit_pset]
+
+                if best_fit_obj <= bootstrap_max_obj:
                     completed_bootstrap_runs += 1
+                    bootstrapped_psets.add(best_fit_pset, best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs)
                     consec_failed_bootstrap_runs = 0
                     shutil.move(config.config['output_dir'] + '/Results', config.config['output_dir'] + '/Results-boot%s' % completed_bootstrap_runs)
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
@@ -246,14 +252,16 @@ def main():
                                     config.config['output_dir'] + '/Simulations-boot%s' % completed_bootstrap_runs)
                 else:
                     consec_failed_bootstrap_runs += 1
-                    print0("Bootstrap run %s did not achieve maximum allowable objective function value.  Retrying")
+                    print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
                     shutil.rmtree(config.config['output_dir'] + '/Results')
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
                         shutil.rmtree(config.config['output_dir'] + '/Simulations')
                     if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
                         raise PybnfError("Bootstrap runs failing to achieve maximum allowable objective function values")
 
-            # TODO output bootstrapping stats
+            shutil.move(config.config['output_dir'] + '/Results-base', config.config['output_dir'] + '/Results')
+            shutil.move(config.config['output_dir'] + '/Simulations-base', config.config['output_dir'] + '/Simulations')
+            bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
             print0('Bootstrapping complete')
 
         success = True
