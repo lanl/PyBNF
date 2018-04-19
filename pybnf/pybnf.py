@@ -217,7 +217,6 @@ def main():
                 os.mkdir(config.config['output_dir'] + '/Simulations')
 
                 alg.reset()
-                # TODO output files containing bootstrapped data (on success?)
                 for name, data in alg.exp_data.items():
                     data.gen_bootstrap_weights()
                     data.weights_to_file(config.config['output_dir']+ '/Results/%s_weights_%s.txt' % (name, completed_bootstrap_runs))
@@ -257,7 +256,8 @@ def main():
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
                         shutil.rmtree(config.config['output_dir'] + '/Simulations')
                     if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
-                        raise PybnfError("Bootstrap runs failing to achieve maximum allowable objective function values")
+                        raise PybnfError("20 consecutive bootstrap runs failed to achieve maximum allowable objective "
+                                         "function values.  Check 'bootstrap_max_obj' configuration key")
 
             shutil.move(config.config['output_dir'] + '/Results-base', config.config['output_dir'] + '/Results')
             shutil.move(config.config['output_dir'] + '/Simulations-base', config.config['output_dir'] + '/Simulations')
