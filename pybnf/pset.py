@@ -557,7 +557,6 @@ class SbmlModel(OldSbmlModel):
 
     def execute(self, folder, filename, timeout):
         arg = pickle.dumps(self)
-        logger.debug('My argument is %s' % arg)
         proc_output = run(['python', 'sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg)
         result = pickle.loads(proc_output.stdout)
         return result
