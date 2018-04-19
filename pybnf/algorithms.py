@@ -257,6 +257,7 @@ class Algorithm(object):
         self.job_group_dir = dict()
         self.fail_count = 0
         self.success_count = 0
+        self.max_iterations = config.config['max_iterations']
 
         logger.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
@@ -509,6 +510,13 @@ class Algorithm(object):
         """
         return self.config.config['backup_every'] * self.config.config['population_size'] * \
             self.config.config['smoothing']
+
+    def add_iterations(self, n):
+        """
+        Adds n additional iterations to the algorithm.
+        May be overridden in subclasses that don't use self.max_iterations to track the iteration count
+        """
+        self.max_iterations += n
 
     def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
         """Main loop for executing the algorithm"""
@@ -827,6 +835,9 @@ class ParticleSwarm(Algorithm):
 
         return [new_pset]
 
+    def add_iterations(self, n):
+        self.max_evals += n * self.config.config['population_size']
+
 
 class DifferentialEvolution(Algorithm):
     """
@@ -1100,11 +1111,11 @@ class ScatterSearch(Algorithm):
         super(ScatterSearch, self).__init__(config)
 
         self.popsize = config.config['population_size']
-        self.maxiters = config.config['max_iterations']
+        self.max_iterations = config.config['max_iterations']
         if 'reserve_size' in config.config:
             self.reserve_size = config.config['reserve_size']
         else:
-            self.reserve_size = self.maxiters
+            self.reserve_size = self.max_iterations
         if 'init_size' in config.config:
             self.init_size = config.config['init_size']
             if self.init_size < self.popsize:
@@ -1130,7 +1141,7 @@ class ScatterSearch(Algorithm):
 
     def start_run(self):
         print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
-               (self.popsize, self.popsize * (self.popsize - 1), self.maxiters))
+               (self.popsize, self.popsize * (self.popsize - 1), self.max_iterations))
         # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
         if self.config.config['initialization'] == 'lh':
             psets = self.random_latin_hypercube_psets(self.init_size)
@@ -1214,9 +1225,9 @@ class ScatterSearch(Algorithm):
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logger.info('Iteration %i' % self.iteration)
             if self.iteration % 10 == 0:
-                print1('Completed iteration %i of %i' % (self.iteration, self.maxiters))
+                print1('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
             else:
-                print2('Completed iteration %i of %i' % (self.iteration, self.maxiters))
+                print2('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
             print2('Current scores: ' + str([x[1] for x in self.refs]))
             print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
@@ -1224,7 +1235,7 @@ class ScatterSearch(Algorithm):
                 self.output_results()
 
             self.iteration += 1
-            if self.iteration == self.maxiters:
+            if self.iteration == self.max_iterations:
                 return 'STOP'
 
             # 3) Do the combination antics to generate new candidates

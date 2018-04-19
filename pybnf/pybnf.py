@@ -36,8 +36,10 @@ def main():
                         help='automatically overwrites existing folders if necessary')
     parser.add_argument('-t', '--cluster_type', action='store',
                         help='optional string denoting the type of cluster')
-    parser.add_argument('-r', '--resume', action='store_true',
-                        help='automatically resume the previously stopped fitting run')
+    parser.add_argument('-r', '--resume', action='store', nargs='?', const=0, default=None, type=int,
+                        metavar='iterations',
+                        help='automatically resume the previously stopped fitting run; '
+                             'if a number is passed with this flag, add that many iterations to the fitting run.')
     parser.add_argument('-d', '--debug_logging', action='store_true',
                         help='outputs debugging log (file could be very large)')
     parser.add_argument('-l', '--log_prefix', action='store',
@@ -72,14 +74,14 @@ def main():
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
 
-        if cmdline_args.resume and cmdline_args.overwrite:
+        if cmdline_args.resume is not None and cmdline_args.overwrite:
             raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
                              "run, or --overwrite to overwrite the previous run with a new one.")
 
         continue_run = False
         if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not cmdline_args.overwrite:
             ans = 'x'
-            if cmdline_args.resume:
+            if cmdline_args.resume is not None:
                 ans = 'y'
                 logger.info('Automatically will resume previous run.')
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
@@ -87,6 +89,9 @@ def main():
             if ans.lower() in ('y', 'yes', ''):
                 logger.info('Resuming a previous run')
                 continue_run = True
+                if cmdline_args.resume is None:
+                    # Add 0 iterations to the run if we got here by the manual prompt
+                    cmdline_args.resume = 0
         elif cmdline_args.resume:
             raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir'] + '/Simulations'))
 
@@ -96,6 +101,7 @@ def main():
             f = open(config.config['output_dir'] + '/Simulations/alg_backup.bp', 'rb')
             alg, pending = pickle.load(f)
             config = alg.config
+            alg.add_iterations(cmdline_args.resume)
             f.close()
             if isinstance(alg, algs.SimplexAlgorithm):
                 # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
