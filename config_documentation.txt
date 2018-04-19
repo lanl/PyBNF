@@ -5,7 +5,7 @@ Please update this file whenever you add support for new .conf keys in the code
 ***Fundamental model specification***
 
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list.
-bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise bng_command requires specification in the configuration file
+bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise, if the run includes any .bngl files, bng_command requires specification in the configuration file
 output_dir - Directory where to save the output. Default: bnf_out
 fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
@@ -14,6 +14,10 @@ cluster_type - Type of cluster used for running the fit.  Defaults to None (loca
 scheduler_node - Node used for setting up distributed Client.  Defaults to None (local fitting run); takes a string identifying a machine on a network
 worker_nodes - Nodes used for computation. Defaults to None; takes one or more strings separated by whitespace identifying machines on a network
 
+Action commands below configure simulations to run that are not already specified in the model file. These commands are required to configure runs with SBML files, which do not support declaration of simulation actions in the files themselves.
+time_course = key1: value1, key2: value2,... - Run a time course with the specified attributes. The following keys are available. time: the simulation time; step: the simulation time step (default 1); model: the model to run on (default is all of the models in the fitting run); suffix: The suffix of the data file to save. You should map the model to a .exp file of the same name (default: time_course)
+For example you could write, 'timecourse = model: m1.xml, time: 60, step:5'
+param_scan = key1: value1, key2: value2,... - Run a parameter scan with the specified attributes. The following keys are available. param: name of the parameter to scan, min: minimum value of the parameter, max: maximum value of the parameter, step: change in parameter value between consecutive simulations in the scan, time: amount of time that each simulation in the scan is run, logspace: 0 or 1. If 1, scan the parameter in log space,  model: the model to run on (default is all of the models in the fitting run); suffix: The suffix of the data file to save. You should map the model to a .exp file of the same name (default: param_scan)
 ***Parameter specification***
 
 uniform_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]

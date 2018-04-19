@@ -10,7 +10,7 @@ from .printing import PybnfError
 class Data(object):
     """Top level class for managing data"""
 
-    def __init__(self, file_name=None, arr=None):
+    def __init__(self, file_name=None, arr=None, named_arr=None):
         self.cols = dict()  # dict of column headers to column indices
         self.data = None  # Numpy array for data
         self.indvar = None # Name of the independent variable
@@ -18,6 +18,11 @@ class Data(object):
             self.load_data(file_name)
         elif arr is not None:
             self.data = arr
+        elif named_arr is not None:
+            # Initialize with RoadRunner named array
+            # NamedArray is not pickleable, so we need to copy the contents into a regular array.
+            self.data = np.array(named_arr)
+            self.load_rr_header(named_arr.colnames)
 
     def __getitem__(self, col_header):
         """
@@ -82,11 +87,22 @@ class Data(object):
 
         self.data = self._read_file_lines(lines, sep, file_name=file_name)
 
+    def load_rr_header(self, header):
+        """
+        Loads the header from a RoadRunner NamedArray
+        :param header: The colnames attribute of a RoadRunner NamedArray (a list of str)
+        """
+        self.indvar = header[0].strip('[]')
+        self.cols = {header[i].strip('[]'): i for i in range(len(header))}
+
     def _read_file_lines(self, lines, sep, file_name=''):
         """Helper function that reads lines from BNGL gdat files"""
 
         header = re.split(sep, lines[0].strip().strip('#').strip())
-        header = [h.strip('()') for h in header]  # Ignore parentheses added to functions in BNG 2.3
+        # Ignore parentheses added to functions in BNG 2.3, and [] added to species names in COPASI
+        header = [h.strip('()[]') for h in header]
+        if header[0] == 'Time':
+            header[0] = 'time'  # Allow either capitalization because Copasi uses capital, BNG uses lowercase
         ncols = len(header)
         self.indvar = header[0]
 
