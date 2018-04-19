@@ -636,10 +636,11 @@ class Algorithm(object):
         if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
             # End of fitting; delete unneeded files
             try:
-                os.remove('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'])
-                logger.info('Deleted pickled algorithm')
+                os.rename('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'],
+                          '%s/Results/alg_finished.bp' % self.config.config['output_dir'])
+                logger.info('Moved pickled algorithm to alg_finished')
             except OSError:
-                logger.warning('Tried to delete pickled algorithm, but it was not found')
+                logger.warning('Tried to move pickled algorithm, but it was not found')
             if self.config.config['delete_old_files'] >= 1:
                 shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 

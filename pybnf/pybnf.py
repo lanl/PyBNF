@@ -78,27 +78,31 @@ def main():
             raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
                              "run, or --overwrite to overwrite the previous run with a new one.")
 
-        continue_run = False
-        if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not cmdline_args.overwrite:
+        continue_file = None
+        if cmdline_args.resume is not None:
+            if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp'):
+                continue_file = config.config['output_dir'] + '/Simulations/alg_backup.bp'
+            elif os.path.exists(config.config['output_dir'] + '/Results/alg_finished.bp'):
+                if cmdline_args.resume <= 0:
+                    raise PybnfError('The fitting run saved in %s already finished. If you want to continue the '
+                                     'fitting with more iterations, pass a number of iterations with the '
+                                     '--resume flag.' % config.config['output_dir'])
+                continue_file = config.config['output_dir'] + '/Results/alg_finished.bp'
+            else:
+                raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir']))
+        elif os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not cmdline_args.overwrite:
             ans = 'x'
-            if cmdline_args.resume is not None:
-                ans = 'y'
-                logger.info('Automatically will resume previous run.')
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
                 ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
             if ans.lower() in ('y', 'yes', ''):
                 logger.info('Resuming a previous run')
-                continue_run = True
-                if cmdline_args.resume is None:
-                    # Add 0 iterations to the run if we got here by the manual prompt
-                    cmdline_args.resume = 0
-        elif cmdline_args.resume:
-            raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir'] + '/Simulations'))
+                continue_file = config.config['output_dir'] + '/Simulations/alg_backup.bp'
+                cmdline_args.resume = 0
 
-        if continue_run:
+        if continue_file:
             # Restart the loaded algorithm
             logger.info('Reloading algorithm')
-            f = open(config.config['output_dir'] + '/Simulations/alg_backup.bp', 'rb')
+            f = open(continue_file, 'rb')
             alg, pending = pickle.load(f)
             config = alg.config
             alg.add_iterations(cmdline_args.resume)
