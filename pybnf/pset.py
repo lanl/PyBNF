@@ -7,11 +7,12 @@ import logging
 import numpy as np
 import re
 import copy
-from subprocess import run, STDOUT
+from subprocess import run, STDOUT, PIPE
 from .data import Data
 import heapq
 import traceback
 import roadrunner as rr
+import pickle
 rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
@@ -401,7 +402,7 @@ class NetModel(BNGLModel):
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
 
 
-class SbmlModel(Model):
+class OldSbmlModel(Model):
 
     def __init__(self, file, pset=None, actions=()):
         self.file_path = file
@@ -550,6 +551,19 @@ class SbmlModel(Model):
                 elif mi.name in self.param_names:
                     setattr(runner, mi.name, mi.undo())
         return result_dict
+
+
+class SbmlModel(OldSbmlModel):
+
+    def execute(self, folder, filename, timeout):
+        arg = pickle.dumps(self)
+        logger.debug('My argument is %s' % arg)
+        proc_output = run(['python', 'sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg)
+        result = pickle.loads(proc_output.stdout)
+        return result
+
+    def super_execute(self):
+        return super().execute(None, None, None)
 
 
 class Action:
