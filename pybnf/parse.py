@@ -78,9 +78,9 @@ def parse(s):
 
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
-    bngl_file = pp.Regex(".*?\.(bngl|xml)")
+    model_file = pp.Regex(".*?\.(bngl|xml)")
     exp_file = pp.Regex(".*?\.(exp|con)")
-    mdmgram = mdmkey - equals - bngl_file - colon - pp.delimitedList(exp_file) - comment
+    mdmgram = mdmkey - equals - model_file - colon - pp.delimitedList(exp_file) - comment
 
     # normalization mapping grammar
     normkey = pp.CaselessLiteral("normalization")

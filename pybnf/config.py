@@ -234,9 +234,9 @@ class Configuration(object):
         # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
         home_dir = os.getcwd()
 
-        def absolute(dir):
+        def absolute(directory):
             # Convert relative path to absolute path
-            return dir if dir[0] == '/' else home_dir + '/' + dir
+            return directory if directory[0] == '/' else home_dir + '/' + directory
 
         md = {}
         for mf in self.config['models']:

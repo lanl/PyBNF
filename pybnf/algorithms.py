@@ -162,9 +162,6 @@ class Job:
                                   self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
-            #D! model_files = self._write_models()
-            # self.execute(model_files)
-            # simdata = self.load_simdata()
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
@@ -624,7 +621,7 @@ class Algorithm(object):
                                     (self.config.config['output_dir'], best_name, m, best_name, suf, ext),
                                     '%s/Results' % self.config.config['output_dir'])
                     except FileNotFoundError:
-                        logger.error('Cannot find files corresponding to best fit parameter set... exiting')
+                        logger.error('Cannot find files corresponding to best fit parameter set')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
 
