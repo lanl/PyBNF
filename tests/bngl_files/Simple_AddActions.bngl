@@ -147,11 +147,12 @@ end model
 
 begin actions
 
+generate_network({overwrite=>1})
+
 # The command below instructs BioNetGen to derive a reaction network from the model's rules.
 # The output is sent to a file that has a .net filename extension.
 # The .net file can be further processed to generate the ordinary differential equations
 # corresponding to the reaction network and the rate laws associated with the model's rules.
-generate_network({overwrite=>1})
 
 # The commands below illustrate how we simulated
 # 1) an initial period of multivalent antigen-stimulated IgE receptor signaling,

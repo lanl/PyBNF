@@ -91,13 +91,17 @@ class BNGLModel(Model):
         in_action_block = False
         in_no_block = True
         continuation = ''
-        for i, line in enumerate(all_lines):
-            commenti = line.find('#')
-            if commenti != -1:
-                line = line[:commenti]
+        for i, rawline in enumerate(all_lines):
+            commenti = rawline.find('#')
+            line = rawline if commenti == -1 else rawline[:commenti]
 
             if re.match(r'^\s*$', line):
-                continue  # Blank line - must handle before line continuation
+                # Blank or comment. Handle before continuation
+                if in_action_block:
+                    # Keep it in the actions block
+                    self.actions.append(rawline)
+                    skip_lines.add(i)
+                continue
 
             # Handle case where '\' is used to continue on the next line
             line = continuation + line
@@ -162,7 +166,7 @@ class BNGLModel(Model):
                     # There's probably a better way to handle this.
                     print1("Warning: Your model file specifies the 'seed' argument. This means that if you are "
                            "using the 'smoothing' feature, all of your replicates will come out the same.")
-                self.actions.append(line)
+                self.actions.append(rawline)
 
             if re.match('end\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = True

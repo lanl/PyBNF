@@ -29,6 +29,7 @@ class TestModel:
         cls.savefile2_prefix = 'bngl_files/NoseTest_Save2'
         cls.savefile3_prefix = 'bngl_files/NoseTest_Save3'
         cls.savefile4_prefix = 'bngl_files/NoseTest_Save4'
+        cls.savefile5_prefix = 'bngl_files/NoseTest_Save5'
 
         cls.params1 = [
             pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=3.8),
@@ -43,12 +44,13 @@ class TestModel:
 
     @classmethod
     def teardown_class(cls):
-        remove(cls.savefile_prefix + '.bngl')
-        remove(cls.savefile2_prefix + '.bngl')
-        remove(cls.savefile3_prefix + '.bngl')
-        remove(cls.savefile3_prefix + '.net')
-        remove(cls.savefile4_prefix + '.bngl')
-        remove(cls.savefile4_prefix + '.net')
+        pass
+        # remove(cls.savefile_prefix + '.bngl')
+        # remove(cls.savefile2_prefix + '.bngl')
+        # remove(cls.savefile3_prefix + '.bngl')
+        # remove(cls.savefile3_prefix + '.net')
+        # remove(cls.savefile4_prefix + '.bngl')
+        # remove(cls.savefile4_prefix + '.net')
 
     def test_no_gen_command(self):
         model = pset.BNGLModel(self.file6)
@@ -145,9 +147,9 @@ class TestModel:
         a2 = pset.ParamScan({'min': 10, 'max': 60, 'step': 10, 'time': 5, 'suffix': 's3', 'model': 'Simple',
                              'param': 'kon'})
         model1.add_action(a2)
-        model1.save(self.savefile_prefix)
+        model1.save(self.savefile5_prefix)
 
-        f_myguess = open(self.savefile_prefix + '.bngl')
+        f_myguess = open(self.savefile5_prefix + '.bngl')
         myguess = f_myguess.read()
         f_myguess.close()
 
@@ -168,7 +170,7 @@ class TestModel:
 
     def test_actions(self):
         m0 = pset.BNGLModel(self.file1)
-        assert len(m0.actions) == 2
+        assert len([a for a in m0.actions if len(a) > 0 and a[0] != '#']) == 2
         for a in m0.actions:
             assert re.search('setOption', a) is None
 
