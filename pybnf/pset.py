@@ -322,12 +322,12 @@ class BNGLModel(Model):
 
     def add_action(self, action):
         if isinstance(action, TimeCourse):
-            line = 'simulate({method=>"ode",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>%s})' % \
+            line = 'simulate({method=>"ode",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s"})' % \
                    (action.time, action.stepnumber, action.suffix)
         elif isinstance(action, ParamScan):
             line = 'parameter_scan({parameter=>"%s",method=>"ode",t_start=>0,t_end=>%s,par_min=>%s,par_max=>%s,' \
                    'n_scan_pts=>%s,log_scale=>%s,suffix=>"%s"})' % (action.param, action.time, action.min, action.max,
-                                                                    action.stepnumber, action.logspace, action.suffix)
+                                                                action.stepnumber + 1, action.logspace, action.suffix)
         else:
             raise RuntimeError('Unknown action type %s' % type(action))
         self.actions.append(line)

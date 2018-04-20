@@ -44,13 +44,13 @@ class TestModel:
 
     @classmethod
     def teardown_class(cls):
-        pass
-        # remove(cls.savefile_prefix + '.bngl')
-        # remove(cls.savefile2_prefix + '.bngl')
-        # remove(cls.savefile3_prefix + '.bngl')
-        # remove(cls.savefile3_prefix + '.net')
-        # remove(cls.savefile4_prefix + '.bngl')
-        # remove(cls.savefile4_prefix + '.net')
+        remove(cls.savefile_prefix + '.bngl')
+        remove(cls.savefile2_prefix + '.bngl')
+        remove(cls.savefile3_prefix + '.bngl')
+        remove(cls.savefile3_prefix + '.net')
+        remove(cls.savefile4_prefix + '.bngl')
+        remove(cls.savefile4_prefix + '.net')
+        remove(cls.savefile5_prefix + '.bngl')
 
     def test_no_gen_command(self):
         model = pset.BNGLModel(self.file6)
