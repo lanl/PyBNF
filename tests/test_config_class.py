@@ -51,8 +51,6 @@ class TestConfig(object):
         assert [v.name for v in sorted_vars] == ['__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__']
         assert c.config['normalization']['p1_5'] == 'init'
         assert c.config['cluster_type'] is None
-        assert isinstance(c.models['Tricky'].config_actions[0], pset.ParamScan)
-        assert c.models['Tricky'].config_actions[0].time == 3600.
 
     def test_config_normalization(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
