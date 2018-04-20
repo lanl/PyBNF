@@ -243,6 +243,7 @@ def main():
 
                 if best_fit_obj <= bootstrap_max_obj:
                     completed_bootstrap_runs += 1
+                    logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
                     bootstrapped_psets.add(best_fit_pset, best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs)
                     consec_failed_bootstrap_runs = 0
                     shutil.move(config.config['output_dir'] + '/Results', config.config['output_dir'] + '/Results-boot%s' % completed_bootstrap_runs)
@@ -252,6 +253,7 @@ def main():
                 else:
                     consec_failed_bootstrap_runs += 1
                     print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
+                    logger.warning("Bootstrap run did not achieve maximum allowable objective function value.")
                     shutil.rmtree(config.config['output_dir'] + '/Results')
                     if os.path.exists(config.config['output_dir'] + '/Simulations'):
                         shutil.rmtree(config.config['output_dir'] + '/Simulations')

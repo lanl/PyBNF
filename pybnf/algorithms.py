@@ -609,8 +609,9 @@ class Algorithm(object):
                 break
             response = self.got_result(res)
             if response == 'STOP':
-                logger.info("Stop criterion satisfied")
-                print1('Stop criterion satisfied')
+                best_fit_obj = self.trajectory.trajectory[self.trajectory.best_fit()]
+                logger.info("Stop criterion satisfied with objective function value of %s" % best_fit_obj)
+                print1("Stop criterion satisfied with objective function value of %s" % best_fit_obj)
                 break
             else:
                 new_jobs = []
