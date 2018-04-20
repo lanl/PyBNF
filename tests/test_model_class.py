@@ -43,7 +43,7 @@ class TestModel:
 
     @classmethod
     def teardown_class(cls):
-        # remove(cls.savefile_prefix + '.bngl')
+        remove(cls.savefile_prefix + '.bngl')
         remove(cls.savefile2_prefix + '.bngl')
         remove(cls.savefile3_prefix + '.bngl')
         remove(cls.savefile3_prefix + '.net')
@@ -53,9 +53,6 @@ class TestModel:
     def test_no_gen_command(self):
         model = pset.BNGLModel(self.file6)
         assert model.generates_network
-        print(model.generate_network_line_index, model.action_line_indices)
-        assert model.generate_network_line_index == min(model.action_line_indices) - 1
-        assert model.model_lines[model.generate_network_line_index] == 'generate_network({overwrite=>1})'
         assert model.generate_network_line == 'generate_network({overwrite=>1})'
 
     def test_initialize(self):
