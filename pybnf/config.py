@@ -174,7 +174,7 @@ class Configuration(object):
         :return:
         """
         # Check keys that only work for a subset of the 3 algorithms
-        if conf_dict['fit_type'] != 'pt' and 'exchange_every' in conf_dict:
+        if conf_dict['fit_type'] != 'pt':
             if 'exchange_every' in conf_dict:
                 print1('Warning: Configuration key exchange_every is not used in fit_type %s, so I am ignoring it'
                        % conf_dict['fit_type'])

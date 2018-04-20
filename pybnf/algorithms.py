@@ -544,6 +544,7 @@ class Algorithm(object):
         logger.debug('Generating initial parameter sets')
         if resume:
             psets = resume
+            logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
         else:
             psets = self.start_run()
         pending_psets = set(psets)
@@ -1324,6 +1325,7 @@ class BayesAlgorithm(Algorithm):
         self.load_priors()
 
         self.samples_file = None # Initialize later.
+        self.staged = []  # Used only when resuming a run and adding iterations
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1440,6 +1442,11 @@ class BayesAlgorithm(Algorithm):
                 return []
 
         proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
+        # Note self.staged is empty unless we just resumed a run with added iterations and need to restart chains.
+        if len(self.staged) != 0:
+            toreturn = [proposed_pset] + self.staged
+            self.staged = []
+            return toreturn
         return [proposed_pset]
 
     def try_to_choose_new_pset(self, index):
@@ -1663,6 +1670,18 @@ class BayesAlgorithm(Algorithm):
         super().cleanup()
         self.update_histograms('_end')
 
+    def add_iterations(self, n):
+        oldmax = self.max_iterations
+        self.max_iterations += n
+        # Any chains that already completed need to be restarted with a new proposed parameter set
+        for index in range(self.num_parallel):
+            if self.iteration[index] >= oldmax:
+                ps = self.try_to_choose_new_pset(index)
+                if ps:
+                    # Add to a list of new psets to run that will be submitted when the first result comes back.
+                    ps.name = 'iter%irun%i' % (self.iteration[index], index)
+                    logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
+                    self.staged.append(ps)
 
 class SimplexAlgorithm(Algorithm):
 
