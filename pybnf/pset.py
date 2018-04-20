@@ -322,16 +322,20 @@ class BNGLModel(Model):
 
     def add_action(self, action):
         if isinstance(action, TimeCourse):
-            line = 'simulate({method=>"ode",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s"})' % \
+            line = 'simulate({method=>"ode",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s",print_functions=>1})' % \
                    (action.time, action.stepnumber, action.suffix)
         elif isinstance(action, ParamScan):
             line = 'parameter_scan({parameter=>"%s",method=>"ode",t_start=>0,t_end=>%s,par_min=>%s,par_max=>%s,' \
-                   'n_scan_pts=>%s,log_scale=>%s,suffix=>"%s"})' % (action.param, action.time, action.min, action.max,
-                                                                action.stepnumber + 1, action.logspace, action.suffix)
+                   'n_scan_pts=>%s,log_scale=>%s,suffix=>"%s",print_functions=>1})' % \
+                   (action.param, action.time, action.min, action.max, action.stepnumber + 1, action.logspace,
+                    action.suffix)
         else:
             raise RuntimeError('Unknown action type %s' % type(action))
         self.actions.append(line)
-        self.suffixes.append(action.suffix)
+        self.generates_network = True
+        if self.generate_network_line is None:
+            self.generate_network_line = 'generate_network({overwrite=>1})'
+        self.suffixes.append((action.bng_codeword, action.suffix))
 
 
 class NetModel(BNGLModel):
