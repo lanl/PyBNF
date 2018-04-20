@@ -91,6 +91,8 @@ class BNGLModel(Model):
         in_action_block = False
         in_no_block = True
         continuation = ''
+        continuation_raw = ''
+        continuation_indices = set()
         for i, rawline in enumerate(all_lines):
             commenti = rawline.find('#')
             line = rawline if commenti == -1 else rawline[:commenti]
@@ -105,11 +107,17 @@ class BNGLModel(Model):
 
             # Handle case where '\' is used to continue on the next line
             line = continuation + line
+            rawline = continuation_raw + rawline
+            indices = continuation_indices.union({i})  # The set of indices that are all part of this line due to continuation
             continuation = ''
+            continuation_raw = ''
+            continuation_indices = set()
             continue_match = re.search(r'\\\s*$', line)
             if continue_match:
                 # This line continues on the next line
                 continuation = line[:continue_match.start()]
+                continuation_raw = rawline + '\n'
+                continuation_indices = indices
                 continue
 
             # Find every item matching [alphanumeric]__FREE__
@@ -133,12 +141,12 @@ class BNGLModel(Model):
             if re.match('begin\s+actions', line.strip()):
                 in_action_block = True
                 in_no_block = False
-                skip_lines.add(i)
+                skip_lines.update(indices)
                 continue
             elif re.match('end\s+actions', line.strip()):
                 in_action_block = False
                 in_no_block = True
-                skip_lines.add(i)
+                skip_lines.update(indices)
                 continue
 
             # To keep track of whether we're in no block, which counts as an action block, check for
@@ -147,7 +155,7 @@ class BNGLModel(Model):
                 in_no_block = False
 
             if in_action_block or in_no_block:
-                skip_lines.add(i)
+                skip_lines.update(indices)
                 action_suffix = self._get_action_suffix(line)
                 if action_suffix is not None:
                     self.suffixes.append(action_suffix)
