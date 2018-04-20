@@ -23,6 +23,7 @@ class TestModel:
 
         cls.file1a = 'bngl_files/Simple_Answer.bngl'
         cls.file1b = 'bngl_files/Simple_GenOnly.bngl'
+        cls.file1c = 'bngl_files/Simple_AddActions.bngl'
 
         cls.savefile_prefix = 'bngl_files/NoseTest_Save'
         cls.savefile2_prefix = 'bngl_files/NoseTest_Save2'
@@ -42,7 +43,7 @@ class TestModel:
 
     @classmethod
     def teardown_class(cls):
-        remove(cls.savefile_prefix + '.bngl')
+        # remove(cls.savefile_prefix + '.bngl')
         remove(cls.savefile2_prefix + '.bngl')
         remove(cls.savefile3_prefix + '.bngl')
         remove(cls.savefile3_prefix + '.net')
@@ -138,6 +139,26 @@ class TestModel:
         f_answer2.close()
 
         assert myguess2 == answer2
+
+    def test_bngl_config_actions(self):
+        ps1 = pset.PSet(self.params1)
+        model1 = pset.BNGLModel(self.file1, ps1)
+        a1 = pset.TimeCourse({'time': 50, 'step': 10, 'model': 'Simple', 'suffix': 's2'})
+        model1.add_action(a1)
+        a2 = pset.ParamScan({'min': 10, 'max': 60, 'step': 10, 'time': 5, 'suffix': 's3', 'model': 'Simple',
+                             'param': 'kon'})
+        model1.add_action(a2)
+        model1.save(self.savefile_prefix)
+
+        f_myguess = open(self.savefile_prefix + '.bngl')
+        myguess = f_myguess.read()
+        f_myguess.close()
+
+        f_answer = open(self.file1c)
+        answer = f_answer.read()
+        f_answer.close()
+
+        assert myguess == answer
 
     def test_action_suffixes(self):
         m0 = pset.BNGLModel(self.file1)
