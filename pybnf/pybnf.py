@@ -260,7 +260,9 @@ def main():
                                          "function values.  Check 'bootstrap_max_obj' configuration key")
 
             shutil.move(config.config['output_dir'] + '/Results-base', config.config['output_dir'] + '/Results')
-            shutil.move(config.config['output_dir'] + '/Simulations-base', config.config['output_dir'] + '/Simulations')
+            if os.path.exists(config.config['output_dir'] + '/Simulations-base'):
+                shutil.move(config.config['output_dir'] + '/Simulations-base',
+                            config.config['output_dir'] + '/Simulations')
             bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
             print0('Bootstrapping complete')
 
