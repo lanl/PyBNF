@@ -331,6 +331,8 @@ class BNGLModel(Model):
                     action.suffix)
         else:
             raise RuntimeError('Unknown action type %s' % type(action))
+        # Config actions are assumed to be independent, so need to reset concentrations before each one.
+        self.actions.append('resetConcentrations()')
         self.actions.append(line)
         self.generates_network = True
         if self.generate_network_line is None:

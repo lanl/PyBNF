@@ -168,6 +168,8 @@ setConcentration("Ag(DNP)","Ag_tot_1")
 simulate({suffix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
 
 
+resetConcentrations()
 simulate({method=>"ode",t_start=>0,t_end=>50.0,n_steps=>5,suffix=>"s2",print_functions=>1})
+resetConcentrations()
 parameter_scan({parameter=>"kon",method=>"ode",t_start=>0,t_end=>5.0,par_min=>10.0,par_max=>60.0,n_scan_pts=>6,log_scale=>0,suffix=>"s3",print_functions=>1})
 end actions
