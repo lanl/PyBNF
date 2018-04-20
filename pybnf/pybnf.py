@@ -101,6 +101,7 @@ def main():
                 cmdline_args.resume = 0
 
         if continue_file:
+            # TODO check if resuming bootstrapping
             # Restart the loaded algorithm
             logger.info('Reloading algorithm')
             f = open(continue_file, 'rb')
@@ -203,23 +204,17 @@ def main():
             else:
                 bootstrap_max_obj = alg.trajectory.trajectory[alg.trajectory.best_fit()]
 
-            shutil.move(config.config['output_dir'] + '/Results', config.config['output_dir'] + '/Results-base')
-            if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                shutil.move(config.config['output_dir'] + '/Simulations',
-                            config.config['output_dir'] + '/Simulations-base')
-
             num_to_bootstrap = config.config['bootstrap']
             bootstrapped_psets = Trajectory(num_to_bootstrap)
             completed_bootstrap_runs = 0
             consec_failed_bootstrap_runs = 0
             while completed_bootstrap_runs < num_to_bootstrap:
-                os.mkdir(config.config['output_dir'] + '/Results')
-                os.mkdir(config.config['output_dir'] + '/Simulations')
+                alg.reset(bootstrap=completed_bootstrap_runs)
 
-                alg.reset()
                 for name, data in alg.exp_data.items():
                     data.gen_bootstrap_weights()
-                    data.weights_to_file(config.config['output_dir']+ '/Results/%s_weights_%s.txt' % (name, completed_bootstrap_runs))
+                    data.weights_to_file('%s/%s_weights_%s.txt' % (alg.res_dir, name, completed_bootstrap_runs))
+
                 logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
                 print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
                 alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
@@ -246,25 +241,17 @@ def main():
                     logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
                     bootstrapped_psets.add(best_fit_pset, best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs)
                     consec_failed_bootstrap_runs = 0
-                    shutil.move(config.config['output_dir'] + '/Results', config.config['output_dir'] + '/Results-boot%s' % completed_bootstrap_runs)
-                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                        shutil.move(config.config['output_dir'] + '/Simulations',
-                                    config.config['output_dir'] + '/Simulations-boot%s' % completed_bootstrap_runs)
                 else:
                     consec_failed_bootstrap_runs += 1
                     print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
                     logger.warning("Bootstrap run did not achieve maximum allowable objective function value.")
-                    shutil.rmtree(config.config['output_dir'] + '/Results')
-                    if os.path.exists(config.config['output_dir'] + '/Simulations'):
-                        shutil.rmtree(config.config['output_dir'] + '/Simulations')
+                    shutil.rmtree(alg.res_dir)
+                    if os.path.exists(alg.sim_dir):
+                        shutil.rmtree(alg.sim_dir)
                     if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
                         raise PybnfError("20 consecutive bootstrap runs failed to achieve maximum allowable objective "
                                          "function values.  Check 'bootstrap_max_obj' configuration key")
 
-            shutil.move(config.config['output_dir'] + '/Results-base', config.config['output_dir'] + '/Results')
-            if os.path.exists(config.config['output_dir'] + '/Simulations-base'):
-                shutil.move(config.config['output_dir'] + '/Simulations-base',
-                            config.config['output_dir'] + '/Simulations')
             bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
             print0('Bootstrapping complete')
 
