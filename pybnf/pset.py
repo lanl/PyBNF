@@ -322,13 +322,13 @@ class BNGLModel(Model):
 
     def add_action(self, action):
         if isinstance(action, TimeCourse):
-            line = 'simulate({method=>"ode",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s",print_functions=>1})' % \
-                   (action.time, action.stepnumber, action.suffix)
+            line = 'simulate({method=>"%s",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s",print_functions=>1})' % \
+                   (action.method, action.time, action.stepnumber, action.suffix)
         elif isinstance(action, ParamScan):
-            line = 'parameter_scan({parameter=>"%s",method=>"ode",t_start=>0,t_end=>%s,par_min=>%s,par_max=>%s,' \
+            line = 'parameter_scan({parameter=>"%s",method=>"%s",t_start=>0,t_end=>%s,par_min=>%s,par_max=>%s,' \
                    'n_scan_pts=>%s,log_scale=>%s,suffix=>"%s",print_functions=>1})' % \
-                   (action.param, action.time, action.min, action.max, action.stepnumber + 1, action.logspace,
-                    action.suffix)
+                   (action.param, action.method, action.time, action.min, action.max, action.stepnumber + 1,
+                    action.logspace, action.suffix)
         else:
             raise RuntimeError('Unknown action type %s' % type(action))
         # Config actions are assumed to be independent, so need to reset concentrations before each one.
@@ -434,8 +434,13 @@ class SbmlModel(Model):
             out.write(self.model_text())
 
     def add_action(self, action):
+        if action.method not in ('ode', 'ssa'):
+            raise PybnfError('time_course or param_scan method %s is not possible with an SBML model. Options are '
+                             'ode or ssa.' % action.method)
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
+        if action.method == 'ssa':
+            self.stochastic = True
 
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""
@@ -457,6 +462,12 @@ class SbmlModel(Model):
         # Run the model actions
         result_dict = dict()
         for act in self.actions:
+            runner.reset()
+            if act.method == 'ssa':
+                runner.setIntegrator('gillespie')
+                runner.getIntegrator().setValue('variable_step_size', False)
+            else:
+                runner.setIntegrator('cvode')
             if isinstance(act, TimeCourse):
                 res_array = runner.simulate(0., act.time, steps=act.stepnumber)
                 res = Data(named_arr=res_array)
@@ -517,12 +528,13 @@ class TimeCourse(Action):
         """
         # Available keys and default values
         num_keys = {'time', 'step'}
-        str_keys = {'model', 'suffix'}
+        str_keys = {'model', 'suffix', 'method'}
         # Default values
         self.time = None  # Required
         self.step = 1.
         self.model = ''
         self.suffix = 'time_course'
+        self.method = 'ode'
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -542,6 +554,9 @@ class TimeCourse(Action):
         if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')
 
+        if self.method not in ('ode', 'ssa', 'pla', 'nf'):
+            raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
+
         self.stepnumber = int(np.round(self.time/self.step))
         self.bng_codeword = 'simulate'
 
@@ -558,7 +573,7 @@ class ParamScan(Action):
         """
         # Available keys and default values
         num_keys = {'min', 'max', 'step', 'time', 'logspace'}
-        str_keys = {'model', 'suffix', 'param'}
+        str_keys = {'model', 'suffix', 'param', 'method'}
         required_keys = {'min', 'max', 'step', 'time', 'param'}
         # Default values
         self.min = None
@@ -569,6 +584,7 @@ class ParamScan(Action):
         self.param = None
         self.model = ''
         self.suffix = 'param_scan'
+        self.method = 'ode'
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -591,6 +607,8 @@ class ParamScan(Action):
         self.logspace = int(self.logspace)
         if self.logspace not in (0, 1):
             raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
+        if self.method not in ('ode', 'ssa', 'pla', 'nf'):
+            raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
 
         self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'
