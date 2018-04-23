@@ -934,7 +934,7 @@ class Trajectory(object):
         existing_pset = next(iter(self.trajectory.keys()))
         return pset.keys() == existing_pset.keys()
 
-    def add(self, pset, obj, name):
+    def add(self, pset, obj, name, append_file=None, first=False):
         """
         Adds a PSet to the fitting trajectory
 
@@ -952,14 +952,25 @@ class Trajectory(object):
             self.trajectory[pset] = obj
         self.names[pset] = name
 
+        if append_file:
+            with open(append_file, 'a') as af:
+                if first:
+                    af.write(self._traj_write_header())
+                af.write(self._traj_entry_format(pset))
+
+    def _traj_write_header(self):
+        header = next(iter(self.trajectory.keys())).keys_to_string()
+        return '#\tSimulation\tObj\t%s\n' % header
+
+    def _traj_entry_format(self, k):
+        return '\t%s\t%s\t%s\n' % (self.names[k], self.trajectory[k], k.values_to_string())
+
     def _write(self):
         """Writes the Trajectory in a tab-delimited format"""
-        s = ''
-        header = next(iter(self.trajectory.keys())).keys_to_string()
-        s += '#\tSimulation\tObj\t%s\n' % header
+        s = self._traj_write_header()
         num_output = 0
         for k in sorted(self.trajectory, key=self.trajectory.get):
-            s += '\t%s\t%s\t%s\n' % (self.names[k], self.trajectory[k], k.values_to_string())
+            s += self._traj_entry_format(k)
             num_output += 1
             if num_output == self.max_output:
                 break

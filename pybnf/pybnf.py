@@ -232,9 +232,11 @@ def main():
                 best_fit_obj = alg.trajectory.trajectory[best_fit_pset]
 
                 if best_fit_obj <= bootstrap_max_obj:
-                    completed_bootstrap_runs += 1
                     logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
-                    bootstrapped_psets.add(best_fit_pset, best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs)
+                    bootstrapped_psets.add(best_fit_pset, best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs,
+                                           config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
+                                           completed_bootstrap_runs == 0)
+                    completed_bootstrap_runs += 1
                     consec_failed_bootstrap_runs = 0
                 else:
                     consec_failed_bootstrap_runs += 1
@@ -247,7 +249,7 @@ def main():
                         raise PybnfError("20 consecutive bootstrap runs failed to achieve maximum allowable objective "
                                          "function values.  Check 'bootstrap_max_obj' configuration key")
 
-            bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
+            # bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
             print0('Bootstrapping complete')
 
         success = True
