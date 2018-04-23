@@ -123,8 +123,7 @@ def main():
                     ans = 'x'
                     while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
                         ans = input(
-                            'It looks like you may already have results in the specified output directory.  '
-                            'Overwrite? [y/n] (n) ')
+                            'Your specified output directory already exists. Overwrite? [y/n] (n) ')
                     if ans.lower() == 'y' or ans.lower() == 'yes':
                         logger.info('Overwriting existing output directory')
                         shutil.rmtree(config.config['output_dir'])
