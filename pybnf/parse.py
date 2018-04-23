@@ -1,4 +1,4 @@
-"""pybnf.parse: grammar and methods for parsing the configuration file"""
+"""Grammar and methods for parsing the configuration file"""
 
 
 from .printing import PybnfError, print1
