@@ -257,6 +257,7 @@ class Algorithm(object):
         self.job_group_dir = dict()
         self.fail_count = 0
         self.success_count = 0
+        self.max_iterations = config.config['max_iterations']
 
         logger.debug('Creating output directory')
         if not os.path.isdir(self.config.config['output_dir']):
@@ -510,6 +511,13 @@ class Algorithm(object):
         return self.config.config['backup_every'] * self.config.config['population_size'] * \
             self.config.config['smoothing']
 
+    def add_iterations(self, n):
+        """
+        Adds n additional iterations to the algorithm.
+        May be overridden in subclasses that don't use self.max_iterations to track the iteration count
+        """
+        self.max_iterations += n
+
     def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
         """Main loop for executing the algorithm"""
 
@@ -536,6 +544,7 @@ class Algorithm(object):
         logger.debug('Generating initial parameter sets')
         if resume:
             psets = resume
+            logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
         else:
             psets = self.start_run()
         pending_psets = set(psets)
@@ -628,10 +637,11 @@ class Algorithm(object):
         if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
             # End of fitting; delete unneeded files
             try:
-                os.remove('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'])
-                logger.info('Deleted pickled algorithm')
+                os.rename('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'],
+                          '%s/Results/alg_finished.bp' % self.config.config['output_dir'])
+                logger.info('Moved pickled algorithm to alg_finished')
             except OSError:
-                logger.warning('Tried to delete pickled algorithm, but it was not found')
+                logger.warning('Tried to move pickled algorithm, but it was not found')
             if self.config.config['delete_old_files'] >= 1:
                 shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
 
@@ -826,6 +836,9 @@ class ParticleSwarm(Algorithm):
             return 'STOP'
 
         return [new_pset]
+
+    def add_iterations(self, n):
+        self.max_evals += n * self.config.config['population_size']
 
 
 class DifferentialEvolution(Algorithm):
@@ -1100,11 +1113,11 @@ class ScatterSearch(Algorithm):
         super(ScatterSearch, self).__init__(config)
 
         self.popsize = config.config['population_size']
-        self.maxiters = config.config['max_iterations']
+        self.max_iterations = config.config['max_iterations']
         if 'reserve_size' in config.config:
             self.reserve_size = config.config['reserve_size']
         else:
-            self.reserve_size = self.maxiters
+            self.reserve_size = self.max_iterations
         if 'init_size' in config.config:
             self.init_size = config.config['init_size']
             if self.init_size < self.popsize:
@@ -1130,7 +1143,7 @@ class ScatterSearch(Algorithm):
 
     def start_run(self):
         print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
-               (self.popsize, self.popsize * (self.popsize - 1), self.maxiters))
+               (self.popsize, self.popsize * (self.popsize - 1), self.max_iterations))
         # Generate big number = 10 * variable_count (or user's chosen init_size) initial individuals.
         if self.config.config['initialization'] == 'lh':
             psets = self.random_latin_hypercube_psets(self.init_size)
@@ -1214,9 +1227,9 @@ class ScatterSearch(Algorithm):
             self.refs = sorted(self.refs, key=lambda x: x[1])
             logger.info('Iteration %i' % self.iteration)
             if self.iteration % 10 == 0:
-                print1('Completed iteration %i of %i' % (self.iteration, self.maxiters))
+                print1('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
             else:
-                print2('Completed iteration %i of %i' % (self.iteration, self.maxiters))
+                print2('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
             print2('Current scores: ' + str([x[1] for x in self.refs]))
             print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
 
@@ -1224,7 +1237,7 @@ class ScatterSearch(Algorithm):
                 self.output_results()
 
             self.iteration += 1
-            if self.iteration == self.maxiters:
+            if self.iteration == self.max_iterations:
                 return 'STOP'
 
             # 3) Do the combination antics to generate new candidates
@@ -1312,6 +1325,7 @@ class BayesAlgorithm(Algorithm):
         self.load_priors()
 
         self.samples_file = None # Initialize later.
+        self.staged = []  # Used only when resuming a run and adding iterations
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1428,6 +1442,11 @@ class BayesAlgorithm(Algorithm):
                 return []
 
         proposed_pset.name = 'iter%irun%i' % (self.iteration[index], index)
+        # Note self.staged is empty unless we just resumed a run with added iterations and need to restart chains.
+        if len(self.staged) != 0:
+            toreturn = [proposed_pset] + self.staged
+            self.staged = []
+            return toreturn
         return [proposed_pset]
 
     def try_to_choose_new_pset(self, index):
@@ -1651,6 +1670,18 @@ class BayesAlgorithm(Algorithm):
         super().cleanup()
         self.update_histograms('_end')
 
+    def add_iterations(self, n):
+        oldmax = self.max_iterations
+        self.max_iterations += n
+        # Any chains that already completed need to be restarted with a new proposed parameter set
+        for index in range(self.num_parallel):
+            if self.iteration[index] >= oldmax:
+                ps = self.try_to_choose_new_pset(index)
+                if ps:
+                    # Add to a list of new psets to run that will be submitted when the first result comes back.
+                    ps.name = 'iter%irun%i' % (self.iteration[index], index)
+                    logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
+                    self.staged.append(ps)
 
 class SimplexAlgorithm(Algorithm):
 
