@@ -81,23 +81,23 @@ def main():
 
         continue_file = None
         if cmdline_args.resume is not None:
-            if os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp'):
-                continue_file = config.config['output_dir'] + '/Simulations/alg_backup.bp'
-            elif os.path.exists(config.config['output_dir'] + '/Results/alg_finished.bp'):
+            if os.path.exists(config.config['output_dir'] + '/alg_backup.bp'):
+                continue_file = config.config['output_dir'] + '/alg_backup.bp'
+            elif os.path.exists(config.config['output_dir'] + '/alg_finished.bp'):
                 if cmdline_args.resume <= 0:
                     raise PybnfError('The fitting run saved in %s already finished. If you want to continue the '
                                      'fitting with more iterations, pass a number of iterations with the '
                                      '--resume flag.' % config.config['output_dir'])
-                continue_file = config.config['output_dir'] + '/Results/alg_finished.bp'
+                continue_file = config.config['output_dir'] + '/alg_finished.bp'
             else:
                 raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir']))
-        elif os.path.exists(config.config['output_dir'] + '/Simulations/alg_backup.bp') and not cmdline_args.overwrite:
+        elif os.path.exists(config.config['output_dir'] + '/alg_backup.bp') and not cmdline_args.overwrite:
             ans = 'x'
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
                 ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
             if ans.lower() in ('y', 'yes', ''):
                 logger.info('Resuming a previous run')
-                continue_file = config.config['output_dir'] + '/Simulations/alg_backup.bp'
+                continue_file = config.config['output_dir'] + '/alg_backup.bp'
                 cmdline_args.resume = 0
 
         if continue_file:

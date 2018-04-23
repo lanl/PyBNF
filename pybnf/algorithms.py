@@ -518,7 +518,7 @@ class Algorithm(object):
 
         logger.info('Saving a backup of the algorithm')
         # Pickle the algorithm
-        picklepath = '%s/alg_backup.bp' % self.sim_dir
+        picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
         try:
             f = open(picklepath, 'wb')
             pickle.dump((self, pending_psets), f)
@@ -665,10 +665,12 @@ class Algorithm(object):
         if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
             # End of fitting; delete unneeded files
             try:
-                os.rename('%s/alg_backup.bp' % self.sim_dir, '%s/alg_finished.bp' % self.res_dir)
-                logger.info('Moved pickled algorithm to alg_finished')
+                os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
+                          '%s/alg_finished.bp' % self.config.config['output_dir'])
+                logger.info('Renamed pickled algorithm backup to alg_finished.bp')
             except OSError:
                 logger.warning('Tried to move pickled algorithm, but it was not found')
+
             if self.config.config['delete_old_files'] >= 1:
                 shutil.rmtree(self.sim_dir)
 
