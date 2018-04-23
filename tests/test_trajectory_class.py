@@ -94,3 +94,8 @@ class TestTrajectory:
         traj.add(self.ps3, self.obj3, 'p3')
         s = traj._write()
         assert s == '#\tSimulation\tObj\tx\ty\tz\n\tp0\t0.0\t1.0\t2.0\t3.14\n\tp1\t1.0\t3.0\t700.3\t0.00052\n'
+
+    def test_load_trajectory(self):
+        traj = pset.Trajectory.load_trajectory('bngl_files/traj.txt', self.ps0, 1000)
+        assert len(traj.trajectory) == 16
+        assert traj.trajectory[traj.best_fit()] == 199.84014809103564

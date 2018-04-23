@@ -976,6 +976,27 @@ class Trajectory(object):
                 break
         return s
 
+    @staticmethod
+    def load_trajectory(filename, variables, max_output):
+        """Loads a Trajectory from file given Algorithm.variables information"""
+
+        logger.info('Loading trajectory from %s' % filename)
+        with open(filename) as f:
+            lines = f.readlines()
+        var_names = re.split('\s+', lines[0].strip('#').strip())[2:]
+
+        t = Trajectory(max_output)
+        for l in lines[1:]:
+            xs = re.split('\s+', l.strip())
+            name = xs[0]
+            obj = float(xs[1])
+            var_dict = {var_names[i]: float(x) for i, x in enumerate(xs[2:])}
+            pset = PSet([v.set_value(var_dict[v.name]) for v in variables])
+
+            t.add(pset, obj, name)
+
+        return t
+
     def write_to_file(self, filename):
         """
         Writes the Trajectory to a specified file
