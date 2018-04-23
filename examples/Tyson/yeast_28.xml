@@ -663,7 +663,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
             <bvar>
-              <ci> CDC20A </ci>
+              <ci> CDC20A_APCP </ci>
             </bvar>
             <bvar>
               <ci> CDC20A_APCP_T </ci>
@@ -729,13 +729,13 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                       </apply>
                     </apply>
                   </apply>
-                  <ci> CDC20A </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
               </apply>
               <apply>
                 <times/>
                 <ci> kd_20 </ci>
-                <ci> CDC20A </ci>
+                <ci> CDC20A_APCP </ci>
               </apply>
             </apply>
           </lambda>
@@ -873,7 +873,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
             <bvar>
-              <ci> CDC20A </ci>
+              <ci> CDC20A_APCP </ci>
             </bvar>
             <bvar>
               <ci> CDC20A_APC </ci>
@@ -904,7 +904,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <apply>
                   <times/>
                   <ci> kd_b2_20 </ci>
-                  <ci> CDC20A </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
                 <apply>
                   <times/>
@@ -1285,7 +1285,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
             <bvar>
-              <ci> CDC20A </ci>
+              <ci> CDC20A_APCP </ci>
             </bvar>
             <bvar>
               <ci> CDC20A_APC </ci>
@@ -1310,7 +1310,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <apply>
                   <times/>
                   <ci> kd_b5_20 </ci>
-                  <ci> CDC20A </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
                 <apply>
                   <times/>
@@ -1685,7 +1685,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
             <bvar>
-              <ci> CDC20A </ci>
+              <ci> CDC20A_APCP </ci>
             </bvar>
             <bvar>
               <ci> CDC20A_APC </ci>
@@ -1700,7 +1700,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <ci> kd_pds_20_i </ci>
             </bvar>
             <bvar>
-              <ci> ks_pds_20 </ci>
+              <ci> kd_pds_20 </ci>
             </bvar>
             <apply>
               <times/>
@@ -1709,8 +1709,8 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <ci> kd_pds </ci>
                 <apply>
                   <times/>
-                  <ci> ks_pds_20 </ci>
-                  <ci> CDC20A </ci>
+                  <ci> kd_pds_20 </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
                 <apply>
                   <times/>
@@ -2061,7 +2061,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </COPASI>
         </annotation>
       </species>
-      <species metaid="COPASI16" id="CDC20A" name="CDC20A_APCP" compartment="cell" initialConcentration="0.26" boundaryCondition="false" constant="false">
+      <species metaid="COPASI16" id="CDC20A_APCP" name="CDC20A_APCP" compartment="cell" initialConcentration="0.26" boundaryCondition="false" constant="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -2698,7 +2698,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
       <parameter id="ki_px_p1" name="ki_px_p1" value="6.69" constant="true"/>
       <parameter id="ks_pds" name="ks_pds" value="0.0467" constant="true"/>
       <parameter id="kd_pds" name="kd_pds" value="0.0144" constant="true"/>
-      <parameter id="ks_pds_20" name="kd_pds_20" value="3.04" constant="true"/>
+      <parameter id="kd_pds_20" name="kd_pds_20" value="3.04" constant="true"/>
       <parameter id="ka_15" name="ka_15" value="0.709" constant="true"/>
       <parameter id="ka_15_14" name="ka_15_14" value="7.38" constant="true"/>
       <parameter id="ki_15" name="ki_15" value="0.894" constant="true"/>
@@ -3172,7 +3172,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <apply>
                   <times/>
                   <ci> kd_b5_20 </ci>
-                  <ci> CDC20A </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
                 <apply>
                   <times/>
@@ -3210,7 +3210,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <apply>
                   <times/>
                   <ci> kd_b2_20 </ci>
-                  <ci> CDC20A </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
                 <apply>
                   <times/>
@@ -3282,8 +3282,8 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <ci> kd_pds </ci>
                 <apply>
                   <times/>
-                  <ci> ks_pds_20 </ci>
-                  <ci> CDC20A </ci>
+                  <ci> kd_pds_20 </ci>
+                  <ci> CDC20A_APCP </ci>
                 </apply>
                 <apply>
                   <times/>
@@ -3819,7 +3819,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           <speciesReference species="CLB5T" stoichiometry="1"/>
         </listOfReactants>
         <listOfModifiers>
-          <modifierSpeciesReference species="CDC20A"/>
+          <modifierSpeciesReference species="CDC20A_APCP"/>
           <modifierSpeciesReference species="CDC20A_APC"/>
         </listOfModifiers>
         <kineticLaw>
@@ -3829,7 +3829,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <ci> cell </ci>
               <apply>
                 <ci> Rate_Law_for_Clb5T_Degr_1 </ci>
-                <ci> CDC20A </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> CDC20A_APC </ci>
                 <ci> CLB5T </ci>
                 <ci> kd_b5 </ci>
@@ -3895,7 +3895,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           <speciesReference species="CLB2T" stoichiometry="1"/>
         </listOfReactants>
         <listOfModifiers>
-          <modifierSpeciesReference species="CDC20A"/>
+          <modifierSpeciesReference species="CDC20A_APCP"/>
           <modifierSpeciesReference species="CDC20A_APC"/>
           <modifierSpeciesReference species="CDH1A"/>
         </listOfModifiers>
@@ -3906,7 +3906,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <ci> cell </ci>
               <apply>
                 <ci> Rate_Law_for_Clb2T_Degr_1 </ci>
-                <ci> CDC20A </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> CDC20A_APC </ci>
                 <ci> CDH1A </ci>
                 <ci> CLB2T </ci>
@@ -4261,7 +4261,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </COPASI>
         </annotation>
         <listOfProducts>
-          <speciesReference species="CDC20A" stoichiometry="1"/>
+          <speciesReference species="CDC20A_APCP" stoichiometry="1"/>
         </listOfProducts>
         <listOfModifiers>
           <modifierSpeciesReference species="CDC20A_APCP_T"/>
@@ -4275,7 +4275,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <ci> cell </ci>
               <apply>
                 <ci> Rate_Law_for_CDC20A_APCP_Synth_1 </ci>
-                <ci> CDC20A </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> CDC20A_APCP_T </ci>
                 <ci> ORI </ci>
                 <ci> SPN </ci>
@@ -4521,7 +4521,7 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           <speciesReference species="PDS1T" stoichiometry="1"/>
         </listOfReactants>
         <listOfModifiers>
-          <modifierSpeciesReference species="CDC20A"/>
+          <modifierSpeciesReference species="CDC20A_APCP"/>
           <modifierSpeciesReference species="CDC20A_APC"/>
         </listOfModifiers>
         <kineticLaw>
@@ -4531,12 +4531,12 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <ci> cell </ci>
               <apply>
                 <ci> Rate_Law_for_PDS1T_Degr_1 </ci>
-                <ci> CDC20A </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> CDC20A_APC </ci>
                 <ci> PDS1T </ci>
                 <ci> kd_pds </ci>
                 <ci> kd_pds_20_i </ci>
-                <ci> ks_pds_20 </ci>
+                <ci> kd_pds_20 </ci>
               </apply>
             </apply>
           </math>
