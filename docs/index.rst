@@ -14,10 +14,11 @@ workstations as well as distributed computing systems using the SLURM queueing m
 .. _SBML: http://sbml.org/Main_Page
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: Contents:
 
    installation
+   modules/index.rst
 
 
 Indices and tables
