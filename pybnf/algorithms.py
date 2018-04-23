@@ -589,6 +589,10 @@ class Algorithm(object):
 
             res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
+            if res.score < self.config.config['min_objective']:
+                logger.info('Minimum objective value achieved')
+                print1('Minimum objective value achieved')
+                break
             response = self.got_result(res)
             if response == 'STOP':
                 logger.info("Stop criterion satisfied")
