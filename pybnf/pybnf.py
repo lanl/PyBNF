@@ -101,12 +101,16 @@ def main():
                 cmdline_args.resume = 0
 
         if continue_file:
-            # TODO check if resuming bootstrapping
             # Restart the loaded algorithm
             logger.info('Reloading algorithm')
             f = open(continue_file, 'rb')
             alg, pending = pickle.load(f)
             config = alg.config
+
+            if alg.bootstrap_number is not None and cmdline_args.resume is not None:
+                if cmdline_args.resume > 0:
+                    raise PybnfError("Cannot increase the number of iterations in a boostrapping run")
+
             alg.add_iterations(cmdline_args.resume)
             f.close()
             if isinstance(alg, algs.SimplexAlgorithm):
@@ -195,8 +199,23 @@ def main():
 
             if config.config['bootstrap_max_obj']:
                 bootstrap_max_obj = config.config['bootstrap_max_obj']
-            else:
+            elif alg.bootstrap_number is None:
                 bootstrap_max_obj = alg.trajectory.trajectory[alg.trajectory.best_fit()]
+                logger.info('Using best fit objective function from main fitting run for maximum allowable '
+                            'objective function in bootstrapping runs')
+            else:
+                try:
+                    with open(config.config['output_dir'] + '/Results/sorted_params_final.txt') as f:
+                        f.readline()
+
+                        import re
+                        bootstrap_max_obj = float(re.split('\t', f.readline().strip())[1])
+                    logger.info('Using best fit objective function from main fitting run for maximum allowable '
+                                'objective function in bootstrapping runs')
+                except FileNotFoundError:
+                    logger.error("Maximum allowable objective function not specified in configuration file and no "
+                                 "complete fitting run found")
+                    raise PybnfError("Could not determine maximum allowable objective function for bootstrapping")
 
             num_to_bootstrap = config.config['bootstrap']
             bootstrapped_psets = Trajectory(num_to_bootstrap)

@@ -273,6 +273,8 @@ class Algorithm(object):
         logger.debug('Initializing models')
         self.model_list = self._initialize_models()
 
+        self.bootstrap_number = None
+
     def reset(self, bootstrap):
         """
         Resets the Algorithm, keeping loaded variables and models
@@ -290,6 +292,8 @@ class Algorithm(object):
         self.success_count = 0
 
         if bootstrap is not None:
+            self.bootstrap_number = bootstrap
+
             self.sim_dir = self.config.config['output_dir'] + '/Simulations-boot%s' % bootstrap
             os.mkdir(self.sim_dir)
             self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
