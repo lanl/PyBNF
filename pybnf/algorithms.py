@@ -669,7 +669,7 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
 
-        if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
+        if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             try:
                 os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],

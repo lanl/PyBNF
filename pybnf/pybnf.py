@@ -107,9 +107,13 @@ def main():
             alg, pending = pickle.load(f)
             config = alg.config
 
-            if alg.bootstrap_number is not None and cmdline_args.resume is not None:
-                if cmdline_args.resume > 0:
+            if alg.bootstrap_number is not None:
+                print0('Resuming a bootstrapping run')
+                logger.info('Resuming a bootstrapping run')
+                if cmdline_args.resume > 0 and cmdline_args.resume is not None:
                     raise PybnfError("Cannot increase the number of iterations in a boostrapping run")
+            else:
+                print0('Resuming a fitting run')
 
             alg.add_iterations(cmdline_args.resume)
             f.close()
@@ -192,11 +196,13 @@ def main():
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
                 simplex.run(log_prefix, scheduler_node)
 
-        print0('Fitting complete')
+        if alg.bootstrap_number is None:
+            print0('Fitting complete')
 
         # Bootstrapping (optional)
         if config.config['bootstrap'] > 0:
 
+            # Bootstrapping setup
             if config.config['bootstrap_max_obj']:
                 bootstrap_max_obj = config.config['bootstrap_max_obj']
             elif alg.bootstrap_number is None:
@@ -218,8 +224,37 @@ def main():
                     raise PybnfError("Could not determine maximum allowable objective function for bootstrapping")
 
             num_to_bootstrap = config.config['bootstrap']
-            bootstrapped_psets = Trajectory(num_to_bootstrap)
             completed_bootstrap_runs = 0
+            if alg.bootstrap_number is None:
+                bootstrapped_psets = Trajectory(num_to_bootstrap)
+            else:  # Check if finished a resumed bootstrap fitting run
+                completed_bootstrap_runs += alg.bootstrap_number
+                if completed_bootstrap_runs == 0:
+                    bootstrapped_psets = Trajectory(num_to_bootstrap)
+                else:
+                    if completed_bootstrap_runs > 0:
+                        bootstrapped_psets = Trajectory.load_trajectory(config.config['output_dir'] +
+                                                                        '/Results/bootstrapped_parameter_sets.txt',
+                                                                        config.variables,
+                                                                        config.config['num_to_output'])
+
+                if alg.best_fit_obj <= bootstrap_max_obj:
+                    logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
+                    bootstrapped_psets.add(alg.trajectory.best_fit(), alg.best_fit_obj,
+                                           'bootstrap_run_%s' % completed_bootstrap_runs,
+                                           config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
+                                           completed_bootstrap_runs == 0)
+                    logger.info('Succesfully completed resumed bootstrapping run %s' % completed_bootstrap_runs)
+                    completed_bootstrap_runs += 1
+                else:
+                    shutil.rmtree(alg.res_dir)
+                    if os.path.exists(alg.sim_dir):
+                        shutil.rmtree(alg.sim_dir)
+                    print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
+                    logger.info('Resumed bootstrapping run %s did not achieve maximum allowable objective function '
+                                'value.  Retrying' % completed_bootstrap_runs)
+
+            # Run bootstrapping
             consec_failed_bootstrap_runs = 0
             while completed_bootstrap_runs < num_to_bootstrap:
                 alg.reset(bootstrap=completed_bootstrap_runs)
@@ -230,7 +265,7 @@ def main():
 
                 logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
                 print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
-                alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
+                alg.run(log_prefix, scheduler_node, debug=cmdline_args.debug_logging)
 
                 if config.config['refine'] == 1:
                     logger.debug('Refinement requested for best fit parameter set')
@@ -247,11 +282,10 @@ def main():
                         simplex.run(log_prefix, scheduler_node)
 
                 best_fit_pset = alg.trajectory.best_fit()
-                best_fit_obj = alg.trajectory.trajectory[best_fit_pset]
 
-                if best_fit_obj <= bootstrap_max_obj:
+                if alg.best_fit_obj <= bootstrap_max_obj:
                     logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
-                    bootstrapped_psets.add(best_fit_pset, best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs,
+                    bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs,
                                            config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
                                            completed_bootstrap_runs == 0)
                     completed_bootstrap_runs += 1
