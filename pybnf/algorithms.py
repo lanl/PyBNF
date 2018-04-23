@@ -1,4 +1,4 @@
-"""pybnf.algorithms: contains the Algorithm class and subclasses as well as support classes and functions"""
+"""Contains the Algorithm class and subclasses as well as support classes and functions for running simulations"""
 
 
 from distributed import as_completed

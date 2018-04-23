@@ -1,4 +1,4 @@
-"""pybnf.objective: defines objective functions used for evaluating points in parameter space"""
+"""Classes defining various objective functions used for evaluating points in parameter space"""
 
 
 from .printing import PybnfError, print1
