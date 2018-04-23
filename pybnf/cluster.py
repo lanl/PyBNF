@@ -1,4 +1,4 @@
-"""pybnf.cluster: functions for managing dask cluster setup and teardown"""
+"""Functions for managing dask cluster setup and teardown on distributed computing systems"""
 
 
 from .printing import PybnfError
@@ -49,6 +49,13 @@ def get_scheduler(config):
 
 
 def setup_cluster(node_string, out_dir):
+    """
+    Sets up a Dask cluster using the `dask-ssh` convenience script
+
+    :param node_string: A string composed of a list of compute nodes
+    :param out_dir: A directory for
+    :return: subprocess.Popen
+    """
     logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
     dask_ssh_proc = Popen('dask-ssh %s --log-directory %s' % (node_string, out_dir), shell=True, stdout=DEVNULL, stderr=STDOUT)
     time.sleep(10)
@@ -56,5 +63,11 @@ def setup_cluster(node_string, out_dir):
 
 
 def teardown_cluster(dsp):
+    """
+    Terminates the process running the `dask-ssh` script after completion of fitting run
+
+    :param dsp: subprocess.Popen
+    :return:
+    """
     logger.info('Closing dask-ssh subprocess')
     dsp.terminate()
