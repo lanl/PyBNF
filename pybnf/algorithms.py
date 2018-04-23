@@ -274,6 +274,7 @@ class Algorithm(object):
         self.model_list = self._initialize_models()
 
         self.bootstrap_number = None
+        self.best_fit_obj = None
 
     def reset(self, bootstrap):
         """
@@ -298,6 +299,8 @@ class Algorithm(object):
             os.mkdir(self.sim_dir)
             self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
             os.mkdir(self.res_dir)
+
+        self.best_fit_obj = None
 
     def _initialize_models(self):
         """
@@ -623,9 +626,9 @@ class Algorithm(object):
                 break
             response = self.got_result(res)
             if response == 'STOP':
-                best_fit_obj = self.trajectory.trajectory[self.trajectory.best_fit()]
-                logger.info("Stop criterion satisfied with objective function value of %s" % best_fit_obj)
-                print1("Stop criterion satisfied with objective function value of %s" % best_fit_obj)
+                self.best_fit_obj = self.trajectory.trajectory[self.trajectory.best_fit()]
+                logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
+                print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 break
             else:
                 new_jobs = []
