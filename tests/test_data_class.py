@@ -72,6 +72,43 @@ class TestData:
         cls.d1c = data.Data()
         cls.d1c.data = cls.d1c._read_file_lines(cls.data1c, '\s+')
 
+        cls.data1d = [
+            '# x    obs1    obs2    obs3\n',
+            ' 1 NaN   1   6\n',
+            ' 2 5   Inf   10\n'
+        ]
+        cls.d1d = data.Data()
+        cls.d1d.data = cls.d1d._read_file_lines(cls.data1d, '\s+')
+
+    def test_observer_pattern(self):
+        d = data.Data()
+        assert d.weights is None
+        assert d.data is None
+        d.data = np.arange(6).reshape(2,3)
+        assert d.weights.shape == d.data.shape
+        assert d.weights[0, 0] == 1
+        assert d.weights[0, 1] == 1
+        assert d.weights[0, 2] == 1
+        assert d.weights[1, 0] == 1
+        assert d.weights[1, 1] == 1
+        assert d.weights[1, 2] == 1
+
+    def test_valid_indices(self):
+        vidcs = self.d1d._valid_indices()
+        assert vidcs == [(0, 2), (0, 3), (1, 1), (1, 3)]
+
+    def test_gen_bootstrap_weights(self):
+        self.d1d.gen_bootstrap_weights()
+        print(self.d1d.weights)
+        assert self.d1d.weights[0, 0] == 0
+        assert self.d1d.weights[0, 1] == 0
+        assert self.d1d.weights[0, 2] >= 0
+        assert self.d1d.weights[0, 3] >= 0
+        assert self.d1d.weights[1, 0] == 0
+        assert self.d1d.weights[1, 1] >= 0
+        assert self.d1d.weights[1, 2] == 0
+        assert self.d1d.weights[1, 3] >= 0
+
     def test_comment_ignore(self):
         assert self.d1c.data.shape == (2, 4)
         assert self.d1c.data[0, 0] == 1
@@ -106,9 +143,10 @@ class TestData:
         npt.assert_allclose(self.d1['obs1'], self.d1.data[:, 1])
 
     def test_row_access(self):
-        assert np.array_equal(self.d0.get_row('time',0.), np.array([0.00000000e+00,1.20000000e+01,8.00000000e+00,6.00000000e+00,0.00000000e+00,1.60000000e+01]))
-        assert np.array_equal(self.d1.get_row('obs3',10.), np.array([2., 4., 2., 10.]))
-        assert self.d1.get_row('x',3.) is None
+        assert np.array_equal(self.d0.get_row('time', 0.), np.array(
+            [0.00000000e+00, 1.20000000e+01, 8.00000000e+00, 6.00000000e+00, 0.00000000e+00, 1.60000000e+01]))
+        assert np.array_equal(self.d1.get_row('obs3', 10.), np.array([2., 4., 2., 10.]))
+        assert self.d1.get_row('x', 3.) is None
 
     @raises(KeyError)
     def test_column_access_failure(self):
@@ -160,7 +198,7 @@ class TestData:
         d1b = copy.deepcopy(self.d1)
         d1b.normalize_to_peak(cols=[1, 3])
         npt.assert_allclose(d1b.data, np.array(
-            [[0., 3. / 4., 4., 5. / 10.], [1., 2. / 4., 3. , 6. / 10.], [2., 4. / 4., 2., 10. / 10.]]))
+            [[0., 3. / 4., 4., 5. / 10.], [1., 2. / 4., 3., 6. / 10.], [2., 4. / 4., 2., 10. / 10.]]))
 
     def test_zero_normalization(self):
         d0 = copy.deepcopy(self.d0)
@@ -173,7 +211,7 @@ class TestData:
              [1., -1. / np.std(self.d1.data[:, 1]), 0., -1. / np.std(self.d1.data[:, 3])],
              [2., 1. / np.std(self.d1.data[:, 1]), -1. / np.std(self.d1.data[:, 2]), 3. / np.std(self.d1.data[:, 3])]]))
         d1b = copy.deepcopy(self.d1)
-        d1b.normalize_to_zero(bc=False, cols=[1,3])
+        d1b.normalize_to_zero(bc=False, cols=[1, 3])
         npt.assert_allclose(d1b.data, np.array(
             [[0., 0., 4., -2. / np.std(self.d1.data[:, 3])],
              [1., -1. / np.std(self.d1.data[:, 1]), 3., -1. / np.std(self.d1.data[:, 3])],

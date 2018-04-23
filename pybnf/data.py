@@ -1,19 +1,33 @@
 """pybnf.data: class with methods to manage experimental and simulation data"""
 
 
+import logging
 import math
 import numpy as np
 import re
 from .printing import PybnfError
 
 
+logger = logging.getLogger(__name__)
+
+
 class Data(object):
     """Top level class for managing data"""
 
     def __init__(self, file_name=None, arr=None, named_arr=None):
+        """
+        Initializes a Data instance.  Must specify either a file name or an array
+
+        :param file_name:
+        :param arr:
+        """
         self.cols = dict()  # dict of column headers to column indices
-        self.data = None  # Numpy array for data
-        self.indvar = None # Name of the independent variable
+        self.headers = dict()  # dict of column indices to headers
+        self._data = None  # Numpy array for data
+        self._observers = []  # For implementing the observer pattern
+        self.weights = None  # Numpy array for bootstrapping weights
+        self.indvar = None  # Name of the independent variable
+        self.bind_to(self.update_weights)
         if file_name is not None:
             self.load_data(file_name)
         elif arr is not None:
@@ -23,6 +37,47 @@ class Data(object):
             # NamedArray is not pickleable, so we need to copy the contents into a regular array.
             self.data = np.array(named_arr)
             self.load_rr_header(named_arr.colnames)
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, data):
+        self._data = data
+        for callback in self._observers:
+            callback(self._data)
+
+    def bind_to(self, callback):
+        self._observers.append(callback)
+
+    def update_weights(self, data):
+        self.weights = np.ones(data.shape)
+
+    def _valid_indices(self):
+        """Finds indices in Data.data that are valid for bootstrap sampling"""
+        valid_indices = []
+        for i in range(self.data.shape[0]):
+            for j in range(1, self.data.shape[1]):
+                if re.search('_SD$', self.headers[j]):
+                    continue
+                if np.isfinite(self.data[i, j]):
+                    valid_indices.append((i, j))
+        return valid_indices
+
+    def gen_bootstrap_weights(self):
+        """
+        Generates a integer weight for each point in the set of dependent variables.  Equivalent
+        to sampling with replacement.  Weights are used when calculating the objective function
+        for bootstrapped data.  Used for experimental data sets
+
+        :return:
+        """
+        indices = np.array(self._valid_indices())
+        samples = indices[np.random.choice(indices.shape[0], size=indices.shape[0], replace=True)]
+        self.weights = np.zeros(self.data.shape)
+        for s in samples:
+            self.weights[s[0], s[1]] += 1
 
     def __getitem__(self, col_header):
         """
@@ -109,6 +164,7 @@ class Data(object):
         for c in header:
             l = len(self.cols)
             self.cols[c] = l
+            self.headers[l] = c
 
         data = []
         for i, l in enumerate(lines[1:]):
@@ -280,3 +336,7 @@ class Data(object):
                     # Convert to int indices
                     cols_i = [self.cols[c] for c in cols_i]
                 normalize_once(mi, cols_i)
+
+    def weights_to_file(self, file_name):
+        logger.info("Saving weights in file %s" % file_name)
+        np.savetxt(file_name, self.weights, fmt='%d', header='\t'.join(sorted(self.cols, key=self.cols.get)))

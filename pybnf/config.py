@@ -110,7 +110,8 @@ class Configuration(object):
         default = {
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 1000000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
-            'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf,
+            'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
+            'bootstrap_max_obj': None,
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002,

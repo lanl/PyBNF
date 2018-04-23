@@ -163,9 +163,9 @@ class ChiSquareObjective(SummationObjective):
                  "data file must include a _SD column corresponding to each experimental variable, giving the standard "
                  "deviations of that variable. " % col_name)
         exp_sigma = exp_data.data[exp_row, sd_col]
-        return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
+        return (1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.) * exp_data.weights[exp_row, exp_data.cols[col_name]]
 
-    def _check_columns(self, exp_cols, compare_cols):
+    def  _check_columns(self, exp_cols, compare_cols):
         """
         Check that all exp_cols are being read in compare_cols; give a warning if not.
         :param exp_cols: Iterable of all experimental data column names
@@ -197,7 +197,7 @@ class NormSumOfSquaresObjective(SummationObjective):
 
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        return ((sim_val - exp_val)/exp_val) ** 2.
+        return (((sim_val - exp_val)/exp_val) ** 2.) * exp_data.weights[exp_row, exp_data.cols[col_name]]
 
 
 class AveNormSumOfSquaresObjective(SummationObjective):
@@ -213,4 +213,4 @@ class AveNormSumOfSquaresObjective(SummationObjective):
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
+        return (((sim_val - exp_val) / self.aves[col_name]) ** 2.) * exp_data.weights[exp_row, exp_data.cols[col_name]]

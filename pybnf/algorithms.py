@@ -251,7 +251,7 @@ class Algorithm(object):
         self.exp_data = self.config.exp_data
         self.objective = self.config.obj
         logger.debug('Instantiating Trajectory object')
-        self.trajectory = Trajectory(config.config['num_to_output'])
+        self.trajectory = Trajectory(self.config.config['num_to_output'])
         self.job_id_counter = 0
         self.output_counter = 0
         self.job_group_dir = dict()
@@ -263,12 +263,44 @@ class Algorithm(object):
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
 
+        self.sim_dir = self.config.config['output_dir'] + '/Simulations'
+        self.res_dir = self.config.config['output_dir'] + '/Results'
+
         # Generate a list of variable names
         self.variables = self.config.variables
 
         # Store a list of all Model objects. Change this as needed for compatibility with other parts
         logger.debug('Initializing models')
         self.model_list = self._initialize_models()
+
+        self.bootstrap_number = None
+        self.best_fit_obj = None
+
+    def reset(self, bootstrap):
+        """
+        Resets the Algorithm, keeping loaded variables and models
+
+        :param bootstrap: The bootstrap number (None if not bootstrapping)
+        :type bootstrap: int or None
+        :return:
+        """
+        logger.info('Resetting Algorithm for another run')
+        self.trajectory = Trajectory(self.config.config['num_to_output'])
+        self.job_id_counter = 0
+        self.output_counter = 0
+        self.job_group_dir = dict()
+        self.fail_count = 0
+        self.success_count = 0
+
+        if bootstrap is not None:
+            self.bootstrap_number = bootstrap
+
+            self.sim_dir = self.config.config['output_dir'] + '/Simulations-boot%s' % bootstrap
+            os.mkdir(self.sim_dir)
+            self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
+            os.mkdir(self.res_dir)
+
+        self.best_fit_obj = None
 
     def _initialize_models(self):
         """
@@ -439,8 +471,7 @@ class Algorithm(object):
         if self.config.config['smoothing'] == 1:
             # Create a single job
             return [Job(self.model_list, params, job_id,
-                    self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
-                    bool(self.config.config['delete_old_files']))]
+                    self.sim_dir, self.config.config['wall_time_sim'], bool(self.config.config['delete_old_files']))]
         else:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
@@ -449,7 +480,7 @@ class Algorithm(object):
                 thisname = '%s_rep%i' % (job_id, i)
                 newnames.append(thisname)
                 newjobs.append(Job(self.model_list, params, thisname,
-                                   self.config.config['output_dir']+'/Simulations/', self.config.config['wall_time_sim'],
+                                   self.sim_dir, self.config.config['wall_time_sim'],
                                    bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
@@ -470,7 +501,7 @@ class Algorithm(object):
         if name == '':
             name = str(self.output_counter)
         self.output_counter += 1
-        filepath = '%s/Results/sorted_params_%s.txt' % (self.config.config['output_dir'], name)
+        filepath = '%s/sorted_params_%s.txt' % (self.res_dir, name)
         logger.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
 
@@ -478,7 +509,7 @@ class Algorithm(object):
         # Results/sorted_params.txt, overwriting the previous one.
         if self.config.config['delete_old_files'] >= 2:
             logger.debug("Overwriting previous 'sorted_params.txt'")
-            noname_filepath = '%s/Results/sorted_params.txt' % self.config.config['output_dir']
+            noname_filepath = '%s/sorted_params.txt' % self.res_dir
             if os.path.isfile(noname_filepath):
                 os.remove(noname_filepath)
             os.rename(filepath, noname_filepath)
@@ -494,7 +525,7 @@ class Algorithm(object):
 
         logger.info('Saving a backup of the algorithm')
         # Pickle the algorithm
-        picklepath = '%s/Simulations/alg_backup.bp' % self.config.config['output_dir']
+        picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
         try:
             f = open(picklepath, 'wb')
             pickle.dump((self, pending_psets), f)
@@ -595,8 +626,9 @@ class Algorithm(object):
                 break
             response = self.got_result(res)
             if response == 'STOP':
-                logger.info("Stop criterion satisfied")
-                print1('Stop criterion satisfied')
+                self.best_fit_obj = self.trajectory.trajectory[self.trajectory.best_fit()]
+                logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
+                print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 break
             else:
                 new_jobs = []
@@ -620,7 +652,7 @@ class Algorithm(object):
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save('%s/Results/%s_%s' % (self.config.config['output_dir'], to_save.name, best_name))
+            to_save.save('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
             if self.config.config['delete_old_files'] == 0 and isinstance(this_model, BNGLModel):
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':
@@ -630,24 +662,24 @@ class Algorithm(object):
                     if self.config.config['smoothing'] > 1:
                         best_name = best_name + '_rep0'  # Look for one specific replicate of the data
                     try:
-                        shutil.copy('%s/Simulations/%s/%s_%s_%s.%s' %
-                                    (self.config.config['output_dir'], best_name, m, best_name, suf, ext),
-                                    '%s/Results' % self.config.config['output_dir'])
+                        shutil.copy('%s/%s/%s_%s_%s.%s' % (self.sim_dir, best_name, m, best_name, suf, ext),
+                                    '%s' % self.res_dir)
                     except FileNotFoundError:
                         logger.error('Cannot find files corresponding to best fit parameter set')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
 
-        if isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1:
+        if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             try:
-                os.rename('%s/Simulations/alg_backup.bp' % self.config.config['output_dir'],
-                          '%s/Results/alg_finished.bp' % self.config.config['output_dir'])
-                logger.info('Moved pickled algorithm to alg_finished')
+                os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
+                          '%s/alg_finished.bp' % self.config.config['output_dir'])
+                logger.info('Renamed pickled algorithm backup to alg_finished.bp')
             except OSError:
                 logger.warning('Tried to move pickled algorithm, but it was not found')
+
             if self.config.config['delete_old_files'] >= 1:
-                shutil.rmtree('%s/Simulations' % self.config.config['output_dir'])
+                shutil.rmtree(self.sim_dir)
 
         logger.info("Fitting complete")
 
@@ -738,6 +770,16 @@ class ParticleSwarm(Algorithm):
         self.bests = [[None, np.inf]] * self.num_particles  # The best result for each particle: list of the
         # form [PSet, objective]
         self.global_best = [None, np.inf]  # The best result for the whole swarm
+        self.last_best = np.inf
+
+    def reset(self, bootstrap=None):
+        super(ParticleSwarm, self).reset(bootstrap)
+        self.nv = 0
+        self.num_evals = 0
+        self.swarm = []
+        self.pset_map = dict()
+        self.bests = [[None, np.inf]] * self.num_particles
+        self.global_best = [None, np.inf]
         self.last_best = np.inf
 
     def start_run(self):
@@ -913,6 +955,21 @@ class DifferentialEvolution(Algorithm):
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
 
         self.strategy = 'rand1'  # Customizable later
+
+    def reset(self, bootstrap=None):
+        super(DifferentialEvolution, self).reset(bootstrap)
+        self.island_map = dict()
+        self.iter_num = [0] * self.num_islands
+        self.waiting_count = []
+        self.individuals = []
+        self.proposed_individuals = []
+        self.fitnesses = []
+        self.migration_ready = [0] * self.num_islands
+        self.migration_done = [0] * self.num_islands
+
+        self.migration_transit = dict()
+        self.migration_indices = dict()
+        self.migration_perms = dict()
 
     def start_run(self):
         if self.num_islands == 1:
@@ -1145,6 +1202,16 @@ class ScatterSearch(Algorithm):
         self.local_mins = [] # (Pset, score) pairs that were stuck for 5 gens, and so replaced.
         self.reserve = []
 
+    def reset(self, bootstrap=None):
+        super(ScatterSearch, self).reset(bootstrap)
+        self.pending = dict()
+        self.received = dict()
+        self.refs = []
+        self.stuckcounter = dict()
+        self.iteration = 0
+        self.local_mins = []
+        self.reserve = []
+
     def start_run(self):
         print2('Running Scatter Search with population size %i (%i simulations per iteration) for %i iterations' %
                (self.popsize, self.popsize * (self.popsize - 1), self.max_iterations))
@@ -1330,6 +1397,16 @@ class BayesAlgorithm(Algorithm):
 
         self.samples_file = None # Initialize later.
         self.staged = []  # Used only when resuming a run and adding iterations
+
+    def reset(self, bootstrap=None):
+        super(BayesAlgorithm, self).reset(bootstrap)
+
+        self.current_pset = None
+        self.ln_current_P = None
+        self.iteration = [0] * self.num_parallel
+
+        self.wait_for_sync = [False] * self.num_parallel
+        self.samples_file = None
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1735,6 +1812,18 @@ class SimplexAlgorithm(Algorithm):
         self.centroids = []  # Contains dicts containing the centroid of all simplex points except the one that I am
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
+
+    def reset(self, bootstrap=None):
+        super(SimplexAlgorithm, self).reset(bootstrap)
+        self.iteration = 0
+        self.simplex = []
+
+        self.stages = []
+        self.first_points = []
+        self.second_points = []
+        self.cases = []
+        self.centroids = []
+        self.pending = dict()
 
     def _parse_start_point(self):
         """
