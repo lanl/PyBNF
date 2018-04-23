@@ -81,6 +81,7 @@ class BNGLModel(Model):
         # Check for various things to fill out all of the following attributes needed for model writing
         self.generates_network = False
         self.generate_network_line = None
+        self.seeded = False
         self.actions = []
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
         param_names_set = set()
@@ -171,9 +172,7 @@ class BNGLModel(Model):
                         'simulate.*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
                     self.stochastic = True
                 if re.search('seed=>\d+', line):
-                    # There's probably a better way to handle this.
-                    print1("Warning: Your model file specifies the 'seed' argument. This means that if you are "
-                           "using the 'smoothing' feature, all of your replicates will come out the same.")
+                    self.seeded = True
                 self.actions.append(rawline)
 
             if re.match('end\s+[a-z][a-z\s]*', line.strip()):
