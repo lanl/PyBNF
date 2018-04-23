@@ -1,4 +1,4 @@
-"""pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
+"""Classes for storing models, parameter sets, and the fitting trajectory"""
 
 
 from .printing import print0, print1, PybnfError
@@ -10,8 +10,9 @@ import copy
 from subprocess import run, STDOUT
 from .data import Data
 import roadrunner as rr
-rr.Logger.disableLogging()
 
+
+rr.Logger.disableLogging()
 logger = logging.getLogger(__name__)
 
 
