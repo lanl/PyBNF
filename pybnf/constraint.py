@@ -1,8 +1,15 @@
+"""
+Classes for defining various constraints that can be applied to the fitting run.  Used when incorporating qualitative
+data into the fit
+"""
+
+
 from .printing import PybnfError
 import pyparsing as pp
 import numpy as np
 import re
 import logging
+
 
 logger = logging.getLogger(__name__)
 
