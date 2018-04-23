@@ -1,4 +1,4 @@
-"""pybnf.config: classes and methods for configuring the fit"""
+"""Classes and methods for configuring the fitting run"""
 
 
 from .data import Data
