@@ -115,28 +115,23 @@ def main():
         else:
             # Create output folders, checking for overwrites.
             if os.path.exists(config.config['output_dir']):
-                if os.path.isdir(config.config['output_dir']):
-                    if os.path.exists(config.config['output_dir'] + '/Results') or os.path.exists(
-                                    config.config['output_dir'] + '/Simulations') or os.path.exists(
-                                config.config['output_dir'] + '/Initialize'):
-                        if cmdline_args.overwrite:
-                            logger.info('Overwriting existing output directory')
-                            shutil.rmtree(config.config['output_dir'])
-                        else:
-                            logger.info("Output directory has subdirectories... querying user for overwrite permission")
-                            ans = 'x'
-                            while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                                ans = input(
-                                    'It looks like your output_dir already contains Results/, Simulations/, and/or '
-                                    'Initialize/ folders from a previous run. \n'
-                                    'Overwrite them with the current run? [y/n] (n) ')
-                            if ans.lower() == 'y' or ans.lower() == 'yes':
-                                logger.info('Overwriting existing output directory')
-                                shutil.rmtree(config.config['output_dir'])
-                            else:
-                                logger.info("Overwrite rejected... exiting")
-                                print('Quitting')
-                                exit(0)
+                if cmdline_args.overwrite:
+                    logger.info('Overwriting existing output directory')
+                    shutil.rmtree(config.config['output_dir'])
+                else:
+                    logger.info("Output directory already exists... querying user for overwrite permission")
+                    ans = 'x'
+                    while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                        ans = input(
+                            'It looks like you may already have results in the specified output directory.  '
+                            'Overwrite? [y/n] (n) ')
+                    if ans.lower() == 'y' or ans.lower() == 'yes':
+                        logger.info('Overwriting existing output directory')
+                        shutil.rmtree(config.config['output_dir'])
+                    else:
+                        logger.info("Overwrite rejected... exiting")
+                        print('Quitting')
+                        exit(0)
 
             os.makedirs(config.config['output_dir'] + '/Results')
             os.mkdir(config.config['output_dir'] + '/Simulations')
