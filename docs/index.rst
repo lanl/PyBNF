@@ -14,11 +14,25 @@ workstations as well as distributed computing systems using the SLURM queueing m
 .. _SBML: http://sbml.org/Main_Page
 
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 2
    :caption: Contents:
 
    installation
    config
+   config_keys
+   cluster
+   examples
+   troubleshooting
+   
+PyBNF Module Reference
+----------------------
+
+Detailed documentation of the PyBNF code base for advanced users
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Contents:
+   
    modules/index.rst
 
 
