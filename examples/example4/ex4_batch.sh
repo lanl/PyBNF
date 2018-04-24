@@ -18,4 +18,4 @@
 module load anaconda/Anaconda3
 
 # Run PyBNF
-pybnf -c examples/example3/example3.conf -t SLURM -o
+pybnf -c examples/example4/example4.conf -t SLURM -o
