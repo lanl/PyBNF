@@ -66,6 +66,17 @@ is to set the environment variable ``BNGPATH`` to the BioNetGen directory using 
 which can also be made permanent as of your next login, by copying above command into the file ``.bash_profile``
 in your home directory.
 
+SBML
+^^^^
+PyBNF runs simulations of `SBML`_ models using `libroadrunner`_, which is installed automatically through ``pip`` as part of 
+PyBNF installation. 
+
+To work with SBML files, it is useful to install software such as `Copasi`_ that is capable of reading and writing models in 
+SBML format. 
+
 
 .. _Anaconda: https://www.anaconda.com/download
 .. _BioNetGen: http://www.bionetgen.org
+.. _SBML: http://sbml.org/
+.. _libroadrunner: http://libroadrunner.org/
+.. _Copasi: http://copasi.org/
