@@ -18,6 +18,7 @@ workstations as well as distributed computing systems using the SLURM queueing m
    :caption: Contents:
 
    installation
+   config
    modules/index.rst
 
 
