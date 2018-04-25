@@ -954,7 +954,11 @@ class DifferentialEvolution(Algorithm):
         self.migration_perms = dict()  # How do we rearrange between islands on migration i?
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
 
-        self.strategy = 'rand1'  # Customizable later
+        self.strategy = config.config['de_strategy']
+        options = ('rand1', 'rand2i', 'best1', 'best2', 'all1', 'all2')
+        if self.strategy not in options:
+            raise PybnfError('Invalid differential evolution strategy "%s". Options are: %s' %
+                             (self.strategy, ','.join(options)))
 
     def reset(self, bootstrap=None):
         super(DifferentialEvolution, self).reset(bootstrap)
@@ -1102,8 +1106,14 @@ class DifferentialEvolution(Algorithm):
                     del self.migration_indices[migration_num]
 
             # Set up the next generation
+            best = np.argmin(self.fitnesses[island])
             for jj in range(self.num_per_island):
-                new_pset = self.new_individual(island)
+                if 'best' in self.strategy:
+                    new_pset = self.new_individual(island, best)
+                elif 'all' in self.strategy:
+                    new_pset = self.new_individual(island, jj)
+                else:
+                    new_pset = self.new_individual(island, None)
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
@@ -1132,28 +1142,46 @@ class DifferentialEvolution(Algorithm):
             # Add no new jobs, wait for this generation to complete.
             return []
 
-    def new_individual(self, island):
+    def new_individual(self, island, base_index=None):
         """
         Create a new individual for the specified island, according to the set strategy
 
         :param island:
+        :param base_index: The index to use for the new individual, or None for a random index.
         :return:
         """
 
-        # Choose a starting parameter set (either the best one, or a random one, or the one we want to replace)
-        # and others to cross over
-        if self.strategy in ['rand1']:
-            picks = np.random.choice(np.arange(len(self.individuals[island])), 3, replace=False)
-            base = self.individuals[island][picks[0]]
-            others = [self.individuals[island][p] for p in picks[1:]]
+        # Choose a starting parameter set (either a random one or the base_index specified)
+        # and others to cross over (always random)
+
+        if '1' in self.strategy:
+            pickn = 3
         else:
-            raise NotImplementedError('Please select one of the strategies from our extensive list of options: rand1')
+            pickn = 5
+
+        # Choose pickn random unique indices, or if base_index was given, choose base_index followed by pickn-1 unique
+        # indices
+        picks = np.random.choice(len(self.individuals[island]), pickn, replace=False)
+        if base_index is not None:
+            if base_index in picks:
+                # If we accidentally picked base_index, replace it with picks[0], preserving uniqueness in our list
+                iswitch = list(picks).index(base_index)
+                picks[iswitch] = picks[0]
+            # Now overwrite picks[0] with base_index. If we have base_index, picks[0] was an "extra pick" we only needed
+            # in case we sampled base_index and had to replace it.
+            picks[0] = base_index
+        base = self.individuals[island][picks[0]]
+        others = [self.individuals[island][p] for p in picks[1:]]
 
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
         for p in base:
             if np.random.random() < self.mutation_rate:
-                update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                if '1' in self.strategy:
+                    update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                else:
+                    update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name)) +\
+                                 self.mutation_factor * others[2].get_param(p.name).diff(others[3].get_param(p.name))
                 new_pset_vars.append(p.add(update_val))
             else:
                 new_pset_vars.append(p)
