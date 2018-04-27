@@ -91,4 +91,4 @@ class TestJob(object):
         res = self.job_to.run_simulation()
         assert res.fail_type == 0
         a.add_to_trajectory(res)
-        assert -a.trajectory.trajectory[0][0] == np.inf
+        assert a.trajectory.best_score() == np.inf

@@ -97,6 +97,6 @@ class TestTrajectory:
 
     def test_load_trajectory(self):
         traj = pset.Trajectory.load_trajectory('bngl_files/traj.txt', self.ps0, 1000)
-        assert len(traj.trajectory) == 16
-        assert -max(traj.trajectory)[0] == 199.84014809103564
+        assert len(traj._trajectory) == 16
+        assert -max(traj._trajectory)[0] == 199.84014809103564
         assert traj.best_fit_name() == 'iter2p1'
