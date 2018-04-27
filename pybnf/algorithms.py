@@ -831,6 +831,13 @@ class ParticleSwarm(Algorithm):
                 self.nv += 1
             self.last_best = self.global_best[1]
 
+            # Check stop criterion
+            if self.config.config['v_stop'] > 0:
+                max_speed = max([abs(v) for p in self.swarm for v in p[1].values()])
+                if max_speed < self.config.config['v_stop']:
+                    logger.info('Stopping particle swarm because the max speed is %s' % max_speed)
+                    return 'STOP'
+
         if self.num_evals % self.output_every == 0:
             self.output_results()
 
@@ -2028,7 +2035,7 @@ class SimplexAlgorithm(Algorithm):
                 reflections.append(new_pset)
                 self.pending[new_pset.name] = ai
             # Check for stop criterion due to moves being too small
-            if max_diff < self.config['simplex_stop_tol']:
+            if max_diff < self.config.config['simplex_stop_tol']:
                 logger.info('Stopping simplex because the maximum move attempted this iteration was %s' % max_diff)
                 return 'STOP'
 
