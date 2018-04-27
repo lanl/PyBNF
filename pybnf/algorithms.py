@@ -2006,6 +2006,7 @@ class SimplexAlgorithm(Algorithm):
             self.centroids = []
             # Sum of each param value, to help take the reflections
             sums = self.get_sums() # Returns in log space for log variables
+            max_diff = 0.
             for ai in range(self.parallel_count):
                 a = self.simplex[-ai-1][1]
                 new_vars = []
@@ -2020,11 +2021,16 @@ class SimplexAlgorithm(Algorithm):
                     # new_dict[v] = centroid + self.alpha * (centroid - a[v])
                     new_var = v.set_value(self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v.name], v))
                     new_vars.append(new_var)
+                    max_diff = max(max_diff, abs(new_var.diff(a.get_param(v.name))))
                 self.centroids.append(this_centroid)
                 new_pset = PSet(new_vars)
                 new_pset.name = 'simplex_iter%i_pt%i' % (self.iteration, ai)
                 reflections.append(new_pset)
                 self.pending[new_pset.name] = ai
+            # Check for stop criterion due to moves being too small
+            if max_diff < self.config['simplex_stop_tol']:
+                logger.info('Stopping simplex because the maximum move attempted this iteration was %s' % max_diff)
+                return 'STOP'
 
             # Reset data structures to track this iteration
             self.stages = [1] * len(reflections)
