@@ -119,8 +119,8 @@ class TestSimplex:
         # Iteration was unproductive, so expect to shrink, should have gotten 3 new psets to complete that shrink
         assert len(final_ps) == 3
         np.testing.assert_almost_equal(final_ps[0]['v1__FREE__'], 7. / 3.)
-        np.testing.assert_almost_equal(final_ps[1]['v2__FREE__'], 10. / 3.)
-        np.testing.assert_almost_equal(final_ps[2]['v3__FREE__'], 4. + 5. / 18.)
+        np.testing.assert_almost_equal(final_ps[1]['v2__FREE__'], 17. / 6.)
+        np.testing.assert_almost_equal(final_ps[2]['v3__FREE__'], 77. / 18.)
 
     def test_start_log(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.logconfig))
@@ -206,5 +206,5 @@ class TestSimplex:
         # Iteration was unproductive, so expect to shrink, should have gotten 3 new psets to complete that shrink
         assert len(final_ps) == 3
         np.testing.assert_almost_equal(final_ps[0]['v1__FREE__'], 10**(7. / 3.))
-        np.testing.assert_almost_equal(final_ps[1]['v2__FREE__'], 10**(10. / 3.))
-        np.testing.assert_almost_equal(final_ps[2]['v3__FREE__'], 10**(4. + 5. / 18.))
+        np.testing.assert_almost_equal(final_ps[1]['v2__FREE__'], 10**(17. / 6.))
+        np.testing.assert_almost_equal(final_ps[2]['v3__FREE__'], 10**(77. / 18.))
