@@ -636,7 +636,7 @@ class Algorithm(object):
                 break
             response = self.got_result(res)
             if response == 'STOP':
-                self.best_fit_obj = self.trajectory.trajectory[self.trajectory.best_fit()]
+                self.best_fit_obj = self.trajectory.best_score()
                 logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 break

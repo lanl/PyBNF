@@ -53,13 +53,13 @@ class TestTrajectory:
     def test_build(self):
         traj = pset.Trajectory(1000000)
         traj.add(self.ps0, self.obj0, 'p0')
-        assert len(traj.trajectory) == 1
+        assert len(traj._trajectory) == 1
         traj.add(self.ps1, self.obj1, 'p1')
-        assert len(traj.trajectory) == 2
+        assert len(traj._trajectory) == 2
         traj.add(self.ps2, self.obj2, 'p2')
-        assert len(traj.trajectory) == 3
+        assert len(traj._trajectory) == 3
         traj.add(self.ps3, self.obj3, 'p3')
-        assert len(traj.trajectory) == 4
+        assert len(traj._trajectory) == 4
 
     @raises(Exception)
     def test_incompatible_psets(self):

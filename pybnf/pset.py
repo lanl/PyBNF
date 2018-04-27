@@ -921,11 +921,11 @@ class Trajectory(object):
     """
 
     def __init__(self, max_output):
-        # self.trajectory is a heap-based priority queue
+        # self._trajectory is a heap-based priority queue
         # Contains tuples (-score, name, PSet) - allows us to efficiently toss the worst PSet when we get a new one
         # Note we use -score so popping the worst entry is fast
         # As long as you follow the rule of no duplicate names, this is safe and won't compare PSets.
-        self.trajectory = []
+        self._trajectory = []
         self.max_output = max_output
 
     def _valid_pset(self, pset):
@@ -935,7 +935,7 @@ class Trajectory(object):
         :param pset: A PSet instance
         :return: bool
         """
-        existing_pset = self.trajectory[0][2]
+        existing_pset = self._trajectory[0][2]
         return pset.keys() == existing_pset.keys()
 
     def add(self, pset, obj, name, append_file=None, first=False):
@@ -946,18 +946,18 @@ class Trajectory(object):
         :param obj: The objective function value upon executing the model at this point in parameter space
         :raises: Exception
         """
-        if len(self.trajectory) > 0:
+        if len(self._trajectory) > 0:
             if not self._valid_pset(pset):
                 raise ValueError("PSet %s has incompatible parameters" % pset)
         if np.isnan(obj):
             # Treat nan values as Inf in order to sort correctly
             obj = np.inf
 
-        if len(self.trajectory) < self.max_output:
-            heapq.heappush(self.trajectory, (-obj, name, pset))
+        if len(self._trajectory) < self.max_output:
+            heapq.heappush(self._trajectory, (-obj, name, pset))
         else:
             # Add the current pset, and throw away the worst one
-            heapq.heappushpop(self.trajectory, (-obj, name, pset))
+            heapq.heappushpop(self._trajectory, (-obj, name, pset))
 
         if append_file:
             with open(append_file, 'a') as af:
@@ -966,7 +966,7 @@ class Trajectory(object):
                 af.write(self._traj_entry_format((-obj, name, pset)))
 
     def _traj_write_header(self):
-        header = self.trajectory[0][2].keys_to_string()
+        header = self._trajectory[0][2].keys_to_string()
         return '#\tSimulation\tObj\t%s\n' % header
 
     def _traj_entry_format(self, entry):
@@ -979,7 +979,7 @@ class Trajectory(object):
         """Writes the Trajectory in a tab-delimited format"""
         s = self._traj_write_header()
         num_output = 0
-        for k in sorted(self.trajectory, reverse=True):
+        for k in sorted(self._trajectory, reverse=True):
             s += self._traj_entry_format(k)
             num_output += 1
             if num_output == self.max_output:
@@ -1023,7 +1023,7 @@ class Trajectory(object):
 
         :return: PSet
         """
-        return max(self.trajectory)[2]
+        return max(self._trajectory)[2]
 
     def best_fit_name(self):
         """
@@ -1032,7 +1032,14 @@ class Trajectory(object):
 
         :return: str
         """
-        return max(self.trajectory)[1]
+        return max(self._trajectory)[1]
+
+    def best_score(self):
+        """
+        Returns the best objective value in this trajectory
+        :return: float
+        """
+        return -max(self._trajectory)[0]
 
 
 class OutOfBoundsException(Exception):
