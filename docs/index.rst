@@ -20,6 +20,7 @@ workstations as well as distributed computing systems using the SLURM queueing m
    installation
    config
    config_keys
+   algorithms
    cluster
    examples
    troubleshooting
