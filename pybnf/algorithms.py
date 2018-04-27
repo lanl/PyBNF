@@ -537,9 +537,12 @@ class Algorithm(object):
             f = open(picklepath, 'wb')
             pickle.dump((self, pending_psets), f)
             f.close()
-        except IOError:
+        except IOError as e:
             logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
+            if e.strerror == 'Too many open files':
+                print0('Too many open files! See "Troubleshooting" in the documentation for how to deal with this '
+                       'problem.')
 
         # Restore the trajectory
         self.trajectory = trajectory_holder

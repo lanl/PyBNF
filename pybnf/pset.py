@@ -1013,9 +1013,16 @@ class Trajectory(object):
 
         :param filename: File to store Trajectory
         """
-        with open(filename, 'w') as f:
-            f.write(self._write())
-            f.close()
+        try:
+            with open(filename, 'w') as f:
+                f.write(self._write())
+                f.close()
+        except IOError as e:
+            logger.exception('Failed to save parameter sets to file')
+            print1('Failed to save parameter sets to file.\nSee log for more information')
+            if e.strerror == 'Too many open files':
+                print0('Too many open files! See "Troubleshooting" in the documentation for how to deal with this '
+                       'problem.')
 
     def best_fit(self):
         """
