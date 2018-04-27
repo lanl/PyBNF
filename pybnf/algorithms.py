@@ -589,6 +589,15 @@ class Algorithm(object):
         if resume:
             psets = resume
             logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
+            # Restore the Trajectory from file (the loaded algorithm starts with Trajectory = None)
+            try:
+                self.trajectory = Trajectory.load_trajectory(self.res_dir + '/sorted_params_backup.txt',
+                                                             self.config.variables, self.config.config['num_to_output'])
+            except IOError:
+                logger.exception('Failed to load trajectory from file')
+                print1('Failed to load Results/sorted_params_backup.txt . Still resuming your run, but when I save the '
+                       'best fits, it will only be the ones I\'ve seen since resuming.')
+                self.trajectory = Trajectory(self.config.config['num_to_output'])
         else:
             psets = self.start_run()
         pending_psets = set(psets)
