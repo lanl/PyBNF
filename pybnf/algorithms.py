@@ -500,7 +500,7 @@ class Algorithm(object):
         """
         if name == '':
             name = str(self.output_counter)
-        self.output_counter += 1
+            self.output_counter += 1
         filepath = '%s/sorted_params_%s.txt' % (self.res_dir, name)
         logger.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
@@ -524,6 +524,13 @@ class Algorithm(object):
         """
 
         logger.info('Saving a backup of the algorithm')
+        # Save a backup of the PSets
+        self.output_results(name='backup')
+
+        # Hide the Trajectory so it doesn't get pickled
+        trajectory_holder = self.trajectory
+        self.trajectory = None
+
         # Pickle the algorithm
         picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
         try:
@@ -533,6 +540,9 @@ class Algorithm(object):
         except IOError:
             logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
+
+        # Restore the trajectory
+        self.trajectory = trajectory_holder
 
     def get_backup_every(self):
         """
