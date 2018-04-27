@@ -62,7 +62,8 @@ simplex_reflection - When we reflect a point through the centroid, what is the r
 simplex_expansion - If the reflected point was the global min, how far do we keep moving in that direction? (as a ratio to the initial distance to centroid) Default: 1.0
 simplex_contraction - If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) Default: 0.5
 simplex_shrink - If a whole iteration was unproductive, shrink the simplex by setting simplex point s[i] to x*s[i-1] + (1-x)*s[i]. This key specifies x. Default: 0.5
-simplex_max_iterations - If specified, overrides the max_iterations setting. Useful if you are using the refine flag and want max_iterations to refer to your main algorithm. 
+simplex_max_iterations - If specified, overrides the max_iterations setting. Useful if you are using the refine flag and want max_iterations to refer to your main algorithm.
+simplex_stop_tol - Stop the algorithm if all parameters have converged to within this value (specifically, if all reflections in an iteration move the param by less than this) Default: 0 (don't use this criterion)
 
 
 ***Differential Evolution Settings***
@@ -82,6 +83,7 @@ num_to_migrate: How many individuals to migrate off of each island during migrat
 cognitive: Acceleration toward a particle's own best fit
 social: Acceleration toward the global best fit
 particle_weight: Inertia weight of particle. Default: 1
+v_stop: Stop the algorithm if the speeds of all parameters in all particles are less than this value. Default: 0 (don't use this criterion)
 
 # particle swarm params related to adaptive weight changing, which may or may not be useful
 particle_weight_final: The final particle weight after the adaptive changing. Default: the value of particle_weight, effectively disabling this feature. 

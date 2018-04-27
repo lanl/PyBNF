@@ -117,7 +117,7 @@ class Configuration(object):
             'stop_tolerance': 0.002,
 
             'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
-            'adaptive_rel_tol': 0.0, 'cognitive': 1.5, 'social': 1.5,
+            'adaptive_rel_tol': 0.0, 'cognitive': 1.5, 'social': 1.5, 'v_stop': 0.,
 
             'local_min_limit': 5,
 
@@ -125,7 +125,7 @@ class Configuration(object):
             'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01,
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
-            'simplex_shrink': 0.5,
+            'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,
 
             'wall_time_gen': 3600,
             'wall_time_sim': 3600,
@@ -147,12 +147,13 @@ class Configuration(object):
         alg_specific = {'de': {'mutation_rate', 'mutation_factor', 'stop_tolerance', 'islands', 'migrate_every',
                                'num_to_migrate'},
                         'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
-                                'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol'},
+                                'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol', 'v_stop'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
                         'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
                                 'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
-                                'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations'}}
+                                'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',
+                                'simplex_stop_tol'}}
         ignored_params = set()
         thisalg = conf_dict['fit_type']
         if thisalg in ('pt', 'sa'):
