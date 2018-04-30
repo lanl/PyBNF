@@ -1,3 +1,5 @@
+.. _config:
+
 Configuring a Fitting Job
 =========================
 
@@ -10,7 +12,7 @@ Several examples of .conf files are included in the examples/ folder.
 
 Each line of a conf file has the general format config_key=value, which assigns the configuration key “config_key” to the value “value”.
 
-The available configuration keys to be specified are detailed in the sections below.
+The available configuration keys to be specified are detailed in :ref:`config_keys`.
 
 **[During development, please refer to config_documentation.txt]**
 
