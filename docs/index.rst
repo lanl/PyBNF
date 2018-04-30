@@ -18,6 +18,7 @@ workstations as well as distributed computing systems using the SLURM queueing m
    :caption: Contents:
 
    installation
+   quickstart
    config
    config_keys
    algorithms
