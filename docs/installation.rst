@@ -11,7 +11,9 @@ environments. Instructions for installing on various platforms can be found on t
 
 PyBNF
 -----
-The ``pip`` package manager comes with `Anaconda`_ and should be used to install PyBNF from the command line.
+The ``pip`` package manager is included with `Anaconda`_ and should be used to install PyBNF from the command line.
+
+It is also possible to install ``pip`` alone without Anaconda. If you choose to do this, be sure your ``pip`` is associated with Python 3 (on some systems, this command is ``pip3``). 
 
 Installing from PyPI
 ^^^^^^^^^^^^^^^^^^^^
@@ -22,7 +24,7 @@ Simply type the following in a terminal:
 
     :command:`pip install pybnf`
 
-The above command will install the most recent version of PyBNF released on the Python Package Index
+The above command will install the most recent version of PyBNF released on the Python Package Index, along with all required dependencies. 
 
 Installing from source
 ^^^^^^^^^^^^^^^^^^^^^^
