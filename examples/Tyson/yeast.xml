@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Created by COPASI version 4.22 (Build 170) on 2018-04-10 15:51 with libSBML version 5.15.3. -->
+<!-- Created by COPASI version 4.22 (Build 170) on 2018-05-01 15:00 with libSBML version 5.15.3. -->
 <sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
-  <model metaid="COPASI0" id="Yeast_Cell_Cycle_1" name="Yeast Cell Cycle_1">
+  <model metaid="COPASI0" id="Yeast_Cell_Cycle_1_1" name="Yeast Cell Cycle_1_1">
     <notes>
       <body xmlns="http://www.w3.org/1999/xhtml">
         <pre>Model of the yeast cell cycle originally described in Oguz et al (2013) &quot;Optimization and model reduction in the high dimensional parameter space of a budding yeast cell cycle model&quot; BMC Syst. Biol.
@@ -79,11 +79,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition metaid="COPASI80" id="Heav" name="Heav">
+      <functionDefinition metaid="COPASI86" id="Heav" name="Heav">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI80">
+              <rdf:Description rdf:about="#COPASI86">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T12:04:05Z</dcterms:W3CDTF>
@@ -114,11 +114,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition metaid="COPASI81" id="Sigmoid" name="Sigmoid">
+      <functionDefinition metaid="COPASI87" id="Sigmoid" name="Sigmoid">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI81">
+              <rdf:Description rdf:about="#COPASI87">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T12:05:38Z</dcterms:W3CDTF>
@@ -161,11 +161,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition metaid="COPASI82" id="Rate_Law_for_Growth_1" name="Rate Law for Growth_1">
+      <functionDefinition metaid="COPASI88" id="Rate_Law_for_Growth_1" name="Rate Law for Growth_1">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI82">
+              <rdf:Description rdf:about="#COPASI88">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-04-09T15:10:38Z</dcterms:W3CDTF>
@@ -244,11 +244,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition metaid="COPASI83" id="Rate_Law_for_WHI5deP_Synth_1" name="Rate Law for WHI5deP Synth_1">
+      <functionDefinition metaid="COPASI89" id="Rate_Law_for_WHI5deP_Synth_1" name="Rate Law for WHI5deP Synth_1">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI83">
+              <rdf:Description rdf:about="#COPASI89">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-04-09T15:10:40Z</dcterms:W3CDTF>
@@ -442,11 +442,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition metaid="COPASI84" id="Rate_Law_for_CKIT_Synth_1" name="Rate Law for CKIT Synth_1">
+      <functionDefinition metaid="COPASI90" id="Rate_Law_for_CKIT_Synth_1" name="Rate Law for CKIT Synth_1">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI84">
+              <rdf:Description rdf:about="#COPASI90">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-04-09T15:10:36Z</dcterms:W3CDTF>
@@ -642,72 +642,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition id="Rate_Law_for_Clb5T_Degr_1" name="Rate Law for Clb5T Degr_1">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <lambda>
-            <bvar>
-              <ci> CDC20A_APCP </ci>
-            </bvar>
-            <bvar>
-              <ci> CDC20A_APC </ci>
-            </bvar>
-            <bvar>
-              <ci> CLB5T </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b5 </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b5_20 </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b5_20_i </ci>
-            </bvar>
-            <apply>
-              <times/>
-              <apply>
-                <plus/>
-                <ci> kd_b5 </ci>
-                <apply>
-                  <times/>
-                  <ci> kd_b5_20 </ci>
-                  <ci> CDC20A_APCP </ci>
-                </apply>
-                <apply>
-                  <times/>
-                  <ci> kd_b5_20_i </ci>
-                  <ci> CDC20A_APC </ci>
-                </apply>
-              </apply>
-              <ci> CLB5T </ci>
-            </apply>
-          </lambda>
-        </math>
-      </functionDefinition>
-      <functionDefinition id="Rate_Law_for_Clb5T_Synth_1" name="Rate Law for Clb5T Synth_1">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <lambda>
-            <bvar>
-              <ci> SBF </ci>
-            </bvar>
-            <bvar>
-              <ci> ks_b5 </ci>
-            </bvar>
-            <bvar>
-              <ci> ks_b5_bf </ci>
-            </bvar>
-            <apply>
-              <plus/>
-              <ci> ks_b5 </ci>
-              <apply>
-                <times/>
-                <ci> ks_b5_bf </ci>
-                <ci> SBF </ci>
-              </apply>
-            </apply>
-          </lambda>
-        </math>
-      </functionDefinition>
       <functionDefinition id="Rate_Law_for_Clb2T_Synth_1" name="Rate Law for Clb2T Synth_1">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
@@ -739,55 +673,26 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition id="Rate_Law_for_Clb2T_Degr_1" name="Rate Law for Clb2T Degr_1">
+      <functionDefinition id="Rate_Law_for_Clb5T_Synth_1" name="Rate Law for Clb5T Synth_1">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
             <bvar>
-              <ci> CDC20A_APCP </ci>
+              <ci> SBF </ci>
             </bvar>
             <bvar>
-              <ci> CDC20A_APC </ci>
+              <ci> ks_b5 </ci>
             </bvar>
             <bvar>
-              <ci> CDH1A </ci>
-            </bvar>
-            <bvar>
-              <ci> CLB2T </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b2 </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b2_20 </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b2_20_i </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_b2_h1 </ci>
+              <ci> ks_b5_bf </ci>
             </bvar>
             <apply>
-              <times/>
+              <plus/>
+              <ci> ks_b5 </ci>
               <apply>
-                <plus/>
-                <ci> kd_b2 </ci>
-                <apply>
-                  <times/>
-                  <ci> kd_b2_20 </ci>
-                  <ci> CDC20A_APCP </ci>
-                </apply>
-                <apply>
-                  <times/>
-                  <ci> kd_b2_20_i </ci>
-                  <ci> CDC20A_APC </ci>
-                </apply>
-                <apply>
-                  <times/>
-                  <ci> kd_b2_h1 </ci>
-                  <ci> CDH1A </ci>
-                </apply>
+                <times/>
+                <ci> ks_b5_bf </ci>
+                <ci> SBF </ci>
               </apply>
-              <ci> CLB2T </ci>
             </apply>
           </lambda>
         </math>
@@ -965,93 +870,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition id="Rate_Law_for_CDC20A_APCP_Synth_1" name="Rate Law for CDC20A_APCP Synth_1">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <lambda>
-            <bvar>
-              <ci> CDC20A_APCP </ci>
-            </bvar>
-            <bvar>
-              <ci> CDC20A_APCP_T </ci>
-            </bvar>
-            <bvar>
-              <ci> ORI </ci>
-            </bvar>
-            <bvar>
-              <ci> SPN </ci>
-            </bvar>
-            <bvar>
-              <ci> gamma </ci>
-            </bvar>
-            <bvar>
-              <ci> ka_20 </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_20 </ci>
-            </bvar>
-            <bvar>
-              <ci> ki_20_ori </ci>
-            </bvar>
-            <bvar>
-              <ci> sig </ci>
-            </bvar>
-            <apply>
-              <minus/>
-              <apply>
-                <times/>
-                <ci> gamma </ci>
-                <apply>
-                  <minus/>
-                  <apply>
-                    <ci> Sigmoid </ci>
-                    <ci> CDC20A_APCP_T </ci>
-                    <ci> sig </ci>
-                    <apply>
-                      <minus/>
-                      <ci> ka_20 </ci>
-                      <apply>
-                        <times/>
-                        <ci> ki_20_ori </ci>
-                        <apply>
-                          <ci> Heav </ci>
-                          <apply>
-                            <minus/>
-                            <ci> ORI </ci>
-                            <cn> 1 </cn>
-                          </apply>
-                        </apply>
-                        <apply>
-                          <minus/>
-                          <cn> 1 </cn>
-                          <apply>
-                            <ci> Heav </ci>
-                            <apply>
-                              <minus/>
-                              <ci> SPN </ci>
-                              <cn> 1 </cn>
-                            </apply>
-                          </apply>
-                        </apply>
-                      </apply>
-                    </apply>
-                  </apply>
-                  <ci> CDC20A_APCP </ci>
-                </apply>
-              </apply>
-              <apply>
-                <times/>
-                <ci> kd_20 </ci>
-                <ci> CDC20A_APCP </ci>
-              </apply>
-            </apply>
-          </lambda>
-        </math>
-      </functionDefinition>
-      <functionDefinition metaid="COPASI85" id="Rate_Law_for_APCP_Synth_1" name="Rate Law for APCP Synth_1">
+      <functionDefinition metaid="COPASI91" id="Rate_Law_for_APCP_Synth_1" name="Rate Law for APCP Synth_1">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI85">
+              <rdf:Description rdf:about="#COPASI91">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-04-09T15:10:38Z</dcterms:W3CDTF>
@@ -1387,48 +1210,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition id="Rate_Law_for_PDS1T_Degr_1" name="Rate Law for PDS1T Degr_1">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <lambda>
-            <bvar>
-              <ci> CDC20A_APCP </ci>
-            </bvar>
-            <bvar>
-              <ci> CDC20A_APC </ci>
-            </bvar>
-            <bvar>
-              <ci> PDS1T </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_pds </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_pds_20_i </ci>
-            </bvar>
-            <bvar>
-              <ci> kd_pds_20 </ci>
-            </bvar>
-            <apply>
-              <times/>
-              <apply>
-                <plus/>
-                <ci> kd_pds </ci>
-                <apply>
-                  <times/>
-                  <ci> kd_pds_20 </ci>
-                  <ci> CDC20A_APCP </ci>
-                </apply>
-                <apply>
-                  <times/>
-                  <ci> kd_pds_20_i </ci>
-                  <ci> CDC20A_APC </ci>
-                </apply>
-              </apply>
-              <ci> PDS1T </ci>
-            </apply>
-          </lambda>
-        </math>
-      </functionDefinition>
       <functionDefinition id="Rate_Law_for_CDC15_Synth_1" name="Rate Law for CDC15 Synth_1">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <lambda>
@@ -1499,11 +1280,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </lambda>
         </math>
       </functionDefinition>
-      <functionDefinition metaid="COPASI86" id="Rate_Law_for_TEM1_Synth_1" name="Rate Law for TEM1 Synth_1">
+      <functionDefinition metaid="COPASI92" id="Rate_Law_for_TEM1_Synth_1" name="Rate Law for TEM1 Synth_1">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI86">
+              <rdf:Description rdf:about="#COPASI92">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-04-09T15:10:39Z</dcterms:W3CDTF>
@@ -1807,6 +1588,225 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
                 <ci> kd_20 </ci>
                 <ci> CDC20A_APC </ci>
               </apply>
+            </apply>
+          </lambda>
+        </math>
+      </functionDefinition>
+      <functionDefinition id="Rate_Law_for_CDC20A_APCP_Synth_1" name="Rate Law for CDC20A_APCP Synth_1_1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <lambda>
+            <bvar>
+              <ci> CDC20A_APCP </ci>
+            </bvar>
+            <bvar>
+              <ci> CDC20A_APCP_T </ci>
+            </bvar>
+            <bvar>
+              <ci> ORI </ci>
+            </bvar>
+            <bvar>
+              <ci> SPN </ci>
+            </bvar>
+            <bvar>
+              <ci> gamma </ci>
+            </bvar>
+            <bvar>
+              <ci> ka_20 </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_20 </ci>
+            </bvar>
+            <bvar>
+              <ci> ki_20_ori </ci>
+            </bvar>
+            <bvar>
+              <ci> sig </ci>
+            </bvar>
+            <apply>
+              <minus/>
+              <apply>
+                <times/>
+                <ci> gamma </ci>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <ci> Sigmoid </ci>
+                    <ci> CDC20A_APCP_T </ci>
+                    <ci> sig </ci>
+                    <apply>
+                      <minus/>
+                      <ci> ka_20 </ci>
+                      <apply>
+                        <times/>
+                        <ci> ki_20_ori </ci>
+                        <apply>
+                          <ci> Heav </ci>
+                          <apply>
+                            <minus/>
+                            <ci> ORI </ci>
+                            <cn> 1 </cn>
+                          </apply>
+                        </apply>
+                        <apply>
+                          <minus/>
+                          <cn> 1 </cn>
+                          <apply>
+                            <ci> Heav </ci>
+                            <apply>
+                              <minus/>
+                              <ci> SPN </ci>
+                              <cn> 1 </cn>
+                            </apply>
+                          </apply>
+                        </apply>
+                      </apply>
+                    </apply>
+                  </apply>
+                  <ci> CDC20A_APCP </ci>
+                </apply>
+              </apply>
+              <apply>
+                <times/>
+                <ci> kd_20 </ci>
+                <ci> CDC20A_APCP </ci>
+              </apply>
+            </apply>
+          </lambda>
+        </math>
+      </functionDefinition>
+      <functionDefinition id="Rate_Law_for_Clb5T_Degr_1_1_1" name="Rate Law for Clb5T Degr_1_1_1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <lambda>
+            <bvar>
+              <ci> CDC20A_APC </ci>
+            </bvar>
+            <bvar>
+              <ci> CDC20A_APCP </ci>
+            </bvar>
+            <bvar>
+              <ci> CLB5T </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b5 </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b5_20 </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b5_20_i </ci>
+            </bvar>
+            <apply>
+              <times/>
+              <apply>
+                <plus/>
+                <ci> kd_b5 </ci>
+                <apply>
+                  <times/>
+                  <ci> kd_b5_20 </ci>
+                  <ci> CDC20A_APCP </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> kd_b5_20_i </ci>
+                  <ci> CDC20A_APC </ci>
+                </apply>
+              </apply>
+              <ci> CLB5T </ci>
+            </apply>
+          </lambda>
+        </math>
+      </functionDefinition>
+      <functionDefinition id="Rate_Law_for_Clb2T_Degr_1_1_1" name="Rate Law for Clb2T Degr_1_1_1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <lambda>
+            <bvar>
+              <ci> CDC20A_APC </ci>
+            </bvar>
+            <bvar>
+              <ci> CDC20A_APCP </ci>
+            </bvar>
+            <bvar>
+              <ci> CDH1A </ci>
+            </bvar>
+            <bvar>
+              <ci> CLB2T </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b2 </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b2_20 </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b2_20_i </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_b2_h1 </ci>
+            </bvar>
+            <apply>
+              <times/>
+              <apply>
+                <plus/>
+                <ci> kd_b2 </ci>
+                <apply>
+                  <times/>
+                  <ci> kd_b2_20 </ci>
+                  <ci> CDC20A_APCP </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> kd_b2_20_i </ci>
+                  <ci> CDC20A_APC </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> kd_b2_h1 </ci>
+                  <ci> CDH1A </ci>
+                </apply>
+              </apply>
+              <ci> CLB2T </ci>
+            </apply>
+          </lambda>
+        </math>
+      </functionDefinition>
+      <functionDefinition id="Rate_Law_for_PDS1T_Degr_1_1_1" name="Rate Law for PDS1T Degr_1_1_1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <lambda>
+            <bvar>
+              <ci> CDC20A_APC </ci>
+            </bvar>
+            <bvar>
+              <ci> CDC20A_APCP </ci>
+            </bvar>
+            <bvar>
+              <ci> PDS1T </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_pds </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_pds_20 </ci>
+            </bvar>
+            <bvar>
+              <ci> kd_pds_20_i </ci>
+            </bvar>
+            <apply>
+              <times/>
+              <apply>
+                <plus/>
+                <ci> kd_pds </ci>
+                <apply>
+                  <times/>
+                  <ci> kd_pds_20 </ci>
+                  <ci> CDC20A_APCP </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> kd_pds_20_i </ci>
+                  <ci> CDC20A_APC </ci>
+                </apply>
+              </apply>
+              <ci> PDS1T </ci>
             </apply>
           </lambda>
         </math>
@@ -2369,6 +2369,8 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </COPASI>
         </annotation>
       </species>
+      <species id="OK_DIV" name="OK_DIV" compartment="cell" initialConcentration="0" boundaryCondition="false" constant="false"/>
+      <species id="OK_LICENSE" name="OK_LICENSE" compartment="cell" initialConcentration="0" boundaryCondition="false" constant="false"/>
     </listOfSpecies>
     <listOfParameters>
       <parameter metaid="COPASI37" id="mdt" name="mdt" value="100" constant="true">
@@ -2557,23 +2559,15 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
       <parameter id="f" name="f" value="0.4" constant="true"/>
     </listOfParameters>
     <listOfRules>
-      <assignmentRule variable="SBF">
+      <assignmentRule variable="mu">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <apply>
-            <times/>
+            <divide/>
             <apply>
-              <minus/>
-              <ci> SBFdeP </ci>
-              <ci> WHI5deP </ci>
+              <ln/>
+              <cn> 2 </cn>
             </apply>
-            <apply>
-              <ci> Heav </ci>
-              <apply>
-                <minus/>
-                <ci> SBFdeP </ci>
-                <ci> WHI5deP </ci>
-              </apply>
-            </apply>
+            <ci> mdt </ci>
           </apply>
         </math>
       </assignmentRule>
@@ -2592,121 +2586,6 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <cn> 1 </cn>
             </apply>
           </apply>
-        </math>
-      </assignmentRule>
-      <assignmentRule variable="ESP1">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <apply>
-            <times/>
-            <apply>
-              <minus/>
-              <ci> ESP1T </ci>
-              <ci> PDS1T </ci>
-            </apply>
-            <apply>
-              <ci> Heav </ci>
-              <apply>
-                <minus/>
-                <ci> ESP1T </ci>
-                <ci> PDS1T </ci>
-              </apply>
-            </apply>
-          </apply>
-        </math>
-      </assignmentRule>
-      <assignmentRule variable="MEN">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <piecewise>
-            <piece>
-              <ci> TEM1 </ci>
-              <apply>
-                <lt/>
-                <ci> TEM1 </ci>
-                <ci> CDC15 </ci>
-              </apply>
-            </piece>
-            <otherwise>
-              <ci> CDC15 </ci>
-            </otherwise>
-          </piecewise>
-        </math>
-      </assignmentRule>
-      <assignmentRule variable="CDC14">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <apply>
-            <times/>
-            <apply>
-              <minus/>
-              <ci> CDC14T </ci>
-              <apply>
-                <times/>
-                <ci> kas_net </ci>
-                <ci> NET1deP </ci>
-              </apply>
-            </apply>
-            <apply>
-              <ci> Heav </ci>
-              <apply>
-                <minus/>
-                <ci> CDC14T </ci>
-                <apply>
-                  <times/>
-                  <ci> kas_net </ci>
-                  <ci> NET1deP </ci>
-                </apply>
-              </apply>
-            </apply>
-          </apply>
-        </math>
-      </assignmentRule>
-      <assignmentRule variable="CDC20A_APCP_T">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <piecewise>
-            <piece>
-              <ci> CDC20T </ci>
-              <apply>
-                <lt/>
-                <ci> CDC20T </ci>
-                <ci> APCP </ci>
-              </apply>
-            </piece>
-            <otherwise>
-              <ci> APCP </ci>
-            </otherwise>
-          </piecewise>
-        </math>
-      </assignmentRule>
-      <assignmentRule variable="CDC20A_APC_T">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <piecewise>
-            <piece>
-              <apply>
-                <minus/>
-                <ci> CDC20T </ci>
-                <ci> CDC20A_APCP_T </ci>
-              </apply>
-              <apply>
-                <lt/>
-                <apply>
-                  <minus/>
-                  <ci> CDC20T </ci>
-                  <ci> CDC20A_APCP_T </ci>
-                </apply>
-                <apply>
-                  <minus/>
-                  <ci> APCPT </ci>
-                  <ci> APCP </ci>
-                </apply>
-              </apply>
-            </piece>
-            <otherwise>
-              <apply>
-                <minus/>
-                <ci> APCPT </ci>
-                <ci> APCP </ci>
-              </apply>
-            </otherwise>
-          </piecewise>
         </math>
       </assignmentRule>
       <assignmentRule variable="CLB5">
@@ -2791,6 +2670,91 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </apply>
         </math>
       </assignmentRule>
+      <assignmentRule variable="SBF">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply>
+            <times/>
+            <apply>
+              <minus/>
+              <ci> SBFdeP </ci>
+              <ci> WHI5deP </ci>
+            </apply>
+            <apply>
+              <ci> Heav </ci>
+              <apply>
+                <minus/>
+                <ci> SBFdeP </ci>
+                <ci> WHI5deP </ci>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+      </assignmentRule>
+      <assignmentRule variable="CDC14">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply>
+            <times/>
+            <apply>
+              <minus/>
+              <ci> CDC14T </ci>
+              <apply>
+                <times/>
+                <ci> kas_net </ci>
+                <ci> NET1deP </ci>
+              </apply>
+            </apply>
+            <apply>
+              <ci> Heav </ci>
+              <apply>
+                <minus/>
+                <ci> CDC14T </ci>
+                <apply>
+                  <times/>
+                  <ci> kas_net </ci>
+                  <ci> NET1deP </ci>
+                </apply>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+      </assignmentRule>
+      <assignmentRule variable="ESP1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply>
+            <times/>
+            <apply>
+              <minus/>
+              <ci> ESP1T </ci>
+              <ci> PDS1T </ci>
+            </apply>
+            <apply>
+              <ci> Heav </ci>
+              <apply>
+                <minus/>
+                <ci> ESP1T </ci>
+                <ci> PDS1T </ci>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+      </assignmentRule>
+      <assignmentRule variable="MEN">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <piecewise>
+            <piece>
+              <ci> TEM1 </ci>
+              <apply>
+                <lt/>
+                <ci> TEM1 </ci>
+                <ci> CDC15 </ci>
+              </apply>
+            </piece>
+            <otherwise>
+              <ci> CDC15 </ci>
+            </otherwise>
+          </piecewise>
+        </math>
+      </assignmentRule>
       <assignmentRule variable="MCM1">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <apply>
@@ -2831,6 +2795,56 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </apply>
         </math>
       </assignmentRule>
+      <assignmentRule variable="CDC20A_APCP_T">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <piecewise>
+            <piece>
+              <ci> CDC20T </ci>
+              <apply>
+                <lt/>
+                <ci> CDC20T </ci>
+                <ci> APCP </ci>
+              </apply>
+            </piece>
+            <otherwise>
+              <ci> APCP </ci>
+            </otherwise>
+          </piecewise>
+        </math>
+      </assignmentRule>
+      <assignmentRule variable="CDC20A_APC_T">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <piecewise>
+            <piece>
+              <apply>
+                <minus/>
+                <ci> CDC20T </ci>
+                <ci> CDC20A_APCP_T </ci>
+              </apply>
+              <apply>
+                <lt/>
+                <apply>
+                  <minus/>
+                  <ci> CDC20T </ci>
+                  <ci> CDC20A_APCP_T </ci>
+                </apply>
+                <apply>
+                  <minus/>
+                  <ci> APCPT </ci>
+                  <ci> APCP </ci>
+                </apply>
+              </apply>
+            </piece>
+            <otherwise>
+              <apply>
+                <minus/>
+                <ci> APCPT </ci>
+                <ci> APCP </ci>
+              </apply>
+            </otherwise>
+          </piecewise>
+        </math>
+      </assignmentRule>
       <assignmentRule variable="CLB2CLB5">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
           <apply>
@@ -2840,25 +2854,13 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </apply>
         </math>
       </assignmentRule>
-      <assignmentRule variable="mu">
-        <math xmlns="http://www.w3.org/1998/Math/MathML">
-          <apply>
-            <divide/>
-            <apply>
-              <ln/>
-              <cn> 2 </cn>
-            </apply>
-            <ci> mdt </ci>
-          </apply>
-        </math>
-      </assignmentRule>
     </listOfRules>
     <listOfReactions>
-      <reaction metaid="COPASI41" id="Growth" name="Growth" reversible="false">
+      <reaction metaid="COPASI47" id="Growth" name="Growth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI41">
+              <rdf:Description rdf:about="#COPASI47">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T09:14:28Z</dcterms:W3CDTF>
@@ -2885,11 +2887,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI42" id="Cln3_Synth" name="Cln3 Synth" reversible="false">
+      <reaction metaid="COPASI48" id="Cln3_Synth" name="Cln3 Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI42">
+              <rdf:Description rdf:about="#COPASI48">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T10:01:18Z</dcterms:W3CDTF>
@@ -2921,11 +2923,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI43" id="Cln3_Degr" name="Cln3 Degr" reversible="false">
+      <reaction metaid="COPASI49" id="Cln3_Degr" name="Cln3 Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI43">
+              <rdf:Description rdf:about="#COPASI49">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T10:10:33Z</dcterms:W3CDTF>
@@ -2949,11 +2951,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI44" id="Bck2_Synth" name="Bck2 Synth" reversible="false">
+      <reaction metaid="COPASI50" id="Bck2_Synth" name="Bck2 Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI44">
+              <rdf:Description rdf:about="#COPASI50">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T11:00:07Z</dcterms:W3CDTF>
@@ -2983,11 +2985,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI45" id="Bck2_Degr" name="Bck2 Degr" reversible="false">
+      <reaction metaid="COPASI51" id="Bck2_Degr" name="Bck2 Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI45">
+              <rdf:Description rdf:about="#COPASI51">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T11:02:40Z</dcterms:W3CDTF>
@@ -3011,11 +3013,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI46" id="WHI5deP_Synth" name="WHI5deP Synth" reversible="true">
+      <reaction metaid="COPASI52" id="WHI5deP_Synth" name="WHI5deP Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI46">
+              <rdf:Description rdf:about="#COPASI52">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T11:11:35Z</dcterms:W3CDTF>
@@ -3063,11 +3065,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI47" id="SBFdeP_Synth" name="SBFdeP Synth" reversible="true">
+      <reaction metaid="COPASI53" id="SBFdeP_Synth" name="SBFdeP Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI47">
+              <rdf:Description rdf:about="#COPASI53">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:24:23Z</dcterms:W3CDTF>
@@ -3102,11 +3104,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI48" id="Cln2_Synth" name="Cln2 Synth" reversible="false">
+      <reaction metaid="COPASI54" id="Cln2_Synth" name="Cln2 Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI48">
+              <rdf:Description rdf:about="#COPASI54">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:31:46Z</dcterms:W3CDTF>
@@ -3137,11 +3139,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI49" id="Cln2_Degr" name="Cln2 Degr" reversible="false">
+      <reaction metaid="COPASI55" id="Cln2_Degr" name="Cln2 Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI49">
+              <rdf:Description rdf:about="#COPASI55">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:32:56Z</dcterms:W3CDTF>
@@ -3165,11 +3167,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI50" id="CKIT_Synth" name="CKIT Synth" reversible="false">
+      <reaction metaid="COPASI56" id="CKIT_Synth" name="CKIT Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI50">
+              <rdf:Description rdf:about="#COPASI56">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:35:10Z</dcterms:W3CDTF>
@@ -3200,11 +3202,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI51" id="CKIT_Degr" name="CKIT Degr" reversible="false">
+      <reaction metaid="COPASI57" id="CKIT_Degr" name="CKIT Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI51">
+              <rdf:Description rdf:about="#COPASI57">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:42:23Z</dcterms:W3CDTF>
@@ -3236,11 +3238,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI52" id="CKIP_Synth" name="CKIP Synth" reversible="true">
+      <reaction metaid="COPASI58" id="CKIP_Synth" name="CKIP Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI52">
+              <rdf:Description rdf:about="#COPASI58">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:44:52Z</dcterms:W3CDTF>
@@ -3293,11 +3295,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI53" id="Clb5T_Synth" name="Clb5T Synth" reversible="false">
+      <reaction metaid="COPASI59" id="Clb5T_Synth" name="Clb5T Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI53">
+              <rdf:Description rdf:about="#COPASI59">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:50:59Z</dcterms:W3CDTF>
@@ -3328,11 +3330,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI54" id="Clb5T_Degr" name="Clb5T Degr" reversible="false">
+      <reaction metaid="COPASI60" id="Clb5T_Degr" name="Clb5T Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI54">
+              <rdf:Description rdf:about="#COPASI60">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T13:52:13Z</dcterms:W3CDTF>
@@ -3355,9 +3357,9 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <times/>
               <ci> cell </ci>
               <apply>
-                <ci> Rate_Law_for_Clb5T_Degr_1 </ci>
-                <ci> CDC20A_APCP </ci>
+                <ci> Rate_Law_for_Clb5T_Degr_1_1_1 </ci>
                 <ci> CDC20A_APC </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> CLB5T </ci>
                 <ci> kd_b5 </ci>
                 <ci> kd_b5_20 </ci>
@@ -3367,11 +3369,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI55" id="Clb2T_Synth" name="Clb2T Synth" reversible="false">
+      <reaction metaid="COPASI61" id="Clb2T_Synth" name="Clb2T Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI55">
+              <rdf:Description rdf:about="#COPASI61">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:00:34Z</dcterms:W3CDTF>
@@ -3404,11 +3406,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI56" id="Clb2T_Degr" name="Clb2T Degr" reversible="false">
+      <reaction metaid="COPASI62" id="Clb2T_Degr" name="Clb2T Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI56">
+              <rdf:Description rdf:about="#COPASI62">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:01:37Z</dcterms:W3CDTF>
@@ -3432,9 +3434,9 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <times/>
               <ci> cell </ci>
               <apply>
-                <ci> Rate_Law_for_Clb2T_Degr_1 </ci>
-                <ci> CDC20A_APCP </ci>
+                <ci> Rate_Law_for_Clb2T_Degr_1_1_1 </ci>
                 <ci> CDC20A_APC </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> CDH1A </ci>
                 <ci> CLB2T </ci>
                 <ci> kd_b2 </ci>
@@ -3446,11 +3448,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI57" id="BUD_Synth" name="BUD Synth" reversible="false">
+      <reaction metaid="COPASI63" id="BUD_Synth" name="BUD Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI57">
+              <rdf:Description rdf:about="#COPASI63">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:05:26Z</dcterms:W3CDTF>
@@ -3490,11 +3492,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI58" id="BUD_Degr" name="BUD Degr" reversible="false">
+      <reaction metaid="COPASI64" id="BUD_Degr" name="BUD Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI58">
+              <rdf:Description rdf:about="#COPASI64">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:06:23Z</dcterms:W3CDTF>
@@ -3518,11 +3520,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI59" id="ORI_Synth" name="ORI Synth" reversible="false">
+      <reaction metaid="COPASI65" id="ORI_Synth" name="ORI Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI59">
+              <rdf:Description rdf:about="#COPASI65">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:08:50Z</dcterms:W3CDTF>
@@ -3556,11 +3558,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI60" id="ORI_Degr" name="ORI Degr" reversible="false">
+      <reaction metaid="COPASI66" id="ORI_Degr" name="ORI Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI60">
+              <rdf:Description rdf:about="#COPASI66">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:09:26Z</dcterms:W3CDTF>
@@ -3584,11 +3586,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI61" id="SPN_Synth" name="SPN Synth" reversible="false">
+      <reaction metaid="COPASI67" id="SPN_Synth" name="SPN Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI61">
+              <rdf:Description rdf:about="#COPASI67">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:09:51Z</dcterms:W3CDTF>
@@ -3619,11 +3621,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI62" id="SPN_Degr" name="SPN Degr" reversible="false">
+      <reaction metaid="COPASI68" id="SPN_Degr" name="SPN Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI62">
+              <rdf:Description rdf:about="#COPASI68">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:10:24Z</dcterms:W3CDTF>
@@ -3647,11 +3649,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI63" id="SWI5T_Synth" name="SWI5T Synth" reversible="false">
+      <reaction metaid="COPASI69" id="SWI5T_Synth" name="SWI5T Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI63">
+              <rdf:Description rdf:about="#COPASI69">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:11:54Z</dcterms:W3CDTF>
@@ -3682,11 +3684,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI64" id="SWI5T_Degr" name="SWI5T Degr" reversible="false">
+      <reaction metaid="COPASI70" id="SWI5T_Degr" name="SWI5T Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI64">
+              <rdf:Description rdf:about="#COPASI70">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:13:43Z</dcterms:W3CDTF>
@@ -3710,11 +3712,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI65" id="CDC20T_Synth" name="CDC20T Synth" reversible="false">
+      <reaction metaid="COPASI71" id="CDC20T_Synth" name="CDC20T Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI65">
+              <rdf:Description rdf:about="#COPASI71">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:11:31Z</dcterms:W3CDTF>
@@ -3745,11 +3747,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI66" id="CDC20T_Degr" name="CDC20T Degr" reversible="false">
+      <reaction metaid="COPASI72" id="CDC20T_Degr" name="CDC20T Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI66">
+              <rdf:Description rdf:about="#COPASI72">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:14:33Z</dcterms:W3CDTF>
@@ -3773,11 +3775,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI67" id="CDC20A_Synth" name="CDC20A_APCP Synth" reversible="true">
+      <reaction metaid="COPASI73" id="CDC20A_Synth" name="CDC20A_APCP Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI67">
+              <rdf:Description rdf:about="#COPASI73">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:17:25Z</dcterms:W3CDTF>
@@ -3816,11 +3818,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI68" id="APCP_Synth" name="APCP Synth" reversible="true">
+      <reaction metaid="COPASI74" id="APCP_Synth" name="APCP Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI68">
+              <rdf:Description rdf:about="#COPASI74">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:21:13Z</dcterms:W3CDTF>
@@ -3855,11 +3857,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI69" id="CDH1A_Synth" name="CDH1A Synth" reversible="true">
+      <reaction metaid="COPASI75" id="CDH1A_Synth" name="CDH1A Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI69">
+              <rdf:Description rdf:about="#COPASI75">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:22:42Z</dcterms:W3CDTF>
@@ -3908,11 +3910,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI70" id="NET1deP_Synth" name="NET1deP Synth" reversible="true">
+      <reaction metaid="COPASI76" id="NET1deP_Synth" name="NET1deP Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI70">
+              <rdf:Description rdf:about="#COPASI76">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:26:49Z</dcterms:W3CDTF>
@@ -3960,11 +3962,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI71" id="PPX_Synth" name="PPX Synth" reversible="true">
+      <reaction metaid="COPASI77" id="PPX_Synth" name="PPX Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI71">
+              <rdf:Description rdf:about="#COPASI77">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:29:21Z</dcterms:W3CDTF>
@@ -4000,11 +4002,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI72" id="PDS1T_Synth" name="PDS1T Synth" reversible="false">
+      <reaction metaid="COPASI78" id="PDS1T_Synth" name="PDS1T Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI72">
+              <rdf:Description rdf:about="#COPASI78">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:30:52Z</dcterms:W3CDTF>
@@ -4030,11 +4032,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI73" id="PDS1T_Degr" name="PDS1T Degr" reversible="false">
+      <reaction metaid="COPASI79" id="PDS1T_Degr" name="PDS1T Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI73">
+              <rdf:Description rdf:about="#COPASI79">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:31:06Z</dcterms:W3CDTF>
@@ -4057,23 +4059,23 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
               <times/>
               <ci> cell </ci>
               <apply>
-                <ci> Rate_Law_for_PDS1T_Degr_1 </ci>
-                <ci> CDC20A_APCP </ci>
+                <ci> Rate_Law_for_PDS1T_Degr_1_1_1 </ci>
                 <ci> CDC20A_APC </ci>
+                <ci> CDC20A_APCP </ci>
                 <ci> PDS1T </ci>
                 <ci> kd_pds </ci>
-                <ci> kd_pds_20_i </ci>
                 <ci> kd_pds_20 </ci>
+                <ci> kd_pds_20_i </ci>
               </apply>
             </apply>
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI74" id="CDC15_Synth" name="CDC15 Synth" reversible="true">
+      <reaction metaid="COPASI80" id="CDC15_Synth" name="CDC15 Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI74">
+              <rdf:Description rdf:about="#COPASI80">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:33:11Z</dcterms:W3CDTF>
@@ -4112,11 +4114,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI75" id="TEM1_Synth" name="TEM1 Synth" reversible="true">
+      <reaction metaid="COPASI81" id="TEM1_Synth" name="TEM1 Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI75">
+              <rdf:Description rdf:about="#COPASI81">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:34:57Z</dcterms:W3CDTF>
@@ -4158,11 +4160,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI76" id="POLOT_Synth" name="POLOT Synth" reversible="false">
+      <reaction metaid="COPASI82" id="POLOT_Synth" name="POLOT Synth" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI76">
+              <rdf:Description rdf:about="#COPASI82">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:37:58Z</dcterms:W3CDTF>
@@ -4193,11 +4195,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI77" id="POLOT_Degr" name="POLOT Degr" reversible="false">
+      <reaction metaid="COPASI83" id="POLOT_Degr" name="POLOT Degr" reversible="false">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI77">
+              <rdf:Description rdf:about="#COPASI83">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:38:40Z</dcterms:W3CDTF>
@@ -4229,11 +4231,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI78" id="POLOA_Synth" name="POLOA Synth" reversible="true">
+      <reaction metaid="COPASI84" id="POLOA_Synth" name="POLOA Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI78">
+              <rdf:Description rdf:about="#COPASI84">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:39:37Z</dcterms:W3CDTF>
@@ -4274,11 +4276,11 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </math>
         </kineticLaw>
       </reaction>
-      <reaction metaid="COPASI79" id="CDC20A_APC_Synth" name="CDC20A_APC Synth" reversible="true">
+      <reaction metaid="COPASI85" id="CDC20A_APC_Synth" name="CDC20A_APC Synth" reversible="true">
         <annotation>
           <COPASI xmlns="http://www.copasi.org/static/sbml">
             <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-              <rdf:Description rdf:about="#COPASI79">
+              <rdf:Description rdf:about="#COPASI85">
                 <dcterms:created>
                   <rdf:Description>
                     <dcterms:W3CDTF>2018-01-06T14:45:13Z</dcterms:W3CDTF>
@@ -4319,13 +4321,34 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
       </reaction>
     </listOfReactions>
     <listOfEvents>
-      <event id="Cell_division" name="Cell division" useValuesFromTriggerTime="true">
+      <event metaid="COPASI41" id="Cell_division" name="Cell division" useValuesFromTriggerTime="true">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI41">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2018-05-01T12:48:38Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
         <trigger>
           <math xmlns="http://www.w3.org/1998/Math/MathML">
             <apply>
-              <lt/>
-              <ci> CLB2 </ci>
-              <cn> 0.2 </cn>
+              <and/>
+              <apply>
+                <lt/>
+                <ci> CLB2 </ci>
+                <cn> 0.2 </cn>
+              </apply>
+              <apply>
+                <eq/>
+                <ci> OK_DIV </ci>
+                <cn> 1 </cn>
+              </apply>
             </apply>
           </math>
         </trigger>
@@ -4375,17 +4398,38 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </eventAssignment>
         </listOfEventAssignments>
       </event>
-      <event id="Origin_relicensing" name="Origin relicensing" useValuesFromTriggerTime="true">
+      <event metaid="COPASI42" id="Origin_relicensing" name="Origin relicensing" useValuesFromTriggerTime="true">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI42">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2018-05-01T12:48:57Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
         <trigger>
           <math xmlns="http://www.w3.org/1998/Math/MathML">
             <apply>
-              <lt/>
+              <and/>
               <apply>
-                <plus/>
-                <ci> CLB2 </ci>
-                <ci> CLB5 </ci>
+                <lt/>
+                <apply>
+                  <plus/>
+                  <ci> CLB2 </ci>
+                  <ci> CLB5 </ci>
+                </apply>
+                <cn> 0.2 </cn>
               </apply>
-              <cn> 0.2 </cn>
+              <apply>
+                <eq/>
+                <ci> OK_LICENSE </ci>
+                <cn> 1 </cn>
+              </apply>
             </apply>
           </math>
         </trigger>
@@ -4407,7 +4451,20 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </eventAssignment>
         </listOfEventAssignments>
       </event>
-      <event id="Bud_emergence" name="Bud emergence" useValuesFromTriggerTime="true">
+      <event metaid="COPASI43" id="Bud_emergence" name="Bud emergence" useValuesFromTriggerTime="true">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI43">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2018-05-01T14:27:39Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
         <trigger>
           <math xmlns="http://www.w3.org/1998/Math/MathML">
             <apply>
@@ -4430,7 +4487,20 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
           </eventAssignment>
         </listOfEventAssignments>
       </event>
-      <event id="ORI_activation" name="ORI activation" useValuesFromTriggerTime="true">
+      <event metaid="COPASI44" id="ORI_activation" name="ORI activation" useValuesFromTriggerTime="true">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI44">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2018-05-01T12:50:11Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
         <trigger>
           <math xmlns="http://www.w3.org/1998/Math/MathML">
             <apply>
@@ -4470,6 +4540,88 @@ Adapted to SBML format and used as an example problem in Mitra et al (2018) &quo
         </delay>
         <listOfEventAssignments>
           <eventAssignment variable="FLAG_SPC">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <cn> 1 </cn>
+            </math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event metaid="COPASI45" id="Allow_division" name="Allow division">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI45">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2018-05-01T12:49:36Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+        <trigger>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+              <and/>
+              <apply>
+                <eq/>
+                <ci> OK_DIV </ci>
+                <cn> 0 </cn>
+              </apply>
+              <apply>
+                <gt/>
+                <ci> CLB2 </ci>
+                <cn> 0.2 </cn>
+              </apply>
+            </apply>
+          </math>
+        </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="OK_DIV">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <cn> 1 </cn>
+            </math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event metaid="COPASI46" id="Allow_license" name="Allow license">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI46">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2018-05-01T14:27:38Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+        <trigger>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply>
+              <and/>
+              <apply>
+                <eq/>
+                <ci> OK_LICENSE </ci>
+                <cn> 0 </cn>
+              </apply>
+              <apply>
+                <gt/>
+                <apply>
+                  <plus/>
+                  <ci> CLB2 </ci>
+                  <ci> CLB5 </ci>
+                </apply>
+                <cn> 0.2 </cn>
+              </apply>
+            </apply>
+          </math>
+        </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="OK_LICENSE">
             <math xmlns="http://www.w3.org/1998/Math/MathML">
               <cn> 1 </cn>
             </math>
