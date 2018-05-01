@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import re
 import copy
-from subprocess import run, STDOUT, PIPE
+from subprocess import run, STDOUT, PIPE, DEVNULL
 from .data import Data
 import heapq
 import traceback
@@ -557,7 +557,7 @@ class SbmlModel(OldSbmlModel):
 
     def execute(self, folder, filename, timeout):
         arg = pickle.dumps(self)
-        proc_output = run(['python', 'sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg)
+        proc_output = run(['python', 'sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=DEVNULL)
         result = pickle.loads(proc_output.stdout)
         return result
 
