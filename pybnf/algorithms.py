@@ -302,6 +302,31 @@ class Algorithm(object):
 
         self.best_fit_obj = None
 
+    @staticmethod
+    def should_pickle(k):
+        """
+        Checks to see if key 'k' should be included in pickling.  Currently allows all entries in instance dictionary
+        except for 'trajectory'
+
+        :param k:
+        :return:
+        """
+        return k != 'trajectory'
+
+    def __getstate__(self):
+        return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        try:
+            self.trajectory = Trajectory.load_trajectory(self.res_dir + '/sorted_params_backup.txt',
+                                                         self.config.variables, self.config.config['num_to_output'])
+        except IOError:
+            logger.exception('Failed to load trajectory from file')
+            print1('Failed to load Results/sorted_params_backup.txt . Still resuming your run, but when I save the '
+                   'best fits, it will only be the ones I\'ve seen since resuming.')
+            self.trajectory = Trajectory(self.config.config['num_to_output'])
+
     def _initialize_models(self):
         """
         Checks initial BNGLModel instances from the Configuration object for models that
@@ -527,10 +552,6 @@ class Algorithm(object):
         # Save a backup of the PSets
         self.output_results(name='backup')
 
-        # Hide the Trajectory so it doesn't get pickled
-        trajectory_holder = self.trajectory
-        self.trajectory = None
-
         # Pickle the algorithm
         picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
         try:
@@ -543,9 +564,6 @@ class Algorithm(object):
             if e.strerror == 'Too many open files':
                 print0('Too many open files! See "Troubleshooting" in the documentation for how to deal with this '
                        'problem.')
-
-        # Restore the trajectory
-        self.trajectory = trajectory_holder
 
     def get_backup_every(self):
         """
@@ -589,15 +607,6 @@ class Algorithm(object):
         if resume:
             psets = resume
             logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
-            # Restore the Trajectory from file (the loaded algorithm starts with Trajectory = None)
-            try:
-                self.trajectory = Trajectory.load_trajectory(self.res_dir + '/sorted_params_backup.txt',
-                                                             self.config.variables, self.config.config['num_to_output'])
-            except IOError:
-                logger.exception('Failed to load trajectory from file')
-                print1('Failed to load Results/sorted_params_backup.txt . Still resuming your run, but when I save the '
-                       'best fits, it will only be the ones I\'ve seen since resuming.')
-                self.trajectory = Trajectory(self.config.config['num_to_output'])
         else:
             psets = self.start_run()
         pending_psets = set(psets)
