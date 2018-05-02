@@ -73,44 +73,52 @@ class BNGLModel(Model):
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
         self.bng_command = ''
 
-        self.generates_network = False
-        self.generate_network_line = None
-        self.generate_network_line_index = -1
-        self.action_line_indices = []
-        self.actions = []
-        self.config_actions = []
-
-        self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
-
-        # TODO BNGL file reading is rather convoluted and could probably be cleaned up
         # Read the file
         with open(self.file_path) as file:
             self.bngl_file_text = file.read()
 
         # Scan the file's lines
-        # Find param names of type __FREE__, and also the 'begin parameters' declaration
+        # Check for various things to fill out all of the following attributes needed for model writing
+        self.generates_network = False
+        self.generate_network_line = None
+        self.seeded = False
+        self.actions = []
+        self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
         param_names_set = set()
-        self.split_line_index = None # for insertion of free parameters
-        self.model_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
+        self.split_line_index = None  # for insertion of free parameters
+        all_lines = [x.strip() for x in self.bngl_file_text.splitlines()]
+        skip_lines = set()  # Indices of lines that should not go into self.model_lines
+
         in_action_block = False
         in_no_block = True
-
         continuation = ''
-        for i, line in enumerate(self.model_lines):
-            commenti = line.find('#')
-            if commenti != -1:
-                line = line[:commenti]
+        continuation_raw = ''
+        continuation_indices = set()
+        for i, rawline in enumerate(all_lines):
+            commenti = rawline.find('#')
+            line = rawline if commenti == -1 else rawline[:commenti]
 
             if re.match(r'^\s*$', line):
-                continue  # Blank line - must handle before line continuation
+                # Blank or comment. Handle before continuation
+                if in_action_block:
+                    # Keep it in the actions block
+                    self.actions.append(rawline)
+                    skip_lines.add(i)
+                continue
 
             # Handle case where '\' is used to continue on the next line
             line = continuation + line
+            rawline = continuation_raw + rawline
+            indices = continuation_indices.union({i})  # The set of indices that are all part of this line due to continuation
             continuation = ''
+            continuation_raw = ''
+            continuation_indices = set()
             continue_match = re.search(r'\\\s*$', line)
             if continue_match:
                 # This line continues on the next line
                 continuation = line[:continue_match.start()]
+                continuation_raw = rawline + '\n'
+                continuation_indices = indices
                 continue
 
             # Find every item matching [alphanumeric]__FREE__
@@ -119,22 +127,13 @@ class BNGLModel(Model):
                 param_names_set.add(p)
 
             # Make sure setOption (if present) doesn't get passed to the actions block
-            if re.match('\s*setOption', line):
+            if re.match('\s*(setOption|setModelName|substanceUnits|version)', line):
                 continue
 
             # Check if this is the 'begin parameters' line
             if re.match('begin\s+parameters', line.strip()):
-                self.split_line_index = i + 1
-            elif re.search('generate_network', line):
-                self.generates_network = True
-                self.generate_network_line = line
-                self.generate_network_line_index = i
-            elif re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search('simulate.*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
-                self.generates_network = True  # in case there is no "generate_network" command present
-
-            action_suffix = self._get_action_suffix(line)
-            if action_suffix is not None:
-                self.suffixes.append(action_suffix)
+                # Generate index into self.model_lines based on i and number of skipped lines (probably 0 at this point)
+                self.split_line_index = i + 1 - len(skip_lines)
 
             # "begin model" doesn't work like a regular block, so escape before we start handling blocks.
             if re.match('(begin|end)\s+model', line.strip()):
@@ -143,57 +142,51 @@ class BNGLModel(Model):
             if re.match('begin\s+actions', line.strip()):
                 in_action_block = True
                 in_no_block = False
-                self.action_line_indices.append(i)
+                skip_lines.update(indices)
                 continue
             elif re.match('end\s+actions', line.strip()):
                 in_action_block = False
                 in_no_block = True
-                self.action_line_indices.append(i)
+                skip_lines.update(indices)
                 continue
 
             # To keep track of whether we're in no block, which counts as an action block, check for
             # begin and end keywords
-            if re.match('begin\s+[a-z][a-z\s]*', line.strip()) and not re.match('begin\s+model', line.strip()):
+            if re.match('begin\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = False
-                continue
-
-            if re.match('end\s+[a-z][a-z\s]*', line.strip()) and not re.match('end\s+model', line.strip()):
-                in_no_block = True
-                continue
 
             if in_action_block or in_no_block:
-                if re.match('generate_network', line.strip()):
-                    continue
-                else:
-                    if 'method=>"nf"' in line or 'method=>"ssa"' in line or 'method=>"pla"' in line or \
-                            'simulate_nf' in line or 'simulate_ssa' in line or 'simulate_pla' in line:
-                        self.stochastic = True
-                    if re.search('seed=>\d+', line):
-                        # There's probably a better way to handle this.
-                        print1("Warning: Your model file specifies the 'seed' argument. This means that if you are "
-                               "using the 'smoothing' feature, all of your replicates will come out the same.")
-                    self.action_line_indices.append(i)
-                    self.actions.append(line)
+                skip_lines.update(indices)
+                action_suffix = self._get_action_suffix(line)
+                if action_suffix is not None:
+                    self.suffixes.append(action_suffix)
 
+                if re.match('generate_network', line.strip()):
+                    self.generates_network = True
+                    self.generate_network_line = line
+                    continue
+                if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
+                        'simulate.*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
+                    self.generates_network = True  # in case there is no "generate_network" command present
+                if re.search('simulate_((nf)|(ssa)|(pla))', line) or re.search(
+                        'simulate.*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
+                    self.stochastic = True
+                if re.search('seed=>\d+', line):
+                    self.seeded = True
+                self.actions.append(rawline)
+
+            if re.match('end\s+[a-z][a-z\s]*', line.strip()):
+                in_no_block = True
+
+        if self.split_line_index is None:
+            raise ModelError("'begin parameters' not found in BNGL file")
+        self.model_lines = [all_lines[i] for i in range(len(all_lines)) if i not in skip_lines]
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = 'generate_network({overwrite=>1})'
-            first_action_index = min(self.action_line_indices)
-
-            # places generate_network command directly prior to actions
-            self.generate_network_line_index = first_action_index
-            self.model_lines.insert(self.generate_network_line_index, self.generate_network_line)
-            for i, v in enumerate(self.action_line_indices):
-                self.action_line_indices[i] = 1 + v
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
                              "that end in '__FREE__' to tell BioNetFit which parameters to fit." % bngl_file)
-
-        if self.split_line_index is None:
-            raise ModelError("'begin parameters' not found in BNGL file")
-
-        if not self.action_line_indices:
-            raise ModelError("No actions found in model")
 
         # Save model_params as a sorted tuple
         param_names_list = list(param_names_set)
@@ -249,6 +242,9 @@ class BNGLModel(Model):
         if self.param_set is None:
             raise ModelError('Must assign a PSet to the model before calling model_text()')
 
+        if len(self.actions) == 0:
+            raise ModelError("No actions found in model")
+
         # Generate the text associated with defining __FREE__ parameter values
         param_text_lines = ['%s %s' % (k, str(self.param_set[k])) for k in self.param_names]
 
@@ -259,19 +255,19 @@ class BNGLModel(Model):
                 self.generate_network_line + '\n',
                 'end actions'
             ]
-            self.model_lines = \
-                self.model_lines[:self.split_line_index] + \
-                param_text_lines + \
-                [self.model_lines[i] for i in range(self.split_line_index, len(self.model_lines))
-                 if i not in self.action_line_indices + [self.generate_network_line_index]] + \
-                action_lines
         else:
-            self.model_lines = \
-                self.model_lines[:self.split_line_index] + \
-                param_text_lines + \
-                self.model_lines[self.split_line_index:]
+            action_lines = ['begin actions\n']
+            if self.generates_network:
+                action_lines.append(self.generate_network_line)
+            action_lines += self.actions + ['end actions']
 
-        return '\n'.join(self.model_lines) + '\n'
+        all_lines = \
+            self.model_lines[:self.split_line_index] + \
+            param_text_lines + \
+            self.model_lines[self.split_line_index:] + \
+            action_lines
+
+        return '\n'.join(all_lines) + '\n'
 
     def save(self, file_prefix, gen_only=False, pset=None):
         """
@@ -332,8 +328,23 @@ class BNGLModel(Model):
         return ds
 
     def add_action(self, action):
-        self.config_actions.append(action)
-        print0('Warning: Adding actions to BNGL models with config options is not yet supported')
+        if isinstance(action, TimeCourse):
+            line = 'simulate({method=>"%s",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s",print_functions=>1})' % \
+                   (action.method, action.time, action.stepnumber, action.suffix)
+        elif isinstance(action, ParamScan):
+            line = 'parameter_scan({parameter=>"%s",method=>"%s",t_start=>0,t_end=>%s,par_min=>%s,par_max=>%s,' \
+                   'n_scan_pts=>%s,log_scale=>%s,suffix=>"%s",print_functions=>1})' % \
+                   (action.param, action.method, action.time, action.min, action.max, action.stepnumber + 1,
+                    action.logspace, action.suffix)
+        else:
+            raise RuntimeError('Unknown action type %s' % type(action))
+        # Config actions are assumed to be independent, so need to reset concentrations before each one.
+        self.actions.append('resetConcentrations()')
+        self.actions.append(line)
+        self.generates_network = True
+        if self.generate_network_line is None:
+            self.generate_network_line = 'generate_network({overwrite=>1})'
+        self.suffixes.append((action.bng_codeword, action.suffix))
 
 
 class NetModel(BNGLModel):
@@ -430,8 +441,13 @@ class SbmlModel(Model):
             out.write(self.model_text())
 
     def add_action(self, action):
+        if action.method not in ('ode', 'ssa'):
+            raise PybnfError('time_course or param_scan method %s is not possible with an SBML model. Options are '
+                             'ode or ssa.' % action.method)
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
+        if action.method == 'ssa':
+            self.stochastic = True
 
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""
@@ -453,6 +469,12 @@ class SbmlModel(Model):
         # Run the model actions
         result_dict = dict()
         for act in self.actions:
+            runner.reset()
+            if act.method == 'ssa':
+                runner.setIntegrator('gillespie')
+                runner.getIntegrator().setValue('variable_step_size', False)
+            else:
+                runner.setIntegrator('cvode')
             if isinstance(act, TimeCourse):
                 res_array = runner.simulate(0., act.time, steps=act.stepnumber)
                 res = Data(named_arr=res_array)
@@ -513,12 +535,13 @@ class TimeCourse(Action):
         """
         # Available keys and default values
         num_keys = {'time', 'step'}
-        str_keys = {'model', 'suffix'}
+        str_keys = {'model', 'suffix', 'method'}
         # Default values
         self.time = None  # Required
         self.step = 1.
         self.model = ''
         self.suffix = 'time_course'
+        self.method = 'ode'
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -538,6 +561,9 @@ class TimeCourse(Action):
         if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')
 
+        if self.method not in ('ode', 'ssa', 'pla', 'nf'):
+            raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
+
         self.stepnumber = int(np.round(self.time/self.step))
         self.bng_codeword = 'simulate'
 
@@ -554,7 +580,7 @@ class ParamScan(Action):
         """
         # Available keys and default values
         num_keys = {'min', 'max', 'step', 'time', 'logspace'}
-        str_keys = {'model', 'suffix', 'param'}
+        str_keys = {'model', 'suffix', 'param', 'method'}
         required_keys = {'min', 'max', 'step', 'time', 'param'}
         # Default values
         self.min = None
@@ -565,6 +591,7 @@ class ParamScan(Action):
         self.param = None
         self.model = ''
         self.suffix = 'param_scan'
+        self.method = 'ode'
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -587,6 +614,8 @@ class ParamScan(Action):
         self.logspace = int(self.logspace)
         if self.logspace not in (0, 1):
             raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
+        if self.method not in ('ode', 'ssa', 'pla', 'nf'):
+            raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
 
         self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'

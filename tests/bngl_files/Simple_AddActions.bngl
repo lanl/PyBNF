@@ -149,4 +149,27 @@ begin actions
 
 generate_network({overwrite=>1})
 
+# The command below instructs BioNetGen to derive a reaction network from the model's rules.
+# The output is sent to a file that has a .net filename extension.
+# The .net file can be further processed to generate the ordinary differential equations
+# corresponding to the reaction network and the rate laws associated with the model's rules.
+
+# The commands below illustrate how we simulated
+# 1) an initial period of multivalent antigen-stimulated IgE receptor signaling,
+# 2) an intermediate period of monovalent antigen-induced IgE receptor signaling quiescence, and
+# 3) a second and final period of multivalent antigen-stimulated IgE receptor signaling.
+
+# For the purposes of fitting to experimental data, we repeat the series of 3 simulations for each time delay that was tested experimentally
+# For each one, a .exp file was saved containing the appropriate experimental data point from Fig. 4
+# BioNetFit will be used to fit the model to the .exp files.
+
+# first 5-min period of multivalent antigen stimulation
+setConcentration("Ag(DNP)","Ag_tot_1")
+simulate({suffix=>"p1_5",method=>"ode",t_end=>5,n_steps=>50})
+
+
+resetConcentrations()
+simulate({method=>"ode",t_start=>0,t_end=>50.0,n_steps=>5,suffix=>"s2",print_functions=>1})
+resetConcentrations()
+parameter_scan({parameter=>"kon",method=>"ode",t_start=>0,t_end=>5.0,par_min=>10.0,par_max=>60.0,n_scan_pts=>6,log_scale=>0,suffix=>"s3",print_functions=>1})
 end actions

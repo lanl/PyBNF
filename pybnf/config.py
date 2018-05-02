@@ -267,6 +267,10 @@ class Configuration(object):
             if not stochastic:
                 print1('Warning: You specified smoothing=%i, but it looks like none of your models use a stochastic '
                        'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
+            if np.any([m.seeded for m in md.values() if isinstance(m, BNGLModel)]):
+                raise PybnfError('You specified smoothing=%i, but one of your simulation commands contains the "seed" '
+                                 'argument. This would cause all of your smoothing replicates to come out the same.'
+                                 % self.config['smoothing'])
 
         return md
 

@@ -23,11 +23,13 @@ class TestModel:
 
         cls.file1a = 'bngl_files/Simple_Answer.bngl'
         cls.file1b = 'bngl_files/Simple_GenOnly.bngl'
+        cls.file1c = 'bngl_files/Simple_AddActions.bngl'
 
         cls.savefile_prefix = 'bngl_files/NoseTest_Save'
         cls.savefile2_prefix = 'bngl_files/NoseTest_Save2'
         cls.savefile3_prefix = 'bngl_files/NoseTest_Save3'
         cls.savefile4_prefix = 'bngl_files/NoseTest_Save4'
+        cls.savefile5_prefix = 'bngl_files/NoseTest_Save5'
 
         cls.params1 = [
             pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=3.8),
@@ -48,13 +50,11 @@ class TestModel:
         remove(cls.savefile3_prefix + '.net')
         remove(cls.savefile4_prefix + '.bngl')
         remove(cls.savefile4_prefix + '.net')
+        remove(cls.savefile5_prefix + '.bngl')
 
     def test_no_gen_command(self):
         model = pset.BNGLModel(self.file6)
         assert model.generates_network
-        print(model.generate_network_line_index, model.action_line_indices)
-        assert model.generate_network_line_index == min(model.action_line_indices) - 1
-        assert model.model_lines[model.generate_network_line_index] == 'generate_network({overwrite=>1})'
         assert model.generate_network_line == 'generate_network({overwrite=>1})'
 
     def test_initialize(self):
@@ -139,6 +139,26 @@ class TestModel:
 
         assert myguess2 == answer2
 
+    def test_bngl_config_actions(self):
+        ps1 = pset.PSet(self.params1)
+        model1 = pset.BNGLModel(self.file1, ps1)
+        a1 = pset.TimeCourse({'time': 50, 'step': 10, 'model': 'Simple', 'suffix': 's2'})
+        model1.add_action(a1)
+        a2 = pset.ParamScan({'min': 10, 'max': 60, 'step': 10, 'time': 5, 'suffix': 's3', 'model': 'Simple',
+                             'param': 'kon'})
+        model1.add_action(a2)
+        model1.save(self.savefile5_prefix)
+
+        f_myguess = open(self.savefile5_prefix + '.bngl')
+        myguess = f_myguess.read()
+        f_myguess.close()
+
+        f_answer = open(self.file1c)
+        answer = f_answer.read()
+        f_answer.close()
+
+        assert myguess == answer
+
     def test_action_suffixes(self):
         m0 = pset.BNGLModel(self.file1)
         assert len(m0.suffixes) == 1
@@ -150,7 +170,7 @@ class TestModel:
 
     def test_actions(self):
         m0 = pset.BNGLModel(self.file1)
-        assert len(m0.actions) == 2
+        assert len([a for a in m0.actions if len(a) > 0 and a[0] != '#']) == 2
         for a in m0.actions:
             assert re.search('setOption', a) is None
 
