@@ -686,11 +686,11 @@ class FreeParameter(object):
 
     def set_value(self, new_value):
         """
-        Assigns a value to the parameter
+        Creates a copy of the parameter with the given value
 
         :param new_value: A numeric value assigned to the FreeParameter
         :type new_value: float
-        :return:
+        :return: FreeParameter
         """
         if new_value < self.lower_bound or new_value > self.upper_bound:
             if self.value is None:
@@ -789,9 +789,9 @@ class FreeParameter(object):
         :return:
         """
         if not isinstance(other, FreeParameter):
-            raise PybnfError("Cannot compare FreeParameter with another object")
+            raise ValueError("Cannot compare FreeParameter with another object")
         if not self.log_space == other.log_space:
-            raise PybnfError("Cannot calculate diff between two FreeParameter instances that are not varying in the same"
+            raise ValueError("Cannot calculate diff between two FreeParameter instances that are not varying in the same"
                              "space")
         if self.log_space:
             return np.log10(self.value / other.value)
