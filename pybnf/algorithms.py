@@ -275,6 +275,11 @@ class JobGroup:
 
 
 class Algorithm(object):
+    """
+    A superclass containing the structures common to all metaheuristic and MCMC-based algorithms
+    defined in this software suite
+    """
+
     def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
