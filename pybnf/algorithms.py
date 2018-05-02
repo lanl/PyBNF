@@ -1912,7 +1912,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         self.prior = None
         self.load_priors()
 
-        self.samples_file = None # Initialize later.
         self.staged = []  # Used only when resuming a run and adding iterations
 
     def reset(self, bootstrap=None):
