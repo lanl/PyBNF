@@ -1986,7 +1986,7 @@ class SimplexAlgorithm(Algorithm):
                         new_vars = []
                         for v in self.variables:
                             # new_dict[v] = self.tau * self.simplex[i-1][1][v] + (1 - self.tau) * self.simplex[i][1][v]
-                            new_var = v.set_value(self.ab_plus_cd(self.tau, self.simplex[i-1][1][v.name], 1 - self.tau,
+                            new_var = v.set_value(self.ab_plus_cd(self.tau, self.simplex[0][1][v.name], 1 - self.tau,
                                                       self.simplex[i][1][v.name], v))
                             new_vars.append(new_var)
                         new_pset = PSet(new_vars)
