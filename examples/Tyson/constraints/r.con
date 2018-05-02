@@ -8,12 +8,12 @@ ESP1<1 always weight 10000
 ESP1>0.2 once weight 20000
 FLAG_BUD>=1 at FLAG_SPC=1 weight 10000 altpenalty BUD>1 min 0.0001
 FLAG_UDNA>=1 at FLAG_SPC=1 weight 10000 altpenalty ORI>1 min 0.0001
-FLAG_BUD>=1 at DIV_COUNT=1 weight 10000 altpenalty BUD>1 min 0.0001
-FLAG_UDNA>=1 at DIV_COUNT=1 weight 10000 altpenalty ORI>1 min 0.0001
-FLAG_BUD>=1 at DIV_COUNT=2 weight 10000 altpenalty BUD>1 min 0.0001
-FLAG_UDNA>=1 at DIV_COUNT=2 weight 10000 altpenalty ORI>1 min 0.0001
-FLAG_BUD>=1 at DIV_COUNT=3 weight 10000 altpenalty BUD>1 min 0.0001
-FLAG_UDNA>=1 at DIV_COUNT=3 weight 10000 altpenalty ORI>1 min 0.0001
-FLAG_SPC>=1 at DIV_COUNT=1 weight 10000 altpenalty SPN>1 min 0.0001
-FLAG_SPC>=1 at DIV_COUNT=2 weight 10000 altpenalty SPN>1 min 0.0001
-FLAG_SPC>=1 at DIV_COUNT=3 weight 10000 altpenalty SPN>1 min 0.0001
+FLAG_BUD>=1 at DIV_COUNT=1 before weight 10000 altpenalty BUD>1 min 0.0001
+FLAG_UDNA>=1 at DIV_COUNT=1 before weight 10000 altpenalty ORI>1 min 0.0001
+FLAG_BUD>=1 at DIV_COUNT=2 before weight 10000 altpenalty BUD>1 min 0.0001
+FLAG_UDNA>=1 at DIV_COUNT=2 before weight 10000 altpenalty ORI>1 min 0.0001
+FLAG_BUD>=1 at DIV_COUNT=3 before weight 10000 altpenalty BUD>1 min 0.0001
+FLAG_UDNA>=1 at DIV_COUNT=3 before weight 10000 altpenalty ORI>1 min 0.0001
+FLAG_SPC>=1 at DIV_COUNT=1 before weight 10000 altpenalty SPN>1 min 0.0001
+FLAG_SPC>=1 at DIV_COUNT=2 before weight 10000 altpenalty SPN>1 min 0.0001
+FLAG_SPC>=1 at DIV_COUNT=3 before weight 10000 altpenalty SPN>1 min 0.0001
