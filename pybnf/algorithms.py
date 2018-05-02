@@ -302,6 +302,31 @@ class Algorithm(object):
 
         self.best_fit_obj = None
 
+    @staticmethod
+    def should_pickle(k):
+        """
+        Checks to see if key 'k' should be included in pickling.  Currently allows all entries in instance dictionary
+        except for 'trajectory'
+
+        :param k:
+        :return:
+        """
+        return k != 'trajectory'
+
+    def __getstate__(self):
+        return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        try:
+            self.trajectory = Trajectory.load_trajectory(self.res_dir + '/sorted_params_backup.txt',
+                                                         self.config.variables, self.config.config['num_to_output'])
+        except IOError:
+            logger.exception('Failed to load trajectory from file')
+            print1('Failed to load Results/sorted_params_backup.txt . Still resuming your run, but when I save the '
+                   'best fits, it will only be the ones I\'ve seen since resuming.')
+            self.trajectory = Trajectory(self.config.config['num_to_output'])
+
     def _initialize_models(self):
         """
         Checks initial BNGLModel instances from the Configuration object for models that
@@ -500,7 +525,7 @@ class Algorithm(object):
         """
         if name == '':
             name = str(self.output_counter)
-        self.output_counter += 1
+            self.output_counter += 1
         filepath = '%s/sorted_params_%s.txt' % (self.res_dir, name)
         logger.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
@@ -524,15 +549,21 @@ class Algorithm(object):
         """
 
         logger.info('Saving a backup of the algorithm')
+        # Save a backup of the PSets
+        self.output_results(name='backup')
+
         # Pickle the algorithm
         picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
         try:
             f = open(picklepath, 'wb')
             pickle.dump((self, pending_psets), f)
             f.close()
-        except IOError:
+        except IOError as e:
             logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
+            if e.strerror == 'Too many open files':
+                print0('Too many open files! See "Troubleshooting" in the documentation for how to deal with this '
+                       'problem.')
 
     def get_backup_every(self):
         """
@@ -626,7 +657,7 @@ class Algorithm(object):
                 break
             response = self.got_result(res)
             if response == 'STOP':
-                self.best_fit_obj = self.trajectory.trajectory[self.trajectory.best_fit()]
+                self.best_fit_obj = self.trajectory.best_score()
                 logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 break

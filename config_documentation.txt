@@ -36,7 +36,7 @@ logvar = name__FREE__ init step - a variable that starts at init with an initial
 
 refine: If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. Default: 0
 delete_old_files: If 1 - delete simulation folders immediately after they complete. 2 - Delete both old simulation folders and old sorted_params.txt result files Default: 0
-num_to_output: The maximum number of PSets to write when writing the trajectory. Default: 1000000
+num_to_output: The maximum number of PSets to write when writing the trajectory. Default: 5000
 output_every: Write the Trajectory to file every x iterations. Default: 20
 wall_time_sim: Maximum time (in seconds) to wait for a simulation to finish.  Exceeding this (either for a simulation or network generation) results in an infinite objective function value.  Default: 3600
 wall_time_gen: Same as wall_time_sim, but for the initial network generation.  Will cause the program to exit if exceeded.
