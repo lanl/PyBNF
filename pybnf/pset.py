@@ -13,6 +13,9 @@ import heapq
 import traceback
 import roadrunner as rr
 import pickle
+from os.path import abspath, dirname, join
+
+ROOT_DIRECTORY = join(dirname(abspath(__file__)), '..')
 rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
@@ -557,7 +560,7 @@ class SbmlModel(OldSbmlModel):
 
     def execute(self, folder, filename, timeout):
         arg = pickle.dumps(self)
-        proc_output = run(['python', 'sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=DEVNULL)
+        proc_output = run(['python', ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=DEVNULL)
         result = pickle.loads(proc_output.stdout)
         return result
 
