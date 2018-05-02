@@ -416,7 +416,7 @@ class SbmlModel(Model):
         except RuntimeError:
             raise FileNotFoundError
 
-        self.species_names = set(runner.model.getFloatingSpeciesIds())
+        self.species_names = set(runner.model.getFloatingSpeciesIds()).union(set(runner.model.getBoundarySpeciesIds()))
         self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
 
     def copy_with_param_set(self, pset):
@@ -468,6 +468,7 @@ class SbmlModel(Model):
 
         # Run the model actions
         result_dict = dict()
+        selection = ['time'] + list(self.species_names)
         for act in self.actions:
             runner.reset()
             if act.method == 'ssa':
@@ -476,7 +477,7 @@ class SbmlModel(Model):
             else:
                 runner.setIntegrator('cvode')
             if isinstance(act, TimeCourse):
-                res_array = runner.simulate(0., act.time, steps=act.stepnumber)
+                res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
                 res = Data(named_arr=res_array)
                 result_dict[act.suffix] = res
             elif isinstance(act, ParamScan):
@@ -496,7 +497,7 @@ class SbmlModel(Model):
                     else:
                         setattr(runner, act.param, x)
                     runner.reset()  # Reset concentrations to current ICs
-                    i_array = runner.simulate(0., act.time, steps=1)
+                    i_array = runner.simulate(0., act.time, steps=1, selections=selection)
                     if res_array is None:  # First iteration
                         res_array = np.zeros((len(points), 1+i_array.shape[1]))
                         if icscan:

@@ -41,7 +41,7 @@ end model
 
 begin actions
   generate_network({overwrite=>1})
-  simulate({method=>"ode",t_start=>-10,t_end=>10,n_steps=>20,suffix=>"par1",print_functions=>1})
+  simulate({method=>"ode",t_start=>-0,t_end=>20,n_steps=>20,suffix=>"par1",print_functions=>1})
 
 end actions
 
