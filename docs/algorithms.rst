@@ -106,7 +106,7 @@ Then the in the new parameter set, :math:`P = \textrm{parent}[P] + \textrm{rand\
 
 Intuitively what we do here is perturb P on the order of d (which acts as a measure of the variability of P in the population). If the parent is better than the helper, we keep P closer to the parent, and if the helper is better, we shift it closer to the helper. 
 
-The proposed new parameter set is accepted if it achieves a lower objective value than its parent.  
+The proposed new parameter set is accepted if it achieves a lower objective value than its parent.
 
 If a parent goes ``local_min_limit`` iterations without being replaced by a new parameter set, it is assumed to be stuck in a local minimum, and is replaced with a new random parameter set. The random parameter set is drawn from a "reserve queue", which is initialized at the start of the fitting run to contain ``reserve_size`` Latin hypercube distributed samples. The reserve queue ensures that each time we take a new random parameter set, we are sampling a part of parameter space that we have not sampled previously. 
 
@@ -149,7 +149,10 @@ Markov Chain Monte Carlo
 
 Algorithm
 ^^^^^^^^^
-Markov chain Monte Carlo is a Bayesian method in which points in parameter space are sampled with a frequency proportional to the probability that the parameter set is correct given the data. The result is a probability distribution over parameter space that expresses the likelihood of each possible parameter set. With this algorithm, we obtain not just a point estimate of the best fit, but a means to quantify the uncertainty in each parameter value. 
+Markov chain Monte Carlo is a Bayesian method in which points in parameter space are sampled with a frequency
+proportional to the probability that the parameter set is correct given the data. The result is a probability
+distribution over parameter space that expresses the likelihood of each possible parameter set. With this algorithm, we
+obtain not just a point estimate of the best fit, but a means to quantify the uncertainty in each parameter value.
 
 When running Markov chain Monte Carlo, PyBNF outputs additional files containing this probability distribution information. The files in ``Results/Histograms/`` give histograms of the marginal probability distributions for each free parameter. The files ``credible##.txt`` (e.g., ``credible95.txt``) use the marginal histogram for each parameter to calculate a *credible interval* - an interval in which the parameter value is expected to fall with the specified probability (e.g. 95%).  Finally, ``samples.txt`` contains all parameter sets sampled over the course of the fitting run, allowing the user to perform further custom analysis on the sampled probability distribution. 
 
@@ -227,7 +230,46 @@ Compared to ordinary Markov chain Monte Carlo, parallel tempering offers a trade
 DREAM
 -----
 
-Ryan: please write this one
+Algorithm
+^^^^^^^^^
+**D**\ iffe\ **R**\ ential **E**\ volution **A**\ daptive **M**\ etropolis (DREAM), described in [Vrugt2016]_, is an
+MCMC approach for estimating the joint probability distribution of a model's free parameters.  DREAM combines features
+from traditional Bayesian MCMC (e.g. the Metropolis-Hastings acceptance criterion) and differential evolution (parameter
+recombination).  DREAM is purported to accelerate convergence of the MCMC as well as facilitate sampling of multimodal
+distributions.
+
+Parallelization
+^^^^^^^^^^^^^^^
+DREAM uses parallel MCMC chains whose current state behaves as an individual in a differential evolution fitting run.
+Upon evaluation of each individual (by applying the Metropolis-Hastings criterion), a proposal individual is created
+according to the differential evolution update strategy ``all1``.  Thus the algorithm is synchronized based on the
+evaluation of the current "generation"
+
+Implementation details
+^^^^^^^^^^^^^^^^^^^^^^
+Many details here are similar to those in the traditional MCMC algorithm, including the requirement for prior
+distributions for the parameters, and the use of the Metropolis-Hastings criterion for acceptance.  However, the use
+of differential evolution features introduces a number of distinctions.  To maintain the required detailed balance
+necessary for MCMC proposal distributions, random perturbations must be introduced to reach all of parameter space.
+Thus a simple proposal for some chain :math:`X` on iteration :math:`i` is :math:`X_{i+1} = X_i + \gamma\left(X_a - X_b\right) + \zeta`
+where :math:`\zeta` is drawn from a standard normal distribution with small standard deviation and :math:`\gamma` is the
+``step_size`` configuration parameter.
+
+DREAM also incorporates subspace sampling in parameter space, meaning that only a subset of the parameters may be
+modified by the differential evolution update.  A "crossover" number can be set in the configuration file that
+defines a multinomial probability distribution that governs whether a particular parameter will be updated
+(the ``crossover_number`` key).  For each parameter to be updated, we perform the traditional differential evolution
+update (calculating the difference between two other chains for the parameter and scaling by :math:`\gamma`) and then
+introduce another random perturbation that is uniformly distributed between :math:`-\lambda` and :math:`\lambda` as
+defined in the configuration file with key ``lambda``.
+
+Finally, DREAM enables jumping (approximately) between modes in the posterior distribution.  The user may specify the
+frequency of this jump (which effectively sets :math:`\gamma = 1`) by setting the key ``gamma_prob`` to value between 0
+and 1 in the configuration file.
+
+The algorithm described here is similar to Algorithm 5 in [Vrugt2016]_, but with a few omissions.  The algorithm does
+not implement a convergence check (such as the Gelman-Rubin diagnostic), and we do not automatically prune outlier
+chains.
 
 Simplex
 -------
@@ -249,13 +291,13 @@ The initial simplex consists of N+1 points chosen deterministically based on the
 
 
 .. figure:: simplex.png
-    :width: 200px
+:width: 200px
     :align: center
-    :figclass: align-center
+        :figclass: align-center
 
-    Illustration of the simplex algorithm, modifying point P on a 3-point simplex in 2 dimensions
+        Illustration of the simplex algorithm, modifying point P on a 3-point simplex in 2 dimensions
 
-Each iteration, we operate on the k worst points in the simplex, where k is the number of available processors (``parallel_count``). For each point P, we  consider the hyperplane defined by the other N points in the simplex (blue line). Let d be the distance from P to the hyperplane. We evaluate point P\ :sub:`1` obtained by reflecting P through the hyperplane, to a distance of d \* ``simplex_reflect`` on the other side. Depending on the resulting objective value, we try another point in the second phase of the iteration. Three cases are possible. 
+    Each iteration, we operate on the k worst points in the simplex, where k is the number of available processors (``parallel_count``). For each point P, we  consider the hyperplane defined by the other N points in the simplex (blue line). Let d be the distance from P to the hyperplane. We evaluate point P\ :sub:`1` obtained by reflecting P through the hyperplane, to a distance of d \* ``simplex_reflect`` on the other side. Depending on the resulting objective value, we try another point in the second phase of the iteration. Three cases are possible.
 
 1) The new point is better than the current global minimum: We try a second point continuing in the same direction for a distance of d \* ``simplex_expansion`` away from the hyperplane (P\ :sub:`2,1`).
 2) The new point is worse than the global minimum, but better than the next worst point in the simplex: We don't try a second point.
@@ -263,7 +305,7 @@ Each iteration, we operate on the k worst points in the simplex, where k is the 
 
 In all cases, P in the simplex is set to the best choice among P, P\ :sub:`1`, or whichever second point we tried.
 
-If in a given iteration, all k points resulted in Case 3 and did not update to P\ :sub:`2,3a` or P\ :sub:`2,3b`, the iteration did not effectively change the state of the simplex. Then, we contract the simplex towards the best point: We set each point P to ``simplex_contract`` \* P0 + (1 - ``simplex_contract``) \* P, where P0 is the best point in the simplex. 
+    If in a given iteration, all k points resulted in Case 3 and did not update to P\ :sub:`2,3a` or P\ :sub:`2,3b`, the iteration did not effectively change the state of the simplex. Then, we contract the simplex towards the best point: We set each point P to ``simplex_contract`` \* P0 + (1 - ``simplex_contract``) \* P, where P0 is the best point in the simplex.
 
 Applications
 ^^^^^^^^^^^^
@@ -281,3 +323,4 @@ It is also possible to run the Simplex algorithm on its own, using a custom star
 .. [Moraes2015] Moraes, A. O. S.; Mitre, J. F.; Lage, P. L. C.; Secchi, A. R. A Robust Parallel Algorithm of the Particle Swarm Optimization Method for Large Dimensional Engineering Problems. Appl. Math. Model. 2015, 39 (14), 4223–4241.
 .. [Penas2015] Penas, D. R.; González, P.; Egea, J. A.; Banga, J. R.; Doallo, R. Parallel Metaheuristics in Computational Biology: An Asynchronous Cooperative Enhanced Scatter Search Method. Procedia Comput. Sci. 2015, 51 (1), 630–639.
 .. [Penas2017] Penas, D. R.; González, P.; Egea, J. A.; Doallo, R.; Banga, J. R. Parameter Estimation in Large-Scale Systems Biology Models: A Parallel and Self-Adaptive Cooperative Strategy. BMC Bioinformatics 2017, 18 (1), 52.
+.. [Vrugt2016] Vrugt, J. Markov chain Monte Carlo simulation using the DREAM software package: Theory, concepts, and MATLAB implementation. Environmental Modelling and Software 2016, 75, 273-316.
