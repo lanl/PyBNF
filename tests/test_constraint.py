@@ -11,7 +11,7 @@ class TestConstraint:
     def setup_class(cls):
 
         cls.line1 = 'A<B at 6 weight 1'
-        cls.line2 = '42>=A At B=17 everytime Weight 5 AltPenalty C<=42 Min 3.4e-7#Comment  '
+        cls.line2 = '42>=A At B=17 everytime before Weight 5 AltPenalty C<=42 Min 3.4e-7#Comment  '
         cls.line3 = 'A<16 between B=3.14, 702 weight 8 min 9'
         cls.line4 = 'A<16 always weight 6'
         cls.line5 = 'A<16 once weight 6'
@@ -42,6 +42,7 @@ class TestConstraint:
         assert p.enforce[0] == 'at'
         assert list(p.enforce[1]) == ['B', '17']
         assert p.enforce[2] == 'everytime'
+        assert p.enforce[3] == 'before'
         assert p.weight_expr.weight == '5'
         assert list(p.weight_expr.altpenalty) == ['C', '<=', '42']
         assert p.weight_expr.min == '3.4E-7'
@@ -106,5 +107,6 @@ class TestConstraint:
         assert cs.constraints[12].penalty(d_dict) == 1
         assert cs.constraints[13].penalty(d_dict) == 0
         np.testing.assert_almost_equal(cs.constraints[14].penalty(d_dict), 1.6)
+        np.testing.assert_almost_equal(cs.constraints[15].penalty(d_dict), 0.1)
 
-        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 85.2)
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 85.3)

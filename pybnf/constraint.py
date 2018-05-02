@@ -77,9 +77,10 @@ class ConstraintSet:
                     else:
                         atvar = p.enforce[1][0]
                         atval = float(p.enforce[1][1])
-                    repeat = (len(p.enforce) == 3 and p.enforce[2] == 'everytime')
+                    repeat = (len(p.enforce) >= 3 and p.enforce[2] == 'everytime')
+                    before = (len(p.enforce) >= 3 and p.enforce[-1] == 'before')
                     con = AtConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat)
+                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before)
                 elif p.enforce[0] == 'always':
                     con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty)
@@ -121,7 +122,8 @@ class ConstraintSet:
         equals = pp.Suppress('=')
         obs_crit = obs - equals - const
         enforce_crit = const | obs_crit
-        enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True))
+        enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True)) -\
+            pp.Optional(pp.CaselessLiteral('before'))
         enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
@@ -342,7 +344,7 @@ class Constraint:
 
 class AtConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
-                 repeat=False):
+                 repeat=False, before=False):
         """
         Creates a new constraint of the form
 
@@ -352,12 +354,14 @@ class AtConstraint(Constraint):
         :param atval: Value that the atvar must take to activate the 'at' condition
         :param repeat: If True, enforce the constraint every time the 'at' condition is met. If False, only enforce
         the first time
+        :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
         self.atvar = atvar
         self.atval = atval
         self.repeat = repeat
+        self.before = before
 
         self.atkeys = None
         logger.debug("Created 'at' constraint %s<%s" % (self.quant1, self.quant2))
@@ -409,7 +413,9 @@ class AtConstraint(Constraint):
             # Make sure we pick the correct end of the interval if there's a point equal to the "at"
             if np.isclose(atdata[fi+1], self.atval, atol=0.) and not (np.isclose(atdata[fi], self.atval, atol=0.)):
                 fi += 1
-
+            # If constraint was declared with "before", go back 1.
+            if self.before and fi > 0:
+                fi -= 1
             penalty += self.get_penalty(sim_data_dict, fi, fi+1, require_length=len(at_col))
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
 
