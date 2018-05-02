@@ -72,6 +72,7 @@ simplex_stop_tol - Stop the algorithm if all parameters have converged to within
 mutation_rate - When generating a new individual, mutate each parameter with this probability. Default: 0.5
 mutation_factor - When mutating a parameter x, change it by mutation_factor*(PS1[x] - PS2[x]) where PS1 and PS2 are random other PSets in the population.  Default: 1.0
 stop_tolerance - Stop the run if max(objective) / min(objective) < 1 + this value, i.e., the entire population has converged to roughly the same objective. Default: 0.002
+de_strategy - Specifies how new parameter sets are chosen. Options are: rand1, rand2, best1, best2, all1, all2. The parameter set we mutate is: 'rand' - a random one, 'best' - the one with the lowest objective value, 'all' - the one we are proposing to replace (so all psets are mutated once per iteration). The amount of mutation is based on: '1' - 1 pair of other parameter sets (p1-p2), '2' - 2 pairs of other parameter sets (p1-p2 + p3-p4).
 
 # These are related to the more parallel-friendly "island-based" differential evolution. If all omitted, uses regular differential evolution, which is still parallelizable, but has to wait until a whole generation finishes before moving on to the next. 
 islands: Number of separate populations to evolve. Default: 1
