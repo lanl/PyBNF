@@ -74,7 +74,7 @@ class Result(object):
 
 
 class FailedSimulation(Result):
-    def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None])):
+    def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None]), lfs=None):
         """
         Instantiates a FailedSimulation
 
@@ -83,11 +83,16 @@ class FailedSimulation(Result):
         :param name:
         :param fail_type: 0 - Exceeded walltime, 1 - Other crash
         :type fail_type: int
+        :param einfo:
+        :type einfo: tuple
+        :param lfs: Log files (BNGL only) tracking BioNetGen stdout/stderr
+        :type lfs: list
         """
         super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
         self.failed = True
         self.traceback = ''.join(traceback.format_exception(*einfo))
+        self.log_files = lfs
 
     def normalize(self, settings):
         return
@@ -138,8 +143,6 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
-            if isinstance(model, BNGLModel) or isinstance(model, NetModel):
-                self.log_files.append('%s.log' % model_file_prefix)
         return ds
 
     def run_simulation(self):
@@ -168,16 +171,31 @@ class Job:
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
-        except (CalledProcessError, FailedSimulationError):
-            jlogger.debug('Job %s failed' % self.job_id, exc_info=True)
-            res = FailedSimulation(self.params, self.job_id, 1)
+        except CalledProcessError:
+            for m in self.models:
+                lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
+                jlogger.debug('Checking for log file %s' %lf)
+                if os.path.isfile(lf):
+                    self.log_files.append(lf)
+            res = FailedSimulation(self.params, self.job_id, 1, lfs=self.log_files)
         except TimeoutExpired:
-            res = FailedSimulation(self.params, self.job_id, 0)
+            for m in self.models:
+                lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
+                jlogger.debug('Checking for log file %s' % lf)
+                if os.path.isfile(lf):
+                    self.log_files.append(lf)
+            res = FailedSimulation(self.params, self.job_id, 0, lfs=self.log_files)
         except Exception:
+            for m in self.models:
+                lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
+                jlogger.debug('Checking for log file %s' % lf)
+                if os.path.isfile(lf):
+                    self.log_files.append(lf)
             print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
                    'as a bug.')
             jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
@@ -272,6 +290,7 @@ class Algorithm(object):
 
         self.sim_dir = self.config.config['output_dir'] + '/Simulations'
         self.res_dir = self.config.config['output_dir'] + '/Results'
+        self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs'
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -646,6 +665,14 @@ class Algorithm(object):
                 if res.fail_type >= 1:
                     self.fail_count += 1
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
+
+                if res.log_files:
+                    if not os.path.isdir(self.failed_logs_dir):
+                        os.mkdir(self.failed_logs_dir)
+                    for lf in res.log_files:
+                        logger.debug('Copying BNGL logs from failed simulations')
+                        shutil.copy(lf, self.failed_logs_dir)
+
                 logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
