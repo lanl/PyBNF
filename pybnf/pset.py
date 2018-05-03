@@ -352,6 +352,11 @@ class BNGLModel(Model):
             self.generate_network_line = 'generate_network({overwrite=>1})'
         self.suffixes.append((action.bng_codeword, action.suffix))
 
+    def get_suffixes(self):
+        """Returns a list of suffixes used in the model"""
+        # Todo: Clean up once mutations are also implemented for BNGL
+        return [s[1] for s in self.suffixes]
+
 
 class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
@@ -472,6 +477,17 @@ class SbmlModelNoTimeout(Model):
         :return:
         """
         self.mutants.append(mut_set)
+
+    def get_suffixes(self):
+        """
+        Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
+        mutation name
+        """
+        result = []
+        for s in self.suffixes:
+            for mut in self.mutants:
+                result.append(s[1]+mut.suffix)
+        return result
 
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""

@@ -404,7 +404,7 @@ class Configuration(object):
     def _check_actions(self):
         mapping = dict()
         for model in self.models.values():
-            suffs = {s[1] for s in model.suffixes}
+            suffs = set(model.get_suffixes())
             efs_per_m = {self._file_prefix(ef) for ef in self.config[model.file_path] if re.search("\.exp$", ef)}
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
