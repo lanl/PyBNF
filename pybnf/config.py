@@ -5,7 +5,8 @@ from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
 
-from .pset import BNGLModel, ModelError, SbmlModel, FreeParameter, TimeCourse, ParamScan, Mutation, MutationSet
+from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
+    Mutation, MutationSet
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -138,7 +139,7 @@ class Configuration(object):
             'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,
 
             'wall_time_gen': 3600,
-            'wall_time_sim': 3600,
+            'wall_time_sim': None,  # Chosen when loading models
             'normalization': None,
 
             'cluster_type': None,
@@ -243,6 +244,15 @@ class Configuration(object):
         Loads models specified in configuration file in a dictionary keyed on
         Model.name
         """
+
+        # If needed, choose the default timeout, which depends on what simulators the models use.
+        if self.config['wall_time_sim'] is None:
+            self.config['wall_time_sim'] = 0
+            for mf in self.config['models']:
+                if re.search('\.bngl$', mf):
+                    self.config['wall_time_sim'] = 3600
+                    break
+
         # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
         home_dir = os.getcwd()
 
@@ -259,7 +269,10 @@ class Configuration(object):
                     model.bng_command = absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
-                    model = SbmlModel(mf)
+                    if self.config['wall_time_sim'] == 0:
+                        model = SbmlModelNoTimeout(mf)
+                    else:
+                        model = SbmlModel(mf)
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)

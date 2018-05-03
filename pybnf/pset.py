@@ -405,7 +405,7 @@ class NetModel(BNGLModel):
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
 
 
-class OldSbmlModel(Model):
+class SbmlModelNoTimeout(Model):
 
     def __init__(self, file, pset=None, actions=()):
         self.file_path = file
@@ -556,7 +556,7 @@ class OldSbmlModel(Model):
         return result_dict
 
 
-class SbmlModel(OldSbmlModel):
+class SbmlModel(SbmlModelNoTimeout):
 
     def execute(self, folder, filename, timeout):
         arg = pickle.dumps(self)
