@@ -166,13 +166,14 @@ class Job:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except (CalledProcessError, FailedSimulationError):
+            jlogger.debug('Job %s failed' % self.job_id, exc_info=True)
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             res = FailedSimulation(self.params, self.job_id, 0)
         except Exception:
             print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
                    'as a bug.')
-            logger.exception('Unknown error during simulation')
+            jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         if self.delete_folder:
             try:
@@ -646,8 +647,9 @@ class Algorithm(object):
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your BioNetGen simulations are failing to run. See the BioNetGen log files in '
-                                     'the Simulations directory.')
+                                     'Your simulations are failing to run. For more info, check the debug log, and for '
+                                     'BioNetGen simulations, also check the BNG log files in the Simulations '
+                                     'directory.')
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)
