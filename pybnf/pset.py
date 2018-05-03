@@ -539,8 +539,10 @@ class SbmlModelNoTimeout(Model):
                         raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
                     if act.param in self.species_names:
                         icscan = True
+                        init_val = runner.model['init([%s])' % act.param]
                     else:
                         icscan = False
+                        init_val = getattr(runner, act.param)
                     points = np.linspace(act.min, act.max, act.stepnumber + 1)
                     res_array = None
                     labels = None
@@ -563,8 +565,11 @@ class SbmlModelNoTimeout(Model):
                                 labels = [act.param] + i_array.colnames
                         res_array[i, 0] = x
                         res_array[i, 1:] = i_array[1, :]
-                    logger.debug(str(labels))
-                    logger.debug(str(res_array))
+                    # Restore the original value of the scanned param, for any future actions / models
+                    if icscan:
+                        runner.model['init([%s])' % act.param] = init_val
+                    else:
+                        setattr(runner, act.param, init_val)
                     res = Data(arr=res_array)
                     res.load_rr_header(labels)
                     result_dict[act.suffix + mut.suffix] = res
