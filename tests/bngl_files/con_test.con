@@ -46,4 +46,6 @@ D>5000 between B=10,time=7 weight 2
 # Penalty 0.8 * 2 = 1.6
 D<5 between A=5,A=4 weight 2
 
+# Triggers at time 1 (before time 2), for a penalty of 0.1
+D <= 5 at B=8 before
 
