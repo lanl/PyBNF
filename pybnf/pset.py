@@ -525,7 +525,6 @@ class SbmlModelNoTimeout(Model):
                 else:
                     runner.setIntegrator('cvode')
                 if isinstance(act, TimeCourse):
-                    runner.reset()
                     try:
                         res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
                     except RuntimeError:
