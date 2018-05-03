@@ -647,9 +647,8 @@ class Algorithm(object):
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your simulations are failing to run. For more info, check the debug log, and for '
-                                     'BioNetGen simulations, also check the BNG log files in the Simulations '
-                                     'directory.')
+                                     'Your simulations are failing to run. For more info, check the log files in the '
+                                     'Simulations directory.')
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)
