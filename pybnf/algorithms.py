@@ -169,9 +169,11 @@ class Job:
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             res = FailedSimulation(self.params, self.job_id, 0)
-        # This block is making bugs hard to diagnose
-        # except Exception:
-        #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+        except Exception:
+            print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
+                   'as a bug.')
+            logger.exception('Unknown error during simulation')
+            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
@@ -637,7 +639,7 @@ class Algorithm(object):
             except KeyError:
                 logger.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
-                if res.fail_type == 1:
+                if res.fail_type >= 1:
                     self.fail_count += 1
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
                 logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
