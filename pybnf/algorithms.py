@@ -103,6 +103,10 @@ class Job:
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
 
+    # Seeing these logs for cluster-based fitting requires configuring dask to log to the
+    # "pybnf.algorithms.job" logger
+    jlogger = logging.getLogger('pybnf.algorithms.job')
+
     def __init__(self, models, params, job_id, output_dir, timeout, delete_folder=False):
         """
         Instantiates a Job
@@ -143,14 +147,18 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
+        self._get_log_files()
         return ds
+
+    def _get_log_files(self):
+        for m in self.models:
+            lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
+            if os.path.isfile(lf):
+                self.jlogger.debug('Found log file %s' % lf)
+                self.log_files.append(lf)
 
     def run_simulation(self):
         """Runs the simulation and reads in the result"""
-
-        # Seeing these logs for cluster-based fitting requires configuring dask to log to the
-        # "pybnf.algorithms.job" logger
-        jlogger = logging.getLogger('pybnf.algorithms.job')
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
@@ -158,32 +166,24 @@ class Job:
         while not made_folder:
             try:
                 os.mkdir(self.folder)
-                jlogger.info('Created folder %s for simulation' % self.folder)
+                self.jlogger.info('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
-                jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
+                self.jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
+                    self.jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
                                   self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
-            for m in self.models:
-                lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
-                jlogger.debug('Checking for log file %s' %lf)
-                if os.path.isfile(lf):
-                    self.log_files.append(lf)
+            self._get_log_files()
             res = FailedSimulation(self.params, self.job_id, 1, lfs=self.log_files)
         except TimeoutExpired:
-            for m in self.models:
-                lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
-                jlogger.debug('Checking for log file %s' % lf)
-                if os.path.isfile(lf):
-                    self.log_files.append(lf)
+            self._get_log_files()
             res = FailedSimulation(self.params, self.job_id, 0, lfs=self.log_files)
         except Exception:
             for m in self.models:
@@ -199,7 +199,7 @@ class Job:
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
-                jlogger.info('Removing folder %s' % self.folder)
+                self.jlogger.info('Removing folder %s' % self.folder)
             except CalledProcessError or TimeoutExpired:
                 # fail flag set to 1 since timeout in this case is due to directory removal
                 res = FailedSimulation(self.params, self.job_id, 1)

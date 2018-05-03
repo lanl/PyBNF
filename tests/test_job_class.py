@@ -46,7 +46,7 @@ class TestJob(object):
         self.job.folder = getcwd() + '/sim_x'
         assert self.job.log_files == []
         sim_data = self.job._run_models()
-        assert self.job.log_files[0] == 'Tricky_sim_1.log'
+        assert self.job.log_files[0] == self.job.folder + '/Tricky_sim_1.log'
         assert len(sim_data.keys()) == 1
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
@@ -80,7 +80,7 @@ class TestJob(object):
         assert isfile('sim_net/TrickyWP_p1_5_test.cdat')
         assert isfile('sim_net/TrickyWP_p1_5_test.gdat')
         assert isfile('sim_net/TrickyWP_p1_5_test.log')
-        assert job.log_files[0] == 'TrickyWP_p1_5_test.log'
+        assert job.log_files[0] == job.folder + '/TrickyWP_p1_5_test.log'
 
     def test_timeout(self):
         res = self.job_to.run_simulation()
