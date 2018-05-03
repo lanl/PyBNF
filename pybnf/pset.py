@@ -510,7 +510,11 @@ class SbmlModelNoTimeout(Model):
                     runner.setIntegrator('cvode')
                 if isinstance(act, TimeCourse):
                     runner.reset()
-                    res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                    try:
+                        res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                    except RuntimeError:
+                        # Rethrow simulation errors as something more specific to be caught
+                        raise FailedSimulationError
                     res = Data(named_arr=res_array)
                     result_dict[act.suffix + mut.suffix] = res
                 elif isinstance(act, ParamScan):
@@ -530,7 +534,10 @@ class SbmlModelNoTimeout(Model):
                         else:
                             setattr(runner, act.param, x)
                         runner.reset()  # Reset concentrations to current ICs
-                        i_array = runner.simulate(0., act.time, steps=1, selections=selection)
+                        try:
+                            i_array = runner.simulate(0., act.time, steps=1, selections=selection)
+                        except RuntimeError:
+                            raise FailedSimulationError
                         if res_array is None:  # First iteration
                             res_array = np.zeros((len(points), 1+i_array.shape[1]))
                             if icscan:
@@ -566,6 +573,14 @@ class SbmlModel(SbmlModelNoTimeout):
 
     def super_execute(self):
         return super().execute(None, None, None)
+
+
+class FailedSimulationError(Exception):
+    """
+    Raised when a simulation fails that was not a result of a subprocess.run() call (currently only use with
+    SbmlModelNoTimeout)
+    """
+    pass
 
 
 class Action:
