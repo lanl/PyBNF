@@ -325,6 +325,8 @@ class Algorithm(object):
             os.mkdir(self.sim_dir)
             self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
             os.mkdir(self.res_dir)
+            self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs-boot%s' % bootstrap
+            os.mkdir(self.failed_logs_dir)
 
         self.best_fit_obj = None
 
