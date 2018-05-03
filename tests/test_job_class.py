@@ -44,7 +44,9 @@ class TestJob(object):
     def test_job_components(self):
         mkdir('sim_x')
         self.job.folder = getcwd() + '/sim_x'
+        assert self.job.log_files == []
         sim_data = self.job._run_models()
+        assert self.job.log_files[0] == 'Tricky_sim_1.log'
         assert len(sim_data.keys()) == 1
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
@@ -71,11 +73,14 @@ class TestJob(object):
         job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', '.', timeout=None)
 
         job.folder = getcwd() + '/sim_net'
+        assert job.log_files == []
         job._run_models()
         assert isfile('sim_net/TrickyWP_p1_5_test.net')
         assert isfile('sim_net/TrickyWP_p1_5_test.bngl')
         assert isfile('sim_net/TrickyWP_p1_5_test.cdat')
         assert isfile('sim_net/TrickyWP_p1_5_test.gdat')
+        assert isfile('sim_net/TrickyWP_p1_5_test.log')
+        assert job.log_files[0] == 'TrickyWP_p1_5_test.log'
 
     def test_timeout(self):
         res = self.job_to.run_simulation()

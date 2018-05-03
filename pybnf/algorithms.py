@@ -127,6 +127,7 @@ class Job:
         # Folder where we save the model files and outputs.
         self.folder = '%s/%s' % (self.output_dir, self.job_id)
         self.delete_folder = delete_folder
+        self.log_files = []
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
@@ -137,6 +138,8 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
+            if isinstance(model, BNGLModel) or isinstance(model, NetModel):
+                self.log_files.append('%s.log' % model_file_prefix)
         return ds
 
     def run_simulation(self):
