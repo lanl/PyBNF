@@ -147,7 +147,7 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
-        self._get_log_files()
+        self._get_log_files()  # Occurs when runs are successful.  Log files not used in this case yet
         return ds
 
     def _get_log_files(self):
@@ -157,7 +157,7 @@ class Job:
                 self.jlogger.debug('Found log file %s' % lf)
                 self.log_files.append(lf)
 
-    def run_simulation(self):
+    def run_simulation(self, debug):
         """Runs the simulation and reads in the result"""
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
@@ -180,20 +180,20 @@ class Job:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
-            self._get_log_files()
+            if debug:
+                self._get_log_files()
             res = FailedSimulation(self.params, self.job_id, 1, lfs=self.log_files)
         except TimeoutExpired:
+            if debug:
+                self._get_log_files()
             self._get_log_files()
             res = FailedSimulation(self.params, self.job_id, 0, lfs=self.log_files)
         except Exception:
-            for m in self.models:
-                lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
-                jlogger.debug('Checking for log file %s' % lf)
-                if os.path.isfile(lf):
-                    self.log_files.append(lf)
+            if debug:
+                self._get_log_files()
             print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
                    'as a bug.')
-            jlogger.exception('Unknown error during job %s' % self.job_id)
+            self.jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
 
         if self.delete_folder:
@@ -643,7 +643,7 @@ class Algorithm(object):
         for p in psets:
             jobs += self.make_job(p)
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(job.run_simulation) for job in jobs]
+        futures = [client.submit(job.run_simulation, debug) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
@@ -679,8 +679,8 @@ class Algorithm(object):
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your simulations are failing to run. For more info, check the log files in the '
-                                     'Simulations directory.')
+                                     'Your BioNetGen simulations are failing to run. See the BioNetGen log files in '
+                                     'the %s directory.' % ('FailedSimLogs' if debug else 'Simulations'))
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)
