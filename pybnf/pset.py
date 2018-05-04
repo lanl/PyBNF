@@ -14,6 +14,7 @@ import traceback
 import roadrunner as rr
 import pickle
 from os.path import abspath, dirname, join
+from sys import executable
 
 ROOT_DIRECTORY = join(dirname(abspath(__file__)), '..')
 rr.Logger.disableLogging()
@@ -588,7 +589,7 @@ class SbmlModel(SbmlModelNoTimeout):
     def execute(self, folder, filename, timeout):
         arg = pickle.dumps(self)
         with open('%s/%s_log' % (folder, filename), 'w') as errout:
-            proc_output = run(['python3', ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=errout)
+            proc_output = run([executable, ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=errout)
         result = pickle.loads(proc_output.stdout)
         return result
 
