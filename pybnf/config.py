@@ -270,9 +270,9 @@ class Configuration(object):
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
                     if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf)
+                        model = SbmlModelNoTimeout(mf, absolute(mf))
                     else:
-                        model = SbmlModel(mf)
+                        model = SbmlModel(mf, absolute(mf))
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)

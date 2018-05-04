@@ -413,8 +413,16 @@ class NetModel(BNGLModel):
 
 class SbmlModelNoTimeout(Model):
 
-    def __init__(self, file, pset=None, actions=()):
+    def __init__(self, file, abs_file, pset=None, actions=()):
+        """
+        :param file: The file path to the model as it was defined in the config. Used when indexing into the config dict
+        :param abs_file: The absolute file path to the model. Used to actually load the model
+        :param pset: The parameter set for the model
+        :param actions: Iterable of actions to run on the model
+        """
+
         self.file_path = file
+        self.abs_file_path = abs_file
         self.param_set = pset
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.actions = list(actions)
@@ -424,7 +432,7 @@ class SbmlModelNoTimeout(Model):
 
         try:
             rr.Logger.enableConsoleLogging()
-            runner = rr.RoadRunner(self.file_path)
+            runner = rr.RoadRunner(self.abs_file_path)
             rr.Logger.disableLogging()
         except RuntimeError:
             # XML was not found, or had a bug in it, or some other problem in RoadRunner
@@ -453,7 +461,7 @@ class SbmlModelNoTimeout(Model):
         :return:
         """
         logger.info('Generating model text for %s' % self.name)
-        runner = rr.RoadRunner(self.file_path)
+        runner = rr.RoadRunner(self.abs_file_path)
         self._modify_params(runner)
         return runner.getCurrentSBML()
 
@@ -502,7 +510,7 @@ class SbmlModelNoTimeout(Model):
 
     def execute(self, folder, filename, timeout):
         # Load the original xml file with Roadrunner
-        runner = rr.RoadRunner(self.file_path)
+        runner = rr.RoadRunner(self.abs_file_path)
 
         # Do parameter modifications
         self._modify_params(runner)
