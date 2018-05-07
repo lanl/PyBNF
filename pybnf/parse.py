@@ -20,7 +20,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_g
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
-               'exchange_every', 'backup_every', 'bootstrap']
+               'exchange_every', 'backup_every', 'bootstrap', 'ind_var_rounding']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
@@ -78,9 +78,10 @@ def parse(s):
 
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
+    nonetoken = pp.Suppress(pp.CaselessLiteral("none"))
     model_file = pp.Regex(".*?\.(bngl|xml)")
     exp_file = pp.Regex(".*?\.(exp|con)")
-    mdmgram = mdmkey - equals - model_file - colon - pp.delimitedList(exp_file) - comment
+    mdmgram = mdmkey - equals - model_file - colon - (pp.delimitedList(exp_file) ^ nonetoken) - comment
 
     # normalization mapping grammar
     normkey = pp.CaselessLiteral("normalization")
@@ -95,9 +96,15 @@ def parse(s):
     dict_key = pp.oneOf(' '.join(dictkeys), caseless=True)
     dictgram = dict_key - equals - pp.delimitedList(dict_entry) - comment
 
+    # mutant model grammar
+    mutkey = pp.CaselessLiteral('mutant')
+    mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - pp.oneOf('+ - * / =') - num)
+    mutgram = mutkey - equals - string - string - pp.Group(pp.OneOrMore(mut_op)) - \
+        pp.Group(colon - (pp.delimitedList(exp_file) ^ nonetoken)) - comment
+
     # check each grammar and output somewhat legible error message
     line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram
-            ).parseString(s, parseAll=True).asList()
+            | mutgram).parseString(s, parseAll=True).asList()
 
     return line
 
@@ -147,7 +154,7 @@ def ploop(ls):  # parse loop
             elif l[0] in multnumkeys:
                 key = l[0]
                 values = [float(x) for x in l[1:]]
-            else:
+            elif l[0] != 'model':
                 key = l[0]
                 values = flatten(l[1:])
 
@@ -171,6 +178,12 @@ def ploop(ls):  # parse loop
                     d[l[0]].append(entry)
                 else:
                     d[l[0]] = [entry]
+            elif l[0] == 'mutant':
+                if 'mutant' in d:
+                    d['mutant'].append(l[1:])
+                else:
+                    d['mutant'] = [l[1:]]
+                exp_data.update(l[-1])
             elif l[0] == 'normalization':
                 # Normalization defined with way too many possible options
                 # At the end of all this, the config dict has one of the following formats:
@@ -208,9 +221,9 @@ def ploop(ls):  # parse loop
             else:
                 if key in d:
                     if d[key] == values:
-                        print1("Warning: Config key '%s' is specified multiple times" % key)
+                        print1("Warning: Config key '%s' is specified multiple times" % (key,))
                     else:
-                        raise PybnfError("Config key '%s' is specified multiple times with different values." % key)
+                        raise PybnfError("Config key '%s' is specified multiple times with different values." % (key,))
                 d[key] = values
 
         except pp.ParseBaseException:
@@ -241,6 +254,10 @@ def ploop(ls):  # parse loop
             elif key in dictkeys:
                 fmt = "'%s=key1: value1, key2: value2,...' where key1, key2, etc are attributes of the %s (see " \
                       "documentation for available options)" % (key, key)
+            elif key == 'mutant':
+                fmt = "'mutant=base model var1=val1 var2*val2 ... : datafile1.exp, datafile2.exp' where mutation " \
+                      "operations (var1=val1 etc) have the format [variable_name][operator][number] and other " \
+                      "arguments are strings"
 
             message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
             if fmt == '':

@@ -14,6 +14,7 @@ from .pset import Trajectory
 
 from .pset import NetModel, BNGLModel
 from .pset import OutOfBoundsException
+from .pset import FailedSimulationError
 from .printing import print0, print1, print2, PybnfError
 
 import logging
@@ -164,13 +165,16 @@ class Job:
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
-        except CalledProcessError:
+        except (CalledProcessError, FailedSimulationError):
+            jlogger.debug('Job %s failed' % self.job_id, exc_info=True)
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             res = FailedSimulation(self.params, self.job_id, 0)
-        # This block is making bugs hard to diagnose
-        # except Exception:
-        #     res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+        except Exception:
+            print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
+                   'as a bug.')
+            jlogger.exception('Unknown error during job %s' % self.job_id)
+            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
@@ -636,15 +640,15 @@ class Algorithm(object):
             except KeyError:
                 logger.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
-                if res.fail_type == 1:
+                if res.fail_type >= 1:
                     self.fail_count += 1
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
                 logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your BioNetGen simulations are failing to run. See the BioNetGen log files in '
-                                     'the Simulations directory.')
+                                     'Your simulations are failing to run. For more info, check the log files in the '
+                                     'Simulations directory.')
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)

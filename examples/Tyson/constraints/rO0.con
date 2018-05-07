@@ -1,0 +1,8 @@
+DIV_COUNT>5 once weight 3
+ORI>5 once weight 2
+SPN>1 once weight 10
+SPN<2.5 always weight 10
+ORI<40 always weight 0.01
+ESP1<1 always weight 10
+ESP1>0.2 once weight 20
+CLB2CLB5>0.25 between DIV_COUNT=1,DIV_COUNT=2 weight 40

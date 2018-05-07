@@ -5,7 +5,8 @@ from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective
 
-from .pset import BNGLModel, ModelError, SbmlModel, FreeParameter, TimeCourse, ParamScan
+from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
+    Mutation, MutationSet
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -89,15 +90,26 @@ class Configuration(object):
         for k, v in d.items():
             self.config[k] = v
 
+        self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
-        self._load_simulators()
+        logger.debug('Loaded models')
         self._load_actions()
+        logger.debug('Loaded actions')
+        self._load_simulators()
+        logger.debug('Loaded simulators')
+        self._load_mutants()
+        logger.debug('Loaded mutants')
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
+        logger.debug('Loaded model:exp mapping')
         self.exp_data, self.constraints = self._load_exp_data()
+        logger.debug('Loaded data')
         self.obj = self._load_obj_func()
+        logger.debug('Loaded objective function')
         self.variables = self._load_variables()
         self._check_variable_correspondence()
+        logger.debug('Loaded variables')
         self._postprocess_normalization()
+        logger.debug('Completed configuration')
 
     @staticmethod
     def default_config():
@@ -111,8 +123,7 @@ class Configuration(object):
             'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 5000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
-            'bootstrap_max_obj': None,
-
+            'bootstrap_max_obj': None, 'ind_var_rounding': 0,
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
 
@@ -128,7 +139,7 @@ class Configuration(object):
             'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,
 
             'wall_time_gen': 3600,
-            'wall_time_sim': 3600,
+            'wall_time_sim': None,  # Chosen when loading models
             'normalization': None,
 
             'cluster_type': None,
@@ -233,6 +244,15 @@ class Configuration(object):
         Loads models specified in configuration file in a dictionary keyed on
         Model.name
         """
+
+        # If needed, choose the default timeout, which depends on what simulators the models use.
+        if self.config['wall_time_sim'] is None:
+            self.config['wall_time_sim'] = 0
+            for mf in self.config['models']:
+                if re.search('\.bngl$', mf):
+                    self.config['wall_time_sim'] = 3600
+                    break
+
         # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
         home_dir = os.getcwd()
 
@@ -249,7 +269,10 @@ class Configuration(object):
                     model.bng_command = absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
-                    model = SbmlModel(mf)
+                    if self.config['wall_time_sim'] == 0:
+                        model = SbmlModelNoTimeout(mf, absolute(mf))
+                    else:
+                        model = SbmlModel(mf, absolute(mf))
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
@@ -261,6 +284,7 @@ class Configuration(object):
                 raise PybnfError('Multiple models with the name "%s". Please give all your models different names. '
                                  % model.name)
             md[model.name] = model
+            self._data_map[model.name] = self.config[mf]  # List of exp files associated with this model
 
         if self.config['smoothing'] > 1:
             # Check for misuse of 'smoothing' feature
@@ -275,6 +299,33 @@ class Configuration(object):
 
         return md
 
+    def _load_mutants(self):
+
+        if 'mutant' not in self.config:
+            return
+
+        for base, name, mutations, exps in self.config['mutant']:
+            base = self._file_prefix(base, '(bngl|xml)')
+            if base not in self.models:
+                raise PybnfError('Mutant %s declared corresponding to model %s, but that model was not found' %
+                                 (name, base))
+            mut_objects = [Mutation(var, op, float(val)) for var, op, val in mutations]
+            mut_set = MutationSet(mut_objects, name)
+            self.models[base].add_mutant(mut_set)
+            # Check that the exp files will have simulation outputs
+            for ex in exps:
+                ename = self._file_prefix(ex, '(exp|con)')
+                base_suffix = re.match('.*(?=%s)' % name, ename)
+                suffix_choices = [x[1] for x in self.models[base].suffixes]
+                if len(suffix_choices) == 0:
+                    raise PybnfError("Model %s has no action suffixes, so I can't have mutant model %s with "
+                                     "data file %s based on that model" % (base, name, ex))
+                if not base_suffix or base_suffix.group(0) not in suffix_choices:
+                    raise PybnfError('Experimental file name %s in mutant model %s. This file name should consist of '
+                                     'the model suffix it corresponds to, followed by the mutant name (e.g. %s%s.exp)'
+                                     % (ex, name, suffix_choices[0], name))
+            # Stages these exp files to get loaded along with regular model ones
+            self._data_map[base] += exps
 
     def _load_simulators(self):
 
@@ -333,8 +384,8 @@ class Configuration(object):
         """
         ed = {}
         csets = set()
-        for m in self.config['models']:
-            for ef in self.config[m]:
+        for m in self._data_map:
+            for ef in self._data_map[m]:
                 if re.search("exp$", ef):
                     try:
                         d = Data(file_name=ef)
@@ -342,7 +393,7 @@ class Configuration(object):
                         raise PybnfError('Experimental data file %s was not found.' % ef)
                     ed[self._file_prefix(ef)] = d
                 else:
-                    cs = ConstraintSet(self._file_prefix(m, 'bngl'), self._file_prefix(ef, 'con'))
+                    cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, 'con'))
                     try:
                         cs.load_constraint_file(ef)
                     except FileNotFoundError:
@@ -353,7 +404,7 @@ class Configuration(object):
     def _check_actions(self):
         mapping = dict()
         for model in self.models.values():
-            suffs = {s[1] for s in model.suffixes}
+            suffs = set(model.get_suffixes())
             efs_per_m = {self._file_prefix(ef) for ef in self.config[model.file_path] if re.search("\.exp$", ef)}
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
@@ -369,13 +420,13 @@ class Configuration(object):
 
     def _load_obj_func(self):
         if self.config['objfunc'] == 'chi_sq':
-            return ChiSquareObjective()
+            return ChiSquareObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'sos':
-            return SumOfSquaresObjective()
+            return SumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'norm_sos':
-            return NormSumOfSquaresObjective()
+            return NormSumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'ave_norm_sos':
-            return AveNormSumOfSquaresObjective()
+            return AveNormSumOfSquaresObjective(self.config['ind_var_rounding'])
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
               "Objective function %s is not defined. Valid objective function choices are: "
               "chi_sq, sos, norm_sos, ave_norm_sos" % self.config['objfunc'])

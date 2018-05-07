@@ -7,10 +7,16 @@ import logging
 import numpy as np
 import re
 import copy
-from subprocess import run, STDOUT
+from subprocess import run, STDOUT, PIPE, DEVNULL
 from .data import Data
 import heapq
+import traceback
 import roadrunner as rr
+import pickle
+from os.path import abspath, dirname, join
+from sys import executable
+
+ROOT_DIRECTORY = join(dirname(abspath(__file__)), '..')
 rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
@@ -347,6 +353,11 @@ class BNGLModel(Model):
             self.generate_network_line = 'generate_network({overwrite=>1})'
         self.suffixes.append((action.bng_codeword, action.suffix))
 
+    def get_suffixes(self):
+        """Returns a list of suffixes used in the model"""
+        # Todo: Clean up once mutations are also implemented for BNGL
+        return [s[1] for s in self.suffixes]
+
 
 class NetModel(BNGLModel):
     def __init__(self, name, acts, suffs, ls=None, nf=None):
@@ -400,25 +411,42 @@ class NetModel(BNGLModel):
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
 
 
-class SbmlModel(Model):
+class SbmlModelNoTimeout(Model):
 
-    def __init__(self, file, pset=None, actions=()):
+    def __init__(self, file, abs_file, pset=None, actions=()):
+        """
+        :param file: The file path to the model as it was defined in the config. Used when indexing into the config dict
+        :param abs_file: The absolute file path to the model. Used to actually load the model
+        :param pset: The parameter set for the model
+        :param actions: Iterable of actions to run on the model
+        """
+
         self.file_path = file
+        self.abs_file_path = abs_file
         self.param_set = pset
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.actions = list(actions)
         self.suffixes = [a.suffix for a in actions]
         self.stochastic = False
+        self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
 
         try:
             rr.Logger.enableConsoleLogging()
-            runner = rr.RoadRunner(self.file_path)
+            runner = rr.RoadRunner(self.abs_file_path)
             rr.Logger.disableLogging()
         except RuntimeError:
-            raise FileNotFoundError
+            # XML was not found, or had a bug in it, or some other problem in RoadRunner
+            logger.exception('Failed to load model %s in Roadrunner' % self.name)
+            exceptiondata = traceback.format_exc().splitlines()
+            if 'could not open %s as a file' % file in exceptiondata[-1]:
+                message = 'File %s was not found' % file
+            else:
+                message = 'There were errors in parsing this SBML file. See log for details.'
+            raise PybnfError('Failed to load model %s.xml - %s' % (self.name, message))
 
         self.species_names = set(runner.model.getFloatingSpeciesIds()).union(set(runner.model.getBoundarySpeciesIds()))
         self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
+        logger.debug('Loaded model %s with Roadrunner' % self.name)
 
     def copy_with_param_set(self, pset):
 
@@ -433,7 +461,7 @@ class SbmlModel(Model):
         :return:
         """
         logger.info('Generating model text for %s' % self.name)
-        runner = rr.RoadRunner(self.file_path)
+        runner = rr.RoadRunner(self.abs_file_path)
         self._modify_params(runner)
         return runner.getCurrentSBML()
 
@@ -450,6 +478,26 @@ class SbmlModel(Model):
         if action.method == 'ssa':
             self.stochastic = True
 
+    def add_mutant(self, mut_set):
+        """
+        Add a mutant to run along with this model
+        :param mut_set: MutationSet that should be applied to this mutant
+        :type mut_set: MutationSet
+        :return:
+        """
+        self.mutants.append(mut_set)
+
+    def get_suffixes(self):
+        """
+        Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
+        mutation name
+        """
+        result = []
+        for s in self.suffixes:
+            for mut in self.mutants:
+                result.append(s[1]+mut.suffix)
+        return result
+
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""
         for p in self.param_set.keys():
@@ -462,7 +510,7 @@ class SbmlModel(Model):
 
     def execute(self, folder, filename, timeout):
         # Load the original xml file with Roadrunner
-        runner = rr.RoadRunner(self.file_path)
+        runner = rr.RoadRunner(self.abs_file_path)
 
         # Do parameter modifications
         self._modify_params(runner)
@@ -470,52 +518,99 @@ class SbmlModel(Model):
         # Run the model actions
         result_dict = dict()
         selection = ['time'] + list(self.species_names)
-        for act in self.actions:
-            runner.reset()
-            if act.method == 'ssa':
-                runner.setIntegrator('gillespie')
-                runner.getIntegrator().setValue('variable_step_size', False)
-            else:
-                runner.setIntegrator('cvode')
-            if isinstance(act, TimeCourse):
-                res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
-                res = Data(named_arr=res_array)
-                result_dict[act.suffix] = res
-            elif isinstance(act, ParamScan):
-                # Manually run parameter scan with several simulate commands
-                if act.param not in self.param_names:
-                    raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
-                if act.param in self.species_names:
-                    icscan = True
+        for mut in self.mutants:
+            # Apply all mutations
+            for mi in mut:
+                if mi.name in self.species_names:
+                    runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
+                elif mi.name in self.param_names:
+                    setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+
+            for act in self.actions:
+                runner.reset()
+                if act.method == 'ssa':
+                    runner.setIntegrator('gillespie')
+                    runner.getIntegrator().setValue('variable_step_size', False)
                 else:
-                    icscan = False
-                points = np.linspace(act.min, act.max, act.stepnumber + 1)
-                res_array = None
-                labels = None
-                for i, x in enumerate(points):
-                    if icscan:
-                        runner.model['init([%s])' % act.param] = x
+                    runner.setIntegrator('cvode')
+                if isinstance(act, TimeCourse):
+                    try:
+                        res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                    except RuntimeError:
+                        # Rethrow simulation errors as something more specific to be caught
+                        raise FailedSimulationError
+                    res = Data(named_arr=res_array)
+                    result_dict[act.suffix + mut.suffix] = res
+                elif isinstance(act, ParamScan):
+                    # Manually run parameter scan with several simulate commands
+                    if act.param not in self.param_names:
+                        raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
+                    if act.param in self.species_names:
+                        icscan = True
+                        init_val = runner.model['init([%s])' % act.param]
                     else:
-                        setattr(runner, act.param, x)
-                    runner.reset()  # Reset concentrations to current ICs
-                    i_array = runner.simulate(0., act.time, steps=1, selections=selection)
-                    if res_array is None:  # First iteration
-                        res_array = np.zeros((len(points), 1+i_array.shape[1]))
+                        icscan = False
+                        init_val = getattr(runner, act.param)
+                    points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                    res_array = None
+                    labels = None
+                    for i, x in enumerate(points):
                         if icscan:
-                            # is an initial condition
-                            labels = [act.param + '_0'] + i_array.colnames
+                            runner.model['init([%s])' % act.param] = x
                         else:
-                            labels = [act.param] + i_array.colnames
-                    res_array[i, 0] = x
-                    res_array[i, 1:] = i_array[1, :]
-                logger.debug(str(labels))
-                logger.debug(str(res_array))
-                res = Data(arr=res_array)
-                res.load_rr_header(labels)
-                result_dict[act.suffix] = res
-            else:
-                raise NotImplementedError('Unknown action type')
+                            setattr(runner, act.param, x)
+                        runner.reset()  # Reset concentrations to current ICs
+                        try:
+                            i_array = runner.simulate(0., act.time, steps=1, selections=selection)
+                        except RuntimeError:
+                            raise FailedSimulationError
+                        if res_array is None:  # First iteration
+                            res_array = np.zeros((len(points), 1+i_array.shape[1]))
+                            if icscan:
+                                # is an initial condition
+                                labels = [act.param + '_0'] + i_array.colnames
+                            else:
+                                labels = [act.param] + i_array.colnames
+                        res_array[i, 0] = x
+                        res_array[i, 1:] = i_array[1, :]
+                    # Restore the original value of the scanned param, for any future actions / models
+                    if icscan:
+                        runner.model['init([%s])' % act.param] = init_val
+                    else:
+                        setattr(runner, act.param, init_val)
+                    res = Data(arr=res_array)
+                    res.load_rr_header(labels)
+                    result_dict[act.suffix + mut.suffix] = res
+                else:
+                    raise NotImplementedError('Unknown action type')
+            # Undo all mutations
+            for mi in mut:
+                if mi.name in self.species_names:
+                    runner.model['init([%s])' % mi.name] = mi.undo()
+                elif mi.name in self.param_names:
+                    setattr(runner, mi.name, mi.undo())
         return result_dict
+
+
+class SbmlModel(SbmlModelNoTimeout):
+
+    def execute(self, folder, filename, timeout):
+        arg = pickle.dumps(self)
+        with open('%s/%s_log' % (folder, filename), 'w') as errout:
+            proc_output = run([executable, ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=errout)
+        result = pickle.loads(proc_output.stdout)
+        return result
+
+    def super_execute(self):
+        return super().execute(None, None, None)
+
+
+class FailedSimulationError(Exception):
+    """
+    Raised when a simulation fails that was not a result of a subprocess.run() call (currently only use with
+    SbmlModelNoTimeout)
+    """
+    pass
 
 
 class Action:
@@ -621,6 +716,76 @@ class ParamScan(Action):
 
         self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'
+
+
+class Mutation:
+
+    def __init__(self, name, operation, value):
+        """
+        Create a mutation
+        :param name: Name of the variable to mutate
+        :type name: str
+        :param operation: Operation to perform on the target variable; one of + - * / =
+        :type operation: str
+        :param value: The value to add/subtract/etc (depending on the operation)
+        :type value: float
+        """
+        self.name = name
+        self.operation = operation
+        self.value = value
+        if operation not in ('+', '-', '*', '/', '='):
+            raise RuntimeError('Invalid mutation operation %s' % operation)
+        self.old = None
+        logger.debug('Created mutation %s %s %s' % (self.name, self.operation, self.value))
+
+    def mutate(self, num):
+        """
+        Applies this mutation
+        :param num:
+        :return: float
+        """
+        self.old = num
+        if self.operation == '=':
+            return self.value
+        elif self.operation == '+':
+            return num + self.value
+        elif self.operation == '-':
+            return num - self.value
+        elif self.operation == '*':
+            return num * self.value
+        elif self.operation == '/':
+            return num / self.value
+
+    def undo(self):
+        """
+        Undo the mutation we just did
+        :return: float
+        """
+        if not self.old:
+            raise RuntimeError('Called undo() on a Mutation that was not performed')
+        old = self.old
+        self.old = None
+        return old
+
+
+class MutationSet:
+    """
+    A set of mutations that represents a mutant model
+    """
+    def __init__(self, mutations=(), suffix=''):
+        """
+
+        :param mutations: The mutations to include in this MutationSet
+        :type mutations: iterable of Mutant
+        :param suffix: The simulation suffix for this mutant. This will be appended to the action suffix
+        :type suffix: str
+        """
+        self.mutations = mutations
+        self.suffix = suffix
+        logger.debug('Created MutationSet with %i mutations' % len(self.mutations))
+
+    def __iter__(self):
+        return iter(self.mutations)
 
 
 class ModelError(Exception):

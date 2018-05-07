@@ -4,11 +4,12 @@ Please update this file whenever you add support for new .conf keys in the code
 
 ***Fundamental model specification***
 
-model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list.
+model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list. If no experimental files are associated with the model, write "none".
 bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise, if the run includes any .bngl files, bng_command requires specification in the configuration file
 output_dir - Directory where to save the output. Default: bnf_out
 fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
+mutant = basemodel name statement1 statement2: data1name.exp, data2name.exp - Declares a model that does not contain its own model file, but instead is defined based on another model basemodel. "name" is the name of the mutant model; this name is appended to the suffixes of the base model, i.e. if the base model has data files data1.exp and data2.exp, a corresponding mutant file with the name "m1" should use the files data1m1.exp and data2m1.exp. statement1, statement2,... have the format [variable][operator][value] ; for example a__FREE__=0 or b__FREE__*2.
 parallel_count - How many jobs to run in parallel. Default: Use all available cores.
 cluster_type - Type of cluster used for running the fit.  Defaults to None (local fitting run).  Currently supports 'slurm' and will support 'torque'/'pbs'
 scheduler_node - Node used for setting up distributed Client.  Defaults to None (local fitting run); takes a string identifying a machine on a network
@@ -44,6 +45,7 @@ verbosity: Specifies the amount of information output to the terminal. 0 - Quiet
 smoothing: Number of replicates to run for each parameter set (useful for stochastic runs). Default: 1
 normalization = type [: d1.exp, d2.exp] - Indicates that simulation data must be normalized in order to compare with exp files. Choices are: 'init', 'peak', 'zero', 'unit'. If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, like this (data1.exp: 1,3-5) or (data1.exp: var1,var2) Multiple lines with this key can be used. Default: No normalization
 min_objective: Stop fitting if an objective function lower than this value is reached. Default: None; always run for the maximum iterations
+ind_var_rounding: If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) Default: 0
 bootstrap: Whether (>0) or not (0) to estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.  Default: 0
 bootstrap_max_obj: The maximum value of a fitting run's objective function to be considered valid in the bootstrapping procedure.  Default: None
 
