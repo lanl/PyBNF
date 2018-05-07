@@ -157,7 +157,7 @@ class Job:
                 self.jlogger.debug('Found log file %s' % lf)
                 self.log_files.append(lf)
 
-    def run_simulation(self, debug):
+    def run_simulation(self, debug=False):
         """Runs the simulation and reads in the result"""
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
