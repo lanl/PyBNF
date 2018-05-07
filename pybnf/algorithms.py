@@ -606,10 +606,13 @@ class Algorithm(object):
         """
         self.max_iterations += n
 
-    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
+    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False, refine=False):
         """Main loop for executing the algorithm"""
 
         logger.debug('Initializing dask Client object')
+
+        if refine:
+            logger.debug('Setting up Simplex refinement of previous algorithm')
 
         if scheduler_node:
             if 'parallel_count' in self.config.config:
@@ -730,15 +733,17 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
 
+        try:
+            os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
+                      '%s/alg_%s.bp' % (self.config.config['output_dir'],
+                                        ('finished' if not refine else 'refine_finished')))
+            logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
+                        ('finished' if not refine else 'refine_finished'))
+        except OSError:
+            logger.warning('Tried to move pickled algorithm, but it was not found')
+
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
-            try:
-                os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
-                          '%s/alg_finished.bp' % self.config.config['output_dir'])
-                logger.info('Renamed pickled algorithm backup to alg_finished.bp')
-            except OSError:
-                logger.warning('Tried to move pickled algorithm, but it was not found')
-
             if self.config.config['delete_old_files'] >= 1:
                 shutil.rmtree(self.sim_dir)
 

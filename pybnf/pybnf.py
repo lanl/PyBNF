@@ -194,7 +194,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(log_prefix, scheduler_node)
+                simplex.run(log_prefix, scheduler_node, refine=True)
 
         if alg.bootstrap_number is None:
             print0('Fitting complete')
@@ -279,7 +279,7 @@ def main():
                         config.config['simplex_start_point'] = alg.trajectory.best_fit()
                         simplex = algs.SimplexAlgorithm(config)
                         simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                        simplex.run(log_prefix, scheduler_node)
+                        simplex.run(log_prefix, scheduler_node, refine=True)
 
                 best_fit_pset = alg.trajectory.best_fit()
 
