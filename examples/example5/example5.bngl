@@ -40,11 +40,11 @@ begin parameters
 
 	# equilibrium dissociation constant
 	# KD1 is specified as being free. It has a matching option in the .conf file.
-	KD1 KD1__FREE__ # [=] nM 
+	KD1 KD1__FREE # [=] nM
 	
 	# reverse rate constant (derived)
 	#km1 is specified as being free. It has a matching option in the .conf file.
-	km1 km1__FREE__ # [=] /s 
+	km1 km1__FREE # [=] /s
 	
 	# forward rate constant (derived)
 	kp1=(km1/KD1) # [=] /nM/s
@@ -52,13 +52,13 @@ begin parameters
 	# receptor-receptor interaction
 	# dimensionless equilibrium association constant
 	# K2RT is specified as being free. It has a matching option in the .conf file.
-	K2RT K2RT__FREE__ # [=] dimensionless
+	K2RT K2RT__FREE # [=] dimensionless
 	#   a value of 0.1 => weak crosslinking
 	#   a value of 1.0 => moderate crosslinking
 	#   a value of 10.0 => strong crosslinking
 	
 	# reverse rate constant (derived)
-	km2 km2__FREE__ # [=] /s
+	km2 km2__FREE # [=] /s
 	
 	# forward rate constant (derived)
 	kp2=K2RT*km2/EGFR_copy_number # [=] /nM/s
@@ -67,11 +67,11 @@ begin parameters
 
 	# phosphorylation rate constant
 	# kphos is specified as being free. It has a matching option in the .conf file.
-	kphos kphos__FREE__ # [=] /s
+	kphos kphos__FREE # [=] /s
 
 	# dephosphorylation rate constant
 	# kdephos is specified as being free. It has a matching option in the .conf file.
-	kdephos kdephos__FREE__ # [=] /s
+	kdephos kdephos__FREE # [=] /s
 	
 	# A boolean value indicating whether or not EGF is present. This
 	# is used to set the forward rate constant for ligand binding in

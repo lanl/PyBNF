@@ -18,13 +18,13 @@ class TestConfig(object):
         cls.cf0 = {'models': {'bngl_files/Tricky.bngl'},
                    'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                   ('uniform_var', 'koff__FREE__'): [4., 5., 'u'],
-                   ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                   ('normal_var', 'kase__FREE__'): [28., 5.],
-                   ('uniform_var', 'pase__FREE__'): [6., 7.],
+                   ('uniform_var', 'koff__FREE'): [4., 5., 'u'],
+                   ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+                   ('normal_var', 'kase__FREE'): [28., 5.],
+                   ('uniform_var', 'pase__FREE'): [6., 7.],
                    'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                    'normalization': {'bngl_files/p1_5.exp': 'init'},
-                   'param_scan': [{'model': 'Tricky.bngl', 'param': 'koff__FREE__', 'min': '1', 'max': '10', 'step': '1', 'time': '3600'}]}
+                   'param_scan': [{'model': 'Tricky.bngl', 'param': 'koff__FREE', 'min': '1', 'max': '10', 'step': '1', 'time': '3600'}]}
         cls.cf1 = {'models': {'bngl_files/TrickyUS.bngl'},
                    'bngl_files/TrickyUS.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                    'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'}, 'fit_type': 'de',
@@ -42,13 +42,13 @@ class TestConfig(object):
         assert 'thing' in c.mapping['Tricky']
         assert isinstance(c.obj, objective.ChiSquareObjective)
         sorted_vars = sorted(c.variables, key=operator.attrgetter('name'))
-        assert sorted_vars[0].name == '__koff2__FREE__'
+        assert sorted_vars[0].name == '__koff2__FREE'
         assert sorted_vars[0].type == 'loguniform_var'
         assert sorted_vars[0].bounded
         assert sorted_vars[0].log_space
         assert not sorted_vars[1].log_space
         assert not sorted_vars[1].bounded
-        assert [v.name for v in sorted_vars] == ['__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__']
+        assert [v.name for v in sorted_vars] == ['__koff2__FREE', 'kase__FREE', 'koff__FREE', 'pase__FREE']
         assert c.config['normalization']['p1_5'] == 'init'
         assert c.config['cluster_type'] is None
 
@@ -56,10 +56,10 @@ class TestConfig(object):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
                                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
-                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                                  ('normal_var', 'kase__FREE__'): [28., 5.],
-                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  ('uniform_var', 'koff__FREE'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE'): [6., 7.],
                                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                                   'normalization': {'bngl_files/p1_5.exp': [('init', [1])],
                                                     'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
@@ -71,10 +71,10 @@ class TestConfig(object):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
                                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
-                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                                  ('normal_var', 'kase__FREE__'): [28., 5.],
-                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  ('uniform_var', 'koff__FREE'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE'): [6., 7.],
                                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                                   'normalization': {'bngl_files/p1_5.exp': [('init', [1])],
                                                     'bngl_files/thing.exp': [('peak', ['R_free'])]}})
@@ -84,10 +84,10 @@ class TestConfig(object):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
                                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
-                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                                  ('normal_var', 'kase__FREE__'): [28., 5.],
-                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  ('uniform_var', 'koff__FREE'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE'): [6., 7.],
                                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                                   'normalization': {'bngl_files/p1_5.exp': [('init', [2])],
                                                     'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})
@@ -98,10 +98,10 @@ class TestConfig(object):
                                   'bng_command': "/incorrect/path/to/BNG2.pl",
                                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
                                   'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
-                                  ('uniform_var', 'koff__FREE__'): [4., 5.],
-                                  ('loguniform_var', '__koff2__FREE__'): [0.01, 1e5],
-                                  ('normal_var', 'kase__FREE__'): [28., 5.],
-                                  ('uniform_var', 'pase__FREE__'): [6., 7.],
+                                  ('uniform_var', 'koff__FREE'): [4., 5.],
+                                  ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+                                  ('normal_var', 'kase__FREE'): [28., 5.],
+                                  ('uniform_var', 'pase__FREE'): [6., 7.],
                                   'fit_type': 'de', 'population_size': 10, 'max_iterations': 10,
                                   'normalization': {'bngl_files/p1_5.exp': [('init', [2])],
                                                     'bngl_files/thing.exp': [('peak', ['Ag_total'])]}})

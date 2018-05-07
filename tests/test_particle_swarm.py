@@ -35,25 +35,25 @@ class TestParticleSwarm:
         cls.d2s = data.Data()
         cls.d2s.data = cls.d2s._read_file_lines(cls.data2s, '\s+')
 
-        cls.variables = ['v1__FREE__', 'v2__FREE__', 'v3__FREE__']
+        cls.variables = ['v1__FREE', 'v2__FREE', 'v3__FREE']
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        cls.p0 = pset.FreeParameter('v1__FREE__', 'uniform_var', 0, 10, 3.14)
-        cls.p1 = pset.FreeParameter('v2__FREE__', 'uniform_var', 0, 10, 1.0)
-        cls.p2 = pset.FreeParameter('v3__FREE__', 'uniform_var', 0, 10, 0.1)
+        cls.p0 = pset.FreeParameter('v1__FREE', 'uniform_var', 0, 10, 3.14)
+        cls.p1 = pset.FreeParameter('v2__FREE', 'uniform_var', 0, 10, 1.0)
+        cls.p2 = pset.FreeParameter('v3__FREE', 'uniform_var', 0, 10, 0.1)
 
         cls.params = pset.PSet([cls.p0, cls.p1, cls.p2])
 
         cls.config = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-                      ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
+                      ('uniform_var', 'v1__FREE'): [0, 10], ('uniform_var', 'v2__FREE'): [0, 10], ('uniform_var', 'v3__FREE'): [0, 10],
                       'models': {'bngl_files/parabola.bngl'}, 'exp_data':{'bngl_files/par1.exp'},
                       'bngl_files/parabola.bngl':['bngl_files/par1.exp'],
                       'fit_type': 'pso', 'output_dir': 'test_pso'})
 
         cls.config2 = config.Configuration({'population_size': 15, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-                           ('uniform_var', 'v1__FREE__'): [0, 10], ('loguniform_var', 'v2__FREE__'): [0.01, 1e5],
-                           ('lognormal_var', 'v3__FREE__'): [0, 1],
+                           ('uniform_var', 'v1__FREE'): [0, 10], ('loguniform_var', 'v2__FREE'): [0.01, 1e5],
+                           ('lognormal_var', 'v3__FREE'): [0, 1],
                            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
                            'fit_type': 'pso', 'output_dir': 'test_pso2'})
@@ -62,7 +62,7 @@ class TestParticleSwarm:
 
         cls.lh_config = config.Configuration(
             {'population_size': 10, 'max_iterations': 20, 'cognitive': 1.5, 'social': 1.5,
-            ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10], ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('uniform_var', 'v1__FREE'): [0, 10], ('uniform_var', 'v2__FREE'): [0, 10], ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'},
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': 'test_pso_lh',
             'initialization': 'lh', 'fit_type': 'pso'})
@@ -79,9 +79,9 @@ class TestParticleSwarm:
     def test_random_pset(self):
         ps = algorithms.ParticleSwarm(deepcopy(self.config2))
         params = ps.random_pset()
-        assert 0 <= params['v1__FREE__'] <= 10
-        assert 0.01 < params['v2__FREE__'] < 1e5
-        assert 1e-4 < params['v3__FREE__'] < 1e4
+        assert 0 <= params['v1__FREE'] <= 10
+        assert 0.01 < params['v2__FREE'] < 1e5
+        assert 1e-4 < params['v3__FREE'] < 1e4
 
     def test_start(self):
         ps = algorithms.ParticleSwarm(self.config)
@@ -118,6 +118,6 @@ class TestParticleSwarm:
         ps.start_run()
         for i in range(10):
             # Latin hypercube should distribute starting values evenly (one in each bin) in each dimension.
-            assert len([x for x in ps.swarm if i < x[0]['v1__FREE__'] < i+1]) == 1
+            assert len([x for x in ps.swarm if i < x[0]['v1__FREE'] < i+1]) == 1
 
 

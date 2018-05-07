@@ -31,12 +31,12 @@ koff 0.01 # [=] /s, from Table 1 in Ref
 kr1=koff # [=] /s
 kr2=koff # [=] /s
 
-alpha alpha__FREE__
+alpha alpha__FREE
 
 inverse_alpha=1.0/alpha # 1/alpha
 
-K1 K1__FREE__ # [=] /nM, from Brandon
-K2 K2__FREE__ # [=] /nM, from Brandon
+K1 K1__FREE # [=] /nM, from Brandon
+K2 K2__FREE # [=] /nM, from Brandon
 
 kf1=K1*1.0e9*kr1/(NA*Vref) # [=] /(molecule/cell)/s
 kf2=K2*1.0e9*kr2/(NA*Vref) # [=] /(molecule/cell)/s

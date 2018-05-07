@@ -21,10 +21,10 @@ class TestJob(object):
     def setup_class(cls):
         cls.model = pset.BNGLModel('bngl_files/Tricky.bngl')
         d = [
-            pset.FreeParameter('koff__FREE__', 'normal_var', 0, 1, value=0.1),
-            pset.FreeParameter('__koff2__FREE__', 'normal_var', 0, 1, value=0.1),
-            pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=1),
-            pset.FreeParameter('pase__FREE__', 'normal_var', 0, 1, value=1),
+            pset.FreeParameter('koff__FREE', 'normal_var', 0, 1, value=0.1),
+            pset.FreeParameter('__koff2__FREE', 'normal_var', 0, 1, value=0.1),
+            pset.FreeParameter('kase__FREE', 'normal_var', 0, 1, value=1),
+            pset.FreeParameter('pase__FREE', 'normal_var', 0, 1, value=1),
         ]
         cls.pset = pset.PSet(d)
         cls.bng_command = environ['BNGPATH'] + '/BNG2.pl'
@@ -87,8 +87,8 @@ class TestJob(object):
             config.Configuration({"models": {"bngl_files/parabola.bngl"}, 'exp_data': {'bngl_files/par1.exp'},
                                   'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'max_iterations': 10,
                                   'population_size': 10,
-                                  ('uniform_var', 'v1__FREE__'): [0., 10.], ('uniform_var', 'v2__FREE__'): [0., 10.],
-                                  ('uniform_var', 'v3__FREE__'): [0., 10.]}))
+                                  ('uniform_var', 'v1__FREE'): [0., 10.], ('uniform_var', 'v2__FREE'): [0., 10.],
+                                  ('uniform_var', 'v3__FREE'): [0., 10.]}))
         res = self.job_to.run_simulation()
         assert res.fail_type == 0
         a.add_to_trajectory(res)

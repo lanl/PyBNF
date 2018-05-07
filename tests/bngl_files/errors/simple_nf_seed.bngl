@@ -2,7 +2,7 @@ begin model
 
   begin parameters
 
-    v1 v1__FREE__
+    v1 v1__FREE
 
   end parameters
 

@@ -7,11 +7,11 @@ begin model
 # Original values used 
 # (a,b,c,d,e) = 0.5, 3, 5, 1, 1.5
 
-    a a__FREE__
-    b b__FREE__
-    c c__FREE__
-    d d__FREE__
-    e e__FREE__
+    a a__FREE
+    b b__FREE
+    c c__FREE
+    d d__FREE
+    e e__FREE
 
   end parameters
 

@@ -48,31 +48,31 @@ Syk_tot f*3e5 # cpc (0.166 uM)
 Ship1_tot f*3e5 # cpc (0.166 uM)
 
 # rate constant for antigen capture
-kon kon__FREE__*T/(NA*Vecf) # /M/s (1.8e8 /M/min) converted to /cpc/min; Initial guess 3e6
+kon kon__FREE*T/(NA*Vecf) # /M/s (1.8e8 /M/min) converted to /cpc/min; Initial guess 3e6
 
 # rate constant for antigen release
-koff koff__FREE__*T # /s converted to /min (0.6 /min); Initial guess 0.01
+koff koff__FREE*T # /s converted to /min (0.6 /min); Initial guess 0.01
 
 # rate constant for pseudo first-order phosphorylation of antigen-engaged receptor
-kase kase__FREE__*T # /s converted to /min (60 /min); Initial guess 1
+kase kase__FREE*T # /s converted to /min (60 /min); Initial guess 1
 
 # rate constant for pseuedo first-order dephosphorylation of phosphorylated receptor
-pase pase__FREE__*T # /s converted to /min (120 /min); Initial guess 2
+pase pase__FREE*T # /s converted to /min (120 /min); Initial guess 2
 
-kp_Syk kp_Syk__FREE__*T/(NA*Vcyt) # /M/s (6e7 /M/min) converted to /cpc/min; Initial guess 1e6
-km_Syk km_Syk__FREE__*T # /s converted to /min (7.8 /min); Initial guess 0.13
+kp_Syk kp_Syk__FREE*T/(NA*Vcyt) # /M/s (6e7 /M/min) converted to /cpc/min; Initial guess 1e6
+km_Syk km_Syk__FREE*T # /s converted to /min (7.8 /min); Initial guess 0.13
 
-kp_Ship1 kp_Ship1__FREE__*T/(NA*Vcyt) # /M/s (1e6 /M/min) converted to /cpc/min; Initial guess 1.667e4
-km_Ship1 km_Ship1__FREE__*T # /s converted to /min (0.1 /min); Initial guess 1.667e-3
+kp_Ship1 kp_Ship1__FREE*T/(NA*Vcyt) # /M/s (1e6 /M/min) converted to /cpc/min; Initial guess 1.667e4
+km_Ship1 km_Ship1__FREE*T # /s converted to /min (0.1 /min); Initial guess 1.667e-3
 
-ksynth1 ksynth1__FREE__*T # /s converted to /min (10 /min); Initial guess 0.1667
-kdeg1 kdeg1__FREE__*T/(NA*Vcyt) # /M/s (3.6e9 /M/min) converted to /cpc/min; Initial guess 1e7, diffusion-limited
-kpten kpten__FREE__*T # /s Rate of basal degradation of PIP3 and/or IP3; Initial guess 8.3333
+ksynth1 ksynth1__FREE*T # /s converted to /min (10 /min); Initial guess 0.1667
+kdeg1 kdeg1__FREE*T/(NA*Vcyt) # /M/s (3.6e9 /M/min) converted to /cpc/min; Initial guess 1e7, diffusion-limited
+kpten kpten__FREE*T # /s Rate of basal degradation of PIP3 and/or IP3; Initial guess 8.3333
 
 
 H_tot 1e6 # cpc
 
-kdegran kdegran__FREE__*T/(NA*Vcyt) # /M/s (3.6e6 /M/min) converted to /cpc/min (2e-6 /cpc/min); Initial guess 6e4
+kdegran kdegran__FREE*T/(NA*Vcyt) # /M/s (3.6e6 /M/min) converted to /cpc/min (2e-6 /cpc/min); Initial guess 6e4
 
 # rate constant for ubiquitination
 #kE3	5.833e-4*T # /s converted to /min (0.035 /min)
@@ -81,17 +81,17 @@ kdegran kdegran__FREE__*T/(NA*Vcyt) # /M/s (3.6e6 /M/min) converted to /cpc/min 
 #kproteosome	1*T # /s converted to /min (60 /min)
 
 # rate constant for degradation of X (in one step, including ubiquitination and proteosomal degradation)
-kdegX kdegX__FREE__*T # /s converted to /min (60 /min); Initial guess 5.833e-4
+kdegX kdegX__FREE*T # /s converted to /min (60 /min); Initial guess 5.833e-4
 
 
-k_Xon k_Xon__FREE__*T/(NA*Vcyt) # /M/s (1.8e12 /M/min) converted to /cpc/min; Initial guess 1e7, diffusion limited
-k_Xoff k_Xoff__FREE__*T # /s converted to /min (0.002 /min); Initial guess 3.333e-5
+k_Xon k_Xon__FREE*T/(NA*Vcyt) # /M/s (1.8e12 /M/min) converted to /cpc/min; Initial guess 1e7, diffusion limited
+k_Xoff k_Xoff__FREE*T # /s converted to /min (0.002 /min); Initial guess 3.333e-5
 
-kp_x kp_x__FREE__*T/(NA*Vcyt) # /M/s (1.8e18 /M/min) converted to /cpc/min (1e6 /cpc/min); Initial guess 1e7, diffusion limited
-km_x km_x__FREE__*T # /s converted to /min (100 /min); Initial guess 1.666
+kp_x kp_x__FREE*T/(NA*Vcyt) # /M/s (1.8e18 /M/min) converted to /cpc/min (1e6 /cpc/min); Initial guess 1e7, diffusion limited
+km_x km_x__FREE*T # /s converted to /min (100 /min); Initial guess 1.666
 
 # abundance of hypothetical Ship1 cofactor X
-X_tot=X_tot__FREE__*Ship1_tot # 2.4e6 cpc (1.33 uM); Initial guess 8
+X_tot=X_tot__FREE*Ship1_tot # 2.4e6 cpc (1.33 uM); Initial guess 8
 
 end parameters
 

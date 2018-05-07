@@ -32,14 +32,14 @@ class TestModel:
         cls.savefile5_prefix = 'bngl_files/NoseTest_Save5'
 
         cls.params1 = [
-            pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=3.8),
-            pset.FreeParameter('pase__FREE__', 'normal_var', 0, 1, value=0.16),
-            pset.FreeParameter('koff__FREE__', 'normal_var', 0, 1, value=4.4e-3)
+            pset.FreeParameter('kase__FREE', 'normal_var', 0, 1, value=3.8),
+            pset.FreeParameter('pase__FREE', 'normal_var', 0, 1, value=0.16),
+            pset.FreeParameter('koff__FREE', 'normal_var', 0, 1, value=4.4e-3)
         ]
         cls.params2 = [
-            pset.FreeParameter('kase__FREE__', 'normal_var', 0, 1, value=3.8),
-            pset.FreeParameter('pase__FREE__', 'normal_var', 0, 1, value=0.16),
-            pset.FreeParameter('wrongname__FREE__', 'normal_var', 0, 1, value=4.4e-3)
+            pset.FreeParameter('kase__FREE', 'normal_var', 0, 1, value=3.8),
+            pset.FreeParameter('pase__FREE', 'normal_var', 0, 1, value=0.16),
+            pset.FreeParameter('wrongname__FREE', 'normal_var', 0, 1, value=4.4e-3)
         ]
 
     @classmethod
@@ -59,31 +59,31 @@ class TestModel:
 
     def test_initialize(self):
         model1 = pset.BNGLModel(self.file1)
-        assert model1.param_names == ('kase__FREE__', 'koff__FREE__', 'pase__FREE__')
+        assert model1.param_names == ('kase__FREE', 'koff__FREE', 'pase__FREE')
 
         model2 = pset.BNGLModel(self.file2)
         assert model2.param_names == (
-            'Ag_tot_1__FREE__', 'kase__FREE__', 'koff__FREE__', 'kon__FREE__', 'pase__FREE__', 't_end__FREE__')
+            'Ag_tot_1__FREE', 'kase__FREE', 'koff__FREE', 'kon__FREE', 'pase__FREE', 't_end__FREE')
 
         model3 = pset.BNGLModel(self.file3)
-        assert model3.param_names == ('__koff2__FREE__', 'kase__FREE__', 'koff__FREE__', 'pase__FREE__')
+        assert model3.param_names == ('__koff2__FREE', 'kase__FREE', 'koff__FREE', 'pase__FREE')
 
     def test_init_with_pset(self):
         ps1 = pset.PSet(self.params1)
         model1 = pset.BNGLModel(self.file1, ps1)
-        assert model1.param_set['kase__FREE__'] == 3.8
+        assert model1.param_set['kase__FREE'] == 3.8
 
     @raises(ValueError)
     def test_init_with_pset_error(self):
         ps1 = pset.PSet(self.params2)
         model1 = pset.BNGLModel(self.file1, ps1)
-        assert model1.param_set['kase__FREE__'] == 3.8
+        assert model1.param_set['kase__FREE'] == 3.8
 
     def test_copy_with_param_set(self):
         model1 = pset.BNGLModel(self.file1)
         ps1 = pset.PSet(self.params1)
         model1b = model1.copy_with_param_set(ps1)
-        assert model1b.param_set['kase__FREE__'] == 3.8
+        assert model1b.param_set['kase__FREE'] == 3.8
 
         nmodel1 = pset.NetModel('TrickyWP_p1_5', [], [], nf=self.file5)
         ps1 = pset.PSet([pset.FreeParameter('Nchannel', 'normal_var', 0, 1, value=20)])

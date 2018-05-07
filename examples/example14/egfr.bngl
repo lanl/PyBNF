@@ -9,61 +9,61 @@ Shc_tot      2.7e5
 Sos_tot      1.3e4 
 Grb2_Sos_tot  4.9e4 
 
-kp1      kp1__FREE__ # ligand-monomer binding  (scaled)
-km1           km1__FREE__ # ligand-monomer dissociation
+kp1      kp1__FREE # ligand-monomer binding  (scaled)
+km1           km1__FREE # ligand-monomer dissociation
 
-kp2      kp2__FREE__ # aggregation of bound monomers (scaled)
-km2            km2__FREE__ # dissociation of bound monomers
+kp2      kp2__FREE # aggregation of bound monomers (scaled)
+km2            km2__FREE # dissociation of bound monomers
 
-kp3            kp3__FREE__ # dimer transphosphorylation   
-km3          km3__FREE__ # dimer dephosphorylation        
+kp3            kp3__FREE # dimer transphosphorylation
+km3          km3__FREE # dimer dephosphorylation
 
-kp14             kp14__FREE__ # Shc transphosphorylation  
-km14          km14__FREE__ # Shc dephosphorylation      
+kp14             kp14__FREE # Shc transphosphorylation
+km14          km14__FREE # Shc dephosphorylation
 
-km16         km16__FREE__ # Shc cytosolic dephosphorylation     
+km16         km16__FREE # Shc cytosolic dephosphorylation
 
-kp9      kp9__FREE__ # binding of Grb2 to receptor     (scaled)
-km9           km9__FREE__ # dissociation of Grb2 from receptor
+kp9      kp9__FREE # binding of Grb2 to receptor     (scaled)
+km9           km9__FREE # dissociation of Grb2 from receptor
 
-kp10     kp10__FREE__ # binding of Sos to receptor    (scaled)
-km10          km10__FREE__ # dissociation of Sos from receptor
+kp10     kp10__FREE # binding of Sos to receptor    (scaled)
+km10          km10__FREE # dissociation of Sos from receptor
 
-kp11      kp11__FREE__ # binding of Grb2-Sos to receptor     (scaled)
-km11          km11__FREE__ # diss. of Grb2-Sos from receptor
+kp11      kp11__FREE # binding of Grb2-Sos to receptor     (scaled)
+km11          km11__FREE # diss. of Grb2-Sos from receptor
 
-kp13       kp13__FREE__ # binding of Shc to  receptor    (scaled)
-km13           km13__FREE__ # diss. of Shc from  receptor
+kp13       kp13__FREE # binding of Shc to  receptor    (scaled)
+km13           km13__FREE # diss. of Shc from  receptor
 
-kp15       kp15__FREE__ # binding of ShcP to  receptor     (scaled)
-km15           km15__FREE__ # diss. of ShcP from  receptor
+kp15       kp15__FREE # binding of ShcP to  receptor     (scaled)
+km15           km15__FREE # diss. of ShcP from  receptor
 
-kp17     kp17__FREE__ # binding of Grb2 to RP-ShcP  (scaled)
-km17           km17__FREE__ # diss. of Grb2 from RP-ShcP  
+kp17     kp17__FREE # binding of Grb2 to RP-ShcP  (scaled)
+km17           km17__FREE # diss. of Grb2 from RP-ShcP
 
-kp18       kp18__FREE__ # binding of ShcP-Grb2 to receptor    (scaled)
-km18           km18__FREE__ # diss. of ShcP-Grb2 from  receptor
+kp18       kp18__FREE # binding of ShcP-Grb2 to receptor    (scaled)
+km18           km18__FREE # diss. of ShcP-Grb2 from  receptor
 
-kp19     kp19__FREE__ # binding of Sos to RP-ShcP-Grb2  (scaled)
-km19        km19__FREE__ # diss. of Sos from RP-ShcP-Grb2 
+kp19     kp19__FREE # binding of Sos to RP-ShcP-Grb2  (scaled)
+km19        km19__FREE # diss. of Sos from RP-ShcP-Grb2
 
-kp20     kp20__FREE__ # binding of ShcP-Grb2-Sos to receptor    (scaled)
-km20          km20__FREE__ # diss. of ShcP-Grb2-Sos from receptor
+kp20     kp20__FREE # binding of ShcP-Grb2-Sos to receptor    (scaled)
+km20          km20__FREE # diss. of ShcP-Grb2-Sos from receptor
 
-kp24         kp24__FREE__ # binding of Grb2-Sos to RP-ShcP    (scaled)
-km24        km24__FREE__ # diss. of Grb2-Sos from RP-ShcP
+kp24         kp24__FREE # binding of Grb2-Sos to RP-ShcP    (scaled)
+km24        km24__FREE # diss. of Grb2-Sos from RP-ShcP
 
-kp21     kp21__FREE__ # binding of ShcP to Grb2 in cytosol (scaled)
-km21          km21__FREE__ # diss. of Grb2 and SchP in cytosol
+kp21     kp21__FREE # binding of ShcP to Grb2 in cytosol (scaled)
+km21          km21__FREE # diss. of Grb2 and SchP in cytosol
 
-kp23     kp23__FREE__ # binding of ShcP to Grb2-Sos in cytosol (scaled)
-km23     km23__FREE__ # diss. of Grb2-Sos and SchP in cytosol
+kp23     kp23__FREE # binding of ShcP to Grb2-Sos in cytosol (scaled)
+km23     km23__FREE # diss. of Grb2-Sos and SchP in cytosol
 
-kp12     kp12__FREE__ # binding of Grb2 to Sos in cytosol (scaled)
-km12     km12__FREE__ # diss. of Grb2 and Sos in cytosol
+kp12     kp12__FREE # binding of Grb2 to Sos in cytosol (scaled)
+km12     km12__FREE # diss. of Grb2 and Sos in cytosol
 
-kp22     kp22__FREE__ # binding of ShcP-Grb2 to Sos in cytosol (scaled)
-km22     km22__FREE__ # diss. of ShcP-Grb2 and Sos in cytosol
+kp22     kp22__FREE # binding of ShcP-Grb2 to Sos in cytosol (scaled)
+km22     km22__FREE # diss. of ShcP-Grb2 and Sos in cytosol
 
 end parameters
 
