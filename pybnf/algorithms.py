@@ -299,6 +299,7 @@ class Algorithm(object):
 
         self.bootstrap_number = None
         self.best_fit_obj = None
+        self.refine = False
 
     def reset(self, bootstrap):
         """
@@ -552,6 +553,8 @@ class Algorithm(object):
         if name == '':
             name = str(self.output_counter)
             self.output_counter += 1
+        if self.refine:
+            name = 'refine_%s' % name
         filepath = '%s/sorted_params_%s.txt' % (self.res_dir, name)
         logger.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
@@ -611,7 +614,8 @@ class Algorithm(object):
 
         logger.debug('Initializing dask Client object')
 
-        if refine:
+        self.refine = refine
+        if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
 
         if scheduler_node:
@@ -736,9 +740,9 @@ class Algorithm(object):
         try:
             os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
                       '%s/alg_%s.bp' % (self.config.config['output_dir'],
-                                        ('finished' if not refine else 'refine_finished')))
+                                        ('finished' if not self.refine else 'refine_finished')))
             logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
-                        ('finished' if not refine else 'refine_finished'))
+                        ('finished' if not self.refine else 'refine_finished'))
         except OSError:
             logger.warning('Tried to move pickled algorithm, but it was not found')
 
