@@ -74,7 +74,7 @@ class Result(object):
 
 
 class FailedSimulation(Result):
-    def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None]), lfs=None):
+    def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None])):
         """
         Instantiates a FailedSimulation
 
@@ -85,14 +85,11 @@ class FailedSimulation(Result):
         :type fail_type: int
         :param einfo:
         :type einfo: tuple
-        :param lfs: Log files (BNGL only) tracking BioNetGen stdout/stderr
-        :type lfs: list
         """
         super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
         self.failed = True
         self.traceback = ''.join(traceback.format_exception(*einfo))
-        self.log_files = lfs
 
     def normalize(self, settings):
         return
@@ -136,7 +133,6 @@ class Job:
         # Folder where we save the model files and outputs.
         self.folder = '%s/%s' % (self.output_dir, self.job_id)
         self.delete_folder = delete_folder
-        self.log_files = []
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
@@ -147,17 +143,20 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
-        self._get_log_files()  # Occurs when runs are successful.  Log files not used in this case yet
+        self._copy_log_files('')  # Occurs when runs are successful.  Log files not used in this case yet
         return ds
 
-    def _get_log_files(self):
+    def _copy_log_files(self, failed_logs_dir):
+        if failed_logs_dir == '':
+            self.jlogger.error('Cannot save log files without specified directory')
+            return
         for m in self.models:
             lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
             if os.path.isfile(lf):
-                self.jlogger.debug('Found log file %s' % lf)
-                self.log_files.append(lf)
+                self.jlogger.debug('Copying log file %s' % lf)
+                shutil.copy(lf, failed_logs_dir)
 
-    def run_simulation(self, debug=False):
+    def run_simulation(self, debug=False, failed_logs_dir=''):
         """Runs the simulation and reads in the result"""
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
@@ -174,23 +173,22 @@ class Job:
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
                     self.jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
-                                  self.job_id)
+                                       self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
         except CalledProcessError:
             if debug:
-                self._get_log_files()
-            res = FailedSimulation(self.params, self.job_id, 1, lfs=self.log_files)
+                self._copy_log_files(failed_logs_dir)
+            res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
             if debug:
-                self._get_log_files()
-            self._get_log_files()
-            res = FailedSimulation(self.params, self.job_id, 0, lfs=self.log_files)
+                self._copy_log_files(failed_logs_dir)
+            res = FailedSimulation(self.params, self.job_id, 0)
         except Exception:
             if debug:
-                self._get_log_files()
+                self._copy_log_files(failed_logs_dir)
             print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
                    'as a bug.')
             self.jlogger.exception('Unknown error during job %s' % self.job_id)
@@ -639,11 +637,14 @@ class Algorithm(object):
             psets = self.start_run()
         pending_psets = set(psets)
 
+        if not os.path.isdir(self.failed_logs_dir):
+            os.mkdir(self.failed_logs_dir)
+
         jobs = []
         for p in psets:
             jobs += self.make_job(p)
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(job.run_simulation, debug) for job in jobs]
+        futures = [client.submit(job.run_simulation, debug, self.failed_logs_dir) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
@@ -667,13 +668,6 @@ class Algorithm(object):
                 if res.fail_type >= 1:
                     self.fail_count += 1
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
-
-                if res.log_files:
-                    if not os.path.isdir(self.failed_logs_dir):
-                        os.mkdir(self.failed_logs_dir)
-                    for lf in res.log_files:
-                        logger.debug('Copying BNGL logs from failed simulations')
-                        shutil.copy(lf, self.failed_logs_dir)
 
                 logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
                 print1('Job %s failed' % res.name)
@@ -704,7 +698,7 @@ class Algorithm(object):
                     pending_psets.add(ps)
                 logger.debug('Submitting %d new Jobs' % len(new_jobs))
 
-                new_futures = [client.submit(j.run_simulation) for j in new_jobs]
+                new_futures = [client.submit(j.run_simulation, debug, self.failed_logs_dir) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
         logger.info("Cancelling %d pending jobs" % len(pending))
@@ -1866,8 +1860,8 @@ class BayesAlgorithm(Algorithm):
                     logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
                     self.staged.append(ps)
 
-class SimplexAlgorithm(Algorithm):
 
+class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
     Computational Economics
