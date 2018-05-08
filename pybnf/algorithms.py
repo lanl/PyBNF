@@ -346,7 +346,8 @@ class Algorithm(object):
     def __setstate__(self, state):
         self.__dict__.update(state)
         try:
-            self.trajectory = Trajectory.load_trajectory(self.res_dir + '/sorted_params_backup.txt',
+            backup_params = 'sorted_params_backup.txt' if not self.refine else 'sorted_params_refine_backup.txt'
+            self.trajectory = Trajectory.load_trajectory('%s/%s' % (self.res_dir, backup_params),
                                                          self.config.variables, self.config.config['num_to_output'])
         except IOError:
             logger.exception('Failed to load trajectory from file')
