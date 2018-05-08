@@ -105,6 +105,7 @@ def main():
             logger.info('Reloading algorithm')
             f = open(continue_file, 'rb')
             alg, pending = pickle.load(f)
+            logger.debug('Loaded algorithm is the %s algorithm' % ('refinement' if alg.refine else 'configured'))
             config = alg.config
 
             if alg.bootstrap_number is not None:
@@ -192,9 +193,9 @@ def main():
                 logger.debug('Refining further using the Simplex algorithm')
                 print1("Refining the best fit by the Simplex algorithm")
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
-                simplex = algs.SimplexAlgorithm(config)
+                simplex = algs.SimplexAlgorithm(config, refine=True)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(log_prefix, scheduler_node, refine=True)
+                simplex.run(log_prefix, scheduler_node)
 
         if alg.bootstrap_number is None:
             print0('Fitting complete')
@@ -277,9 +278,9 @@ def main():
                         logger.debug('Refining further using the Simplex algorithm')
                         print1("Refining the best fit by the Simplex algorithm")
                         config.config['simplex_start_point'] = alg.trajectory.best_fit()
-                        simplex = algs.SimplexAlgorithm(config)
+                        simplex = algs.SimplexAlgorithm(config, refine=True)
                         simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                        simplex.run(log_prefix, scheduler_node, refine=True)
+                        simplex.run(log_prefix, scheduler_node)
 
                 best_fit_pset = alg.trajectory.best_fit()
 

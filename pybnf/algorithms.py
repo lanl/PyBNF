@@ -610,12 +610,11 @@ class Algorithm(object):
         """
         self.max_iterations += n
 
-    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False, refine=False):
+    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
         """Main loop for executing the algorithm"""
 
         logger.debug('Initializing dask Client object')
 
-        self.refine = refine
         if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
 
@@ -1878,7 +1877,7 @@ class SimplexAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config):
+    def __init__(self, config, refine=False):
         super(SimplexAlgorithm, self).__init__(config)
         if 'simplex_start_point' not in self.config.config:
             # We need to set up the initial point ourselfs
@@ -1918,6 +1917,7 @@ class SimplexAlgorithm(Algorithm):
         self.centroids = []  # Contains dicts containing the centroid of all simplex points except the one that I am
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
+        self.refine = refine
 
     def reset(self, bootstrap=None):
         super(SimplexAlgorithm, self).reset(bootstrap)
