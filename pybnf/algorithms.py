@@ -1723,7 +1723,7 @@ class BayesianAlgorithm(Algorithm):
             v = self.variables[i]
             fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
             # For log-space variables, we want the histogram in log space
-            if v.type == 'log':
+            if v.log_space:
                 histdata = np.log10(dat_array[:, i])
                 header = 'log10_lower_bound\tlog10_upper_bound\tcount'
             else:
