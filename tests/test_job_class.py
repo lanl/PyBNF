@@ -76,6 +76,7 @@ class TestJob(object):
         assert isfile('sim_net/TrickyWP_p1_5_test.bngl')
         assert isfile('sim_net/TrickyWP_p1_5_test.cdat')
         assert isfile('sim_net/TrickyWP_p1_5_test.gdat')
+        assert isfile('sim_net/TrickyWP_p1_5_test.log')
 
     def test_timeout(self):
         res = self.job_to.run_simulation()

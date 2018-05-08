@@ -393,7 +393,7 @@ class NetModel(BNGLModel):
             elif re.match('end\s+parameters', l.strip()):
                 in_params_block = False
             elif in_params_block:
-                m = re.match('(\s+)(\d)+\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
+                m = re.match('(\s+)(\d+)\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
                     if m.group(3) in pset.keys():
                         lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
@@ -596,7 +596,7 @@ class SbmlModel(SbmlModelNoTimeout):
 
     def execute(self, folder, filename, timeout):
         arg = pickle.dumps(self)
-        with open('%s/%s_log' % (folder, filename), 'w') as errout:
+        with open('%s/%s.log' % (folder, filename), 'w') as errout:
             proc_output = run([executable, ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=errout)
         result = pickle.loads(proc_output.stdout)
         return result

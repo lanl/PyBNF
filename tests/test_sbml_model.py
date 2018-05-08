@@ -45,6 +45,10 @@ class TestSbmlModel:
             shutil.rmtree(cls.folder_scan)
         except OSError:
             pass
+        try:
+            os.remove('raf_test_exec.log')
+        except OSError:
+            pass
 
     def test_init(self):
         m = pset.SbmlModel(self.file, self.abs_file)

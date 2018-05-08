@@ -83,6 +83,8 @@ class FailedSimulation(Result):
         :param name:
         :param fail_type: 0 - Exceeded walltime, 1 - Other crash
         :type fail_type: int
+        :param einfo:
+        :type einfo: tuple
         """
         super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
@@ -97,6 +99,10 @@ class Job:
     """
     Container for information necessary to perform a single evaluation in the fitting algorithm
     """
+
+    # Seeing these logs for cluster-based fitting requires configuring dask to log to the
+    # "pybnf.algorithms.job" logger
+    jlogger = logging.getLogger('pybnf.algorithms.job')
 
     def __init__(self, models, params, job_id, output_dir, timeout, delete_folder=False):
         """
@@ -137,14 +143,21 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
+        self._copy_log_files('')  # Occurs when runs are successful.  Log files not used in this case yet
         return ds
 
-    def run_simulation(self):
-        """Runs the simulation and reads in the result"""
+    def _copy_log_files(self, failed_logs_dir):
+        if failed_logs_dir == '':
+            self.jlogger.error('Cannot save log files without specified directory')
+            return
+        for m in self.models:
+            lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
+            if os.path.isfile(lf):
+                self.jlogger.debug('Copying log file %s' % lf)
+                shutil.copy(lf, failed_logs_dir)
 
-        # Seeing these logs for cluster-based fitting requires configuring dask to log to the
-        # "pybnf.algorithms.job" logger
-        jlogger = logging.getLogger('pybnf.algorithms.job')
+    def run_simulation(self, debug=False, failed_logs_dir=''):
+        """Runs the simulation and reads in the result"""
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
@@ -152,33 +165,39 @@ class Job:
         while not made_folder:
             try:
                 os.mkdir(self.folder)
-                jlogger.info('Created folder %s for simulation' % self.folder)
+                self.jlogger.info('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
-                jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
+                self.jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
-                                  self.job_id)
+                    self.jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
+                                       self.job_id)
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
-        except (CalledProcessError, FailedSimulationError):
-            jlogger.debug('Job %s failed' % self.job_id, exc_info=True)
+        except CalledProcessError:
+            if debug:
+                self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
+            if debug:
+                self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 0)
         except Exception:
+            if debug:
+                self._copy_log_files(failed_logs_dir)
             print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
                    'as a bug.')
-            jlogger.exception('Unknown error during job %s' % self.job_id)
+            self.jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
-                jlogger.info('Removing folder %s' % self.folder)
+                self.jlogger.info('Removing folder %s' % self.folder)
             except CalledProcessError or TimeoutExpired:
                 # fail flag set to 1 since timeout in this case is due to directory removal
                 res = FailedSimulation(self.params, self.job_id, 1)
@@ -269,6 +288,7 @@ class Algorithm(object):
 
         self.sim_dir = self.config.config['output_dir'] + '/Simulations'
         self.res_dir = self.config.config['output_dir'] + '/Results'
+        self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs'
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -303,6 +323,8 @@ class Algorithm(object):
             os.mkdir(self.sim_dir)
             self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
             os.mkdir(self.res_dir)
+            self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs-boot%s' % bootstrap
+            os.mkdir(self.failed_logs_dir)
 
         self.best_fit_obj = None
 
@@ -615,11 +637,14 @@ class Algorithm(object):
             psets = self.start_run()
         pending_psets = set(psets)
 
+        if debug and not os.path.isdir(self.failed_logs_dir):
+            os.mkdir(self.failed_logs_dir)
+
         jobs = []
         for p in psets:
             jobs += self.make_job(p)
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(job.run_simulation) for job in jobs]
+        futures = [client.submit(job.run_simulation, debug, self.failed_logs_dir) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
@@ -643,12 +668,13 @@ class Algorithm(object):
                 if res.fail_type >= 1:
                     self.fail_count += 1
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
+
                 logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your simulations are failing to run. For more info, check the log files in the '
-                                     'Simulations directory.')
+                                     'Your simulations are failing to run. See the log files in '
+                                     'the %s directory.' % ('FailedSimLogs' if debug else 'Simulations'))
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)
@@ -672,7 +698,7 @@ class Algorithm(object):
                     pending_psets.add(ps)
                 logger.debug('Submitting %d new Jobs' % len(new_jobs))
 
-                new_futures = [client.submit(j.run_simulation) for j in new_jobs]
+                new_futures = [client.submit(j.run_simulation, debug, self.failed_logs_dir) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
         logger.info("Cancelling %d pending jobs" % len(pending))
@@ -1834,8 +1860,8 @@ class BayesAlgorithm(Algorithm):
                     logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
                     self.staged.append(ps)
 
-class SimplexAlgorithm(Algorithm):
 
+class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
     Computational Economics
