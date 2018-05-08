@@ -637,7 +637,7 @@ class Algorithm(object):
             psets = self.start_run()
         pending_psets = set(psets)
 
-        if not os.path.isdir(self.failed_logs_dir):
+        if debug and not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
 
         jobs = []
@@ -673,7 +673,7 @@ class Algorithm(object):
                 print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your BioNetGen simulations are failing to run. See the BioNetGen log files in '
+                                     'Your simulations are failing to run. See the log files in '
                                      'the %s directory.' % ('FailedSimLogs' if debug else 'Simulations'))
             else:
                 self.success_count += 1
