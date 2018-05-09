@@ -1802,6 +1802,13 @@ class DreamAlgorithm(BayesianAlgorithm):
         self.iteration[index] += 1
         self.acceptance_rates[index] = self.acceptances[index] / self.iteration[index]
 
+        # Update histograms and trajectories if necessary
+        if self.iteration[index] % self.sample_every == 0:
+            self.sample_pset(self.current_pset[index], self.ln_current_P[index])
+        if (self.iteration[index] % (self.sample_every * self.output_hist_every) == 0
+            and self.iteration[index] > self.burn_in):
+            self.update_histograms('_%i' % self.iteration[index])
+
         # Wait for entire generation to finish
         if np.all(self.wait_for_sync):
 
@@ -1817,12 +1824,6 @@ class DreamAlgorithm(BayesianAlgorithm):
                 print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
             logger.info('Completed %i iterations' % self.iteration[index])
             print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
-
-            if self.iteration[index] % self.sample_every == 0:
-                self.sample_pset(self.current_pset[index], self.ln_current_P[index])
-            if (self.iteration[index] % (self.sample_every * self.output_hist_every) == 0
-                and self.iteration[index] > self.burn_in):
-                self.update_histograms('_%i' % self.iteration[index])
 
             next_gen = []
             for i, p in enumerate(self.current_pset):
@@ -2147,17 +2148,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                     logger.warning('Box-constrained parameter %s reached a value outside the box.')
                     total += -np.inf
         return total
-
-    def sample_pset(self, pset, ln_prob):
-        """
-        Adds this pset to the set of sampled psets for the final distribution.
-        :param pset:
-        :type pset: PSet
-        :param ln_prob - The probability of this PSet to record in the samples file.
-        :type ln_prob: float
-        """
-        with open(self.samples_file, 'a') as f:
-            f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
 
     def replica_exchange(self):
         """
