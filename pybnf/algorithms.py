@@ -658,7 +658,7 @@ class Algorithm(object):
 
         if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1:
             calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
-            [self.calc_future] = client.scatter([calculator])
+            [self.calc_future] = client.scatter([calculator], broadcast=True)
         else:
             self.calc_future = None
 
