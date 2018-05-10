@@ -1,6 +1,12 @@
 Troubleshooting
 ===============
 
+Failed simulations
+^^^^^^^^^^^^^^^^^^
+If an abnormal number of  simulations are failing, rerun the fit with the debugging flag ``-d``.  Failed simulations
+will send their logs (generally stdout and stderr) to a ``FailedSimLogs`` folder in the specified output directory.  A
+more detailed log file (with a "debug" tag) will also be created in the directory from which ``pybnf`` was called.
+
 Too many open files
 ^^^^^^^^^^^^^^^^^^^
 Some highly parallelized runs may encounter the error "Too many open files". This error occurs when PyBNF exceeds the number of open files allowed by the system for a single program. When this error comes up, it prevents PyBNF from saving results and backups of the run, and may also interfere with its ability to run simulations. 
