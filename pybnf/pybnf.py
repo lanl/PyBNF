@@ -108,6 +108,10 @@ def main():
             logger.debug('Loaded algorithm is the %s algorithm' % ('refinement' if alg.refine else 'configured'))
             config = alg.config
 
+            logger.debug('Checking for Simulations directory')
+            if not os.path.exists(alg.sim_dir):
+                os.mkdir(alg.sim_dir)
+
             if alg.bootstrap_number is not None:
                 print0('Resuming a bootstrapping run')
                 logger.info('Resuming a bootstrapping run')
