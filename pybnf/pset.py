@@ -588,7 +588,7 @@ class SbmlModelNoTimeout(Model):
                     res.load_rr_header(labels)
                     result_dict[act.suffix + mut.suffix] = res
                     if self.save_files:
-                        np.savetxt('%s/%s_%s%s.gdat' % (folder, filename, act.suffix, mut.suffix), res_array,
+                        np.savetxt('%s/%s_%s%s.scan' % (folder, filename, act.suffix, mut.suffix), res_array,
                                    header=' '.join([act.param] + i_array.colnames))
                 else:
                     raise NotImplementedError('Unknown action type')
