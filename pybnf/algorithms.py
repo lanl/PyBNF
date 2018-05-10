@@ -105,7 +105,7 @@ class Job:
     # "pybnf.algorithms.job" logger
     jlogger = logging.getLogger('pybnf.algorithms.job')
 
-    def __init__(self, models, params, job_id, output_dir, timeout, calc_future, delete_folder=False):
+    def __init__(self, models, params, job_id, output_dir, timeout, calc_future, norm_settings, delete_folder=False):
         """
         Instantiates a Job
 
@@ -120,6 +120,9 @@ class Job:
         :param calc_future: Future for an ObjectiveCalculator containing the objective function and experimental data,
         which we can use to calculate the objective value.
         :type calc_future: Future
+        :param norm_settings: Config value for 'normalization': a string representing the normalization type, a dict
+        mapping exp files to normalization type, or None
+        :type norm_settings: Union[str, dict, NoneType]
         :param delete_folder: If True, delete the folder and files created after the simulation runs
         :type delete_folder: bool
         """
@@ -127,6 +130,7 @@ class Job:
         self.params = params
         self.job_id = job_id
         self.calc_future = calc_future
+        self.norm_settings = norm_settings
         self.home_dir = os.getcwd()  # This is safe because it is called from the scheduler, not the workers.
         # Force absolute paths for bngcommand and output_dir, because workers do not get the relative path info.
         if output_dir[0] == '/':
@@ -200,6 +204,7 @@ class Job:
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         else:
             if self.calc_future is not None:
+                res.normalize(self.norm_settings)
                 res.score = self.calc_future.result().evaluate_objective(res.simdata)
                 if res.score is None:
                     res.score = np.inf
@@ -455,6 +460,7 @@ class Algorithm(object):
         """
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
+            res.normalize(self.config.config['normalization'])
             res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
@@ -537,7 +543,7 @@ class Algorithm(object):
             # Create a single job
             return [Job(self.model_list, params, job_id,
                     self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
-                        bool(self.config.config['delete_old_files']))]
+                    self.config.config['normalization'], bool(self.config.config['delete_old_files']))]
         else:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
@@ -549,7 +555,7 @@ class Algorithm(object):
                 # objective on their own
                 newjobs.append(Job(self.model_list, params, thisname,
                                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
-                                   bool(self.config.config['delete_old_files'])))
+                                   self.config.config['normalization'], bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
@@ -702,7 +708,6 @@ class Algorithm(object):
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)
 
-            res.normalize(self.config.config['normalization'])
             self.add_to_trajectory(res)
             if res.score < self.config.config['min_objective']:
                 logger.info('Minimum objective value achieved')
