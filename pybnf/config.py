@@ -269,10 +269,11 @@ class Configuration(object):
                     model.bng_command = absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
+                    save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf, absolute(mf))
+                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag)
                     else:
-                        model = SbmlModel(mf, absolute(mf))
+                        model = SbmlModel(mf, absolute(mf), save_files=save_flag)
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
