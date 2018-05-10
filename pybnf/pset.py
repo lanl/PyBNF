@@ -413,18 +413,20 @@ class NetModel(BNGLModel):
 
 class SbmlModelNoTimeout(Model):
 
-    def __init__(self, file, abs_file, pset=None, actions=()):
+    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False):
         """
         :param file: The file path to the model as it was defined in the config. Used when indexing into the config dict
         :param abs_file: The absolute file path to the model. Used to actually load the model
         :param pset: The parameter set for the model
         :param actions: Iterable of actions to run on the model
+        :param save_files: Whether to save the simulation output to file each time the model is run
         """
 
         self.file_path = file
         self.abs_file_path = abs_file
         self.param_set = pset
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
+        self.save_files = save_files
         self.actions = list(actions)
         self.suffixes = [a.suffix for a in actions]
         self.stochastic = False
@@ -542,6 +544,9 @@ class SbmlModelNoTimeout(Model):
                         raise FailedSimulationError
                     res = Data(named_arr=res_array)
                     result_dict[act.suffix + mut.suffix] = res
+                    if self.save_files:
+                        np.savetxt('%s/%s_%s%s.gdat' % (folder, filename, act.suffix, mut.suffix), res_array,
+                                   header=' '.join(res_array.colnames))
                 elif isinstance(act, ParamScan):
                     # Manually run parameter scan with several simulate commands
                     if act.param not in self.param_names:
@@ -582,6 +587,9 @@ class SbmlModelNoTimeout(Model):
                     res = Data(arr=res_array)
                     res.load_rr_header(labels)
                     result_dict[act.suffix + mut.suffix] = res
+                    if self.save_files:
+                        np.savetxt('%s/%s_%s%s.scan' % (folder, filename, act.suffix, mut.suffix), res_array,
+                                   header=' '.join([act.param] + i_array.colnames))
                 else:
                     raise NotImplementedError('Unknown action type')
             # Undo all mutations
@@ -596,6 +604,8 @@ class SbmlModelNoTimeout(Model):
 class SbmlModel(SbmlModelNoTimeout):
 
     def execute(self, folder, filename, timeout):
+        self.curr_folder = folder
+        self.curr_file = filename
         arg = pickle.dumps(self)
         with open('%s/%s.log' % (folder, filename), 'w') as errout:
             proc_output = run([executable, ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=errout)
@@ -603,7 +613,7 @@ class SbmlModel(SbmlModelNoTimeout):
         return result
 
     def super_execute(self):
-        return super().execute(None, None, None)
+        return super().execute(self.curr_folder, self.curr_file, None)
 
 
 class FailedSimulationError(Exception):

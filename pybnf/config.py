@@ -120,7 +120,7 @@ class Configuration(object):
             bng_command = ''
 
         default = {
-            'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 0, 'num_to_output': 5000,
+            'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 1, 'num_to_output': 5000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0,
@@ -269,10 +269,11 @@ class Configuration(object):
                     model.bng_command = absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
+                    save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf, absolute(mf))
+                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag)
                     else:
-                        model = SbmlModel(mf, absolute(mf))
+                        model = SbmlModel(mf, absolute(mf), save_files=save_flag)
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
