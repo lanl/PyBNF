@@ -199,7 +199,10 @@ class Job:
             self.jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         else:
-            res.score = self.calc_future.result().evaluate_objective(res.simdata)
+            if self.calc_future is not None:
+                res.score = self.calc_future.result().evaluate_objective(res.simdata)
+                if res.score is None:
+                    res.score = np.inf
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
@@ -449,11 +452,16 @@ class Algorithm(object):
         """
         Adds the information from a Result to the Trajectory instance
         """
-        if res.score is None:
+        # Evaluate objective if it wasn't done on workers.
+        if res.score is None:  # Check if the objective wasn't evaluated on the workers
+            res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
+            if res.score is None:  # Check if the above evaluation failed
+                res.score = np.inf
+
+        if res.score == np.inf:
             logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
             logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
             print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
-            res.score = np.inf
         else:
             logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, res.score))
         self.trajectory.add(res.pset, res.score, res.name)
@@ -536,7 +544,8 @@ class Algorithm(object):
             for i in range(self.config.config['smoothing']):
                 thisname = '%s_rep%i' % (job_id, i)
                 newnames.append(thisname)
-                # Todo: This naive handling of ObjectiveCalculators in combination with JobGroups is probably wrong!
+                # calc_future is supposed to be None here - the workers don't have enough info to calculate the
+                # objective on their own
                 newjobs.append(Job(self.model_list, params, thisname,
                                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                                    bool(self.config.config['delete_old_files'])))
@@ -647,8 +656,11 @@ class Algorithm(object):
         if debug and not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
 
-        calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
-        [self.calc_future] = client.scatter([calculator])
+        if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1:
+            calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
+            [self.calc_future] = client.scatter([calculator])
+        else:
+            self.calc_future = None
 
         jobs = []
         for p in psets:
