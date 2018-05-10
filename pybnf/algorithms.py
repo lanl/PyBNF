@@ -16,6 +16,7 @@ from .pset import NetModel, BNGLModel
 from .pset import OutOfBoundsException
 from .pset import FailedSimulationError
 from .printing import print0, print1, print2, PybnfError
+from .objective import ObjectiveCalculator
 
 import logging
 import numpy as np
@@ -104,7 +105,7 @@ class Job:
     # "pybnf.algorithms.job" logger
     jlogger = logging.getLogger('pybnf.algorithms.job')
 
-    def __init__(self, models, params, job_id, output_dir, timeout, delete_folder=False):
+    def __init__(self, models, params, job_id, output_dir, timeout, calc_future, delete_folder=False):
         """
         Instantiates a Job
 
@@ -116,12 +117,16 @@ class Job:
         :type job_id: str
         :param output_dir path to the directory where I should create my simulation folder
         :type output_dir: str
+        :param calc_future: Future for an ObjectiveCalculator containing the objective function and experimental data,
+        which we can use to calculate the objective value.
+        :type calc_future: Future
         :param delete_folder: If True, delete the folder and files created after the simulation runs
         :type delete_folder: bool
         """
         self.models = models
         self.params = params
         self.job_id = job_id
+        self.calc_future = calc_future
         self.home_dir = os.getcwd()  # This is safe because it is called from the scheduler, not the workers.
         # Force absolute paths for bngcommand and output_dir, because workers do not get the relative path info.
         if output_dir[0] == '/':
@@ -193,6 +198,16 @@ class Job:
                    'as a bug.')
             self.jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+        else:
+            score = self.calc_future.result().evaluate_objective(res.simdata)
+            if score is None:
+                logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+                logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+                print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
+                res.score = np.inf
+            else:
+                res.score = score
+                logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
 
         if self.delete_folder:
             try:
@@ -299,6 +314,7 @@ class Algorithm(object):
 
         self.bootstrap_number = None
         self.best_fit_obj = None
+        self.calc_future = None  # Created during Algorithm.run()
 
     def reset(self, bootstrap):
         """
@@ -440,17 +456,8 @@ class Algorithm(object):
 
     def add_to_trajectory(self, res):
         """
-        Evaluates the objective function for a Result, and adds the information from the Result to the Trajectory
-        instance"""
-        score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
-        if score is None:
-            logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-            logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
-            print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
-            res.score = np.inf
-        else:
-            res.score = score
-            logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
+        Adds the information from a Result to the Trajectory instance
+        """
         self.trajectory.add(res.pset, res.score, res.name)
 
     def random_pset(self):
@@ -522,7 +529,8 @@ class Algorithm(object):
         if self.config.config['smoothing'] == 1:
             # Create a single job
             return [Job(self.model_list, params, job_id,
-                    self.sim_dir, self.config.config['wall_time_sim'], bool(self.config.config['delete_old_files']))]
+                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
+                        bool(self.config.config['delete_old_files']))]
         else:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
@@ -530,8 +538,9 @@ class Algorithm(object):
             for i in range(self.config.config['smoothing']):
                 thisname = '%s_rep%i' % (job_id, i)
                 newnames.append(thisname)
+                # Todo: This naive handling of ObjectiveCalculators in combination with JobGroups is probably wrong!
                 newjobs.append(Job(self.model_list, params, thisname,
-                                   self.sim_dir, self.config.config['wall_time_sim'],
+                                   self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                                    bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
@@ -639,6 +648,9 @@ class Algorithm(object):
 
         if debug and not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
+
+        calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
+        [self.calc_future] = client.scatter([calculator])
 
         jobs = []
         for p in psets:
