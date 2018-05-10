@@ -463,6 +463,7 @@ class SbmlModelNoTimeout(Model):
         logger.info('Generating model text for %s' % self.name)
         runner = rr.RoadRunner(self.abs_file_path)
         self._modify_params(runner)
+        runner.reset()
         return runner.getCurrentSBML()
 
     def save(self, file_prefix):
