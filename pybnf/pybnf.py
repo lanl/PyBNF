@@ -158,8 +158,10 @@ def main():
                 alg = algs.BayesAlgorithm(config, sa=True)
             elif config.config['fit_type'] == 'sim':
                 alg = algs.SimplexAlgorithm(config)
+            elif config.config['fit_type'] == 'ade':
+                alg = algs.AsynchronousDifferentialEvolution(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ss, bmc, pt, sa, sim' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
         # override cluster type value in configuration file if specified with cmdline args
         if cmdline_args.cluster_type:

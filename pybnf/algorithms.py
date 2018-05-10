@@ -1023,7 +1023,7 @@ class DifferentialEvolution(Algorithm):
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
 
         self.strategy = config.config['de_strategy']
-        options = ('rand1', 'rand2i', 'best1', 'best2', 'all1', 'all2')
+        options = ('rand1', 'rand2', 'best1', 'best2', 'all1', 'all2')
         if self.strategy not in options:
             raise PybnfError('Invalid differential evolution strategy "%s". Options are: %s' %
                              (self.strategy, ','.join(options)))
@@ -1048,7 +1048,7 @@ class DifferentialEvolution(Algorithm):
             print2('Running Differential Evolution with population size %i for up to %i iterations' %
                    (self.num_per_island, self.max_iterations))
         else:
-            print2('Running asynchronous Differential Evolution with %i islands of %i individuals each, '
+            print2('Running island-based Differential Evolution with %i islands of %i individuals each, '
                    'for up to %i iterations' % (self.num_islands, self.num_per_island, self.max_iterations))
 
         # Initialize random individuals
@@ -1240,6 +1240,159 @@ class DifferentialEvolution(Algorithm):
             picks[0] = base_index
         base = self.individuals[island][picks[0]]
         others = [self.individuals[island][p] for p in picks[1:]]
+
+        # Iterate through parameters; decide whether to mutate or leave the same.
+        new_pset_vars = []
+        for p in base:
+            if np.random.random() < self.mutation_rate:
+                if '1' in self.strategy:
+                    update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
+                else:
+                    update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name)) +\
+                                 self.mutation_factor * others[2].get_param(p.name).diff(others[3].get_param(p.name))
+                new_pset_vars.append(p.add(update_val))
+            else:
+                new_pset_vars.append(p)
+
+        return PSet(new_pset_vars)
+
+
+class AsynchronousDifferentialEvolution(Algorithm):
+    """
+    Implements a simple asynchronous differential evolution algorithm.
+
+    Contains no islands or migrations. Instead, each time a PSet finishes, proposes a new PSet at the same index using
+    the standard DE formula and whatever the current population happens to be at the time.
+
+    """
+
+    def __init__(self, config):
+        """
+        Initializes algorithm based on the config object.
+
+        """
+        super(AsynchronousDifferentialEvolution, self).__init__(config)
+
+        self.mutation_rate = config.config['mutation_rate']
+        self.mutation_factor = config.config['mutation_factor']
+        self.max_iterations = config.config['max_iterations']
+        self.stop_tolerance = config.config['stop_tolerance']
+        self.population_size = config.config['population_size']
+
+        self.sims_completed = 0  # Count the number of completed iterations on each island
+        self.individuals = []  # List of individuals
+        self.fitnesses = []  # List of same shape, gives fitness of each individual
+
+        self.strategy = config.config['de_strategy']
+        options = ('rand1', 'rand2', 'best1', 'best2', 'all1', 'all2')
+        if self.strategy not in options:
+            raise PybnfError('Invalid differential evolution strategy "%s". Options are: %s' %
+                             (self.strategy, ','.join(options)))
+
+    def reset(self, bootstrap=None):
+        super(AsynchronousDifferentialEvolution, self).reset(bootstrap)
+        self.sims_completed = 0
+        self.individuals = []
+        self.fitnesses = []
+
+    def start_run(self):
+        print2('Running Asyncrhonous Differential Evolution with population size %i for up to %i iterations' %
+               (self.population_size, self.max_iterations))
+
+        # Initialize random individuals
+        if self.config.config['initialization'] == 'lh':
+            self.individuals = self.random_latin_hypercube_psets(self.population_size)
+        else:
+            self.individuals = [self.random_pset() for i in range(self.population_size)]
+
+        # Set all fitnesses to Inf, guaranteeing a replacement by the first proposed individual.
+        # The first replacement will replace with a copy of the same PSet, with the correct objective calculated.
+        self.fitnesses = [np.Inf for i in range(self.population_size)]
+
+        for i in range(len(self.individuals)):
+            self.individuals[i].name = 'gen0ind%i' % i
+
+        return copy.deepcopy(self.individuals)
+
+    def got_result(self, res):
+        """
+        Called when a simulation run finishes
+
+        :param res: Result object
+        :return:
+        """
+
+        pset = res.pset
+        fitness = res.score
+
+        gen = int(re.search('(?<=gen)\d+', pset.name).group(0))
+        j = int(re.search('(?<=ind)\d+', pset.name).group(0))
+
+        if fitness <= self.fitnesses[j]:
+            self.individuals[j] = pset
+            self.fitnesses[j] = fitness
+
+        self.sims_completed += 1
+
+        # Do various "per iteration" stuff
+        if self.sims_completed % self.population_size == 0:
+            iters_complete = self.sims_completed / self.population_size
+            if iters_complete % self.config.config['output_every'] == 0:
+                self.output_results()
+            if iters_complete % 10 == 0:
+                print1('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
+            else:
+                print2('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
+            print2('Current population fitnesses:')
+            print2(sorted(self.fitnesses))
+            if iters_complete % 20 == 0:
+                logger.info('Completed %i simulations' % self.sims_completed)
+            if iters_complete >= self.max_iterations:
+                return 'STOP'
+            # Convergence check
+            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance:
+                return 'STOP'
+
+        if 'best' in self.strategy:
+            best = np.argmin(self.fitnesses)
+            new_pset = self.new_individual(best)
+        elif 'all' in self.strategy:
+            new_pset = self.new_individual(j)
+        else:
+            new_pset = self.new_individual(None)
+        new_pset.name = 'gen%iind%i' % (gen+1, j)
+
+        return [new_pset]
+
+    def new_individual(self, base_index=None):
+        """
+        Create a new individual for the specified island, according to the set strategy
+
+        :param base_index: The index to use for the new individual, or None for a random index.
+        :return:
+        """
+
+        # Choose a starting parameter set (either a random one or the base_index specified)
+        # and others to cross over (always random)
+
+        if '1' in self.strategy:
+            pickn = 3
+        else:
+            pickn = 5
+
+        # Choose pickn random unique indices, or if base_index was given, choose base_index followed by pickn-1 unique
+        # indices
+        picks = np.random.choice(len(self.individuals), pickn, replace=False)
+        if base_index is not None:
+            if base_index in picks:
+                # If we accidentally picked base_index, replace it with picks[0], preserving uniqueness in our list
+                iswitch = list(picks).index(base_index)
+                picks[iswitch] = picks[0]
+            # Now overwrite picks[0] with base_index. If we have base_index, picks[0] was an "extra pick" we only needed
+            # in case we sampled base_index and had to replace it.
+            picks[0] = base_index
+        base = self.individuals[picks[0]]
+        others = [self.individuals[p] for p in picks[1:]]
 
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
