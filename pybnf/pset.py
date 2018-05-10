@@ -604,6 +604,8 @@ class SbmlModelNoTimeout(Model):
 class SbmlModel(SbmlModelNoTimeout):
 
     def execute(self, folder, filename, timeout):
+        self.curr_folder = folder
+        self.curr_file = filename
         arg = pickle.dumps(self)
         with open('%s/%s.log' % (folder, filename), 'w') as errout:
             proc_output = run([executable, ROOT_DIRECTORY + '/sbml_runner.py'], timeout=timeout, stdout=PIPE, check=True, input=arg, stderr=errout)
@@ -611,7 +613,7 @@ class SbmlModel(SbmlModelNoTimeout):
         return result
 
     def super_execute(self):
-        return super().execute(None, None, None)
+        return super().execute(self.curr_folder, self.curr_file, None)
 
 
 class FailedSimulationError(Exception):
