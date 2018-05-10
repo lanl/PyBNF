@@ -199,16 +199,7 @@ class Job:
             self.jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         else:
-            score = self.calc_future.result().evaluate_objective(res.simdata)
-            if score is None:
-                logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-                logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
-                print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
-                res.score = np.inf
-            else:
-                res.score = score
-                logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, score))
-
+            res.score = self.calc_future.result().evaluate_objective(res.simdata)
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
@@ -458,6 +449,13 @@ class Algorithm(object):
         """
         Adds the information from a Result to the Trajectory instance
         """
+        if res.score is None:
+            logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+            logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+            print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
+            res.score = np.inf
+        else:
+            logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, res.score))
         self.trajectory.add(res.pset, res.score, res.name)
 
     def random_pset(self):
