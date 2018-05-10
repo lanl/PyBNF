@@ -203,6 +203,7 @@ class Job:
                 res.score = self.calc_future.result().evaluate_objective(res.simdata)
                 if res.score is None:
                     res.score = np.inf
+                res.simdata = None
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=60)
