@@ -314,7 +314,7 @@ class BNGLModel(Model):
         f.write(text)
         f.close()
 
-    def execute(self, folder, filename, timeout):
+    def execute(self, folder, filename, timeout, with_mutants=True):
         """
 
         :param folder: Folder in which to do all the file creation
@@ -333,18 +333,21 @@ class BNGLModel(Model):
         # Load the data file(s)
         ds = self._load_simdata(folder, filename)
 
-        for mut in self.mutants:
-            # Inefficient iteration over PSet to build the mutant one, but hopefully not performance-critical
-            params = {p.name: p.value for p in self.param_set}
-            for mi in mut:
-                params[mi.name] = mi.mutate(params[mi.name])
-            mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
-                              for pname in params]
-            mut_pset = PSet(mut_param_list)
-            mut_model = self.copy_with_param_set(mut_pset)
-            mut_data = mut_model.execute(folder, filename, timeout)
-            for suff in mut_data:
-                ds[suff + mut.suffix] = mut_data[suff]
+        if with_mutants:
+            for mut in self.mutants:
+                # Inefficient iteration over PSet to build the mutant one, but hopefully not performance-critical
+                logger.debug('Working on mutant %s' % mut.suffix)
+                params = {p.name: p.value for p in self.param_set}
+                for mi in mut:
+                    params[mi.name] = mi.mutate(params[mi.name])
+                mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
+                                  for pname in params]
+                mut_pset = PSet(mut_param_list)
+                mut_model = self.copy_with_param_set(mut_pset)
+                mut_data = mut_model.execute(folder, filename, timeout, with_mutants=False)
+                for suff in mut_data:
+                    ds[suff + mut.suffix] = mut_data[suff]
+                logger.debug('Finished mutant %s' % mut.suffix)
         return ds
 
     def _load_simdata(self, folder, filename):
