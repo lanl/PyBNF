@@ -344,7 +344,7 @@ class BNGLModel(Model):
                                   for pname in params]
                 mut_pset = PSet(mut_param_list)
                 mut_model = self.copy_with_param_set(mut_pset)
-                mut_data = mut_model.execute(folder, filename, timeout, with_mutants=False)
+                mut_data = mut_model.execute(folder, filename+mut.suffix, timeout, with_mutants=False)
                 for suff in mut_data:
                     ds[suff + mut.suffix] = mut_data[suff]
                 logger.debug('Finished mutant %s' % mut.suffix)
