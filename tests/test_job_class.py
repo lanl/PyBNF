@@ -65,7 +65,7 @@ class TestJob(object):
         assert isdir('sim_1/Tricky_sim_1_thing')
 
     def test_net_job(self):
-        netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], nf='bngl_files/TrickyWP_p1_5.net')
+        netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], [], nf='bngl_files/TrickyWP_p1_5.net')
         netmodel.bng_command = self.bng_command
         mkdir('sim_net')
         job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', '.', calc_future=None, norm_settings=None, timeout=None)

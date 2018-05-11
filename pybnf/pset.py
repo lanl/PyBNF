@@ -65,11 +65,7 @@ class Model(object):
         Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
         mutation name
         """
-        result = []
-        for s in self.suffixes:
-            for mut in self.mutants:
-                result.append(s[1]+mut.suffix)
-        return result
+        raise NotImplementedError('Subclasses of Model must implement get_suffixes()')
 
     def add_mutant(self, mut_set):
         """
@@ -348,7 +344,7 @@ class BNGLModel(Model):
             mut_model = self.copy_with_param_set(mut_pset)
             mut_data = mut_model.execute(folder, filename, timeout)
             for suff in mut_data:
-                ds['%s_%s' % (suff, mut.suffix)] = mut_data[suff]
+                ds[suff + mut.suffix] = mut_data[suff]
         return ds
 
     def _load_simdata(self, folder, filename):
@@ -389,6 +385,18 @@ class BNGLModel(Model):
         if self.generate_network_line is None:
             self.generate_network_line = 'generate_network({overwrite=>1})'
         self.suffixes.append((action.bng_codeword, action.suffix))
+
+    def get_suffixes(self):
+        """
+        Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
+        mutation name
+        """
+        result = []
+        for s in self.suffixes:
+            result.append(s[1])
+            for mut in self.mutants:
+                result.append(s[1]+mut.suffix)
+        return result
 
 
 class NetModel(BNGLModel):
@@ -514,6 +522,16 @@ class SbmlModelNoTimeout(Model):
         if action.method == 'ssa':
             self.stochastic = True
 
+    def get_suffixes(self):
+        """
+        Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
+        mutation name
+        """
+        result = []
+        for s in self.suffixes:
+            for mut in self.mutants:
+                result.append(s[1]+mut.suffix)
+        return result
 
     def _modify_params(self, runner):
         """Modify the parameters in this runner instance according to my current PSet"""
