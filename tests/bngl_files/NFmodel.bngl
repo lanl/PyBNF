@@ -2,8 +2,8 @@ begin model
 
 begin parameters
 
-k_factor k_factor__FREE__
-kps=1e-6*k_factor__FREE__
+k_factor k_factor__FREE
+kps=1e-6*k_factor__FREE
 km=1e-2
 
 k_link 1e-5

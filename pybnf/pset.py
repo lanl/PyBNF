@@ -128,8 +128,8 @@ class BNGLModel(Model):
                 continuation_indices = indices
                 continue
 
-            # Find every item matching [alphanumeric]__FREE__
-            params = re.findall('[A-Za-z_]\w*__FREE__', line)
+            # Find every item matching [alphanumeric]__FREE
+            params = re.findall('[A-Za-z_]\w*__FREE', line)
             for p in params:
                 param_names_set.add(p)
 
@@ -193,7 +193,7 @@ class BNGLModel(Model):
 
         if len(param_names_set) == 0:
             raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
-                             "that end in '__FREE__' to tell BioNetFit which parameters to fit." % bngl_file)
+                             "that end in '__FREE' to tell BioNetFit which parameters to fit." % bngl_file)
 
         # Save model_params as a sorted tuple
         param_names_list = list(param_names_set)
@@ -240,7 +240,7 @@ class BNGLModel(Model):
     def model_text(self, gen_only=False):
         """
         Returns the text of a runnable BNGL file, which includes the contents of the original BNGL file, and also values
-        assigned to each __FREE__ parameter, as determined by this model's PSet
+        assigned to each __FREE parameter, as determined by this model's PSet
 
         :return: str
         """
@@ -252,7 +252,7 @@ class BNGLModel(Model):
         if len(self.actions) == 0:
             raise ModelError("No actions found in model")
 
-        # Generate the text associated with defining __FREE__ parameter values
+        # Generate the text associated with defining __FREE parameter values
         param_text_lines = ['%s %s' % (k, str(self.param_set[k])) for k in self.param_names]
 
         # Insert the generated text at the correct point within the text of the model
@@ -278,7 +278,7 @@ class BNGLModel(Model):
 
     def save(self, file_prefix, gen_only=False, pset=None):
         """
-        Saves a runnable BNGL file of the model, including definitions of the __FREE__ parameter values that are defined
+        Saves a runnable BNGL file of the model, including definitions of the __FREE parameter values that are defined
         by this model's pset, to the specified location.
 
         :param file_prefix: str, path where the file should be saved

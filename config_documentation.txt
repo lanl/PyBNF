@@ -22,15 +22,15 @@ param_scan = key1: value1, key2: value2,... - Run a parameter scan with the spec
 
 ***Parameter specification***
 
-uniform_var = name__FREE___ min max - a uniformly distributed variable with bounds [min, max]
-normal_var = name__FREE___ mu sigma - a normal-distributed variable in regular space with mean mu, std dev sigma. A box constraint to keep >= 0 is also assumed.
-loguniform_var = name__FREE___ min max - a log-uniform distributed variable with bounds [min, max]. Bounds should be in regular space, eg [0.01, 100]
-lognormal_var = name__FREE__ mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space.
+uniform_var = name__FREE_ min max - a uniformly distributed variable with bounds [min, max]
+normal_var = name__FREE_ mu sigma - a normal-distributed variable in regular space with mean mu, std dev sigma. A box constraint to keep >= 0 is also assumed.
+loguniform_var = name__FREE_ min max - a log-uniform distributed variable with bounds [min, max]. Bounds should be in regular space, eg [0.01, 100]
+lognormal_var = name__FREE mu sigma - a log-normal distributed variable with mean mu, std dev sigma. mu, sigma are given in log base 10 space.
 
 The following are to be used only with the simplex algorithm. Simplex should not use any of the other parameter specifications.
 If you are using another algorithm with the flag refine, you still should not use these, you must set step size with simplex_step or simplex_log_step.
-var = name__FREE__ init step - a variable that starts at init with an initial step size step. step is optional; defaults to simplex_step
-logvar = name__FREE__ init step - a variable that starts at init with an initial step size step, that moves in log space. init and step should be given in log base 10 space. step is optional; defaults to simplex_log_step.
+var = name__FREE init step - a variable that starts at init with an initial step size step. step is optional; defaults to simplex_step
+logvar = name__FREE init step - a variable that starts at init with an initial step size step, that moves in log space. init and step should be given in log base 10 space. step is optional; defaults to simplex_log_step.
 
 
 ***General options***

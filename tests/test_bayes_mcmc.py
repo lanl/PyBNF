@@ -21,9 +21,9 @@ class TestBayes:
         os.makedirs('noseoutput1/Results', exist_ok=True)
         os.makedirs('noseoutput2/Results', exist_ok=True)
 
-        cls.p0 = pset.FreeParameter('v1__FREE__', 'lognormal_var', 1., 0.5, 4.14)
-        cls.p1 = pset.FreeParameter('v2__FREE__', 'lognormal_var', 1., 0.5, 10.0)
-        cls.p2 = pset.FreeParameter('v3__FREE__', 'normal_var', 50, 3, 1.0)
+        cls.p0 = pset.FreeParameter('v1__FREE', 'lognormal_var', 1., 0.5, 4.14)
+        cls.p1 = pset.FreeParameter('v2__FREE', 'lognormal_var', 1., 0.5, 10.0)
+        cls.p2 = pset.FreeParameter('v3__FREE', 'normal_var', 50, 3, 1.0)
         cls.pset = pset.PSet([cls.p0, cls.p1, cls.p2])
 
         # Note mutation_rate is set to 1.0 because for tests with few params, with a lower mutation_rate might randomly
@@ -31,30 +31,30 @@ class TestBayes:
         cls.config = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('lognormal_var', 'v1__FREE__'): [0., 0.5], ('loguniform_var', 'v2__FREE__'): [1., 10.], ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('lognormal_var', 'v1__FREE'): [0., 0.5], ('loguniform_var', 'v2__FREE'): [1., 10.], ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'bmc'})
 
         cls.config_box = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('uniform_var', 'v1__FREE__'): [0, 10], ('uniform_var', 'v2__FREE__'): [0, 10],
-            ('uniform_var', 'v3__FREE__'): [0, 10],
+            ('uniform_var', 'v1__FREE'): [0, 10], ('uniform_var', 'v2__FREE'): [0, 10],
+            ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'bmc'})
 
         cls.config_normal = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput2/',
-            ('lognormal_var', 'v1__FREE__'): [0., 0.5], ('lognormal_var', 'v2__FREE__'): [0., 0.5],
-            ('lognormal_var', 'v3__FREE__'): [0., 0.5],
+            ('lognormal_var', 'v1__FREE'): [0., 0.5], ('lognormal_var', 'v2__FREE'): [0., 0.5],
+            ('lognormal_var', 'v3__FREE'): [0., 0.5],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'bmc'})
 
         cls.config_replica = config.Configuration({
             'population_size': 4, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
             'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
-            ('lognormal_var', 'v1__FREE__'): [1., 0.5], ('lognormal_var', 'v2__FREE__'): [1., 0.5], ('normal_var', 'v3__FREE__'): [50, 3],
+            ('lognormal_var', 'v1__FREE'): [1., 0.5], ('lognormal_var', 'v2__FREE'): [1., 0.5], ('normal_var', 'v3__FREE'): [50, 3],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7], 'fit_type': 'pt'})
 
@@ -67,9 +67,9 @@ class TestBayes:
         ba = algorithms.BayesAlgorithm(self.config)
         start_params = ba.start_run()
         assert len(start_params) == 20
-        assert ba.prior['v1__FREE__'] == ('log', 'n', 0., 0.5)
-        assert ba.prior['v2__FREE__'] == ('log', 'b', 0., 1.)
-        assert ba.prior['v3__FREE__'] == ('reg', 'b', 0, 10)
+        assert ba.prior['v1__FREE'] == ('log', 'n', 0., 0.5)
+        assert ba.prior['v2__FREE'] == ('log', 'b', 0., 1.)
+        assert ba.prior['v3__FREE'] == ('reg', 'b', 0, 10)
 
     def test_updates_box(self):
         # In this test, the variables have box constraints, so the prior contribution should be constant.
@@ -128,7 +128,7 @@ class TestBayes:
             curr_params = next_params
 
         # Check the files came out looking reasonable
-        a = np.genfromtxt('noseoutput2/Results/Histograms/v1__FREE___10.txt')
+        a = np.genfromtxt('noseoutput2/Results/Histograms/v1__FREE_10.txt')
         assert a.shape == (10, 3)
         assert sum(a[:, 2]) == 80  # 20 saves on iters 4, 6, 8, and 10
 

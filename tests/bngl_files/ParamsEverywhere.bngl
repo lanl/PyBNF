@@ -40,12 +40,12 @@ R_tot f*3e5 # copies per cell (1 nM)
 
 
 # rate constant for pseudo first-order phosphorylation of antigen-engaged receptor
-kase kase__FREE__*T # /s converted to /min (60 /min); Initial guess 1
+kase kase__FREE*T # /s converted to /min (60 /min); Initial guess 1
 
 
 H_tot 1e6 # cpc
 
-kdegran kase__FREE__*6e4*T/(NA*Vcyt) # /M/s (3.6e6 /M/min) converted to /cpc/min (2e-6 /cpc/min); Initial guess 6e4
+kdegran kase__FREE*6e4*T/(NA*Vcyt) # /M/s (3.6e6 /M/min) converted to /cpc/min (2e-6 /cpc/min); Initial guess 6e4
 
 
 end parameters
@@ -74,7 +74,7 @@ begin seed species
 # initial conditions
 
 # initial abundance of free antigen (in medium) per cell
-Ag(DNP) Ag_tot_1__FREE__
+Ag(DNP) Ag_tot_1__FREE
 
 # initial abundance of free antigen receptor
 R(IgE,Yb~0) R_tot
@@ -107,7 +107,7 @@ begin reaction rules
 # of antigen-mediated receptor aggregation on the residence time of antigen
 # on the cell surface. Recall that the antigen receptor is a long-lived 1:1 complex 
 # of antigen-specific IgE and Fc&epsilon;RI, the high-affinity Fc receptor for IgE.
-Ag(DNP)+R(IgE)<->Ag(DNP!1).R(IgE!1) kon__FREE__,koff__FREE__
+Ag(DNP)+R(IgE)<->Ag(DNP!1).R(IgE!1) kon__FREE,koff__FREE
 
 # ligand-dependent receptor phosphorylation
 # We assume that bound receptors are competent for (Lyn-mediated) phosphorylation 
@@ -122,7 +122,7 @@ R(IgE!+,Yb~0)->R(IgE!+,Yb~P) kase
 # As a simplification, we consider a pseudo first-order mechanism. 
 # Thus, the effective rate constant for phosphorylation can be viewed 
 # as the Vmax/KM ratio for phosphatases. We expect phosphatase activity to be high.
-R(Yb~P)->R(Yb~0)  pase__FREE__
+R(Yb~P)->R(Yb~0)  pase__FREE
  
 
 # Degranulation due to the presence of phosphorylated receptor
@@ -152,8 +152,8 @@ generate_network({overwrite=>1})
 # BioNetFit will be used to fit the model to the .exp files.
 
 # first 5-min period of multivalent antigen stimulation
-setConcentration("Ag(DNP)","Ag_tot_1__FREE__") 
-simulate({suffix=>"p1_5",method=>"ode",t_end=>t_end__FREE__,n_steps=>50})
+setConcentration("Ag(DNP)","Ag_tot_1__FREE")
+simulate({suffix=>"p1_5",method=>"ode",t_end=>t_end__FREE,n_steps=>50})
 
 
 end actions

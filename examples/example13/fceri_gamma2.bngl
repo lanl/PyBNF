@@ -4,28 +4,28 @@ Rec_tot  400
 Lyn_tot  28
 Syk_tot  400
 
- kp1  kp1__FREE__
+ kp1  kp1__FREE
  km1  0
- kp2  kp2__FREE__
+ kp2  kp2__FREE
  km2  0
- kpL  kpL__FREE__
- kmL  kmL__FREE__
-kpLs  kpLs__FREE__
-kmLs  kmLs__FREE__
- kpS  kps__FREE__
- kmS  kmS__FREE__
-kpSs  kpSs__FREE__
-kmSs  kmSs__FREE__
- pLb  pLb__FREE__
-pLbs  pLbs__FREE__
- pLg  pLg__FREE__
-pLgs  pLgs__FREE__
- pLS  pLS__FREE__
-pLSs  pLSs__FREE__
- pSS  pSS__FREE__
-pSSs  pSSs__FREE__
-  dm  dm__FREE__
-  dc  dc__FREE__
+ kpL  kpL__FREE
+ kmL  kmL__FREE
+kpLs  kpLs__FREE
+kmLs  kmLs__FREE
+ kpS  kps__FREE
+ kmS  kmS__FREE
+kpSs  kpSs__FREE
+kmSs  kmSs__FREE
+ pLb  pLb__FREE
+pLbs  pLbs__FREE
+ pLg  pLg__FREE
+pLgs  pLgs__FREE
+ pLS  pLS__FREE
+pLSs  pLSs__FREE
+ pSS  pSS__FREE
+pSSs  pSSs__FREE
+  dm  dm__FREE
+  dc  dc__FREE
 end parameters
 
 

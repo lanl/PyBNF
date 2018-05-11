@@ -10,11 +10,11 @@ class TestFreeParameter:
 
     @classmethod
     def setup_class(cls):
-        cls.p0 = pset.FreeParameter('var0__FREE__', 'normal_var', 0, 1)
-        cls.p1 = pset.FreeParameter('var1__FREE__', 'lognormal_var', 1, 2)
-        cls.p2 = pset.FreeParameter('var2__FREE__', 'loguniform_var', 0.01, 100)
-        cls.p3 = pset.FreeParameter('var2__FREE__', 'uniform_var', 0, 10)
-        cls.p4 = pset.FreeParameter('var2__FREE__', 'uniform_var', 0, 10, bounded=False)
+        cls.p0 = pset.FreeParameter('var0__FREE', 'normal_var', 0, 1)
+        cls.p1 = pset.FreeParameter('var1__FREE', 'lognormal_var', 1, 2)
+        cls.p2 = pset.FreeParameter('var2__FREE', 'loguniform_var', 0.01, 100)
+        cls.p3 = pset.FreeParameter('var2__FREE', 'uniform_var', 0, 10)
+        cls.p4 = pset.FreeParameter('var2__FREE', 'uniform_var', 0, 10, bounded=False)
 
     @classmethod
     def teardown_class(cls):
@@ -38,7 +38,7 @@ class TestFreeParameter:
 
     @raises(pset.OutOfBoundsException)
     def test_check_erroneous_assignment(self):
-        pset.FreeParameter('var2__FREE__', 'loguniform_var', 0.01, 100, value=1000)
+        pset.FreeParameter('var2__FREE', 'loguniform_var', 0.01, 100, value=1000)
 
     def test_distribution(self):
         xs = [self.p3.sample_value().value for x in range(100000)]

@@ -7,8 +7,8 @@ begin model
 
 #Parabola A:    Y = v1*(X^2)  +  v2*X   +  v3
 
-    v1 v1__FREE__
-    v2 v2__FREE__
+    v1 v1__FREE
+    v2 v2__FREE
 
   end parameters
 

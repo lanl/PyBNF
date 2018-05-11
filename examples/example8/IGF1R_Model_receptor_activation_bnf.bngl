@@ -3,9 +3,9 @@
 # Affiliation: Theoretical Division, Los Alamos National Laboratory
 
 # list of free parameters:
-# K1__FREE__
-# K2__FREE__
-# K1prime__FREE__
+# K1__FREE
+# K2__FREE
+# K1prime__FREE
 
 begin model
 
@@ -52,9 +52,9 @@ IGF1R_total 20000*f # [=] copies per cell (NB: two copies of IGF1R per dimer)
 #   K1=d1/a1=9.2 nM - 9.09 nM is the Site 1 KD reported in Table 1 (Kiselyov et al., 2009)
 #   K2=d2/a2=483 nM -  490 nM is the Site 2 KD reported in Table 1 (Kiselyov et al., 2009)
 
-K1	K1__FREE__		# [=] M
-K2	K2__FREE__		# [=] M
-K1prime	K1prime__FREE__		# [=] dimensionless
+K1	K1__FREE		# [=] M
+K2	K2__FREE		# [=] M
+K1prime	K1prime__FREE		# [=] dimensionless
 
 # Guess we have to assume some rate constants. Use the values reported by Kiselyov et al.,2009 in Table 1
 a1_perMpers 3.47e5		# /M/s
@@ -85,7 +85,7 @@ d2prime=d2 			# [=] /s - see p. 9 in Kiselyov et al. (2009)
 
 # forward rate constant (crosslinking reactions)
 #   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
-# kcr kcr__FREE__ #0.33 # [=] /s
+# kcr kcr__FREE #0.33 # [=] /s
  a1prime=d1prime/K1prime	# [=] /s
  a2prime=(a2/a1)*a1prime	# [=] /s [By applying the detailed balance]
 

@@ -12,22 +12,22 @@ begin parameters
 # BioNetFit 1.0
 # For more information, see the BioNetFit configuration file model_fit.conf
 
-X_tot__FREE__ 6.13331088e+00
-k_Xoff__FREE__ 1.91394890e-06
-k_Xon__FREE__ 9.39816993e+04
-kase__FREE__ 3.76143208e+00
-kdegX__FREE__ 3.19130252e-04
-kdegran__FREE__ 188893.283626392
-km_Ship1__FREE__ 1.43154204e-03
-km_Syk__FREE__ 2.87783197e-01
-km_x__FREE__ 1.12185442e-01
-koff__FREE__ 4.45671503e-03
-kp_Ship1__FREE__ 1.10810534e+04
-kp_Syk__FREE__ 2.65462642e+05
-kp_x__FREE__ 7.81553987e+05
-kpten__FREE__ 0.00995093271320638
-ksynth1__FREE__ 1.84930114e-02
-pase__FREE__ 1.60206452e-01
+X_tot__FREE 6.13331088e+00
+k_Xoff__FREE 1.91394890e-06
+k_Xon__FREE 9.39816993e+04
+kase__FREE 3.76143208e+00
+kdegX__FREE 3.19130252e-04
+kdegran__FREE 188893.283626392
+km_Ship1__FREE 1.43154204e-03
+km_Syk__FREE 2.87783197e-01
+km_x__FREE 1.12185442e-01
+koff__FREE 4.45671503e-03
+kp_Ship1__FREE 1.10810534e+04
+kp_Syk__FREE 2.65462642e+05
+kp_x__FREE 7.81553987e+05
+kpten__FREE 0.00995093271320638
+ksynth1__FREE 1.84930114e-02
+pase__FREE 1.60206452e-01
 
 #  End fit parameters
 
@@ -75,48 +75,48 @@ kon 1e7*T/(NA*Vecf) # /M/s converted to /cpc/min
 # We assume a diffusion-limited value of 1e7 /M/s
 
 # rate constant for antigen release
-koff koff__FREE__*T # 4.46e-3 /s converted to 0.268 /min
+koff koff__FREE*T # 4.46e-3 /s converted to 0.268 /min
 
 # rate constant for pseudo first-order phosphorylation of antigen-engaged
 # receptor
-kase kase__FREE__*T # 3.76 /s converted to 2.25e+2 /min
+kase kase__FREE*T # 3.76 /s converted to 2.25e+2 /min
 
 # rate constant for pseuedo first-order dephosphorylation of phosphorylated
 # receptor
-pase pase__FREE__*T # 1.60e-1 /s converted to 9.6 /min
+pase pase__FREE*T # 1.60e-1 /s converted to 9.6 /min
 
-kp_Syk kp_Syk__FREE__*T/(NA*Vcyt) # 2.65e+5 /M/s converted to 8.80e-6 /cpc/min
-km_Syk km_Syk__FREE__*T # 2.88e-1 /s converted to 17.2 /min
+kp_Syk kp_Syk__FREE*T/(NA*Vcyt) # 2.65e+5 /M/s converted to 8.80e-6 /cpc/min
+km_Syk km_Syk__FREE*T # 2.88e-1 /s converted to 17.2 /min
 
-kp_Ship1 kp_Ship1__FREE__*T/(NA*Vcyt) # 1.11e+4 /M/s converted to
+kp_Ship1 kp_Ship1__FREE*T/(NA*Vcyt) # 1.11e+4 /M/s converted to
 # 3.68e-7 /cpc/min
-km_Ship1 km_Ship1__FREE__*T #  1.43e-3 /s converted to 8.58e-2 /min 
+km_Ship1 km_Ship1__FREE*T #  1.43e-3 /s converted to 8.58e-2 /min
 
-ksynth1 ksynth1__FREE__*T # 1.85e-2 /s converted to 1.11 /min
+ksynth1 ksynth1__FREE*T # 1.85e-2 /s converted to 1.11 /min
 kdeg1 1e7*T/(NA*Vcyt) # /M/s converted to /cpc/min;
 # We assume a diffusion-limited value of 1e7 /M/s
 
 # Rate of basal degradation of PIP3 and/or IP3
-kpten kpten__FREE__*T # 9.95e-3 /s converted to 0.597 /min 
+kpten kpten__FREE*T # 9.95e-3 /s converted to 0.597 /min
 
 
 H_tot 1e6 # cpc
 
-kdegran kdegran__FREE__*T/(NA*Vcyt) # 1.89e+5 /M/s converted to 6.27e-6/cpc/min
+kdegran kdegran__FREE*T/(NA*Vcyt) # 1.89e+5 /M/s converted to 6.27e-6/cpc/min
 
 # rate constant for degradation of X 
 # (in one step, including ubiquitination and proteosomal degradation)
-kdegX kdegX__FREE__*T # 3.19e-4 /s converted to 1.91e-2 /min
+kdegX kdegX__FREE*T # 3.19e-4 /s converted to 1.91e-2 /min
 
 
-k_Xon k_Xon__FREE__*T/(NA*Vcyt) # 9.40e+4 /M/s converted to 3.12e-6 /cpc/min
-k_Xoff k_Xoff__FREE__*T # 1.91e-6 /s converted to 1.15e-4 /min
+k_Xon k_Xon__FREE*T/(NA*Vcyt) # 9.40e+4 /M/s converted to 3.12e-6 /cpc/min
+k_Xoff k_Xoff__FREE*T # 1.91e-6 /s converted to 1.15e-4 /min
 
-kp_x kp_x__FREE__*T/(NA*Vcyt) # 7.81e+5 /M/s converted to 2.59e-5 /cpc/min
-km_x km_x__FREE__*T # 1.12e-1 /s converted to 7.26 /min
+kp_x kp_x__FREE*T/(NA*Vcyt) # 7.81e+5 /M/s converted to 2.59e-5 /cpc/min
+km_x km_x__FREE*T # 1.12e-1 /s converted to 7.26 /min
 
 # abundance of hypothetical Ship1 cofactor X
-X_tot=X_tot__FREE__*Ship1_tot # 6.13 times the Ship1 concentration, converted
+X_tot=X_tot__FREE*Ship1_tot # 6.13 times the Ship1 concentration, converted
 # to 1.84e6 cpc
 
 end parameters

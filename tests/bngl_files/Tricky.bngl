@@ -45,11 +45,11 @@ R_tot f*3e5 # copies per cell (1 nM)
 kon 1e7*T/(NA*Vecf) # /M/s (1.8e8 /M/min) converted to /cpc/min; Initial guess 3e6
 
 # rate constant for antigen release
-koff koff__FREE__+__koff2__FREE__*T # You should not parse commented__FREE__ 
+koff koff__FREE+__koff2__FREE*T # You should not parse commented__FREE
 
 # rate constant for pseudo first-order phosphorylation of antigen-engaged receptor
-kase kase__FREE__*T # You should not parse commented__FREE__ 
-pase pase__FREE__
+kase kase__FREE*T # You should not parse commented__FREE
+pase pase__FREE
 
 H_tot 1e6 # cpc
 

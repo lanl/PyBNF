@@ -490,7 +490,7 @@ class Configuration(object):
         variables_names = {v.name for v in self.variables}
         extra_in_conf = variables_names.difference(model_vars)
         extra_in_model = set(model_vars).difference(variables_names)
-        extra_in_model = {p for p in extra_in_model if p[-8:] == '__FREE__'}
+        extra_in_model = {p for p in extra_in_model if p[-8:] == '__FREE'}
 
         if len(extra_in_conf) > 0:
             raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '

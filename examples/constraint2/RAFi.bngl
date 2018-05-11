@@ -4,8 +4,8 @@ begin parameters
 
 K1 0.04 # /uM
 K2 20 # /uM
-K3 K3__FREE__ # /uM
-K5 K5__FREE__ # /uM
+K3 K3__FREE # /uM
+K5 K5__FREE # /uM
 
 K4=K1*K3/K2 # /uM
 K6=K4*K5/K2 # /uM

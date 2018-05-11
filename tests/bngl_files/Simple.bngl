@@ -43,13 +43,13 @@ R_tot f*3e5 # copies per cell (1 nM)
 kon 1e7*T/(NA*Vecf) # /M/s (1.8e8 /M/min) converted to /cpc/min; Initial guess 3e6
 
 # rate constant for antigen release
-koff koff__FREE__*T # /s converted to /min (0.6 /min); Initial guess 0.01
+koff koff__FREE*T # /s converted to /min (0.6 /min); Initial guess 0.01
 
 # rate constant for pseudo first-order phosphorylation of antigen-engaged receptor
-kase kase__FREE__*T # /s converted to /min (60 /min); Initial guess 1
+kase kase__FREE*T # /s converted to /min (60 /min); Initial guess 1
 
 # rate constant for pseuedo first-order dephosphorylation of phosphorylated receptor
-pase pase__FREE__*T # /s converted to /min (120 /min); Initial guess 2
+pase pase__FREE*T # /s converted to /min (120 /min); Initial guess 2
 
 H_tot 1e6 # cpc
 
