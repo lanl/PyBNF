@@ -7,7 +7,7 @@ Please update this file whenever you add support for new .conf keys in the code
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list. If no experimental files are associated with the model, write "none".
 bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise, if the run includes any .bngl files, bng_command requires specification in the configuration file
 output_dir - Directory where to save the output. Default: bnf_out
-fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
+fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ade - Asynchronous Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
 mutant = basemodel name statement1 statement2: data1name.exp, data2name.exp - Declares a model that does not contain its own model file, but instead is defined based on another model basemodel. "name" is the name of the mutant model; this name is appended to the suffixes of the base model, i.e. if the base model has data files data1.exp and data2.exp, a corresponding mutant file with the name "m1" should use the files data1m1.exp and data2m1.exp. statement1, statement2,... have the format [variable][operator][value] ; for example a__FREE__=0 or b__FREE__*2.
 parallel_count - How many jobs to run in parallel. Default: Use all available cores.
@@ -77,7 +77,8 @@ mutation_factor - When mutating a parameter x, change it by mutation_factor*(PS1
 stop_tolerance - Stop the run if max(objective) / min(objective) < 1 + this value, i.e., the entire population has converged to roughly the same objective. Default: 0.002
 de_strategy - Specifies how new parameter sets are chosen. Options are: rand1, rand2, best1, best2, all1, all2. The parameter set we mutate is: 'rand' - a random one, 'best' - the one with the lowest objective value, 'all' - the one we are proposing to replace (so all psets are mutated once per iteration). The amount of mutation is based on: '1' - 1 pair of other parameter sets (p1-p2), '2' - 2 pairs of other parameter sets (p1-p2 + p3-p4).
 
-# These are related to the more parallel-friendly "island-based" differential evolution. If all omitted, uses regular differential evolution, which is still parallelizable, but has to wait until a whole generation finishes before moving on to the next. 
+# These are related to "island-based" differential evolution. If all omitted, uses regular differential evolution, which is still parallelizable, but has to wait until a whole generation finishes before moving on to the next.
+# Asynchronous differential evolution (fit_type=ade) is also available. It does not use islands, and so ignores these keys.
 islands: Number of separate populations to evolve. Default: 1
 migrate_every: After this number of generations, migrate some individuals between islands. Default: 20 (but Inf if islands = 1)
 num_to_migrate: How many individuals to migrate off of each island during migration? Default: 3

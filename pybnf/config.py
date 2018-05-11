@@ -155,8 +155,8 @@ class Configuration(object):
         :param conf_dict: The config dictionary
         :return:
         """
-        alg_specific = {'de': {'mutation_rate', 'mutation_factor', 'stop_tolerance', 'islands', 'migrate_every',
-                               'num_to_migrate'},
+        alg_specific = {'ade': {'mutation_rate', 'mutation_factor', 'stop_tolerance', 'de_strategy'},
+                        'de': {'islands', 'migrate_every', 'num_to_migrate'},
                         'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol', 'v_stop'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
@@ -171,7 +171,8 @@ class Configuration(object):
             thisalg = 'bmc'
         for alg in alg_specific:
             if (thisalg != alg
-               and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)):
+               and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)
+               and not (thisalg == 'de' and alg == 'ade')):
                 ignored_params = ignored_params.union(alg_specific[alg])
         for k in ignored_params.intersection(set(conf_dict.keys())):
             print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
