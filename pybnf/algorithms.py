@@ -1803,7 +1803,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         self.acceptance_rates[index] = self.acceptances[index] / self.iteration[index]
 
         # Update histograms and trajectories if necessary
-        if self.iteration[index] % self.sample_every == 0:
+        if self.iteration[index] % self.sample_every == 0 and self.iteration[index] > self.burn_in:
             self.sample_pset(self.current_pset[index], self.ln_current_P[index])
         if (self.iteration[index] % (self.sample_every * self.output_hist_every) == 0
             and self.iteration[index] > self.burn_in):
