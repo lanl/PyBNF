@@ -315,6 +315,7 @@ class Algorithm(object):
         self.bootstrap_number = None
         self.best_fit_obj = None
         self.calc_future = None  # Created during Algorithm.run()
+        self.refine = False
 
     def reset(self, bootstrap):
         """
@@ -361,7 +362,8 @@ class Algorithm(object):
     def __setstate__(self, state):
         self.__dict__.update(state)
         try:
-            self.trajectory = Trajectory.load_trajectory(self.res_dir + '/sorted_params_backup.txt',
+            backup_params = 'sorted_params_backup.txt' if not self.refine else 'sorted_params_refine_backup.txt'
+            self.trajectory = Trajectory.load_trajectory('%s/%s' % (self.res_dir, backup_params),
                                                          self.config.variables, self.config.config['num_to_output'])
         except IOError:
             logger.exception('Failed to load trajectory from file')
@@ -575,6 +577,8 @@ class Algorithm(object):
         if name == '':
             name = str(self.output_counter)
             self.output_counter += 1
+        if self.refine:
+            name = 'refine_%s' % name
         filepath = '%s/sorted_params_%s.txt' % (self.res_dir, name)
         logger.info('Outputting results to file %s' % filepath)
         self.trajectory.write_to_file(filepath)
@@ -633,6 +637,9 @@ class Algorithm(object):
         """Main loop for executing the algorithm"""
 
         logger.debug('Initializing dask Client object')
+
+        if self.refine:
+            logger.debug('Setting up Simplex refinement of previous algorithm')
 
         if scheduler_node:
             if 'parallel_count' in self.config.config:
@@ -742,7 +749,7 @@ class Algorithm(object):
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
             to_save.save('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
-            if self.config.config['delete_old_files'] == 0 and isinstance(this_model, BNGLModel):
+            if self.config.config['delete_old_files'] == 0:
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':
                         ext = 'gdat'
@@ -758,15 +765,17 @@ class Algorithm(object):
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
 
+        try:
+            os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
+                      '%s/alg_%s.bp' % (self.config.config['output_dir'],
+                                        ('finished' if not self.refine else 'refine_finished')))
+            logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
+                        ('finished' if not self.refine else 'refine_finished'))
+        except OSError:
+            logger.warning('Tried to move pickled algorithm, but it was not found')
+
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
-            try:
-                os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
-                          '%s/alg_finished.bp' % self.config.config['output_dir'])
-                logger.info('Renamed pickled algorithm backup to alg_finished.bp')
-            except OSError:
-                logger.warning('Tried to move pickled algorithm, but it was not found')
-
             if self.config.config['delete_old_files'] >= 1:
                 shutil.rmtree(self.sim_dir)
 
@@ -1896,7 +1905,7 @@ class SimplexAlgorithm(Algorithm):
 
     """
 
-    def __init__(self, config):
+    def __init__(self, config, refine=False):
         super(SimplexAlgorithm, self).__init__(config)
         if 'simplex_start_point' not in self.config.config:
             # We need to set up the initial point ourselfs
@@ -1936,6 +1945,7 @@ class SimplexAlgorithm(Algorithm):
         self.centroids = []  # Contains dicts containing the centroid of all simplex points except the one that I am
         # working with
         self.pending = dict()  # Maps PSet name (str) to the index of the point in the above 3 lists.
+        self.refine = refine
 
     def reset(self, bootstrap=None):
         super(SimplexAlgorithm, self).reset(bootstrap)
