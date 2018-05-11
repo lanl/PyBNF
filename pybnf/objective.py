@@ -6,6 +6,27 @@ from .printing import PybnfError, print1
 import numpy as np
 
 
+class ObjectiveCalculator:
+    """
+    Wrapper for all of the objects needed for the workers to calculate the objective function value.
+    Contains the objective function, exp_data_dict, and constraint tuple
+    """
+
+    def __init__(self, objective, exp_data_dict, constraints):
+        self.objective = objective
+        self.exp_data_dict = exp_data_dict
+        self.constraints = constraints
+
+    def evaluate_objective(self, sim_data_dict):
+        """
+        Evaluate the objective using the input simulation data and the info contained in this object
+        :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
+        :return:
+        """
+        return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, self.constraints)
+
+
+
 class ObjectiveFunction(object):
     """
     Abstract class representing an objective function
