@@ -259,7 +259,7 @@ class Configuration(object):
 
         def absolute(directory):
             # Convert relative path to absolute path
-            return directory if directory[0] == '/' else home_dir + '/' + directory
+            return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
 
         md = {}
         for mf in self.config['models']:
