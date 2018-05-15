@@ -127,24 +127,37 @@ def main():
                 alg.config.config['refine'] = 0
         else:
             # Create output folders, checking for overwrites.
-            if os.path.exists(config.config['output_dir']):
-                if cmdline_args.overwrite:
-                    logger.info('Overwriting existing output directory')
-                    shutil.rmtree(config.config['output_dir'])
-                else:
+            subdirs = ('Simulations', 'Results', 'Initialize', 'FailedSimLogs')
+            subfiles = ('alg_backup.bp', 'alg_finished.bp')
+            will_overwrite = [subdir for subdir in subdirs + subfiles
+                              if os.path.exists(config.config['output_dir'] + '/' + subdir)]
+            if len(will_overwrite) > 0:
+                if not cmdline_args.overwrite:
                     logger.info("Output directory already exists... querying user for overwrite permission")
                     ans = 'x'
                     while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                        print0('Your output directory contains files from a previous run: %s.' % ', '.join(will_overwrite))
                         ans = input(
-                            'Your specified output directory already exists. Overwrite? [y/n] (n) ')
-                    if ans.lower() == 'y' or ans.lower() == 'yes':
-                        logger.info('Overwriting existing output directory')
-                        shutil.rmtree(config.config['output_dir'])
-                    else:
+                            'Overwrite them with the current run? [y/n] (n) ')
+                    if not(ans.lower() == 'y' or ans.lower() == 'yes'):
                         logger.info("Overwrite rejected... exiting")
-                        print('Quitting')
+                        print0('Quitting')
                         exit(0)
+                # If we get here, safe to overwrite files
+                for subdir in subdirs:
+                    try:
+                        shutil.rmtree(config.config['output_dir'] + '/' + subdir)
+                        logger.info('Deleted old directory %s' % config.config['output_dir'] + '/' + subdir)
+                    except OSError:
+                        logger.debug('Directory %s does not already exist' % config.config['output_dir'] + '/' + subdir)
+                for subfile in subfiles:
+                    try:
+                        os.remove(config.config['output_dir'] + '/' + subfile)
+                        logger.info('Deleted old file %s' % config.config['output_dir'] + '/' + subfile)
+                    except OSError:
+                        logger.debug('File %s does not already exist' % config.config['output_dir'] + '/' + subfile)
 
+            # Create new directories for the current run.
             os.makedirs(config.config['output_dir'] + '/Results')
             os.mkdir(config.config['output_dir'] + '/Simulations')
             shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
@@ -301,9 +314,6 @@ def main():
                     consec_failed_bootstrap_runs += 1
                     print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
                     logger.warning("Bootstrap run did not achieve maximum allowable objective function value.")
-                    shutil.rmtree(alg.res_dir)
-                    if os.path.exists(alg.sim_dir):
-                        shutil.rmtree(alg.sim_dir)
                     if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
                         raise PybnfError("20 consecutive bootstrap runs failed to achieve maximum allowable objective "
                                          "function values.  Check 'bootstrap_max_obj' configuration key")

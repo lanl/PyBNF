@@ -336,11 +336,12 @@ class Algorithm(object):
             self.bootstrap_number = bootstrap
 
             self.sim_dir = self.config.config['output_dir'] + '/Simulations-boot%s' % bootstrap
-            os.mkdir(self.sim_dir)
             self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
-            os.mkdir(self.res_dir)
             self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs-boot%s' % bootstrap
-            os.mkdir(self.failed_logs_dir)
+            for boot_dir in (self.sim_dir, self.res_dir, self.failed_logs_dir):
+                if os.path.exists(boot_dir):
+                    shutil.rmtree(boot_dir)
+                os.mkdir(boot_dir)
 
         self.best_fit_obj = None
 
