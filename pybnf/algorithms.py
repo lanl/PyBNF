@@ -152,7 +152,6 @@ class Job:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
-        self._copy_log_files('')  # Occurs when runs are successful.  Log files not used in this case yet
         return ds
 
     def _copy_log_files(self, failed_logs_dir):
