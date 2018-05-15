@@ -85,7 +85,7 @@ class TestModel:
         model1b = model1.copy_with_param_set(ps1)
         assert model1b.param_set['kase__FREE'] == 3.8
 
-        nmodel1 = pset.NetModel('TrickyWP_p1_5', [], [], nf=self.file5)
+        nmodel1 = pset.NetModel('TrickyWP_p1_5', [], [], [], nf=self.file5)
         ps1 = pset.PSet([pset.FreeParameter('Nchannel', 'normal_var', 0, 1, value=20)])
         nmodel1b = nmodel1.copy_with_param_set(ps1)
         nmodel1b.save(self.savefile4_prefix)
@@ -181,11 +181,11 @@ class TestModel:
         assert not model1.generates_network
 
     def test_netfile_read(self):
-        netmodel = pset.NetModel('TrickyWP_p1_5', [], [], nf=self.file5)
+        netmodel = pset.NetModel('TrickyWP_p1_5', [], [], [], nf=self.file5)
         assert len(netmodel.netfile_lines) == 48
 
     def test_netfile_pcopy_and_save(self):
-        netmodel = pset.NetModel('TrickyWP_p1_5', [], [], nf=self.file5)
+        netmodel = pset.NetModel('TrickyWP_p1_5', [], [], [], nf=self.file5)
         params = [pset.FreeParameter('Vchannel', 'normal_var', 0, 1, value=1e-5),
                   pset.FreeParameter('H_tot', 'normal_var', 0, 1, value=3.4)]
         ps = pset.PSet(params)

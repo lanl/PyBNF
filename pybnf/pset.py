@@ -58,7 +58,26 @@ class Model(object):
         raise NotImplementedError("Subclasses of Model must override execute()")
 
     def add_action(self, action):
-        pass
+        raise PybnfError('Model type %s does not support adding actions' % type(self))
+
+    def get_suffixes(self):
+        """
+        Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
+        mutation name
+        """
+        raise NotImplementedError('Subclasses of Model must implement get_suffixes()')
+
+    def add_mutant(self, mut_set):
+        """
+        Add a mutant to run along with this model
+        :param mut_set: MutationSet that should be applied to this mutant
+        :type mut_set: MutationSet
+        :return:
+        """
+        try:
+            self.mutants.append(mut_set)
+        except AttributeError:
+            raise PybnfError('Model type %s does not support adding mutations' % type(self))
 
 
 class BNGLModel(Model):
@@ -90,6 +109,7 @@ class BNGLModel(Model):
         self.generate_network_line = None
         self.seeded = False
         self.actions = []
+        self.mutants = []
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
         param_names_set = set()
         self.split_line_index = None  # for insertion of free parameters
@@ -294,7 +314,7 @@ class BNGLModel(Model):
         f.write(text)
         f.close()
 
-    def execute(self, folder, filename, timeout):
+    def execute(self, folder, filename, timeout, with_mutants=True):
         """
 
         :param folder: Folder in which to do all the file creation
@@ -312,6 +332,22 @@ class BNGLModel(Model):
 
         # Load the data file(s)
         ds = self._load_simdata(folder, filename)
+
+        if with_mutants:
+            for mut in self.mutants:
+                # Inefficient iteration over PSet to build the mutant one, but hopefully not performance-critical
+                logger.debug('Working on mutant %s' % mut.suffix)
+                params = {p.name: p.value for p in self.param_set}
+                for mi in mut:
+                    params[mi.name] = mi.mutate(params[mi.name])
+                mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
+                                  for pname in params]
+                mut_pset = PSet(mut_param_list)
+                mut_model = self.copy_with_param_set(mut_pset)
+                mut_data = mut_model.execute(folder, filename+mut.suffix, timeout, with_mutants=False)
+                for suff in mut_data:
+                    ds[suff + mut.suffix] = mut_data[suff]
+                logger.debug('Finished mutant %s' % mut.suffix)
         return ds
 
     def _load_simdata(self, folder, filename):
@@ -354,17 +390,25 @@ class BNGLModel(Model):
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     def get_suffixes(self):
-        """Returns a list of suffixes used in the model"""
-        # Todo: Clean up once mutations are also implemented for BNGL
-        return [s[1] for s in self.suffixes]
+        """
+        Return a list of valid data suffixes to use in this model, including all combinations of action suffix +
+        mutation name
+        """
+        result = []
+        for s in self.suffixes:
+            result.append(s[1])
+            for mut in self.mutants:
+                result.append(s[1]+mut.suffix)
+        return result
 
 
 class NetModel(BNGLModel):
-    def __init__(self, name, acts, suffs, ls=None, nf=None):
+    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None):
         self.name = name
         self.actions = acts
         self.config_actions = []
         self.suffixes = suffs
+        self.mutants = mutants
         self.param_set = None
         self.bng_command = ''
 
@@ -398,7 +442,7 @@ class NetModel(BNGLModel):
                     if m.group(3) in pset.keys():
                         lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
 
-        newmodel = NetModel(self.name, self.actions, self.suffixes, ls=lines_copy)
+        newmodel = NetModel(self.name, self.actions, self.suffixes, self.mutants, ls=lines_copy)
         newmodel.bng_command = self.bng_command
         newmodel.param_set = pset
         return newmodel
@@ -480,15 +524,6 @@ class SbmlModelNoTimeout(Model):
         self.suffixes.append((action.bng_codeword, action.suffix))
         if action.method == 'ssa':
             self.stochastic = True
-
-    def add_mutant(self, mut_set):
-        """
-        Add a mutant to run along with this model
-        :param mut_set: MutationSet that should be applied to this mutant
-        :type mut_set: MutationSet
-        :return:
-        """
-        self.mutants.append(mut_set)
 
     def get_suffixes(self):
         """

@@ -424,7 +424,7 @@ class Algorithm(object):
 
                 logger.info('Output for network generation of model %s logged in %s/%s.log' %
                              (m.name, init_dir, gnm_name))
-                final_model_list.append(NetModel(m.name, m.actions, m.suffixes, nf=init_dir + '/' + gnm_name + '.net'))
+                final_model_list.append(NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=init_dir + '/' + gnm_name + '.net'))
                 final_model_list[-1].bng_command = m.bng_command
             else:
                 logger.info('Model %s does not require network generation' % m.name)
