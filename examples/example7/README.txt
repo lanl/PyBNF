@@ -1,3 +1,6 @@
+This example originally was published as:
+
+
 Supplementary Data S2
 
 Timescale Separation of Positive and Negative Signaling Creates History-Dependent Responses to IgE Receptor Stimulation
