@@ -354,7 +354,7 @@ class Algorithm(object):
         :param k:
         :return:
         """
-        return k != 'trajectory'
+        return k not in set(['trajectory', 'calc_future'])
 
     def __getstate__(self):
         return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
