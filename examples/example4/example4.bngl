@@ -1,3 +1,6 @@
+# A model of T cell receptor signaling
+
+# Originally published as:
 # Supplementary File A in File S1
 # "Phosphorylation site dynamics of early T-cell receptor signaling"
 # L.A. Chylek, V. Akimov, J. Dengjel, K.T.G. Rigbolt, B. Hu, W.S. Hlavacek, B. Blagoev
@@ -6,7 +9,6 @@
 # This file can be processed by BNGL-compatible tools, such as BioNetGen (http://bionetgen.org/) and NFsim (http://emonet.biology.yale.edu/nfsim/).
 # This file is meant to be used in conjunction with Supplementary File B in File S1, which is a simulation protocol for NFsim in the form of an RNF (Run NFsim) script.
 
-# This file should be named FileA.bngl (to ensure proper processing by BioNetGen and subsequent processing of the output by NFsim)
 
 begin parameters
 

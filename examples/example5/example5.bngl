@@ -1,4 +1,4 @@
-# A simple model
+# A simple model of ligand/receptor binding and receptor phosphorylation.
 #
 
 begin model

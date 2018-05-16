@@ -2,10 +2,9 @@
 #   This plain-text file is a BioNetGen input file.
 #   It is derived from the supplemental BioNetGen input file of Kozer et al. (2014):
 #     bi500182x_si_001.txt
-#   Edits of this file were made by Brandon R. Thomas and William S. Hlavacek.
+#   Edits of this file were made by Brandon R. Thomas and William S. Hlavacek for inclusion with BioNetFit 1
+#   Further edits were made by Eshan D. Mitra for inclusion in PyBioNetFit.
 # Date of last modification: 18 June 2015
-# A modified version of this file (suitable for processing by GenFit) is referred to 
-# as Supplementary File S2 by Thomas et al.
 
 begin model
 

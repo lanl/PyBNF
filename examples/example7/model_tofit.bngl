@@ -1,3 +1,9 @@
+# A model of IgE receptor signaling 
+
+# Originally published in Harmon et. al., "Timescale Separation of Positive and 
+# Negative Signaling Creates History-Dependent Responses to IgE Receptor Stimulation"
+# Scientific Reports, 2017
+
 # filename: model.bngl
 # date of last edit: 25-Jul-2017
 # authors: Chylek LA, Mitra E, Hlavacek WS (Los Alamos National Laboratory)
