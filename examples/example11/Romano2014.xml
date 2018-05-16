@@ -31,7 +31,7 @@
       <species compartment="default_compartment" id="LATS1a" initialConcentration="0" metaid="_35f4c788-3527-453d-b330-75b6b9a71bd2"/>
       <species compartment="default_compartment" id="Raf_1a" initialConcentration="0" metaid="a6ebe671-d4eb-4616-94a3-70050ca9b3a4"/>
       <species compartment="default_compartment" id="ppERK" initialConcentration="0" metaid="_59534edd-e4db-4e66-94fc-37405db9f3ff"/>
-      <species compartment="default_compartment" id="pMST2i" metaid="_858bb2ed-dc66-4f3a-8dab-c387129d33bb"/>
+      <species compartment="default_compartment" id="pMST2i" initialConcentration="0" metaid="_858bb2ed-dc66-4f3a-8dab-c387129d33bb"/>
       <species compartment="default_compartment" id="pMi_pRi" initialConcentration="0" metaid="_1eb9a43d-c3cf-42e7-b525-3e80b13fca83"/>
       <species compartment="default_compartment" id="MST2" initialConcentration="1500" metaid="_95129980-a797-4060-88ea-68000552974e"/>
       <species compartment="default_compartment" id="M_pRi" initialConcentration="0" metaid="ddc0226b-2025-4efa-b157-c529a93e0d6b"/>
