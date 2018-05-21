@@ -61,10 +61,10 @@ class TestBayes:
     @classmethod
     def teardown_class(cls):
         shutil.rmtree('noseoutput1')
-        shutil.rmtree('noseoutput2')
+        # shutil.rmtree('noseoutput2')
 
     def test_start(self):
-        ba = algorithms.BayesAlgorithm(self.config)
+        ba = algorithms.BasicBayesMCMCAlgorithm(self.config)
         start_params = ba.start_run()
         assert len(start_params) == 20
         assert ba.prior['v1__FREE'] == ('log', 'n', 0., 0.5)
@@ -75,7 +75,7 @@ class TestBayes:
         # In this test, the variables have box constraints, so the prior contribution should be constant.
         # We test the decisions to replace / not replace, which should be fairly deterministic
 
-        ba = algorithms.BayesAlgorithm(self.config_box)
+        ba = algorithms.BasicBayesMCMCAlgorithm(self.config_box)
         start_params = ba.start_run()
         next_params = []
         for p in start_params:
@@ -114,7 +114,7 @@ class TestBayes:
         # In this test, variables have lognormal priors. This makes the overall fitness of psets random, depending on
         # prior
         # But, iteration and output count is deterministic, and we test that here.
-        ba = algorithms.BayesAlgorithm(self.config_normal)
+        ba = algorithms.BasicBayesMCMCAlgorithm(self.config_normal)
 
         # Run 10 iterations
         start_params = ba.start_run()
@@ -148,7 +148,7 @@ class TestBayes:
                     assert float(parts[1]) < float(parts[2])
 
     def test_replica_exchange_run(self):
-        ba = algorithms.BayesAlgorithm(self.config_replica)
+        ba = algorithms.BasicBayesMCMCAlgorithm(self.config_replica)
         start_params = ba.start_run()
         assert len(start_params) == 4
         for chain in range(4):
@@ -172,7 +172,7 @@ class TestBayes:
     def test_replica_exchange_function(self):
         count = 0
         for iters in range(20):
-            ba = algorithms.BayesAlgorithm(self.config_replica)
+            ba = algorithms.BasicBayesMCMCAlgorithm(self.config_replica)
             psets = []
             for i in range(4):
                 p = self.pset

@@ -1594,62 +1594,33 @@ class ScatterSearch(Algorithm):
             (self.config.config['population_size']-1) * self.config.config['smoothing']
 
 
-class BayesAlgorithm(Algorithm):
+class BayesianAlgorithm(Algorithm):
+    """Superclass for Bayesian MCMC algorithms"""
 
-    """
-    Implements a Bayesian Markov chain Monte Carlo simulation.
-
-    This is essentially a non-parallel algorithm, but here, we run n instances in parallel, and pool all results.
-    This will give you a best fit (which is maybe not great), but more importantly, generates an extra result file
-    that gives the probability distribution of each variable.
-    This distribution depends on the prior, which is specified according to the variable initialization rules.
-
-    With sa=True, this instead acts as a simulated annealing algorithm with n indepdendent chains.
-
-    """
-
-    def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
-        super(BayesAlgorithm, self).__init__(config)
-        self.sa = sa
-        self.step_size = config.config['step_size']
+    def __init__(self, config):
+        super(BayesianAlgorithm, self).__init__(config)
         self.num_parallel = config.config['population_size']
         self.max_iterations = config.config['max_iterations']
+        self.step_size = config.config['step_size']
+
+        self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
 
         self.current_pset = None  # List of n PSets corresponding to the n independent runs
         self.ln_current_P = None  # List of n probabilities of those n PSets.
-        self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
 
-        if sa:
-            self.cooling = config.config['cooling']
-            self.beta_max = config.config['beta_max']
-        else:
-            self.burn_in = config.config['burn_in'] # todo: 'auto' option
-            self.sample_every = config.config['sample_every']
-            self.output_hist_every = config.config['output_hist_every']
-            # A list of the % credible intervals to save, eg [68. 95]
-            self.credible_intervals = config.config['credible_intervals']
-            self.num_bins = config.config['hist_bins']
-
-        self.exchange_every = config.config['exchange_every']
-        self.betas = config.config['beta_list']
+        self.burn_in = config.config['burn_in']  # todo: 'auto' option
+        self.sample_every = config.config['sample_every']
+        self.output_hist_every = config.config['output_hist_every']
+        # A list of the % credible intervals to save, eg [68. 95]
+        self.credible_intervals = config.config['credible_intervals']
+        self.num_bins = config.config['hist_bins']
 
         self.wait_for_sync = [False] * self.num_parallel
 
         self.prior = None
         self.load_priors()
 
-        self.samples_file = None # Initialize later.
-        self.staged = []  # Used only when resuming a run and adding iterations
-
-    def reset(self, bootstrap=None):
-        super(BayesAlgorithm, self).reset(bootstrap)
-
-        self.current_pset = None
-        self.ln_current_P = None
-        self.iteration = [0] * self.num_parallel
-
-        self.wait_for_sync = [False] * self.num_parallel
-        self.samples_file = None
+        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1666,6 +1637,294 @@ class BayesAlgorithm(Algorithm):
                 self.prior[var.name] = ('reg', 'b', var.p1, var.p2)
             elif var.type == 'loguniform_var':
                 self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
+
+    def start_run(self, setup_samples=True):
+        if self.config.config['initialization'] == 'lh':
+            first_psets = self.random_latin_hypercube_psets(self.num_parallel)
+        else:
+            first_psets = [self.random_pset() for i in range(self.num_parallel)]
+
+        self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
+        self.current_pset = [None]*self.num_parallel
+        for i in range(len(first_psets)):
+            first_psets[i].name = 'iter0run%i' % i
+
+        # Set up the output files
+        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
+        if setup_samples:
+            with open(self.samples_file, 'w') as f:
+                f.write('# Name\tLn_probability\t'+first_psets[0].keys_to_string()+'\n')
+            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+
+        return first_psets
+
+    def got_result(self, res):
+        NotImplementedError("got_result() must be implemented in BayesianAlgorithm subclass")
+
+    def ln_prior(self, pset):
+        """
+        Returns the value of the prior distribution for the given parameter set
+
+        :param pset:
+        :type pset: PSet
+        :return: float value of ln times the prior distribution
+        """
+        total = 0.
+        for v in self.prior:
+            (space, dist, x1, x2) = self.prior[v]
+            if space == 'log':
+                val = np.log10(pset[v])
+            else:
+                val = pset[v]
+
+            if dist == 'n':
+                # Normal with mean x1 and value x2
+                total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
+            else:
+                # Uniform from x1 to x2
+                if x1 <= val <= x2:
+                    total += -np.log(x2-x1)
+                else:
+                    logger.warning('Box-constrained parameter %s reached a value outside the box.')
+                    total += -np.inf
+        return total
+
+    def sample_pset(self, pset, ln_prob):
+        """
+        Adds this pset to the set of sampled psets for the final distribution.
+        :param pset:
+        :type pset: PSet
+        :param ln_prob - The probability of this PSet to record in the samples file.
+        :type ln_prob: float
+        """
+        with open(self.samples_file, 'a') as f:
+            f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
+
+    def update_histograms(self, file_ext):
+        """
+        Updates the files that contain histogram points for each variable
+        :param file_ext: String to append to the save file names
+        :type file_ext: str
+        :return:
+        """
+        # Read the samples file into an array, ignoring the first row (header)
+        # and first 2 columns (pset names, probabilities)
+        dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
+                                  usecols=range(2, len(self.variables)+2))
+
+        # Open the file(s) to save the credible intervals
+        cred_files = []
+        for i in self.credible_intervals:
+            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
+            f.write('# param\tlower_bound\tupper_bound\n')
+            cred_files.append(f)
+
+        for i in range(len(self.variables)):
+            v = self.variables[i]
+            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
+            # For log-space variables, we want the histogram in log space
+            if v.log_space:
+                histdata = np.log10(dat_array[:, i])
+                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
+            else:
+                histdata = dat_array[:, i]
+                header = 'lower_bound\tupper_bound\tcount'
+            hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
+            result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
+            np.savetxt(fname, result_array, delimiter='\t', header=header)
+
+            sorted_data = sorted(dat_array[:, i])
+            for interval, file in zip(self.credible_intervals, cred_files):
+                n = len(sorted_data)
+                want = n * (interval/100)
+                min_index = int(np.round(n/2 - want/2))
+                max_index = int(np.round(n/2 + want/2 - 1))
+                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
+
+        for file in cred_files:
+            file.close()
+
+    def cleanup(self):
+        """Called when quitting due to error.
+        Save the histograms in addition to the usual algorithm cleanup"""
+        super().cleanup()
+        self.update_histograms('_end')
+
+
+class DreamAlgorithm(BayesianAlgorithm):
+    """
+    Implements a variant of the DREAM algorithm as described in Vrugt (2016) Environmental Modelling
+    and Software.
+
+    Adapts Bayesian MCMC to use methods from differential evolution for accelerated convergence and
+    more efficient sampling of parameter space
+    """
+
+    def __init__(self, config):
+        super(DreamAlgorithm, self).__init__(config)
+        self.n_dim = len(self.variables)
+        self.all_idcs = np.arange(self.n_dim)
+        self.ncr = [(1+x)/self.config.config['crossover_number'] for x in range(self.config.config['crossover_number'])]
+        self.g_prob = self.config.config['gamma_prob']
+        self.acceptances = [0]*self.num_parallel
+        self.acceptance_rates = [0.0]*self.num_parallel
+
+    def got_result(self, res):
+        """
+        Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
+        data
+
+        :param res: PSet that was run in this simulation
+        :type res: Result
+        :return: List of PSet(s) to be run next.
+        """
+
+        pset = res.pset
+        score = res.score
+
+        m = re.search('(?<=run)\d+', pset.name)
+        index = int(m.group(0))
+
+        # Calculate posterior of finished job
+        lnprior = self.ln_prior(pset)
+        lnlikelihood = -score
+        lnposterior = lnprior + lnlikelihood
+
+        # Metropolis-Hastings criterion
+        ln_p_accept = np.log10(np.random.uniform()) < min(0., lnposterior - self.ln_current_P[index])
+        if ln_p_accept:  # accept update based on MH criterion
+            self.current_pset[index] = pset
+            self.ln_current_P[index] = lnposterior
+            self.acceptances[index] += 1
+
+        # Record that this individual is complete
+        self.wait_for_sync[index] = True
+        self.iteration[index] += 1
+        self.acceptance_rates[index] = self.acceptances[index] / self.iteration[index]
+
+        # Update histograms and trajectories if necessary
+        if self.iteration[index] % self.sample_every == 0 and self.iteration[index] > self.burn_in:
+            self.sample_pset(self.current_pset[index], self.ln_current_P[index])
+        if (self.iteration[index] % (self.sample_every * self.output_hist_every) == 0
+            and self.iteration[index] > self.burn_in):
+            self.update_histograms('_%i' % self.iteration[index])
+
+        # Wait for entire generation to finish
+        if np.all(self.wait_for_sync):
+
+            self.wait_for_sync = [False] * self.num_parallel
+
+            if min(self.iteration) >= self.max_iterations:
+                return 'STOP'
+
+            if self.iteration[index] % 10 == 0:
+                print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
+            else:
+                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+            logger.info('Completed %i iterations' % self.iteration[index])
+            print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
+
+            next_gen = []
+            for i, p in enumerate(self.current_pset):
+                new_pset = self.calculate_new_pset(i)
+                if new_pset:
+                    new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
+                    next_gen.append(new_pset)
+                else:
+                    #  If new PSet is outside of variable bounds, keep current PSet and wait for next generation
+                    logger.debug('Proposed PSet %s is invalid.  Rejecting and waiting until next iteration' % i)
+                    self.wait_for_sync[i] = True
+                    self.iteration[i] += 1
+
+            return next_gen
+
+        return []
+
+    def calculate_new_pset(self, idx):
+        """
+        Uses differential evolution-like update to calculate new PSet
+
+        :param idx: Index of PSet to update
+        :return:
+        """
+
+        # Choose individuals (not individual to be updated) for mutation
+        sel = np.random.choice(self.all_idcs[self.all_idcs != idx], 2, replace=False)
+        x0 = self.current_pset[idx]
+        x1 = self.current_pset[sel[0]]
+        x2 = self.current_pset[sel[1]]
+
+        # Sample the probability of modifying a parameter
+        cr = np.random.choice(self.ncr)
+        while True:
+            ds = np.random.uniform(size=self.n_dim) <= cr  # sample parameter subspace
+            if np.any(ds):
+                break
+
+        # Sample whether to jump to the mode (when gamma = 1)
+        gamma = 1 if np.random.uniform() < self.g_prob else self.step_size
+
+        new_vars = []
+        for i, d in enumerate(np.random.permutation(ds)):
+            k = self.variables[i]
+            diff = x1.get_param(k.name).diff(x2.get_param(k.name)) if d else 0.0
+            zeta = np.random.normal(0, self.config.config['zeta'])
+            lamb = np.random.uniform(-self.config.config['lambda'], self.config.config['lambda'])
+
+            # Differential evolution calculation (while satisfying detailed balance)
+            try:
+                # Do not reflect the parameter (need to reject if outside bounds)
+                new_var = x0.get_param(k.name).add(zeta + (1. + lamb) * gamma * diff, False)
+                new_vars.append(new_var)
+            except OutOfBoundsException:
+                logger.debug("Variable %s is outside of bounds")
+                return None
+
+        return PSet(new_vars)
+
+
+class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
+
+    """
+    Implements a Bayesian Markov chain Monte Carlo simulation.
+
+    This is essentially a non-parallel algorithm, but here, we run n instances in parallel, and pool all results.
+    This will give you a best fit (which is maybe not great), but more importantly, generates an extra result file
+    that gives the probability distribution of each variable.
+    This distribution depends on the prior, which is specified according to the variable initialization rules.
+
+    With sa=True, this instead acts as a simulated annealing algorithm with n indepdendent chains.
+
+    """
+
+    def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
+        super(BasicBayesMCMCAlgorithm, self).__init__(config)
+        self.sa = sa
+
+        if sa:
+            self.cooling = config.config['cooling']
+            self.beta_max = config.config['beta_max']
+
+        self.exchange_every = config.config['exchange_every']
+        self.betas = config.config['beta_list']
+
+        self.wait_for_sync = [False] * self.num_parallel
+
+        self.prior = None
+        self.load_priors()
+
+        self.staged = []  # Used only when resuming a run and adding iterations
+
+    def reset(self, bootstrap=None):
+        super(BasicBayesMCMCAlgorithm, self).reset(bootstrap)
+
+        self.current_pset = None
+        self.ln_current_P = None
+        self.iteration = [0] * self.num_parallel
+
+        self.wait_for_sync = [False] * self.num_parallel
+        self.samples_file = None
 
     def start_run(self):
         """
@@ -1688,25 +1947,8 @@ class BayesAlgorithm(Algorithm):
             print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
                    % (self.sample_every, self.burn_in))
 
-        if self.config.config['initialization'] == 'lh':
-            first_pset = self.random_latin_hypercube_psets(self.num_parallel)
-        else:
-            first_pset = [self.random_pset() for i in range(self.num_parallel)]
-
-        self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
-        self.current_pset = [None]*self.num_parallel
-        for i in range(len(first_pset)):
-            first_pset[i].name = 'iter0run%i' % i
-
-        # Set up the output files
-        # Cant do this in the constructor because that happens before the output folder is potentially overwritten.
-        if not self.sa:
-            self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
-            with open(self.samples_file, 'w') as f:
-                f.write('# Name\tLn_probability\t'+first_pset[0].keys_to_string()+'\n')
-            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
-
-        return first_pset
+        setup_samples = not self.sa
+        return super(BasicBayesMCMCAlgorithm, self).start_run(setup_samples=setup_samples)
 
     def got_result(self, res):
         """
@@ -1722,7 +1964,7 @@ class BayesAlgorithm(Algorithm):
         score = res.score
 
         # Figure out which parallel run this is from based on the .name field.
-        m = re.search('(?<=run)\d+',pset.name)
+        m = re.search('(?<=run)\d+', pset.name)
         index = int(m.group(0))
 
         # Calculate the acceptance probability
@@ -1862,86 +2104,6 @@ class BayesAlgorithm(Algorithm):
             new_vars.append(new_var)
 
         return PSet(new_vars)
-
-    def ln_prior(self, pset):
-        """
-        Returns the value of the prior distribution for the given parameter set
-
-        :param pset:
-        :type pset: PSet
-        :return: float value of ln times the prior distribution
-        """
-        total = 0.
-        for v in self.prior:
-            (space, dist, x1, x2) = self.prior[v]
-            if space == 'log':
-                val = np.log10(pset[v])
-            else:
-                val = pset[v]
-
-            if dist == 'n':
-                # Normal with mean x1 and value x2
-                total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
-            else:
-                # Uniform from x1 to x2
-                if x1 <= val <= x2:
-                    total += -np.log(x2-x1)
-                else:
-                    logger.warning('Box-constrained parameter %s reached a value outside the box.')
-                    total += -np.inf
-        return total
-
-    def sample_pset(self, pset, ln_prob):
-        """
-        Adds this pset to the set of sampled psets for the final distribution.
-        :param pset:
-        :type pset: PSet
-        :param ln_prob - The probability of this PSet to record in the samples file.
-        :type ln_prob: float
-        """
-        with open(self.samples_file, 'a') as f:
-            f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
-
-    def update_histograms(self, file_ext):
-        """
-        Updates the files that contain histogram points for each variable
-        :param file_ext: String to append to the save file names
-        :type file_ext: str
-        :return:
-        """
-        # Read the samples file into an array, ignoring the first row (header)
-        # and first 2 columns (pset names, probabilities)
-        dat_array = np.genfromtxt(self.samples_file, delimiter='\t', dtype=float,
-                                  usecols=range(2, len(self.variables)+2))
-
-        # Open the file(s) to save the credible intervals
-        cred_files = []
-        for i in self.credible_intervals:
-            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
-            f.write('# param\tlower_bound\tupper_bound\n')
-            cred_files.append(f)
-
-        for i in range(len(self.variables)):
-            v = self.variables[i]
-            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
-            # For log-space variables, we want the histogram in log space
-            if v.log_space:
-                histdata = np.log10(dat_array[:, i])
-                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
-            else:
-                histdata = dat_array[:, i]
-                header = 'lower_bound\tupper_bound\tcount'
-            hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
-            result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
-            np.savetxt(fname, result_array, delimiter='\t', header=header)
-
-            sorted_data = sorted(dat_array[:, i])
-            for interval, file in zip(self.credible_intervals, cred_files):
-                n = len(sorted_data)
-                want = n * (interval/100)
-                min_index = int(np.round(n/2 - want/2))
-                max_index = int(np.round(n/2 + want/2 - 1))
-                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
 
     def replica_exchange(self):
         """

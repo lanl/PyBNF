@@ -84,7 +84,7 @@ class Configuration(object):
 
         if verbosity >= 1:
             self.check_unused_keys(d)
-        if d['fit_type'] in ('bmc', 'pt', 'sa'):
+        if d['fit_type'] in ('bmc', 'pt', 'sa', 'dream'):
             self.postprocess_mcmc_keys(d)
         self.config = self.default_config()
         for k, v in d.items():
@@ -144,7 +144,12 @@ class Configuration(object):
 
             'cluster_type': None,
             'scheduler_node': None,
-            'worker_nodes': None
+            'worker_nodes': None,
+
+            'gamma_prob': 0.1,
+            'zeta': 1e-6,
+            'lambda': 0.1,
+            'crossover_number': 3
         }
         return default
 
@@ -161,13 +166,15 @@ class Configuration(object):
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol', 'v_stop'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
                         'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
-                                'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling'},
+                                'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling',
+                                'crossover_number', 'zeta', 'lambda', 'gamma_prob'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',
-                                'simplex_stop_tol'}}
+                                'simplex_stop_tol'}
+                        }
         ignored_params = set()
         thisalg = conf_dict['fit_type']
-        if thisalg in ('pt', 'sa'):
+        if thisalg in ('pt', 'sa', 'dream'):
             thisalg = 'bmc'
         for alg in alg_specific:
             if (thisalg != alg
@@ -177,18 +184,19 @@ class Configuration(object):
         for k in ignored_params.intersection(set(conf_dict.keys())):
             print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                             % (k, conf_dict['fit_type']))
+            logger.warning('Ignoring unused key %s for fitting algorithm %s' % (k, conf_dict['fit_type']))
 
     @staticmethod
     def postprocess_mcmc_keys(conf_dict):
         """
-        Algorithms 'bmc', 'pt', and 'sa' have similar but non-identical valid config keys. This helper method
+        Algorithms 'bmc', 'pt', 'dream', and 'sa' have similar but non-identical valid config keys. This helper method
         does post-processing of config keys for these 3 algorithms
 
         :param conf_dict:
         :return:
         """
-        # Check keys that only work for a subset of the 3 algorithms
-        if conf_dict['fit_type'] != 'pt':
+        # Check keys that only work for a subset of the 4 algorithms
+        if conf_dict['fit_type'] != 'pt' and 'exchange_every' in conf_dict:
             if 'exchange_every' in conf_dict:
                 print1('Warning: Configuration key exchange_every is not used in fit_type %s, so I am ignoring it'
                        % conf_dict['fit_type'])
@@ -203,10 +211,16 @@ class Configuration(object):
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
+        if conf_dict['fit_type'] in ['bmc', 'sa', 'pt']:
+            for k in ['crossover_numer', 'zeta', 'lambda', 'gamma_prob']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
 
         # Create the starting list of betas based on the various available options. Warn if tried to do something weird
         if 'beta' not in conf_dict and 'beta_range' not in conf_dict:
             conf_dict['beta'] = [1.]
+
         if 'beta_range' in conf_dict:
             if len(conf_dict['beta_range']) != 2:
                 raise PybnfError("Wrong number of entries in beta_range",

@@ -19,13 +19,14 @@ numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_g
                'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations',
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
-               'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
-               'exchange_every', 'backup_every', 'bootstrap', 'ind_var_rounding', 'local_objective_eval']
+               'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity'
+               'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
+               'local_objective_eval']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
-                 'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop']
+                 'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range']
 b_var_def_keys = ['uniform_var', 'loguniform_var']
 var_def_keys = ['lognormal_var', 'normal_var', 'mutate']

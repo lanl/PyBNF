@@ -7,7 +7,7 @@ Please update this file whenever you add support for new .conf keys in the code
 model - specifies the mapping between .bngl model files and .exp files. This has a unique syntax, model = model.bngl : data1.exp, data2.exp . It is possible to include both .exp and .con (constraint) files in the list. If no experimental files are associated with the model, write "none".
 bng_command - path to BNG2.pl, including the BNG2.pl file name. Default: based on the value of the BNGPATH env variable if set, otherwise, if the run includes any .bngl files, bng_command requires specification in the configuration file
 output_dir - Directory where to save the output. Default: bnf_out
-fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ade - Asynchronous Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering. Default: de
+fit_type - Which fitting algorithm to use. Options: pso - Particle Swarm Optimization, de - Differential Evolution, ade - Asynchronous Differential Evolution, ss - Scatter Search, bmc - Bayesian Markov chain Monte Carlo, sim - Simplex local search, sa - Simulated Annealing, pt - Parallel tempering, dream - DREAM. Default: de
 objfunc - Which objective function to use. Options: chisq - Chi Squared, sos - Sum of squares, norm_sos - Sum of squares, normalized by the value at each point, ave_norm_sos - Sum of squares, normalized by the average value of the variable. Default: chisq
 mutant = basemodel name statement1 statement2: data1name.exp, data2name.exp - Declares a model that does not contain its own model file, but instead is defined based on another model basemodel. "name" is the name of the mutant model; this name is appended to the suffixes of the base model, i.e. if the base model has data files data1.exp and data2.exp, a corresponding mutant file with the name "m1" should use the files data1m1.exp and data2m1.exp. statement1, statement2,... have the format [variable][operator][value] ; for example a__FREE__=0 or b__FREE__*2.
 parallel_count - How many jobs to run in parallel. Default: Use all available cores.
@@ -106,25 +106,36 @@ local_min_limit: If a point is stuck for this many iterations without improvemen
 reserve_size: Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from here, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. Default: max_iterations
 
 
-***Bayesian MCMC settings***
+***Bayesian settings***
 
 step_size: When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. Default: 0.2
 burn_in: Ignore this many iterations at the start, to let the system equilibrate. Default: 10000
 sample_every: Every x iterations, save the current PSet into the sampled population. Default: 100
-beta: 1 over the "temperature" used for sampling. beta = 1 samples the true probability landscape. At lower beta (higher temperature), unfavorable moves are more often accepted, and parameter space is sampled more broadly. Default: 1
 
 output_hist_every: Every x samples (i.e every x*sample_every iterations), save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Default: 100
 hist_bins: Number of bins used when writing the histogram files. Default: 10
 credible_intervals: Specify one or more numbers here. For each n, algorithm will save a file giving bounds for each variable such that in n% of the samples the variable lies within the bounds.  Default: 68 95
 
-The following additional options configure Parallel Tempering, an extension of Bayesian MCMC when replica exchange occurs.
+beta: 1 over the starting "temperature" for all replicates. This value increases (i.e., temperature decreases) over the course of the run.
+
+
+*** Parallel Tempering MCMC settings (includes Bayesian settings) ***
+
 exchange_every: Every x iterations, perform replica exchange, swapping replicas that are adjacent in temperature with a statistically correct probability
 beta_range=min max : The range of values of beta to use. The replicates will use population_size evenly spaced beta values within this range.
 beta: Alternatively to specifying beta_range, you may specify population_size beta values here to use
 
-***Simulated Annealing settings***
 
-step_size: When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. (same key as MCMC above) Default: 0.2
-beta: 1 over the starting "temperature" for all replicates. This value increases (i.e., temperature decreases) over the course of the run.
+*** DREAM settings (includes Bayesian settings) ***
+
+step_size: As in Bayesian settings, but here it can be set to 'auto'
+crossover_number: The number of distinct crossover probabilities for performing Gibbs sampling on the parameter set.  Random numbers are generated for each parameter and if they are less than the sampled crossover probability, then a new value is calculated in the updated PSet (default: 3)
+zeta: A (very) small number for perturbing the calculated update for a particular parameter (applies to all parameters).  Default: 1e-6
+lambda: Another small number for perturbing parameters selected by the crossover procedure.  Default: 0.1
+gamma_prob: A probability that determines how often a jump in parameter space is assigned a value of 1 instead of step_size.  Helps with jumping to the mode of the distribution.  Default: 0.1
+
+
+***Simulated Annealing settings (includes Bayesian settings)***
+
 beta_max: Stop the algorithm if all replicates reach this beta = 1/temperature value. Default: Inf
 cooling: Each time a move to a higher energy state is accepted, increase beta = 1/temperature by this value. Default: 0.01

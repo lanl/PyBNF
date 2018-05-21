@@ -75,10 +75,10 @@ class TestFreeParameter:
         assert p12.diff(p11) == 1
 
     def test_reflect(self):
-        self.p3.set_value(11) == 9
-        self.p3.set_value(12) == 8
-        self.p3.set_value(25) == 5
-        self.p2.set_value(200) == 1
+        assert self.p3.set_value(11).value == 9
+        assert self.p3.set_value(12).value == 8
+        assert self.p3.set_value(25).value == 5
+        assert self.p2.set_value(1000).value == 10
 
     def test_set_value(self):
         p13 = self.p0.set_value(1)
@@ -87,3 +87,7 @@ class TestFreeParameter:
         p14 = self.p4.set_value(100)
         assert p14.lower_bound == self.p4.lower_bound
         assert p14.upper_bound == self.p4.upper_bound
+
+    @raises(pset.OutOfBoundsException)
+    def test_no_reflect(self):
+        self.p3.set_value(11, False)
