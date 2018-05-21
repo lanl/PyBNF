@@ -22,10 +22,10 @@ begin parameters
 	LT_nM_exp 0
 	LT_exp LT_nM_exp*NA*Vo
 
-	RT_nM_exp_28_ROI_6=RT_nM_exp_28_ROI_6__FREE__ # nM
+	RT_nM_exp_28_ROI_6=RT_nM_exp_28_ROI_6__FREE # nM
 	RT_exp=RT_nM_exp_28_ROI_6*NA*Vo
-	ucf_exp_28_ROI_6=ucf_exp_28_ROI_6__FREE__ # converts cluster density per cell to cluster density per unit area
-	base_fluor_28_ROI_6=base_fluor_28_ROI_6__FREE__
+	ucf_exp_28_ROI_6=ucf_exp_28_ROI_6__FREE # converts cluster density per cell to cluster density per unit area
+	base_fluor_28_ROI_6=base_fluor_28_ROI_6__FREE
 
 	K11     4.6                  #  Equilibrium association constant (/nM)
 	k11r	0.02                 #  Dissociation constant (/s)

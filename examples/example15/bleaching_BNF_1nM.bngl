@@ -22,10 +22,10 @@ begin parameters
 	LT_nM_exp 0
 	LT_exp LT_nM_exp*NA*Vo
 
-	RT_nM_exp_1nM=RT_nM_exp_1nM__FREE__ # nM
+	RT_nM_exp_1nM=RT_nM_exp_1nM__FREE # nM
 	RT_exp=RT_nM_exp_1nM*NA*Vo
-	ucf_exp_1nM=ucf_exp_1nM__FREE__ # converts cluster density per cell to cluster density per unit area
-	base_fluor_1nM=base_fluor_1nM__FREE__
+	ucf_exp_1nM=ucf_exp_1nM__FREE # converts cluster density per cell to cluster density per unit area
+	base_fluor_1nM=base_fluor_1nM__FREE
 
 	K11     4.6                  #  Equilibrium association constant (/nM)
 	k11r	0.02                 #  Dissociation constant (/s)
@@ -51,11 +51,11 @@ begin parameters
 	l22r	0.272                #  Dissociation rate constant in (/s)
 	l22f    2*L22*l22r/(NA*Vo)   #  Association rate constant (/nM/s)
 
-	k_o_factor k_o_factor__FREE__
-	k_c_factor k_c_factor__FREE__
-	kaf_factor kaf_factor__FREE__
-	kar_factor kar_factor__FREE__
-	chi_r_factor chi_r_factor__FREE__
+	k_o_factor k_o_factor__FREE
+	k_c_factor k_c_factor__FREE
+	kaf_factor kaf_factor__FREE
+	kar_factor kar_factor__FREE
+	chi_r_factor chi_r_factor__FREE
 
 	k_o     6.0*k_o_factor                  #  Rate constant for ligand-mediated activating conformation change in the cytosolic tail of EGFR (/s)
 	k_c     1.6*k_c_factor                  #  Rate constant for ligand-independent deactivating conformation change in the cytosolic tail of EGFR (/s)
