@@ -1,4 +1,4 @@
-"""pybnf.pset: classes for storing models, parameter sets, and the fitting trajectory"""
+"""Classes for storing models, parameter sets, and the fitting trajectory"""
 
 
 from .printing import print0, print1, PybnfError

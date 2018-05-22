@@ -1,4 +1,4 @@
-"""pybnf.pybnf: defines the entry point for the PyBNF application"""
+"""The entry point for the PyBNF application containing the main function and version"""
 
 
 from .parse import load_config
@@ -24,6 +24,7 @@ __version__ = "0.1"
 
 
 def main():
+    """The main function for running a fitting job"""
 
     success = False
     node_string = None

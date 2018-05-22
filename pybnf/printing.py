@@ -1,4 +1,4 @@
-"""pybnf.printing: contains printing commands that respect the application-wide verbosity setting."""
+"""Contains printing commands that respect the application-wide verbosity setting."""
 
 
 verbosity = 1
