@@ -207,6 +207,8 @@ class Job:
                 res.score = self.calc_future.result().evaluate_objective(res.simdata)
                 if res.score is None:
                     res.score = np.inf
+                    logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+                    logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
                 res.simdata = None
         if self.delete_folder:
             try:
@@ -471,13 +473,10 @@ class Algorithm(object):
             res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
-
-        if res.score == np.inf:
-            logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-            logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
-            print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
-        else:
-            logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, res.score))
+                logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+                logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+                print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
+        logger.info('Adding Result %s to Trajectory with score %.4f' % (res.name, res.score))
         self.trajectory.add(res.pset, res.score, res.name)
 
     def random_pset(self):
