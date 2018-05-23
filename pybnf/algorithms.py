@@ -711,10 +711,7 @@ class Algorithm(object):
                 tb = '\n'+res.traceback if res.fail_type == 1 else ''
 
                 logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
-                if res.fail_type >= 1:
-                    print1('Job %s failed' % res.name)
-                else:
-                    print1('Job %s timed out' % res.name)
+                print1('Job %s failed' % res.name)
                 if self.success_count == 0 and self.fail_count >= 10:
                     raise PybnfError('Aborted because all jobs are failing',
                                      'Your simulations are failing to run. See the log files in '
