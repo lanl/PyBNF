@@ -59,6 +59,8 @@ BioNetGen
 PyBNF is designed to work with simulators present in the `BioNetGen`_ software suite, version 2.3. The current
 `BioNetGen`_ distribution includes support for both network-based simulations and network-free simulations.
 
+.. _set_bng_path:
+
 PyBNF will need to know the location of `BioNetGen`_ – specifically the location of the script ``BNG2.pl`` within the
 `BioNetGen`_ installation. This path can be included in the PyBNF configuration file (see below). A convenient alternative
 is to set the environment variable ``BNGPATH`` to the BioNetGen directory using the following command:
