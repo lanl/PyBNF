@@ -807,7 +807,7 @@ class Mutation:
         Undo the mutation we just did
         :return: float
         """
-        if not self.old:
+        if self.old is None:
             raise RuntimeError('Called undo() on a Mutation that was not performed')
         old = self.old
         self.old = None
