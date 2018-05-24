@@ -96,6 +96,15 @@ class FailedSimulation(Result):
         return
 
 
+def run_job(j, debug=False, failed_logs_dir=''):
+    """
+    Runs the Job j.
+    This function is passed to Dask instead of j.run_simulation because if you pass j.run_simulation, Dask leaks memory
+    associated with j.
+    """
+    return j.run_simulation(debug, failed_logs_dir)
+
+
 class Job:
     """
     Container for information necessary to perform a single evaluation in the fitting algorithm
@@ -684,7 +693,7 @@ class Algorithm(object):
         for p in psets:
             jobs += self.make_job(p)
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(job.run_simulation, debug, self.failed_logs_dir) for job in jobs]
+        futures = [client.submit(run_job, job, debug, self.failed_logs_dir) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
@@ -740,7 +749,7 @@ class Algorithm(object):
                     pending_psets.add(ps)
                 logger.debug('Submitting %d new Jobs' % len(new_jobs))
 
-                new_futures = [client.submit(j.run_simulation, debug, self.failed_logs_dir) for j in new_jobs]
+                new_futures = [client.submit(run_job, j, debug, self.failed_logs_dir) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
         logger.info("Cancelling %d pending jobs" % len(pending))
