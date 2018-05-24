@@ -186,7 +186,7 @@ class Job:
         try:
             simdata = self._run_models()
             res = Result(self.params, simdata, self.job_id)
-        except CalledProcessError:
+        except (CalledProcessError, FailedSimulationError):
             if debug:
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 1)
