@@ -518,21 +518,28 @@ class SbmlModelNoTimeout(Model):
         newmodel.param_set = pset
         return newmodel
 
-    def model_text(self):
+    def model_text(self, mut=None):
         """
-        Generates the XML text of the model
+        Generates the XML text of the model, optionally applying the MutationSet mut
         Should only be used when saving the model to disk, which is not often done.
         :return:
         """
         logger.info('Generating model text for %s' % self.name)
         runner = rr.RoadRunner(self.abs_file_path)
         self._modify_params(runner)
+        if mut:
+            self._apply_mutant(mut, runner)
         runner.reset()
         return runner.getCurrentSBML()
 
     def save(self, file_prefix):
         with open('%s.xml' % file_prefix, 'w') as out:
             out.write(self.model_text())
+
+    def save_all(self, file_prefix):
+        for mut in self.mutants:
+            with open('%s%s.xml' % (file_prefix, mut.suffix), 'w') as out:
+                out.write(self.model_text(mut=mut))
 
     def add_action(self, action):
         if action.method not in ('ode', 'ssa'):
@@ -564,6 +571,23 @@ class SbmlModelNoTimeout(Model):
                 setattr(runner, p, self.param_set[p])
             # else The parameter does not appear in this model (might appear in another model, so not an error)
 
+    def _apply_mutant(self, mut, runner):
+        """Modify the parameters in this runner instance according to the MutationSet mut"""
+        for mi in mut:
+            if mi.name in self.species_names:
+                runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
+            elif mi.name in self.param_names:
+                setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+
+    def _undo_mutant(self, mut, runner):
+        """ Undo the application of the MutationSet mut. Should only be called after previously calling
+        _apply_mutant()"""
+        for mi in mut:
+            if mi.name in self.species_names:
+                runner.model['init([%s])' % mi.name] = mi.undo()
+            elif mi.name in self.param_names:
+                setattr(runner, mi.name, mi.undo())
+
     def execute(self, folder, filename, timeout):
         # Load the original xml file with Roadrunner
         runner = rr.RoadRunner(self.abs_file_path)
@@ -576,11 +600,7 @@ class SbmlModelNoTimeout(Model):
         selection = ['time'] + list(self.species_names)
         for mut in self.mutants:
             # Apply all mutations
-            for mi in mut:
-                if mi.name in self.species_names:
-                    runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
-                elif mi.name in self.param_names:
-                    setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+            self._apply_mutant(mut, runner)
 
             for act in self.actions:
                 runner.reset()
@@ -646,11 +666,7 @@ class SbmlModelNoTimeout(Model):
                 else:
                     raise NotImplementedError('Unknown action type')
             # Undo all mutations
-            for mi in mut:
-                if mi.name in self.species_names:
-                    runner.model['init([%s])' % mi.name] = mi.undo()
-                elif mi.name in self.param_names:
-                    setattr(runner, mi.name, mi.undo())
+            self._undo_mutant(mut, runner)
         return result_dict
 
 
