@@ -1924,6 +1924,8 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
         self.exchange_every = config.config['exchange_every']
         self.pt = self.exchange_every != np.inf
+        self.reps_per_beta = self.config.config['reps_per_beta']
+        self.betas_per_group = self.num_parallel // self.reps_per_beta  # Number of unique betas considered (in PT)
 
         # The temperature of each replicate
         # For MCMC, probably n copies of the same number, unless the user set it up strangely
@@ -2106,7 +2108,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         Checks whether this replica index is one that gets sampled.
         For mcmc, always True. For pt, must be a replica at the max beta
         """
-        return (index + 1) % (self.num_parallel // self.config.config['reps_per_beta']) == 0 if self.pt else True
+        return (index + 1) % self.betas_per_group == 0 if self.pt else True
 
     def choose_new_pset(self, oldpset):
         """
@@ -2144,22 +2146,31 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         :return: List of n PSets to run
         """
         logger.info('Performing replica exchange on iteration %i' % self.iteration[0])
-        for j in range(self.num_parallel - 1):
-            # Consider exchanging index j (higher T) with j+1 (lower T)
-            ln_p_exchange = min(0., -(self.betas[j+1]-self.betas[j]) * (self.ln_current_P[j+1]-self.ln_current_P[j]))
-            # Scratch work: Should there be a - sign in front? You want to always accept if moving the better answer
-            # to the lower temperature. j+1 has lower T so higher beta, so the first term is positive. The second term
-            # is positive if j+1 is better. But you want a positive final answer when j, currently at higher T, is
-            # better. So you need a - sign.
-            if np.random.random() < np.exp(ln_p_exchange):
-                # Do the exchange
-                logger.debug('Exchanging individuals %i and %i' % (j, j+1))
-                hold_pset = self.current_pset[j]
-                hold_p = self.ln_current_P[j]
-                self.current_pset[j] = self.current_pset[j+1]
-                self.ln_current_P[j] = self.ln_current_P[j+1]
-                self.current_pset[j+1] = hold_pset
-                self.ln_current_P[j+1] = hold_p
+        # Who exchanges with whom is a little complicated. Each replica tries one exchange with a replica at the next
+        # beta. But if we have multiple reps per beta, then the exchanges aren't necessarily within the same group of
+        # reps. We use this random permutation to determine which groups exchange.
+        permutation = np.random.permutation(range(self.reps_per_beta))
+        for group in range(self.reps_per_beta):
+            for i in range(self.betas_per_group - 1):
+                # Determine the 2 indices we're exchanging, ind_hi and ind_lo
+                ind_hi = self.betas_per_group * group + i
+                other_group = permutation[group]
+                ind_lo = self.betas_per_group * other_group + i + 1
+                # Consider exchanging index ind_hi (higher T) with ind_lo (lower T)
+                ln_p_exchange = min(0., -(self.betas[ind_lo]-self.betas[ind_hi]) * (self.ln_current_P[ind_lo]-self.ln_current_P[ind_hi]))
+                # Scratch work: Should there be a - sign in front? You want to always accept if moving the better answer
+                # to the lower temperature. ind_lo has lower T so higher beta, so the first term is positive. The second
+                # term is positive if ind_lo is better. But you want a positive final answer when ind_hi, currently at
+                # higher T, is better. So you need a - sign.
+                if np.random.random() < np.exp(ln_p_exchange):
+                    # Do the exchange
+                    logger.debug('Exchanging individuals %i and %i' % (ind_hi, ind_lo))
+                    hold_pset = self.current_pset[ind_hi]
+                    hold_p = self.ln_current_P[ind_hi]
+                    self.current_pset[ind_hi] = self.current_pset[ind_lo]
+                    self.ln_current_P[ind_hi] = self.ln_current_P[ind_lo]
+                    self.current_pset[ind_lo] = hold_pset
+                    self.ln_current_P[ind_lo] = hold_p
         # Propose new psets - it's more complicated because of going out of box, and other counters.
         proposed = []
         for j in range(self.num_parallel):
