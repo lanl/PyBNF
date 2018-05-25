@@ -21,7 +21,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_g
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity'
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
-               'local_objective_eval']
+               'local_objective_eval', 'reps_per_beta']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',

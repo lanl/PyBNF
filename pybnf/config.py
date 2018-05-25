@@ -196,11 +196,15 @@ class Configuration(object):
         :return:
         """
         # Check keys that only work for a subset of the 4 algorithms
-        if conf_dict['fit_type'] != 'pt' and 'exchange_every' in conf_dict:
-            if 'exchange_every' in conf_dict:
-                print1('Warning: Configuration key exchange_every is not used in fit_type %s, so I am ignoring it'
-                       % conf_dict['fit_type'])
+        if conf_dict['fit_type'] != 'pt':
+            for k in ['exchange_every', 'reps_per_beta']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
             conf_dict['exchange_every'] = np.inf
+            conf_dict['reps_per_beta'] = 1
+        elif 'reps_per_beta' not in conf_dict:
+            conf_dict['reps_per_beta'] = 1  # Default value if using pt but didn't specify
         if conf_dict['fit_type'] != 'sa':
             for k in ['cooling', 'beta_max']:
                 if k in conf_dict:
@@ -221,6 +225,16 @@ class Configuration(object):
         if 'beta' not in conf_dict and 'beta_range' not in conf_dict:
             conf_dict['beta'] = [1.]
 
+        # Handle the Parallel Tempering case where reps_per_beta is specified.
+        # First, check it's divisible by the population size
+        if conf_dict['population_size'] % conf_dict['reps_per_beta'] != 0:
+            conf_dict['population_size'] -= conf_dict['population_size'] % conf_dict['reps_per_beta']
+            print1('Warning: Lowered your population_size to %i so that it is divisible by your setting for '
+                   'reps_per_beta' % conf_dict['population_size'])
+        # Then, we want the beta_list generated below to contain only one copy of the spread of betas to use
+        # At the end, we make reps_per_beta copies of that list to arrive at the final beta list.
+        subpop_size = conf_dict['population_size'] // conf_dict['reps_per_beta']
+
         if 'beta_range' in conf_dict:
             if len(conf_dict['beta_range']) != 2:
                 raise PybnfError("Wrong number of entries in beta_range",
@@ -230,24 +244,30 @@ class Configuration(object):
             if conf_dict['fit_type'] != 'pt':
                 print1("Warning: You used 'beta_range' with the method %s. This is an odd thing to do. Usually, you "
                        "would want all your replicates starting at the same beta value." % conf_dict['fit_type'])
-            betalist = np.linspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], conf_dict['population_size'])
+            betalist = np.linspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], subpop_size)
         elif len(conf_dict['beta']) > 1:
             betalist = conf_dict['beta']
             if conf_dict['fit_type'] != 'pt':
                 print1("Warning: You specified multiple beta values with the method %s. This is an odd thing to do. "
                        "Usually, you would specify one beta value to use with all your replicates. " % conf_dict['fit_type'])
-            if len(betalist) != conf_dict['population_size']:
+            if len(betalist) != subpop_size:
                 print1("Warning: You specified %i beta values, so I will run %i replicates instead of using your "
-                       "population_size setting" % (len(betalist), len(betalist)))
-                conf_dict['population_size'] = len(betalist)
+                       "population_size setting" % (len(betalist), len(betalist)*conf_dict['reps_per_beta']))
+                conf_dict['population_size'] = len(betalist)*conf_dict['reps_per_beta']
         else:
-            betalist = conf_dict['beta'] * conf_dict['population_size']  # n copies of the single beta value
+            betalist = conf_dict['beta'] * subpop_size  # n copies of the single beta value
             if conf_dict['fit_type'] == 'pt':
                 print1("Warning: You specified a single beta value with the method pt. This makes the algorithm's "
                        "replica exchanges accomplish nothing. To make good use of this algorithm, set the key "
                        "'beta_range' or specify multiple values with the 'beta' key.")
         betalist.sort()
+        betalist = betalist * conf_dict['reps_per_beta']
         conf_dict['beta_list'] = betalist
+
+        if conf_dict['fit_type'] == 'pt' and betalist[-1] != 1:
+            print1('Warning: You are about to calculate a distribution with beta=%i instead of 1. That means your '
+                   'calculated distribution will be %s than the true probability distribution' %
+                   (betalist[-1], 'narrower' if betalist[-1] > 1 else 'broader'))
 
     @staticmethod
     def _req_user_params():
