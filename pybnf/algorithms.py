@@ -2149,9 +2149,9 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         # Who exchanges with whom is a little complicated. Each replica tries one exchange with a replica at the next
         # beta. But if we have multiple reps per beta, then the exchanges aren't necessarily within the same group of
         # reps. We use this random permutation to determine which groups exchange.
-        permutation = np.random.permutation(range(self.reps_per_beta))
-        for group in range(self.reps_per_beta):
-            for i in range(self.betas_per_group - 1):
+        for i in range(self.betas_per_group - 1):
+            permutation = np.random.permutation(range(self.reps_per_beta))
+            for group in range(self.reps_per_beta):
                 # Determine the 2 indices we're exchanging, ind_hi and ind_lo
                 ind_hi = self.betas_per_group * group + i
                 other_group = permutation[group]
