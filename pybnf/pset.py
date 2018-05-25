@@ -314,6 +314,16 @@ class BNGLModel(Model):
         f.write(text)
         f.close()
 
+    def save_all(self, file_prefix):
+        """
+        Saves BNGL files of the original model and all mutants
+        :param file_prefix:
+        """
+        self.save(file_prefix)
+        for mut in self.mutants:
+            mut_model = self._get_mutant_model(mut)
+            mut_model.save(file_prefix+mut.suffix)
+
     def execute(self, folder, filename, timeout, with_mutants=True):
         """
 
@@ -337,18 +347,26 @@ class BNGLModel(Model):
             for mut in self.mutants:
                 # Inefficient iteration over PSet to build the mutant one, but hopefully not performance-critical
                 logger.debug('Working on mutant %s' % mut.suffix)
-                params = {p.name: p.value for p in self.param_set}
-                for mi in mut:
-                    params[mi.name] = mi.mutate(params[mi.name])
-                mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
-                                  for pname in params]
-                mut_pset = PSet(mut_param_list)
-                mut_model = self.copy_with_param_set(mut_pset)
+                mut_model = self._get_mutant_model(mut)
                 mut_data = mut_model.execute(folder, filename+mut.suffix, timeout, with_mutants=False)
                 for suff in mut_data:
                     ds[suff + mut.suffix] = mut_data[suff]
                 logger.debug('Finished mutant %s' % mut.suffix)
         return ds
+
+    def _get_mutant_model(self, mut):
+        """
+        Creates a copy of the model, with the parameter set changed as specified by MutationSet mut
+        :param mut: The MutationSet to apply
+        """
+        params = {p.name: p.value for p in self.param_set}
+        for mi in mut:
+            params[mi.name] = mi.mutate(params[mi.name])
+        mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
+                          for pname in params]
+        mut_pset = PSet(mut_param_list)
+        mut_model = self.copy_with_param_set(mut_pset)
+        return mut_model
 
     def _load_simdata(self, folder, filename):
         """
