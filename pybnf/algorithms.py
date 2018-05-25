@@ -1923,6 +1923,14 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             self.beta_max = config.config['beta_max']
 
         self.exchange_every = config.config['exchange_every']
+        self.pt = self.exchange_every != np.inf
+
+        # The temperature of each replicate
+        # For MCMC, probably n copies of the same number, unless the user set it up strangely
+        # For SA, starts all the same (unless set up strangely), and independently decrease during the run
+        # For PT, contains reps_per_beta copies of the same ascending sequence of betas, e.g.
+        # [0.6, 0.8, 1., 0.6, 0.8, 1.]. Indices congruent to -1 mod (population_size/reps_per_beta) have the max beta
+        # (probably 1), and only these replicas are sampled.
         self.betas = config.config['beta_list']
 
         self.wait_for_sync = [False] * self.num_parallel
@@ -1953,7 +1961,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             print2('Running simulated annealing on %i independent replicates in parallel, for %i iterations each or '
                    'until 1/T reaches %s' % (self.num_parallel, self.max_iterations, self.beta_max))
         else:
-            if self.exchange_every == np.inf:
+            if not self.pt:
                 print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
                        % (self.num_parallel, self.max_iterations))
             else:
@@ -2063,7 +2071,8 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             self.iteration[index] += 1
             # Check if it's time to do various things
             if not self.sa:
-                if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0:
+                if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0 \
+                        and self.should_sample(index):
                     self.sample_pset(self.current_pset[index], self.ln_current_P[index])
                 if (self.iteration[index] > self.burn_in
                    and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
@@ -2091,6 +2100,13 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 return None
             proposed_pset = self.choose_new_pset(self.current_pset[index])
         return proposed_pset
+
+    def should_sample(self, index):
+        """
+        Checks whether this replica index is one that gets sampled.
+        For mcmc, always True. For pt, must be a replica at the max beta
+        """
+        return (index + 1) % (self.num_parallel // self.config.config['reps_per_beta']) == 0 if self.pt else True
 
     def choose_new_pset(self, oldpset):
         """
