@@ -44,6 +44,10 @@ class Model(object):
         """
         NotImplementedError("save is not implemented")
 
+    def save_all(self, file_prefix):
+        logger.warning('Model of type %s does not implement save_all(). Falling back to save()' % type(self))
+        self.save(file_prefix)
+
     def execute(self, folder, filename, timeout):
         """
         Executes the model, working in folder/filename, with a max runtime of timeout.
