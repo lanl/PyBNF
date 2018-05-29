@@ -129,7 +129,7 @@ def main():
         else:
             # Create output folders, checking for overwrites.
             subdirs = ('Simulations', 'Results', 'Initialize', 'FailedSimLogs')
-            subfiles = ('alg_backup.bp', 'alg_finished.bp')
+            subfiles = ('alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp')
             will_overwrite = [subdir for subdir in subdirs + subfiles
                               if os.path.exists(config.config['output_dir'] + '/' + subdir)]
             if len(will_overwrite) > 0:

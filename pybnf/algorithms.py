@@ -764,7 +764,7 @@ class Algorithm(object):
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
+            to_save.save_all('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
             if self.config.config['delete_old_files'] == 0:
                 for simtype, suf in this_model.suffixes:
                     if simtype == 'simulate':

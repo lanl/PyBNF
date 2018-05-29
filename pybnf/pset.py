@@ -44,6 +44,10 @@ class Model(object):
         """
         NotImplementedError("save is not implemented")
 
+    def save_all(self, file_prefix):
+        logger.warning('Model of type %s does not implement save_all(). Falling back to save()' % type(self))
+        self.save(file_prefix)
+
     def execute(self, folder, filename, timeout):
         """
         Executes the model, working in folder/filename, with a max runtime of timeout.
@@ -314,6 +318,16 @@ class BNGLModel(Model):
         f.write(text)
         f.close()
 
+    def save_all(self, file_prefix):
+        """
+        Saves BNGL files of the original model and all mutants
+        :param file_prefix:
+        """
+        self.save(file_prefix)
+        for mut in self.mutants:
+            mut_model = self._get_mutant_model(mut)
+            mut_model.save(file_prefix+mut.suffix)
+
     def execute(self, folder, filename, timeout, with_mutants=True):
         """
 
@@ -337,18 +351,26 @@ class BNGLModel(Model):
             for mut in self.mutants:
                 # Inefficient iteration over PSet to build the mutant one, but hopefully not performance-critical
                 logger.debug('Working on mutant %s' % mut.suffix)
-                params = {p.name: p.value for p in self.param_set}
-                for mi in mut:
-                    params[mi.name] = mi.mutate(params[mi.name])
-                mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
-                                  for pname in params]
-                mut_pset = PSet(mut_param_list)
-                mut_model = self.copy_with_param_set(mut_pset)
+                mut_model = self._get_mutant_model(mut)
                 mut_data = mut_model.execute(folder, filename+mut.suffix, timeout, with_mutants=False)
                 for suff in mut_data:
                     ds[suff + mut.suffix] = mut_data[suff]
                 logger.debug('Finished mutant %s' % mut.suffix)
         return ds
+
+    def _get_mutant_model(self, mut):
+        """
+        Creates a copy of the model, with the parameter set changed as specified by MutationSet mut
+        :param mut: The MutationSet to apply
+        """
+        params = {p.name: p.value for p in self.param_set}
+        for mi in mut:
+            params[mi.name] = mi.mutate(params[mi.name])
+        mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
+                          for pname in params]
+        mut_pset = PSet(mut_param_list)
+        mut_model = self.copy_with_param_set(mut_pset)
+        return mut_model
 
     def _load_simdata(self, folder, filename):
         """
@@ -500,21 +522,28 @@ class SbmlModelNoTimeout(Model):
         newmodel.param_set = pset
         return newmodel
 
-    def model_text(self):
+    def model_text(self, mut=None):
         """
-        Generates the XML text of the model
+        Generates the XML text of the model, optionally applying the MutationSet mut
         Should only be used when saving the model to disk, which is not often done.
         :return:
         """
         logger.info('Generating model text for %s' % self.name)
         runner = rr.RoadRunner(self.abs_file_path)
         self._modify_params(runner)
+        if mut:
+            self._apply_mutant(mut, runner)
         runner.reset()
         return runner.getCurrentSBML()
 
     def save(self, file_prefix):
         with open('%s.xml' % file_prefix, 'w') as out:
             out.write(self.model_text())
+
+    def save_all(self, file_prefix):
+        for mut in self.mutants:
+            with open('%s%s.xml' % (file_prefix, mut.suffix), 'w') as out:
+                out.write(self.model_text(mut=mut))
 
     def add_action(self, action):
         if action.method not in ('ode', 'ssa'):
@@ -546,6 +575,23 @@ class SbmlModelNoTimeout(Model):
                 setattr(runner, p, self.param_set[p])
             # else The parameter does not appear in this model (might appear in another model, so not an error)
 
+    def _apply_mutant(self, mut, runner):
+        """Modify the parameters in this runner instance according to the MutationSet mut"""
+        for mi in mut:
+            if mi.name in self.species_names:
+                runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
+            elif mi.name in self.param_names:
+                setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+
+    def _undo_mutant(self, mut, runner):
+        """ Undo the application of the MutationSet mut. Should only be called after previously calling
+        _apply_mutant()"""
+        for mi in mut:
+            if mi.name in self.species_names:
+                runner.model['init([%s])' % mi.name] = mi.undo()
+            elif mi.name in self.param_names:
+                setattr(runner, mi.name, mi.undo())
+
     def execute(self, folder, filename, timeout):
         # Load the original xml file with Roadrunner
         runner = rr.RoadRunner(self.abs_file_path)
@@ -558,11 +604,7 @@ class SbmlModelNoTimeout(Model):
         selection = ['time'] + list(self.species_names)
         for mut in self.mutants:
             # Apply all mutations
-            for mi in mut:
-                if mi.name in self.species_names:
-                    runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
-                elif mi.name in self.param_names:
-                    setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
+            self._apply_mutant(mut, runner)
 
             for act in self.actions:
                 runner.reset()
@@ -628,11 +670,7 @@ class SbmlModelNoTimeout(Model):
                 else:
                     raise NotImplementedError('Unknown action type')
             # Undo all mutations
-            for mi in mut:
-                if mi.name in self.species_names:
-                    runner.model['init([%s])' % mi.name] = mi.undo()
-                elif mi.name in self.param_names:
-                    setattr(runner, mi.name, mi.undo())
+            self._undo_mutant(mut, runner)
         return result_dict
 
 
