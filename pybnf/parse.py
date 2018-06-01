@@ -19,7 +19,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_g
                'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations',
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
-               'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity'
+               'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
                'local_objective_eval', 'reps_per_beta']
 numkeys_float = ['extra_weight', 'swap_rate', 'min_objective', 'cognitive', 'social', 'particle_weight',
