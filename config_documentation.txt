@@ -122,8 +122,9 @@ beta: 1 over the starting "temperature" for all replicates. This value increases
 *** Parallel Tempering MCMC settings (includes Bayesian settings) ***
 
 exchange_every: Every x iterations, perform replica exchange, swapping replicas that are adjacent in temperature with a statistically correct probability
-beta_range=min max : The range of values of beta to use. The replicates will use population_size evenly spaced beta values within this range.
-beta: Alternatively to specifying beta_range, you may specify population_size beta values here to use
+reps_per_beta: How many identical replicas to run at each temperature. Must be a divisor of population_size
+beta_range=min max : The range of values of beta to use. The replicates will use population_size/reps_per_beta evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, max should be 1.
+beta: Alternatively to specifying beta_range, you may specify population_size/reps_per_beta beta values here to use. Only the replicas at the maximum beta value in the list will be sampled. For the true probability distribution, this value should be 1.
 
 
 *** DREAM settings (includes Bayesian settings) ***

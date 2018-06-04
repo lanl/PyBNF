@@ -58,6 +58,14 @@ class TestBayes:
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7], 'fit_type': 'pt'})
 
+        cls.config_replica_multi = config.Configuration({
+            'population_size': 8, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            ('lognormal_var', 'v1__FREE'): [1., 0.5], ('lognormal_var', 'v2__FREE'): [1., 0.5], ('normal_var', 'v3__FREE'): [50, 3],
+            'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7],
+            'fit_type': 'pt', 'reps_per_beta': 2})
+
     @classmethod
     def teardown_class(cls):
         shutil.rmtree('noseoutput1')
@@ -188,5 +196,23 @@ class TestBayes:
                 count+=1
         assert 0 < count < 20
 
-
-
+    def test_replica_exchange_multi(self):
+        count = 0
+        for iters in range(20):
+            ba = algorithms.BasicBayesMCMCAlgorithm(self.config_replica_multi)
+            assert ba.betas == [0.7, 0.8, 0.9, 1., 0.7, 0.8, 0.9, 1.]
+            assert ba.should_sample(3)
+            assert not ba.should_sample(4)
+            psets = []
+            for i in range(8):
+                p = self.pset
+                p.name = 'iter0run%i' % i
+                psets.append(p)
+            ba.current_pset = psets
+            ba.ln_current_P = [-1., -5000., -2., 3., -1., -42., -2., 3.]
+            ba.replica_exchange()
+            assert ((ba.ln_current_P[0] == -5000. and ba.ln_current_P[4] == -42.) or
+                    (ba.ln_current_P[4] == -5000. and ba.ln_current_P[0] == -42.))
+            if ba.ln_current_P[0] == -5000. and ba.ln_current_P[4] == -42:
+                count += 1
+        assert 0 < count < 20
