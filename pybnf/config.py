@@ -414,20 +414,21 @@ class Configuration(object):
 
     def _load_exp_data(self):
         """
-        Loads experimental data files in a dictionary keyed on data file prefix
+        Loads experimental data files in a nested dictionary keyed on model name, then data prefix
         Also loads constraint files (which at this point are stored in the same structures as the exp files) and stores
         them in a set.
         """
         ed = {}
         csets = set()
         for m in self._data_map:
+            ed[m] = {}
             for ef in self._data_map[m]:
                 if re.search("exp$", ef):
                     try:
                         d = Data(file_name=ef)
                     except FileNotFoundError:
                         raise PybnfError('Experimental data file %s was not found.' % ef)
-                    ed[self._file_prefix(ef)] = d
+                    ed[m][self._file_prefix(ef)] = d
                 else:
                     cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, 'con'))
                     try:
