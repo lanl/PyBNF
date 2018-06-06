@@ -860,11 +860,67 @@ class Algorithm(object):
             logger.warning('Tried to move pickled algorithm, but it was not found')
 
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
+            # Make plot if requested
+            if self.config.config['plot_results']:
+                self.plot_result(best_pset)
+
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
                 run(['rm', '-rf', self.sim_dir])
 
         logger.info("Fitting complete")
+
+    def plot_result(self, best_pset):
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.exception('import matplotlib.pyplot failed')
+            print1('Could not load matplotlib. Skipping plot.')
+            return
+        logger.info('Plotting the results to figure')
+        job = Job(self.model_list, best_pset, 'plot',
+                  self.sim_dir, self.config.config['wall_time_sim'], None,
+                  self.config.config['normalization'], bool(self.config.config['delete_old_files']))
+        plot_res = run_job(job, False, self.failed_logs_dir)
+
+        simdata = plot_res.simdata
+        for z, model in enumerate(simdata):
+            xlist = []
+            ylist = []
+            xpointslist = []
+            ypointslist = []
+            titlelist = []
+            xlabellist = []
+            ylabellist = []
+            for suffix in simdata[model]:
+                if suffix not in self.exp_data:
+                    continue
+                sdata = simdata[model][suffix]  # A Data object
+                edata = self.exp_data[suffix]  # A Data object
+                for variable in sdata.cols:
+                    if variable == sdata.indvar:
+                        continue
+                    if variable in edata.cols:
+                        xlist.append(sdata[sdata.indvar])
+                        ylist.append(sdata[variable])
+                        xpointslist.append(edata[sdata.indvar])
+                        ypointslist.append(edata[variable])
+                        xlabellist.append(sdata.indvar)
+                        ylabellist.append(variable)
+                        titlelist.append(suffix)
+            cols = min(7, len(xlist))
+            rows = 1 + (len(xlist)-1) // 7
+            plt.figure(figsize=(cols*3, rows*3))
+            for i in range(len(xlist)):
+                plt.subplot(rows, cols, i+1)
+                plt.plot(xpointslist[i], ypointslist[i], 'ko', markersize=3)
+                plt.plot(xlist[i], ylist[i], 'r-')
+                plt.xlabel(xlabellist[i])
+                plt.ylabel(ylabellist[i])
+                plt.title(titlelist[i])
+            plt.suptitle(model)
+            plt.tight_layout()
+            plt.show(block=(z == len(simdata)-1))
 
     def cleanup(self):
         """
