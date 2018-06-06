@@ -551,7 +551,15 @@ class Configuration(object):
                                      "The exp file %s given under the 'normalization' keyword is not associated with "
                                      "any model." % ef + seedoc)
                 val = self.config['normalization'][ef]
+
+                # Figure out how to get to the right data object (it's in a dict keyed on model name, then suffix)
+                m = None
+                for modelpath in self.config['models']:
+                    if ef in self.config[modelpath]:
+                        m = self._file_prefix(modelpath, '(bngl|xml)')
+                        break
                 suff = self._file_prefix(ef)
+
                 def checkval(v):
                     if v not in valid:
                         raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
@@ -568,8 +576,8 @@ class Configuration(object):
                         if type(cols[0]) == int:
                             # Need to convert to string labels, because the indices into the sim data will be different
                             to_convert = cols
-                            for label in self.exp_data[suff].cols:
-                                ci = self.exp_data[suff].cols[label]
+                            for label in self.exp_data[m][suff].cols:
+                                ci = self.exp_data[m][suff].cols[label]
                                 if ci in to_convert:
                                     to_convert.remove(ci)
                                     new_cols.append(label)
@@ -577,12 +585,12 @@ class Configuration(object):
                                 raise PybnfError("Invalid normalization column %s for file %s" % (to_convert[0], ef),
                                                  "Specified normalization for column %i in file %s, but that file "
                                                  "contains only %i columns." % (
-                                                 to_convert[0], ef, self.exp_data[suff].data.shape[1]) + seedoc)
+                                                 to_convert[0], ef, self.exp_data[m][suff].data.shape[1]) + seedoc)
                         else:
                             new_cols = cols
                         new_cols_iter = new_cols
                         for c in new_cols_iter:
-                            if c not in self.exp_data[suff].cols:
+                            if c not in self.exp_data[m][suff].cols:
                                 raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
                                                  "Specified normalization for column %s in file %s, but that file does "
                                                  "not contain that column name." % (c, ef) + seedoc)
