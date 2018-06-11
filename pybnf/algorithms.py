@@ -576,7 +576,7 @@ class Algorithm(object):
                 self.job_group_dir[n] = new_group
             return newjobs
 
-    def output_results(self, name=''):
+    def output_results(self, name='', no_move=False):
         """
         Tells the Trajectory to output a log file now with the current best fits.
 
@@ -585,6 +585,8 @@ class Algorithm(object):
         :return:
         :param name: Custom string to add to the saved filename. If omitted, we just use a running counter of the
         number of times we've outputted.
+        :param no_move: If True, overrides the config setting delete_old_files=2, and does not move the result to
+        overwrite sorted_params.txt
         :type name: str
         """
         if name == '':
@@ -598,7 +600,7 @@ class Algorithm(object):
 
         # If the user has asked for fewer output files, each time we're here, move the new file to
         # Results/sorted_params.txt, overwriting the previous one.
-        if self.config.config['delete_old_files'] >= 2:
+        if self.config.config['delete_old_files'] >= 2 and not no_move:
             logger.debug("Overwriting previous 'sorted_params.txt'")
             noname_filepath = '%s/sorted_params.txt' % self.res_dir
             if os.path.isfile(noname_filepath):
@@ -616,7 +618,7 @@ class Algorithm(object):
 
         logger.info('Saving a backup of the algorithm')
         # Save a backup of the PSets
-        self.output_results(name='backup')
+        self.output_results(name='backup', no_move=True)
 
         # Pickle the algorithm
         picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
