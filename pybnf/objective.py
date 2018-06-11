@@ -43,7 +43,7 @@ class ObjectiveFunction(object):
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
-        :param exp_data_dict: Dictionary mapping suffix strings to experimental Data objects
+        :param exp_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing experimental Data objects
         :type exp_data_dict: dict
         :param constraints: Iterable of ConstraintSet objects containing the constraints that we should evaluate using
         the simulated data
@@ -64,8 +64,8 @@ class ObjectiveFunction(object):
                 for suffix in sim_data_dict[model]:
                     # Suffixes might exist in sim_data_dict that do not have experimental data.
                     # Need to check for that here.
-                    if suffix in exp_data_dict:
-                        val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix],
+                    if suffix in exp_data_dict[model]:
+                        val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[model][suffix],
                                             show_warnings=show_warnings)
                         if val is None:
                             return None
@@ -251,10 +251,10 @@ class AveNormSumOfSquaresObjective(SummationObjective):
     Sum of squares where each point is normalized by the average value of that variable,
     ((y-y')/ybar)^2
     """
-    def evaluate(self, sim_data, exp_data):
+    def evaluate(self, sim_data, exp_data, show_warnings=True):
         # Precalculate the average of each exp column to use for all points in this call.
         self.aves = {name: np.average(exp_data[name]) for name in exp_data.cols}
-        return super().evaluate(sim_data, exp_data)
+        return super().evaluate(sim_data, exp_data, show_warnings)
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
