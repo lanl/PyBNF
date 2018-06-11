@@ -251,10 +251,10 @@ class AveNormSumOfSquaresObjective(SummationObjective):
     Sum of squares where each point is normalized by the average value of that variable,
     ((y-y')/ybar)^2
     """
-    def evaluate(self, sim_data, exp_data):
+    def evaluate(self, sim_data, exp_data, show_warnings=True):
         # Precalculate the average of each exp column to use for all points in this call.
         self.aves = {name: np.average(exp_data[name]) for name in exp_data.cols}
-        return super().evaluate(sim_data, exp_data)
+        return super().evaluate(sim_data, exp_data, show_warnings)
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
