@@ -140,6 +140,9 @@ class Job:
         self.job_id = job_id
         self.calc_future = calc_future
         self.norm_settings = norm_settings
+        # Whether to show warnings about missing data if the job includes an objective evaluation. Toggle this after
+        # construction if needed.
+        self.show_warnings = False
         self.home_dir = os.getcwd()  # This is safe because it is called from the scheduler, not the workers.
         # Force absolute paths for bngcommand and output_dir, because workers do not get the relative path info.
         if output_dir[0] == '/':
@@ -213,7 +216,7 @@ class Job:
         else:
             if self.calc_future is not None:
                 res.normalize(self.norm_settings)
-                res.score = self.calc_future.result().evaluate_objective(res.simdata)
+                res.score = self.calc_future.result().evaluate_objective(res.simdata, show_warnings=self.show_warnings)
                 if res.score is None:
                     res.score = np.inf
                     logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
@@ -694,6 +697,7 @@ class Algorithm(object):
         jobs = []
         for p in psets:
             jobs += self.make_job(p)
+        jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = [client.submit(run_job, job, debug, self.failed_logs_dir) for job in jobs]
         pending = set(futures)

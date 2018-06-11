@@ -17,13 +17,15 @@ class ObjectiveCalculator:
         self.exp_data_dict = exp_data_dict
         self.constraints = constraints
 
-    def evaluate_objective(self, sim_data_dict):
+    def evaluate_objective(self, sim_data_dict, show_warnings=True):
         """
         Evaluate the objective using the input simulation data and the info contained in this object
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
+        :param show_warnings: If True, print warnings about unused data
+        :type show_warnings: bool
         :return:
         """
-        return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, self.constraints)
+        return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, self.constraints, show_warnings)
 
 
 
@@ -34,7 +36,7 @@ class ObjectiveFunction(object):
     The base class includes all the support we need for constraints.
     """
 
-    def evaluate_multiple(self, sim_data_dict, exp_data_dict, constraints=()):
+    def evaluate_multiple(self, sim_data_dict, exp_data_dict, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
         Optionally may pass an iterable of ConstraintSets whose penalties will be added to the total
@@ -46,6 +48,8 @@ class ObjectiveFunction(object):
         :param constraints: Iterable of ConstraintSet objects containing the constraints that we should evaluate using
         the simulated data
         :type constraints: Iterable of ConstraintSet
+        :param show_warnings: If True, print warnings about unused data
+        :type show_warnings: bool
         :return:
         """
         total = 0.
@@ -61,7 +65,8 @@ class ObjectiveFunction(object):
                     # Suffixes might exist in sim_data_dict that do not have experimental data.
                     # Need to check for that here.
                     if suffix in exp_data_dict:
-                        val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix])
+                        val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[suffix],
+                                            show_warnings=show_warnings)
                         if val is None:
                             return None
                         total += val
@@ -70,13 +75,15 @@ class ObjectiveFunction(object):
 
             return total
 
-    def evaluate(self, sim_data, exp_data):
+    def evaluate(self, sim_data, exp_data, show_warnings=True):
         """
         :param sim_data: A Data object containing simulated data
         :type sim_data: Data
         :param exp_data: A Data object containing experimental data
         :type exp_data: Data
         :return: float, value of the objective function, with a lower value indicating a better fit.
+        :param show_warnings: If True, print warnings about unused data
+        :type show_warnings: bool
         """
         raise NotImplementedError("Subclasses must override evaluate()")
 
@@ -93,12 +100,14 @@ class SummationObjective(ObjectiveFunction):
         self.warned = set()
         self.rounding = ind_var_rounding
 
-    def evaluate(self, sim_data, exp_data):
+    def evaluate(self, sim_data, exp_data, show_warnings=True):
         """
         :param sim_data: A Data object containing simulated data
         :type sim_data: Data
         :param exp_data: A Data object containing experimental data
         :type exp_data: Data
+        :param show_warnings: If True, print warnings about unused data
+        :type show_warnings: bool
         :return: float, value of the objective function, with a lower value indicating a better fit.
         """
 
@@ -106,7 +115,8 @@ class SummationObjective(ObjectiveFunction):
 
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
         # Warn if experiment columns are going unused
-        self._check_columns(exp_data.cols, compare_cols)
+        if show_warnings:
+            self._check_columns(exp_data.cols, compare_cols)
         try:
             compare_cols.remove(indvar)
         except KeyError:
@@ -124,7 +134,7 @@ class SummationObjective(ObjectiveFunction):
                 # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
                 if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
                     warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
-                    if warnstr not in self.warned:
+                    if show_warnings and warnstr not in self.warned:
                         print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
                                " because that " + indvar + " was not in the simulation data.")
                         self.warned.add(warnstr)
@@ -136,7 +146,7 @@ class SummationObjective(ObjectiveFunction):
                 diff = abs(sim_data[indvar][sim_row] - exp_data.data[rownum, 0])
                 if diff > 1. and diff / exp_data.data[rownum, 0] > 0.1:
                     warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
-                    if warnstr not in self.warned:
+                    if show_warnings and warnstr not in self.warned:
                         print1("Warning: For exp point %s=%s, used sim data at %s=%s" %
                                (indvar, exp_data.data[rownum, 0], indvar, sim_data[indvar][sim_row]))
                         self.warned.add(warnstr)
