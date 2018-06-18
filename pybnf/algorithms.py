@@ -893,10 +893,10 @@ class Algorithm(object):
             xlabellist = []
             ylabellist = []
             for suffix in simdata[model]:
-                if suffix not in self.exp_data:
+                if suffix not in self.exp_data[model]:
                     continue
                 sdata = simdata[model][suffix]  # A Data object
-                edata = self.exp_data[suffix]  # A Data object
+                edata = self.exp_data[model][suffix]  # A Data object
                 for variable in sdata.cols:
                     if variable == sdata.indvar:
                         continue
