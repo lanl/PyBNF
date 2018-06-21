@@ -32,9 +32,11 @@ class ConstraintSet:
         """
         return sum([c.penalty(sim_data_dict) for c in self.constraints])
 
-    def load_constraint_file(self, filename):
+    def load_constraint_file(self, filename, scale=1.0):
         """
         Parse the constraint file filename and load them all into my constraint list
+        :param filename: Path of constraint file
+        :param scale: Factor by which we multiply all constraint weights
         """
         logger.info('Loading constraints for %s suffix %s from %s' % (self.base_model, self.base_suffix, filename))
         with open(filename) as f:
@@ -74,6 +76,8 @@ class ConstraintSet:
                     weight = 1.
                     altpenalty = None
                     minpenalty = 0.
+
+                weight *= scale  # Scale the weight by the specified factor
 
                 # Check the constraint type based on the parse object, extract the constraint-type-specific args, and
                 # make the constraint
