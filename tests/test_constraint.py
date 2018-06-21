@@ -110,3 +110,18 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[15].penalty(d_dict), 0.1)
 
         np.testing.assert_almost_equal(cs.total_penalty(d_dict), 85.3)
+
+    def test_penalty_scale(self):
+        d = data.Data()
+        d.load_data('bngl_files/con_test.gdat')
+        d_dict = {self.model: {self.suf: d}}
+
+        cs = copy.deepcopy(self.cset)
+        cs.load_constraint_file(self.f2, scale=2.0)
+
+        assert cs.constraints[0].penalty(d_dict) == 0
+        assert cs.constraints[1].penalty(d_dict) == 8
+        np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), 0.8)
+        np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), 0.8)
+
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 170.6)

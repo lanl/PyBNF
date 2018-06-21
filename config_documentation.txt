@@ -49,6 +49,7 @@ ind_var_rounding: If 1, make sure every exp row is used by rounding it to the ne
 local_objective_eval: If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the 'smoothing' feature. Default:
 bootstrap: Whether (>0) or not (0) to estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.  Default: 0
 bootstrap_max_obj: The maximum value of a fitting run's objective function to be considered valid in the bootstrapping procedure.  Default: None
+constraint_scale: Scale all weights in all constraint files by this multiplicative factor. For convenience only; the same thing could be achieved by editing constraint files, but useful to change all with one setting for tuning the quantitative vs qualitative data constributions. Default: 1 (no scaling)
 
 ***Settings that apply to multiple Algorithms***
 
