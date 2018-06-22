@@ -40,7 +40,20 @@ Initialization
 
 The initial population of parameter sets is generated based on the keys specified for each free parameter: ``uniform_var``, ``loguniform_var``, ``normal_var`` or ``lognormal_var``. The value of the parameter in each new random parameter set is drawn from the specified probability distribution. 
 
-The `latin_hypercube` option for initialization is enabled by default. This option only affects initialization of ``uniform_var``s and ``loguniform_var``s. When enabled, instead of drawing an independent random value for each starting parameter set, the starting parameter sets are generated with Latin hypercube sampling, which ensures a roughly even distribution of the parameter sets throughout the search space. 
+The ``latin_hypercube`` option for initialization is enabled by default. This option only affects initialization of ``uniform_var``\ s and ``loguniform_var``\ s. When enabled, instead of drawing an independent random value for each starting parameter set, the starting parameter sets are generated with Latin hypercube sampling, which ensures a roughly even distribution of the parameter sets throughout the search space. 
+
+.. _objective:
+
+Objective functions
+^^^^^^^^^^^^^^^^^^^
+
+All algorithms use an objective function to evaluate the quality of fit for each parameter set. The objective function is set with the ``objfunc`` key. The following options are available. Note that :math:`y_i` are the experimental data points and :math:`a_i` are the simulated data points. The summation is over all experimental data points.
+    * Chi squared (``obj_func = chi_sq``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{\sigma_i^2}` . :math:`\sigma_i` is the standard deviation of point :math:`y_i`, and must be specified in the :ref:`exp file <exp-file>`.
+    * Sum of squares (``obj_func = sos``): :math:`f(y, a) =  \sum_i (y_i - a_i)^2`
+    * Normalized sum of squares (``obj_func = norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{y_i}`
+    * Average-normalized sum of squares (``obj_func = ave_norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{\bar{y}}`, where :math:`\bar{y}` is the average of the entire data column :math:`y`.
+    
+If you include any :ref:`constraints <con-file>` in your fit, the constraints add extra terms to the objective function. 
 
 Changing parameter values
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -52,6 +65,7 @@ All algorithms perform changes to parameter values as the fitting proceeds. The 
 ``uniform_var``\ s and ``loguniform_var``\ s avoid moving outside the defined initialization range. If a move is attempted that would take the parameter outside the bounds, the parameter value is reflected over the boundary, back within bounds. This feature can be disabled by appending ``U`` to the end of the variable definition (e.g. ``uniform_var = x__FREE__ 10 30 U``)
 
 
+.. _alg-de:
 
 Differential Evolution
 ----------------------
@@ -74,12 +88,15 @@ We maintain a list of ``population_size`` current parameter sets, and in each it
 
 With ``de_strategy`` of ``best1`` or ``best2``, we force the above p1 to be the parameter set with the lowest objective value. With ``de_strategy`` of ``all1`` or ``all2``, we force p1 to be the parameter set at the same index we are proposing to replace. The ``best`` strategy results in fast convergence to what is likely only a local optimum. The ``all`` strategy converges more slowly, and prevents the entire population from converging to the same value. However, there is still a risk of each member of the population becoming stuck in its own local minimum. For the ``de_strategy``s ending in ``2``, we instead choose a total of 5 parameter sets, p1 through p5, and set the new parameter value as p1[P] + ``mutation_factor`` * (p2[P]-p3[P] + p4[P]-p5[P])
 
+.. _alg-island:
+
 In the asynchronous version of the algorithm, the population is divided into ``num_islands`` islands, which each follow the above update procedure independently. Every ``migrate_every`` iterations, a migration step occurs in which ``num_to_migrate`` individuals from each island are transferred randomly to others (according to a random permutation of the islands, keeping the number of individuals on each island constant). The migration step does not require synchronization of the islands; it is performed when the last island reaches the appropriate iteration number, regardless of whether other islands are already further along. 
 
 Applications
 ^^^^^^^^^^^^
 In our experience, differential evolution tends to be the best general-purpose algorithm, and we suggest it as a starting point for a new fitting problem if you are unsure which algorithm to choose. 
 
+.. _alg-ss:
 
 Scatter Search
 --------------
@@ -114,7 +131,8 @@ If a parent goes ``local_min_limit`` iterations without being replaced by a new 
 Applications
 ^^^^^^^^^^^^
 We find scatter search is also a good general-purpose fitting algorithm. It performs especially well on fitting problems that are difficult due to a search space that is high dimensional or contains many local minima. 
- 
+
+.. _alg-pso: 
 
 Particle Swarm
 --------------
@@ -135,6 +153,8 @@ After each simulation completes, the velocity of the particle is updated accordi
 
 We apply a special treatment if a ``uniform_var`` or ``loguniform_var`` moves outside of the specified box constraints. As with other algorithms, the particle position is reflected back inside the boundaries. In addition, the component of the velocity corresponding to the parameter that moved out of bounds is set to zero, to prevent the particle from immediately crossing the same boundary again. 
 
+.. _pso-adaptive:
+
 An optional feature (discussed in [Moraes2015]_) allows the particle weight w to vary over the course of the simulation. In the original algorithm descirption, w was called "inertia weight", but when w takes a value less than 1, it can be thought of as friction - a force that decelerates particles regardless of the objective function evaluations. The idea is to reduce w (increase friction) over the course of the fitting run, to make the particles come to a stop at a good objective value by the end of the run. 
 
 When using the adaptive friction feature, w starts at ``particle_weight``, and approaches ``particle_weight_final`` by the end of the simulation. The value of w changes based on how many iterations we deem "unproductive" according to the following criterion: An iteration is unproductive if the global best objective function obj_min changes by less than ``adaptive_abs_tol`` + ``adaptive_rel_tol`` \* obj_min, where ``adaptive_abs_tol`` and ``adaptive_rel_tol`` can be set in the config. Then, we keep track of N, the total number of unproductive iterations so far. At each iteration we set w = ``particle_weight`` + (``particle_weight_final`` - ``particle_weight``) \* N / (N + ``adaptive_n_max``). As can be seen in the above formula, the config key ``adaptive_n_max`` sets the number of unproductive iterations it takes to reach halfway between ``particle_weight`` and ``particle_weight_final``.
@@ -143,6 +163,7 @@ Applications
 ^^^^^^^^^^^^
 Particle swarm optimization becomes advantageous over the other available algorithms when many processors are available (>100), and when the runtime per simulation can vary greatly depending on the parameter set (such as in some SSA and NFSim runs). In these cases, the asynchronicity of the particle swarm allows you to take full advantage of all available processors at all times. 
 
+.. _alg-mcmc:
 
 Markov Chain Monte Carlo
 ------------------------
@@ -175,6 +196,7 @@ Applications
 ^^^^^^^^^^^^
 Markov chain Monte Carlo is the simplest method available in PyBNF to generate a probability distribution in parameter space. 
 
+.. _alg-sa:
 
 Simulated Annealing
 -------------------
@@ -197,6 +219,7 @@ Applications
 ^^^^^^^^^^^^
 We have not found any problems for which simulated annealing is better than the other available algorithms, but provide the functionality with the hope that it proves useful for some specific problems. 
 
+.. _alg-pt:
 
 Parallel Tempering
 ------------------
@@ -226,6 +249,7 @@ Like ordinary Markov chain Monte Carlo, the goal of parallel tempering is to pro
 
 Compared to ordinary Markov chain Monte Carlo, parallel tempering offers a trade-off: Parallel tempering generates fewer samples per unit CPU time (because most of the processors run higher temperature simulations that don't sample the distribution of interest), but traverses parameter space more efficiently, making each sample more valuable. The decision between parallel tempering and Markov chain Monte Carlo therefore depends on the nature of your parameter space: parallel tempering is expected to perform better when the space is complex, with many local minima that make it challenging to explore. 
 
+.. _alg-dream:
 
 DREAM
 -----
@@ -271,6 +295,8 @@ The algorithm described here is similar to Algorithm 5 in [Vrugt2016]_, but with
 not implement a convergence check (such as the Gelman-Rubin diagnostic), and we do not automatically prune outlier
 chains.
 
+.. _alg-sim:
+
 Simplex
 -------
 
@@ -291,13 +317,13 @@ The initial simplex consists of N+1 points chosen deterministically based on the
 
 
 .. figure:: simplex.png
-:width: 200px
-    :align: center
-        :figclass: align-center
+   :width: 200px
+   :align: center
+   :figclass: align-center
 
-        Illustration of the simplex algorithm, modifying point P on a 3-point simplex in 2 dimensions
+   Illustration of the simplex algorithm, modifying point P on a 3-point simplex in 2 dimensions
 
-    Each iteration, we operate on the k worst points in the simplex, where k is the number of available processors (``parallel_count``). For each point P, we  consider the hyperplane defined by the other N points in the simplex (blue line). Let d be the distance from P to the hyperplane. We evaluate point P\ :sub:`1` obtained by reflecting P through the hyperplane, to a distance of d \* ``simplex_reflect`` on the other side. Depending on the resulting objective value, we try another point in the second phase of the iteration. Three cases are possible.
+Each iteration, we operate on the k worst points in the simplex, where k is the number of available processors (``parallel_count``). For each point P, we  consider the hyperplane defined by the other N points in the simplex (blue line). Let d be the distance from P to the hyperplane. We evaluate point P\ :sub:`1` obtained by reflecting P through the hyperplane, to a distance of d \* ``simplex_reflect`` on the other side. Depending on the resulting objective value, we try another point in the second phase of the iteration. Three cases are possible.
 
 1) The new point is better than the current global minimum: We try a second point continuing in the same direction for a distance of d \* ``simplex_expansion`` away from the hyperplane (P\ :sub:`2,1`).
 2) The new point is worse than the global minimum, but better than the next worst point in the simplex: We don't try a second point.

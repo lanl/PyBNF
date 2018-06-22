@@ -32,11 +32,10 @@ Paths
 Required Algorithm Options
 --------------------------
 ``fit_type = str``
-  Which fitting algorithm to use. Options: ``de`` - Differential Evolution, ``ade`` - Asynchronous Differential Evolution, ss - Scatter Search, ``pso`` - Particle 
-  Swarm Optimization, ``bmc`` - Bayesian Markov chain Monte Carlo, ``sim`` - Simplex local search, ``sa`` - Simulated Annealing, ``pt`` - Parallel tempering, 
-  ``dream`` - DREAM. Default: de
+  Which fitting algorithm to use. Options: ``de`` - :ref:`alg-de`, ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`, ss - :ref:`alg-ss`, ``pso`` - :ref:`Particle 
+  Swarm Optimization <alg-pso>`, ``bmc`` - :ref:`Bayesian Markov chain Monte Carlo <alg-mcmc>`, ``sim`` - :ref:`Simplex <alg-sim>` local search, ``sa`` - :ref:`Simulated Annealing <alg-sa>`, ``pt`` - :ref:`Parallel tempering <alg-pt>`, ``dream`` - :ref:`DREAM <alg-dream>`. Default: de
 ``objfunc = str``
-  Which objective function to use. Options: ``chi_sq`` - Chi Squared, ``sos`` - Sum of squares, ``norm_sos`` - Sum of squares, normalized by the value at each point, 
+  Which :ref:`objective function <objective>` to use. Options: ``chi_sq`` - Chi Squared, ``sos`` - Sum of squares, ``norm_sos`` - Sum of squares, normalized by the value at each point, 
   ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. Default: chi_sq
 ``population_size = int``
   How many parameter sets to maintain in the algorithm's population. See algorithm descriptions for more information. This key is required.
@@ -48,13 +47,13 @@ Parameter Specification
 ``uniform_var = name__FREE min max`` 
   A uniformly distributed variable with bounds [``min``, ``max``]
 ``normal_var = name__FREE mu sigma``
-  A normal-distributed variable in regular space with mean ``mu``, std dev ``sigma``. A box constraint to keep >= 0 is also assumed.
+  A normal-distributed variable in regular space with mean ``mu``, std dev ``sigma``. A box constraint to keep :math:`\geq 0` is also assumed.
 ``loguniform_var = name__FREE min max`` 
   A log-uniform distributed variable with bounds [``min``, ``max``]. Bounds should be in regular space, eg [0.01, 100]
 ``lognormal_var = name__FREE mu sigma``
   A log-normal distributed variable with mean ``mu``, std dev ``sigma``. ``mu`` and ``sigma`` should be given in log base 10 space.
 
-The following keys are to be used only with the simplex algorithm. Simplex should not use any of the other parameter specifications.
+The following keys are to be used only with the :ref:`simplex <alg-sim>` algorithm. Simplex should not use any of the other parameter specifications.
 If you are using another algorithm with the flag ``refine``, you still should not use these, you must set step size with ``simplex_step`` or ``simplex_log_step``.
 
 ``var = name__FREE init step`` 
@@ -70,39 +69,26 @@ Parallel Computing
 ``cluster_type = str``
   Type of cluster used for running the fit. This key may be omitted, and instead specified on the command line with the ``-t`` flag. Currently suports ``slurm`` or ``none``. Will support ``torque`` and ``pbs`` in the future. Default: None (local fitting run).
 ``scheduler_node = str``
-  Manually set node used for creating the distributed Client -- takes a string identifying a machine on a network. If running on a cluster with SLURM, it is recommended to use automatic configuration with the flag ``-t slurm`` instead of using this key. Default: None 
+  Manually set node used for creating the distributed Client -- takes a string identifying a machine on a network. If running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with the flag ``-t slurm`` instead of using this key. Default: None 
 ``worker_nodes = str1 str2 str3``
-  Manually set nodes used for computation - takes one or more strings separated by whitespace identifying machines on a network. If running on a cluster with SLURM, it is recommended to use automatic configuration with the flag ``-t slurm`` instead of using this key.  Default: None 
+  Manually set nodes used for computation - takes one or more strings separated by whitespace identifying machines on a network. If running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with the flag ``-t slurm`` instead of using this key.  Default: None 
 
 General Options
 ---------------
-``initialization = str``
-  How to initialize parameters.``rand`` - initialize params randomly according to the distributions. ``lh`` - For ``random_var``s and ``loguniform_var``s, initialize with a latin hypercube distribution, to more uniformly cover the search space.
-``refine = int``
-  If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. Default: 0
+
+Output Options
+^^^^^^^^^^^^^^
 ``delete_old_files = int``
   If 1, delete simulation folders immediately after they complete. If 2, delete both old simulation folders and old sorted_params.txt result files. If 0, do not delete any files (warning, could consume a large amount of disk space). Default: 1
 ``num_to_output = int``
   The maximum number of PSets to write when writing the trajectory. Default: 5000
 ``output_every = int``
   Write the Trajectory to file every x iterations. Default: 20
-``wall_time_sim = int``
-  Maximum time (in seconds) to wait for a simulation to finish.  Exceeding this results in an infinite objective function value. Default: 3600
-``wall_time_gen = int``
-  Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded. Default: 3600
 ``verbosity = int``
   Specifies the amount of information output to the terminal. 0 - Quiet; user prompts and errors only. 1 - Normal; Warnings and concise progress updates. 2 - Verbose; Information and detailed progress updates. Default: 1
-``smoothing = int``
-  Number of replicate runs to average together for each parameter set (useful for stochastic runs). Default: 1
-``normalization = type`` ; ``normalization = type : d1.exp, d2.exp`` ; ``normalization = type: (d1.exp: var1,var2)``
-  Indicates that simulation data must be normalized in order to compare with exp files. Choices for ``type`` are: ``init`` - normalize to the initial value,  ``peak`` - normalize to the maximum value. ``zero`` - ??? ``unit`` - ???. If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)`` Multiple lines with this key can be used. Default: No normalization
-``min_objective = float``
-  Stop fitting if an objective function lower than this value is reached. Default: None; always run for the maximum iterations
-``ind_var_rounding = int``
-  If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) Default: 0
-``local_objective_eval = int``
-  If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` feature. 
-  Default: 0 (unless smoothing is enabled)
+
+Algorithm Options
+^^^^^^^^^^^^^^^^^
 ``bootstrap = int`` 
   If assigned a positive value, estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.  Default: 0 (no bootstrapping)
 ``bootstrap_max_obj = float``
@@ -110,7 +96,25 @@ General Options
   Default: None
 ``constraint_scale = float``
   Scale all weights in all constraint files by this multiplicative factor. For convenience only: The same thing could be achieved by editing constraint files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. Default: 1 (no scaling)
-  
+``ind_var_rounding = int``
+  If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) Default: 0
+``initialization = str``
+  How to initialize parameters. ``rand`` - initialize params randomly according to the distributions. ``lh`` - For ``random_var``\ s and ``loguniform_var``\ s, initialize with a latin hypercube distribution, to more uniformly cover the search space.
+``local_objective_eval = int``
+  If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` feature. 
+  Default: 0 (unless smoothing is enabled)
+``min_objective = float``
+  Stop fitting if an objective function lower than this value is reached. Default: None; always run for the maximum iterations
+``normalization = type`` ; ``normalization = type : d1.exp, d2.exp`` ; ``normalization = type: (d1.exp: var1,var2)``
+  Indicates that simulation data must be normalized in order to compare with exp files. Choices for ``type`` are: ``init`` - normalize to the initial value,  ``peak`` - normalize to the maximum value, ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1, ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1). If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)`` Multiple lines with this key can be used. Default: No normalization
+``refine = int``
+  If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. Default: 0
+``smoothing = int``
+  Number of replicate runs to average together for each parameter set (useful for stochastic runs). Default: 1
+``wall_time_gen = int``
+  Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded. Default: 3600
+``wall_time_sim = int``
+  Maximum time (in seconds) to wait for a simulation to finish.  Exceeding this results in an infinite objective function value. Caution: For SBML models, using this option has an overhead cost, so don't use it unless needed. Default: 3600  
 
 
 Algorithm-specific Options
@@ -119,7 +123,7 @@ Algorithm-specific Options
 Simplex
 ^^^^^^^
 
-These settings for the Simplex algorithm may also be used when running other algorithms with ``refine = 1``.
+These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when running other algorithms with ``refine = 1``.
 
 ``simplex_step = float``
   In initialization, we perturb each parameter by this step size. If you specify a step size for a specific variable via ``var`` or ``logvar``, it overrides this setting. Default: 1
@@ -132,7 +136,7 @@ These settings for the Simplex algorithm may also be used when running other alg
 ``simplex_contraction = float``
   If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) Default: 0.5
 ``simplex_shrink = float``
-  If a whole iteration was unproductive, shrink the simplex by setting simplex point :math:`s[i]` to :math:`x*s[i-1] + (1-x)*s[i]`. This key specifies *x*. Default: 0.5
+  If a whole iteration was unproductive, shrink the simplex by setting simplex point :math:`s[i]` to :math:`x*s[0] + (1-x)*s[i]`, where :math:`s[0]` is the best point in the simplex. This key specifies *x*. Default: 0.5
 ``simplex_max_iterations = int``
   If specified, overrides the ``max_iterations`` setting. Useful if you are using the ``refine`` flag and want ``max_iterations`` to refer to your main algorithm.
 ``simplex_stop_tol = float`` 
@@ -143,7 +147,7 @@ These settings for the Simplex algorithm may also be used when running other alg
 Differential Evolution
 ^^^^^^^^^^^^^^^^^^^^^^
 
-PyBNF offers two versions of differential evoltution: synchronous differential evolution (``fit_type = de``) and asynchronous differential evolution (``fit_type = ade``). Both versions may be configured with the follwing keys.
+PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronous differential evolution (``fit_type = de``) and asynchronous differential evolution (``fit_type = ade``). Both versions may be configured with the follwing keys.
 
 ``mutation_rate = float``
   When generating a new individual, mutate each parameter with this probability. Default: 0.5
@@ -154,7 +158,7 @@ PyBNF offers two versions of differential evoltution: synchronous differential e
 ``de_strategy = str``
   Specifies how new parameter sets are chosen. Options are: ``rand1``, ``rand2``, ``best1``, ``best2``, ``all1``, ``all2``. The parameter set we mutate is: 'rand' - a random one, 'best' - the one with the lowest objective value, 'all' - the one we are proposing to replace (so all psets are mutated once per iteration). The amount of mutation is based on: '1' - 1 pair of other parameter sets :math:`(p_1-p_2)`, '2' - 2 pairs of other parameter sets :math:`(p1-p2 + p3-p4)`. Default: rand1
 
-The following options are only available with ``fit_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable island-based differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
+The following options are only available with ``fit_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
 
 ``islands = int``
   Number of separate populations to evolve. Default: 1
@@ -164,8 +168,8 @@ The following options are only available with ``fit_type = de``, and serve to ma
   How many individuals to migrate off of each island during migration. Default: 3
 
 
-Scatter Search
-^^^^^^^^^^^^^^
+:ref:`Scatter Search <alg-ss>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``init_size = int``
   Number of PSets to test to generate the initial population. Default: 10 * number of variables
@@ -175,8 +179,8 @@ Scatter Search
   Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from the reserve, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. Default: max_iterations
 
 
-Particle Swarm
-^^^^^^^^^^^^^^
+:ref:`Particle Swarm <alg-pso>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``cognitive = float``
   Acceleration toward a particle's own best fit
@@ -187,7 +191,7 @@ Particle Swarm
 ``v_stop = float``
   Stop the algorithm if the speeds of all parameters in all particles are less than this value. Default: 0 (don't use this criterion)
 
-A variant of particle swarm that adaptively changes the ``particle_weight`` over the course of the fitting run is configured with the following parameters. See the algorithm documentation for more information. 
+A variant of particle swarm that adaptively changes the ``particle_weight`` over the course of the fitting run is configured with the following parameters. See the :ref:`algorithm documentation <pso-adaptive>` for more information. 
 
 ``particle_weight_final``
   The final particle weight after the adaptive changing. Default: the value of ``particle_weight``, effectively disabling this feature. 
@@ -203,7 +207,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
 Bayesian Algorithms (bmc, pt, sa)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes MCMC (``fit_type = bmc``), Parallel Tempering (``fit_type = pt``), Simulated Annealing (``fit_type = sa``), and DREAM (``fit_type = dream``). These algorithms have many configuration keys in common, as described below. 
+In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``), and :ref:`DREAM <alg-dream>` (``fit_type = dream``). These algorithms have many configuration keys in common, as described below. 
 
 
 For all Bayesian algorithms
@@ -213,11 +217,17 @@ For all Bayesian algorithms
   When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. Default: 0.2
 
 ``beta = int`` ; ``beta = b1 b2 b3`` 
-  Sets the initial beta (1/temperature). A smaller beta corresponds to a more broad exploration of parameter space. If a single value is provided, that beta is used for all replicates. If multiple values are provided, an equal number of replicates uses each value. For ``mcmc``, should be set to 1 (the default) to get the true probability distribution. For ``pt``, should specify multiple values (or instead use the ``beta_range`` key); only the largest beta value in the list will constribute to statistical samples, and for the true probability distribution, this maximum value should be 1. For ``sa``, should typically be set to a single, small value which will increase over the course of the fitting run. 
+  Sets the initial beta (1/temperature). A smaller beta corresponds to a more broad exploration of parameter space. If a single value is provided, that beta is used for all replicates. If multiple values are provided, an equal number of replicates uses each value. 
+  
+  For ``mcmc``, should be set to 1 (the default) to get the true probability distribution. 
+  
+  For ``pt``, should specify multiple values: the number of values should equal ``population_size``/``reps_per_beta``. Or you may instead use the ``beta_range`` key. Only the largest beta value in the list will constribute to statistical samples, and to get the true probability distribution, this maximum value should be 1.
+  
+  For ``sa``, should typically be set to a single, small value which will increase over the course of the fitting run. 
 
 
-For all Bayesian algorithms except `sa`
-"""""""""""""""""""""""""""""""""""""""
+For all Bayesian algorithms except ``sa``
+"""""""""""""""""""""""""""""""""""""""""
 
 ``sample_every = int``
   Every x iterations, save the current PSet into the sampled population. Default: 100
@@ -248,8 +258,7 @@ For Parallel Tempering
 ``reps_per_beta = int``
   How many identical replicas to run at each temperature. Must be a divisor of population_size
 ``beta_range=min max``
-  As an alternative to setting ``beta``, he range of values of beta to use. The replicates will use population_size/reps_per_beta evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, max should be 1.
-beta: Alternatively to specifying beta_range, you may specify population_size/reps_per_beta beta values here to use. Only the replicas at the maximum beta value in the list will be sampled. For the true probability distribution, this value should be 1.
+  As an alternative to setting ``beta``, the range of values of beta to use. The replicates will use population_size/reps_per_beta evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, max should be 1.
 
 
 For DREAM
