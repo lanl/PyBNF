@@ -28,7 +28,8 @@ degranulation
 ^^^^^^^^^^^^^
 A model that relates the initial events of IgE-Fc\ :math:`\epsilon`\ RI signaling to the degranulation response. The model is fit to experimental data from a microfluidic device that was used to measure mast cell degranulation in response to time courses of alternating stimulatory and non-stimulatory inputs. The data and model were originally published in [Harmon2017]_. 
 
-In the original study, the model was analyzed by Bayesian MCMC to acquire probability distributions for each parameter. We provide config files to repeat this analysis in PyBNF, using all three of our algorithms that calculate probability distributions: MCMC, DREAM, and Parallel tempering. In all cases, the results from PyBNF are expected to match the results shown in Fig. S10 of [Harmon2017]_. A large number of samples is required to obtain an acceptable distribution, so we recommend running on a cluster or powerful multi-core workstation. An example batch file to submit the job to a SLURM cluster is provided. For best performance, the config key ``population_size`` should be set to the number of available cores. 
+In the original study, the model was analyzed by Bayesian MCMC to acquire probability distributions for each parameter. We provide config files to repeat this analysis in PyBNF, using both of our algorithms that calculate probability distributions: MCMC, and Parallel tempering. In both cases, the results from PyBNF are expected to match the results shown in Fig. S10 of [Harmon2017]_. A large number of samples is required to obtain an acceptable distribution, so we recommend running on a cluster or powerful multi-core workstation. An example batch file to submit the job to a SLURM cluster is provided. For best performance, the config key ``population_size`` should be set to the number of available cores. 
+.. Note: DREAM also provided, but it gives the wrong distribution. 
 
 demo
 ^^^^

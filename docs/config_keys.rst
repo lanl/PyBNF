@@ -33,7 +33,7 @@ Required Algorithm Options
 --------------------------
 ``fit_type = str``
   Which fitting algorithm to use. Options: ``de`` - :ref:`alg-de`, ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`, ss - :ref:`alg-ss`, ``pso`` - :ref:`Particle 
-  Swarm Optimization <alg-pso>`, ``bmc`` - :ref:`Bayesian Markov chain Monte Carlo <alg-mcmc>`, ``sim`` - :ref:`Simplex <alg-sim>` local search, ``sa`` - :ref:`Simulated Annealing <alg-sa>`, ``pt`` - :ref:`Parallel tempering <alg-pt>`, ``dream`` - :ref:`DREAM <alg-dream>`. Default: de
+  Swarm Optimization <alg-pso>`, ``bmc`` - :ref:`Bayesian Markov chain Monte Carlo <alg-mcmc>`, ``sim`` - :ref:`Simplex <alg-sim>` local search, ``sa`` - :ref:`Simulated Annealing <alg-sa>`, ``pt`` - :ref:`Parallel tempering <alg-pt>`. Default: de
 ``objfunc = str``
   Which :ref:`objective function <objective>` to use. Options: ``chi_sq`` - Chi Squared, ``sos`` - Sum of squares, ``norm_sos`` - Sum of squares, normalized by the value at each point, 
   ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. Default: chi_sq
@@ -207,7 +207,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
 Bayesian Algorithms (bmc, pt, sa)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``), and :ref:`DREAM <alg-dream>` (``fit_type = dream``). These algorithms have many configuration keys in common, as described below. 
+In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``). These algorithms have many configuration keys in common, as described below. 
 
 
 For all Bayesian algorithms
@@ -261,18 +261,18 @@ For Parallel Tempering
   As an alternative to setting ``beta``, the range of values of beta to use. The replicates will use population_size/reps_per_beta evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, max should be 1.
 
 
-For DREAM
-"""""""""
+.. For DREAM
+.. """""""""
 
 .. step_size: As in Bayesian settings, but here it can be set to 'auto' (Not implemented)
-``crossover_number = int``
-  The number of distinct crossover probabilities for performing Gibbs sampling on the parameter set.  Random numbers are generated for each parameter and if they are less than the sampled crossover probability, then a new value is calculated in the updated PSet. Default: 3
-``zeta = float``
-  A (very) small number for perturbing the calculated update for a particular parameter (applies to all parameters).  Default: 1e-6
-``lambda = float``
-  A small number for perturbing parameters selected by the crossover procedure.  Default: 0.1
-``gamma_prob = float``
-  A probability that determines how often a jump in parameter space is assigned a value of 1 instead of ``step_size``.  Helps with jumping to the mode of the distribution.  Default: 0.1
+.. ``crossover_number = int``
+..   The number of distinct crossover probabilities for performing Gibbs sampling on the parameter set.  Random numbers are generated for each parameter and if they are less than the sampled crossover probability, then a new value is calculated in the updated PSet. Default: 3
+.. ``zeta = float``
+..   A (very) small number for perturbing the calculated update for a particular parameter (applies to all parameters).  Default: 1e-6
+.. ``lambda = float``
+..   A small number for perturbing parameters selected by the crossover procedure.  Default: 0.1
+.. ``gamma_prob = float``
+..   A probability that determines how often a jump in parameter space is assigned a value of 1 instead of ``step_size``.  Helps with jumping to the mode of the distribution.  Default: 0.1
 
 
 

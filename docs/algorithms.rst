@@ -23,12 +23,13 @@ Summary of Available Algorithms
 | `Parallel Tempering`_       | Metropolis       | Synchronized    | Finding probability distributions in challenging probablity landscapes    |
 |                             | sampling         | Markov Chains   |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `DREAM`_                    | Hybrid           | Synchronous     | \?\?\?\?                                                                  |
-|                             | Population /     |                 |                                                                           |
-|                             | Metropolis       |                 |                                                                           |
-+-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Simplex`_                  | Local search     | Synchronous     | Local optimization, or refinement of a result from another algorithm.     |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
+
+.. | `DREAM`_                    | Hybrid           | Synchronous     | \?\?\?\?                                                                  |
+.. |                             | Population /     |                 |                                                                           |
+.. |                             | Metropolis       |                 |                                                                           |
+.. +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 
 General implementation features for all algorithms
 --------------------------------------------------
@@ -266,49 +267,51 @@ Compared to ordinary Markov chain Monte Carlo, parallel tempering offers a trade
 
 .. _alg-dream:
 
-DREAM
------
 
-Algorithm
-^^^^^^^^^
-**D**\ iffe\ **R**\ ential **E**\ volution **A**\ daptive **M**\ etropolis (DREAM), described in [Vrugt2016]_, is an
-MCMC approach for estimating the joint probability distribution of a model's free parameters.  DREAM combines features
-from traditional Bayesian MCMC (e.g. the Metropolis-Hastings acceptance criterion) and differential evolution (parameter
-recombination).  DREAM is purported to accelerate convergence of the MCMC as well as facilitate sampling of multimodal
-distributions.
+.. DREAM
+.. -----
 
-Parallelization
-^^^^^^^^^^^^^^^
-DREAM uses parallel MCMC chains whose current state behaves as an individual in a differential evolution fitting run.
-Upon evaluation of each individual (by applying the Metropolis-Hastings criterion), a proposal individual is created
-according to the differential evolution update strategy ``all1``.  Thus the algorithm is synchronized based on the
-evaluation of the current "generation"
+.. Algorithm
+.. ^^^^^^^^^
+.. **D**\ iffe\ **R**\ ential **E**\ volution **A**\ daptive **M**\ etropolis (DREAM), described in [Vrugt2016]_, is an
+.. MCMC approach for estimating the joint probability distribution of a model's free parameters.  DREAM combines features
+.. from traditional Bayesian MCMC (e.g. the Metropolis-Hastings acceptance criterion) and differential evolution (parameter
+.. recombination).  DREAM is purported to accelerate convergence of the MCMC as well as facilitate sampling of multimodal
+.. distributions.
 
-Implementation details
-^^^^^^^^^^^^^^^^^^^^^^
-Many details here are similar to those in the traditional MCMC algorithm, including the requirement for prior
-distributions for the parameters, and the use of the Metropolis-Hastings criterion for acceptance.  However, the use
-of differential evolution features introduces a number of distinctions.  To maintain the required detailed balance
-necessary for MCMC proposal distributions, random perturbations must be introduced to reach all of parameter space.
-Thus a simple proposal for some chain :math:`X` on iteration :math:`i` is :math:`X_{i+1} = X_i + \gamma\left(X_a - X_b\right) + \zeta`
-where :math:`\zeta` is drawn from a standard normal distribution with small standard deviation and :math:`\gamma` is the
-``step_size`` configuration parameter.
+.. Parallelization
+.. ^^^^^^^^^^^^^^^
+.. DREAM uses parallel MCMC chains whose current state behaves as an individual in a differential evolution fitting run.
+.. Upon evaluation of each individual (by applying the Metropolis-Hastings criterion), a proposal individual is created
+.. according to the differential evolution update strategy ``all1``.  Thus the algorithm is synchronized based on the
+.. evaluation of the current "generation"
 
-DREAM also incorporates subspace sampling in parameter space, meaning that only a subset of the parameters may be
-modified by the differential evolution update.  A "crossover" number can be set in the configuration file that
-defines a multinomial probability distribution that governs whether a particular parameter will be updated
-(the ``crossover_number`` key).  For each parameter to be updated, we perform the traditional differential evolution
-update (calculating the difference between two other chains for the parameter and scaling by :math:`\gamma`) and then
-introduce another random perturbation that is uniformly distributed between :math:`-\lambda` and :math:`\lambda` as
-defined in the configuration file with key ``lambda``.
+.. Implementation details
+.. ^^^^^^^^^^^^^^^^^^^^^^
+.. Many details here are similar to those in the traditional MCMC algorithm, including the requirement for prior
+.. distributions for the parameters, and the use of the Metropolis-Hastings criterion for acceptance.  However, the use
+.. of differential evolution features introduces a number of distinctions.  To maintain the required detailed balance
+.. necessary for MCMC proposal distributions, random perturbations must be introduced to reach all of parameter space.
+.. Thus a simple proposal for some chain :math:`X` on iteration :math:`i` is :math:`X_{i+1} = X_i + \gamma\left(X_a - X_b\right) + \zeta`
+.. where :math:`\zeta` is drawn from a standard normal distribution with small standard deviation and :math:`\gamma` is the
+.. ``step_size`` configuration parameter.
 
-Finally, DREAM enables jumping (approximately) between modes in the posterior distribution.  The user may specify the
-frequency of this jump (which effectively sets :math:`\gamma = 1`) by setting the key ``gamma_prob`` to value between 0
-and 1 in the configuration file.
+.. DREAM also incorporates subspace sampling in parameter space, meaning that only a subset of the parameters may be
+.. modified by the differential evolution update.  A "crossover" number can be set in the configuration file that
+.. defines a multinomial probability distribution that governs whether a particular parameter will be updated
+.. (the ``crossover_number`` key).  For each parameter to be updated, we perform the traditional differential evolution
+.. update (calculating the difference between two other chains for the parameter and scaling by :math:`\gamma`) and then
+.. introduce another random perturbation that is uniformly distributed between :math:`-\lambda` and :math:`\lambda` as
+.. defined in the configuration file with key ``lambda``.
 
-The algorithm described here is similar to Algorithm 5 in [Vrugt2016]_, but with a few omissions.  The algorithm does
-not implement a convergence check (such as the Gelman-Rubin diagnostic), and we do not automatically prune outlier
-chains.
+.. Finally, DREAM enables jumping (approximately) between modes in the posterior distribution.  The user may specify the
+.. frequency of this jump (which effectively sets :math:`\gamma = 1`) by setting the key ``gamma_prob`` to value between 0
+.. and 1 in the configuration file.
+
+.. The algorithm described here is similar to Algorithm 5 in [Vrugt2016]_, but with a few omissions.  The algorithm does
+.. not implement a convergence check (such as the Gelman-Rubin diagnostic), and we do not automatically prune outlier
+.. chains.
+
 
 .. _alg-sim:
 
