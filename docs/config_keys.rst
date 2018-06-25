@@ -9,7 +9,7 @@ The following sections give all possible configuration keys that may be used in 
 Paths
 -----
 
-``model = path/to/model1.bngl :path/to/data1.exp, path/to/model2.xml : path/to/data2.con``
+``model = path/to/model1.bngl : path/to/data1.exp, path/to/model2.xml : path/to/data2.con``
   Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are associated with a model write ``none`` instead 
   of a file path. This key is required.
   
@@ -22,7 +22,7 @@ Paths
   Directory where we should save the output. Default: bnf_out
 
 ``mutant = basemodel name statement1 statement2: data1name.exp, data2name.exp``
-  Declares a model that does not contain its own model file, but instead is defined based on another model ``basemodel``. ``name`` is the name of the mutant model; 
+  Declares a model that does not have its own model file, but instead is defined based on another model ``basemodel``. ``name`` is the name of the mutant model; 
   this name is appended to the suffixes of the base model. I.e, if the base model has data files data1.exp and data2.exp, a corresponding mutant model with the name 
   "m1" should use the files data1m1.exp and data2m1.exp. ``statement1``, ``statement2``, etc. specify how to change ``basemodel`` to make the mutant model. The  
   statments have the format [variable][operator][value] ; for example ``a__FREE=0`` or ``b__FREE*2``. Supported operators are ``=``, ``+``, ``-``, ``*``, ``/``.
@@ -110,7 +110,7 @@ Algorithm Options
 ``refine = int``
   If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. Default: 0
 ``smoothing = int``
-  Number of replicate runs to average together for each parameter set (useful for stochastic runs). Default: 1
+  Number of replicate runs to average together for each parameter set (useful for stochastic simulations). Default: 1
 ``wall_time_gen = int``
   Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded. Default: 3600
 ``wall_time_sim = int``
@@ -136,7 +136,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
 ``simplex_contraction = float``
   If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) Default: 0.5
 ``simplex_shrink = float``
-  If a whole iteration was unproductive, shrink the simplex by setting simplex point :math:`s[i]` to :math:`x*s[0] + (1-x)*s[i]`, where :math:`s[0]` is the best point in the simplex. This key specifies *x*. Default: 0.5
+  If a whole iteration was unproductive, shrink the simplex by setting simplex point :math:`s[i]` to :math:`x*s[0] + (1-x)*s[i]`, where *x* is the value of this key and :math:`s[0]` is the best point in the simplex. Default: 0.5
 ``simplex_max_iterations = int``
   If specified, overrides the ``max_iterations`` setting. Useful if you are using the ``refine`` flag and want ``max_iterations`` to refer to your main algorithm.
 ``simplex_stop_tol = float`` 
@@ -234,7 +234,7 @@ For all Bayesian algorithms except ``sa``
 ``burn_in = int``
   Don't sample for this many iterations at the start, to let the system equilibrate. Default: 10000
 ``output_hist_every = int`` 
-  Every x samples (i.e every x*sample_every iterations), save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Regardless, we also output the histograms at the end of the run.  Default: 100
+  Every x samples (i.e every x*sample_every iterations), save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Regardless, we also output these files at the end of the run.  Default: 100
 ``hist_bins = int`` 
   Number of bins used when writing the histogram files. Default: 10
 ``credible_intervals = n1 n2 n3``

@@ -102,14 +102,15 @@ Constraint files
 
 Constraint files are plain text files with the extension ".con" that contain inequality constraints to be imposed on the outputs of the model. Such constraints can be used to formalize qualitative data known about the biological system of interest. 
 
-Each line of the .con file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight indicating the penalty to add to the objective function if the constraint is not satisfied.
+Each line of the .con file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight that controls the penalty to add to the objective function if the constraint is not satisfied. Specifically, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. 
+
 The weight may be omitted and defaults to 1. The inequality and enforcement clauses are required
 
 Inequality
 ^^^^^^^^^^
 
 The inequality can consist of any relationship (<, >, <=, or >=) between two observables, or between one observable and a constant. For example ``A < 5`` , or ``A >= B``. 
-Note that < and <= are equivalent unless the ``min`` keyword is used (see Weights, below)
+Note that < and <= are equivalent unless the ``min`` keyword is used (see `Weight`_).
 
 Enforcement
 ^^^^^^^^^^^
@@ -160,13 +161,13 @@ The ``min`` keyword indicates the minimum possible penalty to apply if the const
 
 ``A < 5 at 6 weight 2 min 4``
 
-If the inequality A < 5 is not satisfied at time 6, the penalty is 2*max((A-5), 4). Since we used the strict < operator, the minimum penalty of 8 is applied even if A=5 at time 6. 
+If the inequality A < 5 is not satisfied at time 6, the penalty is :math:`2*\textrm{max}((A-5), 4)`. Since we used the strict < operator, the minimum penalty of 8 is applied even if A=5 at time 6. 
 
 In some unusual cases, it is desirable to use a different observable for calculating penalties than the one used in the inequality. For example, the variable in the inequality might be a discrete variable, and it would be desirable to calculate the penalty with a corresponding continuous variable. This substitution may be made using the ``altpenalty`` keyword in the weight clause, followed by the new inequality to use for calculating the penalty. 
 
 ``A < 5 at B=3 weight 10 altpenalty A2<4 min 1``
 
-This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: 10\*max(0, A2-4). If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*2 in the example), or zero if no min was declared. 
+This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
 
 .. _Copasi: http://copasi.org/
 
