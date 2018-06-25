@@ -1,4 +1,11 @@
-To assist in the writing documentation in the future, this file will serve as a record of what keys in the conf file we have implemented in the code, and what each one does. 
+This file is now obsolete! The current documentation of available config keys is in docs/config_keys.rst
+
+
+
+
+
+
+To assist in the writing documentation in the future, this file will serve as a record of what keys in the conf file we have implemented in the code, and what each one does.
 Please update this file whenever you add support for new .conf keys in the code
 
 

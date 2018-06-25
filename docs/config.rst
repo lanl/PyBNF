@@ -14,8 +14,6 @@ Each line of a conf file has the general format config_key=value, which assigns 
 
 The available configuration keys to be specified are detailed in :ref:`config_keys`.
 
-**[During development, please refer to config_documentation.txt]**
-
 
 Model Files
 -----------
@@ -72,6 +70,8 @@ Caution: If you are using `Copasi`_ to export SBML files, renaming a parameter i
 
 Note that SBML files do not contain information about what time course or parameter scan simulations should be run on the model. Therefore, when using SBML files, it is required to specify this information in the configuration file with the ``time_course`` and ``param_scan`` keys. 
 
+.. _exp-file:
+
 Experimental Data Files
 -----------------------
 
@@ -95,6 +95,7 @@ If your are fitting with the chi-squared objective function, you also need to pr
         15    nan    6.5e4    nan    5e2
         20    15    1.1e5    0.9    5e2
 
+.. _con-file:
 
 Constraint files
 ----------------
