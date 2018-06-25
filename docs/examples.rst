@@ -26,7 +26,7 @@ A small, biologically relevant fitting problem that includes both constraints an
 
 degranulation
 ^^^^^^^^^^^^^
-A model that relates the initial events of IgE-FceRI signaling to the degranulation response. The model is fit to experimental data from a microfluidic device that was used to measure mast cell degranulation in response to time courses of alternating stimulatory and non-stimulatory inputs. The data and model were originally published in [Harmon2017]_. 
+A model that relates the initial events of IgE-Fc\ :math:`\epsilon`\ RI signaling to the degranulation response. The model is fit to experimental data from a microfluidic device that was used to measure mast cell degranulation in response to time courses of alternating stimulatory and non-stimulatory inputs. The data and model were originally published in [Harmon2017]_. 
 
 In the original study, the model was analyzed by Bayesian MCMC to acquire probability distributions for each parameter. We provide config files to repeat this analysis in PyBNF, using all three of our algorithms that calculate probability distributions: MCMC, DREAM, and Parallel tempering. In all cases, the results from PyBNF are expected to match the results shown in Fig. S10 of [Harmon2017]_. A large number of samples is required to obtain an acceptable distribution, so we recommend running on a cluster or powerful multi-core workstation. An example batch file to submit the job to a SLURM cluster is provided. For best performance, the config key ``population_size`` should be set to the number of available cores. 
 
@@ -58,7 +58,7 @@ This problem was considered as example1 in the original BioNetFit ( [Thomas2016]
 
 fceri_gamma
 ^^^^^^^^^^^
-A benchmark rule-based model of IgE-FceRI signaling, published in [Gupta2018]_. To create an example fitting problem, we generated synthetic data based on the published ground truth, and try to recover the ground truth parameters by fitting. 
+A benchmark rule-based model of IgE-Fc\ :math:`\epsilon`\ RI signaling, published in [Gupta2018]_. To create an example fitting problem, we generated synthetic data based on the published ground truth, and try to recover the ground truth parameters by fitting. 
 
 igf1r
 ^^^^^
@@ -142,6 +142,8 @@ Examples by PyBNF feature
  * Advanced constraint configuration: `constraint_advanced`_
  * Submitting jobs to a cluster: `tlbr`_, `tcr`_, `degranulation`_
  
+References
+----------
 
 .. [Blinov2006] Blinov, M. L.; Faeder, J. R.; Goldstein, B.; Hlavacek, W. S. A Network Model of Early Events in Epidermal Growth Factor Receptor Signaling That Accounts for Combinatorial Complexity. BioSystems 2006, 83 (2–3 SPEC. ISS.), 136–151.
 .. [Chylek2014] Chylek, L. A.; Akimov, V.; Dengjel, J.; Rigbolt, K. T. G.; Hu, B.; Hlavacek, W. S.; Blagoev, B. Phosphorylation Site Dynamics of Early T-Cell Receptor Signaling. PLoS One 2014, 9 (8), e104240.
@@ -151,6 +153,7 @@ Examples by PyBNF feature
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
 .. [Mitra2018] Mitra, E. D.; Dias, R.; Posner, R. G.; Hlavacek, W. S. Using Both Qualitative and Quantitative Data in Parameter Identification for Systems Biology Models. Under review.
 .. [Monine2010] Monine, M. I.; Posner, R. G.; Savage, P. B.; Faeder, J. R.; Hlavacek, W. S. Modeling Multivalent Ligand-Receptor Interactions with Steric Constraints on Configurations of Cell-Surface Receptor Aggregates. Biophys. J. 2010, 98 (1), 48–56.
+.. [Oguz2013] Oguz, C.; Laomettachit, T.; Chen, K. C.; Watson, L. T.; Baumann, W. T.; Tyson, J. J. Optimization and Model Reduction in the High Dimensional Parameter Space of a Budding Yeast Cell Cycle Model. BMC Syst. Biol. 2013, 7 (1), 53.
 .. [Posner2007] Posner, R. G.; Geng, D.; Haymore, S.; Bogert, J.; Pecht, I.; Licht, A.; Savage, P. B. Trivalent Antigens for Degranulation of Mast Cells. Org. Lett. 2007, 9 (18), 3551–3554.
 .. [Romano2014] Romano, D.; Nguyen, L. K.; Matallanas, D.; Halasz, M.; Doherty, C.; Kholodenko, B. N.; Kolch, W. Protein Interaction Switches Coordinate Raf-1 and MST2/Hippo Signalling. Nat. Cell Biol. 2014, 16 (7), 673–684.
 .. [Thomas2016] Thomas, B. R.; Chylek, L. A.; Colvin, J.; Sirimulla, S.; Clayton, A. H. A.; Hlavacek, W. S.; Posner, R. G. BioNetFit: A Fitting Tool Compatible with BioNetGen, NFsim and Distributed Computing Environments. Bioinformatics 2016, 32 (5), 798–800.
