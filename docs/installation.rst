@@ -75,7 +75,7 @@ SBML
 PyBNF runs simulations of `SBML`_ models using `libroadrunner`_, which is installed automatically through ``pip`` as part of 
 PyBNF installation. 
 
-To work with SBML files, it is useful to install software such as `Copasi`_ that is capable of reading and writing models in 
+To work with SBML files, it is useful to install software such as `COPASI`_ that is capable of reading and writing models in
 SBML format. 
 
 
@@ -83,4 +83,4 @@ SBML format.
 .. _BioNetGen: http://www.bionetgen.org
 .. _SBML: http://sbml.org/
 .. _libroadrunner: http://libroadrunner.org/
-.. _Copasi: http://copasi.org/
+.. _COPASI: http://copasi.org/

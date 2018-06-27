@@ -10,7 +10,7 @@ Paths
 -----
 
 ``model = path/to/model1.bngl : path/to/data1.exp, path/to/model2.xml : path/to/data2.con``
-  Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are associated with a model write ``none`` instead 
+  Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are associated with a model write ``none`` instead
   of a file path. This key is required.
   
 
@@ -120,8 +120,8 @@ Algorithm Options
 Algorithm-specific Options
 --------------------------
 
-Simplex
-^^^^^^^
+:ref:`Simplex <alg-sim>`
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when running other algorithms with ``refine = 1``.
 
@@ -144,8 +144,8 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   value) Default: 0 (don't use this criterion)
 
 
-Differential Evolution
-^^^^^^^^^^^^^^^^^^^^^^
+:ref:`Differential Evolution <alg-de>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronous differential evolution (``fit_type = de``) and asynchronous differential evolution (``fit_type = ade``). Both versions may be configured with the follwing keys.
 
@@ -204,8 +204,8 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
 ``adaptive_rel_tol``
   Parameter for checking if an iteration was "unproductive" Default: 0
 
-Bayesian Algorithms (bmc, pt, sa)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+:ref:`Bayesian Algorithms (bmc, pt, sa) <alg-mcmc>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``). These algorithms have many configuration keys in common, as described below. 
 

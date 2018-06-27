@@ -5,7 +5,7 @@ Running on a cluster
 
 PyBNF is designed to run on computing clusters that utilize a shared network filesystem. PyBNF comes with built-in support for clusters running Slurm. It may also be manually configured to run on clusters with other managers (Torque, PBS, etc.).
 
-The Dask.Distributed package, which is installed as a dependency of PyBNF, has a scheduler that we use for handling simulations in distributed computing environments (clusters).  More information on `Dask <http://dask.pydata.org/en/latest/>`_ and `Dask.Distributed <http://distributed.readthedocs.io/en/latest/index.html>`_
+The `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.html>`_ package, which is installed as a dependency of PyBNF, has a scheduler that we use for handling simulations in distributed computing environments (clusters).
 
 While users can likely install PyBNF using ``pip``'s ``--user`` flag, assistance from the cluster administrators may be helpful
 
