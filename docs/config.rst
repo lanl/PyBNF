@@ -66,7 +66,7 @@ PyBNF assumes that any parameters and species that are not named in the config f
 
 To avoid mistakes in configuration, you may optionally append “__FREE__” to the names of parameters to be fit, as with BioNetGen models. PyBNF will raise an error if it finds a parameter ending in “__FREE__” in the SBML that is not specified in the configuration file.
 
-Caution: If you are using `Copasi`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field. 
+Caution: If you are using `COPASI`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field.
 
 Note that SBML files do not contain information about what time course or parameter scan simulations should be run on the model. Therefore, when using SBML files, it is required to specify this information in the configuration file with the ``time_course`` and ``param_scan`` keys. 
 
@@ -169,5 +169,5 @@ In some unusual cases, it is desirable to use a different observable for calcula
 
 This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
 
-.. _Copasi: http://copasi.org/
+.. _COPASI: http://copasi.org/
 
