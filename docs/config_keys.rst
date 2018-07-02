@@ -3,64 +3,134 @@
 Configuration Keys
 ==================
 
-The following sections give all possible configuration keys that may be used in your .conf file to configure your fitting run. 
+The following sections give all possible configuration keys that may be used in your .conf file to configure your
+fitting run.  Configuration keys are mapped to their values with the following syntax::
+
+    key = value
 
 
-Paths
------
+Required Keys
+-------------
+**model**
+  Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are
+  associated with a model write ``none`` instead of a file path.  Model paths and files are followed by a ':' and then
+  a comma-delimited list of experimental data files or constraint files corresponding to the model files
 
-``model = path/to/model1.bngl : path/to/data1.exp, path/to/model2.xml : path/to/data2.con``
-  Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are associated with a model write ``none`` instead
-  of a file path. This key is required.
-  
+  Examples:
+    * ``model = path/to/model1.bngl : path/to/data1.exp``
+    * ``model = path/to/model2.xml : path/to/data2.con, path/to/data2.exp``
 
-``bng_command = path/to/BNG2.pl``
-  Path to BNG2.pl, including the BNG2.pl file name. This key is required if your fitting includes any .bngl files, unless the BioNetGen path is specified with the 
-  BNGPATH env variable. Default: Uses the BNGPATH env variable
+**fit_type**
+  The choice of fitting algorithm. Options:
+    * ``de`` - :ref:`alg-de`
+    * ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`
+    * ``ss`` - :ref:`alg-ss`
+    * ``pso`` - :ref:`Particle Swarm Optimization <alg-pso>`
+    * ``bmc`` - :ref:`Bayesian Markov chain Monte Carlo <alg-mcmc>`
+    * ``sim`` - :ref:`Simplex <alg-sim>` local search
+    * ``sa`` - :ref:`Simulated Annealing <alg-sa>`
+    * ``pt`` - :ref:`Parallel tempering <alg-pt>`
 
-``output_dir = dirname``
-  Directory where we should save the output. Default: bnf_out
+  Examples:
+    * ``fit_type = de``
 
-``mutant = basemodel name statement1 statement2: data1name.exp, data2name.exp``
-  Declares a model that does not have its own model file, but instead is defined based on another model ``basemodel``. ``name`` is the name of the mutant model; 
-  this name is appended to the suffixes of the base model. I.e, if the base model has data files data1.exp and data2.exp, a corresponding mutant model with the name 
-  "m1" should use the files data1m1.exp and data2m1.exp. ``statement1``, ``statement2``, etc. specify how to change ``basemodel`` to make the mutant model. The  
-  statments have the format [variable][operator][value] ; for example ``a__FREE=0`` or ``b__FREE*2``. Supported operators are ``=``, ``+``, ``-``, ``*``, ``/``.
+**population_size**
+  The number parameter sets to maintain in a single iteration of the algorithm. See algorithm descriptions for more
+  information.
+
+  Examples:
+    * ``population_size = 50``
+
+**max_iterations**
+  Maximum number of iterations. This key is required.
+
+  Examples:
+    * ``max_iterations = 200``
+
+
+Other Path Keys
+---------------
+**bng_command**
+  Path to BNG2.pl, including the BNG2.pl file name. This key is required if your fitting includes any .bngl files,
+  unless the BioNetGen path is specified with the BNGPATH env variable.
+
+  Default: Uses the BNGPATH environmental variable
+
+  Examples:
+    * ``bng_command = path/to/BNG2.pl``
+
+**output_dir**
+  Directory where we should save the output.
+
+  Default: "bnf_out"
+
+  Examples:
+    * ``output_dir = dirname``
+
+**mutant**
+  Declares a model that does not have its own model file, but instead is defined based on another model with some name
+  (e.g. ``basemodel``). Following ``basemodel`` is the name of the mutant model; this name is appended to the suffixes
+  of the base model. That is, if the base model has data files ``data1.exp`` and ``data2.exp``, a corresponding mutant
+  model with the name  "m1" should use the files ``data1m1.exp`` and ``data2m1.exp``. ``statement1``, ``statement2``,
+  etc. specify how to change ``basemodel`` to make the mutant model. The statements have the format
+  [variable][operator][value] ; for example ``a__FREE=0`` or ``b__FREE*2``. Supported operators are ``=``, ``+``, ``-``,
+  ``*``, ``/``.
+
   Default: None
 
+  Examples:
+    * ``mutant = model0 no_a a__FREE=0 : data1no_a.exp, data2no_a.exp``
 
-Required Algorithm Options
---------------------------
-``fit_type = str``
-  Which fitting algorithm to use. Options: ``de`` - :ref:`alg-de`, ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`, ss - :ref:`alg-ss`, ``pso`` - :ref:`Particle 
-  Swarm Optimization <alg-pso>`, ``bmc`` - :ref:`Bayesian Markov chain Monte Carlo <alg-mcmc>`, ``sim`` - :ref:`Simplex <alg-sim>` local search, ``sa`` - :ref:`Simulated Annealing <alg-sa>`, ``pt`` - :ref:`Parallel tempering <alg-pt>`. Default: de
-``objfunc = str``
-  Which :ref:`objective function <objective>` to use. Options: ``chi_sq`` - Chi Squared, ``sos`` - Sum of squares, ``norm_sos`` - Sum of squares, normalized by the value at each point, 
-  ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. Default: chi_sq
-``population_size = int``
-  How many parameter sets to maintain in the algorithm's population. See algorithm descriptions for more information. This key is required.
-``max_iterations = int``
-  Maximum number of iterations. This key is required.
 
 Parameter Specification
 -----------------------
-``uniform_var = name__FREE min max`` 
-  A uniformly distributed variable with bounds [``min``, ``max``]
-``normal_var = name__FREE mu sigma``
-  A normal-distributed variable in regular space with mean ``mu``, std dev ``sigma``. A box constraint to keep :math:`\geq 0` is also assumed.
-``loguniform_var = name__FREE min max`` 
-  A log-uniform distributed variable with bounds [``min``, ``max``]. Bounds should be in regular space, eg [0.01, 100]
-``lognormal_var = name__FREE mu sigma``
-  A log-normal distributed variable with mean ``mu``, std dev ``sigma``. ``mu`` and ``sigma`` should be given in log base 10 space.
+**uniform_var**
+  A bounded uniformly distributed variable defined by a 3-tuple corresponding to the variable name, minimum
+  value, and maximum value
 
-The following keys are to be used only with the :ref:`simplex <alg-sim>` algorithm. Simplex should not use any of the other parameter specifications.
-If you are using another algorithm with the flag ``refine``, you still should not use these, you must set step size with ``simplex_step`` or ``simplex_log_step``.
+  Examples:
+    * ``uniform_var = k__FREE 10 20``
 
-``var = name__FREE init step`` 
-  A variable that starts at ``init`` with an initial step size ``step``. ``step`` is optional; defaults to ``simplex_step``
-``logvar = name__FREE init step``
-  A variable that starts at ``init`` with an initial step size ``step``, that moves in log space. ``init`` and ``step`` should be given in log base 10 space. ``step`` is optional; defaults to ``simplex_log_step``.
+**normal_var**
+  A normally distributed variable defined by a 3-tuple: the name, mean value, and standard deviation. The distribution
+  is truncated at 0 to prevent negative values
 
+  Examples:
+    * ``normal_var = d__FREE 0 1``
+
+**loguniform_var**
+  A variable distributed uniformly in logarithmic space. The value syntax is identical to the **uniform_var** syntax
+
+  Examples:
+    * ``loguniform_var = p__FREE 0.001 100``
+
+**lognormal_var**
+  A variable normally distributed in logarithmic space.  The value syntax is a 3-tuple specifying the variable name,
+  the base 10 logarithm of the mean, and the base 10 logarithm of the standard deviation
+
+  Examples:
+    * ``lognormal_var = l__FREE 1 0.1``
+
+
+The following keys are to be used only with the :ref:`simplex <alg-sim>` algorithm. Simplex should not use any of the
+other parameter specifications. If you are using another algorithm with the flag ``refine``, you must set the simplex
+algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
+
+**var**
+  The starting point for a free parameter.  It is defined by a 3-tuple, corresponding to the variable's name, its initial
+  value and an initial step size (optional).  If not specified, the initial step size defaults to the value specified
+  by the simplex-specific parameter ``simplex_step`` (see :ref:`simplex <alg-sim>`)
+
+  Examples:
+    * ``var = k__FREE 10``
+    * ``var = d__FREE 2 0.05``
+
+**logvar**
+  Syntax and sematics are identical to the ``var`` key above, but the initial value and initial step should be specified
+  in base 10 logarithmic space.
+
+  Examples:
+    * ``logvar = k__FREE -3 1``
 
 Parallel Computing
 ------------------
@@ -89,6 +159,9 @@ Output Options
 
 Algorithm Options
 ^^^^^^^^^^^^^^^^^
+``objfunc = str``
+  Which :ref:`objective function <objective>` to use. Options: ``chi_sq`` - Chi Squared, ``sos`` - Sum of squares, ``norm_sos`` - Sum of squares, normalized by the value at each point,
+  ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. Default: chi_sq
 ``bootstrap = int`` 
   If assigned a positive value, estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.  Default: 0 (no bootstrapping)
 ``bootstrap_max_obj = float``
