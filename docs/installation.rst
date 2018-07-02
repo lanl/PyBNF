@@ -62,12 +62,13 @@ PyBNF is designed to work with simulators present in the `BioNetGen`_ software s
 .. _set_bng_path:
 
 PyBNF will need to know the location of `BioNetGen`_ – specifically the location of the script ``BNG2.pl`` within the
-`BioNetGen`_ installation. This path can be included in the PyBNF configuration file (see below). A convenient alternative
-is to set the environment variable ``BNGPATH`` to the BioNetGen directory using the following command:
+`BioNetGen`_ installation. This path can be included in the PyBNF configuration file with the :ref:`bng_command <bng_command>` key. 
+A convenient alternative is to set the environment variable ``BNGPATH`` to the BioNetGen directory using the following command:
 
     :command:`export BNGPATH=/path/to/bng2`
 
-which can also be made permanent as of your next login, by copying above command into the file ``.bash_profile``
+where ``/path/to/bng2`` is the path to the folder containing ``BNG2.pl``, not including the "BNG2.pl" file name. This 
+setting may be made permanent as of your next login, by copying above command into the file ``.bash_profile``
 in your home directory.
 
 SBML

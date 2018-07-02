@@ -13,6 +13,7 @@ Paths
   Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are associated with a model write ``none`` instead
   of a file path. This key is required.
   
+.. _bng_command:
 
 ``bng_command = path/to/BNG2.pl``
   Path to BNG2.pl, including the BNG2.pl file name. This key is required if your fitting includes any .bngl files, unless the BioNetGen path is specified with the 
