@@ -63,7 +63,7 @@ All algorithms perform changes to parameter values as the fitting proceeds. The 
 
 ``loguniform_var``\ s and ``lognormal_var``\ s are moved in logarithmic space (base 10) throughout the entire fitting run. 
 
-``uniform_var``\ s and ``loguniform_var``\ s avoid moving outside the defined initialization range. If a move is attempted that would take the parameter outside the bounds, the parameter value is reflected over the boundary, back within bounds. This feature can be disabled by appending ``U`` to the end of the variable definition (e.g. ``uniform_var = x__FREE__ 10 30 U``)
+``uniform_var``\ s and ``loguniform_var``\ s avoid moving outside the defined initialization range. If a move is attempted that would take the parameter outside the bounds, the parameter value is reflected over the boundary, back within bounds. This feature can be disabled by appending ``U`` to the end of the variable definition (e.g. ``uniform_var = x__FREE 10 30 U``)
 
 
 .. _alg-de:

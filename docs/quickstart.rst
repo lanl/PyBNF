@@ -12,9 +12,9 @@ For a simple job using BioNetGen:
     :command:`pybnf -c examples/demo/demo_bng.conf`
 
 For a simple job using SBML:
-    :command:`pybnf -c examples/demo/demo_sbml.conf`
+    :command:`pybnf -c examples/demo/demo_xml.conf`
     
-The examples will print progress to the terminal as the fitting proceeds, and the results will be saved in the directory PyBNF-output/demo/, located one level up from the PyBNF root directory (this output directory can be changed by editing ``demo_bng.conf`` and ``demo_sbml.conf``). 
+The examples will print progress to the terminal as the fitting proceeds, and the results will be saved in the directory PyBNF-output/demo/, located one level up from the PyBNF root directory (this output directory can be changed by editing ``demo_bng.conf`` and ``demo_xml.conf``). 
 
 In PyBNF-output/demo/Results, the file sorted_params.txt contains the parameter sets tested during the fitting run. Open this file and verify that the best-fit parameter set (first line of the file) is close to the ground truth value of v1__FREE=0.5, v2__FREE=1.5, v3__FREE=3.0. 
 
@@ -35,7 +35,7 @@ Then run pybnf as on a single machine, but use the ``-t`` flag to indicate that 
 
     :command:`pybnf -c examples/demo/demo_bng.conf -t slurm`
     
-    :command:`pybnf -c examples/demo/demo_sbml.conf -t slurm`
+    :command:`pybnf -c examples/demo/demo_xml.conf -t slurm`
     
 To close your Slurm session after completing the jobs, run the command ``exit`` twice (once to log out of the node, and a second time to relinquish the job allocation)
 
