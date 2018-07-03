@@ -15,7 +15,6 @@ Required Keys
   Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are
   associated with a model write ``none`` instead of a file path.  Model paths and files are followed by a ':' and then
   a comma-delimited list of experimental data files or constraint files corresponding to the model files
-.. _bng_command:
 
   Examples:
     * ``model = path/to/model1.bngl : path/to/data1.exp``
@@ -51,6 +50,9 @@ Required Keys
 
 Other Path Keys
 ---------------
+
+.. _bng_command:
+
 **bng_command**
   Path to BNG2.pl, including the BNG2.pl file name. This key is required if your fitting includes any .bngl files,
   unless the BioNetGen path is specified with the BNGPATH env variable.
@@ -60,6 +62,7 @@ Other Path Keys
   Examples:
     * ``bng_command = path/to/BNG2.pl``
 
+
 **output_dir**
   Directory where we should save the output.
 
@@ -68,6 +71,9 @@ Other Path Keys
   Examples:
     * ``output_dir = dirname``
 
+
+Parameter and Model Specification
+---------------------------------
 **mutant**
   Declares a model that does not have its own model file, but instead is defined based on another model with some name
   (e.g. ``basemodel``). Following ``basemodel`` is the name of the mutant model; this name is appended to the suffixes
@@ -82,9 +88,6 @@ Other Path Keys
   Examples:
     * ``mutant = model0 no_a a__FREE=0 : data1no_a.exp, data2no_a.exp``
 
-
-Parameter Specification
------------------------
 **uniform_var**
   A bounded uniformly distributed variable defined by a 3-tuple corresponding to the variable name, minimum
   value, and maximum value
@@ -113,7 +116,7 @@ Parameter Specification
     * ``lognormal_var = l__FREE 1 0.1``
 
 
-The following keys are to be used only with the :ref:`simplex <alg-sim>` algorithm. Simplex should not use any of the
+The following two keys (``var`` and ``logvar``) are to be used only with the :ref:`simplex <alg-sim>` algorithm. Simplex should not use any of the
 other parameter specifications. If you are using another algorithm with the flag ``refine``, you must set the simplex
 algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
 
@@ -135,28 +138,85 @@ algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
 
 Parallel Computing
 ------------------
-``parallel_count = int``
-  For a local (non-cluster) fitting run, how many jobs to run in parallel. Default: Use all available cores.
-``cluster_type = str``
-  Type of cluster used for running the fit. This key may be omitted, and instead specified on the command line with the ``-t`` flag. Currently suports ``slurm`` or ``none``. Will support ``torque`` and ``pbs`` in the future. Default: None (local fitting run).
-``scheduler_node = str``
-  Manually set node used for creating the distributed Client -- takes a string identifying a machine on a network. If running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with the flag ``-t slurm`` instead of using this key. Default: None 
-``worker_nodes = str1 str2 str3``
-  Manually set nodes used for computation - takes one or more strings separated by whitespace identifying machines on a network. If running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with the flag ``-t slurm`` instead of using this key.  Default: None 
+**parallel_count**
+  The number jobs to run in parallel for local (non-cluster) fitting runs.
+
+  Default: Use all available cores/threads.
+
+  Examples:
+    * ``parallel_count = 7``
+
+**cluster_type**
+  Type of cluster used for running the fit. This key may be omitted, and instead specified on the command line with the
+  ``-t`` flag. Currently supports ``slurm`` or ``none``. Will support ``torque`` and ``pbs`` in the future.
+
+  Default: None (local fitting run).
+
+  Examples:
+    * ``cluster_type = slurm``
+
+**scheduler_node**
+  Manually set node used for creating the distributed Client -- takes a string identifying a machine on a network. If
+  running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with the flag
+  ``-t slurm`` instead of using this key.
+
+  Default: None
+
+  Examples:
+    * ``scheduler_node = cn180``
+
+**worker_nodes**
+  Manually set nodes used for computation - takes one or more strings separated by whitespace identifying machines on a
+  network. If running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with
+  the flag ``-t slurm`` instead of using this key.
+
+  Default: None
+
+  Examples:
+    * ``worker_nodes = cn102 cn104 cn10511``
 
 General Options
 ---------------
 
 Output Options
 ^^^^^^^^^^^^^^
-``delete_old_files = int``
-  If 1, delete simulation folders immediately after they complete. If 2, delete both old simulation folders and old sorted_params.txt result files. If 0, do not delete any files (warning, could consume a large amount of disk space). Default: 1
-``num_to_output = int``
-  The maximum number of PSets to write when writing the trajectory. Default: 5000
-``output_every = int``
-  Write the Trajectory to file every x iterations. Default: 20
-``verbosity = int``
-  Specifies the amount of information output to the terminal. 0 - Quiet; user prompts and errors only. 1 - Normal; Warnings and concise progress updates. 2 - Verbose; Information and detailed progress updates. Default: 1
+**delete_old_files**
+  Takes an integer for a value.  If 1, delete simulation folders immediately after they complete. If 2, delete both
+  old simulation folders and old sorted_params.txt result files. If 0, do not delete any files (warning, could consume
+  a large amount of disk space).
+
+  Default: 1
+
+  Examples:
+    * ``delete_old_files = 2``
+
+**num_to_output**
+  The maximum number of parameter sets to output when writing the trajectory to file. THe parameter sets are ordered
+  by their corresponding objective function value to ensure the best fits are outputted.
+
+  Default: 5000
+
+  Examples:
+    * ``num_to_output = 100000``
+
+**output_every**
+  The number of iterations in between consecutive events writing the trajectory to file.
+
+  Default: 20
+
+  Examples:
+    * ``output_every = 1000``
+
+**verbosity**
+  An integer value that specifies the amount of information output to the terminal.
+   - 0 - Quiet: user prompts and errors only
+   - 1 - Normal; Warnings and concise progress updates
+   - 2 - Verbose; Information and detailed progress updates
+
+  Default: 1
+
+  Examples:
+    * ``verbosity = 0``
 
 Algorithm Options
 ^^^^^^^^^^^^^^^^^
