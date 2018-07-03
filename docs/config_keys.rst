@@ -15,6 +15,7 @@ Required Keys
   Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are
   associated with a model write ``none`` instead of a file path.  Model paths and files are followed by a ':' and then
   a comma-delimited list of experimental data files or constraint files corresponding to the model files
+.. _bng_command:
 
   Examples:
     * ``model = path/to/model1.bngl : path/to/data1.exp``

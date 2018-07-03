@@ -27,7 +27,7 @@ Two small modifications of a BioNetGen-compatible BNGL file are necessary to use
 
 .. highlight:: none
 
-1) Replace each value to be fit with a name that ends in the string “__FREE__”.
+1) Replace each value to be fit with a name that ends in the string “__FREE”.
 
 For example, if the parameters block in our original file was the following:
 ::
@@ -44,9 +44,9 @@ the revised version for PyBNF should look like:
 ::
     begin parameters
 
-        v1 v1__FREE__
-        v2 v2__FREE__
-        v3 v3__FREE__
+        v1 v1__FREE
+        v2 v2__FREE
+        v3 v3__FREE
         NA 6.02e23
 
     end parameters
@@ -64,7 +64,7 @@ SBML files can be used with PyBNF as is, with no modifications required. PyBNF w
 
 PyBNF assumes that any parameters and species that are not named in the config file are not meant to be fit - such values are held constant at the value specified in the SBML file. 
 
-To avoid mistakes in configuration, you may optionally append “__FREE__” to the names of parameters to be fit, as with BioNetGen models. PyBNF will raise an error if it finds a parameter ending in “__FREE__” in the SBML that is not specified in the configuration file.
+To avoid mistakes in configuration, you may optionally append “__FREE” to the names of parameters to be fit, as with BioNetGen models. PyBNF will raise an error if it finds a parameter ending in “__FREE” in the SBML that is not specified in the configuration file.
 
 Caution: If you are using `COPASI`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field.
 
