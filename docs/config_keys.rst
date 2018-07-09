@@ -4,7 +4,7 @@ Configuration Keys
 ==================
 
 The following sections give all possible configuration keys that may be used in your .conf file to configure your
-fitting run.  Configuration keys are mapped to their values with the following syntax::
+fitting run.  Each line of the .conf file sets the value of a configuration key with the general syntax::
 
     key = value
 
@@ -12,13 +12,14 @@ fitting run.  Configuration keys are mapped to their values with the following s
 Required Keys
 -------------
 **model**
-  Specifies the mapping between model files (.bngl or .xml) and .exp files (.exp or .con). If no experimental files are
-  associated with a model write ``none`` instead of a file path.  Model paths and files are followed by a ':' and then
-  a comma-delimited list of experimental data files or constraint files corresponding to the model files
+  Specifies the mapping between model files (.bngl or .xml) and data files (.exp or .con). Model paths and files are 
+  followed by a ':' and then a comma-delimited list of experimental data files or constraint files corresponding to the 
+  model files. If no experimental files are associated with a model write ``none`` instead of a file path.  
 
   Examples:
     * ``model = path/to/model1.bngl : path/to/data1.exp``
     * ``model = path/to/model2.xml : path/to/data2.con, path/to/data2.exp``
+    * ``model = path/to/model3.xml : none``
 
 **fit_type**
   The choice of fitting algorithm. Options:
@@ -31,20 +32,20 @@ Required Keys
     * ``sa`` - :ref:`Simulated Annealing <alg-sa>`
     * ``pt`` - :ref:`Parallel tempering <alg-pt>`
 
-  Examples:
+  Example:
     * ``fit_type = de``
 
 **population_size**
   The number parameter sets to maintain in a single iteration of the algorithm. See algorithm descriptions for more
   information.
 
-  Examples:
+  Example:
     * ``population_size = 50``
 
 **max_iterations**
   Maximum number of iterations. This key is required.
 
-  Examples:
+  Example:
     * ``max_iterations = 200``
 
 
@@ -59,7 +60,7 @@ Other Path Keys
 
   Default: Uses the BNGPATH environmental variable
 
-  Examples:
+  Example:
     * ``bng_command = path/to/BNG2.pl``
 
 
@@ -68,7 +69,7 @@ Other Path Keys
 
   Default: "bnf_out"
 
-  Examples:
+  Example:
     * ``output_dir = dirname``
 
 
@@ -85,34 +86,34 @@ Parameter and Model Specification
 
   Default: None
 
-  Examples:
+  Example:
     * ``mutant = model0 no_a a__FREE=0 : data1no_a.exp, data2no_a.exp``
 
 **uniform_var**
   A bounded uniformly distributed variable defined by a 3-tuple corresponding to the variable name, minimum
   value, and maximum value
 
-  Examples:
+  Example:
     * ``uniform_var = k__FREE 10 20``
 
 **normal_var**
   A normally distributed variable defined by a 3-tuple: the name, mean value, and standard deviation. The distribution
   is truncated at 0 to prevent negative values
 
-  Examples:
-    * ``normal_var = d__FREE 0 1``
+  Example:
+    * ``normal_var = d__FREE 10 1``
 
 **loguniform_var**
   A variable distributed uniformly in logarithmic space. The value syntax is identical to the **uniform_var** syntax
 
-  Examples:
+  Example:
     * ``loguniform_var = p__FREE 0.001 100``
 
 **lognormal_var**
   A variable normally distributed in logarithmic space.  The value syntax is a 3-tuple specifying the variable name,
   the base 10 logarithm of the mean, and the base 10 logarithm of the standard deviation
 
-  Examples:
+  Example:
     * ``lognormal_var = l__FREE 1 0.1``
 
 
@@ -133,7 +134,7 @@ algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
   Syntax and sematics are identical to the ``var`` key above, but the initial value and initial step should be specified
   in base 10 logarithmic space.
 
-  Examples:
+  Example:
     * ``logvar = k__FREE -3 1``
 
 Parallel Computing
@@ -143,7 +144,7 @@ Parallel Computing
 
   Default: Use all available cores/threads.
 
-  Examples:
+  Example:
     * ``parallel_count = 7``
 
 **cluster_type**
@@ -152,7 +153,7 @@ Parallel Computing
 
   Default: None (local fitting run).
 
-  Examples:
+  Example:
     * ``cluster_type = slurm``
 
 **scheduler_node**
@@ -162,7 +163,7 @@ Parallel Computing
 
   Default: None
 
-  Examples:
+  Example:
     * ``scheduler_node = cn180``
 
 **worker_nodes**
@@ -172,7 +173,7 @@ Parallel Computing
 
   Default: None
 
-  Examples:
+  Example:
     * ``worker_nodes = cn102 cn104 cn10511``
 
 General Options
@@ -187,7 +188,7 @@ Output Options
 
   Default: 1
 
-  Examples:
+  Example:
     * ``delete_old_files = 2``
 
 **num_to_output**
@@ -196,7 +197,7 @@ Output Options
 
   Default: 5000
 
-  Examples:
+  Example:
     * ``num_to_output = 100000``
 
 **output_every**
@@ -204,18 +205,18 @@ Output Options
 
   Default: 20
 
-  Examples:
+  Example:
     * ``output_every = 1000``
 
 **verbosity**
   An integer value that specifies the amount of information output to the terminal.
    - 0 - Quiet: user prompts and errors only
-   - 1 - Normal; Warnings and concise progress updates
-   - 2 - Verbose; Information and detailed progress updates
+   - 1 - Normal: Warnings and concise progress updates
+   - 2 - Verbose: Information and detailed progress updates
 
   Default: 1
 
-  Examples:
+  Example:
     * ``verbosity = 0``
 
 Algorithm Options
