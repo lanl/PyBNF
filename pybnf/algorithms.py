@@ -1775,6 +1775,9 @@ class BayesianAlgorithm(Algorithm):
 
 class DreamAlgorithm(BayesianAlgorithm):
     """
+    **This algorithm is a work in progress, and does not currently work correctly. In our most recent testing, it
+    generates incorrect probability distributions**
+
     Implements a variant of the DREAM algorithm as described in Vrugt (2016) Environmental Modelling
     and Software.
 
@@ -1784,6 +1787,8 @@ class DreamAlgorithm(BayesianAlgorithm):
 
     def __init__(self, config):
         super(DreamAlgorithm, self).__init__(config)
+        print0('You are running the DREAM algorithm. This is a work in progress, and is not officially supported! In '
+               'our most recent testing, it generates incorrect probability distributions.')
         self.n_dim = len(self.variables)
         self.all_idcs = np.arange(self.n_dim)
         self.ncr = [(1+x)/self.config.config['crossover_number'] for x in range(self.config.config['crossover_number'])]

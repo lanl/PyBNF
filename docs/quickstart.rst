@@ -4,36 +4,38 @@ Quick Start
 Verify installation with simple examples
 ----------------------------------------
 
-examples/example0 contains two simple example configurations to verify that PyBNF and associated simulators are installed and working correctly. The model files consist of simple polynomial functions, and the entire fitting run should complete in under a minute. 
+examples/demo contains two simple example configurations to verify that PyBNF and associated simulators are installed and working correctly. The model files consist of simple polynomial functions, and the entire fitting run should complete in under a minute. 
 
 To run the examples, use the following commands from the PyBNF root directory
 
 For a simple job using BioNetGen:
-    :command:`pybnf -c examples/example0/example0_bng.conf`
+    :command:`pybnf -c examples/demo/demo_bng.conf`
 
 For a simple job using SBML:
-    :command:`pybnf -c examples/example0/example0_sbml.conf`
+    :command:`pybnf -c examples/demo/demo_xml.conf`
     
-The examples will print progress to the terminal as the fitting proceeds, and the results will be saved in the directory PyBNF-output/example0/, located one level up from the PyBNF root directory (this output directory can be changed by editing ``example0_bng.conf`` and ``example0_sbml.conf``). 
+The examples will print progress to the terminal as the fitting proceeds, and the results will be saved in the directory PyBNF-output/demo/, located one level up from the PyBNF root directory (this output directory can be changed by editing ``demo_bng.conf`` and ``demo_xml.conf``). 
 
-In PyBNF-output/example0/Results, the file sorted_params.txt contains the parameter sets tested during the fitting run. Open this file and verify that the best-fit parameter set (first line of the file) is close to the ground truth value of v1__FREE__=0.5, v2__FREE__=1.5, v3__FREE__=3.0. 
+In PyBNF-output/demo/Results, the file sorted_params.txt contains the parameter sets tested during the fitting run. Open this file and verify that the best-fit parameter set (first line of the file) is close to the ground truth value of v1__FREE=0.5, v2__FREE=1.5, v3__FREE=3.0. 
 
 After verifying that PyBNF is installed correctly, it should be possible to run any of the other examples in the examples/ directory. For more information about these examples and the features they include, see :ref:`examples` 
 
 On a SLURM cluster
 ^^^^^^^^^^^^^^^^^^
 
-To run the examples on a cluster with the Slurm resource manager, start by allocating 2 nodes for your job, and logging into one of the nodes:
+To run the examples on a cluster with the Slurm resource manager, start by allocating 2 nodes for your job:
 
     :command:`salloc -N 2`
+    
+Log in to your allocated nodes (depending on your cluster, this may happen automatically without this command):
     
     :command:`slogin`
     
 Then run pybnf as on a single machine, but use the ``-t`` flag to indicate that you are on a cluster:
 
-    :command:`pybnf -c examples/example0/example0_bng.conf -t slurm`
+    :command:`pybnf -c examples/demo/demo_bng.conf -t slurm`
     
-    :command:`pybnf -c examples/example0/example0_sbml.conf -t slurm`
+    :command:`pybnf -c examples/demo/demo_xml.conf -t slurm`
     
 To close your Slurm session after completing the jobs, run the command ``exit`` twice (once to log out of the node, and a second time to relinquish the job allocation)
 
@@ -50,7 +52,7 @@ Start by creating a new folder to contain your modified BNGL file, data file, co
 Modify your BNGL file
 ^^^^^^^^^^^^^^^^^^^^^
 
-In your bngl file, replace each value you want PyBNF to fit with a name ending in ``__FREE__``
+In your bngl file, replace each value you want PyBNF to fit with a name ending in ``__FREE``
 
 For example, if you want to fit var1, var2, and var3 in the following parameters block::
 
@@ -66,9 +68,9 @@ Modify the BNGL code to::
 
     begin parameters
     
-        var1 var1__FREE__
-        var2 var2__FREE__
-        var3 var3__FREE__
+        var1 var1__FREE
+        var2 var2__FREE
+        var3 var3__FREE
         
     end parameters
     
@@ -103,12 +105,12 @@ We'll run the fitting job using the differential evolution algorithm. Create the
     population_size=20
     max_iterations=30
     
-    uniform_var=var1__FREE__ 1 10
-    uniform_var=var2__FREE__ 1 10
-    uniform_var=var3__FREE__ 1 10
+    uniform_var=var1__FREE 1 10
+    uniform_var=var2__FREE 1 10
+    uniform_var=var3__FREE 1 10
     
 
-Replace ``model.bngl`` and ``data1.exp`` with the names of your .bngl and .exp files. Replace ``/path/to/bng2/BNG2.pl`` with the full path to the file BNG2.pl on your computer (or delete the line if you have the BNGPATH enviorment variable set). Replace the variable names ``var1__FREE__`` etc. with the names of the free parameters in your bngl file, and replace the corresponding numbers ``1 10`` with the minimum and maximum bounds for each parameter. 
+Replace ``model.bngl`` and ``data1.exp`` with the names of your .bngl and .exp files. Replace ``/path/to/bng2/BNG2.pl`` with the full path to the file BNG2.pl on your computer (or delete the line if you have the BNGPATH enviorment variable set). Replace the variable names ``var1__FREE`` etc. with the names of the free parameters in your bngl file, and replace the corresponding numbers ``1 10`` with the minimum and maximum bounds for each parameter. 
 
 This config file will run the differential evolution algorithm on a population of 20 individuals for 30 iterations (600 simulations total), and evaluate the best fits using a sum-of-squares objective function. Adjust these settings as is suited for your model. 
 

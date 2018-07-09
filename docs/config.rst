@@ -27,7 +27,7 @@ Two small modifications of a BioNetGen-compatible BNGL file are necessary to use
 
 .. highlight:: none
 
-1) Replace each value to be fit with a name that ends in the string “__FREE__”.
+1) Replace each value to be fit with a name that ends in the string “__FREE”.
 
 For example, if the parameters block in our original file was the following:
 ::
@@ -44,9 +44,9 @@ the revised version for PyBNF should look like:
 ::
     begin parameters
 
-        v1 v1__FREE__
-        v2 v2__FREE__
-        v3 v3__FREE__
+        v1 v1__FREE
+        v2 v2__FREE
+        v3 v3__FREE
         NA 6.02e23
 
     end parameters
@@ -64,9 +64,9 @@ SBML files can be used with PyBNF as is, with no modifications required. PyBNF w
 
 PyBNF assumes that any parameters and species that are not named in the config file are not meant to be fit - such values are held constant at the value specified in the SBML file. 
 
-To avoid mistakes in configuration, you may optionally append “__FREE__” to the names of parameters to be fit, as with BioNetGen models. PyBNF will raise an error if it finds a parameter ending in “__FREE__” in the SBML that is not specified in the configuration file.
+To avoid mistakes in configuration, you may optionally append “__FREE” to the names of parameters to be fit, as with BioNetGen models. PyBNF will raise an error if it finds a parameter ending in “__FREE” in the SBML that is not specified in the configuration file.
 
-Caution: If you are using `Copasi`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field. 
+Caution: If you are using `COPASI`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field.
 
 Note that SBML files do not contain information about what time course or parameter scan simulations should be run on the model. Therefore, when using SBML files, it is required to specify this information in the configuration file with the ``time_course`` and ``param_scan`` keys. 
 
@@ -102,14 +102,15 @@ Constraint files
 
 Constraint files are plain text files with the extension ".con" that contain inequality constraints to be imposed on the outputs of the model. Such constraints can be used to formalize qualitative data known about the biological system of interest. 
 
-Each line of the .con file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight indicating the penalty to add to the objective function if the constraint is not satisfied.
+Each line of the .con file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight that controls the penalty to add to the objective function if the constraint is not satisfied. Specifically, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. 
+
 The weight may be omitted and defaults to 1. The inequality and enforcement clauses are required
 
 Inequality
 ^^^^^^^^^^
 
 The inequality can consist of any relationship (<, >, <=, or >=) between two observables, or between one observable and a constant. For example ``A < 5`` , or ``A >= B``. 
-Note that < and <= are equivalent unless the ``min`` keyword is used (see Weights, below)
+Note that < and <= are equivalent unless the ``min`` keyword is used (see `Weight`_).
 
 Enforcement
 ^^^^^^^^^^^
@@ -160,13 +161,13 @@ The ``min`` keyword indicates the minimum possible penalty to apply if the const
 
 ``A < 5 at 6 weight 2 min 4``
 
-If the inequality A < 5 is not satisfied at time 6, the penalty is 2*max((A-5), 4). Since we used the strict < operator, the minimum penalty of 8 is applied even if A=5 at time 6. 
+If the inequality A < 5 is not satisfied at time 6, the penalty is :math:`2*\textrm{max}((A-5), 4)`. Since we used the strict < operator, the minimum penalty of 8 is applied even if A=5 at time 6. 
 
 In some unusual cases, it is desirable to use a different observable for calculating penalties than the one used in the inequality. For example, the variable in the inequality might be a discrete variable, and it would be desirable to calculate the penalty with a corresponding continuous variable. This substitution may be made using the ``altpenalty`` keyword in the weight clause, followed by the new inequality to use for calculating the penalty. 
 
 ``A < 5 at B=3 weight 10 altpenalty A2<4 min 1``
 
-This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: 10\*max(0, A2-4). If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*2 in the example), or zero if no min was declared. 
+This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
 
-.. _Copasi: http://copasi.org/
+.. _COPASI: http://copasi.org/
 
