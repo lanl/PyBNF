@@ -347,23 +347,68 @@ Algorithm-specific Options
 
 These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when running other algorithms with ``refine = 1``.
 
-``simplex_step = float``
-  In initialization, we perturb each parameter by this step size. If you specify a step size for a specific variable via ``var`` or ``logvar``, it overrides this setting. Default: 1
-``simplex_log_step = float``
-  Equivalent of ``simplex_step``, for variables that move in log space. Default: ``simplex_step``
-``simplex_reflection = float``
-  When we reflect a point through the centroid, what is the ratio of dilation on the other side? Default: 1.0
-``simplex_expansion = float``
-  If the reflected point was the global minimum, how far do we keep moving in that direction? (as a ratio to the initial distance to centroid) Default: 1.0
-``simplex_contraction = float``
-  If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) Default: 0.5
-``simplex_shrink = float``
-  If a whole iteration was unproductive, shrink the simplex by setting simplex point :math:`s[i]` to :math:`x*s[0] + (1-x)*s[i]`, where *x* is the value of this key and :math:`s[0]` is the best point in the simplex. Default: 0.5
-``simplex_max_iterations = int``
+**simplex_step**
+  In initialization, we perturb each parameter by this step size. If you specify a step size for a specific variable via ``var`` or ``logvar``, it overrides this setting. 
+  
+  Default: 1
+  
+  Example:
+    * ``simplex_step = 0.5``
+  
+**simplex_log_step**
+  Equivalent of ``simplex_step``, for variables that move in log space. 
+  
+  Default: Value of ``simplex_step``
+  
+  Example:
+    * ``simplex_log_step = 0.5``
+
+**simplex_reflection**
+  When we reflect a point through the centroid, what is the ratio of dilation on the other side? 
+  
+  Default: 1.0
+  
+  Example:
+    * ``simplex_reflection = 0.5``
+
+**simplex_expansion**
+  If the reflected point was the global minimum, how far do we keep moving in that direction? (as a ratio to the initial distance to centroid) 
+  
+  Default: 1.0
+  
+  Example:
+    * ``simplex_expansion = 0.5``
+  
+**simplex_contraction**
+  If the reflected point was not an improvement, we retry at what distance from the centroid? (as a ratio of the initial distance to centroid) 
+  
+  Default: 0.5
+  
+  Example:
+    * ``simplex_contraction = 0.3``
+    
+**simplex_shrink**
+  If a whole iteration was unproductive, shrink the simplex by setting simplex point :math:`s[i]` to :math:`x*s[0] + (1-x)*s[i]`, where *x* is the value of this key and :math:`s[0]` is the best point in the simplex. 
+  
+  Default: 0.5
+  
+  Example:
+    * ``simplex_shrink = 0.3``
+
+**simplex_max_iterations**
   If specified, overrides the ``max_iterations`` setting. Useful if you are using the ``refine`` flag and want ``max_iterations`` to refer to your main algorithm.
-``simplex_stop_tol = float`` 
+  
+  Example:
+    * ``simplex_max_iterations = 20``
+    
+**simplex_stop_tol** 
   Stop the algorithm if all parameters have converged to within this value (specifically, if all reflections in an iteration move the parameter by less than this 
-  value) Default: 0 (don't use this criterion)
+  value)
+  
+  Default: 0 (don't use this criterion)
+  
+  Example:
+    * ``simplex_stop_tol = 0.01``
 
 
 :ref:`Differential Evolution <alg-de>`
@@ -371,74 +416,203 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
 
 PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronous differential evolution (``fit_type = de``) and asynchronous differential evolution (``fit_type = ade``). Both versions may be configured with the follwing keys.
 
-``mutation_rate = float``
-  When generating a new individual, mutate each parameter with this probability. Default: 0.5
-``mutation_factor = float``
-  When mutating a parameter x, change it by mutation_factor*(PS1[x] - PS2[x]) where PS1 and PS2 are random other PSets in the population.  Default: 1.0
-``stop_tolerance = float``
-  Stop the run if within the current popluation :math:`max(objective) / min(objective) < 1 + e`, where *e* = this value. This criterion triggers when the entire population has converged to roughly the same objective. Default: 0.002
-``de_strategy = str``
-  Specifies how new parameter sets are chosen. Options are: ``rand1``, ``rand2``, ``best1``, ``best2``, ``all1``, ``all2``. The parameter set we mutate is: 'rand' - a random one, 'best' - the one with the lowest objective value, 'all' - the one we are proposing to replace (so all psets are mutated once per iteration). The amount of mutation is based on: '1' - 1 pair of other parameter sets :math:`(p_1-p_2)`, '2' - 2 pairs of other parameter sets :math:`(p1-p2 + p3-p4)`. Default: rand1
+**mutation_rate**
+  When generating a new individual, mutate each parameter with this probability. 
+  
+  Default: 0.5
+  
+  Example:
+    * ``mutation_rate = 0.7``
+    
+**mutation_factor**
+  When mutating a parameter x, change it by mutation_factor*(PS1[x] - PS2[x]) where PS1 and PS2 are random other PSets in the population.  
+  
+  Default: 1.0
+  
+  Example:
+    * ``mutation_factor = 0.7``
+
+**stop_tolerance**
+  Stop the run if within the current popluation, :math:`max\_objective / min\_objective < 1 + e`, where *e* is the value of this key. This criterion triggers when the entire population has converged to roughly the same objective function value. 
+  
+  Default: 0.002
+  
+  Example:
+    * ``stop_tolerance = 0.001``
+  
+  
+**de_strategy**
+  Specifies how new parameter sets are chosen. The following options are available:
+   - ``rand1``
+   - ``rand2``
+   - ``best1`` 
+   - ``best2``
+   - ``all1``
+   - ``all2``
+  The first part of the string determines which parameter set we mutate:
+   - ``rand`` - a random one
+   - ``best`` - the one with the lowest objective value
+   - ``all`` - the one we are proposing to replace (so all psets are mutated once per iteration). 
+  The second part of the string specifies how we calculate the amount by which to mutate each parameter: 
+   - ``1`` - Use 1 pair of other parameter sets: :math:`(p_1-p_2)`
+   - ``2`` - Use 2 pairs of other parameter sets: :math:`(p1-p2 + p3-p4)`. 
+  
+  Default: rand1
+  
+  Example:
+    * ``de_strategy = rand2``
 
 The following options are only available with ``fit_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
 
-``islands = int``
-  Number of separate populations to evolve. Default: 1
-``migrate_every = int``
-  After this number of generations, migrate some individuals between islands. Default: 20 (but Inf if ``islands = 1``)
-``num_to_migrate = int``
-  How many individuals to migrate off of each island during migration. Default: 3
+**islands**
+  Number of separate populations to evolve.
+  
+  Default: 1
+  
+  Example: 
+    * ``islands = 2``
+    
+**migrate_every**
+  After this number of generations, migrate some individuals between islands. 
+  
+  Default: 20 (but Infinity if ``islands = 1``)
+  
+  Example:
+    * ``migrate_every = 10``
+    
+**num_to_migrate**
+  How many individuals to migrate off of each island during migration. 
+  
+  Default: 3
+  
+  Example:
+    * ``num_to_migrate = 5``
 
 
 :ref:`Scatter Search <alg-ss>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``init_size = int``
-  Number of PSets to test to generate the initial population. Default: 10 * number of variables
-``local_min_limit = int``
-  If a point is stuck for this many iterations without improvement, it is assumed to be a local min and replaced with a random parameter set. Default: 5
-``reserve_size = int``
-  Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from the reserve, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. Default: max_iterations
+**init_size**
+  Number of parameter sets to test to generate the initial population. 
+  
+  Default: 10 * number of parameters
+  
+  Example:
+    * ``init_size = 100``
+  
+  
+**local_min_limit**
+  If a point is stuck for this many iterations without improvement, it is assumed to be a local min and replaced with a random parameter set. 
+  
+  Default: 5
+  
+  Example:
+    * ``local_min_limit = 10``
+    
+**reserve_size**
+  Scatter Search maintains a latin-hypercube-distributed "reserve" of parameter sets. When it needs to pick a random new parameter set, it takes one from the reserve, so it's not similar to a previous random choice. The initial size of the reserve is this value. If the reserve becomes empty, we revert to truly random pset choices. 
+  
+  Default: Value of ``max_iterations``
+  
+  Example:
+    * ``reserve_size = 100``
 
 
 :ref:`Particle Swarm <alg-pso>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``cognitive = float``
+**cognitive**
   Acceleration toward a particle's own best fit
-``social = float``
+  
+  Default: 1.5
+  
+  Example:
+    * ``cognitive = 1.7``
+  
+**social**
   Acceleration toward the global best fit
-``particle_weight = float`` 
-  Inertia weight of particle. A value less than 1 can be thought of as friction that contiuously decelerates the particle. Default: 1
-``v_stop = float``
-  Stop the algorithm if the speeds of all parameters in all particles are less than this value. Default: 0 (don't use this criterion)
+  
+  Default: 1.5
+  
+  Example:
+    * ``social = 1.7``
+    
+**particle_weight**
+  Inertia weight of particle. A value less than 1 can be thought of as friction that contiuously decelerates the particle. 
+  
+  Default: 1
+  
+  Example:
+    * ``particle_weight = 0.9``
+    
+**v_stop**
+  Stop the algorithm if the speeds of all parameters in all particles are less than this value. 
+  
+  Default: 0 (don't use this criterion)
+  
+  Example:
+    * ``v_stop = 0.01``
 
 A variant of particle swarm that adaptively changes the ``particle_weight`` over the course of the fitting run is configured with the following parameters. See the :ref:`algorithm documentation <pso-adaptive>` for more information. 
 
-``particle_weight_final``
-  The final particle weight after the adaptive changing. Default: the value of ``particle_weight``, effectively disabling this feature. 
-``adaptive_n_max``
-  After this many "unproductive" iterations, we have moved halfway from the initial weight to the final weight. Default: 30
-``adaptive_n_stop``
-  Afer this many "unproductive" iterations, stop the fitting run. Default: Inf
-``adaptive_abs_tol``
-  Parameter for checking if an iteration was "unproductive" Default: 0
-``adaptive_rel_tol``
-  Parameter for checking if an iteration was "unproductive" Default: 0
+**particle_weight_final**
+  The final particle weight after the adaptive weight changing. 
+  
+  Default: the value of ``particle_weight``, effectively disabling this feature. 
+  
+  Example:
+    * ``particle_weight_final = 0.5``
+    
+**adaptive_n_max**
+  After this many "unproductive" iterations, we have moved halfway from the initial weight to the final weight. 
+  
+  Default: 30
+  
+  Example: 
+    * ``adaptive_n_max = 20``
+    
+**adaptive_n_stop**
+  Afer this many "unproductive" iterations, stop the fitting run. 
+  
+  Default: Inf
+  
+  Example:
+    * ``adaptive_n_stop = 50``
+    
+**adaptive_abs_tol**
+  Parameter for checking if an iteration was "unproductive" 
+  
+  Default: 0
+  
+  Example:
+    * ``adaptive_abs_tol = 0.01``
+    
+**adaptive_rel_tol**
+  Parameter for checking if an iteration was "unproductive" 
+  
+  Default: 0
+  
+  Example:
+    * ``adaptive_rel_tol = 0.01``
 
 :ref:`Bayesian Algorithms (bmc, pt, sa) <alg-mcmc>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``). These algorithms have many configuration keys in common, as described below. 
+In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), and :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``). These algorithms have many configuration keys in common, as described below. 
 
 
 For all Bayesian algorithms
 """""""""""""""""""""""""""
 
-``step_size = float``
-  When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. Default: 0.2
+**step_size**
+  When proposing a Monte Carlo step, the step in n-dimensional parameter space has this length. 
+  
+  Default: 0.2
+  
+  Example:
+    * ``step_size = 0.5``
 
-``beta = int`` ; ``beta = b1 b2 b3`` 
+**beta**
   Sets the initial beta (1/temperature). A smaller beta corresponds to a more broad exploration of parameter space. If a single value is provided, that beta is used for all replicates. If multiple values are provided, an equal number of replicates uses each value. 
   
   For ``mcmc``, should be set to 1 (the default) to get the true probability distribution. 
@@ -446,41 +620,106 @@ For all Bayesian algorithms
   For ``pt``, should specify multiple values: the number of values should equal ``population_size``/``reps_per_beta``. Or you may instead use the ``beta_range`` key. Only the largest beta value in the list will constribute to statistical samples, and to get the true probability distribution, this maximum value should be 1.
   
   For ``sa``, should typically be set to a single, small value which will increase over the course of the fitting run. 
+  
+  Default: 1
+  
+  Examples:
+    * ``beta = 0.9``
+    * ``beta = 0.7 0.8 0.9 1``
 
 
 For all Bayesian algorithms except ``sa``
 """""""""""""""""""""""""""""""""""""""""
 
-``sample_every = int``
+**sample_every**
   Every x iterations, save the current PSet into the sampled population. Default: 100
-``burn_in = int``
-  Don't sample for this many iterations at the start, to let the system equilibrate. Default: 10000
-``output_hist_every = int`` 
-  Every x samples (i.e every x*sample_every iterations), save a historgram file for each variable, and the credible interval files, based on what has been sampled so far. Regardless, we also output these files at the end of the run.  Default: 100
-``hist_bins = int`` 
-  Number of bins used when writing the histogram files. Default: 10
-``credible_intervals = n1 n2 n3``
-  Specify one or more numbers here. For each n, the algorithm will save a file giving bounds for each variable such that in n% of the samples the variable lies within the bounds.  Default: 68 95
+  
+  Example:
+    * ``sample_every = 20``
+    
+**burn_in**
+  Don't sample for this many iterations at the start, to let the system equilibrate. 
+  
+  Default: 10000
+  
+  Example:
+    * ``burn_in = 1000``
+    
+**output_hist_every**
+  Every x samples (i.e every x*sample_every iterations), save a historgram file for each parameter, and the credible interval files, based on what has been sampled so far. Regardless, we also output these files at the end of the run.  
+  
+  Default: 100
+  
+  Example: 
+    * ``output_hist_every = 10``
+    
+**hist_bins** 
+  Number of bins used when writing the histogram files. 
+  
+  Default: 10
+  
+  Example:
+    * ``hist_bins = 20``
+
+**credible_intervals**
+  Specify one or more numbers here. For each n, the algorithm will save a file giving bounds for each parameter such that in n% of the samples, the parameter lies within the bounds.
+  
+  Default: 68 95
+  
+  Examples:
+    * ``credible_intervals = 95``
+    * ``credible_intervals = 20 68 95``
 
 
 For Simulated Annealing
 """""""""""""""""""""""
 
-``beta_max = float`` 
-  Stop the algorithm if all replicates reach this beta (1/temperature) value. Default: Inf (don't use this stop criterion)
-``cooling = float``
-  Each time a move to a higher energy state is accepted, increase beta (1/temperature) by this value. Default: 0.01
+**beta_max** 
+  Stop the algorithm if all replicates reach this beta (1/temperature) value. 
+  
+  Default: Infinity (don't use this stop criterion)
+  
+  Example:
+    * ``beta_max = 1.5``
+    
+**cooling = float**
+  Each time a move to a higher energy state is accepted, increase beta (1/temperature) by this value. 
+  
+  Default: 0.01
+  
+  Example:
+    * ``cooling = 0.001``
 
 
 For Parallel Tempering
 """"""""""""""""""""""
 
-``exchange_every = int``
+**exchange_every**
   Every x iterations, perform replica exchange, swapping replicas that are adjacent in temperature with a statistically correct probability
-``reps_per_beta = int``
-  How many identical replicas to run at each temperature. Must be a divisor of population_size
-``beta_range=min max``
-  As an alternative to setting ``beta``, the range of values of beta to use. The replicates will use population_size/reps_per_beta evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, max should be 1.
+  
+  Default: 20
+  
+  Example:
+    * ``exchange_every = 10``
+    
+    
+**reps_per_beta**
+  How many identical replicas to run at each temperature. Must be a divisor of ``population_size``.
+  
+  Default: 1
+  
+  Example:
+    * ``reps_per_beta = 5``
+  
+  
+**beta_range**
+  As an alternative to setting ``beta``, the range of values of beta to use. Specify the minimum value, followed by the maximum value. The replicates will use ``population_size``/``reps_per_beta`` evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, the maximum value should be 1.
+  
+  Default: None (betas are set with the ``beta`` key)
+  
+  Example:
+    * ``beta_range = 0.5 1`` 
+  
 
 
 .. For DREAM
