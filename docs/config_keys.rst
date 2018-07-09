@@ -220,35 +220,123 @@ Output Options
 
 Algorithm Options
 ^^^^^^^^^^^^^^^^^
-``objfunc = str``
-  Which :ref:`objective function <objective>` to use. Options: ``chi_sq`` - Chi Squared, ``sos`` - Sum of squares, ``norm_sos`` - Sum of squares, normalized by the value at each point,
-  ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. Default: chi_sq
-``bootstrap = int`` 
-  If assigned a positive value, estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.  Default: 0 (no bootstrapping)
-``bootstrap_max_obj = float``
-  The maximum value of a fitting run's objective function to be considered valid in the bootstrapping procedure. If a fit ends with a larger objective value, it is discarded. 
+**objfunc**
+  Which :ref:`objective function <objective>` to use. 
+   - ``chi_sq`` - Chi Squared
+   - ``sos`` - Sum of squares
+   - ``norm_sos`` - Sum of squares, normalized by the value at each point,
+   - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. 
+   
+  Default: chi_sq
+  
+  Example:
+    * ``objfunc = chi_sq``
+   
+  
+**bootstrap**
+  If assigned a positive value, estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.
+  
+  Default: 0 (no bootstrapping)
+  
+  Example:
+    * ``bootstrap = 10``
+    
+**bootstrap_max_obj**
+  The maximum value of a fitting run's objective function to be considered valid in the bootstrapping procedure. If a fit ends with a larger objective value, it is discarded.
+  
   Default: None
-``constraint_scale = float``
-  Scale all weights in all constraint files by this multiplicative factor. For convenience only: The same thing could be achieved by editing constraint files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. Default: 1 (no scaling)
-``ind_var_rounding = int``
-  If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) Default: 0
-``initialization = str``
-  How to initialize parameters. ``rand`` - initialize params randomly according to the distributions. ``lh`` - For ``random_var``\ s and ``loguniform_var``\ s, initialize with a latin hypercube distribution, to more uniformly cover the search space.
-``local_objective_eval = int``
-  If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` feature. 
+  
+  Example:
+    * ``bootstrap_max_obj = 1.5``
+    
+**constraint_scale**  
+  Scale all weights in all constraint files by this multiplicative factor. For convenience only: The same thing could be achieved by editing constraint files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. 
+  
+  Default: 1 (no scaling)
+  
+  Example:
+    * ``constraint_scale = 1.5``
+
+**ind_var_rounding**
+  If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) 
+  
+  Default: 0
+  
+  Example:
+    * ``ind_var_rounding = 1``
+    
+**initialization**
+  How to initialize parameters. 
+   - ``rand`` - initialize params randomly according to the distributions. 
+   - ``lh`` - For ``random_var``\ s and ``loguniform_var``\ s, initialize with a latin hypercube distribution, to more uniformly cover the search space.
+   
+  Default: lh
+  
+  Example: 
+    * ``initialization = rand``
+    
+**local_objective_eval**
+  If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` feature.
+   
   Default: 0 (unless smoothing is enabled)
-``min_objective = float``
-  Stop fitting if an objective function lower than this value is reached. Default: None; always run for the maximum iterations
-``normalization = type`` ; ``normalization = type : d1.exp, d2.exp`` ; ``normalization = type: (d1.exp: var1,var2)``
-  Indicates that simulation data must be normalized in order to compare with exp files. Choices for ``type`` are: ``init`` - normalize to the initial value,  ``peak`` - normalize to the maximum value, ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1, ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1). If only the type is specified, the normalization is applied to all exp files. If one or more exp files included, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)`` Multiple lines with this key can be used. Default: No normalization
-``refine = int``
-  If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. Default: 0
-``smoothing = int``
-  Number of replicate runs to average together for each parameter set (useful for stochastic simulations). Default: 1
-``wall_time_gen = int``
-  Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded. Default: 3600
-``wall_time_sim = int``
-  Maximum time (in seconds) to wait for a simulation to finish.  Exceeding this results in an infinite objective function value. Caution: For SBML models, using this option has an overhead cost, so don't use it unless needed. Default: 3600  
+  
+  Example: 
+    * ``local_objective_eval = 1``
+  
+**min_objective**
+  Stop fitting if an objective function lower than this value is reached. 
+  
+  Default: None; always run for the maximum iterations
+  
+  Example: 
+    * ``min_objective = 0.01``
+  
+**normalization**
+  Indicates that simulation data must be normalized in order to compare with exp files. Specify one of the following types of normalization:
+   - ``init`` - normalize to the initial value
+   - ``peak`` - normalize to the maximum value
+   - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
+   - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1). 
+  If only the type is specified, the normalization is applied to all exp files. If the type is followed by a ':' and a comma-delimited list of exp files, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)``. Multiple lines with this key can be used. 
+   
+  Default: No normalization
+   
+  Examples:
+     * ``normalization = init``
+     * ``normalization = init: data1.exp, data2.exp``
+     * ``normalization = init: (data1.exp: 1,3-5), (data2.exp: var1,var2)``
+  
+**refine**
+  If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. 
+  
+  Default: 0
+  
+  Example:
+    * ``refine = 1``
+    
+**smoothing**
+  Number of replicate runs to average together for each parameter set (useful for stochastic simulations). 
+  
+  Default: 1
+  
+  Example:
+    * ``smoothing = 2``
+    
+**wall_time_gen**
+  Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded. 
+  
+  Default: 3600
+  
+  Example: 
+    * ``wall_time_gen = 600``
+    
+**wall_time_sim**
+  Maximum time (in seconds) to wait for a simulation to finish.  Exceeding this results in an infinite objective function value. Caution: For SBML models, using this option has an overhead cost, so only use it when needed. 
+  
+  Default: 3600 for BNGL models; No limit for SMBL models
+  
+  Example: 
+    * ``wall_time_sim = 600``
 
 
 Algorithm-specific Options
