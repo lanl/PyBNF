@@ -1414,7 +1414,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
                 # print(sorted(self.fitnesses[island]))
 
             # Convergence check
-            if np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance:
+            if (np.min(self.fitnesses) != 0) and (np.max(self.fitnesses) / np.min(self.fitnesses) < 1. + self.stop_tolerance):
                 return 'STOP'
 
             # Return a copy, so our internal data structure is not tampered with.
