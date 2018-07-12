@@ -983,7 +983,10 @@ class ParticleSwarm(Algorithm):
         # If so, update based on reflection protocol and set velocity to 0
         new_vars = []
         for v in self.swarm[p][0]:
-            new_val = v.value + self.swarm[p][1][v.name]
+            if v.log_space:
+                new_val = 10.**(np.log10(v.value) + self.swarm[p][1][v.name])
+            else:
+                new_val = v.value + self.swarm[p][1][v.name]
             if new_val < v.lower_bound or v.upper_bound < new_val:
                 self.swarm[p][1][v.name] = 0.0
             new_vars.append(v.add(self.swarm[p][1][v.name]))
