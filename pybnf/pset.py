@@ -974,8 +974,11 @@ class FreeParameter(object):
 
         while True:
             if num_reflections >= 1000:
-                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter = %s" % (cur, add, self.name))
-                raise PybnfError("Too many reflections for parameter %s. Current value = %s, adding value %s" % (self.name, cur, add))
+                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter ="
+                             " %s. Set parameter to a random value" % (cur, add, self.name))
+                # Return a random value. Not ideal, but better than crashing the whole run.
+                rand = np.random.uniform(lb, ub)
+                return 10.**rand if self.log_space else rand
 
             num_reflections += 1
             if cur + add > ub:
