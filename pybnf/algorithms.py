@@ -919,20 +919,8 @@ class ParticleSwarm(Algorithm):
             p = new_params_list[i]
             p.name = 'iter0p%i' % i
 
-            # As per various suggestions (e.g. Soon and Low 2012), start with very small velocities.
-            # We use 1/100 of a uniform search space, or stddev/10 for a normal search space
-            new_velocity = dict()
-            for v in self.variables:
-                if v.type == 'uniform_var':
-                    vel = np.random.uniform(-0.01*(v.p2-v.p1), 0.01*(v.p2-v.p1))
-                elif v.type=='loguniform_var':
-                    vel = np.random.uniform(-0.01*(np.log10(v.p2)-np.log10(v.p1)), 0.01*(np.log10(v.p2)-np.log10(v.p1)))
-                elif v.type=='normal_var' or v.type=='lognormal_var':
-                    vel = np.random.uniform(-v.p2/10., v.p2/10.)
-                else:
-                    logger.error('Unknown variable type %s. Setting particle swarm velocity to 0' % v.type)
-                    vel = 0.
-                new_velocity[v.name] = vel
+            # As suggested by Engelbrecht 2012, set all initial velocities to 0
+            new_velocity = dict({v.name: 0. for v in self.variables})
 
             self.swarm.append([p, new_velocity])
             self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
