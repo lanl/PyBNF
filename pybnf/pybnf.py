@@ -3,7 +3,7 @@
 
 from .parse import load_config
 from .config import init_logging
-from .printing import print0, print1, PybnfError
+from .printing import print0, print1, print2, PybnfError
 from .cluster import get_scheduler, setup_cluster, teardown_cluster
 from .pset import Trajectory
 import pybnf.algorithms as algs
@@ -25,6 +25,7 @@ __version__ = "0.1"
 
 def main():
     """The main function for running a fitting job"""
+    start_time = time.time()
 
     success = False
     node_string = None
@@ -367,4 +368,10 @@ def main():
         except:
             logger.exception('During cleanup, another exception occurred')
         finally:
+            end_time = time.time()
+            secs = end_time - start_time
+            mins, secs = divmod(secs, 60)
+            hrs, mins = divmod(mins, 60)
+            print2('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
+            logger.info('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
             exit(0 if success else 1)
