@@ -206,6 +206,10 @@ class Job:
             if debug:
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 0)
+        except FileNotFoundError:
+            self.jlogger.exception('File not found during job %s. This should only happen if the fitting '
+                                   'is already done.' % self.job_id)
+            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         except Exception:
             if debug:
                 self._copy_log_files(failed_logs_dir)
@@ -799,7 +803,7 @@ class Algorithm(object):
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
-                shutil.rmtree(self.sim_dir)
+                run(['rm', '-rf', self.sim_dir])
 
         logger.info("Fitting complete")
 
