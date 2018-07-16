@@ -128,7 +128,7 @@ class Configuration(object):
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
 
-            'particle_weight': 1.0, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
+            'particle_weight': 0.7, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
             'adaptive_rel_tol': 0.0, 'cognitive': 1.5, 'social': 1.5, 'v_stop': 0.,
 
             'local_min_limit': 5,
