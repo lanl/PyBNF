@@ -535,7 +535,16 @@ class Algorithm(object):
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
             res.normalize(self.config.config['normalization'])
-            res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
+            # Do custom postprocessing, if any
+            try:
+                res.postprocess_data(self.config.postprocessing)
+            except Exception:
+                logger.exception('User-defined post-processing script failed')
+                traceback.print_exc()
+                print0('User-defined post-processing script failed')
+                res.score = np.inf
+            else:
+                res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
                 logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
