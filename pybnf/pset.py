@@ -614,8 +614,6 @@ class SbmlModelNoTimeout(Model):
                     runner.getIntegrator().setValue('variable_step_size', False)
                 else:
                     runner.setIntegrator(self.integrator)
-                    if self.integrator == 'rk45':
-                        runner.getIntegrator().setValue('variable_step_size', False)
                 if isinstance(act, TimeCourse):
                     try:
                         res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)

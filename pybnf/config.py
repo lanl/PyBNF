@@ -397,7 +397,7 @@ class Configuration(object):
                                      'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
                                      'variable is correctly set')
         # Check that the integrator is valid
-        integrators = ('cvode', 'euler', 'rk4', 'rk45', 'gillespie')
+        integrators = ('cvode', 'euler', 'rk4', 'gillespie')
         if self.config['sbml_integrator'] not in integrators:
             raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
                                                                                ', '.join(integrators)))
