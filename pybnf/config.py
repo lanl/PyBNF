@@ -15,6 +15,7 @@ import os
 import re
 import logging
 import subprocess
+import roadrunner
 
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ class Configuration(object):
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
+            'sbml_integrator': 'cvode',
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
@@ -394,6 +396,14 @@ class Configuration(object):
                     raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
                                      'variable is correctly set')
+        # Check that the integrator is valid
+        integrators = ('cvode', 'euler', 'rk4', 'rk45', 'gillespie')
+        if self.config['sbml_integrator'] not in integrators:
+            raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
+                                                                               ', '.join(integrators)))
+        if self.config['sbml_integrator'] == 'euler' and roadrunner.__version__ < '1.5.0':
+            raise PybnfError('"sbml_integrator = euler" requires Roadrunner version 1.5.0 or higher. You '
+                             'have version %s' % roadrunner.__version__)
 
     def _load_actions(self):
 
