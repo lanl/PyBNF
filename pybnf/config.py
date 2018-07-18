@@ -317,9 +317,9 @@ class Configuration(object):
                 elif re.search('\.xml$', mf):
                     save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag)
+                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
                     else:
-                        model = SbmlModel(mf, absolute(mf), save_files=save_flag)
+                        model = SbmlModel(mf, absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
@@ -402,7 +402,7 @@ class Configuration(object):
             raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
                                                                                ', '.join(integrators)))
         if self.config['sbml_integrator'] == 'euler' and roadrunner.__version__ < '1.5.0':
-            raise PybnfError('"sbml_integrator = euler" requires Roadrunner version 1.5.0 or higher. You '
+            raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.0 or higher. You '
                              'have version %s' % roadrunner.__version__)
 
     def _load_actions(self):

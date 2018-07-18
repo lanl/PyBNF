@@ -479,7 +479,7 @@ class NetModel(BNGLModel):
 
 class SbmlModelNoTimeout(Model):
 
-    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False):
+    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode'):
         """
         :param file: The file path to the model as it was defined in the config. Used when indexing into the config dict
         :param abs_file: The absolute file path to the model. Used to actually load the model
@@ -494,8 +494,9 @@ class SbmlModelNoTimeout(Model):
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.save_files = save_files
         self.actions = list(actions)
+        self.integrator = integrator
         self.suffixes = [a.suffix for a in actions]
-        self.stochastic = False
+        self.stochastic = True if integrator == 'gillespie' else False
         self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
 
         try:
@@ -608,11 +609,13 @@ class SbmlModelNoTimeout(Model):
 
             for act in self.actions:
                 runner.reset()
-                if act.method == 'ssa':
+                if act.method == 'ssa' or self.integrator == 'gillespie':
                     runner.setIntegrator('gillespie')
                     runner.getIntegrator().setValue('variable_step_size', False)
                 else:
-                    runner.setIntegrator('cvode')
+                    runner.setIntegrator(self.integrator)
+                    if self.integrator == 'rk45':
+                        runner.getIntegrator().setValue('variable_step_size', False)
                 if isinstance(act, TimeCourse):
                     try:
                         res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
