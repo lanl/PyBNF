@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import ntpath
+import signal
 from shutil import copyfile
 from pathlib import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -27,7 +28,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     bnfpath = ""
     savepath = ""
     confhead = ""
-
+    process = ''
     home = str(Path.home())
 
     def layout_widgets(self, layout):
@@ -61,10 +62,12 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         self.cluster_type.activated[int].connect(self.clusterAct)
 
         self.actionOpen_file.triggered.connect(self.OpenFile)
-        self.actionSave_file.triggered.connect(self.SaveFile)
-        self.actionSave_Project.triggered.connect(self.SaveProject)
+        self.actionSave.triggered.connect(self.Savebtn)
+        self.actionSaveAs_file.triggered.connect(self.SaveFile)
+        self.actionExport_Project.triggered.connect(self.SaveProject)
         self.openBtn.clicked.connect(self.OpenFile)
-        self.saveBtn.clicked.connect(self.SaveFile)
+        self.saveBtn.clicked.connect(self.Savebtn)
+        self.saveAsBtn.clicked.connect(self.SaveFile)
         self.saveprojBtn.clicked.connect(self.SaveProject)
 
         #free params
@@ -257,15 +260,26 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         self.bnf_path.setText(self.bnfpath)
 
     def runBNF(self):
-        try:
-            self.SaveFile()
-            #print(self.savepath)
-            command = str("cd " + self.bnfpath +"; pybnf -c " + self.savepath)
-            QtWidgets.QMessageBox.about(self, "Alert", "Check terminal for BioNetFit subprocess")
-            subprocess.Popen(command, shell=True, start_new_session=True)
-        except Exception as e:
-            print(e)
-    '''
+        if self.bnfBtn.text() == "Save and run":
+            try:
+                self.Savebtn()
+                #print(self.savepath)
+                command = str("cd " + self.bnfpath +"; pybnf -c " + self.savepath)
+                QtWidgets.QMessageBox.about(self, "Alert", "Check terminal for BioNetFit subprocess")
+                self.process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
+                print("start")
+                self.bnfBtn.setText("Terminate process")
+            except Exception as e:
+                print(e)
+        else:
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                print("killed")
+                self.bnfBtn.setText("Save and run")
+            except Exception as e:
+                print(e)
+
+    ''' 
     init combobox functions
     '''
     def random(self):
@@ -937,6 +951,18 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                         strprint = str(strprint[:-1])
                         file.write(strprint)
                         file.write("\n")
+    def hide(self):
+        print ("hide")
+
+    def Savebtn(self):
+        if self.savepath != "":
+            self.Save(self.savepath)
+            self.savelabel.setText("Saved!")
+            timer = QtCore.QTimer()
+            timer.timeout.connect(self.hide)
+            timer.start(5000)
+            self.savelabel.setText("")
+            
     def SaveFile(self):
         options = QtWidgets.QFileDialog.Options()
         options |= QtWidgets.QFileDialog.DontUseNativeDialog
