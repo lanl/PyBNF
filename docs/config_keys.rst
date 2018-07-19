@@ -539,9 +539,9 @@ The following options are only available with ``fit_type = de``, and serve to ma
     * ``social = 1.7``
     
 **particle_weight**
-  Inertia weight of particle. A value less than 1 can be thought of as friction that contiuously decelerates the particle. 
+  Inertia weight of particle. A value less than 1 can be thought of as friction that contniuously decelerates the particle.
   
-  Default: 1
+  Default: 0.7
   
   Example:
     * ``particle_weight = 0.9``

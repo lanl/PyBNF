@@ -206,6 +206,10 @@ class Job:
             if debug:
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 0)
+        except FileNotFoundError:
+            self.jlogger.exception('File not found during job %s. This should only happen if the fitting '
+                                   'is already done.' % self.job_id)
+            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         except Exception:
             if debug:
                 self._copy_log_files(failed_logs_dir)
@@ -799,7 +803,7 @@ class Algorithm(object):
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
-                shutil.rmtree(self.sim_dir)
+                run(['rm', '-rf', self.sim_dir])
 
         logger.info("Fitting complete")
 
@@ -918,8 +922,10 @@ class ParticleSwarm(Algorithm):
         for i in range(len(new_params_list)):
             p = new_params_list[i]
             p.name = 'iter0p%i' % i
-            # Todo: Smart way to initialize velocity?
-            new_velocity = {v.name: np.random.uniform(-1, 1) for v in self.variables}
+
+            # As suggested by Engelbrecht 2012, set all initial velocities to 0
+            new_velocity = dict({v.name: 0. for v in self.variables})
+
             self.swarm.append([p, new_velocity])
             self.pset_map[p] = len(self.swarm)-1  # Index of the newly added PSet.
 
@@ -983,10 +989,13 @@ class ParticleSwarm(Algorithm):
         # If so, update based on reflection protocol and set velocity to 0
         new_vars = []
         for v in self.swarm[p][0]:
-            new_val = v.value + self.swarm[p][1][v.name]
+            new_vars.append(v.add(self.swarm[p][1][v.name]))
+            if v.log_space:
+                new_val = 10.**(np.log10(v.value) + self.swarm[p][1][v.name])
+            else:
+                new_val = v.value + self.swarm[p][1][v.name]
             if new_val < v.lower_bound or v.upper_bound < new_val:
                 self.swarm[p][1][v.name] = 0.0
-            new_vars.append(v.add(self.swarm[p][1][v.name]))
 
         new_pset = PSet(new_vars)
         self.swarm[p][0] = new_pset
