@@ -56,6 +56,14 @@ def init_logging(file_prefix, debug=False):
         tlog.addHandler(dfh)
         talog.addHandler(dfh)
 
+def reinit_logging(file_prefix, debug=False):
+    """
+    Shut down logging, then restart it.
+    Used when some module (e.g. distributed v1.22.0) breaks the logging.
+    """
+    if logging.root:
+        del logging.root.handlers[:]
+    init_logging(file_prefix, debug)
 
 class Configuration(object):
     def __init__(self, d=dict()):
