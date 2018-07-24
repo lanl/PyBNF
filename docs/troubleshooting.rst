@@ -80,6 +80,24 @@ Some highly parallelized runs may encounter the error "Too many open files". Thi
 
 If you are unable to increase the open file handle limit, then you will have to reduce the number of parallel jobs submitted in PyBNF by adjusting the ``num_parallel`` or ``population_size`` settings. 
 
+
+Too many threads
+----------------
+This error can come up in parallelized runs in which simulations are very fast. Similar to the `Too many open files`_ error, it occurs when PyBNF exceeds the number of threads allowed by the system for a single user. 
+
+You can check the thread limit on the command line with ``ulimit -u``. Many operating systems have this limit very high (over 100,000), but if yours has it set on the order of 4096, it could cause this error. 
+
+We recommend having an administrator with root access increase your default thread limit on the machine. Edit the file ``/etc/security/limits.conf`` and add the lines::
+
+    username soft nproc 100000
+    username hard nproc 100000
+
+where ``username`` is your user name, and ``100000`` is the new thread limit (use any reasonably large value). Restart the system for the changes to take effect. 
+
+We do not recommend increasing the thread limit via the command line as in `Too many open files`_\ : This change would only affect the current terminal, so although PyBNF could keep running, the rest of your system would become unresponsive after the original limit was exceeded. 
+
+
+
 .. _jobs_still_running:
 
 Jobs still running after PyBNF stops
