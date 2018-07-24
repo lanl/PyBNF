@@ -7,7 +7,7 @@ from subprocess import run
 from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import STDOUT
 
-from .config import init_logging
+from .config import init_logging, reinit_logging
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
@@ -677,6 +677,9 @@ class Algorithm(object):
         else:
             client = Client()
             client.run(init_logging, log_prefix, debug)
+
+        # Required because with distributed v1.22.0, logger breaks after calling Client()
+        reinit_logging(log_prefix, debug)
 
         backup_every = self.get_backup_every()
         sim_count = 0
