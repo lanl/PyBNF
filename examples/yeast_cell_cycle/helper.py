@@ -17,7 +17,7 @@ def gen_config(filename, outmodel, outact):
                 phen = line[1]
                 if phen not in next_index:
                     next_index[phen] = 0
-                model_line = 'mutant = %s %s%s ' + ' '.join(muts) + ': examples/Tyson/constraints/r%s%s.con\n'
+                model_line = 'mutant = %s %s%s ' + ' '.join(muts) + ': constraints/r%s%s.con\n'
                 base = 'yeast'
                 outm.write(model_line % (base, phen, next_index[phen], phen, next_index[phen],))
                 action_line = 'time_course = model:%s%s, time:1000, step:1, suffix:r\n' % (phen, next_index[phen])
