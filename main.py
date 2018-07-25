@@ -19,6 +19,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     actionDict = {}
     mutantDict = {}
     models = {}
+    mutants = {}
     paths = []
     varlist = []
 
@@ -31,12 +32,16 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     process = ''
     home = str(Path.home())
 
+    timer = QtCore.QTimer()
+
     def layout_widgets(self, layout):
         return (layout.itemAt(i).widget() for i in range(layout.count()))
 
     def __init__(self, parent=None):
         super(bnfc, self).__init__(parent)
         self.setupUi(self)
+        #set up timer
+        self.timer.timeout.connect(self.checkProcess)
         #model config
         self.modelpBtn.clicked.connect(self.addModel)
         self.modelmBtn.clicked.connect(self.removeModel)
@@ -104,15 +109,14 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         self.addEmptyScan()
 
         #mutant
-        self.addMutantBtn.clicked.connect(self.addEmptyMutant)
-
-        m = QtWidgets.QWidget()
-        m.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.mutantout = QtWidgets.QGridLayout()
-        m.setLayout(self.mutantout)
-        self.mutantArea.setWidgetResizable(True)
-        self.mutantArea.setWidget(m)
-        self.addEmptyMutant()
+        self.maddBtn.clicked.connect(self.addMutantModel)
+        self.mremBtn.clicked.connect(self.removeMutantModel)
+        self.nameBtn.clicked.connect(self.addMutantName)
+        self.addStatementBtn.clicked.connect(self.addMutantStatement)
+        self.remStatementBtn.clicked.connect(self.removeMutantStatement)
+        self.addmexpBtn.clicked.connect(self.addMExp)
+        self.remmexpBtn.clicked.connect(self.removeMExp)
+        self.mutantList.currentItemChanged.connect(self.mutantItemChanged)
 
     '''
     model config functions
@@ -138,7 +142,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             options = QtWidgets.QFileDialog.Options()
             options |= QtWidgets.QFileDialog.DontUseNativeDialog
             fileName, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, "QFileDialog.getOpenFileName()", "", "Experimental Data Files (*.exp, *.con);;Constraint Files (*.con);;All Files (*)", options=options)
+                self, "QFileDialog.getOpenFileName()", "", "Experimental Data Files (*.exp);;Constraint Files (*.con);;All Files (*)", options=options)
             if fileName != "":
                 self.models[c.text()].append(fileName)
                 self.expList.addItem(fileName)
@@ -259,6 +263,12 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self, "Choose PyBioNetFit directory")
         self.bnf_path.setText(self.bnfpath)
 
+    def checkProcess(self):
+        if self.process.poll() == None:
+            self.bnfBtn.setText("Terminate process")
+        else:
+            self.bnfBtn.setText("Save and run")
+
     def runBNF(self):
         if self.bnfBtn.text() == "Save and run":
             try:
@@ -267,15 +277,12 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                 command = str("cd " + self.bnfpath +"; pybnf -c " + self.savepath)
                 QtWidgets.QMessageBox.about(self, "Alert", "Check terminal for BioNetFit subprocess")
                 self.process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
-                print("start")
-                self.bnfBtn.setText("Terminate process")
+                self.timer.start(1000)
             except Exception as e:
                 print(e)
         else:
             try:
                 os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-                print("killed")
-                self.bnfBtn.setText("Save and run")
             except Exception as e:
                 print(e)
 
@@ -297,6 +304,9 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     def chisq(self):
         self.varDict["objfunc"] = "chi_sq"
 
+    def sos(self):
+        self.varDict["objfunc"] = "sos"
+
     def norm_sos(self):
         self.varDict["objfunc"] = "norm_sos"
 
@@ -304,7 +314,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         self.varDict["objfunc"] = "ave_norm_sos"
 
     def objAct(self, index):
-        obj = {0: self.chisq, 1: self.norm_sos, 2: self.ave_norm_sos}
+        obj = {0: self.chisq, 1: self.sos, 2: self.norm_sos, 3: self.ave_norm_sos}
         obj[index]()
     '''
     cluster type cb
@@ -540,78 +550,84 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     '''
     mutant
     '''
-    def addMutantModel(self, model):
+    def addMutantModel(self):
         options = QtWidgets.QFileDialog.Options()
         options |= QtWidgets.QFileDialog.DontUseNativeDialog
         fileName, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "QFileDialog.getOpenFileName()", "", "BioNetGen Files (*.bngl);;All Files (*)", options=options)
+        if fileName != "":
+            self.mutants[fileName] = ["", [], []]
+            self.mutantList.addItem(fileName)
 
-        for r in range(0, self.mutantout.rowCount()):
-            it = self.mutantout.itemAtPosition(r, 0)
-            if it is None:
-                continue
+    def removeMutantModel(self):
+        c = self.modelList.currentItem()
+        if c is not None:
+            self.modelList.takeItem(self.modelList.currentRow())
+            self.models.pop(c.text(), None)
+    #name
+    def addMutantName(self):
+        name, _ = QtWidgets.QInputDialog.getText(self, 'Name of mutant', "Enter the name of the mutant:")
+        c = self.mutantList.currentItem()
+        if c is not None:
+            if name != "":
+                self.mutants[c.text()][0] = name
+                self.nameList.clear()
+                self.nameList.addItem(name)
+            else:
+                error_dialog = QtWidgets.QErrorMessage()
+                error_dialog.showMessage('The name entered is not valid.')
+    #statement
+    def addMutantStatement(self):
+        statement, _ = QtWidgets.QInputDialog.getText(self, 'Statements', "Enter the statement:")
+        c = self.mutantList.currentItem()
+        if c is not None:
+            if statement != "":
+                self.mutants[c.text()][1].append(statement)
+                self.statementList.addItem(statement)
+            else:
+                error_dialog = QtWidgets.QErrorMessage()
+                error_dialog.showMessage('The statement entered is not valid.')
 
-            if it.widget() == model:
-                if fileName != "":
-                    model.setText(fileName)
-                break
+    def removeMutantStatement(self):
+        m = self.mutantList.currentItem()
+        c = self.statementList.currentItem()
+        if c is not None:
+            self.mutants[m.text()][1].remove(c.text())
+            self.statementList.takeItem(self.statementList.currentRow())
+    #exps
+    def addMExp(self):
+        c = self.mutantList.currentItem()
+        if c is not None:
+            options = QtWidgets.QFileDialog.Options()
+            options |= QtWidgets.QFileDialog.DontUseNativeDialog
+            fileName, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "QFileDialog.getOpenFileName()", "", "Experimental Data Files (*.exp);;Constraint Files (*.con);;All Files (*)", options=options)
+            if fileName != "":
+                self.mutants[c.text()][2].append(fileName)
+                self.mexpList.addItem(fileName)
 
-    def addEmptyMutant(self):
-        name = QtWidgets.QLineEdit()
-        m = QtWidgets.QTextEdit()
+    def removeMExp(self):
+        m = self.mutantList.currentItem()
+        c = self.mexpList.currentItem()
+        if c is not None:
+            self.mutants[m.text()][2].remove(c.text())
+            self.mexpList.takeItem(self.mexpList.currentRow())
 
-        btn = QtWidgets.QPushButton("Choose:", None)
-        slotLambda = lambda: self.addMutantModel(m)
-        btn.clicked.connect(slotLambda)
-
-        statement1 = QtWidgets.QLineEdit()
-        statement2 = QtWidgets.QLineEdit()
-
-        exp1 = QtWidgets.QLineEdit()
-        exp2 = QtWidgets.QLineEdit()
-
-        gl = self.mutantout
-        row = gl.rowCount()
-        gl.addWidget(m, row, 0)
-        gl.addWidget(btn, row, 1)
-        gl.addWidget(name, row, 2)
-        gl.addWidget(statement1, row, 3)
-        gl.addWidget(statement2, row, 4)
-        gl.addWidget(QtWidgets.QLabel("|"), row, 5)
-        gl.addWidget(exp1, row, 6)
-        gl.addWidget(exp2, row, 7)
-
-    def addMutant(self, mod, nam, stat1, stat2, ex1, ex2):
-        name = QtWidgets.QLineEdit()
-        m = QtWidgets.QTextEdit()
-
-        btn = QtWidgets.QPushButton("+", None)
-        slotLambda = lambda index: self.addMutantModel(m)
-        btn.clicked.connect(slotLambda)
-
-        statement1 = QtWidgets.QLineEdit()
-        statement2 = QtWidgets.QLineEdit()
-
-        exp1 = QtWidgets.QLineEdit()
-        exp2 = QtWidgets.QLineEdit()
-
-        gl = self.mutantout
-        row = gl.rowCount()
-        gl.addWidget(m, row, 0)
-        gl.addWidget(btn, row, 1)
-        gl.addWidget(name, row, 2)
-        gl.addWidget(statement1, row, 3)
-        gl.addWidget(statement2, row, 4)
-        gl.addWidget(QtWidgets.QLabel("|"), row, 5)
-        gl.addWidget(exp1, row, 6)
-        gl.addWidget(exp2, row, 7)
-
-        m.setText(mod)
-        name.setText(nam)
-        statement1.setText(stat1)
-        statement2.setText(stat2)
-        exp1.setText(ex1)
-        exp2.setText(ex2)
+    def mutantItemChanged(self):
+        c = self.mutantList.currentItem()
+        if c is not None:
+            ml = self.mutants[c.text()]
+            self.nameList.clear()
+            self.statementList.clear()
+            self.mexpList.clear()
+            #set name
+            self.nameList.addItem(ml[0])
+            #set statements
+            for j in ml[1]:
+                self.statementList.addItem(j)
+            #set exps
+            for k in ml[2]:
+                self.mexpList.addItem(k)
 
     '''
     file menu func
@@ -657,7 +673,10 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self.modelList.clear()
             self.expList.clear()
             #mutant
-            self.clearGrid(self.mutantout)
+            self.mutantList.clear()
+            self.nameList.clear()
+            self.statementList.clear()
+            self.mexpList.clear()
             #normalization
             self.typeList.clear()
             self.expList2.clear()
@@ -718,8 +737,22 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                     for k, v in quickDict.items():
                         r = {"param": 0, "max": 1, "step": 2, "time": 3, "logspace": 4, "model": 5, "method": 6}
                         self.addScan(r[k], v)
-                elif key == "mutant":
-                    self.addMutant(value[0], value[1], value[2], value[3], value[4], value[5], value[6])
+                elif key == "mutant": #test
+                    statement = ""
+                    statements = []
+                    print(value)
+                    for i in value:
+                        model = i[0]
+                        name = i[1]
+                        for a in i[2]:
+                            for b in a:
+                                statement += b + " "
+                            statements.append(statement)
+                            statement = ""
+                        exps = i[3]
+                        self.mutants[model] = [name, statements, exps]
+                        self.mutantList.addItem(model)
+                        statements = []
                 elif key == "normalization":
                     quickDict = {}
                    # print(value)
@@ -736,7 +769,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
 
                 #qcombobox setting
                 #obj func
-                obj = {"chi_sq": 0, "norm_sos": 1, "ave_norm_sos": 2}
+                obj = {"chi_sq": 0, "sos": 1, "norm_sos": 2, "ave_norm_sos": 3}
                 index = obj.get(varDict.get("objfunc"))
                 if index is not(None):
                     self.objCb.setCurrentIndex(index)
@@ -831,20 +864,6 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                     l = [r[index], val.text()]
                     self.actionDict["param_scan"].append(l)
 
-        #mutant
-        for r in range(0, self.mutantout.rowCount()):
-            it = self.mutantout.itemAtPosition(r, 0)
-            if it is not(None):
-                if it.widget().toPlainText() != "":
-                    model = self.mutantout.itemAtPosition(r, 0).widget()
-                    name = self.mutantout.itemAtPosition(r, 2).widget()
-                    s1 = self.mutantout.itemAtPosition(r, 3).widget()
-                    s2 = self.mutantout.itemAtPosition(r, 4).widget()
-                    e1 = self.mutantout.itemAtPosition(r, 6).widget()
-                    e2 = self.mutantout.itemAtPosition(r, 7).widget()
-                    key = (model.toPlainText(), name.text(), s1.text(), s2.text())
-                    self.mutantDict[key] = [e1.text(), e2.text()]
-
         #normalization
         normalDict = {}
         r = {0: "init", 1: "peak", 2: "zero", 3: "unit"}
@@ -916,8 +935,15 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                         file.write('model = %s : '%(key) + str(", ".join(self.models[key])) + '\n')
                     popDict(self.varDict, ["bng_command", "output_dir", "fit_type", "objfunc", "parallel_count", "cluster_type", "scheduler_node", "worker_nodes"])
                 #mutant
-                for (model, name, s1, s2), (e1, e2) in self.mutantDict.items():
-                    file.write("mutant = %s %s %s %s: %s %s\n"%(model, name, s1, s2, e1, e2))
+                for key, value in self.mutants.items():
+                    statements = ""
+                    exps = ""
+                    name = value[0]
+                    for a in value[1]:
+                        statements += a + " "
+                    for b in value[2]:
+                        exps += b + " "
+                    file.write('mutant = %s %s %s : %s\n' %(key, name, statements, exps))
                 #action commands
                 if self.actionDict.items() != 0:
                     file.write("\n")
@@ -962,6 +988,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             timer.timeout.connect(self.hide)
             timer.start(5000)
             self.savelabel.setText("")
+        else:
+            self.SaveFile()
             
     def SaveFile(self):
         options = QtWidgets.QFileDialog.Options()
