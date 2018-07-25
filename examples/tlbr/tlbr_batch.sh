@@ -18,4 +18,4 @@
 module load anaconda/Anaconda3
 
 # Run PyBNF
-pybnf -c examples/tlbr/tlbr.conf -t SLURM -o
+pybnf -c tlbr.conf -t SLURM -o

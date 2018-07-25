@@ -18,5 +18,5 @@
 module load anaconda/Anaconda3
 
 # Run PyBNF
-pybnf -c examples/degranulation/mcmc.conf -t SLURM -o
+pybnf -c mcmc.conf -t SLURM -o
 

@@ -2,13 +2,13 @@
 # To build Docker image, run inside PyBNF directory:
 #     docker build -t pybnf .
 #
-# Run in the parent directory of PyBNF to mount PyBNF and the PyBNF_output directory inside the image:
-#     $ docker run -it --rm -v $(pwd)/PyBNF:/project/PyBNF -v $(pwd)/PyBNF-output:/project/PyBNF-output pybnf
-
+# Run inside PyBNF to mount examples directory inside the image:
+#     $ docker run -it --rm -v $(pwd)/examples:/project/examples pybnf
+#
 # And then inside the image:
-#     cd PyBNF
-#     pybnf -c examples/demo/demo_bng.conf
-#     
+#     cd examples/demo
+#     pybnf -c demo_bng.conf
+#
 #
 
 #### Interim build container
