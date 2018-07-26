@@ -52,28 +52,29 @@ class ObjectiveFunction(object):
         :type show_warnings: bool
         :return:
         """
-        total = 0.
+        with np.errstate(all='ignore'):  # Suppress numpy warnings printed to terminal
+            total = 0.
 
-        # Dictionary mapping suffix strings to experimental Data objects
-        # exp_data_dict = self.conf.exp_data
+            # Dictionary mapping suffix strings to experimental Data objects
+            # exp_data_dict = self.conf.exp_data
 
-        if not sim_data_dict:
-            return np.inf
-        else:
-            for model in sim_data_dict:
-                for suffix in sim_data_dict[model]:
-                    # Suffixes might exist in sim_data_dict that do not have experimental data.
-                    # Need to check for that here.
-                    if suffix in exp_data_dict[model]:
-                        val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[model][suffix],
-                                            show_warnings=show_warnings)
-                        if val is None:
-                            return None
-                        total += val
-            for cset in constraints:
-                total += cset.total_penalty(sim_data_dict)
+            if not sim_data_dict:
+                return np.inf
+            else:
+                for model in sim_data_dict:
+                    for suffix in sim_data_dict[model]:
+                        # Suffixes might exist in sim_data_dict that do not have experimental data.
+                        # Need to check for that here.
+                        if suffix in exp_data_dict[model]:
+                            val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[model][suffix],
+                                                show_warnings=show_warnings)
+                            if val is None:
+                                return None
+                            total += val
+                for cset in constraints:
+                    total += cset.total_penalty(sim_data_dict)
 
-            return total
+                return total
 
     def evaluate(self, sim_data, exp_data, show_warnings=True):
         """
