@@ -137,6 +137,42 @@ algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
   Example:
     * ``logvar = k__FREE -3 1``
 
+Simulation Actions
+------------------
+
+These keys specify what simulations should be performed with the models. For SBML models, simulation actions are required. For BNGL models, the same information can be specified in the actions block of the BNGL file, so use of these keys is optional. 
+
+**time_course**
+  Run a time course simulation on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
+    * ``time``: The simulation time. Required.
+    * ``suffix``: The suffix of the data file to save. You should map the model to a .exp file of the same name. Default: time_course
+    * ``time_step``: The simulation time step. Default: 1
+    * ``model``: The name of the model to run (not including the path or .bngl/.xml extension). Default: All models in the fitting run.
+    * ``method`` The simulation method to use. Default is ``ode``. Options are:
+       * ``ode``: Numerical integration of differential equations
+       * ``ssa``: Stochastic simulation by Gillespie's method
+       * ``pla``: Partitioned-leaping algorithm (BNGL models only)
+       * ``nf``: Network-free simulation with NFsim (BNGL models only)
+  
+  Example:
+    * ``time_course = time:60, model:model1, suffix:data1``
+
+**param_scan**
+  Run a parameter scan on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
+    * ``param``: Name of the parameter to scan. Required.
+    * ``min``: Minimum value of the parameter. Required
+    * ``max``: Maximum value of the parameter. Required. 
+    * ``step``: Change in the parameter value between consecutive simulations in the scan. Required.
+    * ``time``: The simulation time. Required.
+    * ``suffix``: The suffix of the data file to save. You should map the model to a .exp file of the same name. Default: param_scan
+    * ``logspace``: If 1, scan the parameter in log space. Default: 0
+    * ``model``: The name of the model to run (not including the path or .bngl/.xml extension). Default: All models in the fitting run.
+    * ``method``: The simulation method to use. Options are the same as in ``time_course``. Default: ode
+  
+  Example:
+    * ``param_scan = param:x, min:1, max:1000, step:0.5, logspace:1, time:60, model:model1, suffix:data1``
+
+
 Parallel Computing
 ------------------
 **parallel_count**
@@ -314,6 +350,16 @@ Algorithm Options
   
   Example:
     * ``refine = 1``
+
+**sbml_integrator**
+  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. ``euler`` requires libroadrunner v. 1.5.0 or higher, which currently must be installed explicitly via pip: 
+  
+  :command:`pip uninstall libroadrunner && pip install --no-cache libroadrunner==1.5.0`
+  
+  Default: cvode
+  
+  Example:
+    * ``sbml_integrator = rk4``
     
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). 

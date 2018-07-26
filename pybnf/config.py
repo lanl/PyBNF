@@ -401,9 +401,12 @@ class Configuration(object):
         if self.config['sbml_integrator'] not in integrators:
             raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
                                                                                ', '.join(integrators)))
-        if self.config['sbml_integrator'] == 'euler' and roadrunner.__version__ < '1.5.0':
-            raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.0 or higher. You '
-                             'have version %s' % roadrunner.__version__)
+        if self.config['sbml_integrator'] == 'euler':
+            if roadrunner.__version__ < '1.5.0':
+                raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.0 or higher. You '
+                                 'have version %s' % roadrunner.__version__)
+            print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
+                   'producing reasonable output.')
 
     def _load_actions(self):
 
