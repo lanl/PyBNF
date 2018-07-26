@@ -929,8 +929,8 @@ class FreeParameter(object):
         self.lower_bound = 0.0 if not self.bounded else self.p1
         self.upper_bound = np.inf if not self.bounded else self.p2
 
-        if self.lower_bound >= self.upper_bound:
-            raise PybnfError("Parameter %s has a lower bound is greater than its upper bound" % self.name)
+        if self.lower_bound > self.upper_bound:
+            raise PybnfError("Parameter %s has a lower bound that is greater than its upper bound" % self.name)
 
         # Determine a positive value that can serve as the default for network generation
         self.default_value = None
@@ -983,6 +983,8 @@ class FreeParameter(object):
         ub = self.upper_bound
         lb = self.lower_bound
         cur = self.value
+        if lb == ub:
+            return lb
         if self.log_space:  # transform to log space if needed
             cur = np.log10(cur)
             ub = np.log10(self.upper_bound)
