@@ -230,7 +230,7 @@ def main():
             if config.config['bootstrap_max_obj']:
                 bootstrap_max_obj = config.config['bootstrap_max_obj']
             elif alg.bootstrap_number is None:
-                bootstrap_max_obj = alg.trajectory.trajectory[alg.trajectory.best_fit()]
+                bootstrap_max_obj = alg.trajectory.best_score()
                 logger.info('Using best fit objective function from main fitting run for maximum allowable '
                             'objective function in bootstrapping runs')
             else:
@@ -283,9 +283,10 @@ def main():
             while completed_bootstrap_runs < num_to_bootstrap:
                 alg.reset(bootstrap=completed_bootstrap_runs)
 
-                for name, data in alg.exp_data.items():
-                    data.gen_bootstrap_weights()
-                    data.weights_to_file('%s/%s_weights_%s.txt' % (alg.res_dir, name, completed_bootstrap_runs))
+                for model in alg.exp_data:
+                    for name, data in alg.exp_data[model].items():
+                        data.gen_bootstrap_weights()
+                        data.weights_to_file('%s/%s_weights_%s.txt' % (alg.res_dir, name, completed_bootstrap_runs))
 
                 logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
                 print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
