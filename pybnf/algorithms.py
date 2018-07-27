@@ -102,7 +102,16 @@ def run_job(j, debug=False, failed_logs_dir=''):
     This function is passed to Dask instead of j.run_simulation because if you pass j.run_simulation, Dask leaks memory
     associated with j.
     """
-    return j.run_simulation(debug, failed_logs_dir)
+    try:
+        return j.run_simulation(debug, failed_logs_dir)
+    except RuntimeError as e:
+        # Catch the error for running out of threads here - it's the only place outside dask where we can catch it.
+        if e.args[0] == "can't start new thread":
+            logger.error("Reached thread limit - can't start new thread")
+            print0('Too many threads! See "Troubleshooting" in the documentation for how to deal with this problem')
+            return FailedSimulation(j.params, j.job_id, 1)
+        else:
+            raise
 
 
 class Job:
