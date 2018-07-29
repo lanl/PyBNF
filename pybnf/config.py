@@ -159,6 +159,7 @@ class Configuration(object):
 
             'cluster_type': None,
             'scheduler_node': None,
+            'scheduler_file': None,
             'worker_nodes': None,
 
             'gamma_prob': 0.1,

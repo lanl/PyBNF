@@ -33,7 +33,7 @@ b_var_def_keys = ['uniform_var', 'loguniform_var']
 var_def_keys = ['lognormal_var', 'normal_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
-              'cluster_type', 'scheduler_node', 'de_strategy', 'sbml_integrator']
+              'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator']
 multstrkeys = ['worker_nodes', 'postprocess']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)

@@ -39,6 +39,8 @@ def main():
                         help='automatically overwrites existing folders if necessary')
     parser.add_argument('-t', '--cluster_type', action='store',
                         help='optional string denoting the type of cluster')
+    parser.add_argument('-s', '--scheduler_file', action='store',
+                        help='optional file on shared filesystem to get scheduler location, should be same as passed to dask-scheduler and dask-worker.')
     parser.add_argument('-r', '--resume', action='store', nargs='?', const=0, default=None, type=int,
                         metavar='iterations',
                         help='automatically resume the previously stopped fitting run; '
@@ -185,12 +187,18 @@ def main():
             else:
                 raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 
-        # override cluster type value in configuration file if specified with cmdline args
+        # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
             config.config['cluster_type'] = cmdline_args.cluster_type
+        if cmdline_args.scheduler_file:
+            config.config['scheduler_file'] = cmdline_args.scheduler_file
 
         # Set up cluster
-        if config.config['scheduler_node'] and config.config['worker_nodes']:
+        if config.config['scheduler_file']:
+            # Scheduler node will be read in from scheduler file stored on shared file system
+            node_string = None
+            scheduler_node = None
+        elif config.config['scheduler_node'] and config.config['worker_nodes']:
             scheduler_node = config.config['scheduler_node']
             node_string = ' '.join(config.config['worker_nodes'])
         elif config.config['scheduler_node']:
