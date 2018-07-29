@@ -731,6 +731,9 @@ class Algorithm(object):
         if reuse_client:
             logger.info('Reusing Client from the previous run')
             client = reuse_client
+        elif 'scheduler_file' in self.config.config:
+            # Scheduler node read in from scheduler file stored on shared file system
+            client = Client(scheduler_file=self.config.config['scheduler_file'])
         elif scheduler_node:
             client = Client('%s:8786' % scheduler_node)
         elif self.config.config['parallel_count'] is not None:
