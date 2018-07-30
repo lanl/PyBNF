@@ -57,7 +57,6 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         #file paths linked to text edits
         self.outputBtn.clicked.connect(self.outputdir)
         self.bngBtn.clicked.connect(self.bng_path)
-        self.bnfpathBtn.clicked.connect(self.bnfpathfunc)
         #run bnf
         self.bnfBtn.clicked.connect(self.runBNF)
         #comboboxes
@@ -74,6 +73,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         self.saveBtn.clicked.connect(self.Savebtn)
         self.saveAsBtn.clicked.connect(self.SaveFile)
         self.saveprojBtn.clicked.connect(self.SaveProject)
+        #savelabel
+        self.savelabel.setStyleSheet("color: rgb(7, 158, 72);")
 
         #free params
         self.addBtn.clicked.connect(self.addEmptyParam)
@@ -110,13 +111,13 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
 
         #mutant
         self.maddBtn.clicked.connect(self.addMutantModel)
-        self.mremBtn.clicked.connect(self.removeMutantModel)
-        self.nameBtn.clicked.connect(self.addMutantName)
+        self.addnameBtn.clicked.connect(self.addMutantName)
+        self.remnameBtn.clicked.connect(self.remMutantName)
         self.addStatementBtn.clicked.connect(self.addMutantStatement)
         self.remStatementBtn.clicked.connect(self.removeMutantStatement)
         self.addmexpBtn.clicked.connect(self.addMExp)
         self.remmexpBtn.clicked.connect(self.removeMExp)
-        self.mutantList.currentItemChanged.connect(self.mutantItemChanged)
+        self.nameList.currentItemChanged.connect(self.mutantItemChanged)
 
     '''
     model config functions
@@ -161,6 +162,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self.expList.clear()
             for i in ml:
                 self.expList.addItem(i)
+        else:
+            self.expList.clear()
     '''
     normalization
     '''
@@ -242,6 +245,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self.expList2.clear()
             for i in ml:
                 self.expList2.addItem(i)
+        else:
+            self.expList2.clear()
 
     '''
     file path funcs
@@ -258,11 +263,6 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     '''
     run BNF
     '''
-    def bnfpathfunc(self):
-        self.bnfpath = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Choose PyBioNetFit directory")
-        self.bnf_path.setText(self.bnfpath)
-
     def checkProcess(self):
         if self.process.poll() == None:
             self.bnfBtn.setText("Terminate process")
@@ -274,7 +274,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             try:
                 self.Savebtn()
                 #print(self.savepath)
-                command = str("cd " + self.bnfpath +"; pybnf -c " + self.savepath)
+                print(str(os.path.dirname(os.path.realpath(__file__))))
+                command = str("cd " + str(os.path.dirname(os.path.realpath(__file__))) +"; pybnf -c " + self.savepath)
                 QtWidgets.QMessageBox.about(self, "Alert", "Check terminal for BioNetFit subprocess")
                 self.process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
                 self.timer.start(1000)
@@ -555,31 +556,31 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         options |= QtWidgets.QFileDialog.DontUseNativeDialog
         fileName, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "QFileDialog.getOpenFileName()", "", "BioNetGen Files (*.bngl);;All Files (*)", options=options)
-        if fileName != "":
-            self.mutants[fileName] = ["", [], []]
-            self.mutantList.addItem(fileName)
-
-    def removeMutantModel(self):
-        c = self.modelList.currentItem()
+        c = self.nameList.currentItem()
         if c is not None:
-            self.modelList.takeItem(self.modelList.currentRow())
-            self.models.pop(c.text(), None)
+            if fileName != "":
+                self.mutants[c.text()][0] = fileName
+                self.mutantList.clear()
+                self.mutantList.addItem(fileName)
     #name
     def addMutantName(self):
         name, _ = QtWidgets.QInputDialog.getText(self, 'Name of mutant', "Enter the name of the mutant:")
-        c = self.mutantList.currentItem()
+        if name not in self.mutants and name != "":
+            self.mutants[name] = ["", [], []]
+            self.nameList.addItem(name)
+        else:
+            error_dialog = QtWidgets.QErrorMessage()
+            error_dialog.showMessage('The name entered is not valid.')
+
+    def remMutantName(self):
+        c = self.nameList.currentItem()
         if c is not None:
-            if name != "":
-                self.mutants[c.text()][0] = name
-                self.nameList.clear()
-                self.nameList.addItem(name)
-            else:
-                error_dialog = QtWidgets.QErrorMessage()
-                error_dialog.showMessage('The name entered is not valid.')
+            self.nameList.takeItem(self.nameList.currentRow())
+            self.mutants.pop(c.text(), None)
     #statement
     def addMutantStatement(self):
         statement, _ = QtWidgets.QInputDialog.getText(self, 'Statements', "Enter the statement:")
-        c = self.mutantList.currentItem()
+        c = self.nameList.currentItem()
         if c is not None:
             if statement != "":
                 self.mutants[c.text()][1].append(statement)
@@ -589,14 +590,14 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                 error_dialog.showMessage('The statement entered is not valid.')
 
     def removeMutantStatement(self):
-        m = self.mutantList.currentItem()
+        m = self.nameList.currentItem()
         c = self.statementList.currentItem()
         if c is not None:
             self.mutants[m.text()][1].remove(c.text())
             self.statementList.takeItem(self.statementList.currentRow())
     #exps
     def addMExp(self):
-        c = self.mutantList.currentItem()
+        c = self.nameList.currentItem()
         if c is not None:
             options = QtWidgets.QFileDialog.Options()
             options |= QtWidgets.QFileDialog.DontUseNativeDialog
@@ -607,27 +608,32 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                 self.mexpList.addItem(fileName)
 
     def removeMExp(self):
-        m = self.mutantList.currentItem()
+        m = self.nameList.currentItem()
         c = self.mexpList.currentItem()
         if c is not None:
             self.mutants[m.text()][2].remove(c.text())
             self.mexpList.takeItem(self.mexpList.currentRow())
 
     def mutantItemChanged(self):
-        c = self.mutantList.currentItem()
+        c = self.nameList.currentItem()
         if c is not None:
+            #print("called")
             ml = self.mutants[c.text()]
-            self.nameList.clear()
+            self.mutantList.clear()
             self.statementList.clear()
             self.mexpList.clear()
             #set name
-            self.nameList.addItem(ml[0])
+            self.mutantList.addItem(ml[0])
             #set statements
             for j in ml[1]:
                 self.statementList.addItem(j)
             #set exps
             for k in ml[2]:
                 self.mexpList.addItem(k)
+        else:
+            self.mutantList.clear()
+            self.statementList.clear()
+            self.mexpList.clear()
 
     '''
     file menu func
@@ -740,7 +746,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                 elif key == "mutant": #test
                     statement = ""
                     statements = []
-                    print(value)
+                    #print(value)
                     for i in value:
                         model = i[0]
                         name = i[1]
@@ -750,8 +756,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                             statements.append(statement)
                             statement = ""
                         exps = i[3]
-                        self.mutants[model] = [name, statements, exps]
-                        self.mutantList.addItem(model)
+                        self.mutants[name] = [model, statements, exps]
+                        self.nameList.addItem(name)
                         statements = []
                 elif key == "normalization":
                     quickDict = {}
@@ -938,12 +944,12 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                 for key, value in self.mutants.items():
                     statements = ""
                     exps = ""
-                    name = value[0]
+                    model = value[0]
                     for a in value[1]:
                         statements += a + " "
                     for b in value[2]:
                         exps += b + " "
-                    file.write('mutant = %s %s %s : %s\n' %(key, name, statements, exps))
+                    file.write('mutant = %s %s %s : %s\n' %(model, key, statements, exps))
                 #action commands
                 if self.actionDict.items() != 0:
                     file.write("\n")
@@ -977,17 +983,15 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                         strprint = str(strprint[:-1])
                         file.write(strprint)
                         file.write("\n")
+            self.savelabel.setText("Saved!")
+            QtCore.QTimer.singleShot(5000, self.hide)
+
     def hide(self):
-        print ("hide")
+        self.savelabel.setText("")
 
     def Savebtn(self):
         if self.savepath != "":
             self.Save(self.savepath)
-            self.savelabel.setText("Saved!")
-            timer = QtCore.QTimer()
-            timer.timeout.connect(self.hide)
-            timer.start(5000)
-            self.savelabel.setText("")
         else:
             self.SaveFile()
             
