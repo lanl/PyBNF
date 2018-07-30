@@ -4,6 +4,7 @@ python script for parsing and plotting gdat files
 
 import matplotlib.pyplot as plt
 import os
+import re
 #x
 xtitle = ""
 xdata = []
@@ -23,7 +24,7 @@ def load(path):
     infile.close()
 
 def parse(s):
-	plist = s.split("\t")
+	plist = re.split('\s', s)
 	data = []
 	for n, i in enumerate(plist):
 		cl = i.strip()
