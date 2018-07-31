@@ -126,7 +126,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         options = QtWidgets.QFileDialog.Options()
         options |= QtWidgets.QFileDialog.DontUseNativeDialog
         fileName, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "QFileDialog.getOpenFileName()", "", "BioNetGen Files (*.bngl);;All Files (*)", options=options)
+            self, "QFileDialog.getOpenFileName()", "", "BioNetGen Files (*.bngl);;XML Files (*.xml);;All Files (*)", options=options)
         if fileName != "":
             self.models[fileName] = []
             self.modelList.addItem(fileName)
