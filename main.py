@@ -654,7 +654,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         options = QtWidgets.QFileDialog.Options()
         options |= QtWidgets.QFileDialog.DontUseNativeDialog
         fileName, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Open File", "", "All Files (*);;Configure Files (*.conf)", options=options)
+            self, "Open File", "", "Configure Files (*.conf);;All Files (*)", options=options)
         if fileName != "":
             if not(fileName.endswith(".conf")):
                 fileName += ".conf"
@@ -693,6 +693,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self.clearGrid(self.playout)
             #algorithmic params
             self.clrIterate(self.de_layout)
+            self.clrIterate(self.ade_layout)
             self.clrIterate(self.pso_layout)
             self.clrIterate(self.ss_layout)
             self.clrIterate(self.bmc_layout)
@@ -786,7 +787,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                     self.initCb.setCurrentIndex(index)
 
                 #fit type
-                fit = {"de": 0, "pso": 1, "ss": 2, "bmc": 3, "sim": 4, "sa": 5, "pt": 6}
+                fit = {"de": 0, "ade": 1, "pso": 2, "ss": 3, "bmc": 4, "sim": 5, "sa": 6, "pt": 7}
                 index = fit.get(varDict.get("fit_type"))
                 if index is not(None):
                     self.fitCb.setCurrentIndex(index)
@@ -890,6 +891,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         if self.varDict.get("refine") == "1":
             if self.varDict["fit_type"] == "de":
                 self.varIterate(self.de_layout)
+            elif self.varDict["fit_type"] == "ade":
+                self.varIterate(self.ade_layout)
             elif self.varDict["fit_type"] == "pso":
                 self.varIterate(self.pso_layout)
             elif self.varDict["fit_type"] == "ss":
@@ -906,6 +909,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         else:
             if self.varDict["fit_type"] == "de":
                 self.varIterate(self.de_layout)
+            elif self.varDict["fit_type"] == "ade":
+                self.varIterate(self.ade_layout)
             elif self.varDict["fit_type"] == "pso":
                 self.varIterate(self.pso_layout)
             elif self.varDict["fit_type"] == "ss":

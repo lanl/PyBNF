@@ -63,7 +63,7 @@
         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Variables&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
        </property>
        <property name="currentIndex">
-        <number>0</number>
+        <number>4</number>
        </property>
        <widget class="QWidget" name="input_files">
         <attribute name="title">
@@ -220,8 +220,8 @@ p, li { white-space: pre-wrap; }
            <rect>
             <x>0</x>
             <y>0</y>
-            <width>771</width>
-            <height>291</height>
+            <width>98</width>
+            <height>28</height>
            </rect>
           </property>
           <attribute name="label">
@@ -445,8 +445,8 @@ p, li { white-space: pre-wrap; }
            <rect>
             <x>0</x>
             <y>0</y>
-            <width>771</width>
-            <height>291</height>
+            <width>98</width>
+            <height>28</height>
            </rect>
           </property>
           <attribute name="label">
@@ -573,8 +573,8 @@ p, li { white-space: pre-wrap; }
            <rect>
             <x>0</x>
             <y>0</y>
-            <width>771</width>
-            <height>291</height>
+            <width>98</width>
+            <height>28</height>
            </rect>
           </property>
           <attribute name="label">
@@ -639,8 +639,8 @@ p, li { white-space: pre-wrap; }
            <rect>
             <x>0</x>
             <y>0</y>
-            <width>771</width>
-            <height>291</height>
+            <width>98</width>
+            <height>28</height>
            </rect>
           </property>
           <attribute name="label">
@@ -1245,7 +1245,7 @@ p, li { white-space: pre-wrap; }
           </rect>
          </property>
          <property name="currentIndex">
-          <number>0</number>
+          <number>1</number>
          </property>
          <widget class="QWidget" name="page">
           <widget class="QWidget" name="gridLayoutWidget_2">
@@ -1446,7 +1446,7 @@ p, li { white-space: pre-wrap; }
              <height>211</height>
             </rect>
            </property>
-           <layout class="QGridLayout" name="de_layout_2">
+           <layout class="QGridLayout" name="ade_layout">
             <item row="2" column="1">
              <widget class="QLineEdit" name="stop_tolerance2">
               <property name="text">
