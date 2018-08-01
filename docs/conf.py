@@ -24,9 +24,9 @@ copyright = '2018, Ryan Suderman, Eshan Mitra'
 author = 'Ryan Suderman, Eshan Mitra'
 
 # The short X.Y version
-version = '0.1'
+version = '0.1.2'
 # The full version, including alpha/beta/rc tags
-release = 'v0.1'
+release = 'v0.1.2'
 
 
 # -- General configuration ---------------------------------------------------
