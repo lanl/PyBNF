@@ -274,8 +274,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             try:
                 self.Savebtn()
                 #print(self.savepath)
-                print(str(os.path.dirname(os.path.realpath(__file__))))
-                command = str("cd " + str(os.path.dirname(os.path.realpath(__file__))) +"; pybnf -c " + self.savepath)
+                command = str("cd " + str(os.getcwd()) +"; pybnf -c " + self.savepath)
                 QtWidgets.QMessageBox.about(self, "Alert", "Check terminal for BioNetFit subprocess")
                 self.process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
                 self.timer.start(1000)
