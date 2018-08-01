@@ -760,7 +760,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                         statements = []
                 elif key == "normalization":
                     quickDict = {}
-                   # print(value)
+                    print(value)
                     for k, v in value.items():
                         r = {"init": 0, "peak": 1, "zero": 2, "unit": 3}
                         self.addOpenType(r[v], k)
@@ -928,6 +928,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         if fileName != "":
             if not(fileName.endswith(".conf")):
                 fileName += ".conf"
+                self.savepath = fileName
             self.current_file.setText(self.savepath)
             #print(self.savepath)
             paramAdj = {k: v for k, v in self.paramDict.items() if v is not None}
