@@ -402,8 +402,8 @@ class Configuration(object):
             raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
                                                                                ', '.join(integrators)))
         if self.config['sbml_integrator'] == 'euler':
-            if roadrunner.__version__ < '1.5.0':
-                raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.0 or higher. You '
+            if roadrunner.__version__ < '1.5.1':
+                raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
                                  'have version %s' % roadrunner.__version__)
             print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
                    'producing reasonable output.')
@@ -414,6 +414,9 @@ class Configuration(object):
             # Iterate through all time courses and param scans included in the config dict, create the corresponding
             # Action objects, and add them to the appropriate model(s).
             for action_dict in self.config[key]:
+                if 'subdivisions' in action_dict and self.config['sbml_integrator'] != 'euler':
+                    print1('Warning: Ignoring "subdivisions" setting because that is only used with sbml_integrator = '
+                           'euler')
                 if 'model' in action_dict:
                     action = ActionType(action_dict)
                     try:

@@ -614,6 +614,8 @@ class SbmlModelNoTimeout(Model):
                     runner.getIntegrator().setValue('variable_step_size', False)
                 else:
                     runner.setIntegrator(self.integrator)
+                    if self.integrator == 'euler':
+                        runner.integrator.subdivision_steps = act.subdivisions
                 if isinstance(act, TimeCourse):
                     try:
                         res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
@@ -718,9 +720,11 @@ class TimeCourse(Action):
         # Available keys and default values
         num_keys = {'time', 'step'}
         str_keys = {'model', 'suffix', 'method'}
+        int_keys = {'subdivisions'}
         # Default values
         self.time = None  # Required
         self.step = 1.
+        self.subdivisions = 1
         self.model = ''
         self.suffix = 'time_course'
         self.method = 'ode'
@@ -732,6 +736,12 @@ class TimeCourse(Action):
                     num = float(d[k])
                 except ValueError:
                     raise PybnfError('For key "time_course", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in int_keys:
+                try:
+                    num = int(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be an integer.' % k)
                 self.__setattr__(k, num)
             elif k in str_keys:
                 self.__setattr__(k, d[k])
@@ -761,15 +771,16 @@ class ParamScan(Action):
         Raises a PyBNF error if anything is wrong with the dict.
         """
         # Available keys and default values
-        num_keys = {'min', 'max', 'step', 'time', 'logspace'}
+        num_keys = {'min', 'max', 'step', 'time'}
         str_keys = {'model', 'suffix', 'param', 'method'}
+        int_keys = {'subdivisions', 'logspace'}
         required_keys = {'min', 'max', 'step', 'time', 'param'}
         # Default values
         self.min = None
         self.max = None
         self.step = None
         self.time = None
-        self.logspace = 0.
+        self.logspace = 0
         self.param = None
         self.model = ''
         self.suffix = 'param_scan'
@@ -782,6 +793,12 @@ class ParamScan(Action):
                     num = float(d[k])
                 except ValueError:
                     raise PybnfError('For key "param_scan", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in int_keys:
+                try:
+                    num = int(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be an integer.' % k)
                 self.__setattr__(k, num)
             elif k in str_keys:
                 self.__setattr__(k, d[k])
