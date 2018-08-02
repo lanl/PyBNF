@@ -146,8 +146,9 @@ These keys specify what simulations should be performed with the models. For SBM
   Run a time course simulation on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
     * ``time``: The simulation time. Required.
     * ``suffix``: The suffix of the data file to save. You should map the model to a .exp file of the same name. Default: time_course
-    * ``time_step``: The simulation time step. Default: 1
+    * ``step``: The simulation time step. Default: 1
     * ``model``: The name of the model to run (not including the path or .bngl/.xml extension). Default: All models in the fitting run.
+    * ``subdivisions``: Only for use with ``sbml_integrator=euler``, specifies the number of internal Euler steps to perform between each output step specified by ``step``. Default: 1
     * ``method`` The simulation method to use. Default is ``ode``. Options are:
        * ``ode``: Numerical integration of differential equations
        * ``ssa``: Stochastic simulation by Gillespie's method
@@ -167,6 +168,7 @@ These keys specify what simulations should be performed with the models. For SBM
     * ``suffix``: The suffix of the data file to save. You should map the model to a .exp file of the same name. Default: param_scan
     * ``logspace``: If 1, scan the parameter in log space. Default: 0
     * ``model``: The name of the model to run (not including the path or .bngl/.xml extension). Default: All models in the fitting run.
+    * ``subdivisions``: Only for use with ``sbml_integrator=euler``, specifies the number of internal Euler steps to perform for each simulation. Default: 1000
     * ``method``: The simulation method to use. Options are the same as in ``time_course``. Default: ode
   
   Example:

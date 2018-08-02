@@ -785,6 +785,7 @@ class ParamScan(Action):
         self.model = ''
         self.suffix = 'param_scan'
         self.method = 'ode'
+        self.subdivisions = 1000
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
