@@ -213,11 +213,12 @@ class Data(object):
         :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         :return: Normalized Numpy array (including independent variable column)
         """
-        if cols == 'all':
-            cols = list(range(self.data.shape[1]))
-            cols.remove(idx)
-        for c in cols:
-            self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
+        with np.errstate(all='ignore'):  # Suppress divide by 0 warnings printed to terminal
+            if cols == 'all':
+                cols = list(range(self.data.shape[1]))
+                cols.remove(idx)
+            for c in cols:
+                self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
 
     def normalize_to_init(self, idx=0, cols='all'):
         """
@@ -230,11 +231,12 @@ class Data(object):
         :type idx: int
         :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         """
-        if cols == 'all':
-            cols = list(range(self.data.shape[1]))
-            cols.remove(idx)
-        for c in cols:
-            self.data[:, c] = self.data[:, c] / self.data[0, c]
+        with np.errstate(all='ignore'):  # Suppress divide by 0 warnings printed to terminal
+            if cols == 'all':
+                cols = list(range(self.data.shape[1]))
+                cols.remove(idx)
+            for c in cols:
+                self.data[:, c] = self.data[:, c] / self.data[0, c]
 
     def normalize_to_zero(self, idx=0, bc=True, cols='all'):
         """
@@ -248,17 +250,18 @@ class Data(object):
         :type bc: bool
         :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         """
-        if cols == 'all':
-            cols = list(range(self.data.shape[1]))
-            cols.remove(idx)
-        ddof = 0 if not bc else 1
-        for c in cols:
-            col = self.data[:, c]
-            col -= np.mean(col)
-            std = np.std(col, ddof=ddof)
-            if std != 0:
-                col /= std
-            self.data[:, c] = col
+        with np.errstate(all='ignore'):  # Suppress divide by 0 warnings printed to terminal
+            if cols == 'all':
+                cols = list(range(self.data.shape[1]))
+                cols.remove(idx)
+            ddof = 0 if not bc else 1
+            for c in cols:
+                col = self.data[:, c]
+                col -= np.mean(col)
+                std = np.std(col, ddof=ddof)
+                if std != 0:
+                    col /= std
+                self.data[:, c] = col
 
     def _subtract_baseline(self, idx=0, cols='all'):
         if cols == 'all':

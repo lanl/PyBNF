@@ -479,7 +479,7 @@ class NetModel(BNGLModel):
 
 class SbmlModelNoTimeout(Model):
 
-    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False):
+    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode'):
         """
         :param file: The file path to the model as it was defined in the config. Used when indexing into the config dict
         :param abs_file: The absolute file path to the model. Used to actually load the model
@@ -494,8 +494,9 @@ class SbmlModelNoTimeout(Model):
         self.name = re.sub(".xml", "", self.file_path[self.file_path.rfind("/") + 1:])
         self.save_files = save_files
         self.actions = list(actions)
+        self.integrator = integrator
         self.suffixes = [a.suffix for a in actions]
-        self.stochastic = False
+        self.stochastic = True if integrator == 'gillespie' else False
         self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
 
         try:
@@ -608,11 +609,13 @@ class SbmlModelNoTimeout(Model):
 
             for act in self.actions:
                 runner.reset()
-                if act.method == 'ssa':
+                if act.method == 'ssa' or self.integrator == 'gillespie':
                     runner.setIntegrator('gillespie')
                     runner.getIntegrator().setValue('variable_step_size', False)
                 else:
-                    runner.setIntegrator('cvode')
+                    runner.setIntegrator(self.integrator)
+                    if self.integrator == 'euler':
+                        runner.integrator.subdivision_steps = act.subdivisions
                 if isinstance(act, TimeCourse):
                     try:
                         res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
@@ -717,9 +720,11 @@ class TimeCourse(Action):
         # Available keys and default values
         num_keys = {'time', 'step'}
         str_keys = {'model', 'suffix', 'method'}
+        int_keys = {'subdivisions'}
         # Default values
         self.time = None  # Required
         self.step = 1.
+        self.subdivisions = 1
         self.model = ''
         self.suffix = 'time_course'
         self.method = 'ode'
@@ -731,6 +736,12 @@ class TimeCourse(Action):
                     num = float(d[k])
                 except ValueError:
                     raise PybnfError('For key "time_course", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in int_keys:
+                try:
+                    num = int(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be an integer.' % k)
                 self.__setattr__(k, num)
             elif k in str_keys:
                 self.__setattr__(k, d[k])
@@ -760,19 +771,21 @@ class ParamScan(Action):
         Raises a PyBNF error if anything is wrong with the dict.
         """
         # Available keys and default values
-        num_keys = {'min', 'max', 'step', 'time', 'logspace'}
+        num_keys = {'min', 'max', 'step', 'time'}
         str_keys = {'model', 'suffix', 'param', 'method'}
+        int_keys = {'subdivisions', 'logspace'}
         required_keys = {'min', 'max', 'step', 'time', 'param'}
         # Default values
         self.min = None
         self.max = None
         self.step = None
         self.time = None
-        self.logspace = 0.
+        self.logspace = 0
         self.param = None
         self.model = ''
         self.suffix = 'param_scan'
         self.method = 'ode'
+        self.subdivisions = 1000
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -781,6 +794,12 @@ class ParamScan(Action):
                     num = float(d[k])
                 except ValueError:
                     raise PybnfError('For key "param_scan", the value of "%s" must be a number.' % k)
+                self.__setattr__(k, num)
+            elif k in int_keys:
+                try:
+                    num = int(d[k])
+                except ValueError:
+                    raise PybnfError('For key "time_course", the value of "%s" must be an integer.' % k)
                 self.__setattr__(k, num)
             elif k in str_keys:
                 self.__setattr__(k, d[k])

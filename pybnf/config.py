@@ -15,6 +15,7 @@ import os
 import re
 import logging
 import subprocess
+import roadrunner
 
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ class Configuration(object):
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
+            'sbml_integrator': 'cvode',
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
@@ -315,9 +317,9 @@ class Configuration(object):
                 elif re.search('\.xml$', mf):
                     save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag)
+                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
                     else:
-                        model = SbmlModel(mf, absolute(mf), save_files=save_flag)
+                        model = SbmlModel(mf, absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
@@ -394,6 +396,17 @@ class Configuration(object):
                     raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
                                      'variable is correctly set')
+        # Check that the integrator is valid
+        integrators = ('cvode', 'euler', 'rk4', 'gillespie')
+        if self.config['sbml_integrator'] not in integrators:
+            raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
+                                                                               ', '.join(integrators)))
+        if self.config['sbml_integrator'] == 'euler':
+            if roadrunner.__version__ < '1.5.1':
+                raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
+                                 'have version %s' % roadrunner.__version__)
+            print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
+                   'producing reasonable output.')
 
     def _load_actions(self):
 
@@ -401,6 +414,9 @@ class Configuration(object):
             # Iterate through all time courses and param scans included in the config dict, create the corresponding
             # Action objects, and add them to the appropriate model(s).
             for action_dict in self.config[key]:
+                if 'subdivisions' in action_dict and self.config['sbml_integrator'] != 'euler':
+                    print1('Warning: Ignoring "subdivisions" setting because that is only used with sbml_integrator = '
+                           'euler')
                 if 'model' in action_dict:
                     action = ActionType(action_dict)
                     try:
