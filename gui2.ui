@@ -63,7 +63,7 @@
         <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Variables&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
        </property>
        <property name="currentIndex">
-        <number>4</number>
+        <number>0</number>
        </property>
        <widget class="QWidget" name="input_files">
         <attribute name="title">

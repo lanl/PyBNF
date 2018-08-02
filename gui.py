@@ -1148,7 +1148,7 @@ class Ui_mainWindow(object):
         self.menubar.addAction(self.menuSave_File.menuAction())
 
         self.retranslateUi(mainWindow)
-        self.tabWidget.setCurrentIndex(4)
+        self.tabWidget.setCurrentIndex(0)
         self.toolBox.setCurrentIndex(0)
         self.fitStack.setCurrentIndex(1)
         QtCore.QMetaObject.connectSlotsByName(mainWindow)

@@ -669,7 +669,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self.actionDict = {}
             self.paramDict = {}
             self.mutantDict = {}
-                
+            self.varDict = {}
             self.constructtypes = {}
             self.types = {}
             self.typenum = 0
@@ -708,18 +708,18 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
 
         try:
             #set varDict to be the parsed dict that is returned
-            self.varDict = self.load_config(fileName)
+            varDict = self.load_config(fileName)
             #file paths
-            self.output_dir.setPlainText(self.varDict.get("output_dir", "")) 
-            self.bng_command.setPlainText(self.varDict.get("bng_command", ""))
+            self.output_dir.setPlainText(varDict.get("output_dir", "")) 
+            self.bng_command.setPlainText(varDict.get("bng_command", ""))
             #iterate through the models key to find all the models and put them in the local models dictionary
-            for m in self.varDict["models"]:
-                exp = self.varDict[m]
+            for m in varDict["models"]:
+                exp = varDict[m]
                 self.models[m] = exp
                 self.modelList.addItem(m)
 
             #iterate through key value pairs to update gui
-            for key, value in self.varDict.items():
+            for key, value in varDict.items():
                 #print(key, value)
                 if isinstance(key, tuple):
                     ptype = key[0]
@@ -775,22 +775,24 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                 #qcombobox setting
                 #obj func
                 obj = {"chi_sq": 0, "sos": 1, "norm_sos": 2, "ave_norm_sos": 3}
-                index = obj.get(self.varDict.get("objfunc"))
+                index = obj.get(varDict.get("objfunc"))
                 if index is not(None):
                     self.objCb.setCurrentIndex(index)
+                    self.varDict["objfunc"] = varDict.get("objfunc")
 
                 #init
                 init = {"rand": 0, "lh": 1}
-                index = init.get(self.varDict.get("initialization"))
+                index = init.get(varDict.get("initialization"))
                 if index is not(None):
                     self.initCb.setCurrentIndex(index)
-
+                    self.varDict["initialization"] = varDict.get("initialization")
                 #fit type
                 fit = {"de": 0, "ade": 1, "pso": 2, "ss": 3, "bmc": 4, "sim": 5, "sa": 6, "pt": 7}
-                index = fit.get(self.varDict.get("fit_type"))
+                index = fit.get(varDict.get("fit_type"))
                 if index is not(None):
                     self.fitCb.setCurrentIndex(index)
                     self.onActivated(index)
+                    self.varDict["fit_type"] = varDict.get("fit_type")
 
         except Exception as p:# parse.PybnfError as p:
             QtWidgets.QMessageBox.about(self, "Error:", "%s" % p)
@@ -972,11 +974,11 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                         file.write('%s = %s %s %s\n'%(ptype, name, val1, val2))
                         self.varlist.append(name)
             #general options
-                if self.varDict.items() != 0:
+                if self.varDict.items():
                     file.write(coolComment("General Options"))
                     for key, value in self.varDict.items():
                         file.write('%s = %s\n'%(key, value))
-                if self.varDict.items() != 0:
+                if normalDict.items():
                     file.write("#normalization\n")
                     for typ, exp in normalDict.items():
                         strprint = ""
