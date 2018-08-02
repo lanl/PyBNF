@@ -1,6 +1,10 @@
 Installation
 ============
 
+Operating System
+----------------
+PyBNF can be installed on any recent Linux or macOS operating system. Windows is not currently supported. 
+
 Python
 ------
 

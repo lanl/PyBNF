@@ -169,5 +169,23 @@ In some unusual cases, it is desirable to use a different observable for calcula
 
 This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
 
+Constraints involving multiple models
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, observables in constraint files are assumed to come from the model that the .con file is mapped to, and the simulation suffix matching the .con file's name (the same convention as for .exp files). However, it is possible to use "dot notation" to refer to observables in other simulations, as in the following example.
+
+fit.conf::
+    
+    model = model1.bngl : wt.exp
+    model = model2.bngl : mut.con
+
+mut.con::
+    
+    A < wt.A always 
+    
+In this example, the constraint would check that the value of ``A`` in the simulation of model2 with suffix "mut" is less than the value of ``A`` in the simulation of model1 with suffix "wt". In this way, it is possible to write constraints involving the outputs of multiple models. 
+
+To use this feature, all simulation suffixes must be unique across all models. In addition all observables used in a single constraint must have the same independent variable with the same step size. 
+
 .. _COPASI: http://copasi.org/
 
