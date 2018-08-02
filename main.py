@@ -764,7 +764,12 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                     for k, v in value.items():
                         r = {"init": 0, "peak": 1, "zero": 2, "unit": 3}
                         self.addOpenType(r[v], k)
-
+                elif key == "credible_intervals":
+                    intervalstr = ""
+                    for v in value:
+                        intervalstr += str(v) + " "
+                    lineEdit = self.findChild(QtWidgets.QLineEdit, key)
+                    lineEdit.setText(intervalstr)
                 else:
                     try:
                         lineEdit = self.findChild(QtWidgets.QLineEdit, key)
