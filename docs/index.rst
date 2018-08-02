@@ -38,10 +38,3 @@ Detailed documentation of the PyBNF code base for advanced users
    
    modules/index.rst
 
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
