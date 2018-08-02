@@ -357,8 +357,6 @@ Local optimization with the simplex algorithm is useful for improving on an alre
 
 It is also possible to run the Simplex algorithm on its own, using a custom starting point. In this case, you should use the ``var`` and ``log_var`` keys to specify your known starting point. 
 
-References
-----------
 
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.

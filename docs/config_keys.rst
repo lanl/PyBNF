@@ -354,9 +354,9 @@ Algorithm Options
     * ``refine = 1``
 
 **sbml_integrator**
-  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. ``euler`` requires libroadrunner v. 1.5.0 or higher, which currently must be installed explicitly via pip: 
+  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. ``euler`` requires libroadrunner v. 1.5.1 or higher, which currently must be installed explicitly via pip: 
   
-  :command:`pip uninstall libroadrunner && pip install --no-cache libroadrunner==1.5.0`
+  :command:`pip uninstall libroadrunner && pip install --no-cache libroadrunner==1.5.1`
   
   Default: cvode
   
