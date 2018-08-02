@@ -10,8 +10,8 @@ Python
 
 PyBNF requires an installation of Python version 3.5 or higher. This should come built-in with most new Linux and Mac
 operating systems.  However, we recommend installing the `Anaconda`_ Python distribution for Python v3.5 or higher.
-Installing `Anaconda`_ facilitates managing and installing Python packages as well as maintaining multiple Python
-environments. Instructions for installing on various platforms can be found on the Anaconda website.
+Installing Anaconda facilitates managing and installing Python packages as well as maintaining multiple Python
+environments. Instructions for installing on various platforms can be found on the `Anaconda`_ website.
 
 PyBNF
 -----
@@ -61,12 +61,12 @@ Installation of External Simulators
 BioNetGen
 ^^^^^^^^^
 PyBNF is designed to work with simulators present in the `BioNetGen`_ software suite, version 2.3. The current
-`BioNetGen`_ distribution includes support for both network-based simulations and network-free simulations.
+BioNetGen distribution includes support for both network-based simulations and network-free simulations.
 
 .. _set_bng_path:
 
-PyBNF will need to know the location of `BioNetGen`_ – specifically the location of the script ``BNG2.pl`` within the
-`BioNetGen`_ installation. This path can be included in the PyBNF configuration file with the :ref:`bng_command <bng_command>` key. 
+PyBNF will need to know the location of BioNetGen – specifically the location of the script ``BNG2.pl`` within the
+BioNetGen installation. This path can be included in the PyBNF configuration file with the :ref:`bng_command <bng_command>` key. 
 A convenient alternative is to set the environment variable ``BNGPATH`` to the BioNetGen directory using the following command:
 
     :command:`export BNGPATH=/path/to/bng2`

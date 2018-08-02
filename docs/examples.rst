@@ -143,8 +143,6 @@ Examples by PyBNF feature
  * Advanced constraint configuration: `constraint_advanced`_
  * Submitting jobs to a cluster: `tlbr`_, `tcr`_, `degranulation`_
  
-References
-----------
 
 .. [Blinov2006] Blinov, M. L.; Faeder, J. R.; Goldstein, B.; Hlavacek, W. S. A Network Model of Early Events in Epidermal Growth Factor Receptor Signaling That Accounts for Combinatorial Complexity. BioSystems 2006, 83 (2–3 SPEC. ISS.), 136–151.
 .. [Chylek2014] Chylek, L. A.; Akimov, V.; Dengjel, J.; Rigbolt, K. T. G.; Hu, B.; Hlavacek, W. S.; Blagoev, B. Phosphorylation Site Dynamics of Early T-Cell Receptor Signaling. PLoS One 2014, 9 (8), e104240.
