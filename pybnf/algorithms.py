@@ -3,6 +3,8 @@
 
 from distributed import as_completed
 from distributed import Client, LocalCluster
+from dask import __version__ as daskv
+from distributed import __version__ as distributedv
 from subprocess import run
 from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import STDOUT
@@ -721,7 +723,7 @@ class Algorithm(object):
     def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
         """Main loop for executing the algorithm"""
 
-        logger.debug('Initializing dask Client object')
+        logger.info('Initializing dask Client with dask v%s, distributed v%s' % (daskv, distributedv))
 
         if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
