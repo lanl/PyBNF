@@ -34,7 +34,7 @@ var_def_keys = ['lognormal_var', 'normal_var', 'mutate']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node', 'de_strategy', 'sbml_integrator']
-multstrkeys = ['worker_nodes']
+multstrkeys = ['worker_nodes', 'postprocess']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
 
@@ -156,6 +156,9 @@ def ploop(ls):  # parse loop
             elif l[0] in multnumkeys:
                 key = l[0]
                 values = [float(x) for x in l[1:]]
+            elif l[0] in multstrkeys:
+                key = l[0]
+                values = l[1:]
             elif l[0] != 'model':
                 key = l[0]
                 values = flatten(l[1:])
@@ -186,6 +189,14 @@ def ploop(ls):  # parse loop
                 else:
                     d['mutant'] = [l[1:]]
                 exp_data.update(l[-1])
+            elif l[0] == 'postprocess':
+                if len(values) < 2:
+                    raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "
+                                     "suffixes.")
+                if 'postprocess' in d:
+                    d['postprocess'].append([values])
+                else:
+                    d['postprocess'] = [values]
             elif l[0] == 'normalization':
                 # Normalization defined with way too many possible options
                 # At the end of all this, the config dict has one of the following formats:

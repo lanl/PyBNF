@@ -118,6 +118,7 @@ class Configuration(object):
         self._check_variable_correspondence()
         logger.debug('Loaded variables')
         self._postprocess_normalization()
+        self._load_postprocessing()
         logger.debug('Completed configuration')
 
     @staticmethod
@@ -285,6 +286,14 @@ class Configuration(object):
         """Configuration keys that the user must specify"""
         return {'models', 'population_size', 'max_iterations'}
 
+    @staticmethod
+    def _absolute(directory):
+        """
+        Convert relative paths to absolute paths
+        """
+        home_dir = os.getcwd()
+        return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
+
     def _load_models(self):
         """
         Loads models specified in configuration file in a dictionary keyed on
@@ -299,27 +308,20 @@ class Configuration(object):
                     self.config['wall_time_sim'] = 3600
                     break
 
-        # Force absolute paths for all simulator paths. Safe to do here because this is the main thread.
-        home_dir = os.getcwd()
-
-        def absolute(directory):
-            # Convert relative path to absolute path
-            return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
-
         md = {}
         for mf in self.config['models']:
             # Initialize model type based on extension
             try:
                 if re.search('\.bngl$', mf):
                     model = BNGLModel(mf)
-                    model.bng_command = absolute(self.config['bng_command'])
+                    model.bng_command = self._absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
                     save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf, absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
+                        model = SbmlModelNoTimeout(mf, self._absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
                     else:
-                        model = SbmlModel(mf, absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
+                        model = SbmlModel(mf, self._absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
                 else:
                     # Should not get here - should be caught in parsing
                     raise ValueError('Unrecognized model suffix in %s' % mf)
@@ -636,6 +638,54 @@ class Configuration(object):
                 raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
                                  "Invalid normalization type '%s'. Options are: init, peak, zero, unit" %
                                  self.config['normalization'] + seedoc)
+
+    def _load_postprocessing(self):
+        """
+        Loads config info for user-specified Python scripts for postprocessing data
+        :return:
+        """
+        self.postprocessing = dict()
+        if 'postprocess' not in self.config:
+            return
+
+        for spec in self.config['postprocess']:
+            script = self._absolute(spec[0])
+            suffixes = spec[1:]
+
+            # Check for simple errors in the script here, before we start running anything.
+            try:
+                # This incantation loads the module as postproc
+                import importlib.util
+                logger.info('Prepare to load the script %s' % script)
+                spec = importlib.util.spec_from_file_location("postprocessor", script)
+                if not spec:
+                    raise PybnfError('Could not load the postprocessing script %s. Make sure this is a Python '
+                                     'file (.py)' % script)
+                postproc = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(postproc)
+                # Now postproc is the user-defined Python module
+            except OSError:
+                raise PybnfError('Could not load the postprocessing script %s' % script)
+            try:
+                func = postproc.postprocess
+            except NameError:
+                raise PybnfError('The postprocessing script %s should contain a definition of the function '
+                                 'postprocess(data). This function was not found.' % script)
+
+            for suff in suffixes:
+
+                # Need to backsolve the model name based on the suffix.
+                model_choices = []
+                for modelname in self.models:
+                    if suff in self.models[modelname].get_suffixes():
+                        model_choices.append(modelname)
+                if len(model_choices) == 0:
+                    raise PybnfError('Suffix %s was specified for a postprocessing script, but that suffix was not '
+                                     'found in any model' % suff)
+                if len(model_choices) > 1:
+                    raise PybnfError('Suffix %s was specified for a postprocessing script, but was found in multiple '
+                                     'models. Please rename suffixes to avoid this ambiguity.' % suff)
+                self.postprocessing[(model_choices[0], suff)] = script
 
 
 class UnknownObjectiveFunctionError(PybnfError):

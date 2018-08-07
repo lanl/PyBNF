@@ -55,6 +55,7 @@ class Result(object):
         self.name = name
         self.score = None  # To be set later when the Result is scored.
         self.failed = False
+        self.delete_failed = False  # Set to True if folder deletion failed for this Job
 
     def normalize(self, settings):
         """
@@ -72,6 +73,34 @@ class Result(object):
                     self.simdata[m][suff].normalize(settings)
                 elif suff in settings:
                     self.simdata[m][suff].normalize(settings[suff])
+
+    def postprocess_data(self, settings):
+        """
+        Postprocess the Data objects in this result with a user-defined Python script
+        :param settings: A dict that maps a tuple (model, suffix) to a Python filename to load.
+        That file is expected to contain the definition for the function postprocess(data),
+        which takes a Data object and returns a processed data object
+        :return: None
+        """
+        for m, suff in settings:
+            rawdata = self.simdata[m][suff]
+            # This could generate all kinds of errors if the user's script is bad. Whatever happens, it's caught
+            # by the caller of postprocess_data()
+            # exec(settings[m][suff])
+            # noinspection PyUnresolvedReferences
+            # self.simdata[m][suff] = postprocess(rawdata)
+
+            # Cleaner attempt - follows good practice and is probably faster, but makes it hard for the user to create
+            # a new Data object if they want to do that.
+            # However, they can do that by `dataclass = data.__class__` `newdata = dataclass()`
+            # Import the user-specified script as a module
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("postprocessor", settings[m, suff])
+            postproc = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(postproc)
+            # Now postproc is the user-defined Python module
+
+            self.simdata[m][suff] = postproc.postprocess(rawdata)
 
 
 class FailedSimulation(Result):
@@ -91,6 +120,7 @@ class FailedSimulation(Result):
         self.fail_type = fail_type
         self.failed = True
         self.traceback = ''.join(traceback.format_exception(*einfo))
+        self.delete_failed = False
 
     def normalize(self, settings):
         return
@@ -123,7 +153,8 @@ class Job:
     # "pybnf.algorithms.job" logger
     jlogger = logging.getLogger('pybnf.algorithms.job')
 
-    def __init__(self, models, params, job_id, output_dir, timeout, calc_future, norm_settings, delete_folder=False):
+    def __init__(self, models, params, job_id, output_dir, timeout, calc_future, norm_settings, postproc_settings,
+                 delete_folder=False):
         """
         Instantiates a Job
 
@@ -141,6 +172,8 @@ class Job:
         :param norm_settings: Config value for 'normalization': a string representing the normalization type, a dict
         mapping exp files to normalization type, or None
         :type norm_settings: Union[str, dict, NoneType]
+        :param postproc_settings: dict mapping (model, suffix) tuples to the path of a Python postprocessing file to
+        run on the result.
         :param delete_folder: If True, delete the folder and files created after the simulation runs
         :type delete_folder: bool
         """
@@ -149,6 +182,7 @@ class Job:
         self.job_id = job_id
         self.calc_future = calc_future
         self.norm_settings = norm_settings
+        self.postproc_settings = postproc_settings
         # Whether to show warnings about missing data if the job includes an objective evaluation. Toggle this after
         # construction if needed.
         self.show_warnings = False
@@ -229,19 +263,28 @@ class Job:
         else:
             if self.calc_future is not None:
                 res.normalize(self.norm_settings)
-                res.score = self.calc_future.result().evaluate_objective(res.simdata, show_warnings=self.show_warnings)
-                if res.score is None:
+                try:
+                    res.postprocess_data(self.postproc_settings)
+                except Exception:
+                    self.jlogger.exception('User-defined post-processing script failed')
+                    traceback.print_exc()
+                    print0('User-defined post-processing script failed')
                     res.score = np.inf
-                    logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-                    logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+                else:
+                    res.score = self.calc_future.result().evaluate_objective(res.simdata, show_warnings=self.show_warnings)
+                    if res.score is None:
+                        res.score = np.inf
+                        logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+                        logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
                 res.simdata = None
         if self.delete_folder:
             try:
-                run(['rm', '-rf', self.folder], check=True, timeout=60)
-                self.jlogger.info('Removing folder %s' % self.folder)
-            except CalledProcessError or TimeoutExpired:
-                # fail flag set to 1 since timeout in this case is due to directory removal
-                res = FailedSimulation(self.params, self.job_id, 1)
+                run(['rm', '-rf', self.folder], check=True, timeout=1800)
+                self.jlogger.info('Removed folder %s' % self.folder)
+            except (CalledProcessError, TimeoutExpired):
+                self.jlogger.error('Failed to remove folder %s.' % self.folder)
+                # Will increment Algorithm's counter. If we get too many of these, stops the fitting run
+                res.delete_failed = True
 
         return res
 
@@ -495,7 +538,16 @@ class Algorithm(object):
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
             res.normalize(self.config.config['normalization'])
-            res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
+            # Do custom postprocessing, if any
+            try:
+                res.postprocess_data(self.config.postprocessing)
+            except Exception:
+                logger.exception('User-defined post-processing script failed')
+                traceback.print_exc()
+                print0('User-defined post-processing script failed')
+                res.score = np.inf
+            else:
+                res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
                 logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
@@ -574,7 +626,8 @@ class Algorithm(object):
             # Create a single job
             return [Job(self.model_list, params, job_id,
                     self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
-                    self.config.config['normalization'], bool(self.config.config['delete_old_files']))]
+                    self.config.config['normalization'], self.config.postprocessing,
+                    bool(self.config.config['delete_old_files']))]
         else:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
@@ -586,7 +639,8 @@ class Algorithm(object):
                 # objective on their own
                 newjobs.append(Job(self.model_list, params, thisname,
                                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
-                                   self.config.config['normalization'], bool(self.config.config['delete_old_files'])))
+                                   self.config.config['normalization'], dict(),
+                                   bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
@@ -693,6 +747,8 @@ class Algorithm(object):
         backup_every = self.get_backup_every()
         sim_count = 0
 
+        delete_failures = 0
+
         logger.debug('Generating initial parameter sets')
         if resume:
             psets = resume
@@ -722,6 +778,11 @@ class Algorithm(object):
             if sim_count % backup_every == 0 and sim_count != 0:
                 self.backup(pending_psets)
             f, res = next(pool)
+            if res.delete_failed:
+                delete_failures += 1
+                if delete_failures > 5*self.config['population_size']:
+                    raise PybnfError('Failed to delete too many Simulations folders. Stopping fitting so I don''t '
+                                     'inadvertently fill up your disk.')
             # Handle if this result is one of multiple instances for smoothing
             sim_count += 1
             pending.remove(f)

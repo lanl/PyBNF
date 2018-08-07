@@ -22,6 +22,7 @@ workstations as well as distributed computing systems using the SLURM queueing m
    config
    config_keys
    algorithms
+   advanced
    algorithm_development
    cluster
    examples

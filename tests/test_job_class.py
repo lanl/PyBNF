@@ -8,7 +8,8 @@ from os import getcwd
 from os.path import isfile
 from os.path import isdir
 from shutil import rmtree
-
+from nose.tools import raises
+import copy
 
 import numpy as np
 
@@ -29,8 +30,10 @@ class TestJob(object):
         cls.pset = pset.PSet(d)
         cls.bng_command = environ['BNGPATH'] + '/BNG2.pl'
         cls.model.bng_command = cls.bng_command
-        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', '.', calc_future=None, norm_settings=None, timeout=None)
-        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', '.', calc_future=None, norm_settings=None, timeout=0)
+        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', '.', calc_future=None, norm_settings=None,
+                                 timeout=None, postproc_settings=dict())
+        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', '.', calc_future=None, norm_settings=None,
+                                    timeout=0, postproc_settings=dict())
 
     @classmethod
     def teardown_class(cls):
@@ -68,7 +71,7 @@ class TestJob(object):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], [], nf='bngl_files/TrickyWP_p1_5.net')
         netmodel.bng_command = self.bng_command
         mkdir('sim_net')
-        job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', '.', calc_future=None, norm_settings=None, timeout=None)
+        job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', '.', calc_future=None, norm_settings=None, timeout=None, postproc_settings=dict())
 
         job.folder = getcwd() + '/sim_net'
         job._run_models()
@@ -93,3 +96,20 @@ class TestJob(object):
         assert res.fail_type == 0
         a.add_to_trajectory(res)
         assert a.trajectory.best_score() == np.inf
+
+    def test_postprocess_result(self):
+        d = data.Data('bngl_files/special_cases/postprocess/unit_test_data.gdat')
+        simdata = {'model1': {'data1': d, 'data2': copy.deepcopy(d)}}
+        res = algorithms.Result(self.pset, simdata, 'test')
+        postproc_settings = {('model1', 'data1'): 'bngl_files/special_cases/postprocess/myscript.py'}
+        res.postprocess_data(postproc_settings)
+        assert res.simdata['model1']['data1']['x'][1] == 10
+        assert res.simdata['model1']['data2']['x'][1] == 5
+
+    @raises(TypeError)
+    def test_failed_postprocess(self):
+        d = data.Data('bngl_files/special_cases/postprocess/unit_test_data.gdat')
+        simdata = {'model1': {'data1': d, 'data2': copy.deepcopy(d)}}
+        res = algorithms.Result(self.pset, simdata, 'test')
+        postproc_settings = {('model1', 'data1'): 'bngl_files/special_cases/postprocess/bugscript.py'}
+        res.postprocess_data(postproc_settings)

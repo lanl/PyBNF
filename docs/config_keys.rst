@@ -344,6 +344,16 @@ Algorithm Options
      * ``normalization = init``
      * ``normalization = init: data1.exp, data2.exp``
      * ``normalization = init: (data1.exp: 1,3-5), (data2.exp: var1,var2)``
+
+.. _postproc_key:
+
+**postprocess**
+  Used to specify a custom Python script for postprocessing simulation results before evaluating the objective function. Specify the path to the Python script, followed by a list of all of the simulation suffixes for which that postprocessing script should be applied. For how to set up a postprocessing script, see :ref:`Custom Postprocessing <postproc>`. 
+ 
+  Default: No postprocessing
+  
+  Example:
+    * ``postprocess = path/to/script.py suff1 suff2``
   
 **refine**
   If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. 
