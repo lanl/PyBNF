@@ -782,7 +782,7 @@ class Algorithm(object):
             f, res = next(pool)
             if res.delete_failed:
                 delete_failures += 1
-                if delete_failures > 5*self.config['population_size']:
+                if delete_failures > 20*self.config.config['population_size']:
                     raise PybnfError('Failed to delete too many Simulations folders. Stopping fitting so I don''t '
                                      'inadvertently fill up your disk.')
             # Handle if this result is one of multiple instances for smoothing
