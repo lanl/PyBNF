@@ -37,24 +37,35 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
 
     def layout_widgets(self, layout):
         return (layout.itemAt(i).widget() for i in range(layout.count()))
-
+    #this timer updates the comboboxes for the models in time courses and param scan
     def updateModels(self):
         try:
             for r in range(0, self.timeout.rowCount()):
                 it = self.timeout.itemAtPosition(r, 5)
                 if it is not None:
                     tcmodel = self.timeout.itemAtPosition(r, 3).widget()
+                    #adds models to combobox
                     for i in list(self.models.keys()):
                         index = tcmodel.findText(i)
                         if index == -1:
                             tcmodel.addItem(i)
-                    #tcmodel.addItems(list(self.models.keys()))
+                    #removes artifacts from the combobox
+                    for i in range(tcmodel.count()):
+                        if not(tcmodel.itemText(i) in list(self.models.keys())):
+                            tcmodel.removeItem(i)
             for r in range(0, self.scanout.rowCount()):
                 it = self.scanout.itemAtPosition(r, 5)
                 if it is not None:
                     psmodel = self.scanout.itemAtPosition(r, 3).widget()
-                    psmodel.clear()
-                    psmodel.addItems(list(self.models.keys()))
+                    #adds models to combobox
+                    for i in list(self.models.keys()):
+                        index = psmodel.findText(i)
+                        if index == -1:
+                            psmodel.addItem(i)
+                    #removes artifacts from the combobox
+                    for i in range(psmodel.count()):
+                        if not(psmodel.itemText(i) in list(self.models.keys())):
+                            psmodel.removeItem(i)
         except Exception as e:
             print(e)
 

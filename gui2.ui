@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>994</width>
-    <height>667</height>
+    <height>644</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -78,7 +78,7 @@
            <x>10</x>
            <y>10</y>
            <width>961</width>
-           <height>491</height>
+           <height>461</height>
           </rect>
          </property>
          <property name="sizePolicy">
@@ -99,7 +99,7 @@
             <x>0</x>
             <y>0</y>
             <width>961</width>
-            <height>321</height>
+            <height>291</height>
            </rect>
           </property>
           <attribute name="label">
@@ -649,7 +649,7 @@ p, li { white-space: pre-wrap; }
             <x>0</x>
             <y>0</y>
             <width>961</width>
-            <height>321</height>
+            <height>291</height>
            </rect>
           </property>
           <attribute name="label">
