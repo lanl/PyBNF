@@ -250,7 +250,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         index = self.typeList.currentRow() + 1
         if c is not None:
             self.typeList.takeItem(self.typeList.currentRow())
-            self.types.pop(self.types[index], None)
+            self.types.pop(index, None)
 
     def addExp2(self):
         c = self.typeList.currentItem()
@@ -275,8 +275,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     def typeItemChanged(self):
         c = self.typeList.currentItem()
         index = self.typeList.currentRow() + 1
-        if c is not None:
-            ml = self.types[index]
+        if index is not None:
+            ml = self.types.get(list(self.types)[index])
             self.expList2.clear()
             for i in ml:
                 self.expList2.addItem(i)
