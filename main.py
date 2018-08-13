@@ -33,15 +33,38 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
     home = str(Path.home())
 
     timer = QtCore.QTimer()
+    modelUpdate = QtCore.QTimer()
 
     def layout_widgets(self, layout):
         return (layout.itemAt(i).widget() for i in range(layout.count()))
 
+    def updateModels(self):
+        try:
+            for r in range(0, self.timeout.rowCount()):
+                it = self.timeout.itemAtPosition(r, 5)
+                if it is not None:
+                    tcmodel = self.timeout.itemAtPosition(r, 3).widget()
+                    for i in list(self.models.keys()):
+                        index = tcmodel.findText(i)
+                        if index == -1:
+                            tcmodel.addItem(i)
+                    #tcmodel.addItems(list(self.models.keys()))
+            for r in range(0, self.scanout.rowCount()):
+                it = self.scanout.itemAtPosition(r, 5)
+                if it is not None:
+                    psmodel = self.scanout.itemAtPosition(r, 3).widget()
+                    psmodel.clear()
+                    psmodel.addItems(list(self.models.keys()))
+        except Exception as e:
+            print(e)
+
+
     def __init__(self, parent=None):
         super(bnfc, self).__init__(parent)
         self.setupUi(self)
-        #set up timer
+        #set up timers
         self.timer.timeout.connect(self.checkProcess)
+        self.modelUpdate.timeout.connect(self.updateModels)
         #model config
         self.modelpBtn.clicked.connect(self.addModel)
         self.modelmBtn.clicked.connect(self.removeModel)
@@ -108,7 +131,8 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         self.scanArea.setWidgetResizable(True)
         self.scanArea.setWidget(s)
         self.addEmptyScan()
-
+        #start update timer for time courses and param scan
+        self.modelUpdate.start(1000)
         #mutant
         self.maddBtn.clicked.connect(self.addMutantModel)
         self.addnameBtn.clicked.connect(self.addMutantName)
@@ -268,6 +292,7 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
             self.bnfBtn.setText("Terminate process")
         else:
             self.bnfBtn.setText("Save and run")
+
 
     def runBNF(self):
         if self.bnfBtn.text() == "Save and run":
@@ -488,32 +513,41 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         ctype = QtWidgets.QComboBox()
         ctype.addItems(["time", "step", "model", "suffix", "method"])
 
+        models = QtWidgets.QComboBox()
+        models.addItems(list(self.models.keys()))
+
         val = QtWidgets.QLineEdit()
 
         gl = self.timeout
         row = gl.rowCount()
         gl.addWidget(QtWidgets.QLabel("key:"), row, 0)
         gl.addWidget(ctype, row, 1)
-        gl.addWidget(QtWidgets.QLabel("val:"), row, 2)
-        gl.addWidget(val, row, 3)
+        gl.addWidget(QtWidgets.QLabel("model:"), row, 2)
+        gl.addWidget(models, row, 3)
+        gl.addWidget(QtWidgets.QLabel("val:"), row, 4)
+        gl.addWidget(val, row, 5)
 
     def addCourse(self, typ, v1):
         ctype = QtWidgets.QComboBox()
         ctype.addItems(["time", "step", "model", "suffix", "method"])
 
+        models = QtWidgets.QComboBox()
+        models.addItems(list(self.models.keys()))
+
         val = QtWidgets.QLineEdit()
 
         gl = self.timeout
         row = gl.rowCount()
         gl.addWidget(QtWidgets.QLabel("key:"), row, 0)
         gl.addWidget(ctype, row, 1)
-        gl.addWidget(QtWidgets.QLabel("val:"), row, 2)
-        gl.addWidget(val, row, 3)
+        gl.addWidget(QtWidgets.QLabel("model:"), row, 2)
+        gl.addWidget(models, row, 3)
+        gl.addWidget(QtWidgets.QLabel("val:"), row, 4)
+        gl.addWidget(val, row, 5)
 
         #assign values
         ctype.setCurrentIndex(typ)
         val.setText(v1)
-
     '''
     param scan
     '''
@@ -521,14 +555,19 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         stype = QtWidgets.QComboBox()
         stype.addItems(["param:", "max:", "step:", "time:", "logspace:", "model:", "method:"])
 
+        models = QtWidgets.QComboBox()
+        models.addItems(list(self.models.keys()))
+
         val = QtWidgets.QLineEdit()
 
         gl = self.scanout
         row = gl.rowCount()
         gl.addWidget(QtWidgets.QLabel("key:"), row, 0)
         gl.addWidget(stype, row, 1)
-        gl.addWidget(QtWidgets.QLabel("val:"), row, 2)
-        gl.addWidget(val, row, 3)
+        gl.addWidget(QtWidgets.QLabel("model:"), row, 2)
+        gl.addWidget(models, row, 3)
+        gl.addWidget(QtWidgets.QLabel("val:"), row, 4)
+        gl.addWidget(val, row, 5)
 
     def addScan(self, typ, v1):
         stype = QtWidgets.QComboBox()
@@ -540,8 +579,10 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         row = gl.rowCount()
         gl.addWidget(QtWidgets.QLabel("key:"), row, 0)
         gl.addWidget(stype, row, 1)
-        gl.addWidget(QtWidgets.QLabel("val:"), row, 2)
-        gl.addWidget(val, row, 3)
+        gl.addWidget(QtWidgets.QLabel("model:"), row, 2)
+        gl.addWidget(models, row, 3)
+        gl.addWidget(QtWidgets.QLabel("val:"), row, 4)
+        gl.addWidget(val, row, 5)
 
         #assign values
         stype.setCurrentIndex(typ)
@@ -855,25 +896,27 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
         #time courses
         self.actionDict["time_course"] = []
         for r in range(0, self.timeout.rowCount()):
-            it = self.timeout.itemAtPosition(r, 3)
+            it = self.timeout.itemAtPosition(r, 5)
             if it is not None:
                 if it.widget().text() != "":
-                    val = self.timeout.itemAtPosition(r, 3).widget()
+                    val = self.timeout.itemAtPosition(r, 5).widget()
+                    tcmodel = str(self.timeout.itemAtPosition(r, 3).widget().currentText())
                     index = self.timeout.itemAtPosition(r, 1).widget().currentIndex()
                     r = {0: "time", 1: "step", 2: "model", 3: "suffix", 4: "method"}
-                    l = [r[index], val.text()]
+                    l = [r[index], tcmodel, val.text()]
                     self.actionDict["time_course"].append(l)
 
         #param scan
         self.actionDict["param_scan"] = []
         for r in range(0, self.scanout.rowCount()):
-            it = self.scanout.itemAtPosition(r, 3)
+            it = self.scanout.itemAtPosition(r, 5)
             if it is not None:
                 if it.widget().text() != "":
-                    val = self.scanout.itemAtPosition(r, 3).widget()
+                    val = self.scanout.itemAtPosition(r, 5).widget()
+                    psmodel = str(self.scanout.itemAtPosition(r, 3).widget().currentText())
                     index = self.scanout.itemAtPosition(r, 1).widget().currentIndex()
                     r = {0: "param", 1: "max", 2: "step", 3: "time", 4: "logspace", 5: "model", 6: "method"}
-                    l = [r[index], val.text()]
+                    l = [r[index], psmodel, val.text()]
                     self.actionDict["param_scan"].append(l)
 
         #normalization
@@ -967,11 +1010,14 @@ class bnfc(QtWidgets.QMainWindow, gui.Ui_mainWindow):
                     for key, value in self.actionDict.items():
                         strprint = ""
                         if value:
-                            file.write(key + " = ")
-                            for k, v in value: #TEST FLAG
-                                strprint += str(k + ": " + v + ",")
-                            file.write(strprint[:-1])
-                            file.write("\n")
+                            for k, m, v in value: #TEST FLAG
+                                if m != "":
+                                    strprint += str("model: " + m + ", " + k + ": " + v + "\n")
+                                else:
+                                    strprint += str(k + ": " + v + "\n")
+                                file.write(key + " = " + strprint)
+                                strprint = ""
+                            #file.write("\n")
             #parameter specification
                 if paramAdj.items() != 0:
                     file.write(coolComment("Parameter Specifications"))
