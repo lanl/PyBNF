@@ -57,7 +57,6 @@ class Result(object):
         self.name = name
         self.score = None  # To be set later when the Result is scored.
         self.failed = False
-        self.delete_failed = False  # Set to True if folder deletion failed for this Job
 
     def normalize(self, settings):
         """
@@ -122,7 +121,6 @@ class FailedSimulation(Result):
         self.fail_type = fail_type
         self.failed = True
         self.traceback = ''.join(traceback.format_exception(*einfo))
-        self.delete_failed = False
 
     def normalize(self, settings):
         return
@@ -285,8 +283,6 @@ class Job:
                 self.jlogger.info('Removed folder %s' % self.folder)
             except (CalledProcessError, TimeoutExpired):
                 self.jlogger.error('Failed to remove folder %s.' % self.folder)
-                # Will increment Algorithm's counter. If we get too many of these, stops the fitting run
-                res.delete_failed = True
 
         return res
 
@@ -749,8 +745,6 @@ class Algorithm(object):
         backup_every = self.get_backup_every()
         sim_count = 0
 
-        delete_failures = 0
-
         logger.debug('Generating initial parameter sets')
         if resume:
             psets = resume
@@ -780,11 +774,6 @@ class Algorithm(object):
             if sim_count % backup_every == 0 and sim_count != 0:
                 self.backup(pending_psets)
             f, res = next(pool)
-            if res.delete_failed:
-                delete_failures += 1
-                if delete_failures > 5*self.config['population_size']:
-                    raise PybnfError('Failed to delete too many Simulations folders. Stopping fitting so I don''t '
-                                     'inadvertently fill up your disk.')
             # Handle if this result is one of multiple instances for smoothing
             sim_count += 1
             pending.remove(f)
