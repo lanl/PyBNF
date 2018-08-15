@@ -1034,9 +1034,9 @@ class ParticleSwarm(Algorithm):
         p = self.pset_map.pop(paramset)  # Particle number
 
         # Update best scores if needed.
-        if score < self.bests[p][1]:
+        if score <= self.bests[p][1]:
             self.bests[p] = [paramset, score]
-            if score < self.global_best[1]:
+            if score <= self.global_best[1]:
                 self.global_best = [paramset, score]
 
         # Update own position and velocity
