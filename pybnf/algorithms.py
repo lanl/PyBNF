@@ -2024,6 +2024,11 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         self.prior = None
         self.load_priors()
 
+        self.attempts = 0
+        self.accepted = 0
+        self.exchange_attempts = 0
+        self.exchange_accepted = 0
+
         self.staged = []  # Used only when resuming a run and adding iterations
 
     def reset(self, bootstrap=None):
@@ -2087,8 +2092,10 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         ln_p_accept = min(0., lnposterior - self.ln_current_P[index])
 
         # Decide whether to accept move.
+        self.attempts += 1
         if np.random.rand() < np.exp(ln_p_accept*self.betas[index]) or np.isnan(self.ln_current_P[index]):
             # Accept the move, so update our current PSet and P
+            self.accepted += 1
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
             # For simulated annealing, reduce the temperature if this was an unfavorable move.
@@ -2113,6 +2120,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 self.wait_for_sync = [False] * self.num_parallel
                 return self.replica_exchange()
             elif min(self.iteration) >= self.max_iterations:
+                print0('Overall move accept rate: %f' % (self.accepted/self.attempts))
                 return 'STOP'
             else:
                 return []
@@ -2170,9 +2178,15 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                     self.output_results()
                 if self.iteration[index] % 10 == 0:
                     print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                    print2('Current move accept rate: %f' % (self.accepted/self.attempts))
+                    if self.exchange_attempts > 0:
+                        print2('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
                 else:
                     print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                 logger.info('Completed %i iterations' % self.iteration[index])
+                logger.info('Current move accept rate: %f' % (self.accepted/self.attempts))
+                if self.exchange_attempts > 0:
+                    logger.info('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
                 if self.sa:
                     logger.debug('Current betas: ' + str(self.betas))
                 print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
@@ -2246,9 +2260,11 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 # to the lower temperature. ind_lo has lower T so higher beta, so the first term is positive. The second
                 # term is positive if ind_lo is better. But you want a positive final answer when ind_hi, currently at
                 # higher T, is better. So you need a - sign.
+                self.exchange_attempts += 1
                 if np.random.random() < np.exp(ln_p_exchange):
                     # Do the exchange
                     logger.debug('Exchanging individuals %i and %i' % (ind_hi, ind_lo))
+                    self.exchange_accepted += 1
                     hold_pset = self.current_pset[ind_hi]
                     hold_p = self.ln_current_P[ind_hi]
                     self.current_pset[ind_hi] = self.current_pset[ind_lo]
