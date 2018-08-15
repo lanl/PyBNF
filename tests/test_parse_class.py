@@ -1,5 +1,6 @@
 import os
 from .context import parse
+from .context import cluster
 
 
 class TestParse:
@@ -97,3 +98,9 @@ class TestParse:
     def test_no_exp(self):
         assert parse.parse('model=thing.bngl: None') == ['model', 'thing.bngl']
         assert parse.parse('mutant = thing mutant a*2 b=0 : None') == ['mutant', 'thing', 'mutant', [['a', '*', '2'], ['b', '=', '0']], []]
+
+    def test_slurm_parse(self):
+        l = cluster.parse_nodes('cn[1-2]0[1,2],dn[1-3,5],en13')
+        assert sorted(l) == ['cn101', 'cn102', 'cn201', 'cn202', 'dn1', 'dn2', 'dn3', 'dn5', 'en13']
+        l = cluster.parse_nodes('n[1,2][3-5]')
+        assert sorted(l) == ['n13', 'n14', 'n15', 'n23', 'n24', 'n25']

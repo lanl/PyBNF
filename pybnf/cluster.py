@@ -3,12 +3,14 @@
 
 from .printing import PybnfError
 
-from subprocess import run, TimeoutExpired, Popen, PIPE, STDOUT, CalledProcessError, DEVNULL
+from subprocess import Popen,  STDOUT, DEVNULL
 
 import logging
 import re
 import time
-
+from itertools import product
+import copy
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +28,11 @@ def get_scheduler(config):
         ctype = config.config['cluster_type']
         if re.match('slurm', ctype, flags=re.IGNORECASE):
             logger.debug('Detected selection of SLURM cluster')
-            get_hosts_cmd = ['scontrol', 'show', 'hostname', '$SLURM_JOB_NODELIST']
             try:
-                proc = run(' '.join(get_hosts_cmd), shell=True, stdout=PIPE, timeout=10, check=True)
-            except TimeoutExpired:
-                logger.error('Could not retrieve host names in 10s')
-                raise PybnfError('Failed to find node names in a reasonable time.  Exiting')
-            except CalledProcessError:
-                logger.error('User specified SLURM cluster, but command "%s" failed' % ' '.join(get_hosts_cmd))
-                raise PybnfError('Command to find node names failed.  Confirm use of SLURM cluster.  Exiting')
-            nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
+                nodeecho = os.environ['SLURM_JOB_NODELIST']
+            except KeyError:
+                raise PybnfError('SLURM cluster setup failed: Enviornment variable $SLURM_JOB_NODELIST was not found')
+            nodes = parse_nodes(nodeecho)
             scheduler_node = nodes[0]
             logger.info('Node %s is being used as the scheduler node' % scheduler_node)
             logger.info('Node(s) %s is/are being used as compute nodes' % ','.join(nodes))
@@ -47,6 +44,51 @@ def get_scheduler(config):
             raise PybnfError("Unknown cluster type: %s" % config.config['cluster_type'])
     return scheduler_node, node_string
 
+def parse_nodes(slurm_string):
+    """
+    Converts a SLURM_JOB_NODELIST into the list of nodes represented
+    :param slurm_string:
+    :return:
+    """
+
+    # Replace all bracketed things with placeholders *1*, *2*, etc
+    index = 1
+    brackets = dict()
+    while True:
+        m = re.search('(?<=\[)[^\[\]]*(?=\])', slurm_string)
+        if m is None:
+            break
+        slurm_string = re.sub('\[[^\[\]]*\]', '*%s*' % index, slurm_string, count=1)
+        brackets[index] = m.group(0)
+        index += 1
+
+    # Expand the bracketed substrings into all the numbers they represent
+    bracket_nums = dict()
+    for k in brackets:
+        s = brackets[k]
+        numlist = []
+        nums = s.split(',')
+        for ni in nums:
+            if '-' in ni:
+                nrange = ni.split('-')
+                numlist += list(range(int(nrange[0]), int(nrange[1])+1))
+            else:
+                numlist.append(int(ni))
+        bracket_nums[k] = numlist
+
+    # Split the outside string by commas, then generate the node names for each part
+    final_list = []
+    parts = slurm_string.split(',')
+    for p in parts:
+        tosub = re.findall('\*[0-9]+\*', p)
+        tosub = [int(i[1:-1]) for i in tosub]
+        sublists = [bracket_nums[i] for i in tosub]
+        for subs in product(*sublists):
+            thisp = copy.copy(p)
+            for i, si in enumerate(subs):
+                thisp = re.sub('\*%i\*' % tosub[i], str(si), thisp)
+            final_list.append(thisp)
+    return final_list
 
 def setup_cluster(node_string, out_dir):
     """

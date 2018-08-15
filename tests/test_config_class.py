@@ -3,6 +3,7 @@ from .context import data
 from .context import objective
 from .context import pset
 from .context import printing
+from .context import cluster
 
 from nose.tools import raises
 
