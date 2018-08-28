@@ -200,7 +200,7 @@ def main():
             scheduler_node, node_string = get_scheduler(config)
 
         if node_string:
-            dask_ssh_proc = setup_cluster(node_string, os.getcwd())
+            dask_ssh_proc = setup_cluster(node_string, os.getcwd(), config.config['parallel_count'])
 
         # Run the algorithm!
         logger.debug('Algorithm initialization')

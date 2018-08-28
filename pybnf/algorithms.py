@@ -725,13 +725,8 @@ class Algorithm(object):
             logger.debug('Setting up Simplex refinement of previous algorithm')
 
         if scheduler_node:
-            if 'parallel_count' in self.config.config:
-                logger.warning("Ignoring 'parallel_count' option and using all processes available to scheduler node")
-                print1("Option 'parallel_count' is not used when a 'scheduler_node' or 'cluster_type' is specified.  "
-                       "Using all of the workers available.")
-
             client = Client('%s:8786' % scheduler_node)
-        elif 'parallel_count' in self.config.config:
+        elif self.config.config['parallel_count'] is not None:
             lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
             client = Client(lc)
             client.run(init_logging, log_prefix, debug)
