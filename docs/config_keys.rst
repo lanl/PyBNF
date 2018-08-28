@@ -178,7 +178,7 @@ These keys specify what simulations should be performed with the models. For SBM
 Parallel Computing
 ------------------
 **parallel_count**
-  The number jobs to run in parallel for local (non-cluster) fitting runs.
+  The number of jobs to run in parallel. This may be set for both local and cluster fitting runs. For cluster runs, this number is divided by the number of available nodes (and rounded up) to determine the number of parallel jobs per node. 
 
   Default: Use all available cores/threads.
 
