@@ -1056,7 +1056,11 @@ class FreeParameter(object):
         :param ub:
         :return:
         """
-        r = np.random.uniform(lb, ub)
+        try:
+            r = np.random.uniform(lb, ub)
+        except OverflowError:
+            logger.error('Random number overflow with lower bound %s, upper bound %s' % (lb, ub))
+            r = 0.
         return self.add(r, reflect)
 
     def diff(self, other):
