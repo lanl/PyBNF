@@ -8,6 +8,7 @@ from subprocess import run, TimeoutExpired, Popen, PIPE, STDOUT, CalledProcessEr
 import logging
 import re
 import time
+import numpy as np
 
 
 logger = logging.getLogger(__name__)
@@ -48,16 +49,24 @@ def get_scheduler(config):
     return scheduler_node, node_string
 
 
-def setup_cluster(node_string, out_dir):
+def setup_cluster(node_string, out_dir, parallel_count=None):
     """
     Sets up a Dask cluster using the `dask-ssh` convenience script
 
     :param node_string: A string composed of a list of compute nodes
     :param out_dir: A directory for
+    :param parallel_count: Total number of parallel threads to use over all nodes. If None, use all available threads
+    (the dask-ssh default)
     :return: subprocess.Popen
     """
     logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
-    dask_ssh_proc = Popen('dask-ssh %s --log-directory %s' % (node_string, out_dir), shell=True, stdout=DEVNULL, stderr=STDOUT)
+    if parallel_count is None:
+        dask_ssh_cmd = 'dask-ssh %s --log-directory %s' % (node_string, out_dir)
+    else:
+        n_per_node = int(np.ceil(parallel_count/len(node_string.split())))
+        logger.info('Manually setting %i threads per node' % n_per_node)
+        dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nthreads %i' % (node_string, out_dir, n_per_node)
+    dask_ssh_proc = Popen(dask_ssh_cmd, shell=True, stdout=DEVNULL, stderr=STDOUT)
     time.sleep(10)
     return dask_ssh_proc
 
