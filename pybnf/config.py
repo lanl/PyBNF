@@ -47,6 +47,9 @@ def init_logging(file_prefix, debug=False):
     talog.setLevel(logging.ERROR)
     talog.addHandler(fh)
 
+    asynclog = logging.getLogger('asyncio')
+    asynclog.setLevel(999)  # Higher than critical -> silent
+
     if debug:
         dfh = logging.FileHandler('%s_debug.log' % file_prefix, mode='a')
         dfh.setLevel(logging.DEBUG)
