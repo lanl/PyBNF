@@ -49,10 +49,11 @@ Objective functions
 ^^^^^^^^^^^^^^^^^^^
 
 All algorithms use an objective function to evaluate the quality of fit for each parameter set. The objective function is set with the ``objfunc`` key. The following options are available. Note that :math:`y_i` are the experimental data points and :math:`a_i` are the simulated data points. The summation is over all experimental data points.
+
     * Chi squared (``obj_func = chi_sq``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{2 \sigma_i^2}` . :math:`\sigma_i` is the standard deviation of point :math:`y_i`, and must be specified in the :ref:`exp file <exp-file>`.
     * Sum of squares (``obj_func = sos``): :math:`f(y, a) =  \sum_i (y_i - a_i)^2`
-    * Normalized sum of squares (``obj_func = norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{y_i}`
-    * Average-normalized sum of squares (``obj_func = ave_norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{\bar{y}}`, where :math:`\bar{y}` is the average of the entire data column :math:`y`.
+    * Normalized sum of squares (``obj_func = norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{y_i^2}`
+    * Average-normalized sum of squares (``obj_func = ave_norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{\bar{y}^2}`, where :math:`\bar{y}` is the average of the entire data column :math:`y`.
     
 If you include any :ref:`constraints <con-file>` in your fit, the constraints add extra terms to the objective function. 
 
