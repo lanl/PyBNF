@@ -14,7 +14,7 @@ from .data import Data
 from .pset import PSet
 from .pset import Trajectory
 
-from .pset import NetModel, BNGLModel
+from .pset import NetModel, BNGLModel, SbmlModelNoTimeout
 from .pset import OutOfBoundsException
 from .pset import FailedSimulationError
 from .printing import print0, print1, print2, PybnfError
@@ -853,6 +853,10 @@ class Algorithm(object):
         if self.config.config['delete_old_files'] > 0 and self.config.config['save_best_data']:
             # Rerun the best fit parameter set so the gdat file(s) are saved in the Results folder.
             logger.info('Rerunning best fit parameter set to save data files.')
+            # Enable saving files for SBML models
+            for m in self.model_list:
+                if isinstance(m, SbmlModelNoTimeout):
+                    m.save_files = True
             finaljob = Job(self.model_list, best_pset, 'bestfit',
                            self.sim_dir, self.config.config['wall_time_sim'], None,
                            self.config.config['normalization'], self.config.postprocessing,
@@ -866,6 +870,10 @@ class Algorithm(object):
                 # Copy all gdat and scan to Results
                 for fname in glob(self.sim_dir+'/bestfit/*.gdat') + glob(self.sim_dir+'/bestfit/*.scan'):
                     shutil.copy(fname, self.res_dir)
+            # Disable saving files for SBML models (in case there is future bootstrapping or refinement)
+            for m in self.model_list:
+                if isinstance(m, SbmlModelNoTimeout):
+                    m.save_files = False
 
         try:
             os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
