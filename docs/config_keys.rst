@@ -245,6 +245,14 @@ Output Options
 
   Example:
     * ``output_every = 1000``
+    
+**save_best_data**
+  If 1, run an extra simulation at the end of fitting using the best-fit parameters, and save the best-fit .gdat and .scan files to the Results directory. 
+  
+  Default: 0
+  
+  Example:
+    * ``save_best_data = 1``
 
 **verbosity**
   An integer value that specifies the amount of information output to the terminal.
