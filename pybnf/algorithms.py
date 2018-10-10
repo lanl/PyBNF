@@ -748,7 +748,7 @@ class Algorithm(object):
             psets = self.start_run()
         pending_psets = set(psets)
 
-        if debug and not os.path.isdir(self.failed_logs_dir):
+        if not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
 
         if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1:
@@ -762,7 +762,7 @@ class Algorithm(object):
             jobs += self.make_job(p)
         jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(run_job, job, debug, self.failed_logs_dir) for job in jobs]
+        futures = [client.submit(run_job, job, True, self.failed_logs_dir) for job in jobs]
         pending = set(futures)
         pool = as_completed(futures, with_results=True)
         while True:
@@ -818,7 +818,8 @@ class Algorithm(object):
                     pending_psets.add(ps)
                 logger.debug('Submitting %d new Jobs' % len(new_jobs))
 
-                new_futures = [client.submit(run_job, j, debug, self.failed_logs_dir) for j in new_jobs]
+                new_futures = [client.submit(run_job, j, (debug or self.fail_count < 10), self.failed_logs_dir)
+                               for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
         logger.info("Cancelling %d pending jobs" % len(pending))
