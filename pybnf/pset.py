@@ -1303,6 +1303,8 @@ class Trajectory(object):
         logger.info('Loading trajectory from %s' % filename)
         with open(filename) as f:
             lines = f.readlines()
+        if len(lines) == 0:
+            raise IOError('Empty parameters file %s' % filename)
         var_names = re.split('\s+', lines[0].strip('#').strip())[2:]
 
         t = Trajectory(max_output)
