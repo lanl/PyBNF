@@ -197,10 +197,10 @@ class BNGLModel(Model):
                     self.generate_network_line = line
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
-                        'simulate.*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
+                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
                     self.generates_network = True  # in case there is no "generate_network" command present
                 if re.search('simulate_((nf)|(ssa)|(pla))', line) or re.search(
-                        'simulate.*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
+                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
                     self.stochastic = True
                 if re.search('seed=>\d+', line):
                     self.seeded = True
