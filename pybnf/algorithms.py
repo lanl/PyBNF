@@ -125,6 +125,9 @@ class FailedSimulation(Result):
     def normalize(self, settings):
         return
 
+    def postprocess_data(self, settings):
+        return
+
 
 def run_job(j, debug=False, failed_logs_dir=''):
     """
