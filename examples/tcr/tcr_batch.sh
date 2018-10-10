@@ -18,4 +18,4 @@
 module load anaconda/Anaconda3
 
 # Run PyBNF
-pybnf -c examples/tcr/tcr.conf -t SLURM -o
+pybnf -c examples/tcr/tcr-ss.conf -t SLURM -o
