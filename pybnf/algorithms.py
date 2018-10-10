@@ -832,7 +832,7 @@ class Algorithm(object):
         else:
             psets = self.start_run()
 
-        if debug and not os.path.isdir(self.failed_logs_dir):
+        if not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
 
         if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1 and \
@@ -850,7 +850,7 @@ class Algorithm(object):
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = []
         for job in jobs:
-            f = client.submit(run_job, job, debug, self.failed_logs_dir)
+            f = client.submit(run_job, job, True, self.failed_logs_dir)
             futures.append(f)
             pending[f] = (job.params, job.job_id)
         pool = custom_as_completed(futures, with_results=True, raise_errors=False)
@@ -910,7 +910,7 @@ class Algorithm(object):
                 for ps in response:
                     new_js = self.make_job(ps)
                     for new_j in new_js:
-                        new_f = client.submit(run_job, new_j, debug, self.failed_logs_dir)
+                        new_f = client.submit(run_job, new_j, (debug or self.fail_count < 10), self.failed_logs_dir)
                         pending[new_f] = (ps, new_j.job_id)
                         new_futures.append(new_f)
                 logger.debug('Submitting %d new Jobs' % len(new_futures))
