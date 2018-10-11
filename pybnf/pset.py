@@ -197,10 +197,10 @@ class BNGLModel(Model):
                     self.generate_network_line = line
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
-                        'simulate.*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
+                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
                     self.generates_network = True  # in case there is no "generate_network" command present
                 if re.search('simulate_((nf)|(ssa)|(pla))', line) or re.search(
-                        'simulate.*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
+                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
                     self.stochastic = True
                 if re.search('seed=>\d+', line):
                     self.seeded = True
@@ -1303,6 +1303,8 @@ class Trajectory(object):
         logger.info('Loading trajectory from %s' % filename)
         with open(filename) as f:
             lines = f.readlines()
+        if len(lines) == 0:
+            raise IOError('Empty parameters file %s' % filename)
         var_names = re.split('\s+', lines[0].strip('#').strip())[2:]
 
         t = Trajectory(max_output)
