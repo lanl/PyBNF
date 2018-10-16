@@ -64,6 +64,7 @@ While COPASI is a useful tool for generating SBML files, it is important to note
 To help confirm that your model is running as expected, you can set ``delete_old_files=0`` in your config file, which causes the model output as it was simulated by libRoadRunner in PyBNF to be saved in the ``Simulations/`` directory. 
 
 The following are known issues in translating from COPASI to SBML / libRoadRunner:
+
   * Writing formulas in terms of derivatives of species is possible in COPASI, but does not export to SBML.
   * If you rename a parameter or species in COPASI (some time after its creation), the parameter / species is not renamed in the exported SBML, likely causing a PyBNF error about a name not being found. To effectively rename a parameter or species, do a find/replace for ``id="oldname"`` in the SBML file itself, or delete the object in COPASI and create a new one.
   * Defining an "Initial expression" for the concentration of a species is supported in COPASI, but does not export to SBML.
