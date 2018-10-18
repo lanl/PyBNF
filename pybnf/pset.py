@@ -602,7 +602,7 @@ class SbmlModelNoTimeout(Model):
 
         # Run the model actions
         result_dict = dict()
-        selection = ['time'] + list(self.species_names)
+        selection = ['time'] + ['[%s]' % s for s in self.species_names]
         for mut in self.mutants:
             # Apply all mutations
             self._apply_mutant(mut, runner)
