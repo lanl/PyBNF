@@ -14,15 +14,14 @@ import re
 logger = logging.getLogger(__name__)
 
 
-numkeys_int = ['verbosity', 'parallel_count', 'seed', 'delete_old_files', 'max_generations', 'population_size',
-               'smoothing', 'max_parents', 'force_different_parents', 'keep_parents', 'divide_by_init',
-               'log_transform_sim_data', 'standardize_sim_data', 'standardize_exp_data', 'max_iterations',
+numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_size',
+               'smoothing', 'max_iterations',
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
                'local_objective_eval', 'reps_per_beta', 'save_best_data']
-numkeys_float = ['extra_weight', 'swap_rate', 'min_objective', 'cognitive', 'social', 'particle_weight',
+numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
@@ -30,9 +29,9 @@ numkeys_float = ['extra_weight', 'swap_rate', 'min_objective', 'cognitive', 'soc
                  'constraint_scale']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range']
 b_var_def_keys = ['uniform_var', 'loguniform_var']
-var_def_keys = ['lognormal_var', 'normal_var', 'mutate']
+var_def_keys = ['lognormal_var', 'normal_var']
 var_def_keys_1or2nums = ['var', 'logvar']
-strkeylist = ['bng_command', 'job_name', 'output_dir', 'fit_type', 'objfunc', 'initialization',
+strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node', 'de_strategy', 'sbml_integrator']
 multstrkeys = ['worker_nodes', 'postprocess']
 dictkeys = ['time_course', 'param_scan']
