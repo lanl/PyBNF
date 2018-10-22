@@ -8,7 +8,7 @@ class TestParse:
 
     @classmethod
     def setup_class(cls):
-        cls.s = ['job_name =  world #test test', 'verbosity = 3', 'model = thing.bngl: data.exp', 'mutate = derp 1 3',
+        cls.s = ['output_dir =  world #test test', 'verbosity = 3', 'model = thing.bngl: data.exp', 'loguniform_var = derp 1 3',
                  ' #derp = derp', 'uniform_var = var__FREE 1 5', 'lognormal_var= var2__FREE 0.01 1.0e5',
                  'uniform_var = var3__FREE 4 5', 'model = another.bngl: d1.exp, d2.exp',
                  'credible_intervals=68 95 99.7', 'var=a 1 2', 'logvar=b 3',
@@ -24,10 +24,10 @@ class TestParse:
         pass
 
     def test_grammar(self):
-        assert parse.parse(self.s[0]) == ['job_name', 'world']
+        assert parse.parse(self.s[0]) == ['output_dir', 'world']
         assert parse.parse(self.s[1]) == ['verbosity', '3']
         assert parse.parse(self.s[2]) == ['model', 'thing.bngl', 'data.exp']
-        assert parse.parse(self.s[3]) == ['mutate', 'derp', '1', '3']
+        assert parse.parse(self.s[3]) == ['loguniform_var', 'derp', '1', '3']
         assert parse.parse(self.s[5]) == ['uniform_var', 'var__FREE', '1', '5']
         assert parse.parse(self.s[6]) == ['lognormal_var', 'var2__FREE', '0.01', '1.0E5']
         assert parse.parse(self.s[7]) == ['uniform_var', 'var3__FREE', '4', '5']
@@ -50,7 +50,7 @@ class TestParse:
 
     def test_capital(self):
         assert parse.parse('Model = string.bngl: string.exp') == ['model', 'string.bngl', 'string.exp']
-        assert parse.parse('Job_name = string') == ['job_name', 'string']
+        assert parse.parse('Output_dir = string') == ['output_dir', 'string']
         assert parse.parse('vErbosity = 2') == ['verbosity', '2']
 
     def test_punctuation(self):
@@ -59,18 +59,18 @@ class TestParse:
 
     def test_ploop(self):
         d = parse.ploop(self.s)
-        assert 'job_name' in d.keys()
+        assert 'output_dir' in d.keys()
         assert 'verbosity' in d.keys()
         assert 'model' not in d.keys()
         assert ('lognormal_var', 'var2__FREE') in d.keys()
         assert ('uniform_var', 'var__FREE') in d.keys()
         assert ('uniform_var', 'var3__FREE') in d.keys()
 
-        assert d['job_name'] == 'world'
+        assert d['output_dir'] == 'world'
         assert d['verbosity'] == 3
         assert type(d['verbosity']) == int
         assert d['thing.bngl'] == ['data.exp']
-        assert d[('mutate', 'derp')] == [1., 3.]
+        assert d[('loguniform_var', 'derp')] == [1., 3., True]
         assert d[('uniform_var', 'var3__FREE')] == [4., 5., True]
         assert d['another.bngl'] == ['d1.exp', 'd2.exp']
         assert d['models'] == {'thing.bngl', 'another.bngl'}
