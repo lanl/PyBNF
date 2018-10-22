@@ -15,20 +15,19 @@ A new algorithm can be written by creating a class that subclasses the Algorithm
             self.current_iter_results = []
             self.ready_for_next_iter = False
 
-        def generate_random_psets(self):
-            # User defined support function that
-            # generates a list of PSet instances
+        def my_custom_function(self):
+            # User defined support function
             ...
 
 The new algorithm requires defining three methods, with the first being the ``__init__`` constructor method.  This
 method will likely take a Configuration object as its first argument.  The other two required methods that must be
 implemented are the ``start_run`` and ``got_result`` methods.
 
-The ``start_run`` method will return a list of PSet instances that correspond to the first batch of parameter set
-evaluations.::
+The ``start_run`` method must return a list of PSet instances that correspond to the first batch of parameter set
+evaluations. The Algorithm superclass functions ``random_pset`` and ``random_latin_hypercube_psets`` may be useful::
 
     def start_run(self):
-        return self.generate_random_psets()
+        return self.random_latin_hypercube_psets(self.population_size)
 
 The ``got_result`` method takes a Result instance as an argument and returns either a list of new PSet instances for
 another round of parameter set evaluations, or the string "STOP" to terminate the fitting run.  Note that an empty list
@@ -47,6 +46,17 @@ finish).::
             return new_psets
 
         return []  # Waiting for synchronization
+
+
+Four additional support methods in the Algorithm superclass may optionally be overridden, depending on the details of the new algorithm, 
+such that the new algorithm is compatible with all features of PyBNF. 
+
+    * ``add_iterations(self,n)`` is required to support adding extra iterations with the ``-r`` flag. This method should add ``n`` iterations to the algorithm's maximum iteration count. The superclass implementation simply adds ``n`` to the attribute ``self.max_iterations``. You should override the method if your algorithm tracks iteration count in a different way. 
+    * ``reset(self, bootstrap)`` is required to support bootstrapping. This method should call the superclass method, and then reset the state of the algorithm so that another fitting replicate can be run. 
+    * ``get_backup_every(self)`` helps choose when to save a backup of the algorithm. This method should return an integer telling after how many individual simulations we should back up the algorithm. The superclass implementation uses a formula that should work in most cases, but you can override this depending on details of your algorithm. 
+    * ``cleanup(self)`` is used to clean up after an error. This method is called just before PyBNF exits due to an error or keyboard interrupt, and may be used to save any useful files before exiting. 
+
+
 
 Adding configuration options
 ----------------------------
