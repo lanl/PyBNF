@@ -7,12 +7,13 @@ Summary of Available Algorithms
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | Algorithm                   | Class            | Parallelization | Applications                                                              |
 +=============================+==================+=================+===========================================================================+
-| `Differential Evolution`_   | Population-based | Synchronous or  | General-purpose parameter fitting; Optimal use of a very large number of  |
-|                             |                  | Asynchronous    | processors (if Asynchronous)                                              |
+| `Differential Evolution`_   | Population-based | Synchronous or  | General-purpose parameter fitting                                         |
+|                             |                  | Asynchronous    |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `Scatter Search`_           | Population-based | Synchronous     | Difficult problems with high dimensions or many local minima              |
+| `Scatter Search`_           | Population-based | Synchronous     | General-purpose parameter fitting, especially difficult problems with high| 
+|                             |                  |                 | dimensions or many local minima                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `Particle Swarm`_           | Population-based | Asynchronous    | Problem-specific applications                                             |
+| `Particle Swarm`_           | Population-based | Asynchronous    | Fitting models with high variability in runtime                           | 
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Markov Chain Monte Carlo`_ | Metropolis       | Independent     | Finding probability distributions of parameters                           |
 |                             | sampling         | Markov Chains   |                                                                           |
@@ -30,6 +31,7 @@ Summary of Available Algorithms
 .. |                             | Population /     |                 |                                                                           |
 .. |                             | Metropolis       |                 |                                                                           |
 .. +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
+
 
 General implementation features for all algorithms
 --------------------------------------------------
@@ -107,9 +109,9 @@ In the island-based version of the algorithm [Penas2015]_, the population is div
 
 Applications
 ^^^^^^^^^^^^
-In our experience, differential evolution tends to be the best general-purpose algorithm, and we suggest it as a starting point for a new fitting problem if you are unsure which algorithm to choose. 
+In our experience, differential evolution tends to be a good general-purpose algorithm. 
 
-The asynchronous version becomes advantageous over the other available algorithms when many processors are available (>100), and when the runtime per simulation can vary greatly depending on the parameter set (such as in some SSA and NFSim runs). In these cases, the asynchronicity of the particle swarm allows you to take full advantage of all available processors at all times. 
+The asynchronous version has similar advantages to `Particle Swarm`_. 
 
 .. _alg-ss:
 
@@ -128,7 +130,7 @@ Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
 The PyBNF implementation follows the outline presented in the introduction of [Penas2017]_ and uses the recombination method described in [Egea2009]_.
 
-We maintain a reference set of ``population_size`` individuals, recommended to be a small number (~ 12-18). Each newly proposed parameter set is based on a "parent" parameter set and a "helper" parameter set, both from the current reference set. In each iteration, we consider all possible parent-helper combinations, for a total of n\*(n-1) parameter sets. The new parameter set depends on the rank of the parent and helper (call them :math:`p_i` and :math:`h_i`) when the reference set is sorted from best to worst. 
+We maintain a reference set of ``population_size`` individuals, recommended to be a small number (~ 9-18). Each newly proposed parameter set is based on a "parent" parameter set and a "helper" parameter set, both from the current reference set. In each iteration, we consider all possible parent-helper combinations, for a total of n\*(n-1) parameter sets. The new parameter set depends on the rank of the parent and helper (call them :math:`p_i` and :math:`h_i`) when the reference set is sorted from best to worst. 
 
 Then we apply a series of formulas to choose the next parameter value.
 
@@ -176,9 +178,7 @@ When using the adaptive friction feature, *w* starts at ``particle_weight``, and
 
 Applications
 ^^^^^^^^^^^^
-We have not found any problems for which particle swarm optimization is better than the other available algorithms, but provide the functionality with the hope that it proves useful for some specific problems. 
-
-Like asynchronous differential evolution, the algorithm is strongest in cases where many processors (>100) are available because the asynchronicity allows it to take advantage of all processors at all times. 
+Particle swarm optimization tends to be the best-performing algorithm for problems that benefit from asynchronicity, namely, models for which the runtime per simulation can vary greatly depending on the parameter set. Models simulated by SSA or NFsim often fall into this category. In these cases, synchronous algorithms would cause some cores to remain idle while slow-running simulations complete on other cores, whereas asynchronous algorithms like particle swarm  allow you to use all cores at all times. 
 
 .. _alg-mcmc:
 
