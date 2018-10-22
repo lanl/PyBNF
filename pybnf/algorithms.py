@@ -878,14 +878,15 @@ class Algorithm(object):
                 if isinstance(m, SbmlModelNoTimeout):
                     m.save_files = False
 
-        try:
-            os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
-                      '%s/alg_%s.bp' % (self.config.config['output_dir'],
-                                        ('finished' if not self.refine else 'refine_finished')))
-            logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
-                        ('finished' if not self.refine else 'refine_finished'))
-        except OSError:
-            logger.warning('Tried to move pickled algorithm, but it was not found')
+        if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:
+            try:
+                os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
+                          '%s/alg_%s.bp' % (self.config.config['output_dir'],
+                                            ('finished' if not self.refine else 'refine_finished')))
+                logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
+                            ('finished' if not self.refine else 'refine_finished'))
+            except OSError:
+                logger.warning('Tried to move pickled algorithm, but it was not found')
 
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
