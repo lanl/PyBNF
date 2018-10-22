@@ -88,7 +88,7 @@ class Configuration(object):
                 if k not in d.keys():
                     unspecified_keys.append(k)
             raise UnspecifiedConfigurationKeyError(
-                "The following configuration keys must be specified:\n\t"",".join(unspecified_keys))
+                "The following configuration keys must be specified:\n\t"+",".join(unspecified_keys))
 
         if 'fit_type' not in d:
             d['fit_type'] = 'de'
