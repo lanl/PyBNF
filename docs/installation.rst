@@ -60,10 +60,14 @@ Installation of External Simulators
 
 BioNetGen
 ^^^^^^^^^
-PyBNF is designed to work with simulators present in the `BioNetGen`_ software suite, version 2.3. The current
-BioNetGen distribution includes support for both network-based simulations and network-free simulations.
+PyBNF is designed to work with simulators present in the BioNetGen software suite, version 2.3, available for download from 
+the `BioNetGen`_ website. Note that for Linux distributions other than Ubuntu, the pre-built binary is unreliable, and it is 
+necessary to rebuild BioNetGen from source. The current BioNetGen distribution includes support for both network-based 
+simulations and network-free simulations. 
 
 .. _set_bng_path:
+\
+
 
 PyBNF will need to know the location of BioNetGen – specifically the location of the script ``BNG2.pl`` within the
 BioNetGen installation. This path can be included in the PyBNF configuration file with the :ref:`bng_command <bng_command>` key. 

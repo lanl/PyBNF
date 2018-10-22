@@ -17,12 +17,14 @@ Required Keys
   model files. If no experimental files are associated with a model write ``none`` instead of a file path.  
 
   Examples:
+  
     * ``model = path/to/model1.bngl : path/to/data1.exp``
     * ``model = path/to/model2.xml : path/to/data2.con, path/to/data2.exp``
     * ``model = path/to/model3.xml : none``
 
 **fit_type**
   The choice of fitting algorithm. Options:
+  
     * ``de`` - :ref:`alg-de`
     * ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`
     * ``ss`` - :ref:`alg-ss`
@@ -33,6 +35,7 @@ Required Keys
     * ``pt`` - :ref:`Parallel tempering <alg-pt>`
 
   Example:
+  
     * ``fit_type = de``
 
 **population_size**
@@ -40,12 +43,14 @@ Required Keys
   information.
 
   Example:
+  
     * ``population_size = 50``
 
 **max_iterations**
-  Maximum number of iterations. This key is required.
+  Maximum number of iterations
 
   Example:
+  
     * ``max_iterations = 200``
 
 
@@ -61,6 +66,7 @@ Other Path Keys
   Default: Uses the BNGPATH environmental variable
 
   Example:
+  
     * ``bng_command = path/to/BNG2.pl``
 
 
@@ -70,6 +76,7 @@ Other Path Keys
   Default: "bnf_out"
 
   Example:
+  
     * ``output_dir = dirname``
 
 
@@ -87,33 +94,41 @@ Parameter and Model Specification
   Default: None
 
   Example:
+  
     * ``mutant = model0 no_a a__FREE=0 : data1no_a.exp, data2no_a.exp``
 
 **uniform_var**
   A bounded uniformly distributed variable defined by a 3-tuple corresponding to the variable name, minimum
-  value, and maximum value
+  value, and maximum value. If the tag ``U`` is added to the end, the bounds are enforced only during initialization, 
+  not during fitting. 
 
-  Example:
+  Examples:
+  
     * ``uniform_var = k__FREE 10 20``
+    * ``uniform_var = k__FREE 10 20 U``
 
 **normal_var**
   A normally distributed variable defined by a 3-tuple: the name, mean value, and standard deviation. The distribution
   is truncated at 0 to prevent negative values
 
   Example:
+  
     * ``normal_var = d__FREE 10 1``
 
 **loguniform_var**
   A variable distributed uniformly in logarithmic space. The value syntax is identical to the **uniform_var** syntax
 
-  Example:
+  Examples:
+  
     * ``loguniform_var = p__FREE 0.001 100``
+    * ``loguniform_var = p__FREE 0.001 100 U``
 
 **lognormal_var**
   A variable normally distributed in logarithmic space.  The value syntax is a 3-tuple specifying the variable name,
   the base 10 logarithm of the mean, and the base 10 logarithm of the standard deviation
 
   Example:
+  
     * ``lognormal_var = l__FREE 1 0.1``
 
 
@@ -127,6 +142,7 @@ algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
   by the simplex-specific parameter ``simplex_step`` (see :ref:`simplex <alg-sim>`)
 
   Examples:
+  
     * ``var = k__FREE 10``
     * ``var = d__FREE 2 0.05``
 
@@ -135,6 +151,7 @@ algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
   in base 10 logarithmic space.
 
   Example:
+  
     * ``logvar = k__FREE -3 1``
 
 Simulation Actions
@@ -142,24 +159,30 @@ Simulation Actions
 
 These keys specify what simulations should be performed with the models. For SBML models, simulation actions are required. For BNGL models, the same information can be specified in the actions block of the BNGL file, so use of these keys is optional. 
 
+.. _time_course_key:
 **time_course**
   Run a time course simulation on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
+  
     * ``time``: The simulation time. Required.
     * ``suffix``: The suffix of the data file to save. You should map the model to a .exp file of the same name. Default: time_course
     * ``step``: The simulation time step. Default: 1
     * ``model``: The name of the model to run (not including the path or .bngl/.xml extension). Default: All models in the fitting run.
     * ``subdivisions``: Only for use with ``sbml_integrator=euler``, specifies the number of internal Euler steps to perform between each output step specified by ``step``. Default: 1
     * ``method`` The simulation method to use. Default is ``ode``. Options are:
+    
        * ``ode``: Numerical integration of differential equations
        * ``ssa``: Stochastic simulation by Gillespie's method
        * ``pla``: Partitioned-leaping algorithm (BNGL models only)
        * ``nf``: Network-free simulation with NFsim (BNGL models only)
   
   Example:
+  
     * ``time_course = time:60, model:model1, suffix:data1``
 
+.. _param_scan_key:
 **param_scan**
   Run a parameter scan on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
+  
     * ``param``: Name of the parameter to scan. Required.
     * ``min``: Minimum value of the parameter. Required
     * ``max``: Maximum value of the parameter. Required. 
@@ -172,6 +195,7 @@ These keys specify what simulations should be performed with the models. For SBM
     * ``method``: The simulation method to use. Options are the same as in ``time_course``. Default: ode
   
   Example:
+  
     * ``param_scan = param:x, min:1, max:1000, step:0.5, logspace:1, time:60, model:model1, suffix:data1``
 
 
@@ -183,6 +207,7 @@ Parallel Computing
   Default: Use all available cores/threads.
 
   Example:
+  
     * ``parallel_count = 7``
 
 **cluster_type**
@@ -192,6 +217,7 @@ Parallel Computing
   Default: None (local fitting run).
 
   Example:
+  
     * ``cluster_type = slurm``
 
 **scheduler_node**
@@ -202,6 +228,7 @@ Parallel Computing
   Default: None
 
   Example:
+  
     * ``scheduler_node = cn180``
 
 **worker_nodes**
@@ -212,6 +239,7 @@ Parallel Computing
   Default: None
 
   Example:
+  
     * ``worker_nodes = cn102 cn104 cn10511``
 
 General Options
@@ -227,15 +255,17 @@ Output Options
   Default: 1
 
   Example:
+  
     * ``delete_old_files = 2``
 
 **num_to_output**
-  The maximum number of parameter sets to output when writing the trajectory to file. THe parameter sets are ordered
+  The maximum number of parameter sets to output when writing the trajectory to file. The parameter sets are ordered
   by their corresponding objective function value to ensure the best fits are outputted.
 
   Default: 5000
 
   Example:
+  
     * ``num_to_output = 100000``
 
 **output_every**
@@ -244,6 +274,7 @@ Output Options
   Default: 20
 
   Example:
+  
     * ``output_every = 1000``
     
 **save_best_data**
@@ -252,24 +283,28 @@ Output Options
   Default: 0
   
   Example:
+  
     * ``save_best_data = 1``
 
 **verbosity**
   An integer value that specifies the amount of information output to the terminal.
-   - 0 - Quiet: user prompts and errors only
+  
+   - 0 - Quiet: User prompts and errors only
    - 1 - Normal: Warnings and concise progress updates
    - 2 - Verbose: Information and detailed progress updates
 
   Default: 1
 
   Example:
+  
     * ``verbosity = 0``
 
 Algorithm Options
 ^^^^^^^^^^^^^^^^^
 **objfunc**
   Which :ref:`objective function <objective>` to use. 
-   - ``chi_sq`` - Chi Squared
+  
+   - ``chi_sq`` - Chi squared
    - ``sos`` - Sum of squares
    - ``norm_sos`` - Sum of squares, normalized by the value at each point,
    - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. 
@@ -277,6 +312,7 @@ Algorithm Options
   Default: chi_sq
   
   Example:
+  
     * ``objfunc = chi_sq``
    
   
@@ -286,6 +322,7 @@ Algorithm Options
   Default: 0 (no bootstrapping)
   
   Example:
+  
     * ``bootstrap = 10``
     
 **bootstrap_max_obj**
@@ -294,6 +331,7 @@ Algorithm Options
   Default: None
   
   Example:
+  
     * ``bootstrap_max_obj = 1.5``
     
 **constraint_scale**  
@@ -302,6 +340,7 @@ Algorithm Options
   Default: 1 (no scaling)
   
   Example:
+  
     * ``constraint_scale = 1.5``
 
 **ind_var_rounding**
@@ -310,16 +349,19 @@ Algorithm Options
   Default: 0
   
   Example:
+  
     * ``ind_var_rounding = 1``
     
 **initialization**
   How to initialize parameters. 
+  
    - ``rand`` - initialize params randomly according to the distributions. 
    - ``lh`` - For ``random_var``\ s and ``loguniform_var``\ s, initialize with a latin hypercube distribution, to more uniformly cover the search space.
    
   Default: lh
   
   Example: 
+  
     * ``initialization = rand``
     
 **local_objective_eval**
@@ -328,6 +370,7 @@ Algorithm Options
   Default: 0 (unless smoothing is enabled)
   
   Example: 
+  
     * ``local_objective_eval = 1``
   
 **min_objective**
@@ -336,10 +379,12 @@ Algorithm Options
   Default: None; always run for the maximum iterations
   
   Example: 
+  
     * ``min_objective = 0.01``
   
 **normalization**
   Indicates that simulation data must be normalized in order to compare with exp files. Specify one of the following types of normalization:
+  
    - ``init`` - normalize to the initial value
    - ``peak`` - normalize to the maximum value
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
@@ -349,6 +394,7 @@ Algorithm Options
   Default: No normalization
    
   Examples:
+  
      * ``normalization = init``
      * ``normalization = init: data1.exp, data2.exp``
      * ``normalization = init: (data1.exp: 1,3-5), (data2.exp: var1,var2)``
@@ -361,6 +407,7 @@ Algorithm Options
   Default: No postprocessing
   
   Example:
+  
     * ``postprocess = path/to/script.py suff1 suff2``
   
 **refine**
@@ -369,6 +416,7 @@ Algorithm Options
   Default: 0
   
   Example:
+  
     * ``refine = 1``
 
 **sbml_integrator**
@@ -379,6 +427,7 @@ Algorithm Options
   Default: cvode
   
   Example:
+  
     * ``sbml_integrator = rk4``
     
 **smoothing**
@@ -387,6 +436,7 @@ Algorithm Options
   Default: 1
   
   Example:
+  
     * ``smoothing = 2``
     
 **wall_time_gen**
@@ -395,6 +445,7 @@ Algorithm Options
   Default: 3600
   
   Example: 
+  
     * ``wall_time_gen = 600``
     
 **wall_time_sim**
@@ -403,6 +454,7 @@ Algorithm Options
   Default: 3600 for BNGL models; No limit for SMBL models
   
   Example: 
+  
     * ``wall_time_sim = 600``
 
 
@@ -420,6 +472,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   Default: 1
   
   Example:
+  
     * ``simplex_step = 0.5``
   
 **simplex_log_step**
@@ -428,6 +481,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   Default: Value of ``simplex_step``
   
   Example:
+  
     * ``simplex_log_step = 0.5``
 
 **simplex_reflection**
@@ -436,6 +490,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   Default: 1.0
   
   Example:
+  
     * ``simplex_reflection = 0.5``
 
 **simplex_expansion**
@@ -444,6 +499,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   Default: 1.0
   
   Example:
+  
     * ``simplex_expansion = 0.5``
   
 **simplex_contraction**
@@ -452,6 +508,7 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   Default: 0.5
   
   Example:
+  
     * ``simplex_contraction = 0.3``
     
 **simplex_shrink**
@@ -460,12 +517,14 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   Default: 0.5
   
   Example:
+  
     * ``simplex_shrink = 0.3``
 
 **simplex_max_iterations**
   If specified, overrides the ``max_iterations`` setting. Useful if you are using the ``refine`` flag and want ``max_iterations`` to refer to your main algorithm.
   
   Example:
+  
     * ``simplex_max_iterations = 20``
     
 **simplex_stop_tol** 
@@ -489,6 +548,7 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
   Default: 0.5
   
   Example:
+  
     * ``mutation_rate = 0.7``
     
 **mutation_factor**
@@ -497,6 +557,7 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
   Default: 1.0
   
   Example:
+  
     * ``mutation_factor = 0.7``
 
 **stop_tolerance**
@@ -505,11 +566,13 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
   Default: 0.002
   
   Example:
+  
     * ``stop_tolerance = 0.001``
   
   
 **de_strategy**
   Specifies how new parameter sets are chosen. The following options are available:
+  
    - ``rand1``
    - ``rand2``
    - ``best1`` 
@@ -517,16 +580,19 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
    - ``all1``
    - ``all2``
   The first part of the string determines which parameter set we mutate:
+  
    - ``rand`` - a random one
    - ``best`` - the one with the lowest objective value
    - ``all`` - the one we are proposing to replace (so all psets are mutated once per iteration). 
   The second part of the string specifies how we calculate the amount by which to mutate each parameter: 
+  
    - ``1`` - Use 1 pair of other parameter sets: :math:`(p_1-p_2)`
    - ``2`` - Use 2 pairs of other parameter sets: :math:`(p1-p2 + p3-p4)`. 
   
   Default: rand1
   
   Example:
+  
     * ``de_strategy = rand2``
 
 The following options are only available with ``fit_type = de``, and serve to make the algorithm more asynchronous. If used, these options enable :ref:`island-based <alg-island>` differential evolution, which is asynchronous in that each island can independently proceed to the next iteration. 
@@ -537,6 +603,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 1
   
   Example: 
+  
     * ``islands = 2``
     
 **migrate_every**
@@ -545,6 +612,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 20 (but Infinity if ``islands = 1``)
   
   Example:
+  
     * ``migrate_every = 10``
     
 **num_to_migrate**
@@ -553,6 +621,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 3
   
   Example:
+  
     * ``num_to_migrate = 5``
 
 
@@ -565,6 +634,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 10 * number of parameters
   
   Example:
+  
     * ``init_size = 100``
   
   
@@ -574,6 +644,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 5
   
   Example:
+  
     * ``local_min_limit = 10``
     
 **reserve_size**
@@ -582,6 +653,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: Value of ``max_iterations``
   
   Example:
+  
     * ``reserve_size = 100``
 
 
@@ -594,6 +666,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 1.5
   
   Example:
+  
     * ``cognitive = 1.7``
   
 **social**
@@ -602,6 +675,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 1.5
   
   Example:
+  
     * ``social = 1.7``
     
 **particle_weight**
@@ -610,6 +684,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 0.7
   
   Example:
+  
     * ``particle_weight = 0.9``
     
 **v_stop**
@@ -618,6 +693,7 @@ The following options are only available with ``fit_type = de``, and serve to ma
   Default: 0 (don't use this criterion)
   
   Example:
+  
     * ``v_stop = 0.01``
 
 A variant of particle swarm that adaptively changes the ``particle_weight`` over the course of the fitting run is configured with the following parameters. See the :ref:`algorithm documentation <pso-adaptive>` for more information. 
@@ -628,6 +704,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
   Default: the value of ``particle_weight``, effectively disabling this feature. 
   
   Example:
+  
     * ``particle_weight_final = 0.5``
     
 **adaptive_n_max**
@@ -636,6 +713,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
   Default: 30
   
   Example: 
+  
     * ``adaptive_n_max = 20``
     
 **adaptive_n_stop**
@@ -644,6 +722,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
   Default: Inf
   
   Example:
+  
     * ``adaptive_n_stop = 50``
     
 **adaptive_abs_tol**
@@ -652,6 +731,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
   Default: 0
   
   Example:
+  
     * ``adaptive_abs_tol = 0.01``
     
 **adaptive_rel_tol**
@@ -660,6 +740,7 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
   Default: 0
   
   Example:
+  
     * ``adaptive_rel_tol = 0.01``
 
 :ref:`Bayesian Algorithms (bmc, pt, sa) <alg-mcmc>`
@@ -677,6 +758,7 @@ For all Bayesian algorithms
   Default: 0.2
   
   Example:
+  
     * ``step_size = 0.5``
 
 **beta**
@@ -691,6 +773,7 @@ For all Bayesian algorithms
   Default: 1
   
   Examples:
+  
     * ``beta = 0.9``
     * ``beta = 0.7 0.8 0.9 1``
 
@@ -702,6 +785,7 @@ For all Bayesian algorithms except ``sa``
   Every x iterations, save the current PSet into the sampled population. Default: 100
   
   Example:
+  
     * ``sample_every = 20``
     
 **burn_in**
@@ -710,6 +794,7 @@ For all Bayesian algorithms except ``sa``
   Default: 10000
   
   Example:
+  
     * ``burn_in = 1000``
     
 **output_hist_every**
@@ -718,6 +803,7 @@ For all Bayesian algorithms except ``sa``
   Default: 100
   
   Example: 
+  
     * ``output_hist_every = 10``
     
 **hist_bins** 
@@ -726,6 +812,7 @@ For all Bayesian algorithms except ``sa``
   Default: 10
   
   Example:
+  
     * ``hist_bins = 20``
 
 **credible_intervals**
@@ -734,6 +821,7 @@ For all Bayesian algorithms except ``sa``
   Default: 68 95
   
   Examples:
+  
     * ``credible_intervals = 95``
     * ``credible_intervals = 20 68 95``
 
@@ -747,6 +835,7 @@ For Simulated Annealing
   Default: Infinity (don't use this stop criterion)
   
   Example:
+  
     * ``beta_max = 1.5``
     
 **cooling = float**
@@ -755,6 +844,7 @@ For Simulated Annealing
   Default: 0.01
   
   Example:
+  
     * ``cooling = 0.001``
 
 
@@ -767,6 +857,7 @@ For Parallel Tempering
   Default: 20
   
   Example:
+  
     * ``exchange_every = 10``
     
     
@@ -776,6 +867,7 @@ For Parallel Tempering
   Default: 1
   
   Example:
+  
     * ``reps_per_beta = 5``
   
   
@@ -785,6 +877,7 @@ For Parallel Tempering
   Default: None (betas are set with the ``beta`` key)
   
   Example:
+  
     * ``beta_range = 0.5 1`` 
   
 

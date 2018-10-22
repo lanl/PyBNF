@@ -9,10 +9,10 @@ examples/demo contains two simple example configurations to verify that PyBNF an
 To run the examples, use the following commands from the PyBNF root directory
 
 For a simple job using BioNetGen:
-    :command:`pybnf -c examples/demo/demo_bng.conf`
+\   :command:`pybnf -c examples/demo/demo_bng.conf`
 
 For a simple job using SBML:
-    :command:`pybnf -c examples/demo/demo_xml.conf`
+\   :command:`pybnf -c examples/demo/demo_xml.conf`
     
 The examples will print progress to the terminal as the fitting proceeds, and the results will be saved in the directory PyBNF-output/demo/, located one level up from the PyBNF root directory (this output directory can be changed by editing ``demo_bng.conf`` and ``demo_xml.conf``). 
 
