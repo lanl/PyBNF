@@ -10,6 +10,7 @@ import pybnf.algorithms as algs
 import pybnf.printing as printing
 
 from subprocess import run
+from numpy import inf
 
 import logging
 import argparse
@@ -229,23 +230,11 @@ def main():
             # Bootstrapping setup
             if config.config['bootstrap_max_obj']:
                 bootstrap_max_obj = config.config['bootstrap_max_obj']
-            elif alg.bootstrap_number is None:
-                bootstrap_max_obj = alg.trajectory.best_score()
-                logger.info('Using best fit objective function from main fitting run for maximum allowable '
-                            'objective function in bootstrapping runs')
             else:
-                try:
-                    with open(config.config['output_dir'] + '/Results/sorted_params_final.txt') as f:
-                        f.readline()
-
-                        import re
-                        bootstrap_max_obj = float(re.split('\t', f.readline().strip())[1])
-                    logger.info('Using best fit objective function from main fitting run for maximum allowable '
-                                'objective function in bootstrapping runs')
-                except FileNotFoundError:
-                    logger.error("Maximum allowable objective function not specified in configuration file and no "
-                                 "complete fitting run found")
-                    raise PybnfError("Could not determine maximum allowable objective function for bootstrapping")
+                bootstrap_max_obj = inf
+                logger.info('No bootstrap_max_obj specified; set to infinity')
+                print1('No bootstrap_max_obj specified. All bootstrap replicates will be accepted regardless of '
+                       'objective value.')
 
             num_to_bootstrap = config.config['bootstrap']
             completed_bootstrap_runs = 0
