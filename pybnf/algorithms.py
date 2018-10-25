@@ -761,7 +761,7 @@ class Algorithm(object):
             self.calc_future = None
 
         jobs = []
-        pending = dict()  # Maps pending futures to pending PSets
+        pending = dict()  # Maps pending futures to tuple (PSet, job_id).
         for p in psets:
             jobs += self.make_job(p)
         jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
@@ -770,17 +770,17 @@ class Algorithm(object):
         for job in jobs:
             f = client.submit(run_job, job, debug, self.failed_logs_dir)
             futures.append(f)
-            pending[f] = job.params
+            pending[f] = (job.params, job.job_id)
         pool = as_completed(futures)
         while True:
             if sim_count % backup_every == 0 and sim_count != 0:
-                self.backup(set(pending.values()))
+                self.backup(set([pending[fut][0] for fut in pending]))
             f = next(pool)
             try:
                 res = f.result()
             except Exception:
                 logger.exception('Job failed with an exception')
-                res = FailedSimulation(pending[f], pending[f].name, 3)
+                res = FailedSimulation(pending[f][0], pending[f][1], 3)
 
             # Handle if this result is one of multiple instances for smoothing
             sim_count += 1
@@ -826,7 +826,7 @@ class Algorithm(object):
                     new_js = self.make_job(ps)
                     for new_j in new_js:
                         new_f = client.submit(run_job, new_j, debug, self.failed_logs_dir)
-                        pending[new_f] = ps
+                        pending[new_f] = (ps, new_j.job_id)
                         new_futures.append(new_f)
                 logger.debug('Submitting %d new Jobs' % len(new_futures))
                 pool.update(new_futures)
