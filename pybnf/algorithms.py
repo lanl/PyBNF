@@ -750,7 +750,6 @@ class Algorithm(object):
             logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
         else:
             psets = self.start_run()
-        pending_psets = set(psets)
 
         if debug and not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
@@ -762,30 +761,36 @@ class Algorithm(object):
             self.calc_future = None
 
         jobs = []
+        pending = dict()  # Maps pending futures to pending PSets
         for p in psets:
             jobs += self.make_job(p)
         jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(run_job, job, debug, self.failed_logs_dir) for job in jobs]
-        pending = set(futures)
-        pool = as_completed(futures, with_results=True)
+        futures = []
+        for job in jobs:
+            f = client.submit(run_job, job, debug, self.failed_logs_dir)
+            futures.append(f)
+            pending[f] = job.params
+        pool = as_completed(futures)
         while True:
             if sim_count % backup_every == 0 and sim_count != 0:
-                self.backup(pending_psets)
-            f, res = next(pool)
+                self.backup(set(pending.values()))
+            f = next(pool)
+            try:
+                res = f.result()
+            except Exception:
+                logger.exception('Job failed with an exception')
+                res = FailedSimulation(pending[f], pending[f].name, 3)
+
             # Handle if this result is one of multiple instances for smoothing
             sim_count += 1
-            pending.remove(f)
+            del pending[f]
             if self.config.config['smoothing'] > 1:
                 group = self.job_group_dir.pop(res.name)
                 done = group.job_finished(res)
                 if not done:
                     continue
                 res = group.average_results()
-            try:
-                pending_psets.remove(res.pset)
-            except KeyError:
-                logger.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type >= 1:
                     self.fail_count += 1
@@ -816,17 +821,17 @@ class Algorithm(object):
                 print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 break
             else:
-                new_jobs = []
+                new_futures = []
                 for ps in response:
-                    new_jobs += self.make_job(ps)
-                    pending_psets.add(ps)
-                logger.debug('Submitting %d new Jobs' % len(new_jobs))
-
-                new_futures = [client.submit(run_job, j, debug, self.failed_logs_dir) for j in new_jobs]
-                pending.update(new_futures)
+                    new_js = self.make_job(ps)
+                    for new_j in new_js:
+                        new_f = client.submit(run_job, new_j, debug, self.failed_logs_dir)
+                        pending[new_f] = ps
+                        new_futures.append(new_f)
+                logger.debug('Submitting %d new Jobs' % len(new_futures))
                 pool.update(new_futures)
         logger.info("Cancelling %d pending jobs" % len(pending))
-        client.cancel(list(pending))
+        client.cancel(list(pending.keys()))
         client.close()
         self.output_results('final')
 
