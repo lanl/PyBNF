@@ -90,6 +90,17 @@ class Data(object):
         idx = self.cols[col_header]
         return self.data[:, idx]
 
+    def __setitem__(self, key, value):
+        """
+        Sets a column of data based on its column header
+        :param key: Column name to modify
+        :type key: str
+        :param value: New column contents
+        :type value: np.array
+        """
+        idx = self.cols[key]
+        self.data[:, idx] = value
+
     def get_row(self, col_header, value):
         """
         Returns the (first) data row in which field col_header is equal to value.
