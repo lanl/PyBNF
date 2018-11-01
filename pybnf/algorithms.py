@@ -232,7 +232,7 @@ class Job:
         while not made_folder:
             try:
                 os.mkdir(self.folder)
-                self.jlogger.info('Created folder %s for simulation' % self.folder)
+                self.jlogger.debug('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
                 self.jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
@@ -284,7 +284,7 @@ class Job:
         if self.delete_folder:
             try:
                 run(['rm', '-rf', self.folder], check=True, timeout=1800)
-                self.jlogger.info('Removed folder %s' % self.folder)
+                self.jlogger.debug('Removed folder %s' % self.folder)
             except (CalledProcessError, TimeoutExpired):
                 self.jlogger.error('Failed to remove folder %s.' % self.folder)
 
