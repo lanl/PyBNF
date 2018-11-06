@@ -816,7 +816,7 @@ class Algorithm(object):
             f = client.submit(run_job, job, debug, self.failed_logs_dir)
             futures.append(f)
             pending[f] = (job.params, job.job_id)
-        pool = custom_as_completed(futures, with_results=True)
+        pool = custom_as_completed(futures, with_results=True, raise_errors=False)
         while True:
             if sim_count % backup_every == 0 and sim_count != 0:
                 self.backup(set([pending[fut][0] for fut in pending]))
