@@ -30,6 +30,9 @@ import sys
 import traceback
 import pickle
 from glob import glob
+from tornado import gen
+from distributed.client import _wait
+from concurrent.futures._base import CancelledError
 
 
 logger = logging.getLogger(__name__)
@@ -344,6 +347,34 @@ class JobGroup:
             for suf in self.result_list[0].simdata[m]:
                 avedata[m][suf] = Data.average([r.simdata[m][suf] for r in self.result_list])
         return Result(self.result_list[0].pset, avedata, self.job_id)
+
+
+class custom_as_completed(as_completed):
+    """
+    Subclass created to modify a section of dask.distributed code
+    By using this subclass instead of as_completed, if you get an exception in a job,
+    that exception is returned as the result, instead of the job disappearing.
+    """
+    @gen.coroutine
+    def track_future(self, future):
+        try:
+            yield _wait(future)
+        except CancelledError:
+            pass
+        if self.with_results:
+            try:
+                result = yield future._result(raiseit=True)
+            except Exception as e:
+                result = e
+        with self.lock:
+            self.futures[future] -= 1
+            if not self.futures[future]:
+                del self.futures[future]
+            if self.with_results:
+                self.queue.put_nowait((future, result))
+            else:
+                self.queue.put_nowait(future)
+            self._notify()
 
 
 class Algorithm(object):
