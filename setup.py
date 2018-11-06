@@ -21,4 +21,5 @@ setup(name='pybnf',
       long_description=long_desc,
       author='Alex Ionkov, Eshan Mitra, Ryan Suderman',
       package=['pybnf'],
-      install_requires=['distributed', 'paramiko', 'numpy', 'nose', 'pyparsing', 'libroadrunner'])
+      install_requires=['distributed==1.24.0', 'paramiko', 'numpy', 'nose', 'pyparsing', 'libroadrunner>=1.5.2',
+                        'dask==0.20.0', 'tornado >= 4.5.1, < 5.0.0'])
