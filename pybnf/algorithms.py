@@ -364,8 +364,8 @@ class custom_as_completed(as_completed):
         if self.with_results:
             try:
                 result = yield future._result(raiseit=True)
-            except Exception as e:
-                result = e
+            except Exception:
+                result = DaskError(traceback.format_exc())
         with self.lock:
             self.futures[future] -= 1
             if not self.futures[future]:
@@ -375,6 +375,14 @@ class custom_as_completed(as_completed):
             else:
                 self.queue.put_nowait(future)
             self._notify()
+
+
+class DaskError:
+    """
+    Class representing the result of a job that failed due to a raised exception
+    """
+    def __init__(self, tb):
+        self.traceback = tb
 
 
 class Algorithm(object):
@@ -787,7 +795,6 @@ class Algorithm(object):
             logger.debug('Resume algorithm with the following PSets: %s' % [p.name for p in resume])
         else:
             psets = self.start_run()
-        pending_psets = set(psets)
 
         if debug and not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
@@ -799,30 +806,34 @@ class Algorithm(object):
             self.calc_future = None
 
         jobs = []
+        pending = dict()  # Maps pending futures to tuple (PSet, job_id).
         for p in psets:
             jobs += self.make_job(p)
         jobs[0].show_warnings = True  # For only the first job submitted, show warnings if exp data is unused.
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
-        futures = [client.submit(run_job, job, debug, self.failed_logs_dir) for job in jobs]
-        pending = set(futures)
-        pool = as_completed(futures, with_results=True)
+        futures = []
+        for job in jobs:
+            f = client.submit(run_job, job, debug, self.failed_logs_dir)
+            futures.append(f)
+            pending[f] = (job.params, job.job_id)
+        pool = custom_as_completed(futures, with_results=True)
         while True:
             if sim_count % backup_every == 0 and sim_count != 0:
-                self.backup(pending_psets)
+                self.backup(set([pending[fut][0] for fut in pending]))
             f, res = next(pool)
+            if isinstance(res, DaskError):
+                logger.error('Job failed with an exception')
+                logger.error(res.traceback)
+                res = FailedSimulation(pending[f][0], pending[f][1], 3)
             # Handle if this result is one of multiple instances for smoothing
             sim_count += 1
-            pending.remove(f)
+            del pending[f]
             if self.config.config['smoothing'] > 1:
                 group = self.job_group_dir.pop(res.name)
                 done = group.job_finished(res)
                 if not done:
                     continue
                 res = group.average_results()
-            try:
-                pending_psets.remove(res.pset)
-            except KeyError:
-                logger.warning('%s was missing when trying to remove from pending_psets' % res.pset)
             if isinstance(res, FailedSimulation):
                 if res.fail_type >= 1:
                     self.fail_count += 1
@@ -853,20 +864,20 @@ class Algorithm(object):
                 print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
                 break
             else:
-                new_jobs = []
+                new_futures = []
                 for ps in response:
-                    new_jobs += self.make_job(ps)
-                    pending_psets.add(ps)
-                logger.debug('Submitting %d new Jobs' % len(new_jobs))
-
-                new_futures = [client.submit(run_job, j, debug, self.failed_logs_dir) for j in new_jobs]
-                pending.update(new_futures)
+                    new_js = self.make_job(ps)
+                    for new_j in new_js:
+                        new_f = client.submit(run_job, new_j, debug, self.failed_logs_dir)
+                        pending[new_f] = (ps, new_j.job_id)
+                        new_futures.append(new_f)
+                logger.debug('Submitting %d new Jobs' % len(new_futures))
                 pool.update(new_futures)
         # If we'll be calling more run()'s, save the client to avoid reinitializing
         save_client = (self.config.config['bootstrap'] and self.bootstrap_number != self.config.config['bootstrap']) \
                       or (self.config.config['refine'] and not isinstance(self, SimplexAlgorithm))
         logger.info("Cancelling %d pending jobs" % len(pending))
-        client.cancel(list(pending))
+        client.cancel(list(pending.keys()))
         if not save_client:
             client.close()
         self.output_results('final')
