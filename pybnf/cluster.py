@@ -9,6 +9,7 @@ import logging
 import re
 import time
 import numpy as np
+from multiprocessing import cpu_count
 
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,11 @@ def setup_cluster(node_string, out_dir, parallel_count=None):
     """
     logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
     if parallel_count is None:
-        dask_ssh_cmd = 'dask-ssh %s --log-directory %s' % (node_string, out_dir)
+        dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nthreads 1 --nprocs %i' % (node_string, out_dir, cpu_count())
     else:
         n_per_node = int(np.ceil(parallel_count/len(node_string.split())))
-        logger.info('Manually setting %i threads per node' % n_per_node)
-        dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nthreads %i' % (node_string, out_dir, n_per_node)
+        logger.info('Manually setting %i workers per node' % n_per_node)
+        dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nprocs %i --nthreads 1' % (node_string, out_dir, n_per_node)
     dask_ssh_proc = Popen(dask_ssh_cmd, shell=True, stdout=DEVNULL, stderr=STDOUT)
     time.sleep(10)
     return dask_ssh_proc
