@@ -720,7 +720,7 @@ class Algorithm(object):
         """
         self.max_iterations += n
 
-    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False):
+    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False, reuse_client=None):
         """Main loop for executing the algorithm"""
 
         logger.info('Initializing dask Client with dask v%s, distributed v%s' % (daskv, distributedv))
@@ -728,7 +728,10 @@ class Algorithm(object):
         if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
 
-        if scheduler_node:
+        if reuse_client:
+            logger.info('Reusing Client from the previous run')
+            client = reuse_client
+        elif scheduler_node:
             client = Client('%s:8786' % scheduler_node)
         elif self.config.config['parallel_count'] is not None:
             lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
@@ -825,9 +828,13 @@ class Algorithm(object):
                 new_futures = [client.submit(run_job, j, debug, self.failed_logs_dir) for j in new_jobs]
                 pending.update(new_futures)
                 pool.update(new_futures)
+        # If we'll be calling more run()'s, save the client to avoid reinitializing
+        save_client = (self.config.config['bootstrap'] and self.bootstrap_number != self.config.config['bootstrap']) \
+                      or (self.config.config['refine'] and not isinstance(self, SimplexAlgorithm))
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending))
-        client.close()
+        if not save_client:
+            client.close()
         self.output_results('final')
 
         # Copy the best simulations into the results folder
@@ -894,6 +901,8 @@ class Algorithm(object):
                 run(['rm', '-rf', self.sim_dir])
 
         logger.info("Fitting complete")
+        if save_client:
+            return client
 
     def cleanup(self):
         """

@@ -205,7 +205,7 @@ def main():
 
         # Run the algorithm!
         logger.debug('Algorithm initialization')
-        alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
+        saved_client = alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
 
         if config.config['refine'] == 1:
             logger.debug('Refinement requested for best fit parameter set')
@@ -219,7 +219,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config, refine=True)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(log_prefix, scheduler_node)
+                simplex.run(log_prefix, scheduler_node, reuse_client=saved_client)
 
         if alg.bootstrap_number is None:
             print0('Fitting complete')
@@ -279,7 +279,8 @@ def main():
 
                 logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
                 print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
-                alg.run(log_prefix, scheduler_node, debug=cmdline_args.debug_logging)
+                saved_client = alg.run(log_prefix, scheduler_node, debug=cmdline_args.debug_logging,
+                                       reuse_client=saved_client)
 
                 if config.config['refine'] == 1:
                     logger.debug('Refinement requested for best fit parameter set')
@@ -293,7 +294,7 @@ def main():
                         config.config['simplex_start_point'] = alg.trajectory.best_fit()
                         simplex = algs.SimplexAlgorithm(config, refine=True)
                         simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                        simplex.run(log_prefix, scheduler_node)
+                        saved_client = simplex.run(log_prefix, scheduler_node, reuse_client=saved_client)
 
                 best_fit_pset = alg.trajectory.best_fit()
 
