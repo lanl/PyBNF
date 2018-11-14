@@ -36,8 +36,8 @@ TORQUE/PBS
 ----------
 Not yet implemented. Please refer to Manual configuration below
 
-Manual configuration
---------------------
+Manual configuration with node names
+------------------------------------
 
 It is possible to run PyBNF on any cluster regardless of resource manager by simply telling PyBNF the names of the nodes it should run on. 
 
@@ -47,3 +47,23 @@ Then set the keys ``scheduler_node`` and ``worker_nodes`` in your PyBNF config f
 
 PyBNF will then run this fitting job on the specified cluster nodes. 
 
+Manual configuration with Dask
+------------------------------
+
+PyBNF uses `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.html>`_ to manage cluster computing. In most cases, it is not necessary for the user to interact directly with Dask. However, if PyBNF's automatic Dask setup is unsatisfactory, then the instructions in this section may be helpful to set up Dask manually. 
+
+In the automatic PyBNF setup, the command ``dask-ssh`` is run on one of the available nodes (which becomes the scheduler node), with all available nodes as arguments (which become the worker nodes). ``dask-ssh`` is run with ``--nthreads 1`` and ``--nprocs`` equal to the number of available cores per node. The default number of available processes per core is the value returned by ``multiprocessing.cpu_count()``; this default can be overridden by specifying the ``parallel_count`` key equal to the total number of processes over all nodes. This entire automatic setup with ``dask-ssh`` can be overridden as described below. If overriding the automatic setup, it is recommended to keep ``nthreads`` equal to 1 for SBML models because the SBML simulator is not thread safe.
+
+To begin manual configuration, run the command ``dask-scheduler`` on the node you want to use as the scheduler. Pass the argument ``--scheduler-file`` to create a JSON-encoded text file containing connection information. For example:
+
+    :command:`dask-schduler --scheduler-file cluster.json`
+
+On each node you want to use as a worker, run the command ``dask-worker``. Pass the scheduler file, and also specify the number of processes and threads per process to use on that worker. For example:
+
+    :command:`dask-worker --scheduler-file cluster.json --nprocs 32 --nthreads 1`
+
+Finally, run PyBNF, and pass PyBNF the scheduler file using the ``-s`` command line argument or the ``scheduler_file`` configuration key:
+
+    :command:`pybnf -c fit.conf -s cluster.json`
+    
+For additional ``dask-scheduler`` and ``dask-worker`` options, refer to the Dask.distributed documentation.
