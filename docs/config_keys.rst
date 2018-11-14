@@ -204,7 +204,7 @@ Parallel Computing
 **parallel_count**
   The number of jobs to run in parallel. This may be set for both local and cluster fitting runs. For cluster runs, this number is divided by the number of available nodes (and rounded up) to determine the number of parallel jobs per node. 
 
-  Default: Use all available cores/threads.
+  Default: Use all available cores. On a cluster, the number of available cores per node is determined by running ``multiprocessing.cpu_count()`` from the scheduler node.
 
   Example:
   
