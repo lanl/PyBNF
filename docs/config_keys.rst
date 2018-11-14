@@ -220,6 +220,16 @@ Parallel Computing
   
     * ``cluster_type = slurm``
 
+**scheduler_file**
+  Provide a scheduler file to link PyBNF to a Dask scheduler already created outside of PyBNF. See Manual configuration with Dask for more information. 
+  This option may also be specified on the command line with the ``-s`` flag. 
+  
+  Default: None
+  
+  Example: 
+  
+    * ``scheduler_file = cluster.json``
+
 **scheduler_node**
   Manually set node used for creating the distributed Client -- takes a string identifying a machine on a network. If
   running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with the flag
