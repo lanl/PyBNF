@@ -364,8 +364,8 @@ class custom_as_completed(as_completed):
         if self.with_results:
             try:
                 result = yield future._result(raiseit=True)
-            except Exception:
-                result = DaskError(traceback.format_exc())
+            except Exception as e:
+                result = DaskError(e, traceback.format_exc())
         with self.lock:
             self.futures[future] -= 1
             if not self.futures[future]:
@@ -381,7 +381,8 @@ class DaskError:
     """
     Class representing the result of a job that failed due to a raised exception
     """
-    def __init__(self, tb):
+    def __init__(self, error, tb):
+        self.error = error
         self.traceback = tb
 
 
@@ -822,6 +823,8 @@ class Algorithm(object):
                 self.backup(set([pending[fut][0] for fut in pending]))
             f, res = next(pool)
             if isinstance(res, DaskError):
+                if isinstance(res.error, PybnfError):
+                    raise res.error  # User-targeted error should be raised instead of skipped
                 logger.error('Job failed with an exception')
                 logger.error(res.traceback)
                 res = FailedSimulation(pending[f][0], pending[f][1], 3)
