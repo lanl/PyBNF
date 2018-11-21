@@ -135,6 +135,7 @@ latex_documents = [
     (master_doc, 'PyBNF.tex', 'PyBNF Documentation',
      'Eshan Mitra, Ryan Suderman', 'manual'),
 ]
+latex_logo = 'Logo1.png'
 
 
 # -- Options for manual page output ------------------------------------------
