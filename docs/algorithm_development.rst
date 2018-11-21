@@ -71,5 +71,5 @@ Pull requests
 -------------
 
 To have new algorithms added into the PyBNF software suite, submit a pull request to the master branch at
-`<https://github.com/NAU-BioNetFit/PyBNF>`_
+`<https://github.com/lanl/PyBNF>`_
 

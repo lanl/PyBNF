@@ -117,10 +117,10 @@ Refer to the log file to try to diagnose the problem - it will contain the Pytho
 
 Rerun the fit with the debugging ``-d`` flag to generate a more detailed log file (with a "debug" tag). 
 
-If you would like to report the bug to the developers ( https://github.com/NAU-BioNetFit/PyBNF/ ), it will be helpful for us if you include the debug log file with your bug report. 
+If you would like to report the bug to the developers ( https://github.com/lanl/PyBNF/ ), it will be helpful for us if you include the debug log file with your bug report. 
 
 
 Other issues
 ------------
-If you encounter a bug that is not documented here, or have a request for a new feature, please contact the developers at https://github.com/NAU-BioNetFit/PyBNF/ . 
+If you encounter a bug that is not documented here, or have a request for a new feature, please contact the developers at https://github.com/lanl/PyBNF/ . 
 

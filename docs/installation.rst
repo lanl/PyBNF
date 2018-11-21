@@ -32,7 +32,7 @@ The above command will install the most recent version of PyBNF released on the 
 
 Installing from source
 ^^^^^^^^^^^^^^^^^^^^^^
-To use bleeding edge PyBNF, the source code may be found on GitHub at https://github.com/NAU-BioNetFit/PyBNF .  To use,
+To use bleeding edge PyBNF, the source code may be found on GitHub at https://github.com/lanl/PyBNF .  To use,
 simply download or clone the repository and run the following command in the repository's root directory:
 
     :command:`pip install -e .`
