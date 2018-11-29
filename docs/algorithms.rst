@@ -253,7 +253,7 @@ The replicates are run in parallel. Synchronization is required at every iterati
 
 Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
-The PyBNF implementation is based on the description in [Gupta2018]_. Markov chains are run by the same method as in Markov chain Monte Carlo, except that the value of :math:`\beta` in the acceptance probability :math:`e^{- \beta \Delta F}` varies between replicas. 
+The PyBNF implementation is based on the description in [Gupta2018a]_. Markov chains are run by the same method as in Markov chain Monte Carlo, except that the value of :math:`\beta` in the acceptance probability :math:`e^{- \beta \Delta F}` varies between replicas. 
 
 Every ``exchange_every`` iterations, we attempt replica exchange. We propose moves that consist of swapping two replicas between adjacent temperatures. Moves are accepted with probability :math:`\min (1, e^{\Delta \beta \Delta F})` where :math:`\Delta \beta` is the change in :math:`\beta` = 1/Temperature, and :math:`\Delta F` is the difference in the objective values of the replicas. In other words, moves that transfer a lower-objective replica to a lower temperature (higher :math:`\beta`) are always accepted, and those that transfer a higher-objective replica to a lower temperature are accepted with a Metropolis-like probability based on the extent of objective difference. 
 
@@ -361,7 +361,7 @@ It is also possible to run the Simplex algorithm on its own, using a custom star
 
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.
-.. [Gupta2018] Gupta, S.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Markov Chain Monte Carlo Methods for Parameter Estimation in Systems Biology. arXiv 2018, 1801.09831.
+.. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
 .. [Lee2007] Lee, D.; Wiswall, M. A Parallel Implementation of the Simplex Function Minimization Routine. Comput. Econ. 2007, 30 (2), 171–187.
 .. [Moraes2015] Moraes, A. O. S.; Mitre, J. F.; Lage, P. L. C.; Secchi, A. R. A Robust Parallel Algorithm of the Particle Swarm Optimization Method for Large Dimensional Engineering Problems. Appl. Math. Model. 2015, 39 (14), 4223–4241.
