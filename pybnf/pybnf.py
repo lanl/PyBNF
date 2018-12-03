@@ -32,7 +32,9 @@ def main():
     node_string = None
     alg = None
 
-    parser = argparse.ArgumentParser(description='Performs parameter fitting on models defined in BNGL')
+    parser = argparse.ArgumentParser(description='Performs parameter fitting on systems biology models defined in '
+                                                 'BNGL or SBML. For documentation, examples, and source code, go to '
+                                                 'https://github.com/lanl/PyBNF')
 
     parser.add_argument('-c', action='store', dest='conf_file',
                         help='Path to the BioNetFit configuration file', metavar='config.conf')
