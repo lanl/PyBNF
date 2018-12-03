@@ -21,8 +21,6 @@ It is also possible to install ``pip`` alone without Anaconda. If you choose to 
 
 Installing from PyPI
 ^^^^^^^^^^^^^^^^^^^^
-.. note::
-    This option is not yet available
 
 Simply type the following in a terminal:
 
