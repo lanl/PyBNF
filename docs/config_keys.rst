@@ -241,6 +241,17 @@ Parallel Computing
   
     * ``scheduler_node = cn180``
 
+**simulation_dir**
+  Optional setting for a different directory where we should save (or temporarily store) simulation output. Usually
+  not necessary to set separately from `output_dir`. However, if you are running on a cluster with a Lustre filesystem, 
+  you may want to set this to a different disk to avoid excessive reads and writes to the Lustre disk. 
+  
+  Default: Use the same directory as `output_dir`.
+  
+  Example:
+  
+    * ``simulation_dir = /scratch/sim_output``
+
 **worker_nodes**
   Manually set nodes used for computation - takes one or more strings separated by whitespace identifying machines on a
   network. If running on a cluster with SLURM, it is recommended to use :ref:`automatic configuration <cluster>` with
