@@ -733,11 +733,14 @@ class Algorithm(object):
         self.output_results(name='backup', no_move=True)
 
         # Pickle the algorithm
+        # Save to a temporary file first, so we can't get interrupted and left with no backup.
         picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
+        temppicklepath = '%s/alg_backup_temp.bp' % self.config.config['output_dir']
         try:
-            f = open(picklepath, 'wb')
+            f = open(temppicklepath, 'wb')
             pickle.dump((self, pending_psets), f)
             f.close()
+            os.rename(temppicklepath, picklepath)
         except IOError as e:
             logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
