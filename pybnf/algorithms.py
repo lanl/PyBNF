@@ -417,7 +417,10 @@ class Algorithm(object):
         if not os.path.isdir(self.config.config['output_dir']):
             os.mkdir(self.config.config['output_dir'])
 
-        self.sim_dir = self.config.config['output_dir'] + '/Simulations'
+        if self.config.config['simulation_dir']:
+            self.sim_dir = self.config.config['simulation_dir'] + '/Simulations'
+        else:
+            self.sim_dir = self.config.config['output_dir'] + '/Simulations'
         self.res_dir = self.config.config['output_dir'] + '/Results'
         self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs'
 

@@ -138,6 +138,10 @@ def main():
             subfiles = ('alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp')
             will_overwrite = [subdir for subdir in subdirs + subfiles
                               if os.path.exists(config.config['output_dir'] + '/' + subdir)]
+            if config.config['simulation_dir']:
+                simdir = config.config['simulation_dir'] + '/Simulations'
+                if os.path.exists(simdir):
+                    will_overwrite.append(simdir)
             if len(will_overwrite) > 0:
                 if not cmdline_args.overwrite:
                     logger.info("Output directory already exists... querying user for overwrite permission")
@@ -163,10 +167,22 @@ def main():
                         logger.info('Deleted old file %s' % config.config['output_dir'] + '/' + subfile)
                     except OSError:
                         logger.debug('File %s does not already exist' % config.config['output_dir'] + '/' + subfile)
+                if config.config['simulation_dir']:
+                    try:
+                        shutil.rmtree(config.config['simulation_dir']+'/Simulations')
+                        logger.info('Deleted old simulation directory %s' %
+                                    config.config['simulation_dir']+'/Simulations')
+                    except OSError:
+                        logger.debug('Simulation directory %s does not already exist' %
+                                     config.config['simulation_dir']+'/Simulations')
+
 
             # Create new directories for the current run.
             os.makedirs(config.config['output_dir'] + '/Results')
-            os.mkdir(config.config['output_dir'] + '/Simulations')
+            if config.config['simulation_dir']:
+                os.makedirs(config.config['simulation_dir'] + '/Simulations')
+            else:
+                os.mkdir(config.config['output_dir'] + '/Simulations')
             shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
             pending = None
     
