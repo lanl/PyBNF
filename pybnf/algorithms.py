@@ -2,14 +2,10 @@
 
 
 from distributed import as_completed
-from distributed import Client, LocalCluster
-from dask import __version__ as daskv
-from distributed import __version__ as distributedv
 from subprocess import run
 from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import STDOUT
 
-from .config import init_logging, reinit_logging
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
@@ -766,32 +762,11 @@ class Algorithm(object):
         """
         self.max_iterations += n
 
-    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False, reuse_client=None):
+    def run(self, client, resume=None, debug=False):
         """Main loop for executing the algorithm"""
-
-        logger.info('Initializing dask Client with dask v%s, distributed v%s' % (daskv, distributedv))
 
         if self.refine:
             logger.debug('Setting up Simplex refinement of previous algorithm')
-
-        if reuse_client:
-            logger.info('Reusing Client from the previous run')
-            client = reuse_client
-        elif self.config.config['scheduler_file'] is not None:
-            # Scheduler node read in from scheduler file stored on shared file system
-            client = Client(scheduler_file=self.config.config['scheduler_file'])
-        elif scheduler_node:
-            client = Client('%s:8786' % scheduler_node)
-        elif self.config.config['parallel_count'] is not None:
-            lc = LocalCluster(n_workers=self.config.config['parallel_count'], threads_per_worker=1)
-            client = Client(lc)
-            client.run(init_logging, log_prefix, debug)
-        else:
-            client = Client()
-            client.run(init_logging, log_prefix, debug)
-
-        # Required because with distributed v1.22.0, logger breaks after calling Client()
-        reinit_logging(log_prefix, debug)
 
         backup_every = self.get_backup_every()
         sim_count = 0
@@ -882,13 +857,9 @@ class Algorithm(object):
                         new_futures.append(new_f)
                 logger.debug('Submitting %d new Jobs' % len(new_futures))
                 pool.update(new_futures)
-        # If we'll be calling more run()'s, save the client to avoid reinitializing
-        save_client = (self.config.config['bootstrap'] and self.bootstrap_number != self.config.config['bootstrap']) \
-                      or (self.config.config['refine'] and not isinstance(self, SimplexAlgorithm))
+
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
-        if not save_client:
-            client.close()
         self.output_results('final')
 
         # Copy the best simulations into the results folder
@@ -955,8 +926,6 @@ class Algorithm(object):
                 run(['rm', '-rf', self.sim_dir])
 
         logger.info("Fitting complete")
-        if save_client:
-            return client
 
     def cleanup(self):
         """

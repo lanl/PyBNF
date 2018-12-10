@@ -4,7 +4,7 @@
 from .parse import load_config
 from .config import init_logging
 from .printing import print0, print1, print2, PybnfError
-from .cluster import get_scheduler, setup_cluster, teardown_cluster
+from .cluster import Cluster
 from .pset import Trajectory
 import pybnf.algorithms as algs
 import pybnf.printing as printing
@@ -29,8 +29,8 @@ def main():
     start_time = time.time()
 
     success = False
-    node_string = None
     alg = None
+    cluster = None
 
     parser = argparse.ArgumentParser(description='Performs parameter fitting on systems biology models defined in '
                                                  'BNGL or SBML. For documentation, examples, and source code, go to '
@@ -58,6 +58,7 @@ def main():
         log_prefix = cmdline_args.log_prefix
     else:
         log_prefix = 'bnf_%s' % time.strftime('%Y%m%d-%H%M%S')
+    debug = cmdline_args.debug_logging
 
     # Overwrite log file if it exists
     if os.path.isfile('%s_debug.log' % log_prefix):
@@ -65,7 +66,7 @@ def main():
     if os.path.isfile('%s.log' % log_prefix):
         os.remove('%s.log' % log_prefix)
 
-    init_logging(log_prefix, cmdline_args.debug_logging)
+    init_logging(log_prefix, debug)
     logger = logging.getLogger(__name__)
 
     print0("PyBNF v%s" % __version__)
@@ -213,25 +214,11 @@ def main():
             config.config['scheduler_file'] = cmdline_args.scheduler_file
 
         # Set up cluster
-        if config.config['scheduler_file']:
-            # Scheduler node will be read in from scheduler file stored on shared file system
-            node_string = None
-            scheduler_node = None
-        elif config.config['scheduler_node'] and config.config['worker_nodes']:
-            scheduler_node = config.config['scheduler_node']
-            node_string = ' '.join(config.config['worker_nodes'])
-        elif config.config['scheduler_node']:
-            dummy, node_string = get_scheduler(config)
-            scheduler_node = config.config['scheduler_node']
-        else:
-            scheduler_node, node_string = get_scheduler(config)
-
-        if node_string:
-            dask_ssh_proc = setup_cluster(node_string, os.getcwd(), config.config['parallel_count'])
+        cluster = Cluster(config, log_prefix, debug)
 
         # Run the algorithm!
         logger.debug('Algorithm initialization')
-        saved_client = alg.run(log_prefix, scheduler_node, resume=pending, debug=cmdline_args.debug_logging)
+        alg.run(cluster.client, resume=pending, debug=debug)
 
         if config.config['refine'] == 1:
             logger.debug('Refinement requested for best fit parameter set')
@@ -245,7 +232,7 @@ def main():
                 config.config['simplex_start_point'] = alg.trajectory.best_fit()
                 simplex = algs.SimplexAlgorithm(config, refine=True)
                 simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(log_prefix, scheduler_node, reuse_client=saved_client)
+                simplex.run(cluster.client, debug=debug)
 
         if alg.bootstrap_number is None:
             print0('Fitting complete')
@@ -305,8 +292,7 @@ def main():
 
                 logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
                 print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
-                saved_client = alg.run(log_prefix, scheduler_node, debug=cmdline_args.debug_logging,
-                                       reuse_client=saved_client)
+                alg.run(cluster.client, debug=debug)
 
                 if config.config['refine'] == 1:
                     logger.debug('Refinement requested for best fit parameter set')
@@ -320,7 +306,7 @@ def main():
                         config.config['simplex_start_point'] = alg.trajectory.best_fit()
                         simplex = algs.SimplexAlgorithm(config, refine=True)
                         simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                        saved_client = simplex.run(log_prefix, scheduler_node, reuse_client=saved_client)
+                        simplex.run(cluster.client, debug=debug)
 
                 best_fit_pset = alg.trajectory.best_fit()
 
@@ -363,9 +349,14 @@ def main():
                'Please report this bug to help us improve PyBNF.' % (exceptiondata[-1], log_prefix))
     finally:
         # Stop dask-ssh regardless of success
-        if node_string:
-            teardown_cluster(dask_ssh_proc)
-            time.sleep(10)  # wait for teardown before continuing
+        if cluster:
+            try:
+                cluster.teardown()
+                time.sleep(10)  # wait for teardown before continuing
+            except Exception:
+                logging.exception('Failed to tear down cluster')
+        else:
+            logging.info('No cluster to tear down')
 
         # Attempt to remove dask-worker-space directory if necessary
         # (exists in directory where workers were instantiated)
