@@ -18,7 +18,7 @@ from .pset import NetModel, BNGLModel, SbmlModelNoTimeout
 from .pset import OutOfBoundsException
 from .pset import FailedSimulationError
 from .printing import print0, print1, print2, PybnfError
-from .objective import ObjectiveCalculator
+from .objective import ObjectiveCalculator, ConstraintCounter
 
 import logging
 import numpy as np
@@ -2808,9 +2808,12 @@ class ModelCheck(object):
         if result.score is None:
             print0('Simulation contained NaN or Inf values. Cannot calculate objective value.')
             return
-
-        print0('Model checking complete')
         print0('Objective value is %s' % result.score)
+        if len(self.config.constraints) > 0:
+            counter = ConstraintCounter()
+            fail_count = counter.evaluate_multiple(result.simdata, self.exp_data, self.config.constraints)
+            total = sum([len(cset.constraints) for cset in self.config.constraints])
+            print('Satisfied %i out of %i constraints' % (total-fail_count, total))
 
 def exp10(n):
     """

@@ -269,3 +269,23 @@ class AveNormSumOfSquaresObjective(SummationObjective):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
+
+
+class ConstraintCounter(ObjectiveFunction):
+    """
+    An objective function that just counts the numbered of failed constraints
+    Used only in model checking
+    """
+
+    def evaluate_multiple(self, sim_data_dict, exp_data_dict, constraints=(), show_warnings=True):
+        """
+        Count the number constraints that are not satisfied by the simulation data.
+        Experimental (quantitative) data is ignored
+        """
+        total = 0.
+        for cset in constraints:
+            total += cset.number_failed(sim_data_dict)
+        return total
+
+    def evaluate(self, sim_data, exp_data, show_warnings=True):
+        raise NotImplementedError("ConstraintCounter does not implement evaluate()")

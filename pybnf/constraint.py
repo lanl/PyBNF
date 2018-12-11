@@ -32,6 +32,15 @@ class ConstraintSet:
         """
         return sum([c.penalty(sim_data_dict) for c in self.constraints])
 
+    def number_failed(self, sim_data_dict):
+        """
+        Return the number of satisfied constraints
+
+        :param sim_data_dict:
+        :return:
+        """
+        return sum([0 if c.penalty(sim_data_dict) == 0 else 1 for c in self.constraints])
+
     def load_constraint_file(self, filename, scale=1.0):
         """
         Parse the constraint file filename and load them all into my constraint list
