@@ -92,7 +92,9 @@ class Configuration(object):
             raise UnspecifiedConfigurationKeyError(
                 "The following configuration keys must be specified:\n\t"+",".join(unspecified_keys))
 
-        if verbosity >= 1:
+        if d['fit_type'] == 'check':
+            d = self.check_unused_keys_model_checking(d)
+        elif verbosity >= 1:
             self.check_unused_keys(d)
         if d['fit_type'] in ('bmc', 'pt', 'sa', 'dream'):
             self.postprocess_mcmc_keys(d)
@@ -199,6 +201,26 @@ class Configuration(object):
             print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                             % (k, conf_dict['fit_type']))
             logger.warning('Ignoring unused key %s for fitting algorithm %s' % (k, conf_dict['fit_type']))
+
+    @staticmethod
+    def check_unused_keys_model_checking(conf_dict):
+        """
+        Gives warnings if the user has specified parameters that will be ignored by model checking. Uses different
+        logic than the rest of the algorithms because so few keys are used for model checking
+        :param conf_dict: The config dictionary
+        :return: A modified config dictionary, after removing any extraneous keys that would crash PyBNF
+        """
+        used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
+                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'time_course', 'param_scan'}
+        would_crash = {'refine', 'bootstrap'}
+
+        for k in conf_dict:
+            if k not in used:
+                print1('Warning: Configuration key '+str(k)+' is not used in fit_type "check", so I am ignoring it')
+        for k in would_crash:
+            if k in conf_dict:
+                del conf_dict[k]
+        return conf_dict
 
     @staticmethod
     def postprocess_mcmc_keys(conf_dict):
@@ -702,14 +724,3 @@ class UnspecifiedConfigurationKeyError(PybnfError):
 
 class UnmatchedExperimentalDataError(PybnfError):
     pass
-
-class ModelCheckConfiguration(Configuration):
-    """
-    Modified Configuration class used for model checking, which has significantly different rules for what is allowed
-    than fitting algorithms
-    """
-
-    @staticmethod
-    def _req_user_params():
-        """Configuration keys that the user must specify"""
-        return {'models'}
