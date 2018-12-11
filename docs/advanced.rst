@@ -1,6 +1,13 @@
 Advanced Features
 =================
 
+.. _model_check:
+
+Model Checking
+--------------
+
+PyBNF includes a model checking utility that evaluates how well an already parameterized model agrees with the given experimental data. To use this feature, set the ``fit_type`` config key to ``check``. PyBNF will run a single simulation on a single core, and output the objective function value to the terminal. For models containing constraints, PyBNF will also output the total number of constraints that are satisfied. Note that for model checking, input models should *not* contain any free parameters tagged with ``__FREE``; all parameters should already be defined.
+
 Bootstrapping
 -------------
 

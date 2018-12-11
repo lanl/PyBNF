@@ -33,6 +33,7 @@ Required Keys
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
     * ``sa`` - :ref:`Simulated Annealing <alg-sa>`
     * ``pt`` - :ref:`Parallel tempering <alg-pt>`
+    * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
   Example:
   
