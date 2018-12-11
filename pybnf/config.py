@@ -81,18 +81,16 @@ class Configuration(object):
         """
         if 'models' not in d or len(d['models']) == 0:
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
-
-        if not self._req_user_params() <= d.keys():
+        if 'fit_type' not in d:
+            d['fit_type'] = 'de'
+            print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
+        if not self._req_user_params() <= d.keys() and d['fit_type'] != 'check':
             unspecified_keys = []
             for k in self._req_user_params():
                 if k not in d.keys():
                     unspecified_keys.append(k)
             raise UnspecifiedConfigurationKeyError(
                 "The following configuration keys must be specified:\n\t"+",".join(unspecified_keys))
-
-        if 'fit_type' not in d:
-            d['fit_type'] = 'de'
-            print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
 
         if verbosity >= 1:
             self.check_unused_keys(d)
@@ -317,7 +315,7 @@ class Configuration(object):
             # Initialize model type based on extension
             try:
                 if re.search('\.bngl$', mf):
-                    model = BNGLModel(mf)
+                    model = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check')
                     model.bng_command = self._absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
@@ -704,3 +702,14 @@ class UnspecifiedConfigurationKeyError(PybnfError):
 
 class UnmatchedExperimentalDataError(PybnfError):
     pass
+
+class ModelCheckConfiguration(Configuration):
+    """
+    Modified Configuration class used for model checking, which has significantly different rules for what is allowed
+    than fitting algorithms
+    """
+
+    @staticmethod
+    def _req_user_params():
+        """Configuration keys that the user must specify"""
+        return {'models'}

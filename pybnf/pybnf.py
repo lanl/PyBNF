@@ -203,6 +203,8 @@ def main():
                 alg = algs.AsynchronousDifferentialEvolution(config)
             elif config.config['fit_type'] == 'dream':
                 alg = algs.DreamAlgorithm(config)
+            elif config.config['fit_type'] == 'check':
+                alg = algs.ModelCheck(config)
             else:
                 raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim' % config.config['fit_type'])
 

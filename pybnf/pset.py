@@ -91,12 +91,14 @@ class BNGLModel(Model):
 
     """
 
-    def __init__(self, bngl_file, pset=None):
+    def __init__(self, bngl_file, pset=None, suppress_free_param_error=False):
         """
         Loads the model from the given .bngl file
 
         :param bngl_file: str address of the bngl file
         :param pset: PSet to initialize the model with. Defaults to None
+        :param suppress_free_param_error: If True, suppress the error that would occur if the model has no free
+        parameters declared
         """
         self.file_path = bngl_file
         self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
@@ -215,7 +217,7 @@ class BNGLModel(Model):
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = 'generate_network({overwrite=>1})'
 
-        if len(param_names_set) == 0:
+        if len(param_names_set) == 0 and not suppress_free_param_error:
             raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
                              "that end in '__FREE' to tell BioNetFit which parameters to fit." % bngl_file)
 

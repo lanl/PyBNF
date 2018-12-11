@@ -2750,6 +2750,68 @@ def latin_hypercube(nsamples, ndims):
     return value_table
 
 
+class ModelCheck(object):
+    """
+    An algorithm that just checks the fit quality for a job with no free parameters.
+
+    Does not subclass Algorithm, but contains the same function signatures for __init__ and run
+    """
+
+    def __init__(self, config):
+        """
+        Instantiates ModelCheck with a Configuration object.
+        :param config: The fitting configuration
+        :type config: Configuration
+        """
+        self.config = config
+        self.exp_data = self.config.exp_data
+        self.objective = self.config.obj
+        self.bootstrap_number = None
+
+        logger.debug('Creating output directory')
+        if not os.path.isdir(self.config.config['output_dir']):
+            os.mkdir(self.config.config['output_dir'])
+
+        if self.config.config['simulation_dir']:
+            self.sim_dir = self.config.config['simulation_dir'] + '/Simulations'
+        else:
+            self.sim_dir = self.config.config['output_dir'] + '/Simulations'
+
+        # Store a list of all Model objects.
+        self.model_list = copy.deepcopy(list(self.config.models.values()))
+
+    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False, reuse_client=None):
+        """Main loop for executing the algorithm"""
+
+        print1('Running model checking on the given model(s)')
+
+        empty = PSet([])
+        empty.name = 'check'
+        job = Job(self.model_list, empty, 'check', self.sim_dir, self.config.config['wall_time_sim'], None,
+                  None, dict(), delete_folder=False)
+        result = run_job(job, debug, self.sim_dir)
+
+        if isinstance(result, FailedSimulation):
+            print0('Simulation failed.')
+            return
+
+        result.normalize(self.config.config['normalization'])
+        try:
+            result.postprocess_data(self.config.postprocessing)
+        except Exception:
+            logger.exception('User-defined post-processing script failed')
+            traceback.print_exc()
+            print0('User-defined post-processing script failed. Exiting')
+            return
+
+        result.score = self.objective.evaluate_multiple(result.simdata, self.exp_data, self.config.constraints)
+        if result.score is None:
+            print0('Simulation contained NaN or Inf values. Cannot calculate objective value.')
+            return
+
+        print0('Model checking complete')
+        print0('Objective value is %s' % result.score)
+
 def exp10(n):
     """
     Raise 10 to the power of a possibly user-defined value, and raise a helpful error if it overflows
