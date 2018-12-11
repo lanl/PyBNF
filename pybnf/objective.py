@@ -236,6 +236,13 @@ class SumOfSquaresObjective(SummationObjective):
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return (sim_val - exp_val) ** 2.
 
+class SumOfDiffsObjective(SummationObjective):
+
+    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+
+        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
+        return abs(sim_val - exp_val)
 
 class NormSumOfSquaresObjective(SummationObjective):
     """

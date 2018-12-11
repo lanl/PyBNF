@@ -3,7 +3,7 @@
 
 from .data import Data
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
-    AveNormSumOfSquaresObjective
+    AveNormSumOfSquaresObjective, SumOfDiffsObjective
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
     Mutation, MutationSet
@@ -495,9 +495,11 @@ class Configuration(object):
             return NormSumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'ave_norm_sos':
             return AveNormSumOfSquaresObjective(self.config['ind_var_rounding'])
+        elif self.config['objfunc'] == 'sod':
+            return SumOfDiffsObjective(self.config['ind_var_rounding'])
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
               "Objective function %s is not defined. Valid objective function choices are: "
-              "chi_sq, sos, norm_sos, ave_norm_sos" % self.config['objfunc'])
+              "chi_sq, sos, sod, norm_sos, ave_norm_sos" % self.config['objfunc'])
 
     def _load_variables(self):
         """

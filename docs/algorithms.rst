@@ -54,6 +54,7 @@ All algorithms use an objective function to evaluate the quality of fit for each
 
     * Chi squared (``obj_func = chi_sq``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{2 \sigma_i^2}` . :math:`\sigma_i` is the standard deviation of point :math:`y_i`, and must be specified in the :ref:`exp file <exp-file>`.
     * Sum of squares (``obj_func = sos``): :math:`f(y, a) =  \sum_i (y_i - a_i)^2`
+    * Sum of differences (``obj_func = sod``): :math:`f(y, a) =  \sum_i |y_i - a_i|`
     * Normalized sum of squares (``obj_func = norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{y_i^2}`
     * Average-normalized sum of squares (``obj_func = ave_norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{\bar{y}^2}`, where :math:`\bar{y}` is the average of the entire data column :math:`y`.
     
