@@ -41,6 +41,19 @@ class ConstraintSet:
         """
         return sum([0 if c.penalty(sim_data_dict) == 0 else 1 for c in self.constraints])
 
+    def output_itemized_eval(self, sim_data_dict, output_dir):
+        """
+        Output a text file in which we evaluate the given simulation data: each line of the text file contains
+        the penalty associated with the corresponding line in the constraint file.
+
+        :param sim_data_dict:
+        :param output_dir: Directory where the file should be saved
+        :return:
+        """
+        with open('%s/%s_constraint_eval.txt' % (output_dir, self.base_suffix), 'w') as out:
+            for c in self.constraints:
+                out.write('%s\n' % c.penalty(sim_data_dict))
+
     def load_constraint_file(self, filename, scale=1.0):
         """
         Parse the constraint file filename and load them all into my constraint list

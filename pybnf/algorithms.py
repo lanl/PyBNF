@@ -2814,6 +2814,8 @@ class ModelCheck(object):
             fail_count = counter.evaluate_multiple(result.simdata, self.exp_data, self.config.constraints)
             total = sum([len(cset.constraints) for cset in self.config.constraints])
             print('Satisfied %i out of %i constraints' % (total-fail_count, total))
+            for cset in self.config.constraints:
+                cset.output_itemized_eval(result.simdata, self.sim_dir)
 
 def exp10(n):
     """
