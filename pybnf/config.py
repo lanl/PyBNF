@@ -211,12 +211,14 @@ class Configuration(object):
         :return: A modified config dictionary, after removing any extraneous keys that would crash PyBNF
         """
         used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
-                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'time_course', 'param_scan'}
+                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'time_course', 'param_scan', 'mutant',
+                'models', 'exp_data'}
         would_crash = {'refine', 'bootstrap'}
 
         for k in conf_dict:
-            if k not in used:
+            if k not in used and not re.search('\.(bngl|xml)', k):
                 print1('Warning: Configuration key '+str(k)+' is not used in fit_type "check", so I am ignoring it')
+                logger.warning('Ignoring unused key %s for fitting algorithm "check"' % k)
         for k in would_crash:
             if k in conf_dict:
                 del conf_dict[k]
