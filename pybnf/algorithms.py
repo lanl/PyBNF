@@ -107,6 +107,14 @@ class Result(object):
 
             self.simdata[m][suff] = postproc.postprocess(rawdata)
 
+    def add_result(self, other):
+        """
+        Add simulation data of other models from another Result object into this Result object
+        :param other: The other Result object
+        :return:
+        """
+        self.simdata.update(other.simdata)
+
 
 class FailedSimulation(Result):
     def __init__(self, paramset, name, fail_type, einfo=tuple([None, None, None])):
@@ -347,6 +355,28 @@ class JobGroup:
             for suf in self.result_list[0].simdata[m]:
                 avedata[m][suf] = Data.average([r.simdata[m][suf] for r in self.result_list])
         return Result(self.result_list[0].pset, avedata, self.job_id)
+
+
+class MultimodelJobGroup(JobGroup):
+    """
+    A JobGroup to handle model-level parallelism
+    """
+
+    def average_results(self):
+        """
+        To be called after all results are in for this group.
+        Combines all results from the submodels into a single Result object
+        :return:
+        """
+        if self.failed:
+            self.failed.name = self.job_id
+            return self.failed
+
+        # Merge all models into a single Result object
+        final_result = Result(self.result_list[0].pset, dict(), self.job_id)
+        for res in self.result_list:
+            final_result.add_result(res)
+        return final_result
 
 
 class custom_as_completed(as_completed):
@@ -667,13 +697,7 @@ class Algorithm(object):
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
         logger.debug('Creating Job %s' % job_id)
-        if self.config.config['smoothing'] == 1:
-            # Create a single job
-            return [Job(self.model_list, params, job_id,
-                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
-                    self.config.config['normalization'], self.config.postprocessing,
-                    bool(self.config.config['delete_old_files']))]
-        else:
+        if self.config.config['smoothing'] > 1:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
             newnames = []
@@ -690,6 +714,32 @@ class Algorithm(object):
             for n in newnames:
                 self.job_group_dir[n] = new_group
             return newjobs
+        elif self.config.config['parallelize_models'] > 1:
+            # Partition our model list into n different jobs
+            newjobs = []
+            newnames = []
+            model_count = len(self.model_list)
+            rep_count = self.config.config['parallelize_models']
+            for i in range(rep_count):
+                thisname = '%s_part%i' % (job_id, i)
+                newnames.append(thisname)
+                # calc_future is supposed to be None here - the workers don't have enough info to calculate the
+                # objective on their own
+                newjobs.append(Job(self.model_list[model_count*i//rep_count:model_count*(i+1)//rep_count],
+                                   params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
+                                   self.calc_future, self.config.config['normalization'], dict(),
+                                   bool(self.config.config['delete_old_files'])))
+            new_group = MultimodelJobGroup(job_id, newnames)
+            for n in newnames:
+                self.job_group_dir[n] = new_group
+            return newjobs
+        else:
+            # Create a single job
+            return [Job(self.model_list, params, job_id,
+                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
+                    self.config.config['normalization'], self.config.postprocessing,
+                    bool(self.config.config['delete_old_files']))]
+
 
     def output_results(self, name='', no_move=False):
         """
@@ -806,7 +856,8 @@ class Algorithm(object):
         if debug and not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
 
-        if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1:
+        if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1 and \
+                self.config.config['parallelize_models'] == 1:
             calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
             [self.calc_future] = client.scatter([calculator], broadcast=True)
         else:
@@ -837,7 +888,7 @@ class Algorithm(object):
             # Handle if this result is one of multiple instances for smoothing
             sim_count += 1
             del pending[f]
-            if self.config.config['smoothing'] > 1:
+            if self.config.config['smoothing'] > 1 or self.config.config['parallelize_models'] > 1:
                 group = self.job_group_dir.pop(res.name)
                 done = group.job_finished(res)
                 if not done:

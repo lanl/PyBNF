@@ -220,6 +220,17 @@ Parallel Computing
   Example:
   
     * ``cluster_type = slurm``
+    
+**parallelize_models**
+  For fitting jobs that include multiple models, run those models on different cores, utilizing a total of this number of cores per parameter set evaluation. 
+  Should not be set higher than the total number of models. Using this option incurs additional communication overhead, and causes the objective function
+  to be evaluated locally, not in parallel. Therefore, only certain types of problems will benefit from this option. 
+  
+  Default: 1
+  
+  Example:
+  
+    * ``parallelize_models = 3``
 
 **scheduler_file**
   Provide a scheduler file to link PyBNF to a Dask scheduler already created outside of PyBNF. See Manual configuration with Dask for more information. 

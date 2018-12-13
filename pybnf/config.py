@@ -138,6 +138,7 @@ class Configuration(object):
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
             'sbml_integrator': 'cvode', 'parallel_count': None, 'save_best_data': 0, 'simulation_dir': None,
+            'parallelize_models': 1,
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
@@ -371,6 +372,10 @@ class Configuration(object):
                 raise PybnfError('You specified smoothing=%i, but one of your simulation commands contains the "seed" '
                                  'argument. This would cause all of your smoothing replicates to come out the same.'
                                  % self.config['smoothing'])
+        if self.config['smoothing'] > 1 and self.config['parallelize_models'] > 1:
+            raise PybnfError('Simultaneous use of "smoothing" and "parallelize_models" is not supported')
+        if self.config['parallelize_models'] > len(md):
+            raise PybnfError('Job contains %i models, so "parallelize_models" should be at most %i' % (len(md), len(md)))
 
         return md
 
