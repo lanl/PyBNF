@@ -875,9 +875,11 @@ class Algorithm(object):
             futures.append(f)
             pending[f] = (job.params, job.job_id)
         pool = custom_as_completed(futures, with_results=True, raise_errors=False)
+        backed_up = True
         while True:
-            if sim_count % backup_every == 0 and sim_count != 0:
+            if sim_count % backup_every == 0 and not backed_up:
                 self.backup(set([pending[fut][0] for fut in pending]))
+                backed_up = True
             f, res = next(pool)
             if isinstance(res, DaskError):
                 if isinstance(res.error, PybnfError):
@@ -894,6 +896,7 @@ class Algorithm(object):
                     continue
                 res = group.average_results()
             sim_count += 1
+            backed_up = False
             if isinstance(res, FailedSimulation):
                 if res.fail_type >= 1:
                     self.fail_count += 1
