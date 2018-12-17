@@ -886,7 +886,6 @@ class Algorithm(object):
                 logger.error(res.traceback)
                 res = FailedSimulation(pending[f][0], pending[f][1], 3)
             # Handle if this result is one of multiple instances for smoothing
-            sim_count += 1
             del pending[f]
             if self.config.config['smoothing'] > 1 or self.config.config['parallelize_models'] > 1:
                 group = self.job_group_dir.pop(res.name)
@@ -894,6 +893,7 @@ class Algorithm(object):
                 if not done:
                     continue
                 res = group.average_results()
+            sim_count += 1
             if isinstance(res, FailedSimulation):
                 if res.fail_type >= 1:
                     self.fail_count += 1
