@@ -895,7 +895,7 @@ For Parallel Tempering
   
   
 **beta_range**
-  As an alternative to setting ``beta``, the range of values of beta to use. Specify the minimum value, followed by the maximum value. The replicates will use ``population_size``/``reps_per_beta`` evenly spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, the maximum value should be 1.
+  As an alternative to setting ``beta``, the range of values of beta to use. Specify the minimum value, followed by the maximum value. The replicates will use ``population_size``/``reps_per_beta`` geometrically spaced beta values within this range. Only the replicas at the max beta value will be sampled. For the true probability distribution, the maximum value should be 1.
   
   Default: None (betas are set with the ``beta`` key)
   

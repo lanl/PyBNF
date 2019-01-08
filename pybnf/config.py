@@ -282,7 +282,7 @@ class Configuration(object):
             if conf_dict['fit_type'] != 'pt':
                 print1("Warning: You used 'beta_range' with the method %s. This is an odd thing to do. Usually, you "
                        "would want all your replicates starting at the same beta value." % conf_dict['fit_type'])
-            betalist = np.linspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], subpop_size)
+            betalist = list(np.geomspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], subpop_size))
         elif len(conf_dict['beta']) > 1:
             betalist = conf_dict['beta']
             if conf_dict['fit_type'] != 'pt':
