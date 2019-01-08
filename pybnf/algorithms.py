@@ -237,6 +237,10 @@ class Job:
     def run_simulation(self, debug=False, failed_logs_dir=''):
         """Runs the simulation and reads in the result"""
 
+        # Force absolute path for failed_logs_dir
+        if len(failed_logs_dir) > 0 and failed_logs_dir[0] != '/':
+            failed_logs_dir = self.home_dir + '/' + failed_logs_dir
+
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False
         failures = 0
