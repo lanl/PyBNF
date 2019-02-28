@@ -16,7 +16,7 @@ For a simple job using SBML:
     
 The examples will print progress to the terminal as the fitting proceeds, and the results will be saved in the directory examples/demo/output (this output directory can be changed by editing ``demo_bng.conf`` and ``demo_xml.conf``). 
 
-In examples/demo/output/Results, the file sorted_params.txt contains the parameter sets tested during the fitting run. Open this file and verify that the best-fit parameter set (first line of the file) is close to the ground truth value of v1__FREE=0.5, v2__FREE=1.5, v3__FREE=3.0. 
+In examples/demo/output/Results, the file sorted_params.txt contains the parameter sets tested during the fitting run. Open this file and verify that the best-fit parameter set (first line of the file) is close to the ground truth value of v1__FREE=0.5, v2__FREE=1.0, v3__FREE=3.0. 
 
 After verifying that PyBNF is installed correctly, it should be possible to run any of the other examples in the examples/ directory. For more information about these examples and the features they include, see :ref:`examples` 
 
