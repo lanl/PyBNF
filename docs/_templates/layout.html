@@ -1,0 +1,13 @@
+{% extends '!layout.html' %}
+
+{% block extrahead %}
+{{super()}}
+<link rel="stylesheet" href="_static/custom.css" type="text/css" />
+{% endblock %}
+
+{% block header %}
+        <div class=headerimage>
+        <img src=_static/logo.png height=120>
+        </div>
+{{super()}}
+{% endblock %}

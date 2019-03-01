@@ -1,0 +1,44 @@
+.headerimage{
+    background: url('header.jpg');
+    text-align: left;
+    padding: 10px;
+}
+
+body{
+    background: #70baff;
+    /*border: 1px solid #1555f9;*/
+}
+
+a {
+    color: #0d6b16;
+}
+
+a.headerlink {
+    color: #0d6b16!important;
+}
+
+a code {
+    color: #0d6b16;
+}
+
+div.related ul li a {
+    color: #0d6b16;
+}
+
+div.sphinxsidebar h3, div.sphinxsidebar h4 {
+    border: 1px solid #000000;
+    background-color: #064b0f;
+}
+
+/*div.bodywrapper {
+    border-right: 1px solid #1555f9;
+}
+
+div.related ul {
+    border-top: 1px solid #1555f9;
+    border-bottom: 1px solid #1555f9;
+}
+
+pre {
+    border: 1px solid #1555f9;
+}*/
