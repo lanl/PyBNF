@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class ConstraintSet:
     """
-    Represents the set of all constraints provided in one con file
+    Represents the set of all constraints provided in one prop file
     """
     def __init__(self, base_model, base_suffix):
         self.constraints = []
@@ -259,7 +259,7 @@ class Constraint:
                 raise PybnfError('Constraint file is associated with model %s, but that model was not found' %
                                  self.base_model)
             if self.base_suffix not in sim_data_dict[self.base_model]:
-                raise PybnfError("Constraint file %s.con refers to suffix '%s' in model '%s', but that model does not "
+                raise PybnfError("Constraint file %s.prop refers to suffix '%s' in model '%s', but that model does not "
                                  "produce output with that suffix" %
                                  (self.base_suffix, self.base_suffix, self.base_model))
             if q not in sim_data_dict[self.base_model][self.base_suffix].cols:

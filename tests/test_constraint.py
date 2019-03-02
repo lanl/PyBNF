@@ -16,8 +16,8 @@ class TestConstraint:
         cls.line4 = 'A<16 always weight 6'
         cls.line5 = 'A<16 once weight 6'
 
-        cls.f1 = 'bngl_files/p1_5.con'
-        cls.f2 = 'bngl_files/con_test.con'
+        cls.f1 = 'bngl_files/p1_5.prop'
+        cls.f2 = 'bngl_files/con_test.prop'
         cls.dat2 = 'bngl_files/con_test.gdat'
 
         cls.model = 'a.bngl'

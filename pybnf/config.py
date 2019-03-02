@@ -394,7 +394,7 @@ class Configuration(object):
             self.models[base].add_mutant(mut_set)
             # Check that the exp files will have simulation outputs
             for ex in exps:
-                ename = self._file_prefix(ex, '(exp|con)')
+                ename = self._file_prefix(ex, '(exp|con|prop)')
                 base_suffix = re.match('.*(?=%s)' % name, ename)
                 suffix_choices = [x[1] for x in self.models[base].suffixes]
                 if len(suffix_choices) == 0:
@@ -488,7 +488,7 @@ class Configuration(object):
                         raise PybnfError('Experimental data file %s was not found.' % ef)
                     ed[m][self._file_prefix(ef)] = d
                 else:
-                    cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, 'con'))
+                    cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, '(con|prop)'))
                     try:
                         cs.load_constraint_file(ef, scale=self.config['constraint_scale'])
                     except FileNotFoundError:

@@ -81,7 +81,7 @@ def parse(s):
     mdmkey = pp.CaselessLiteral("model")
     nonetoken = pp.Suppress(pp.CaselessLiteral("none"))
     model_file = pp.Regex(".*?\.(bngl|xml)")
-    exp_file = pp.Regex(".*?\.(exp|con)")
+    exp_file = pp.Regex(".*?\.(exp|con|prop)")
     mdmgram = mdmkey - equals - model_file - colon - (pp.delimitedList(exp_file) ^ nonetoken) - comment
 
     # normalization mapping grammar
