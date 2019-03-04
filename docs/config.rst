@@ -97,12 +97,12 @@ If your are fitting with the chi-squared objective function, you also need to pr
 
 .. _con-file:
 
-Constraint files
-----------------
+Property (BPSL) files
+---------------------
 
-Constraint files are plain text files with the extension ".con" that contain inequality constraints to be imposed on the outputs of the model. Such constraints can be used to formalize qualitative data known about the biological system of interest. 
+Property files are plain text files with the extension ".prop" that define qualitative system properties. In PyBNF, properties are expressed as inequality constraints to be imposed on the outputs of the model. Such constraints can be used to formalize qualitative data known about the biological system of interest. The syntax for writing .prop files, described in this section, is called the  Biological Property Specification Language (BPSL).
 
-Each line of the .con file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight that controls the penalty to add to the objective function if the constraint is not satisfied. Specifically, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. 
+Each line of the .prop file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight that controls the penalty to add to the objective function if the constraint is not satisfied. Specifically, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. 
 
 The weight may be omitted and defaults to 1. The inequality and enforcement clauses are required
 
@@ -172,14 +172,14 @@ This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it 
 Constraints involving multiple models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, observables in constraint files are assumed to come from the model that the .con file is mapped to, and the simulation suffix matching the .con file's name (the same convention as for .exp files). However, it is possible to use "dot notation" to refer to observables in other simulations, as in the following example.
+By default, observables in property files are assumed to come from the model that the .prop file is mapped to, and the simulation suffix matching the .prop file's name (the same convention as for .exp files). However, it is possible to use "dot notation" to refer to observables in other simulations, as in the following example.
 
 fit.conf::
     
     model = model1.bngl : wt.exp
-    model = model2.bngl : mut.con
+    model = model2.bngl : mut.prop
 
-mut.con::
+mut.prop::
     
     A < wt.A always 
     

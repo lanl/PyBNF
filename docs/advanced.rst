@@ -6,7 +6,7 @@ Advanced Features
 Model Checking
 --------------
 
-PyBNF includes a model checking utility that evaluates how well an already parameterized model agrees with the given experimental data. To use this feature, set the ``fit_type`` config key to ``check``. PyBNF will run a single simulation on a single core, and output the objective function value to the terminal. For models containing constraints, PyBNF will also output the total number of constraints that are satisfied. Finally, for each input constraint (.con) file, PyBNF will output a text file named *<.con file name>*\ _constraint_eval.txt that itemizes the penalties to the constraints: each line of the text file gives the penalty associated with the corresponding line of the .con file. 
+PyBNF includes a model checking utility that evaluates how well an already parameterized model agrees with the given experimental data. To use this feature, set the ``fit_type`` config key to ``check``. PyBNF will run a single simulation on a single core, and output the objective function value to the terminal. For problems containing constraints (.prop files), PyBNF will also output the total number of constraints that are satisfied. Finally, for each input property (.prop) file, PyBNF will output a text file named *<.prop file name>*\ _constraint_eval.txt that itemizes the penalties to the constraints: each line of the text file gives the penalty associated with the corresponding line of the .prop file. 
 
 Note that for model checking, input models should *not* contain any free parameters tagged with ``__FREE``; all parameters should already be defined.
 
@@ -17,7 +17,7 @@ Bootstrapping is a method of uncertainty quantification in which fitting is repe
 
 After the initial fitting run completes, PyBNF will repeat the fitting run the specified number of times. For each of these bootstrap replicates, a different random sample of the experimental data is used. For an exp file with *n* data points, the random sample consists of *n* points sampled *with replacement*, such that some points are used multiple times and others are unused. 
 
-Note that the random sampling is performed at the level of exp files. For example, if you have data1.exp with 20 data points and data2.exp with 5 data points, each random sample will contain 20 points from data1.exp and 5 points from data2.exp. However, if data1.exp contains 10 points for observable A and 10 points for observable B, the random sample might contain an unequal number of A points and B points. Also note that constraint files are not sampled in bootstrapping; all bootstrap replicates enforce all constraints. 
+Note that the random sampling is performed at the level of exp files. For example, if you have data1.exp with 20 data points and data2.exp with 5 data points, each random sample will contain 20 points from data1.exp and 5 points from data2.exp. However, if data1.exp contains 10 points for observable A and 10 points for observable B, the random sample might contain an unequal number of A points and B points. Also note that property files are not sampled in bootstrapping; all bootstrap replicates enforce all constraints. 
 
 If the config key ``bootstrap_max_obj`` is set, then each bootstrap replicate must achieve the specified objective value. If a bootstrap replicate completes fitting with a larger objective value, then the replicate is discarded and a new replicate is run. 
 

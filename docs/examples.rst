@@ -5,7 +5,7 @@ Examples
 
 PyBNF contains 17 example fitting jobs in the examples/ directory. 
 
-Each example directory contains all files required to run the example: the config file, model file(s), and data / constraint file(s). The config file paths are specified such that the examples should be run from the root PyBNF directory, i.e., to run the "demo" example, cd into the examples/demo direcotry and run ``pybnf -c demo_bng.conf``. Results will be saved in a directory called "output" inside the examples/demo directory. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
+Each example directory contains all files required to run the example: the config file, model file(s), and data / property file(s). The config file paths are specified such that the examples should be run from the root PyBNF directory, i.e., to run the "demo" example, cd into the examples/demo direcotry and run ``pybnf -c demo_bng.conf``. Results will be saved in a directory called "output" inside the examples/demo directory. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
 
 The examples are described below. For an index of which examples demonstrate which PyBNF features, refer to `Index of examples by attribute`_
 
@@ -14,7 +14,7 @@ List of examples included in PyBNF
 
 constraint_advanced
 ^^^^^^^^^^^^^^^^^^^
-A demonstration of the features of the PyBNF constraint language. The model consists of simple fourth-order polynomial functions. The constraint files consist of constraints of various forms, showcasing the available capabilities for constraint handling in PyBNF. All constraints are consistent with a known ground truth for the model, so it should be possible to fit with a very low final objective value. 
+A demonstration of the features of PyBNF's Biological Property Specification Language (BPSL). The model consists of simple fourth-order polynomial functions. The property files contain constraints of various forms, showcasing the available capabilities for constraint handling in PyBNF. All properties are consistent with a known ground truth for the model, so it should be possible to fit with a very low final objective value. 
 
 constraint_demo
 ^^^^^^^^^^^^^^^
@@ -99,7 +99,7 @@ The model is run in NFSim, and can grow computationally expensive in parameter r
 
 yeast_cell_cycle
 ^^^^^^^^^^^^^^^^
-A detailed model for cell cycle control in yeast, described and fit in [Oguz2013]_ using a binary objective function. The model was refit in [Mitra2018]_ with an objective function that combined qualitative and quantitative data, as a demonstration of incorporating constraints into fitting. We provide config, data, and constraint files to reproduce the fit of [Mitra2018]_. 
+A detailed model for cell cycle control in yeast, described and fit in [Oguz2013]_ using a binary objective function. The model was refit in [Mitra2018]_ with an objective function that combined qualitative and quantitative data, as a demonstration of incorporating constraints into fitting. We provide config, data, and property files to reproduce the fit of [Mitra2018]_. 
 
 This is the most difficult example provided in PyBNF. Due to the huge size of parameter space (150 parameters), we require many iterations of fitting to expect a good result. Although each simulation is fast, each objective evaluation requires a total of 120 simulations of different mutant yeast strains, which take a total of ~ 30 seconds on the libRoadRunner/CVODE simulator. Replicating the fit under the same specifications used in [Mitra2018]_ is expected to take several weeks on a cluster or powerful workstation.
 
@@ -128,7 +128,7 @@ Examples by source
 Examples by data/model types
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
- * Constraint (.con) data files: `constraint_demo`_, `constraint_raf`_, `constraint_advanced`_, `yeast_cell_cycle`_
+ * Property (.prop) data files: `constraint_demo`_, `constraint_raf`_, `constraint_advanced`_, `yeast_cell_cycle`_
  * SBML models: `raf_sbml`_. `yeast_cell_cycle`_
  * Multiple data files: `degranulation`_
  * Multiple model files: `egfr_bleaching`_

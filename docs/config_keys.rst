@@ -12,14 +12,14 @@ fitting run.  Each line of the .conf file sets the value of a configuration key 
 Required Keys
 -------------
 **model**
-  Specifies the mapping between model files (.bngl or .xml) and data files (.exp or .con). Model paths and files are 
-  followed by a ':' and then a comma-delimited list of experimental data files or constraint files corresponding to the 
+  Specifies the mapping between model files (.bngl or .xml) and data files (.exp or .prop). Model paths and files are 
+  followed by a ':' and then a comma-delimited list of experimental data files or property files corresponding to the 
   model files. If no experimental files are associated with a model write ``none`` instead of a file path.  
 
   Examples:
   
     * ``model = path/to/model1.bngl : path/to/data1.exp``
-    * ``model = path/to/model2.xml : path/to/data2.con, path/to/data2.exp``
+    * ``model = path/to/model2.xml : path/to/data2.prop, path/to/data2.exp``
     * ``model = path/to/model3.xml : none``
 
 **fit_type**
@@ -369,7 +369,7 @@ Algorithm Options
     * ``bootstrap_max_obj = 1.5``
     
 **constraint_scale**  
-  Scale all weights in all constraint files by this multiplicative factor. For convenience only: The same thing could be achieved by editing constraint files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. 
+  Scale all weights in all property files by this multiplicative factor. For convenience only: The same thing could be achieved by editing property files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. 
   
   Default: 1 (no scaling)
   
