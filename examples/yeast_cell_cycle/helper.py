@@ -29,7 +29,7 @@ def gen_config(filename, outmodel, outact):
     outa.close()
     for phen in next_index:
         for i in range(next_index[phen]):
-            subprocess.run(['cp', 'constraints/%s.con'%phen, 'constraints/r%s%s.con' % (phen, i)])
+            subprocess.run(['cp', 'constraints/%s.prop'%phen, 'constraints/r%s%s.prop' % (phen, i)])
                 
 if __name__ == '__main__':
-    gen_config('tyson13-skeleton.con','mutmodels.txt','mutactions.txt')
+    gen_config('tyson13-skeleton.prop','mutmodels.txt','mutactions.txt')
