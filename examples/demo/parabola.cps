@@ -64,16 +64,16 @@
 
         </MiriamAnnotation>
         <Expression>
-          &lt;CN=Root,Model=Parabola,Vector=Values[v1__FREE__],Reference=Value>*&lt;CN=Root,Model=Parabola,Vector=Compartments[compartment],Vector=Metabolites[x],Reference=Concentration>^2+&lt;CN=Root,Model=Parabola,Vector=Values[v2__FREE__],Reference=Value>*&lt;CN=Root,Model=Parabola,Vector=Compartments[compartment],Vector=Metabolites[x],Reference=Concentration>+&lt;CN=Root,Model=Parabola,Vector=Values[v3__FREE__],Reference=Value>
+          &lt;CN=Root,Model=Parabola,Vector=Values[v1__FREE],Reference=Value>*&lt;CN=Root,Model=Parabola,Vector=Compartments[compartment],Vector=Metabolites[x],Reference=Concentration>^2+&lt;CN=Root,Model=Parabola,Vector=Values[v2__FREE__],Reference=Value>*&lt;CN=Root,Model=Parabola,Vector=Compartments[compartment],Vector=Metabolites[x],Reference=Concentration>+&lt;CN=Root,Model=Parabola,Vector=Values[v3__FREE__],Reference=Value>
         </Expression>
       </Metabolite>
     </ListOfMetabolites>
     <ListOfModelValues>
-      <ModelValue key="ModelValue_0" name="v1__FREE__" simulationType="fixed">
+      <ModelValue key="ModelValue_0" name="v1__FREE" simulationType="fixed">
       </ModelValue>
-      <ModelValue key="ModelValue_1" name="v2__FREE__" simulationType="fixed">
+      <ModelValue key="ModelValue_1" name="v2__FREE" simulationType="fixed">
       </ModelValue>
-      <ModelValue key="ModelValue_2" name="v3__FREE__" simulationType="fixed">
+      <ModelValue key="ModelValue_2" name="v3__FREE" simulationType="fixed">
       </ModelValue>
     </ListOfModelValues>
     <ListOfReactions>
@@ -120,9 +120,9 @@
           <ModelParameter cn="CN=Root,Model=Parabola,Vector=Compartments[compartment],Vector=Metabolites[y]" value="0" type="Species" simulationType="assignment"/>
         </ModelParameterGroup>
         <ModelParameterGroup cn="String=Initial Global Quantities" type="Group">
-          <ModelParameter cn="CN=Root,Model=Parabola,Vector=Values[v1__FREE__]" value="0" type="ModelValue" simulationType="fixed"/>
-          <ModelParameter cn="CN=Root,Model=Parabola,Vector=Values[v2__FREE__]" value="0" type="ModelValue" simulationType="fixed"/>
-          <ModelParameter cn="CN=Root,Model=Parabola,Vector=Values[v3__FREE__]" value="0" type="ModelValue" simulationType="fixed"/>
+          <ModelParameter cn="CN=Root,Model=Parabola,Vector=Values[v1__FREE]" value="0" type="ModelValue" simulationType="fixed"/>
+          <ModelParameter cn="CN=Root,Model=Parabola,Vector=Values[v2__FREE]" value="0" type="ModelValue" simulationType="fixed"/>
+          <ModelParameter cn="CN=Root,Model=Parabola,Vector=Values[v3__FREE]" value="0" type="ModelValue" simulationType="fixed"/>
         </ModelParameterGroup>
         <ModelParameterGroup cn="String=Kinetic Parameters" type="Group">
           <ModelParameterGroup cn="CN=Root,Model=Parabola,Vector=Reactions[counter]" type="Reaction">
