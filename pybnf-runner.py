@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 
 
 """pybnf.pybnf-runner: Convenience script for running PyBNF from the source tree"""
