@@ -29,7 +29,7 @@ Required Keys
     * ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`
     * ``ss`` - :ref:`alg-ss`
     * ``pso`` - :ref:`Particle Swarm Optimization <alg-pso>`
-    * ``bmc`` - :ref:`Bayesian Markov chain Monte Carlo <alg-mcmc>`
+    * ``mh`` - :ref:`Metropolis-Hastings MCMC <alg-mcmc>`
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
     * ``sa`` - :ref:`Simulated Annealing <alg-sa>`
     * ``pt`` - :ref:`Parallel tempering <alg-pt>`
@@ -777,10 +777,10 @@ A variant of particle swarm that adaptively changes the ``particle_weight`` over
   
     * ``adaptive_rel_tol = 0.01``
 
-:ref:`Bayesian Algorithms (bmc, pt, sa) <alg-mcmc>`
+:ref:`Bayesian Algorithms (mh, pt, sa) <alg-mcmc>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`MCMC <alg-mcmc>` (``fit_type = bmc``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), and :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``). These algorithms have many configuration keys in common, as described below. 
+In the family of Bayesian algoritms with Metropolis sampling, PyBNF includes :ref:`Metropolis-Hastings MCMC <alg-mcmc>` (``fit_type = mh``), :ref:`Parallel Tempering <alg-pt>` (``fit_type = pt``), and :ref:`Simulated Annealing <alg-sa>` (``fit_type = sa``). These algorithms have many configuration keys in common, as described below. 
 
 
 For all Bayesian algorithms
@@ -872,7 +872,7 @@ For Simulated Annealing
   
     * ``beta_max = 1.5``
     
-**cooling = float**
+**cooling**
   Each time a move to a higher energy state is accepted, increase beta (1/temperature) by this value. 
   
   Default: 0.01

@@ -15,7 +15,7 @@ Summary of Available Algorithms
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Particle Swarm`_           | Population-based | Asynchronous    | Fitting models with high variability in runtime                           | 
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `Markov Chain Monte Carlo`_ | Metropolis       | Independent     | Finding probability distributions of parameters                           |
+| `Metropolis-Hastings MCMC`_ | Metropolis       | Independent     | Finding probability distributions of parameters                           |
 |                             | sampling         | Markov Chains   |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Simulated Annealing`_      | Metropolis       | Independent     | Problem-specific applications                                             |
@@ -183,21 +183,21 @@ Particle swarm optimization tends to be the best-performing algorithm for proble
 
 .. _alg-mcmc:
 
-Markov Chain Monte Carlo
+Metropolis-Hastings MCMC
 ------------------------
 
 Algorithm
 ^^^^^^^^^
-Markov chain Monte Carlo is a Bayesian method in which points in parameter space are sampled with a frequency
+Metropolis-Hastings Markov chain Monte Carlo (MCMC) is a Bayesian method in which points in parameter space are sampled with a frequency
 proportional to the probability that the parameter set is correct given the data. The result is a probability
 distribution over parameter space that expresses the likelihood of each possible parameter set. With this algorithm, we
 obtain not just a point estimate of the best fit, but a means to quantify the uncertainty in each parameter value.
 
-When running Markov chain Monte Carlo, PyBNF outputs additional files containing this probability distribution information. The files in ``Results/Histograms/`` give histograms of the marginal probability distributions for each free parameter. The files ``credible##.txt`` (e.g., ``credible95.txt``) use the marginal histogram for each parameter to calculate a *credible interval* - an interval in which the parameter value is expected to fall with the specified probability (e.g. 95%).  Finally, ``samples.txt`` contains all parameter sets sampled over the course of the fitting run, allowing the user to perform further custom analysis on the sampled probability distribution. 
+When running MCMC, PyBNF outputs additional files containing this probability distribution information. The files in ``Results/Histograms/`` give histograms of the marginal probability distributions for each free parameter. The files ``credible##.txt`` (e.g., ``credible95.txt``) use the marginal histogram for each parameter to calculate a *credible interval* - an interval in which the parameter value is expected to fall with the specified probability (e.g. 95%).  Finally, ``samples.txt`` contains all parameter sets sampled over the course of the fitting run, allowing the user to perform further custom analysis on the sampled probability distribution. 
 
 Parallelization
 ^^^^^^^^^^^^^^^
-Markov chain Monte Carlo is not an inherently parallel algorithm. In the Markov chain, we need to know the current state before proposing the next one. However, PyBNF supports running several independent Markov chains by specifying the number of chains with the ``population_size`` key. All samples from all parallel chains are pooled to obtain a better estimate of the final posterior probability distribution. 
+Metropolis-Hastings is not an inherently parallel algorithm. In the Markov chain, we need to know the current state before proposing the next one. However, PyBNF supports running several independent Markov chains by specifying the number of chains with the ``population_size`` key. All samples from all parallel chains are pooled to obtain a better estimate of the final posterior probability distribution. 
 
 Note that each chain must independently go through the burn-in period, but after the burn-in, your rate of sampling will be improved proportional to the number of parallel chains in your run. 
 
@@ -212,7 +212,7 @@ Moves are accepted according to the Metropolis criterion. If a move increases th
 
 Applications
 ^^^^^^^^^^^^
-Markov chain Monte Carlo is the simplest method available in PyBNF to generate a probability distribution in parameter space. 
+Metropolis-Hastings is the simplest method available in PyBNF to generate a probability distribution in parameter space. 
 
 .. _alg-sa:
 
@@ -244,9 +244,9 @@ Parallel Tempering
 
 Algorithm
 ^^^^^^^^^
-Parallel tempering is a more sophisticated version of Markov chain Monte Carlo. We run several Markov chains in parallel at different temperatures. At specified iterations during the run, there is an opportunity to exchange replicates between the different temperatures. Only the samples recorded at the lowest temperature count towards our final probability distribution, but the presence of the higher temperature replicates makes it easier to escape local minima and explore the full parameter space. 
+Parallel tempering is a more sophisticated version of Markov chain Monte Carlo (MCMC). We run several Markov chains in parallel at different temperatures. At specified iterations during the run, there is an opportunity to exchange replicates between the different temperatures. Only the samples recorded at the lowest temperature count towards our final probability distribution, but the presence of the higher temperature replicates makes it easier to escape local minima and explore the full parameter space. 
 
-When running parallel tempering, PyBNF outputs files containing probability distribution information, the same as with Markov chain Monte Carlo.
+When running parallel tempering, PyBNF outputs files containing probability distribution information, the same as with Metropolis-Hastings MCMC.
 
 Parallelization
 ^^^^^^^^^^^^^^^
@@ -254,7 +254,7 @@ The replicates are run in parallel. Synchronization is required at every iterati
 
 Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
-The PyBNF implementation is based on the description in [Gupta2018a]_. Markov chains are run by the same method as in Markov chain Monte Carlo, except that the value of :math:`\beta` in the acceptance probability :math:`e^{- \beta \Delta F}` varies between replicas. 
+The PyBNF implementation is based on the description in [Gupta2018a]_. Markov chains are run by the same method as in Metropolis-Hastings, except that the value of :math:`\beta` in the acceptance probability :math:`e^{- \beta \Delta F}` varies between replicas. 
 
 Every ``exchange_every`` iterations, we attempt replica exchange. We propose moves that consist of swapping two replicas between adjacent temperatures. Moves are accepted with probability :math:`\min (1, e^{\Delta \beta \Delta F})` where :math:`\Delta \beta` is the change in :math:`\beta` = 1/Temperature, and :math:`\Delta F` is the difference in the objective values of the replicas. In other words, moves that transfer a lower-objective replica to a lower temperature (higher :math:`\beta`) are always accepted, and those that transfer a higher-objective replica to a lower temperature are accepted with a Metropolis-like probability based on the extent of objective difference. 
 
@@ -263,9 +263,9 @@ The list of :math:`\beta`\ s used is customizable with the ``beta`` or ``beta_ra
 
 Applications
 ^^^^^^^^^^^^
-Like ordinary Markov chain Monte Carlo, the goal of parallel tempering is to provide a distribution of possible parameter values rather than a single point estimate. 
+Like conventional Metropolis-Hastings MCMC, the goal of parallel tempering is to provide a distribution of possible parameter values rather than a single point estimate. 
 
-Compared to ordinary Markov chain Monte Carlo, parallel tempering offers a trade-off: Parallel tempering generates fewer samples per unit CPU time (because most of the processors run higher temperature simulations that don't sample the distribution of interest), but traverses parameter space more efficiently, making each sample more valuable. The decision between parallel tempering and Markov chain Monte Carlo therefore depends on the nature of your parameter space: parallel tempering is expected to perform better when the space is complex, with many local minima that make it challenging to explore. 
+Compared to Metropolis-Hastings MCMC, parallel tempering offers a trade-off: Parallel tempering generates fewer samples per unit CPU time (because most of the processors run higher temperature simulations that don't sample the distribution of interest), but traverses parameter space more efficiently, making each sample more valuable. The decision between parallel tempering and Metropolis-Hastings therefore depends on the nature of your parameter space: parallel tempering is expected to perform better when the space is complex, with many local minima that make it challenging to explore. 
 
 .. _alg-dream:
 

@@ -197,8 +197,8 @@ def main():
                 alg = algs.DifferentialEvolution(config)
             elif config.config['fit_type'] == 'ss':
                 alg = algs.ScatterSearch(config)
-            elif config.config['fit_type'] == 'bmc' or config.config['fit_type'] == 'pt':
-                # Note: bmc vs pt difference is handled in Config by setting or not setting the exchange_every key.
+            elif config.config['fit_type'] == 'mh' or config.config['fit_type'] == 'pt':
+                # Note: mh vs pt difference is handled in Config by setting or not setting the exchange_every key.
                 alg = algs.BasicBayesMCMCAlgorithm(config)
             elif config.config['fit_type'] == 'sa':
                 alg = algs.BasicBayesMCMCAlgorithm(config, sa=True)
@@ -211,7 +211,7 @@ def main():
             elif config.config['fit_type'] == 'check':
                 alg = algs.ModelCheck(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim, check' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, check' % config.config['fit_type'])
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:

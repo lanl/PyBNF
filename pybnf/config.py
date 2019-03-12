@@ -106,6 +106,8 @@ class Configuration(object):
         if 'fit_type' not in d:
             d['fit_type'] = 'de'
             print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
+        if d['fit_type'] == 'bmc':
+            d['fit_type'] = 'mh'  # 'bmc' option was renamed to 'mh'. Preserve backwards compatibility.
         if not self._req_user_params() <= d.keys() and d['fit_type'] != 'check':
             unspecified_keys = []
             for k in self._req_user_params():
@@ -118,7 +120,7 @@ class Configuration(object):
             d = self.check_unused_keys_model_checking(d)
         elif verbosity >= 1:
             self.check_unused_keys(d)
-        if d['fit_type'] in ('bmc', 'pt', 'sa', 'dream'):
+        if d['fit_type'] in ('mh', 'pt', 'sa', 'dream'):
             self.postprocess_mcmc_keys(d)
         self.config = self.default_config()
         for k, v in d.items():
@@ -204,7 +206,7 @@ class Configuration(object):
                         'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
                                 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol', 'v_stop'},
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
-                        'bmc': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
+                        'mh': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
                                 'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling',
                                 'crossover_number', 'zeta', 'lambda', 'gamma_prob'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
@@ -214,7 +216,7 @@ class Configuration(object):
         ignored_params = set()
         thisalg = conf_dict['fit_type']
         if thisalg in ('pt', 'sa', 'dream'):
-            thisalg = 'bmc'
+            thisalg = 'mh'
         for alg in alg_specific:
             if (thisalg != alg
                and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)
@@ -250,7 +252,7 @@ class Configuration(object):
     @staticmethod
     def postprocess_mcmc_keys(conf_dict):
         """
-        Algorithms 'bmc', 'pt', 'dream', and 'sa' have similar but non-identical valid config keys. This helper method
+        Algorithms 'mh', 'pt', 'dream', and 'sa' have similar but non-identical valid config keys. This helper method
         does post-processing of config keys for these 3 algorithms
 
         :param conf_dict:
@@ -276,7 +278,7 @@ class Configuration(object):
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
-        if conf_dict['fit_type'] in ['bmc', 'sa', 'pt']:
+        if conf_dict['fit_type'] in ['mh', 'sa', 'pt']:
             for k in ['crossover_numer', 'zeta', 'lambda', 'gamma_prob']:
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
