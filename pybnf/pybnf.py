@@ -362,7 +362,8 @@ def main():
         if cluster:
             try:
                 cluster.teardown()
-                time.sleep(10)  # wait for teardown before continuing
+                if not cluster.local:
+                    time.sleep(10)  # wait for teardown before continuing
             except Exception:
                 logging.exception('Failed to tear down cluster')
         else:

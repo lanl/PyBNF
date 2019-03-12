@@ -66,18 +66,22 @@ class Cluster:
             # Scheduler node read in from scheduler file stored on shared file system
             logger.info('Creating a client using the scheduler file')
             self.client = Client(scheduler_file=config.config['scheduler_file'])
+            self.local = False
         elif scheduler_node:
             logger.info('Creating a client by connecting to the scheduler node %s:8786' % scheduler_node)
             self.client = Client('%s:8786' % scheduler_node)
+            self.local = False
         elif config.config['parallel_count'] is not None:
             logger.info('Creating a local client manually set to %i workers' % config.config['parallel_count'])
             lc = LocalCluster(n_workers=config.config['parallel_count'], threads_per_worker=1)
             self.client = Client(lc)
             self.client.run(init_logging, log_prefix, debug, log_level_name)
+            self.local = True
         else:
             logger.info('Creating a local client with default parallel count')
             self.client = Client()
             self.client.run(init_logging, log_prefix, debug, log_level_name)
+            self.local = True
 
         # Required because with distributed v1.22.0, logger breaks after calling Client()
         reinit_logging(log_prefix, debug, log_level_name)
