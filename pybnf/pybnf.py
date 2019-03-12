@@ -49,9 +49,13 @@ def main():
                         help='automatically resume the previously stopped fitting run; '
                              'if a number is passed with this flag, add that many iterations to the fitting run.')
     parser.add_argument('-d', '--debug_logging', action='store_true',
-                        help='outputs debugging log (file could be very large)')
+                        help='outputs a separate debugging log (file could be very large)')
     parser.add_argument('-l', '--log_prefix', action='store',
                         help='specifies a custom prefix for the log files (will overwrite if files already exist')
+    parser.add_argument('-L', '--log_level', type=str.lower, default='i',
+                        choices=['debug', 'info', 'warning', 'error', 'critical', 'none', 'd', 'i', 'w', 'e', 'c', 'n'],
+                        help='set the level of output to the log file. Options in decreasing order of verbosity are: '
+                             'debug, info, warning, error, critical, none.')
     cmdline_args = parser.parse_args()
 
     if cmdline_args.log_prefix:
@@ -66,7 +70,7 @@ def main():
     if os.path.isfile('%s.log' % log_prefix):
         os.remove('%s.log' % log_prefix)
 
-    init_logging(log_prefix, debug)
+    init_logging(log_prefix, debug, cmdline_args.log_level)
     logger = logging.getLogger(__name__)
 
     print0("PyBNF v%s" % __version__)
@@ -217,7 +221,7 @@ def main():
 
         if config.config['fit_type'] != 'check':
             # Set up cluster
-            cluster = Cluster(config, log_prefix, debug)
+            cluster = Cluster(config, log_prefix, debug, cmdline_args.log_level)
             # Run the algorithm!
             logger.debug('Algorithm initialization')
             alg.run(cluster.client, resume=pending, debug=debug)

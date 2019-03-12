@@ -25,7 +25,7 @@ class Cluster:
     The client is accessible
     """
 
-    def __init__(self, config, log_prefix, debug):
+    def __init__(self, config, log_prefix, debug, log_level_name):
         """
         Create the dask client using the given configuration
 
@@ -35,6 +35,8 @@ class Cluster:
         :type log_prefix: str
         :param debug: Whether debug mode is active
         :type debug: bool
+        :param log_level_name: The logging level for the application
+        :type log_level_name: str
         """
         logger.info('Initializing the Cluster')
 
@@ -71,14 +73,14 @@ class Cluster:
             logger.info('Creating a local client manually set to %i workers' % config.config['parallel_count'])
             lc = LocalCluster(n_workers=config.config['parallel_count'], threads_per_worker=1)
             self.client = Client(lc)
-            self.client.run(init_logging, log_prefix, debug)
+            self.client.run(init_logging, log_prefix, debug, log_level_name)
         else:
             logger.info('Creating a local client with default parallel count')
             self.client = Client()
-            self.client.run(init_logging, log_prefix, debug)
+            self.client.run(init_logging, log_prefix, debug, log_level_name)
 
         # Required because with distributed v1.22.0, logger breaks after calling Client()
-        reinit_logging(log_prefix, debug)
+        reinit_logging(log_prefix, debug, log_level_name)
 
     @staticmethod
     def read_node_names(config):

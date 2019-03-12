@@ -21,11 +21,33 @@ import roadrunner
 logger = logging.getLogger(__name__)
 
 
-def init_logging(file_prefix, debug=False):
+def init_logging(file_prefix, debug=False, log_level_name='info'):
+
+    file_name = '%s.log' % file_prefix
+
+    # Parse log level
+    if log_level_name == 'debug' or log_level_name == 'd':
+        log_level = logging.DEBUG
+    elif log_level_name == 'info' or log_level_name == 'i':
+        log_level = logging.INFO
+    elif log_level_name == 'warning' or log_level_name == 'w':
+        log_level = logging.WARNING
+    elif log_level_name == 'error' or log_level_name == 'e':
+        log_level = logging.ERROR
+    elif log_level_name == 'critical' or log_level_name == 'c':
+        log_level = logging.CRITICAL
+    elif log_level_name == 'none' or log_level_name == 'n':
+        log_level = logging.CRITICAL
+        file_name = os.devnull
+    else:
+        # Should not get here because ArgumentParser catches invalid input
+        raise ValueError('Invalid --log_level setting "%s"' % log_level_name)
+
+
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 
-    fh = logging.FileHandler('%s.log' % file_prefix, mode='a')
-    fh.setLevel(logging.INFO)
+    fh = logging.FileHandler(file_name, mode='a')
+    fh.setLevel(log_level)
     fh.setFormatter(fmt)
 
     root = logging.getLogger()
@@ -34,7 +56,7 @@ def init_logging(file_prefix, debug=False):
 
     dlog = logging.getLogger('distributed')
     dlog.handlers[:] = []  # remove any existing handlers
-    dlog.setLevel(logging.WARNING)
+    dlog.setLevel(max(logging.WARNING, log_level))
     dlog.addHandler(fh)
 
     tlog = logging.getLogger('tornado')
@@ -44,7 +66,7 @@ def init_logging(file_prefix, debug=False):
 
     talog = logging.getLogger('tornado.application')
     talog.handlers[:] = []
-    talog.setLevel(logging.ERROR)
+    talog.setLevel(max(logging.ERROR, log_level))
     talog.addHandler(fh)
 
     asynclog = logging.getLogger('asyncio')
@@ -60,14 +82,14 @@ def init_logging(file_prefix, debug=False):
         tlog.addHandler(dfh)
         talog.addHandler(dfh)
 
-def reinit_logging(file_prefix, debug=False):
+def reinit_logging(file_prefix, debug=False, log_level_name='info'):
     """
     Shut down logging, then restart it.
     Used when some module (e.g. distributed v1.22.0) breaks the logging.
     """
     if logging.root:
         del logging.root.handlers[:]
-    init_logging(file_prefix, debug)
+    init_logging(file_prefix, debug, log_level_name)
 
 class Configuration(object):
     def __init__(self, d=dict()):
