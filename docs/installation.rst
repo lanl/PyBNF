@@ -10,32 +10,37 @@ PyBNF can be installed on any recent Linux or macOS operating system. Windows is
 Python
 ------
 
-PyBNF requires an installation of Python version 3.5 or higher. This should come built-in with most new Linux and Mac
-operating systems.  However, we recommend installing the `Anaconda`_ Python distribution for Python v3.5 or higher.
-Installing Anaconda facilitates managing and installing Python packages as well as maintaining multiple Python
-environments. Instructions for installing on various platforms can be found on the `Anaconda`_ website.
+PyBNF requires an installation of Python version 3.5 or higher. This comes built-in on many new Linux and Mac
+operating systems. To check if you have Python 3, run the command ``python3``. This will start Python and print
+the version number, or will give an error if you don't have Python 3.
+
+Also confirm that your Python 3 has the ``pip`` package manager, which is used to install PyBNF. Run the command ``python3 -m pip``. This will give a help message if you have pip, or an error if not. 
+
+If you are missing python3 or pip, an easy way to get them is by installing the `Anaconda`_ Python distribution for Python v3.5 or higher.
+Instructions for installing on various platforms can be found on the `Anaconda`_ website.
 
 PyBNF
 -----
-The ``pip`` package manager is included with `Anaconda`_ and should be used to install PyBNF from the command line.
-
-It is also possible to install ``pip`` alone without Anaconda. If you choose to do this, be sure your ``pip`` is associated with Python 3 (on some systems, this command is ``pip3``). 
 
 Installing from PyPI
 ^^^^^^^^^^^^^^^^^^^^
 
 Simply type the following in a terminal:
 
-    :command:`pip install pybnf`
+    :command:`python3 -m pip install pybnf`
 
-The above command will install the most recent version of PyBNF released on the Python Package Index, along with all required dependencies. 
+The above command will use your current version of Python 3 to install the most recent version of PyBNF released on the Python Package Index, along with all required dependencies. 
+
+Depending on your Python configuration, the above command may require root access and install PyBNF for all users on the computer. If you don't want to do this, you may add the flag ``--user`` to the end of the command, to install without root access for only the current user. 
+
+Advanced Python users may consider installing PyBNF in a `virtualenv`_ to avoid conflicts between PyBNF's dependencies and other uses of Python on the computer. 
 
 Installing from source
 ^^^^^^^^^^^^^^^^^^^^^^
 To use bleeding edge PyBNF, the source code may be found on GitHub at https://github.com/lanl/PyBNF .  To use,
 simply download or clone the repository and run the following command in the repository's root directory:
 
-    :command:`pip install -e .`
+    :command:`python3 -m pip install -e .`
 
 This also allows developers to modify the source code while still having access to the commmand line functionality
 anywhere in the filesystem.
@@ -93,3 +98,4 @@ SBML format.
 .. _SBML: http://sbml.org/
 .. _libroadrunner: http://libroadrunner.org/
 .. _COPASI: http://copasi.org/
+.. _virtualenv: https://packaging.python.org/guides/installing-using-pip-and-virtualenv/
