@@ -207,7 +207,7 @@ def main():
             elif config.config['fit_type'] == 'check':
                 alg = algs.ModelCheck(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, bmc, pt, sa, sim, check' % config.config['fit_type'])
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
@@ -215,12 +215,16 @@ def main():
         if cmdline_args.scheduler_file:
             config.config['scheduler_file'] = cmdline_args.scheduler_file
 
-        # Set up cluster
-        cluster = Cluster(config, log_prefix, debug)
-
-        # Run the algorithm!
-        logger.debug('Algorithm initialization')
-        alg.run(cluster.client, resume=pending, debug=debug)
+        if config.config['fit_type'] != 'check':
+            # Set up cluster
+            cluster = Cluster(config, log_prefix, debug)
+            # Run the algorithm!
+            logger.debug('Algorithm initialization')
+            alg.run(cluster.client, resume=pending, debug=debug)
+        else:
+            # Run model checking
+            logger.debug('Model checking initialization')
+            alg.run_check(debug=debug)
 
         if config.config['refine'] == 1:
             logger.debug('Refinement requested for best fit parameter set')

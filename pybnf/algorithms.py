@@ -2782,7 +2782,7 @@ class ModelCheck(object):
     """
     An algorithm that just checks the fit quality for a job with no free parameters.
 
-    Does not subclass Algorithm, but contains the same function signatures for __init__ and run
+    Does not subclass Algorithm. To run, instead call run_check() with no Cluster.
     """
 
     def __init__(self, config):
@@ -2808,7 +2808,7 @@ class ModelCheck(object):
         # Store a list of all Model objects.
         self.model_list = copy.deepcopy(list(self.config.models.values()))
 
-    def run(self, log_prefix, scheduler_node=None, resume=None, debug=False, reuse_client=None):
+    def run_check(self, debug=False):
         """Main loop for executing the algorithm"""
 
         print1('Running model checking on the given model(s)')
