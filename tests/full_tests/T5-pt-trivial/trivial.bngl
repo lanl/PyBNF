@@ -1,0 +1,54 @@
+# A trivial model file for testing MCMC distributions. 
+# Ignores parameters a and b; outputs the value of parameter c.
+
+# And has one pointless reaction defined just to be sure BNG is acting normally
+
+begin model
+
+
+begin parameters
+
+a a__FREE
+b b__FREE
+c c__FREE
+
+end parameters
+
+begin molecule types
+
+Q()
+R()
+
+end molecule types
+
+begin seed species
+Q() 100
+end seed species
+
+begin observables
+
+Molecules Q Q()
+
+end observables
+
+begin functions
+
+output()=c
+
+end functions
+
+begin reaction rules
+Q() -> R() 1
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>1,\
+          suffix=>"data",print_functions=>1})
+
+end actions

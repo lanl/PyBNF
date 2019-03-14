@@ -1,0 +1,14 @@
+
+# A bunch of constraints using as many features as possible, which are all true (or unenforced) for the ground truth values that I picked. 
+y1<0 once weight 40
+y2>y1 at 10 weight 5
+y2<77 at y1=400 weight 40
+y1>400 once weight 10
+y2>700 at y1=-60 weight 40
+y2<y1 between y2=-25,y2=0 weight 100
+y2>y1 at time=7 weight 1 altpenalty mut.y2<mut.y1
+y2>26.9 at 0 weight 20 min 20
+y1<=mut.y1 always weight 50
+mut.y2>y1 between 0,mut.y1=170 weight 35
+mut.y2>0 at y1=0 everytime weight 7
+y1>408 at 5 weight 5 altpenalty y2>y1

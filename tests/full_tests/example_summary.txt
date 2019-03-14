@@ -1,0 +1,59 @@
+
+Test T1:
+Completed
+Best objective was 11179.524664077595 with param set iter199p0h9
+2019-03-14 08:52:24,021 pybnf.pybnf     INFO     MainProcess Total fitting time: 0:10:41
+Log has 27087 lines
+Stdout has 606 lines
+Stderr has 0 lines
+
+Test T2:
+Completed
+Best objective was 0.13538940113286135 with param set gen19ind31
+2019-03-14 08:52:46,728 pybnf.pybnf     INFO     MainProcess Total fitting time: 0:00:20
+Log has 1672 lines
+Stdout has 10 lines
+Stderr has 9 lines
+After refinement, best objective was 0.07058283185374659 with param set simplex_iter27_pt0-2
+
+Test T3:
+Completed
+Best objective was 10.858109591920112 with param set gen99ind14
+2019-03-14 08:59:47,239 pybnf.pybnf     INFO     MainProcess Total fitting time: 0:06:59
+Log has 29731 lines
+Stdout has 51 lines
+Stderr has 0 lines
+Bootstrap 0 best objective was 11.65940680168977 with param set gen98ind11
+Bootstrap 1 best objective was 45.29877122477026 with param set gen98ind67
+Bootstrap 2 best objective was 11.966785029180286 with param set gen99ind27
+
+Test T4:
+Completed
+Best objective was 0.010366317709564265 with param set iter40p32
+2019-03-14 09:01:08,578 pybnf.pybnf     INFO     MainProcess Total fitting time: 0:01:19
+Log has 869 lines
+Stdout has 45 lines
+Stderr has 0 lines
+
+Test T5:
+Completed
+Best objective was 9.701079093910022e-09 with param set iter142run39
+2019-03-14 09:09:43,018 pybnf.pybnf     INFO     MainProcess Total fitting time: 0:08:33
+Log has 38004 lines
+Stdout has 54 lines
+Stderr has 0 lines
+68% credible for a = [9.028312969940657, 10.937985216661222] (ground truth [9, 11])
+68% credible for b = [6.868740285508311, 13.338755239298042] (ground truth [6.6, 13.4])
+68% credible for c = [9.115018290801126, 11.07347921890744] (ground truth [9, 11])
+95% credible for a = [8.005143922146884, 11.713520592776254] (ground truth [8, 12])
+95% credible for b = [5.262437412067499, 14.832193932349583] (ground truth [5.25, 14.75])
+95% credible for c = [8.2504052464098, 11.94037074419792] (ground truth [8, 12])
+
+Test T6:
+Completed
+2019-03-14 09:09:45,455 pybnf.pybnf     INFO     MainProcess Total fitting time: 0:00:00
+Log has 11 lines
+Stdout has 6 lines
+Stderr has 0 lines
+Objective value is 0.0
+Satisfied 17 out of 17 constraints

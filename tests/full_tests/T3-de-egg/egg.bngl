@@ -1,0 +1,43 @@
+begin model
+  begin parameters
+    a0 a0__FREE
+    a1 a1__FREE
+    a2 a2__FREE
+    b1 b1__FREE
+    b2 b2__FREE
+    c0 c0__FREE
+    c1 c1__FREE
+    c2 c2__FREE
+    d1 d1__FREE
+    d2 d2__FREE
+    pi=2*asin(1)
+    period 180
+    m=2*pi/period
+  end parameters
+  begin molecule types
+    t
+  end molecule types
+  begin seed species
+    t 0
+  end seed species
+  begin observables
+    Species t t 
+  end observables
+  begin functions
+    X()=a0\
+      +a1*cos(m*1*t)+b1*sin(m*1*t)\
+      +a2*cos(m*2*t)+b2*sin(m*2*t)
+    Y()=c0\
+      +c1*cos(m*1*t)+d1*sin(m*1*t)\
+      +c2*cos(m*2*t)+d2*sin(m*2*t)            
+  end functions
+  begin reaction rules
+    0->t 1
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({suffix=>"egg",method=>"ode",\
+    t_start=>0,t_end=>180,n_steps=>180,\
+    print_functions=>1})
+end actions

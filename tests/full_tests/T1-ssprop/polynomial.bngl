@@ -1,0 +1,50 @@
+# Implementation of the parabola from the Mitra constrained optimization manuscript Fig. 1
+
+begin model
+
+  begin parameters
+
+# Original values used 
+# (a,b,c,d,e,f,g) = 0.3, 1, 27, 70, 21, 5, 0.8
+
+    a a__FREE
+    b b__FREE
+    c c__FREE
+    d d__FREE
+    e e__FREE
+    f f__FREE
+    g g__FREE
+
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    counter() 0
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+
+    y1()=a*x^4-b*x^3+c*x^2-d*x+e
+    y2()=g*x^4-f*x^3+e*x^2-d*x+c
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>1000,suffix=>"wt",print_functions=>1})
+# "Mutate" a parameter, and simulate a second time
+setParameter("d",27)
+resetConcentrations()
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>1000,suffix=>"mut",print_functions=>1})
