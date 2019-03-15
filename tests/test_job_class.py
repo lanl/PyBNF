@@ -37,7 +37,7 @@ class TestJob(object):
 
     @classmethod
     def teardown_class(cls):
-        rmtree('bnf_out')
+        rmtree('pybnf_output')
         rmtree('sim_net')
         rmtree('sim_x')
         rmtree('sim_1')

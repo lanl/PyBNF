@@ -108,6 +108,8 @@ class Configuration(object):
             print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
         if d['fit_type'] == 'bmc':
             d['fit_type'] = 'mh'  # 'bmc' option was renamed to 'mh'. Preserve backwards compatibility.
+        if 'objfunc' not in d:
+            print1('Warning: objfunc was not specified. Defaulting to chi_sq.')
         if not self._req_user_params() <= d.keys() and d['fit_type'] != 'check':
             unspecified_keys = []
             for k in self._req_user_params():
@@ -157,7 +159,7 @@ class Configuration(object):
             bng_command = ''
 
         default = {
-            'objfunc': 'chi_sq', 'output_dir': 'bnf_out', 'delete_old_files': 1, 'num_to_output': 5000,
+            'objfunc': 'chi_sq', 'output_dir': 'pybnf_output', 'delete_old_files': 1, 'num_to_output': 5000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,

@@ -34,7 +34,7 @@ class TestSimplex:
 
     @classmethod
     def teardown_class(cls):
-        rmtree('bnf_out')
+        rmtree('pybnf_output')
 
     def test_start(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.config))
