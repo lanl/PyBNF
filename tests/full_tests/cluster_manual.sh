@@ -25,4 +25,4 @@ scontrol show hostname $SLURM_JOB_NODELIST | while read node; do
 done
 
 # Run the test script
-python3 run_tests.py sf
+python3 run_all.py sf

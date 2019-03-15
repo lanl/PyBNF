@@ -20,4 +20,4 @@ source $HOME/rattlesnake/diamondback/bin/activate
 ulimit -u 500000
 
 # Run the test script
-python3 run_tests.py ssh
+python3 run_all.py ssh
