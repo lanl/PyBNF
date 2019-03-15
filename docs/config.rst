@@ -77,7 +77,7 @@ Experimental Data Files
 
 Experimental data file are plain text files with the extension “.exp” that contain whitespace-delimited tables of data to be used for fitting.
 
-The first line of the .exp file is the header. It should contain the character #, followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables in a BNGL file, or species in an SBML file. The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
+The first line of the .exp file is the header. It should contain the character #, followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
 ::
     #    time    X    Y
         0    5    1e4
@@ -139,6 +139,10 @@ Four keywords are available to specify when the inequality is enforced.
   The ``first`` keyword says that the constraint should only (this is the default behavior, so this keyword is optional)  
 
   ``A<5 at B=6 first``
+  
+  The ``before`` keyword moves the enforcement the last time point before the condition is met
+  
+  ``A<5 at B=6 before`` - Enforce the inequality at the last time point before B=6.
 
   If the specified condition (B=6 in the example) is never met, then the constraint is not applied. It is often useful to add a second constraint to ensure that an "at" constraint is enforced. In this example, assuming the initial value of B is below 6, we could add the constraint ``B>=6 once``
 
@@ -148,26 +152,22 @@ Four keywords are available to specify when the inequality is enforced.
 
   If the first condition (time=7 in the example) is never met, then the constraint is never enforced. If the second condition (B=6 in the example) is never met, then the constraint is enforced from the start time until the end of the simulation. 
 
+The above definitions assume that time is the independent variable, but note that the same keywords can be used for parameter scans with a different independent variable. 
+
 Weight
 ^^^^^^
 
 The weight clause consists of the ``weight`` keyword followed by a number. This number is multiplied by the extent of constraint violation to give the value to be added to the objective function. For example:  
 
-``A < 5 at 6 weight 2``
-
-If the inequality A < 5 is not satisfied at time 6, then a penalty of 2*(A-5) is added to the objective function. 
+``A < 5 at 6 weight 2`` - If the inequality A < 5 is not satisfied at time 6, then a penalty of 2*(A-5) is added to the objective function. 
 
 The ``min`` keyword indicates the minimum possible penalty to apply if the constraint is violated. This minimum is still multiplied by the constraint weight. 
 
-``A < 5 at 6 weight 2 min 4``
-
-If the inequality A < 5 is not satisfied at time 6, the penalty is :math:`2*\textrm{max}((A-5), 4)`. Since we used the strict < operator, the minimum penalty of 8 is applied even if A=5 at time 6. 
+``A < 5 at 6 weight 2 min 4`` - If the inequality A < 5 is not satisfied at time 6, the penalty is :math:`2*\textrm{max}((A-5), 4)`. Since we used the strict < operator, the minimum penalty of 8 is applied even if A=5 at time 6. 
 
 In some unusual cases, it is desirable to use a different observable for calculating penalties than the one used in the inequality. For example, the variable in the inequality might be a discrete variable, and it would be desirable to calculate the penalty with a corresponding continuous variable. This substitution may be made using the ``altpenalty`` keyword in the weight clause, followed by the new inequality to use for calculating the penalty. 
 
-``A < 5 at B=3 weight 10 altpenalty A2<4 min 1``
-
-This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
+``A < 5 at B=3 weight 10 altpenalty A2<4 min 1`` - This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
 
 Constraints involving multiple models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

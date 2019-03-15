@@ -5,14 +5,15 @@ Running on a cluster
 
 PyBNF is designed to run on computing clusters that utilize a shared network filesystem. PyBNF comes with built-in support for clusters running Slurm. It may also be manually configured to run on clusters with other managers (Torque, PBS, etc.).
 
-The `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.html>`_ package, which is installed as a dependency of PyBNF, has a scheduler that we use for handling simulations in distributed computing environments (clusters).
-
-While users can likely install PyBNF using ``pip``'s ``--user`` flag, assistance from the cluster administrators may be helpful
+Installation of PyBNF on a cluster has the same requirements as installation on a workstation, namely Python 3 with the pip package manager. This is available on most clusters, 
+but may require loading a module to access. In Slurm, you can view the available modules with the command ``module avail``, and load the appropriate one with ``module load [modulename]``. Once Python 3 and pip are loaded, the same :ref:`installation instructions <installation>` apply as for a standard installation. 
+Assistance from the cluster administrators may be helpful if any cluster-specific issues arise during installation.
+ 
 
 SLURM
 -----
 
-The user may run PyBNF interactively or as a batch job using the ``salloc`` or ``sbatch`` commands respectively.  Note that the user must have set up their Python environment prior to running PyBNF on a cluster.
+The user may run PyBNF interactively or as a batch job using the ``salloc`` or ``sbatch`` commands respectively.  
 
 To tell PyBNF to use Slurm, pass "slurm" with the ``-t`` flag, i.e. ``pybnf -t slurm``. It is also possible to instead specify the ``cluster_type`` key in the config file. 
 
@@ -22,7 +23,7 @@ Execute the ``salloc -Nx`` command where `x` is an integer denoting the number o
 
 Log in to one of the nodes with the command ``slogin``
 
-Load appropriate Python environment
+Load the appropriate Python environment
 
 Initiate a PyBNF fitting run, including the flag ``-t slurm``
 
@@ -56,6 +57,8 @@ Then set the keys ``scheduler_node`` and ``worker_nodes`` in your PyBNF config f
 
 PyBNF will then run this fitting job on the specified cluster nodes. 
 
+.. _manualdask:
+
 Manual configuration with Dask
 ------------------------------
 
@@ -63,7 +66,9 @@ PyBNF uses `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.
 
 In the automatic PyBNF setup, the command ``dask-ssh`` is run on one of the available nodes (which becomes the scheduler node), with all available nodes as arguments (which become the worker nodes). ``dask-ssh`` is run with ``--nthreads 1`` and ``--nprocs`` equal to the number of available cores per node. The default number of available processes per core is the value returned by ``multiprocessing.cpu_count()``; this default can be overridden by specifying the ``parallel_count`` key equal to the total number of processes over all nodes. This entire automatic setup with ``dask-ssh`` can be overridden as described below. If overriding the automatic setup, it is recommended to keep ``nthreads`` equal to 1 for SBML models because the SBML simulator is not thread safe.
 
-To begin manual configuration, run the command ``dask-scheduler`` on the node you want to use as the scheduler. Pass the argument ``--scheduler-file`` to create a JSON-encoded text file containing connection information. For example:
+For manual configuration, you will need to run the series of commands described below. All of these commands must remain running during the entire PyBNF run. Utilites such as ``nohup`` or ``screen`` are helpful for keeping multiple commands running at once. 
+
+To begin, run the command ``dask-scheduler`` on the node you want to use as the scheduler. Pass the argument ``--scheduler-file`` to create a JSON-encoded text file containing connection information. For example:
 
     :command:`dask-schduler --scheduler-file cluster.json`
 
@@ -75,4 +80,4 @@ Finally, run PyBNF, and pass PyBNF the scheduler file using the ``-s`` command l
 
     :command:`pybnf -c fit.conf -s cluster.json`
     
-For additional ``dask-scheduler`` and ``dask-worker`` options, refer to the Dask.distributed documentation.
+For additional ``dask-scheduler`` and ``dask-worker`` options, refer to the `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.html>`_ documentation.

@@ -4,7 +4,7 @@ Troubleshooting
 Failed simulations
 ------------------
 
-If most or all of your simulations are failing (and generate messages like "Job init0 failed"), troubleshooting is necessary at the level of the simulator (BioNetGen or libRoadRunner). 
+If most or all of your simulations are failing (and generate messages like "Job init0 failed" or "Your simulations are failing to run"), troubleshooting is necessary at the level of the simulator (BioNetGen or libRoadRunner). 
 
 Check the simulation logs
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -42,7 +42,7 @@ CVODE errors
 """"""""""""
 For SBML models, if your logs in ``FailedSimLogs/`` include errors from CVODE such as "CV_ERR_FAILURE: Error test failures occurred too many times during one internal time step" or "CV_TOO_MUCH_WORK: The solver took mxstep internal steps but could not reach tout", it means that CVODE, the ODE integrator used in libRoadRunner to simulate SBML models, decided that the model was too difficult to simulate and gave up. This might happen when the solution to the ODE system is not sufficiently smooth. 
 
-Unfortunately, we do not know of a good workaround for this error. 
+It may be possible to run such simulations with a different SBML integrator, set with the ``sbml_integrator`` key. 
 
 
 Resource not available

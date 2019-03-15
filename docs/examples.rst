@@ -9,6 +9,8 @@ Each example directory contains all files required to run the example: the confi
 
 The examples are described below. For an index of which examples demonstrate which PyBNF features, refer to `Index of examples by attribute`_
 
+Even more examples are available on `RuleHub <https://github.com/RuleWorld/RuleHub/tree/master/Contributed/Mitra2019>`_.
+
 List of examples included in PyBNF
 ----------------------------------
 
@@ -28,16 +30,12 @@ degranulation
 ^^^^^^^^^^^^^
 A model that relates the initial events of IgE-Fc\ :math:`\epsilon`\ RI signaling to the degranulation response. The model is fit to experimental data from a microfluidic device that was used to measure mast cell degranulation in response to time courses of alternating stimulatory and non-stimulatory inputs. The data and model were originally published in [Harmon2017]_. 
 
-In the original study, the model was analyzed by Bayesian MCMC to acquire probability distributions for each parameter. We provide config files to repeat this analysis in PyBNF, using both of our algorithms that calculate probability distributions: MCMC, and Parallel tempering. In both cases, the results from PyBNF are expected to match the results shown in Fig. S10 of [Harmon2017]_. A large number of samples is required to obtain an acceptable distribution, so we recommend running on a cluster or powerful multi-core workstation. An example batch file to submit the job to a SLURM cluster is provided. For best performance, the config key ``population_size`` should be set to the number of available cores. 
+In the original study, the model was analyzed by Bayesian Metropolis Hastings MCMC to acquire probability distributions for each parameter. We provide config files to repeat this analysis in PyBNF, using both of our algorithms that calculate probability distributions: Metropolis Hastings, and Parallel tempering. In both cases, the results from PyBNF are expected to match the results shown in Fig. S10 of [Harmon2017]_. A large number of samples is required to obtain an acceptable distribution, so we recommend running on a cluster or powerful multi-core workstation. An example batch file to submit the job to a SLURM cluster is provided. For best performance, the config key ``population_size`` should be set to the number of available cores. 
 .. Note: DREAM also provided, but it gives the wrong distribution. 
 
 demo
 ^^^^
 Fit a simple parabola implemented in either BNGL or SBML. Useful to validate that PyBNF and associated simulators are installed correctly. 
-
-egfr_bleaching
-^^^^^^^^^^^^^^
-A model of EGFR fit using novel experimental data, presented for the first time with PyBNF. Ryan is going to explain this one.
 
 egfr_benchmark
 ^^^^^^^^^^^^^^
@@ -59,13 +57,13 @@ This problem was considered as example1 in the original BioNetFit ( [Thomas2016]
 
 fceri_gamma
 ^^^^^^^^^^^
-A benchmark rule-based model of IgE-Fc\ :math:`\epsilon`\ RI signaling, published in [Gupta2018]_. To create an example fitting problem, we generated synthetic data based on the published ground truth, and try to recover the ground truth parameters by fitting. 
+A benchmark rule-based model of IgE-Fc\ :math:`\epsilon`\ RI signaling, originally published in [Faeder2003]_ and adapted in [Sneddon2011]_. The BNGL file was provided in [Gupta2018]_. To create an example fitting problem, we generated synthetic data based on the published ground truth, and try to recover the ground truth parameters by fitting. 
 
 igf1r
 ^^^^^
-A model if IGF1R interation with IGF, orignally published and fit with BioNetFit 1 in [Erickson2018]_. We provide the config and data files to solve the same fitting problem as in the original study. 
+A model if IGF1R interation with IGF, orignally published and fit with BioNetFit 1 in [Erickson2019]_. We provide the config and data files to solve the same fitting problem as in the original study. 
 
-The original study also performed bootstrapping to assess parameter uncertainty. We provide the config igf1r_boot.conf to perform the same analysis in PyBNF. The results are expected to match the bootstrapping figure in [Erickson2018]_.
+The original study also performed bootstrapping to assess parameter uncertainty. We provide the config igf1r_boot.conf to perform the same analysis in PyBNF. The results are expected to match the bootstrapping figure in [Erickson2019]_.
 
 raf_sbml
 ^^^^^^^^
@@ -114,13 +112,13 @@ Examples by complexity
 
  * Trivial (for validating installation): `demo`_, `constraint_demo`_
  * Easy (Can run on a personal computer): `receptor`_, `receptor_nf`_ `constraint_raf`_, `fceri_gamma`_, `egfr_benchmark`_
- * Moderate: `degranulation`_, `igf1r`_, `egfr_ode`_, `egfr_nf`_, `egfr_bleaching`_, `raf_sbml`_
+ * Moderate: `degranulation`_, `igf1r`_, `egfr_ode`_, `egfr_nf`_, `raf_sbml`_
  * Difficult (Recommended on a cluster only): `tcr`_, `tlbr`_, `yeast_cell_cycle`_
 
 Examples by source
 ^^^^^^^^^^^^^^^^^^
 
- * Novel fits described in the PyBNF paper: `egfr_bleaching`_, `yeast_cell_cycle`_
+ * Novel fits described in the PyBNF paper: `yeast_cell_cycle`_
  * Examples from BioNetFit 1: `egfr_ode`_, `egfr_nf`_, `tlbr`_, `tcr`_, `receptor`_, `receptor_nf`_
  * Published applications of BioNetFit 1: `degranulation`_, `igf1r`_
  * Synthetic data with known ground truth: `constraint_raf`_, `fceri_gamma`_, `egfr_benchmark`_, `raf_sbml`_
@@ -131,7 +129,6 @@ Examples by data/model types
  * Property (.prop) data files: `constraint_demo`_, `constraint_raf`_, `constraint_advanced`_, `yeast_cell_cycle`_
  * SBML models: `raf_sbml`_. `yeast_cell_cycle`_
  * Multiple data files: `degranulation`_
- * Multiple model files: `egfr_bleaching`_
  * Mutant models: `yeast_cell_cycle`_
 
 Examples by PyBNF feature
@@ -146,7 +143,8 @@ Examples by PyBNF feature
 
 .. [Blinov2006] Blinov, M. L.; Faeder, J. R.; Goldstein, B.; Hlavacek, W. S. A Network Model of Early Events in Epidermal Growth Factor Receptor Signaling That Accounts for Combinatorial Complexity. BioSystems 2006, 83 (2–3 SPEC. ISS.), 136–151.
 .. [Chylek2014] Chylek, L. A.; Akimov, V.; Dengjel, J.; Rigbolt, K. T. G.; Hu, B.; Hlavacek, W. S.; Blagoev, B. Phosphorylation Site Dynamics of Early T-Cell Receptor Signaling. PLoS One 2014, 9 (8), e104240.
-.. [Erickson2018] Erickson, K.; et. al. Under review. 
+.. [Erickson2019] Erickson, K. E.; Rukhlenko, O. S.; Shahinuzzaman, M.; Slavkova, K. P.; Lin, Y. T.; Suderman, R.; Stites, E. C.; Anghel, M.; Posner, R. G.; Barua, D.; et al. Modeling Cell Line-Specific Recruitment of Signaling Proteins to the Insulin-like Growth Factor 1 Receptor. PLOS Comput. Biol. 2019, 15 (1), e1006706.
+.. [Faeder2003] Faeder, J. R.; Hlavacek, W. S.; Reischl, I.; Blinov, M. L.; Metzger, H.; Redondo, A.; Wofsy, C.; Goldstein, B. Investigation of Early Events in FcεRI-Mediated Signaling Using a Detailed Mathematical Model. J. Immunol. 2003, 170 (7), 3769–3781.
 .. [Gupta2018] Gupta, A.; Mendes, P. An Overview of Network-Based and -Free Approaches for Stochastic Simulation of Biochemical Systems. Computation 2018, 6 (1), 9.
 .. [Harmon2017] Harmon, B.; Chylek, L. A.; Liu, Y.; Mitra, E. D.; Mahajan, A.; Saada, E. A.; Schudel, B. R.; Holowka, D. A.; Baird, B. A.; Wilson, B. S.; et al. Timescale Separation of Positive and Negative Signaling Creates History-Dependent Responses to IgE Receptor Stimulation. Sci. Rep. 2017, 7 (1), 15586.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
@@ -155,5 +153,6 @@ Examples by PyBNF feature
 .. [Oguz2013] Oguz, C.; Laomettachit, T.; Chen, K. C.; Watson, L. T.; Baumann, W. T.; Tyson, J. J. Optimization and Model Reduction in the High Dimensional Parameter Space of a Budding Yeast Cell Cycle Model. BMC Syst. Biol. 2013, 7 (1), 53.
 .. [Posner2007] Posner, R. G.; Geng, D.; Haymore, S.; Bogert, J.; Pecht, I.; Licht, A.; Savage, P. B. Trivalent Antigens for Degranulation of Mast Cells. Org. Lett. 2007, 9 (18), 3551–3554.
 .. [Romano2014] Romano, D.; Nguyen, L. K.; Matallanas, D.; Halasz, M.; Doherty, C.; Kholodenko, B. N.; Kolch, W. Protein Interaction Switches Coordinate Raf-1 and MST2/Hippo Signalling. Nat. Cell Biol. 2014, 16 (7), 673–684.
+.. [Sneddon2011] Sneddon, M. W.; Faeder, J. R.; Emonet, T. Efficient Modeling, Simulation and Coarse-Graining of Biological Complexity with NFsim. Nat. Methods 2011, 8 (2), 177–183.
 .. [Thomas2016] Thomas, B. R.; Chylek, L. A.; Colvin, J.; Sirimulla, S.; Clayton, A. H. A.; Hlavacek, W. S.; Posner, R. G. BioNetFit: A Fitting Tool Compatible with BioNetGen, NFsim and Distributed Computing Environments. Bioinformatics 2016, 32 (5), 798–800.
 

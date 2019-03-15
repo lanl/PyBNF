@@ -52,7 +52,7 @@ Objective functions
 
 All algorithms use an objective function to evaluate the quality of fit for each parameter set. The objective function is set with the ``objfunc`` key. The following options are available. Note that :math:`y_i` are the experimental data points and :math:`a_i` are the simulated data points. The summation is over all experimental data points.
 
-    * Chi squared (``obj_func = chi_sq``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{2 \sigma_i^2}` . :math:`\sigma_i` is the standard deviation of point :math:`y_i`, and must be specified in the :ref:`exp file <exp-file>`.
+    * Chi squared (``obj_func = chi_sq``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{2 \sigma_i^2}` , where :math:`\sigma_i` is the standard deviation of point :math:`y_i`, which must be specified in the :ref:`exp file <exp-file>`.
     * Sum of squares (``obj_func = sos``): :math:`f(y, a) =  \sum_i (y_i - a_i)^2`
     * Sum of differences (``obj_func = sod``): :math:`f(y, a) =  \sum_i |y_i - a_i|`
     * Normalized sum of squares (``obj_func = norm_sos``): :math:`f(y, a) =  \sum_i \frac{(y_i - a_i)^2}{y_i^2}`
@@ -188,12 +188,15 @@ Metropolis-Hastings MCMC
 
 Algorithm
 ^^^^^^^^^
-Metropolis-Hastings Markov chain Monte Carlo (MCMC) is a Bayesian method in which points in parameter space are sampled with a frequency
-proportional to the probability that the parameter set is correct given the data. The result is a probability
-distribution over parameter space that expresses the likelihood of each possible parameter set. With this algorithm, we
+Metropolis-Hastings Markov chain Monte Carlo (MCMC) is a Bayesian sampling method. The free parameters are taken to be random variables with 
+unknown probability distributions, and the algorithm samples points in parameter space are sampled with a frequency
+proportional to the probability of the parameter set given the data. The result is a probability
+distribution over parameter space that expresses the probability of each possible parameter set. With this algorithm, we
 obtain not just a point estimate of the best fit, but a means to quantify the uncertainty in each parameter value.
 
-When running MCMC, PyBNF outputs additional files containing this probability distribution information. The files in ``Results/Histograms/`` give histograms of the marginal probability distributions for each free parameter. The files ``credible##.txt`` (e.g., ``credible95.txt``) use the marginal histogram for each parameter to calculate a *credible interval* - an interval in which the parameter value is expected to fall with the specified probability (e.g. 95%).  Finally, ``samples.txt`` contains all parameter sets sampled over the course of the fitting run, allowing the user to perform further custom analysis on the sampled probability distribution. 
+When running this algorithm in PyBNF, it is assumed that the objective function is a *likelihood* function, that is, the objective function value gives the negative log probability of the data given the parameter set. There is a solid mathematical basis for making this assumption when the **chi-squared objective function** is used. It is not recommended to use this algorithm with different objective function, or an objective function that includes qualitative data.
+
+PyBNF outputs additional files containing this probability distribution information. The files in ``Results/Histograms/`` give histograms of the marginal probability distributions for each free parameter. The files ``credible##.txt`` (e.g., ``credible95.txt``) use the marginal histogram for each parameter to calculate a *credible interval* - an interval in which the parameter value is expected to fall with the specified probability (e.g. 95%).  Finally, ``samples.txt`` contains all parameter sets sampled over the course of the fitting run, allowing the user to perform further custom analysis on the sampled probability distribution. 
 
 Parallelization
 ^^^^^^^^^^^^^^^
@@ -203,7 +206,7 @@ Note that each chain must independently go through the burn-in period, but after
 
 Implementation details
 ^^^^^^^^^^^^^^^^^^^^^^
-Our implementation is described in [Kozer2013]_. We start at a random point in parameter space, and make a step of size ``step_size`` to move to a new location in parameter space. We take the value of the objective function to be the probability of the data given the parameter set (the *likelihood* in Bayesian statistics).  We assume a prior distribution based on the parameter definitions in the config file -- a uniform, loguniform, normal, or lognormal distribution, depending on the config key used. Note: If a uniform or loguniform prior is used, the prior does not affect the result other than to confine the distribution within the specified range. If a normal or lognormal prior is used, the prior does affect the probability of accepting each proposed move, and therefore the choice of prior affects the final sampled probability distribution. 
+Our implementation is described in [Kozer2013]_. We start at a random point in parameter space, and make a step of size ``step_size`` to move to a new location in parameter space. We take the value of the objective function to be the negative log probability of the data given the parameter set (the *likelihood* in Bayesian statistics).  We assume a prior distribution based on the parameter definitions in the config file -- a uniform, loguniform, normal, or lognormal distribution, depending on the config key used. Note: If a uniform or loguniform prior is used, the prior does not affect the result other than to confine the distribution within the specified range. If a normal or lognormal prior is used, the prior does affect the probability of accepting each proposed move, and therefore the choice of prior affects the final sampled probability distribution. 
 
 The Bayesian *posterior* distribution -- the probability of the parameters given the data -- is given by the product of the above likelihood and prior. We use the value of the posterior to determine whether to accept the proposed move. 
 
@@ -247,6 +250,8 @@ Algorithm
 Parallel tempering is a more sophisticated version of Markov chain Monte Carlo (MCMC). We run several Markov chains in parallel at different temperatures. At specified iterations during the run, there is an opportunity to exchange replicates between the different temperatures. Only the samples recorded at the lowest temperature count towards our final probability distribution, but the presence of the higher temperature replicates makes it easier to escape local minima and explore the full parameter space. 
 
 When running parallel tempering, PyBNF outputs files containing probability distribution information, the same as with Metropolis-Hastings MCMC.
+
+Like Metropolis-Hastings, it is recommended to only use parallel tempering with the **chi-squared objective function**. 
 
 Parallelization
 ^^^^^^^^^^^^^^^
@@ -368,4 +373,3 @@ It is also possible to run the Simplex algorithm on its own, using a custom star
 .. [Moraes2015] Moraes, A. O. S.; Mitre, J. F.; Lage, P. L. C.; Secchi, A. R. A Robust Parallel Algorithm of the Particle Swarm Optimization Method for Large Dimensional Engineering Problems. Appl. Math. Model. 2015, 39 (14), 4223–4241.
 .. [Penas2015] Penas, D. R.; González, P.; Egea, J. A.; Banga, J. R.; Doallo, R. Parallel Metaheuristics in Computational Biology: An Asynchronous Cooperative Enhanced Scatter Search Method. Procedia Comput. Sci. 2015, 51 (1), 630–639.
 .. [Penas2017] Penas, D. R.; González, P.; Egea, J. A.; Doallo, R.; Banga, J. R. Parameter Estimation in Large-Scale Systems Biology Models: A Parallel and Self-Adaptive Cooperative Strategy. BMC Bioinformatics 2017, 18 (1), 52.
-.. [Vrugt2016] Vrugt, J. Markov chain Monte Carlo simulation using the DREAM software package: Theory, concepts, and MATLAB implementation. Environmental Modelling and Software 2016, 75, 273-316.

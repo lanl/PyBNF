@@ -39,6 +39,22 @@ Required Keys
   
     * ``fit_type = de``
 
+**objfunc**
+  Which :ref:`objective function <objective>` to use. 
+  
+   - ``chi_sq`` - Chi squared
+   - ``sos`` - Sum of squares
+   - ``sod`` - Sum of differences
+   - ``norm_sos`` - Sum of squares, normalized by the value at each point,
+   - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. 
+   
+  Default: chi_sq
+  
+  Example:
+  
+    * ``objfunc = chi_sq``
+   
+
 **population_size**
   The number parameter sets to maintain in a single iteration of the algorithm. See algorithm descriptions for more
   information.
@@ -74,7 +90,7 @@ Other Path Keys
 **output_dir**
   Directory where we should save the output.
 
-  Default: "bnf_out"
+  Default: "pybnf_output"
 
   Example:
   
@@ -84,19 +100,27 @@ Other Path Keys
 Parameter and Model Specification
 ---------------------------------
 **mutant**
-  Declares a model that does not have its own model file, but instead is defined based on another model with some name
-  (e.g. ``basemodel``). Following ``basemodel`` is the name of the mutant model; this name is appended to the suffixes
+  Declares a model that does not have its own model file, but instead is defined based on another model (the "base model"), changing only a small number 
+  of parameter values. The first word of the declaration gives the name of the base model (not including the path or  .bngl/.xml extension).
+  The second word is the name of the mutant model; this name is appended to the suffixes
   of the base model. That is, if the base model has data files ``data1.exp`` and ``data2.exp``, a corresponding mutant
-  model with the name  "m1" should use the files ``data1m1.exp`` and ``data2m1.exp``. ``statement1``, ``statement2``,
-  etc. specify how to change ``basemodel`` to make the mutant model. The statements have the format
-  [variable][operator][value] ; for example ``a__FREE=0`` or ``b__FREE*2``. Supported operators are ``=``, ``+``, ``-``,
-  ``*``, ``/``.
+  model with the name  "m1" should use the files ``data1m1.exp`` and ``data2m1.exp``. Following the name of the mutant
+  model is a series of statements that specify how to change ``basemodel`` to make the mutant model. The statements 
+  have the format [variable][operator][value] ; for example ``a__FREE=0`` or ``b__FREE*2``. Supported operators are 
+  ``=``, ``+``, ``-``, ``*``, ``/``.
 
   Default: None
 
   Example:
-  
-    * ``mutant = model0 no_a a__FREE=0 : data1no_a.exp, data2no_a.exp``
+    
+    Elsewhere in your .conf file, you have specified model1:
+    
+      * ``model = path/to/model1.bngl : data1.exp``
+    
+    Then you can use this key as follows:
+    
+      * ``mutant = model1 no_a a__FREE=0 : data1no_a.exp, data2no_a.exp``
+      * ``mutant = model1 extra_ab a__FREE*2 b__FREE*2 : data1extra_ab.exp``
 
 **uniform_var**
   A bounded uniformly distributed variable defined by a 3-tuple corresponding to the variable name, minimum
@@ -172,7 +196,7 @@ These keys specify what simulations should be performed with the models. For SBM
     * ``method`` The simulation method to use. Default is ``ode``. Options are:
     
        * ``ode``: Numerical integration of differential equations
-       * ``ssa``: Stochastic simulation by Gillespie's method
+       * ``ssa``: Stochastic simulation algorithm (BioNetGen's "ssa" algorithm for BNGL models; Gillespie's direct method for SBML models)
        * ``pla``: Partitioned-leaping algorithm (BNGL models only)
        * ``nf``: Network-free simulation with NFsim (BNGL models only)
   
@@ -190,7 +214,7 @@ These keys specify what simulations should be performed with the models. For SBM
     * ``step``: Change in the parameter value between consecutive simulations in the scan. Required.
     * ``time``: The simulation time. Required.
     * ``suffix``: The suffix of the data file to save. You should map the model to a .exp file of the same name. Default: param_scan
-    * ``logspace``: If 1, scan the parameter in log space. Default: 0
+    * ``logspace``: If 1, take ``step`` to be in log (base 10) space, and scan the parameter in log (base 10) space. Default: 0
     * ``model``: The name of the model to run (not including the path or .bngl/.xml extension). Default: All models in the fitting run.
     * ``subdivisions``: Only for use with ``sbml_integrator=euler``, specifies the number of internal Euler steps to perform for each simulation. Default: 1000
     * ``method``: The simulation method to use. Options are the same as in ``time_course``. Default: ode
@@ -213,7 +237,7 @@ Parallel Computing
 
 **cluster_type**
   Type of cluster used for running the fit. This key may be omitted, and instead specified on the command line with the
-  ``-t`` flag. Currently supports ``slurm`` or ``none``. Will support ``torque`` and ``pbs`` in the future.
+  ``-t`` flag. Currently supports ``slurm`` or ``none``.
 
   Default: None (local fitting run).
 
@@ -233,7 +257,7 @@ Parallel Computing
     * ``parallelize_models = 3``
 
 **scheduler_file**
-  Provide a scheduler file to link PyBNF to a Dask scheduler already created outside of PyBNF. See Manual configuration with Dask for more information. 
+  Provide a scheduler file to link PyBNF to a Dask scheduler already created outside of PyBNF. See :ref:`Manual configuration with Dask <manualdask>` for more information. 
   This option may also be specified on the command line with the ``-s`` flag. 
   
   Default: None
@@ -334,24 +358,9 @@ Output Options
 
 Algorithm Options
 ^^^^^^^^^^^^^^^^^
-**objfunc**
-  Which :ref:`objective function <objective>` to use. 
-  
-   - ``chi_sq`` - Chi squared
-   - ``sos`` - Sum of squares
-   - ``sod`` - Sum of differences
-   - ``norm_sos`` - Sum of squares, normalized by the value at each point,
-   - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. 
-   
-  Default: chi_sq
-  
-  Example:
-  
-    * ``objfunc = chi_sq``
-   
   
 **bootstrap**
-  If assigned a positive value, estimate confidence intervals through a bootstrapping procedure.  The assigned integer is the number of bootstrap replicates to perform.
+  If assigned a positive value, estimate confidence intervals through a :ref:`bootstrapping <bootstrap>` procedure.  The assigned integer is the number of bootstrap replicates to perform.
   
   Default: 0 (no bootstrapping)
   
@@ -369,7 +378,7 @@ Algorithm Options
     * ``bootstrap_max_obj = 1.5``
     
 **constraint_scale**  
-  Scale all weights in all property files by this multiplicative factor. For convenience only: The same thing could be achieved by editing property files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. 
+  Scale all weights in all .prop files by this multiplicative factor. For convenience only - The same thing could be achieved by editing .prop files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. 
   
   Default: 1 (no scaling)
   
@@ -399,7 +408,7 @@ Algorithm Options
     * ``initialization = rand``
     
 **local_objective_eval**
-  If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` feature.
+  If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` or ``parallelize_models`` feature.
    
   Default: 0 (unless smoothing is enabled)
   
@@ -454,9 +463,7 @@ Algorithm Options
     * ``refine = 1``
 
 **sbml_integrator**
-  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. ``euler`` requires libroadrunner v. 1.5.1 or higher, which currently must be installed explicitly via pip: 
-  
-  :command:`pip uninstall libroadrunner && pip install --no-cache libroadrunner==1.5.1`
+  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. 
   
   Default: cvode
   
@@ -798,7 +805,7 @@ For all Bayesian algorithms
 **beta**
   Sets the initial beta (1/temperature). A smaller beta corresponds to a more broad exploration of parameter space. If a single value is provided, that beta is used for all replicates. If multiple values are provided, an equal number of replicates uses each value. 
   
-  For ``mcmc``, should be set to 1 (the default) to get the true probability distribution. 
+  For ``mh``, should be set to 1 (the default) to get the true probability distribution. 
   
   For ``pt``, should specify multiple values: the number of values should equal ``population_size``/``reps_per_beta``. Or you may instead use the ``beta_range`` key. Only the largest beta value in the list will constribute to statistical samples, and to get the true probability distribution, this maximum value should be 1.
   

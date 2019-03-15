@@ -33,7 +33,7 @@ The above command will use your current version of Python 3 to install the most 
 
 Depending on your Python configuration, the above command may require root access and install PyBNF for all users on the computer. If you don't want to do this, you may add the flag ``--user`` to the end of the command, to install without root access for only the current user. 
 
-Advanced Python users may consider installing PyBNF in a `virtualenv`_ to avoid conflicts between PyBNF's dependencies and other uses of Python on the computer. 
+Advanced Python users may consider installing PyBNF in a `virtualenv`_ (which also does not require root access) to avoid conflicts between PyBNF's dependencies and other uses of Python on the computer. 
 
 Installing from source
 ^^^^^^^^^^^^^^^^^^^^^^

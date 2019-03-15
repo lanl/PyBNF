@@ -10,6 +10,8 @@ PyBNF includes a model checking utility that evaluates how well an already param
 
 Note that for model checking, input models should *not* contain any free parameters tagged with ``__FREE``; all parameters should already be defined.
 
+.. _bootstrap:
+
 Bootstrapping
 -------------
 
@@ -21,7 +23,7 @@ Note that the random sampling is performed at the level of exp files. For exampl
 
 If the config key ``bootstrap_max_obj`` is set, then each bootstrap replicate must achieve the specified objective value. If a bootstrap replicate completes fitting with a larger objective value, then the replicate is discarded and a new replicate is run. 
 
-PyBNF will output additional files describing the bootstrap results. Each bootstrap replicate will have its own Simulations and Results folders. The Results folder will contain extra files of the form ``<suffix>_weights_<replicate>.txt`` that indicate which random sample of the data was used for this bootstrap replicate. The main Results folder will contain the file ``bootstrapped_parameter_sets.txt``, which contains the best-fit parameter set from each bootstrap replicate, and can be used to analyze the uncertainty of each parameter value. 
+PyBNF will output additional files describing the bootstrap results. Each bootstrap replicate will have its own Simulations and Results folders. The Results folder will contain extra files of the form ``<suffix>_weights_<replicate>.txt`` that indicate which random sample of the data was used for this bootstrap replicate. The main Results folder will contain the file ``bootstrapped_parameter_sets.txt``, which contains the best-fit parameter set from each bootstrap replicate, and can be used to calculate confidence intervals for each parameter. 
 
 .. _postproc:
 

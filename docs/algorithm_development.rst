@@ -12,8 +12,6 @@ A new algorithm can be written by creating a class that subclasses the Algorithm
         def __init__(self, config, **kwargs):
             super(NewAlgorithm, self).__init__(config)
             # Other setup that may involve additional arguments
-            self.current_iter_results = []
-            self.ready_for_next_iter = False
 
         def my_custom_function(self):
             # User defined support function
@@ -23,16 +21,17 @@ The new algorithm requires defining three methods, with the first being the ``__
 method will likely take a Configuration object as its first argument.  The other two required methods that must be
 implemented are the ``start_run`` and ``got_result`` methods.
 
-The ``start_run`` method must return a list of PSet instances that correspond to the first batch of parameter set
-evaluations. The Algorithm superclass functions ``random_pset`` and ``random_latin_hypercube_psets`` may be useful::
+The ``start_run`` method is called at the start of the fitting run. It must return a list of PSet instances, as the first batch of parameter sets
+to be evaluated. The Algorithm superclass functions ``random_pset`` and ``random_latin_hypercube_psets`` may be useful::
 
     def start_run(self):
         return self.random_latin_hypercube_psets(self.population_size)
 
-The ``got_result`` method takes a Result instance as an argument and returns either a list of new PSet instances for
+The ``got_result`` method is called each time an evaluation of a PSet is completed on a worker. It takes a Result instance 
+as an argument and returns either a list of new PSet instances for
 another round of parameter set evaluations, or the string "STOP" to terminate the fitting run.  Note that an empty list
 is valid if the algorithm requires synchronization (and thus must wait for all jobs in the current iteration to
-finish).::
+finish). For example::
 
     def got_result(self, res):
         if self.satisfies_stop_condition(res):
@@ -44,8 +43,8 @@ finish).::
             for r in self.current_iter_results:
                 new_psets.append(self.generate_new_pset(r))
             return new_psets
-
-        return []  # Waiting for synchronization
+        else:
+            return []  # Waiting for synchronization
 
 
 Four additional support methods in the Algorithm superclass may optionally be overridden, depending on the details of the new algorithm, 
