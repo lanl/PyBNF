@@ -21,7 +21,7 @@ import traceback
 import pickle
 
 
-__version__ = "0.3.3"
+__version__ = "1.0.0"
 
 
 def main():
