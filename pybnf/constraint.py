@@ -94,12 +94,26 @@ class ConstraintSet:
                     else:
                         altpenalty = None
                     minpenalty = float(p.weight_expr.min) if p.weight_expr.min else 0.
+                    confidence = None
+                    tolerance = None
+                    if p.likelihood_expr:
+                        # Should not happen if parsing is working right
+                        raise ValueError('Parsed with both weight_expr and likelihood_expr')
+                elif p.likelihood_expr:
+                    confidence = float(p.likelihood_expr.confidence)
+                    tolerance = float(p.likelihood_expr.tolerance) if p.likelihood_expr.tolerance else 0.
+                    weight = None
+                    altpenalty = None
+                    minpenalty = None
                 else:
                     weight = 1.
                     altpenalty = None
                     minpenalty = 0.
+                    confidence = None
+                    tolerance = None
 
-                weight *= scale  # Scale the weight by the specified factor
+                if weight is not None:
+                    weight *= scale  # Scale the weight by the specified factor
 
                 # Check the constraint type based on the parse object, extract the constraint-type-specific args, and
                 # make the constraint
@@ -113,12 +127,14 @@ class ConstraintSet:
                     repeat = (len(p.enforce) >= 3 and p.enforce[2] == 'everytime')
                     before = (len(p.enforce) >= 3 and p.enforce[-1] == 'before')
                     con = AtConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before)
+                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before,
+                                       confidence=confidence, tolerance=tolerance)
                 elif p.enforce[0] == 'always':
                     con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty)
+                                           minpenalty=minpenalty, confidence=confidence, tolerance=tolerance)
                 elif p.enforce[0] == 'once':
-                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty, minpenalty)
+                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty,
+                                         minpenalty, confidence, tolerance)
                 elif p.enforce[0] == 'between':
                     if len(p.enforce[1]) == 1:
                         startval = float(p.enforce[1][0])
@@ -134,7 +150,7 @@ class ConstraintSet:
                         endval = float(p.enforce[2][1])
                     con = BetweenConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
-                                           endval=endval)
+                                           endval=endval, confidence=confidence, tolerance=tolerance)
                 else:
                     raise RuntimeError('Unknown enforcement keyword %s' % p.enforce[0])
                 self.constraints.append(con)
@@ -145,28 +161,31 @@ class ConstraintSet:
         obs = pp.Word(pp.alphas, pp.alphanums+'_.')
         point = pp.Literal(".")
         e = pp.CaselessLiteral("E")
-        const = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
+        number = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
                          pp.Optional(point + pp.Optional(pp.Word(pp.nums))) +
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
         iop = pp.oneOf("< <= > >=")
-        ineq0 = obs + iop + (obs ^ const)
-        ineq1 = const + iop + obs
+        ineq0 = obs + iop + (obs ^ number)
+        ineq1 = number + iop + obs
         ineq = ineq0 ^ ineq1
         equals = pp.Suppress('=')
-        obs_crit = obs - equals - const
-        enforce_crit = const | obs_crit
+        obs_crit = obs - equals - number
+        enforce_crit = number | obs_crit
         enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True)) -\
             pp.Optional(pp.CaselessLiteral('before'))
         enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
-        min = pp.CaselessLiteral('min') - const.setResultsName('min')
+        min = pp.CaselessLiteral('min') - number.setResultsName('min')
         penalty = pp.CaselessLiteral('altpenalty') - pp.Group(ineq).setResultsName('altpenalty')
-        wt_expr = const.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
+        wt_expr = number.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
         weight = pp.CaselessLiteral('weight') - wt_expr
+        likelihood = pp.CaselessLiteral('confidence') - number.setResultsName('confidence') - \
+                     pp.Optional(pp.CaselessLiteral('tolerance') - number.setResultsName('tolerance'))
         comment = pp.Suppress(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables)))
         constraint = pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce') + \
-                     pp.Optional(pp.Group(weight).setResultsName('weight_expr')) + pp.Optional(comment)
+                     pp.Optional(pp.Group(weight).setResultsName('weight_expr') ^
+                                 pp.Group(likelihood).setResultsName('likelihood_expr')) + pp.Optional(comment)
 
         return constraint.parseString(line, parseAll=True)
 
@@ -176,9 +195,15 @@ class Constraint:
     Abstract class representing an optimization constraint with a penalty for violating the constraint
     """
 
-    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
+                 confidence=None, tolerance=None):
         """
         Create a constraint of the form (quant1) (sign) (quant2)
+        Depending on which parameters are passed, the constraint automatically chooses a model for penalty calculation
+        If weight and/or altpenalty are passed, uses the static penalty method
+        If confidence and/or tolerance are passed, uses the log likelihood method with a logit function.
+        The two penalty models should not be mixed.
+
         :param quant1: String observable name or float. String could be in the form suffix.Observable to refer to any
         observable in the fitting run.
         :param sign: One of '<', '<=', '>', '>='
@@ -189,6 +214,9 @@ class Constraint:
         constraint inequality to calculate the penalty
         :param minpenalty: The minimum penalty that must be applied if the constraint is violated, regardless of how
         low the extent of violation is.
+        :param confidence: Using the log likelihood penalty, the maximum possible value of the logit function.
+        Represents our confidence that the constraint is not randomly failed, regardless of model output.
+        :param tolerance: Using the log likelihood penalty, the steepness of the logit function.
         """
         # Flip the inequality if it's a '>', so we can always assume a '<'
         if sign in ('>', '>='):
@@ -204,9 +232,9 @@ class Constraint:
 
         self.base_model = base_model
         self.base_suffix = base_suffix
+
         self.weight = weight
         self.min_penalty = minpenalty
-
         if altpenalty:
             # Also force the altpenalty to be a '<'.
             # Never matters whether this is an 'or equal' or not.
@@ -220,6 +248,28 @@ class Constraint:
         else:
             self.alt1 = None
             self.alt2 = None
+
+        self.confidence = confidence
+        self.tolerance = tolerance
+
+        # Choose penalty model depending on what is set to None
+        # Check for invalid combinations of keys, but these should have been caught during parsing.
+        if weight is not None:
+            self.penalty_model = 'static'
+            if confidence is not None or tolerance is not None:
+                raise ValueError('Constraint %s%s%s should not have both a weight and a confidence and/or tolerance' %
+                                 (quant1, sign, quant2))
+        elif confidence is not None:
+            self.penalty_model = 'likelihood'
+            if tolerance is None:
+                raise ValueError('Constraint %s%s%s has a confidence but not a tolerance' % (quant1, sign, quant2))
+            if altpenalty is not None:
+                raise ValueError('Constraint %s%s%s should not have both a confidence and a altpenalty' %
+                                 (quant1, sign, quant2))
+            if confidence < 0.5 or confidence > 1.:
+                raise PybnfError('In constraint %s%s%s, confidence must be between 0.5 and 1' % (quant1, sign, quant2))
+        else:
+            raise ValueError('Constraint %s%s%s must have either a weight or a confidence' % (quant1, sign, quant2))
 
         # Key tuples need to be initialized after we receive the first data result, so we can figure out the keys.
         self.qkeys1 = None
@@ -293,6 +343,19 @@ class Constraint:
         :return:
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
+
+    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
+        """
+        Helper function for calculating the penalty, that can be called from the subclasses.
+        Chooses to call either get_static_penalty or get_log_likelihood depending on the penalty model
+        used for this constraint
+        """
+        if self.penalty_model == 'static':
+            return self.get_static_penalty(sim_data_dict, imin, imax, once, require_length)
+        elif self.penalty_model == 'likelihood':
+            return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length)
+        else:
+            raise ValueError('Invalid penalty model: %s' % self.penalty_model)
 
     def get_difference(self, sim_data_dict, imin, imax, once=False, require_length=None):
         """
@@ -432,7 +495,7 @@ class Constraint:
 
 class AtConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
-                 repeat=False, before=False):
+                 repeat=False, before=False, confidence=None, tolerance=None):
         """
         Creates a new constraint of the form
 
@@ -445,7 +508,8 @@ class AtConstraint(Constraint):
         :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, confidence,
+                         tolerance)
         self.atvar = atvar
         self.atval = atval
         self.repeat = repeat
@@ -512,7 +576,7 @@ class AtConstraint(Constraint):
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
-                 minpenalty=0.):
+                 minpenalty=0., confidence=None, tolerance=None):
         """
         Creates a new constraint of the form
 
@@ -524,7 +588,8 @@ class BetweenConstraint(Constraint):
         :param endval: Value that the endvar must take to trigger the start of the interval
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, confidence,
+                         tolerance)
 
         self.startvar = startvar
         self.startval = startval
@@ -609,14 +674,16 @@ class BetweenConstraint(Constraint):
 
 
 class AlwaysConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
+                 confidence=None, tolerance=None):
         """
         Creates a new constraint of the form
 
         X1>X2 always
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, confidence,
+                         tolerance)
         logger.debug("Created 'always' constraint %s<%s" % (self.quant1, self.quant2))
 
     def penalty(self, sim_data_dict):
@@ -634,14 +701,16 @@ class AlwaysConstraint(Constraint):
 
 
 class OnceConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
+                 confidence=None, tolerance=None):
         """
         Creates a new constraint of the form
 
         X1>X2 once
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, confidence,
+                         tolerance)
         logger.debug("Created 'once' constraint %s<%s" % (self.quant1, self.quant2))
 
     def penalty(self, sim_data_dict):
