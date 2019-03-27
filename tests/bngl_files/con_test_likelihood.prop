@@ -1,0 +1,18 @@
+
+# Satisfied, no penalty
+B<10 always confidence 1 tolerance 0
+
+# Satisfied, penalty should be -ln(0.95)
+B<=9 always confidence 0.95
+
+# Not satisfied, penalty should be -ln(0.05)
+B<9 always confidence 0.95
+
+# Penalty should be -ln(0.5)
+A<5 at time = 4 confidence 0.95 tolerance 1
+
+# Plug into likelihood function
+A<4 at time = 4 confidence 0.95 tolerance 1
+
+# Plug into likelihood function
+A<6 at time = 4 confidence 0.95 tolerance 2
