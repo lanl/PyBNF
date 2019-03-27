@@ -294,10 +294,14 @@ class Constraint:
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
-    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
+    def get_difference(self, sim_data_dict, imin, imax, once=False, require_length=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
-        Enforces the constraint for the entire interval unless the once option is set.
+        Calculates the difference between the two sides of the inequality. A negative value means the inequality is
+        satisfied.
+        Considers the worst case over the specified interval, or the best case if once=True.
+
+        The result can be used to calculate the penalty using a static penalty model or a likelihood model.
 
         :param sim_data_dict: The dictionary of data objects
         :param imin: First index at which to check the constraint
@@ -331,11 +335,28 @@ class Constraint:
 
         try:
             if once:
-                penalty = np.min(q1-q2)
+                difference = np.min(q1 - q2)
             else:
-                penalty = np.max(q1 - q2)
+                difference = np.max(q1 - q2)
         except ValueError:
             length_error()
+
+        return difference
+
+    def get_static_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
+        """
+        Helper function for calculating the static penalty, that can be called from the subclasses.
+
+        :param sim_data_dict: The dictionary of data objects
+        :param imin: First index at which to check the constraint
+        :param imax: Last index at which to check the constraint (exclusive)
+        :param once: If true, enforce that the constraint holds once at some point during the time interval
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
+        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+        case)
+        :return:
+        """
+        penalty = self.get_difference(sim_data_dict, imin, imax, once, require_length)
 
         if penalty > 0 or (penalty == 0. and not self.or_equal):
             # Failed constraint
@@ -362,6 +383,40 @@ class Constraint:
         penalty = max(0., penalty)
 
         return penalty * self.weight
+
+    def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None):
+        """
+        Helper function for calculating the negative log likelihood of constraint satisfaction given the parameters,
+        i.e. a likelihood-based penalty function.
+        The likelihood is calculated with a "soft logit" function defined in terms of this constraint's confidence
+        and tolerance
+
+        :param sim_data_dict: The dictionary of data objects
+        :param imin: First index at which to check the constraint
+        :param imax: Last index at which to check the constraint (exclusive)
+        :param once: If true, enforce that the constraint holds once at some point during the time interval
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
+        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+        case)
+        :return:
+        """
+        difference = self.get_difference(sim_data_dict, imin, imax, once, require_length)
+        if self.tolerance == 0:
+            # Edge case where logit is a step function
+            if difference < 0 or (difference == 0 and self.or_equal):
+                log_likelihood = -np.log(self.confidence)
+            else:
+                log_likelihood = -np.log(1-self.confidence)
+        else:
+            # Standard case
+            # Note that a negative difference is good, hence the sign convention in the calculation below.
+            unc = 1. - self.confidence
+            k = self.tolerance
+            logit = (1-2*unc)/(1. + np.exp(difference/k)) + unc
+            log_likelihood = -np.log(logit)
+        return log_likelihood
+
+
 
     def penalty(self, sim_data_dict):
         """
