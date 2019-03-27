@@ -344,20 +344,20 @@ class Constraint:
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
-    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
+    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
         Chooses to call either get_static_penalty or get_log_likelihood depending on the penalty model
         used for this constraint
         """
         if self.penalty_model == 'static':
-            return self.get_static_penalty(sim_data_dict, imin, imax, once, require_length)
+            return self.get_static_penalty(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         elif self.penalty_model == 'likelihood':
-            return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length)
+            return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         else:
             raise ValueError('Invalid penalty model: %s' % self.penalty_model)
 
-    def get_difference(self, sim_data_dict, imin, imax, once=False, require_length=None):
+    def get_difference(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
         Calculates the difference between the two sides of the inequality. A negative value means the inequality is
@@ -373,6 +373,8 @@ class Constraint:
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
         equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
         case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
         :return:
         """
 
@@ -380,6 +382,14 @@ class Constraint:
             raise PybnfError('Applying constraint %s<%s. Constraints involving observables that have different time '
                              'points in their simulation outputs are not currently supported' %
                              (self.quant1, self.quant2))
+
+        if imin2 is None:
+            imin2 = imin
+        if imax2 is None:
+            imax2 = imax
+        if imax-imin != imax2-imin2:
+            # Should not happen, because currently only the Split At constraint uses imin2 and imax2
+            raise ValueError('imin2:imax2 has a different length than imin:imax')
 
         if isinstance(self.quant1, str):
             q1_col = self.index(sim_data_dict, self.qkeys1)
@@ -392,7 +402,7 @@ class Constraint:
             q2_col = self.index(sim_data_dict, self.qkeys2)
             if require_length and len(q2_col) != require_length:
                 length_error()
-            q2 = q2_col[imin:imax]
+            q2 = q2_col[imin2:imax2]
         else:
             q2 = self.quant2
 
@@ -406,7 +416,7 @@ class Constraint:
 
         return difference
 
-    def get_static_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
+    def get_static_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
         Helper function for calculating the static penalty, that can be called from the subclasses.
 
@@ -417,9 +427,11 @@ class Constraint:
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
         equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
         case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
         :return:
         """
-        penalty = self.get_difference(sim_data_dict, imin, imax, once, require_length)
+        penalty = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
 
         if penalty > 0 or (penalty == 0. and not self.or_equal):
             # Failed constraint
@@ -447,7 +459,7 @@ class Constraint:
 
         return penalty * self.weight
 
-    def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None):
+    def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
         Helper function for calculating the negative log likelihood of constraint satisfaction given the parameters,
         i.e. a likelihood-based penalty function.
@@ -461,9 +473,11 @@ class Constraint:
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
         equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
         case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
         :return:
         """
-        difference = self.get_difference(sim_data_dict, imin, imax, once, require_length)
+        difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         if self.tolerance == 0:
             # Edge case where logit is a step function
             if difference < 0 or (difference == 0 and self.or_equal):
@@ -573,6 +587,115 @@ class AtConstraint(Constraint):
 
         return penalty
 
+class SplitAtConstraint(Constraint):
+    def __init__(self, quant1, atvar1, atval1, sign, quant2, atvar2, atval2, base_model, base_suffix,
+                 weight, altpenalty=None, minpenalty=0.,
+                 repeat=False, before=False, confidence=None, tolerance=None):
+        """
+        Creates a new constraint of the form
+
+        X1 at X2=value < X3 at X4=value
+
+        :param atvar: Variable checked to determine the 'at' condition, or None for the independent variable
+        :param atval: Value that the atvar must take to activate the 'at' condition
+        :param repeat: If True, enforce the constraint every time the 'at' condition is met. If False, only enforce
+        the first time
+        :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
+        """
+
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, confidence,
+                         tolerance)
+
+        # Since the superclass flips the sign for ">", we need to also flip the "at" conditions
+        if sign in ('>', '>='):
+            self.atvar1 = atvar2
+            self.atval1 = atval2
+            self.atvar2 = atvar1
+            self.atval2 = atval1
+        else:
+            self.atvar1 = atvar1
+            self.atval1 = atval1
+            self.atvar2 = atvar2
+            self.atval2 = atval2
+        self.before = before
+        if repeat:
+            raise PybnfError('The "repeat" keyword is not currently supported for constraints with two "at" conditions')
+
+        self.atkeys1 = None
+        self.atkeys2 = None
+        logger.debug("Created split 'at' constraint %s<%s" % (self.quant1, self.quant2))
+
+    def find_keys(self, sim_data_dict):
+        """
+        Function to be called on the first evaluation of the penalty.
+        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
+
+        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
+        possible the input is poorly defined by referring to a suffix that exists in multiple models.
+        :param sim_data_dict:
+        :return:
+        """
+
+        keylist = []
+        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.atvar1, self.atvar2):
+            key = self.get_key(q, sim_data_dict)
+            keylist.append(key)
+        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys1, self.atkeys2 = keylist
+        if self.atkeys1 is None:
+            # No name was specified for atvar; we default to the independent variable of the default suffix
+            self.atkeys1 = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
+        if self.atkeys2 is None:
+            # No name was specified for atvar; we default to the independent variable of the default suffix
+            self.atkeys2 = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
+        logger.debug("Got keys for split 'at' constraint %s<%s: %s" %
+                      (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys1,
+                                                  self.atkeys2]))
+
+    def penalty(self, sim_data_dict):
+        """
+        Compute the penalty
+        """
+
+        # Load the keys if we haven't yet done so
+        if not self.atkeys1:
+            self.find_keys(sim_data_dict)
+
+        # Find the index where the when condition is met
+        atdata1 = self.index(sim_data_dict, self.atkeys1)
+        at_col1 = atdata1 < self.atval1
+        # Make array that is True at every point where the atvar crosses the atval
+        flip_points1 = at_col1[:-1] != at_col1[1:]
+        flip_inds1 = np.nonzero(flip_points1)[0]
+
+        # Repeat for 2nd at condition
+        atdata2 = self.index(sim_data_dict, self.atkeys2)
+        at_col2 = atdata2 < self.atval2
+        flip_points2 = at_col2[:-1] != at_col2[1:]
+        flip_inds2 = np.nonzero(flip_points2)[0]
+
+        if len(flip_inds1) == 0 or len(flip_inds2) == 0:
+            # One of the at conditions was not met, so constraint is not enforced.
+            return 0.
+
+        fi1 = flip_inds1[0]
+        fi2 = flip_inds2[0]
+
+        # Make sure we pick the correct end of the interval if there's a point equal to the "at"
+        if np.isclose(atdata1[fi1+1], self.atval1, atol=0.) and not (np.isclose(atdata1[fi1], self.atval1, atol=0.)):
+            fi1 += 1
+        if np.isclose(atdata2[fi2+1], self.atval2, atol=0.) and not (np.isclose(atdata2[fi2], self.atval2, atol=0.)):
+            fi2 += 1
+        # If constraint was declared with "before", go back 1.
+        if self.before and fi1 > 0:
+            fi1 -= 1
+        if self.before and fi2 > 0:
+            fi2 -= 1
+        penalty = self.get_penalty(sim_data_dict, fi1, fi1+1, require_length=len(at_col1), imin2=fi2, imax2=fi2+1)
+        # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
+
+        return penalty
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
