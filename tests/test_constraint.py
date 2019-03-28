@@ -19,6 +19,8 @@ class TestConstraint:
         cls.line5 = 'A<16 once weight 6'
         cls.line6 = 'A<B at 6 confidence 0.98'
         cls.line7 = 'A<16 between 5,B=5 confidence 0.95 tolerance 15'
+        cls.line8 = 'A at B=6 <= A at B=5 weight 6'
+        cls.line9 = 'A at 7 > C at B=4 before confidence 0.95 tolerance 1'
 
         cls.err1 = 'A<16 always weight 2 confidence 0.95'
         cls.err2 = 'A<16 always confidence 0.98 tolerance 15 min 1'
@@ -78,6 +80,20 @@ class TestConstraint:
         assert p.likelihood_expr.confidence == '0.95'
         assert p.likelihood_expr.tolerance == '15'
 
+    def test_grammar_splitat(self):
+        p = self.cset.parse_constraint_line(self.line8)
+        assert not p.ineq
+        assert p.split.obs1 == 'A'
+        assert list(p.split.at1[1]) == ['B', '6']
+        assert p.split.sign == '<='
+        assert p.weight_expr.weight == '6'
+        p = self.cset.parse_constraint_line(self.line9)
+        assert list(p.split.at1[1]) == ['7']
+        assert p.split.obs2 == 'C'
+        assert list(p.split.at2[1]) == ['B', '4']
+        assert p.split.at2[2] == 'before'
+        assert p.likelihood_expr.confidence == '0.95'
+
     @raises(ParseBaseException)
     def test_grammar_invalid1(self):
         p = self.cset.parse_constraint_line(self.err1)
@@ -114,6 +130,13 @@ class TestConstraint:
         assert isinstance(cs.constraints[4], constraint.OnceConstraint)
         assert cs.constraints[4].weight == 6.
 
+        assert isinstance(cs.constraints[5], constraint.SplitAtConstraint)
+        assert cs.constraints[5].atval1 == 15
+        assert cs.constraints[5].atvar1 == 'R0'
+        assert cs.constraints[5].atvar2 is None
+        assert cs.constraints[5].before1
+        assert not cs.constraints[5].before2
+
     def test_penalties(self):
         d = data.Data()
         d.load_data('bngl_files/con_test.gdat')
@@ -138,8 +161,9 @@ class TestConstraint:
         assert cs.constraints[13].penalty(d_dict) == 0
         np.testing.assert_almost_equal(cs.constraints[14].penalty(d_dict), 1.6)
         np.testing.assert_almost_equal(cs.constraints[15].penalty(d_dict), 0.1)
+        assert cs.constraints[16].penalty(d_dict) == 10
 
-        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 85.3)
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 95.3)
 
     def test_penalty_scale(self):
         d = data.Data()
@@ -154,7 +178,7 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), 0.8)
         np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), 0.8)
 
-        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 170.6)
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 190.6)
 
     def test_likelihood_penalties(self):
         d = data.Data()
@@ -170,3 +194,4 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), -np.log(0.5))
         np.testing.assert_almost_equal(cs.constraints[4].penalty(d_dict), -np.log(0.9/(1+np.exp(1)) + 0.05))
         np.testing.assert_almost_equal(cs.constraints[5].penalty(d_dict), -np.log(0.9 / (1 + np.exp(-0.5)) + 0.05))
+        np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(1 / (1 + np.exp(1))))

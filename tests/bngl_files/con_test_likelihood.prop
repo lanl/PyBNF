@@ -16,3 +16,7 @@ A<4 at time = 4 confidence 0.95 tolerance 1
 
 # Plug into likelihood function
 A<6 at time = 4 confidence 0.95 tolerance 2
+
+# 3 vs 6, plug difference of 3 into likelihood function
+# C follows the convention (for now) of using the earlier time point if the condition is between time points. 
+A at B=8 > C at D=5.45 confidence 1 tolerance 3
