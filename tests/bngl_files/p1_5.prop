@@ -6,3 +6,4 @@ Ag_free<RP at 6 weight 1 # Comment 2
 Ag_free < 16 between RP=3.14, 702 weight 8 min 9
 Ag_free<16 always weight 6
 Ag_free<16 once weight 6
+Ag_free at 6 > Ag_free at R0=15 before weight 10

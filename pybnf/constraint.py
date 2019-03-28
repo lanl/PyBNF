@@ -73,15 +73,17 @@ class ConstraintSet:
                 except pp.ParseBaseException:
                     raise PybnfError("Unable to parse constraint '%s' at line %i of %s" % (line, linenum, filename))
                 # Convert all the attributes of the parsed line into args to use to create the constraint
-                try:
-                    quant1 = float(p.ineq[0])
-                except ValueError:
-                    quant1 = p.ineq[0]
-                sign = p.ineq[1]
-                try:
-                    quant2 = float(p.ineq[2])
-                except ValueError:
-                    quant2 = p.ineq[2]
+                if p.ineq:
+                    # Normal case - for everything except "split at" constraint
+                    try:
+                        quant1 = float(p.ineq[0])
+                    except ValueError:
+                        quant1 = p.ineq[0]
+                    sign = p.ineq[1]
+                    try:
+                        quant2 = float(p.ineq[2])
+                    except ValueError:
+                        quant2 = p.ineq[2]
                 if p.weight_expr:
                     weight = float(p.weight_expr.weight)
                     if p.weight_expr.altpenalty:
@@ -117,7 +119,32 @@ class ConstraintSet:
 
                 # Check the constraint type based on the parse object, extract the constraint-type-specific args, and
                 # make the constraint
-                if p.enforce[0] == 'at':
+                if p.split:
+                    # Special case for "split at" combining inequality and enforcement clauses
+                    quant1 = p.split.obs1
+                    quant2 = p.split.obs2
+                    if len(p.split.at1[1]) == 1:
+                        atvar1 = None
+                        atval1 = float(p.split.at1[1][0])
+                    else:
+                        atvar1 = p.split.at1[1][0]
+                        atval1 = float(p.split.at1[1][1])
+                    if len(p.split.at2[1]) == 1:
+                        atvar2 = None
+                        atval2 = float(p.split.at2[1][0])
+                    else:
+                        atvar2 = p.split.at2[1][0]
+                        atval2 = float(p.split.at2[1][1])
+                    sign = p.split.sign
+                    repeat = (len(p.split.at1) >= 3 and p.split.at1[2] == 'everytime') or \
+                             (len(p.split.at2) >= 3 and p.split.at2[2] == 'everytime')
+                    before1 = (len(p.split.at1) >= 3 and p.split.at1[-1] == 'before')
+                    before2 = (len(p.split.at2) >= 3 and p.split.at2[-1] == 'before')
+                    con = SplitAtConstraint(quant1, atvar1, atval1, sign, quant2, atvar2, atval2, self.base_model,
+                                            self.base_suffix, weight, altpenalty=altpenalty, minpenalty=minpenalty,
+                                            repeat=repeat, before1=before1, before2=before2, confidence=confidence,
+                                            tolerance=tolerance)
+                elif p.enforce[0] == 'at':
                     if len(p.enforce[1]) == 1:
                         atval = float(p.enforce[1][0])
                         atvar = None
@@ -176,6 +203,8 @@ class ConstraintSet:
         enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
+        split = obs.setResultsName('obs1') - enforce_at.setResultsName('at1') - iop.setResultsName('sign') - \
+                obs.setResultsName('obs2') - enforce_at.setResultsName('at2')
         min = pp.CaselessLiteral('min') - number.setResultsName('min')
         penalty = pp.CaselessLiteral('altpenalty') - pp.Group(ineq).setResultsName('altpenalty')
         wt_expr = number.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
@@ -183,7 +212,8 @@ class ConstraintSet:
         likelihood = pp.CaselessLiteral('confidence') - number.setResultsName('confidence') - \
                      pp.Optional(pp.CaselessLiteral('tolerance') - number.setResultsName('tolerance'))
         comment = pp.Suppress(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables)))
-        constraint = pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce') + \
+        constraint = ((pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce')) ^
+                      pp.Group(split).setResultsName('split')) + \
                      pp.Optional(pp.Group(weight).setResultsName('weight_expr') ^
                                  pp.Group(likelihood).setResultsName('likelihood_expr')) + pp.Optional(comment)
 
@@ -387,7 +417,9 @@ class Constraint:
             imin2 = imin
         if imax2 is None:
             imax2 = imax
-        if imax-imin != imax2-imin2:
+        if (imax is not None and imax-imin != imax2-imin2) or \
+                (imax is None and (imin != imin2 or imax2 is not None)):
+            # Note that the case of imax=None occurs if the desired max index is the end of the time course.
             # Should not happen, because currently only the Split At constraint uses imin2 and imax2
             raise ValueError('imin2:imax2 has a different length than imin:imax')
 
@@ -590,7 +622,7 @@ class AtConstraint(Constraint):
 class SplitAtConstraint(Constraint):
     def __init__(self, quant1, atvar1, atval1, sign, quant2, atvar2, atval2, base_model, base_suffix,
                  weight, altpenalty=None, minpenalty=0.,
-                 repeat=False, before=False, confidence=None, tolerance=None):
+                 repeat=False, before1=False, before2=False, confidence=None, tolerance=None):
         """
         Creates a new constraint of the form
 
@@ -612,12 +644,15 @@ class SplitAtConstraint(Constraint):
             self.atval1 = atval2
             self.atvar2 = atvar1
             self.atval2 = atval1
+            self.before1 = before2
+            self.before2 = before1
         else:
             self.atvar1 = atvar1
             self.atval1 = atval1
             self.atvar2 = atvar2
             self.atval2 = atval2
-        self.before = before
+            self.before1 = before1
+            self.before2 = before2
         if repeat:
             raise PybnfError('The "repeat" keyword is not currently supported for constraints with two "at" conditions')
 
@@ -688,9 +723,9 @@ class SplitAtConstraint(Constraint):
         if np.isclose(atdata2[fi2+1], self.atval2, atol=0.) and not (np.isclose(atdata2[fi2], self.atval2, atol=0.)):
             fi2 += 1
         # If constraint was declared with "before", go back 1.
-        if self.before and fi1 > 0:
+        if self.before1 and fi1 > 0:
             fi1 -= 1
-        if self.before and fi2 > 0:
+        if self.before2 and fi2 > 0:
             fi2 -= 1
         penalty = self.get_penalty(sim_data_dict, fi1, fi1+1, require_length=len(at_col1), imin2=fi2, imax2=fi2+1)
         # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols

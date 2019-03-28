@@ -49,3 +49,6 @@ D<5 between A=5,A=4 weight 2
 # Triggers at time 1 (before time 2), for a penalty of 0.1
 D <= 5 at B=8 before
 
+# A at 3 = 4; B before C=9 is 2, so penalty is 5*2 = 10
+A at 3 < B at C=9 before weight 5
+
