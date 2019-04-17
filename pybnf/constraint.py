@@ -519,9 +519,10 @@ class Constraint:
         else:
             # Standard case
             # Note that a negative difference is good, hence the sign convention in the calculation below.
+            # Note factor of 1.7, which makes the logit function approximate a Gaussian CDF with standard deviation k
             unc = 1. - self.confidence
             k = self.tolerance
-            logit = (1-2*unc)/(1. + np.exp(difference/k)) + unc
+            logit = (1-2*unc)/(1. + np.exp(1.7*difference/k)) + unc
             log_likelihood = -np.log(logit)
         return log_likelihood
 
