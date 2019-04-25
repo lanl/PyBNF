@@ -337,8 +337,10 @@ class BNGLModel(Model):
         :param folder: Folder in which to do all the file creation
         :return: Data object
         """
+        logger.debug('Calling execute() on model with params %s' % self.param_set.name)
         # Create the modified BNGL file
         file = '%s/%s' % (folder, filename)
+        logger.debug('Saving file to %s' % file)
         self.save(file)
 
         # Run BioNetGen
@@ -391,9 +393,11 @@ class BNGLModel(Model):
         for suff in self.suffixes:
             if suff[0] == 'simulate':
                 data_file = '%s/%s_%s.gdat' % (folder, filename, suff[1])
+                logger.debug('Loading data file %s for model with params %s' % (data_file, self.param_set.name))
                 data = Data(file_name=data_file)
             else:  # suff[0] == 'parameter_scan'
                 data_file = '%s/%s_%s.scan' % (folder, filename, suff[1])
+                logger.debug('Loading data file %s for model with params %s' % (data_file, self.param_set.name))
                 data = Data(file_name=data_file)
             ds[suff[1]] = data
         return ds
