@@ -30,6 +30,7 @@ from tornado import gen
 from distributed.client import _wait
 from concurrent.futures._base import CancelledError
 
+from socket import gethostname
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ class Job:
         :param delete_folder: If True, delete the folder and files created after the simulation runs
         :type delete_folder: bool
         """
+        self.jlogger.debug('Creating job %s on node %s' % (job_id, gethostname()))
         self.models = models
         self.params = params
         self.job_id = job_id
@@ -208,6 +210,7 @@ class Job:
         # Folder where we save the model files and outputs.
         self.folder = '%s/%s' % (self.output_dir, self.job_id)
         self.delete_folder = delete_folder
+        self.jlogger.debug('The output directory for %s is %s' % (self.job_id, self.output_dir))
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
@@ -232,6 +235,7 @@ class Job:
 
     def run_simulation(self, debug=False, failed_logs_dir=''):
         """Runs the simulation and reads in the result"""
+        self.jlogger.debug('Called run simulation for job %s on node %s' % (self.job_id, gethostname()))
 
         # Force absolute path for failed_logs_dir
         if len(failed_logs_dir) > 0 and failed_logs_dir[0] != '/':
@@ -258,6 +262,7 @@ class Job:
             res = Result(self.params, simdata, self.job_id)
         except (CalledProcessError, FailedSimulationError):
             if debug:
+                self.jlogger.exception('Job %s failed with an error' % self.job_id)
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 1)
         except TimeoutExpired:
