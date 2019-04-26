@@ -122,7 +122,7 @@ def main():
 
             logger.debug('Checking for Simulations directory')
             if not os.path.exists(alg.sim_dir):
-                os.mkdir(alg.sim_dir)
+                os.makedirs(alg.sim_dir)
 
             if alg.bootstrap_number is not None:
                 print0('Resuming a bootstrapping run')
