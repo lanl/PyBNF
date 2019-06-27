@@ -81,3 +81,19 @@ Finally, run PyBNF, and pass PyBNF the scheduler file using the ``-s`` command l
     :command:`pybnf -c fit.conf -s cluster.json`
     
 For additional ``dask-scheduler`` and ``dask-worker`` options, refer to the `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.html>`_ documentation.
+
+(Optional) Logging configuration for remote machines
+----------------------------------------------------
+
+By default, PyBNF logs to the file ``bnf_timestamp.log`` to maintain a record of important events in the application.
+When running PyBNF on a cluster, some of the logs may be written while on a node distinct from the main thread. If
+these logs are desired, the user must configure the scheduler to retrieve these logs.
+
+Upon installation of PyBNF, the dependencies ``dask`` and ``distributed`` should be installed. Installing them will
+create a ``.dask/`` folder in the home directory with a single file: ``config.yaml``. Open this file to find a
+``logging:`` block containing information for how distributed outputs logs. Add the following line to the file,
+appropriately indented:
+
+    :command:`pybnf.algorithms.job: info`
+
+where ``info`` can be any string corresponding to a Python logging level (e.g. ``info``, ``debug``, ``warning``)
