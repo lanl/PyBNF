@@ -6,6 +6,8 @@ Quick Start
 Verify installation with simple examples
 ----------------------------------------
 
+Example jobs configured for PyBNF are available in the ``examples`` folder of the `PyBNF GitHub repository <https://github.com/lanl/PyBNF/tree/master/examples>`_. If you installed PyBNF with ``pip``, you can download this examples folder separately from GitHub or the following `direct link <https://minhaskamal.github.io/DownGit/#/home?url=https:%2F%2Fgithub.com%2Flanl%2FPyBNF%2Ftree%2Fmaster%2Fexamples>`_. 
+
 examples/demo contains two simple example configurations to verify that PyBNF and associated simulators are installed and working correctly. The model files consist of simple polynomial functions, and the entire fitting run should complete in under a minute. 
 
 To run the examples, use the following commands from the examples/demo directory
