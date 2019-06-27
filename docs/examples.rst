@@ -3,7 +3,7 @@
 Examples
 ========
 
-PyBNF contains 17 example fitting jobs in the examples/ directory. 
+The PyBNF `GitHub repository <https://github.com/lanl/pybnf>`_ contains 17 example fitting jobs in the examples/ directory. 
 
 Each example directory contains all files required to run the example: the config file, model file(s), and data / property file(s). The config file paths are specified such that the examples should be run from the root PyBNF directory, i.e., to run the "demo" example, cd into the examples/demo direcotry and run ``pybnf -c demo_bng.conf``. Results will be saved in a directory called "output" inside the examples/demo directory. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
 
