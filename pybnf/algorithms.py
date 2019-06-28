@@ -294,9 +294,9 @@ class Job:
                 res.simdata = None
         if self.delete_folder:
             try:
-                run(['rm', '-rf', self.folder], check=True, timeout=1800)
+                shutil.rmtree(self.folder)
                 self.jlogger.debug('Removed folder %s' % self.folder)
-            except (CalledProcessError, TimeoutExpired):
+            except OSError:
                 self.jlogger.error('Failed to remove folder %s.' % self.folder)
 
         return res
@@ -982,7 +982,7 @@ class Algorithm(object):
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
-                run(['rm', '-rf', self.sim_dir])
+                shutil.rmtree(self.sim_dir)
 
         logger.info("Fitting complete")
 
