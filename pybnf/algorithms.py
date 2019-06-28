@@ -770,7 +770,7 @@ class Algorithm(object):
             noname_filepath = '%s/sorted_params.txt' % self.res_dir
             if os.path.isfile(noname_filepath):
                 os.remove(noname_filepath)
-            os.rename(filepath, noname_filepath)
+            os.replace(filepath, noname_filepath)
 
     def backup(self, pending_psets=()):
         """
@@ -793,7 +793,7 @@ class Algorithm(object):
             f = open(temppicklepath, 'wb')
             pickle.dump((self, pending_psets), f)
             f.close()
-            os.rename(temppicklepath, picklepath)
+            os.replace(temppicklepath, picklepath)
         except IOError as e:
             logger.exception('Failed to save backup of algorithm')
             print1('Failed to save backup of the algorithm.\nSee log for more information')
@@ -971,7 +971,7 @@ class Algorithm(object):
 
         if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:
             try:
-                os.rename('%s/alg_backup.bp' % self.config.config['output_dir'],
+                os.replace('%s/alg_backup.bp' % self.config.config['output_dir'],
                           '%s/alg_%s.bp' % (self.config.config['output_dir'],
                                             ('finished' if not self.refine else 'refine_finished')))
                 logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
