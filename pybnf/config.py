@@ -441,8 +441,11 @@ class Configuration(object):
         # path to the appropriate Model subclass
         if BNGLModel in model_types:
             if self.config['bng_command'] == '':
-                raise PybnfError('Path to BNG2.pl not defined.  Please specify using the "bng_command" parameter '
-                                 'in the configuration file or set the BNGPATH environmental variable')
+                raise PybnfError('The location of the BioNetGen simulator (BNG2.pl) is not specified. Please set the '
+                                 '"bng_command" configuration key to the location of the file BNG2.pl, or set the '
+                                 'BNGPATH environmental variable to the folder containing BNG2.pl.\n'
+                                 'If BioNetGen is not yet installed, please refer to installation instructions at '
+                                 'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
             elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
                 raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
                                  'name at the end of the path (e.g. /path/to/BNG2.pl)')
@@ -452,9 +455,11 @@ class Configuration(object):
                     subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError:
-                    raise PybnfError('BioNetGen failed to execute.  Please check that "bng_command" parameter in the '
-                                     'configuration file points to the BNG2.pl script or that the BNGPATH environmental '
-                                     'variable is correctly set')
+                    raise PybnfError('BioNetGen failed to execute. Please check that "bng_command" parameter in the '
+                                     'configuration file points to the BNG2.pl script, or that the BNGPATH environmental '
+                                     'variable is set to the folder containing BNG2.pl.\n'
+                                     'For help, refer to '
+                                     'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
         # Check that the integrator is valid
         integrators = ('cvode', 'euler', 'rk4', 'gillespie')
         if self.config['sbml_integrator'] not in integrators:
