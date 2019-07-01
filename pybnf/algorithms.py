@@ -888,8 +888,9 @@ class Algorithm(object):
                     print1('Job %s timed out' % res.name)
                 if self.success_count == 0 and self.fail_count >= 100:
                     raise PybnfError('Aborted because all jobs are failing',
-                                     'Your simulations are failing to run. See the log files in '
-                                     'the %s directory.' % ('FailedSimLogs' if debug else 'Simulations'))
+                                     'Your simulations are failing to run. Logs from failed simulations are saved in '
+                                     'the FailedSimLogs directory. For help troubleshooting this error, refer to '
+                                     'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete' % res.name)
