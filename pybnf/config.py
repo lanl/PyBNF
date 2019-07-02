@@ -345,6 +345,14 @@ class Configuration(object):
         Convert relative paths to absolute paths
         """
         home_dir = os.getcwd()
+        if os.name == 'nt':  # Windows
+            if directory == '':
+                return ''
+            # Check for both unix-like and windows-like paths starting from root
+            if directory[0] == '/' or re.match(r'[A-Z]:', directory):
+                return directory
+            else:
+                return os.path.join(home_dir, directory)
         return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
 
     def _load_models(self):
