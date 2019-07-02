@@ -8,10 +8,9 @@ If most or all of your simulations are failing (and generate messages like "Job 
 
 Check the simulation logs
 ^^^^^^^^^^^^^^^^^^^^^^^^^
-Rerun the fit with the debugging flag ``-d``.  Failed simulations 
-will send their logs (generally stdout and stderr) to a ``FailedSimLogs`` folder in the specified output directory. These logs should usually contain more information about why the simulator failed to run.
+Failed simulations will send their logs (generally stdout and stderr) to a ``FailedSimLogs`` folder in the specified output directory. These logs should usually contain more information about why the simulator failed to run.
 
-If the fit was run with ``delete_old_files=0`` in the config file, the logs can instead be found in the appropriate folder in the ``Simulations/`` directory.
+By default, PyBNF saves logs of roughly the first 10 failed simulations encountered. If PyBNF is run with the ``-d`` flag, logs from all failed simulations will be saved. If the fit was run with ``delete_old_files=0`` in the config file, all logs can be found in the appropriate folders in the ``Simulations/`` directory.
 
 For BNGL simulations
 ^^^^^^^^^^^^^^^^^^^^
