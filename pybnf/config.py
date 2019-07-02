@@ -452,8 +452,10 @@ class Configuration(object):
             else:  # check to make sure BNG2.pl is available
                 try:
                     logger.info('Checking to make sure bng_command is appropriately set')
-                    subprocess.run(self.config['bng_command'] + ' -v', shell=True, check=True,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                    cmd = [self.config['bng_command'], '-v']
+                    if os.name == 'nt':  # Windows
+                        cmd = ['perl'] + cmd
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError:
                     raise PybnfError('BioNetGen failed to execute. Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script, or that the BNGPATH environmental '
