@@ -14,6 +14,7 @@ import traceback
 import roadrunner as rr
 import pickle
 from os.path import abspath, dirname, join, isfile
+import os
 from sys import executable
 
 ROOT_DIRECTORY = join(dirname(abspath(__file__)), '..')
@@ -343,6 +344,9 @@ class BNGLModel(Model):
         # Run BioNetGen
         cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
         log_file = '%s.log' % file
+        if os.name == 'nt':  # Windows
+            # Explicitly call perl because the #! line in BNG2.pl is not supported.
+            cmd = ['perl'] + cmd
         with open(log_file, 'w') as lf:
             run(cmd, check=True, stderr=STDOUT, stdout=lf, timeout=timeout)
 

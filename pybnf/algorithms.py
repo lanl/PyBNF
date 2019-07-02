@@ -549,6 +549,9 @@ class Algorithm(object):
                 default_pset = PSet([var.set_value(var.default_value) for var in self.variables])
                 m.save(gnm_name, gen_only=True, pset=default_pset)
                 gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
+                if os.name == 'nt':  # Windows
+                    # Explicitly call perl because the #! line in BNG2.pl is not supported.
+                    gn_cmd = ['perl'] + gn_cmd
                 try:
                     with open('%s.log' % gnm_name, 'w') as lf:
                         print2('Generating network for model %s.bngl' % gnm_name)
