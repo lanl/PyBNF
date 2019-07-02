@@ -465,10 +465,18 @@ class Configuration(object):
                         cmd = ['perl'] + cmd
                     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError:
+                    #  Occurs on Windows if BNG2.pl is nonexistent, or on Mac/Linux if BNG2.pl exists but crashed
                     raise PybnfError('BioNetGen failed to execute. Please check that "bng_command" parameter in the '
                                      'configuration file points to the BNG2.pl script, or that the BNGPATH environmental '
                                      'variable is set to the folder containing BNG2.pl.\n'
                                      'For help, refer to '
+                                     'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
+                except FileNotFoundError:
+                    #  Occurs on Mac/Linux if BNG2.pl is nonexistent.
+                    raise PybnfError('The BioNetGen simulator (BNG2.pl) was not found at the specified location. Please set the '
+                                     '"bng_command" configuration key to the location of the file BNG2.pl, or set the '
+                                     'BNGPATH environmental variable to the folder containing BNG2.pl.\n'
+                                     'If BioNetGen is not yet installed, please refer to installation instructions at '
                                      'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
         # Check that the integrator is valid
         integrators = ('cvode', 'euler', 'rk4', 'gillespie')
