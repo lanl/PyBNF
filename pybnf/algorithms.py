@@ -490,7 +490,10 @@ class Algorithm(object):
             self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs-boot%s' % bootstrap
             for boot_dir in (self.sim_dir, self.res_dir, self.failed_logs_dir):
                 if os.path.exists(boot_dir):
-                    shutil.rmtree(boot_dir)
+                    try:
+                        shutil.rmtree(boot_dir)
+                    except OSError:
+                        logger.error('Failed to remove bootstrap directory '+boot_dir)
                 os.mkdir(boot_dir)
 
         self.best_fit_obj = None
@@ -985,7 +988,10 @@ class Algorithm(object):
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
-                shutil.rmtree(self.sim_dir)
+                try:
+                    shutil.rmtree(self.sim_dir)
+                except OSError:
+                    logger.error('Failed to remove simulations directory '+self.sim_dir)
 
         logger.info("Fitting complete")
 
