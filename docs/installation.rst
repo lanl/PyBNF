@@ -7,7 +7,7 @@ Operating System
 ----------------
 PyBNF can be installed on any recent Linux or macOS operating system.
 
-PyBNF can also be installed on Windows, but functionality on Windows has been less extensively tested (in particular, Windows clusters have not been tested). 
+PyBNF can also be installed on Windows, but functionality on Windows has been less extensively tested (in particular, Windows clusters and multicore workstations have not been tested). 
 
 Python
 ------
