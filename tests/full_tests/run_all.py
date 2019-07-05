@@ -112,10 +112,15 @@ def run_test(name, folder, conffile, outstream, display_best=True):
     
     outstream.write('\nTest %s:\n' % name)
     
-    try:
-        proc = sp.run(['pybnf', '-c', '%s/%s' % (folder, conffile), '-l', name, '-o'],
-                      check=True, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
-    except sp.CalledProcessError:
+
+    proc = sp.run(['pybnf', '-c', '%s/%s' % (folder, conffile), '-l', name, '-o'],
+                  stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
+    with open('%s_stdout.out' % name, 'w') as out:
+        out.write(proc.stdout)
+    with open('%s_stderr.out' % name, 'w') as out:
+        out.write(proc.stderr)
+
+    if proc.returncode != 0:
         outstream.write('Failed!\n')
         return
     
@@ -132,11 +137,6 @@ def run_test(name, folder, conffile, outstream, display_best=True):
         outstream.write('Failed to read run time!\n')
     else:
         outstream.write(grep.stdout)
-    
-    with open('%s_stdout.out' % name, 'w') as out:
-        out.write(proc.stdout)
-    with open('%s_stderr.out' % name, 'w') as out:
-        out.write(proc.stderr)
     
     outstream.write('Log has %s lines\n' % wc_summary('%s.log' % name))
     outstream.write('Stdout has %s lines\n' % wc_summary('%s_stdout.out' % name))
