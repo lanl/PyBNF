@@ -10,6 +10,8 @@ Run with the argument ssh to use PyBNF's automatic cluster setup with dask-ssh
 Run with the argument sf to use manual cluster setup, with a preconfigured dask cluster with scheduler file named sf
 Bash files are provided in this folder to run this script using the cluster options. 
 
+This test script is not Windows compatible due to extensive use of `grep`
+
 The output file test_summary.txt should be manually checked to confirm success of the tests. 
 The output can be compared to example_summary.txt, which is the result from running on commit e34ba3b (14 Mar 2019)
 shortly before the v1.0.0 release.
