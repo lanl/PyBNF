@@ -293,11 +293,18 @@ class Job:
                         logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
                 res.simdata = None
         if self.delete_folder:
-            try:
-                shutil.rmtree(self.folder)
-                self.jlogger.debug('Removed folder %s' % self.folder)
-            except OSError:
-                self.jlogger.error('Failed to remove folder %s.' % self.folder)
+            if os.name == 'nt':  # Windows
+                try:
+                    shutil.rmtree(self.folder)
+                    self.jlogger.debug('Removed folder %s' % self.folder)
+                except OSError:
+                    self.jlogger.error('Failed to remove folder %s.' % self.folder)
+            else:
+                try:
+                    run(['rm', '-rf', self.folder], check=True, timeout=1800)
+                    self.jlogger.debug('Removed folder %s' % self.folder)
+                except (CalledProcessError, TimeoutExpired):
+                    self.jlogger.error('Failed to remove folder %s.' % self.folder)
 
         return res
 
@@ -988,10 +995,13 @@ class Algorithm(object):
         if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
-                try:
-                    shutil.rmtree(self.sim_dir)
-                except OSError:
-                    logger.error('Failed to remove simulations directory '+self.sim_dir)
+                if os.name == 'nt':  # Windows
+                    try:
+                        shutil.rmtree(self.sim_dir)
+                    except OSError:
+                        logger.error('Failed to remove simulations directory '+self.sim_dir)
+                else:
+                    run(['rm', '-rf', self.sim_dir])  # More likely to succeed than rmtree()
 
         logger.info("Fitting complete")
 
