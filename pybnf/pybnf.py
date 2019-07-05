@@ -372,10 +372,10 @@ def main():
         # (exists in directory where workers were instantiated)
         # Tries current and home directories
         if os.path.isdir('dask-worker-space'):
-            shutil.rmtree('dask-worker-space')
+            shutil.rmtree('dask-worker-space', ignore_errors=True)
         home_dask_dir = os.path.expanduser(os.path.join('~', 'dask-worker-space'))
         if os.path.isdir(home_dask_dir):
-            shutil.rmtree(home_dask_dir)
+            shutil.rmtree(home_dask_dir, ignore_errors=True)
 
         # After any error, try to clean up.
         try:
