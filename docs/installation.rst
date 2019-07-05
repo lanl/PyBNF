@@ -26,6 +26,8 @@ Also confirm that your Python 3 has the ``pip`` package manager, which is used t
 If you are missing python3 or pip, an easy way to get them is by installing the `Anaconda`_ Python distribution for Python v3.5 or higher.
 Instructions for installing on various platforms can be found on the `Anaconda`_ website.
 
+.. _windows_install:
+
 Windows
 ^^^^^^^
 
@@ -77,7 +79,7 @@ BioNetGen
 PyBNF is designed to work with simulators present in the BioNetGen software suite, version 2.3, available for download from 
 the `BioNetGen`_ website. 
 Note that for Linux distributions other than Ubuntu, the pre-built binary is unreliable, and it is necessary to rebuild BioNetGen from source. 
-For Windows, Perl must be installed separately as part of BioNetGen installation; the developers recommend `ActivePerl`_.
+For Windows, Perl must be installed separately, as described :ref:`above <windows_install>`.
 The current BioNetGen distribution includes support for both network-based simulations and network-free simulations. 
 
 .. _set_bng_path:
