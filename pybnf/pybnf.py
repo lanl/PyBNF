@@ -9,6 +9,7 @@ from .pset import Trajectory
 import pybnf.algorithms as algs
 import pybnf.printing as printing
 
+from subprocess import run
 from numpy import inf
 
 import logging
@@ -372,10 +373,16 @@ def main():
         # (exists in directory where workers were instantiated)
         # Tries current and home directories
         if os.path.isdir('dask-worker-space'):
-            shutil.rmtree('dask-worker-space', ignore_errors=True)
+            if os.name == 'nt':  # Windows
+                shutil.rmtree('dask-worker-space', ignore_errors=True)
+            else:
+                run(['rm', '-rf', 'dask-worker-space'])  # More likely to succeed than rmtree()
         home_dask_dir = os.path.expanduser(os.path.join('~', 'dask-worker-space'))
         if os.path.isdir(home_dask_dir):
-            shutil.rmtree(home_dask_dir, ignore_errors=True)
+            if os.name == 'nt':  # Windows
+                shutil.rmtree(home_dask_dir, ignore_errors=True)
+            else:
+                run(['rm', '-rf', home_dask_dir])
 
         # After any error, try to clean up.
         try:
