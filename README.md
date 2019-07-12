@@ -8,7 +8,7 @@ bootstrapping or Bayesian approaches, and model checking. PyBNF includes the Bio
 (BPSL) for defining qualitative data for use in parameterization or checking. It runs on most Linux and macOS
 workstations as well on computing clusters.
 
-For documentation, refer to [Documentation.pdf](Documentation.pdf) or the online documentation at <https://pybnf.readthedocs.io/en/latest/>.
+For documentation, refer to [Documentation_PyBioNetFit.pdf](Documentation_PyBioNetFit.pdf) or the online documentation at <https://pybnf.readthedocs.io/en/latest/>.
 
 PyBioNetFit is released under the BSD-3 license. For more information, refer to the
 [LICENSE](LICENSE). LANL code designation: C18062
