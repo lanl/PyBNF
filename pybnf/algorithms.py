@@ -1326,6 +1326,16 @@ class DifferentialEvolution(DifferentialEvolutionBase):
 
         self.num_islands = config.config['islands']
         self.num_per_island = int(config.config['population_size'] / self.num_islands)
+        if self.num_per_island < 3:
+            self.num_per_island = 3
+            if self.num_islands == 1:
+                print1('Differential evolution requires a population size of at least 3. Increased the population size '
+                       'to 3.')
+                logger.warning('Increased population size to minimum allowed value of 3')
+            else:
+                print1('Island-based differential evolution requires a population size of at least 3 times '
+                       'the number of islands. Increased the population size to %i.' % (3*self.num_islands))
+                logger.warning('Increased population size to minimum allowed value of 3 per island')
         if config.config['population_size'] % config.config['islands'] != 0:
             logger.warning('Reduced population_size to %i to evenly distribute it over %i islands' %
                             (self.num_islands * self.num_per_island, self.num_islands))
@@ -1552,6 +1562,12 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
         super(AsynchronousDifferentialEvolution, self).__init__(config)
 
         self.population_size = config.config['population_size']
+        if self.population_size < 3:
+            self.population_size = 3
+            self.config.config['population_size'] = 3
+            print1('Asynchronous differential evolution requires a population size of at least 3. '
+                   'Increasing the population size to 3.')
+            logger.warning('Increased population_size to the minimum allowed value of 3')
 
         self.sims_completed = 0
         self.individuals = []  # List of individuals
@@ -1646,6 +1662,12 @@ class ScatterSearch(Algorithm):
         super(ScatterSearch, self).__init__(config)
 
         self.popsize = config.config['population_size']
+        if self.popsize < 3:
+            print1('Scatter search requires a population size of at least 3. '
+                   'Increasing the population size to 3.')
+            logger.warning('Increasing population_size to the minimum allowed value of 3')
+            self.config.config['population_size'] = 3
+            self.popsize = 3
         self.max_iterations = config.config['max_iterations']
         if 'reserve_size' in config.config:
             self.reserve_size = config.config['reserve_size']
