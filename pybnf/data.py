@@ -172,6 +172,8 @@ class Data(object):
         ncols = len(header)
         self.indvar = header[0]
 
+        self.cols = dict()
+        self.headers = dict()
         for c in header:
             l = len(self.cols)
             if c in self.cols:

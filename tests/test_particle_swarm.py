@@ -13,9 +13,7 @@ class TestParticleSwarm:
     def setup_class(cls):
         cls.data1e = [
             '# time    v1_result    v2_result    v3_result  v1_result_SD  v2_result_SD  v3_result_SD\n',
-            ' 0 3   4   5   0.1   0.2   0.3\n',
-            ' 1 2   3   6   0.1   0.1   0.1\n',
-            ' 2 4   2   10  0.3   0.1   1.0\n'
+            ' 1 2   3   6   0.1   0.1   0.1\n'
         ]
 
         cls.d1e = data.Data()
