@@ -174,6 +174,8 @@ class Data(object):
 
         for c in header:
             l = len(self.cols)
+            if c in self.cols:
+                raise DuplicateColumnError('Data file contains duplicate column name "%s"' % c)
             self.cols[c] = l
             self.headers[l] = c
 
@@ -354,3 +356,11 @@ class Data(object):
     def weights_to_file(self, file_name):
         logger.info("Saving weights in file %s" % file_name)
         np.savetxt(file_name, self.weights, fmt='%d', header='\t'.join(sorted(self.cols, key=self.cols.get)))
+
+
+class DuplicateColumnError(ValueError):
+    """
+    Error thrown if a loaded data file has duplicate column names.
+    Should be reraised as a PybnfError only if it was a user-supplied file
+    """
+    pass

@@ -1,7 +1,7 @@
 """Classes and methods for configuring the fitting run"""
 
 
-from .data import Data
+from .data import Data, DuplicateColumnError
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective, SumOfDiffsObjective
 
@@ -535,6 +535,8 @@ class Configuration(object):
                         d = Data(file_name=ef)
                     except FileNotFoundError:
                         raise PybnfError('Experimental data file %s was not found.' % ef)
+                    except DuplicateColumnError as err:
+                        raise PybnfError('Parsing data file %s. %s' % (ef, err.args[0]))
                     ed[m][self._file_prefix(ef)] = d
                 else:
                     cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, '(con|prop)'))
