@@ -134,12 +134,8 @@ class SummationObjective(ObjectiveFunction):
                 sim_row = np.argmax(np.isclose(sim_data[indvar], exp_data.data[rownum, 0], atol=0.))
                 # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
                 if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
-                    warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
-                    if show_warnings and warnstr not in self.warned:
-                        print1("Warning: Ignored " + indvar + " " + str(exp_data.data[rownum, 0]) +
-                               " because that " + indvar + " was not in the simulation data.")
-                        self.warned.add(warnstr)
-                    continue
+                    raise PybnfError('Experimental data includes %s=%s, but that %s is not in the simulation output. '
+                                     % (indvar, exp_data.data[rownum, 0], indvar))
             elif self.rounding == 1:
                 # Take the closest row to the exp data
                 sim_row = np.argmin(abs(sim_data[indvar] - exp_data.data[rownum, 0]))
@@ -190,11 +186,9 @@ class SummationObjective(ObjectiveFunction):
         :return: None
         """
         missed = set(exp_cols).difference(set(compare_cols))
-        for name in missed:
-            if name not in self.warned:
-                print1("Warning: Ignoring experimental data column '%s' because that name is not in the simulation "
-                       "output" % name)
-                self.warned.add(name)
+        if len(missed) > 0:
+            raise PybnfError('The following experimental data columns were not found in the simulation output: '
+                             + str(missed))
 
 
 class ChiSquareObjective(SummationObjective):
@@ -221,11 +215,9 @@ class ChiSquareObjective(SummationObjective):
         :return: None
         """
         missed = set(exp_cols).difference(set(compare_cols).union(set(['%s_SD' % s for s in compare_cols])))
-        for name in missed:
-            if name not in self.warned:
-                print1("Warning: Ignoring experimental data column '%s' because that name is not in the simulation "
-                       "output" % name)
-                self.warned.add(name)
+        if len(missed) > 0:
+            raise PybnfError('The following experimental data columns were not found in the simulation output: '
+                             + str(missed))
 
 
 class SumOfSquaresObjective(SummationObjective):
