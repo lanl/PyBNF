@@ -2277,7 +2277,8 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 return self.replica_exchange()
             elif min(self.iteration) >= self.max_iterations:
                 print0('Overall move accept rate: %f' % (self.accepted/self.attempts))
-                self.update_histograms('_final')
+                if not self.sa:
+                    self.update_histograms('_final')
                 return 'STOP'
             else:
                 return []
