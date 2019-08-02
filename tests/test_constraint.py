@@ -21,6 +21,7 @@ class TestConstraint:
         cls.line7 = 'A<16 between 5,B=5 confidence 0.95 tolerance 15'
         cls.line8 = 'A at B=6 <= A at B=5 weight 6'
         cls.line9 = 'A at 7 > C at B=4 before confidence 0.95 tolerance 1'
+        cls.line10 = 'A<B at C=6 pmin 0.1 pmax 0.95 tolerance 1'
 
         cls.err1 = 'A<16 always weight 2 confidence 0.95'
         cls.err2 = 'A<16 always confidence 0.98 tolerance 15 min 1'
@@ -93,6 +94,12 @@ class TestConstraint:
         assert list(p.split.at2[1]) == ['B', '4']
         assert p.split.at2[2] == 'before'
         assert p.likelihood_expr.confidence == '0.95'
+
+    def test_grammar_pmin(self):
+        p = self.cset.parse_constraint_line(self.line10)
+        assert not p.likelihood_expr.confidence
+        assert p.likelihood_expr.pmin == '0.1'
+        assert p.likelihood_expr.pmax == '0.95'
 
     @raises(ParseBaseException)
     def test_grammar_invalid1(self):
@@ -192,6 +199,7 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[1].penalty(d_dict), -np.log(0.95))
         np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), -np.log(0.05))
         np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), -np.log(0.5))
-        np.testing.assert_almost_equal(cs.constraints[4].penalty(d_dict), -np.log(0.9/(1+np.exp(1)) + 0.05))
-        np.testing.assert_almost_equal(cs.constraints[5].penalty(d_dict), -np.log(0.9 / (1 + np.exp(-0.5)) + 0.05))
-        np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(1 / (1 + np.exp(1))))
+        np.testing.assert_almost_equal(cs.constraints[4].penalty(d_dict), -np.log(0.9/(1+np.exp(1.7*1)) + 0.05))
+        np.testing.assert_almost_equal(cs.constraints[5].penalty(d_dict), -np.log(0.9 / (1 + np.exp(1.7*-0.5)) + 0.05))
+        np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(1 / (1 + np.exp(1.7*1))))
+        np.testing.assert_almost_equal(cs.constraints[7].penalty(d_dict), -np.log(0.75 / (1 + np.exp(1.7*-0.5)) + 0.1))
