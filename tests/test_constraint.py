@@ -3,6 +3,7 @@ import copy
 import numpy as np
 from nose.tools import raises
 from pyparsing import ParseBaseException
+from math import erf, sqrt
 
 
 class TestConstraint:
@@ -195,11 +196,15 @@ class TestConstraint:
         cs = copy.deepcopy(self.cset)
         cs.load_constraint_file(self.f3)
 
+        def cdf(x, sigma):
+            return (1. + erf(x / sigma / sqrt(2.) )) / 2.
+        np.testing.assert_almost_equal(cdf(1,1)-cdf(-1,1), 0.682689492137)  # Check this gaussian CDF is working
+
         assert cs.constraints[0].penalty(d_dict) == 0
         np.testing.assert_almost_equal(cs.constraints[1].penalty(d_dict), -np.log(0.95))
         np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), -np.log(0.05))
         np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), -np.log(0.5))
-        np.testing.assert_almost_equal(cs.constraints[4].penalty(d_dict), -np.log(0.9/(1+np.exp(1.7*1)) + 0.05))
-        np.testing.assert_almost_equal(cs.constraints[5].penalty(d_dict), -np.log(0.9 / (1 + np.exp(1.7*-0.5)) + 0.05))
-        np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(1 / (1 + np.exp(1.7*1))))
-        np.testing.assert_almost_equal(cs.constraints[7].penalty(d_dict), -np.log(0.75 / (1 + np.exp(1.7*-0.5)) + 0.1))
+        np.testing.assert_almost_equal(cs.constraints[4].penalty(d_dict), -np.log(0.9 * cdf(-1.,1.) + 0.05))
+        np.testing.assert_almost_equal(cs.constraints[5].penalty(d_dict), -np.log(0.9 * cdf(1., 2.) + 0.05))
+        np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(cdf(-3., 3.)))
+        np.testing.assert_almost_equal(cs.constraints[7].penalty(d_dict), -np.log(0.75 * cdf(1., 2.) + 0.1))
