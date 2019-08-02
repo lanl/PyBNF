@@ -9,6 +9,7 @@ import pyparsing as pp
 import numpy as np
 import re
 import logging
+from math import erf
 
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ class Constraint:
         Create a constraint of the form (quant1) (sign) (quant2)
         Depending on which parameters are passed, the constraint automatically chooses a model for penalty calculation
         If weight and/or altpenalty are passed, uses the static penalty method
-        If confidence and/or tolerance are passed, uses the log likelihood method with a logit function.
+        If confidence and/or tolerance are passed, uses the log likelihood method with a Gaussian CDF.
         The two penalty models should not be mixed.
 
         :param quant1: String observable name or float. String could be in the form suffix.Observable to refer to any
@@ -255,11 +256,11 @@ class Constraint:
         constraint inequality to calculate the penalty
         :param minpenalty: The minimum penalty that must be applied if the constraint is violated, regardless of how
         low the extent of violation is.
-        :param pmin: Using the log likelihood penalty, the minimum possible value of the logistic function.
+        :param pmin: Using the log likelihood penalty, the minimum possible probability of this constraint.
         Represents the probability that the constraint is satisfied regardless of the output of the model
-        :param pmax: Using the log likelihood penalty, the maximum possible value of the logistic function.
+        :param pmax: Using the log likelihood penalty, the maximum possible probability of this constraint.
         Represents the probability that the constraint is violated regardless of the output of the model
-        :param tolerance: Using the log likelihood penalty, the steepness of the logit function.
+        :param tolerance: Using the log likelihood penalty, the standard deviation of the Gaussian CDF.
         """
         # Flip the inequality if it's a '>', so we can always assume a '<'
         if sign in ('>', '>='):
@@ -514,7 +515,7 @@ class Constraint:
         """
         Helper function for calculating the negative log likelihood of constraint satisfaction given the parameters,
         i.e. a likelihood-based penalty function.
-        The likelihood is calculated with a "soft logit" function defined in terms of this constraint's confidence
+        The likelihood is calculated with a Gaussian CDF defined in terms of this constraint's confidence
         and tolerance
 
         :param sim_data_dict: The dictionary of data objects
@@ -528,9 +529,18 @@ class Constraint:
         :param imax2: If specified, use this different index for quantity 2
         :return:
         """
+
+        def cdf(x):
+            """
+            The cumulative distribution function of a Gaussian distribution with mean 0 and variance 1
+
+            Previous code versions used the approximation cdf(x) = 1./(1. + np.exp(-1.7*x))
+            """
+            return (1. + erf(x / np.sqrt(2.))) / 2.
+
         difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         if self.tolerance == 0:
-            # Edge case where logit is a step function
+            # Edge case where cdf is a step function
             if difference < 0 or (difference == 0 and self.or_equal):
                 log_likelihood = -np.log(self.pmax)
             else:
@@ -538,11 +548,10 @@ class Constraint:
         else:
             # Standard case
             # Note that a negative difference is good, hence the sign convention in the calculation below.
-            # Note factor of 1.7, which makes the logit function approximate a Gaussian CDF with standard deviation k
             k = self.tolerance
-            logit = 1./(1. + np.exp(1.7*difference/k))
-            adjusted_logit = (self.pmax - self.pmin) * logit + self.pmin
-            log_likelihood = -np.log(adjusted_logit)
+            prob = cdf(-difference/k)
+            adjusted_prob = (self.pmax - self.pmin) * prob + self.pmin
+            log_likelihood = -np.log(adjusted_prob)
         return log_likelihood
 
 
