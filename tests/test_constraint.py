@@ -23,6 +23,7 @@ class TestConstraint:
         cls.line8 = 'A at B=6 <= A at B=5 weight 6'
         cls.line9 = 'A at 7 > C at B=4 before confidence 0.95 tolerance 1'
         cls.line10 = 'A<B at C=6 pmin 0.1 pmax 0.95 tolerance 1'
+        cls.line11 = 'A<16 once between B=3.14, 702 weight 8 min 9'
 
         cls.err1 = 'A<16 always weight 2 confidence 0.95'
         cls.err2 = 'A<16 always confidence 0.98 tolerance 15 min 1'
@@ -67,6 +68,9 @@ class TestConstraint:
         assert p.enforce[1][1] == '3.14'
         assert len(p.enforce[2]) == 1
         assert p.enforce[2][0] == '702'
+        p = self.cset.parse_constraint_line(self.line11)
+        assert p.enforce[0] == 'once between'
+        assert p.enforce[1][0] == 'B'
 
     def test_grammar_other(self):
         p = self.cset.parse_constraint_line(self.line4)
@@ -170,8 +174,9 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[14].penalty(d_dict), 1.6)
         np.testing.assert_almost_equal(cs.constraints[15].penalty(d_dict), 0.1)
         assert cs.constraints[16].penalty(d_dict) == 10
+        assert cs.constraints[17].penalty(d_dict) == 3
 
-        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 95.3)
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 98.3)
 
     def test_penalty_scale(self):
         d = data.Data()
@@ -186,7 +191,7 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[2].penalty(d_dict), 0.8)
         np.testing.assert_almost_equal(cs.constraints[3].penalty(d_dict), 0.8)
 
-        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 190.6)
+        np.testing.assert_almost_equal(cs.total_penalty(d_dict), 196.6)
 
     def test_likelihood_penalties(self):
         d = data.Data()
@@ -208,3 +213,4 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[5].penalty(d_dict), -np.log(0.9 * cdf(1., 2.) + 0.05))
         np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(cdf(-3., 3.)))
         np.testing.assert_almost_equal(cs.constraints[7].penalty(d_dict), -np.log(0.75 * cdf(1., 2.) + 0.1))
+        np.testing.assert_almost_equal(cs.constraints[8].penalty(d_dict), -np.log(cdf(-1., 1.)))

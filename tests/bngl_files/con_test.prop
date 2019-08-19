@@ -52,3 +52,5 @@ D <= 5 at B=8 before
 # A at 3 = 4; B before C=9 is 2, so penalty is 5*2 = 10
 A at 3 < B at C=9 before weight 5
 
+# The closest we get to C=4 within that range is C=5, so the penalty is 1*3 = 3
+C < 4 once between D=5.4, 8 weight 3
