@@ -23,3 +23,6 @@ A at B=8 > C at D=5.45 confidence 1 tolerance 3
 
 # Plug into likelihood function
 A<6 at time = 4 pmin 0.1 pmax 0.85 tolerance 2
+
+# The closest we get to C=4 within that range is C=5, so a difference of 1 is plugged into likelihood func
+C < 4 once between D=5.4, 8 confidence 1 tolerance 1

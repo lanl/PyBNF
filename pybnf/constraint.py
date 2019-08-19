@@ -165,13 +165,8 @@ class ConstraintSet:
                     con = AtConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before,
                                        pmin=pmin, pmax=pmax, tolerance=tolerance)
-                elif p.enforce[0] == 'always':
-                    con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty, pmin=pmin, pmax=pmax, tolerance=tolerance)
-                elif p.enforce[0] == 'once':
-                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty,
-                                         minpenalty, pmin, pmax, tolerance)
-                elif p.enforce[0] == 'between':
+                elif p.enforce[0] == 'between' or p.enforce[0] == 'once between':
+                    once = (p.enforce[0] == 'once between')
                     if len(p.enforce[1]) == 1:
                         startval = float(p.enforce[1][0])
                         startvar = None
@@ -186,7 +181,13 @@ class ConstraintSet:
                         endval = float(p.enforce[2][1])
                     con = BetweenConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
-                                           endval=endval, pmin=pmin, pmax=pmax, tolerance=tolerance)
+                                           endval=endval, pmin=pmin, pmax=pmax, tolerance=tolerance, once=once)
+                elif p.enforce[0] == 'always':
+                    con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
+                                           minpenalty=minpenalty, pmin=pmin, pmax=pmax, tolerance=tolerance)
+                elif p.enforce[0] == 'once':
+                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty,
+                                         minpenalty, pmin, pmax, tolerance)
                 else:
                     raise RuntimeError('Unknown enforcement keyword %s' % p.enforce[0])
                 self.constraints.append(con)
@@ -209,7 +210,8 @@ class ConstraintSet:
         enforce_crit = number | obs_crit
         enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True)) -\
             pp.Optional(pp.CaselessLiteral('before'))
-        enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
+        enforce_between = pp.Or([pp.CaselessLiteral('once between'), pp.CaselessLiteral('between')]) - \
+                          pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
         split = obs.setResultsName('obs1') - enforce_at.setResultsName('at1') - iop.setResultsName('sign') - \
@@ -763,11 +765,14 @@ class SplitAtConstraint(Constraint):
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
-                 minpenalty=0., pmin=None, pmax=None, tolerance=None):
+                 minpenalty=0., pmin=None, pmax=None, tolerance=None, once=False):
         """
         Creates a new constraint of the form
 
         X1 < X2 between X3=value  X4=value
+
+        or, if once=True,
+        X1 < X2 once between X3=value  X4=value
 
         :param startvar: Variable checked to determine the start of the interval, or None for the independent variable
         :param startval: Value that the startvar must take to trigger the start of the interval
@@ -785,6 +790,7 @@ class BetweenConstraint(Constraint):
 
         self.startkeys = None
         self.endkeys = None
+        self.once = once
         logger.debug("Created 'between' constraint %s<%s" % (self.quant1, self.quant2))
 
     def find_keys(self, sim_data_dict):
@@ -855,7 +861,7 @@ class BetweenConstraint(Constraint):
                 and not (np.isclose(enddat[end], self.endval, atol=0.)):
             end += 1
 
-        penalty = self.get_penalty(sim_data_dict, start, end+1, require_length=len(endcol))
+        penalty = self.get_penalty(sim_data_dict, start, end+1, require_length=len(endcol), once=self.once)
 
         return penalty
 
