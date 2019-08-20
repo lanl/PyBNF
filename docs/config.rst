@@ -77,7 +77,7 @@ Experimental Data Files
 
 Experimental data file are plain text files with the extension “.exp” that contain whitespace-delimited tables of data to be used for fitting.
 
-The first line of the .exp file is the header. It should contain the character #, followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
+The first line of the .exp file is the header. It should contain the character ``#`` (optional, to match the output format of BioNetGen), followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
 ::
     #    time    X    Y
         0    5    1e4
@@ -124,6 +124,7 @@ Four keywords are available to specify when the inequality is enforced.
   ``A < 5 always``
 
 * ``once`` - Require that the inequality be true at at least one time point during the simulation.  
+
   ``A < 5 once``
 
 * ``at`` - Enforce the inequality at one specific time point. This could be a constant time point:  
@@ -147,12 +148,20 @@ Four keywords are available to specify when the inequality is enforced.
   ``A<5 at B=6 before`` - Enforce the inequality at the last time point before B=6.
 
   If the specified condition (B=6 in the example) is never met, then the constraint is not applied. It is often useful to add a second constraint to ensure that an "at" constraint is enforced. In this example, assuming the initial value of B is below 6, we could add the constraint ``B>=6 once``
+  
+  It is also possible to write inequalities with two ``at`` keywords to compare observables at two different values of the independent variable:
+  
+  ``A at 5 < B at C=6`` - Compares the value of A at time 5 to the value of B at the first time point such that C=6. 
 
 * ``between`` - Enforce the inequality at all times between the two specified time points. The time points may be specified in the same format as with the at keyword above, and should be separated by a comma.  
 
   ``A < 5 between 7, B=6`` would enforce the inequality from time=7 to the first time after time=7 such that B=6. 
 
   If the first condition (time=7 in the example) is never met, then the constraint is never enforced. If the second condition (B=6 in the example) is never met, then the constraint is enforced from the start time until the end of the simulation. 
+  
+* ``once between`` - Require that the inequality be satisfied at at least one point within the specified time range. The syntax is the same as for a ``between`` constraint. 
+
+  ``A < 5 once between 7, B=6`` would require that A<7 at some point between time=7 and the first time after time=7 such that B=6. 
 
 The above definitions assume that time is the independent variable, but note that the same keywords can be used for parameter scans with a different independent variable. 
 
@@ -186,7 +195,7 @@ The following examples illustrate the use of confidence clauses:
 
 * ``A < 5 at time = 4 confidence 0.98 tolerance 1`` - The term added to the objective function would be :math:`-\textrm{log}(0.01 + 0.98*\textrm{cdf}(A(4)-5, 1, 0))`
 
-* ``A > 5 always confidence 0.98`` - Tolerance is assumed to be 0. The term added to the objective function would be :math:`-log(0.99)` if :math:`min(A)>5` or :math:`-log(0.01)` otherwise. 
+* ``A > 5 always confidence 0.98`` - Tolerance is assumed to be 0. The term added to the objective function would be :math:`-\textrm{log}(0.99)` if :math:`min(A)>5` or :math:`-\textrm{log}(0.01)` otherwise. 
 
 The keywords ``pmin`` and ``pmax`` may be used in place of ``confidence`` to specify different minimum and maximum probabilities of the constraint. In this case, the term added to the objectve function is :math:`-\textrm{log}( p_{min} + (p_{max}-p_{min}) \textrm{cdf}(g,tol,0))`. For example
 
