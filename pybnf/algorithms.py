@@ -1,3 +1,4 @@
+
 """Contains the Algorithm class and subclasses as well as support classes and functions for running simulations"""
 
 
@@ -9,7 +10,8 @@ from subprocess import STDOUT
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-
+from .pset import TimeCourse
+from .pset import BNGLModel
 from .pset import NetModel, BNGLModel, SbmlModelNoTimeout
 from .pset import OutOfBoundsException
 from .pset import FailedSimulationError
@@ -25,10 +27,12 @@ import copy
 import sys
 import traceback
 import pickle
+from scipy import stats
 from glob import glob
 from tornado import gen
 from distributed.client import _wait
 from concurrent.futures._base import CancelledError
+
 
 
 logger = logging.getLogger(__name__)
@@ -57,7 +61,6 @@ class Result(object):
         self.name = name
         self.score = None  # To be set later when the Result is scored.
         self.failed = False
-
     def normalize(self, settings):
         """
         Normalizes the Data object in this result, according to settings
@@ -214,10 +217,12 @@ class Job:
 
     def _run_models(self):
         ds = {}
+
         for model in self.models:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
+
         return ds
 
     def _copy_log_files(self, failed_logs_dir):
@@ -232,7 +237,6 @@ class Job:
 
     def run_simulation(self, debug=False, failed_logs_dir=''):
         """Runs the simulation and reads in the result"""
-
         # Force absolute path for failed_logs_dir
         if len(failed_logs_dir) > 0 and failed_logs_dir[0] != '/':
             failed_logs_dir = self.home_dir + '/' + failed_logs_dir
@@ -286,9 +290,11 @@ class Job:
                     print0('User-defined post-processing script failed')
                     res.score = np.inf
                 else:
-                    res.score = self.calc_future.result().evaluate_objective(res.simdata, show_warnings=self.show_warnings)
+                    res.score = self.calc_future.result().evaluate_objective(res.simdata, res.pset, show_warnings=self.show_warnings)
+                    res.out = simdata
                     if res.score is None:
-                        res.score = np.inf
+                        # res.score = np.inf
+                        res.out = np.inf
                         logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
                         logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
                 res.simdata = None
@@ -623,6 +629,7 @@ class Algorithm(object):
         """
         Adds the information from a Result to the Trajectory instance
         """
+
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
             res.normalize(self.config.config['normalization'])
@@ -635,7 +642,7 @@ class Algorithm(object):
                 print0('User-defined post-processing script failed')
                 res.score = np.inf
             else:
-                res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, self.config.constraints)
+                res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, res.pset, self.config.constraints)
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
                 logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
@@ -1300,7 +1307,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
     with that index to different islands.
 
     Each island performs its migration individually, on the first callback when all islands are ready for that
-    migration. It receives individuals from the migration iteration, regardless of what the current iteration is.
+    migration. It receives individuals from the migration iteration, regardless of what the current iteration is.
     This can sometimes lead to wasted effort.
     For example, suppose migration is set to occur at iteration 40, but island 1 has reached iteration 42 by the time
     all islands reach 40. Individual j on island 1 after iteration 42 gets replaced with individual j on island X
@@ -1890,6 +1897,7 @@ class BayesianAlgorithm(Algorithm):
                 self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
 
     def start_run(self, setup_samples=True):
+
         if self.config.config['initialization'] == 'lh':
             first_psets = self.random_latin_hypercube_psets(self.num_parallel)
         else:
@@ -1897,6 +1905,16 @@ class BayesianAlgorithm(Algorithm):
 
         self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
         self.current_pset = [None]*self.num_parallel
+
+        if self.config.config['continue_run'] == 1:
+            mle = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt')
+            for n in range(self.num_parallel):
+                for i,p in enumerate(first_psets[n]):
+                    p.value = mle[i]
+        if self.config.config['starting_params'] and self.config.config['continue_run'] != 1:
+            for n in range(self.num_parallel):
+                for i,p in enumerate(first_psets[n]):
+                    p.value = self.config.config['starting_params'][i]           
         for i in range(len(first_psets)):
             first_psets[i].name = 'iter0run%i' % i
 
@@ -1906,6 +1924,8 @@ class BayesianAlgorithm(Algorithm):
             with open(self.samples_file, 'w') as f:
                 f.write('# Name\tLn_probability\t'+first_psets[0].keys_to_string()+'\n')
             os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+
+
 
         return first_psets
 
@@ -2035,6 +2055,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         :return: List of PSet(s) to be run next.
         """
 
+
         pset = res.pset
         score = res.score
 
@@ -2044,6 +2065,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         # Calculate posterior of finished job
         lnprior = self.ln_prior(pset)
         lnlikelihood = -score
+
         lnposterior = lnprior + lnlikelihood
 
         # Metropolis-Hastings criterion
@@ -2144,14 +2166,11 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
     """
     Implements a Bayesian Markov chain Monte Carlo simulation.
-
     This is essentially a non-parallel algorithm, but here, we run n instances in parallel, and pool all results.
     This will give you a best fit (which is maybe not great), but more importantly, generates an extra result file
     that gives the probability distribution of each variable.
     This distribution depends on the prior, which is specified according to the variable initialization rules.
-
     With sa=True, this instead acts as a simulated annealing algorithm with n indepdendent chains.
-
     """
 
     def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
@@ -2201,7 +2220,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         """
         Called by the scheduler at the start of a fitting run.
         Must return a list of PSets that the scheduler should run.
-
         :return: list of PSets
         """
         if self.sa:
@@ -2225,7 +2243,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         """
         Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
         data
-
         :param res: PSet that was run in this simulation
         :type res: Result
         :return: List of PSet(s) to be run next.
@@ -2296,10 +2313,8 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         Helper function
         Advances the iteration number, and tries to choose a new parameter set for chain index i
         If that fails (e.g. due to a box constraint), keeps advancing iteration number and trying again.
-
         If it hits an iteration where it has to stop and wait (a replica exchange iteration or the end), returns None
         Otherwise returns the new PSet.
-
         :param index:
         :return:
         """
@@ -2370,7 +2385,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         """
         Helper function to perturb the old PSet, generating a new proposed PSet
         If the new PSet fails automatically because it violates box constraints, returns None.
-
         :param oldpset: The PSet to be changed
         :type oldpset: PSet
         :return: the new PSet
@@ -2470,6 +2484,382 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                     logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
                     self.staged.append(ps)
 
+class Yens_MCMC(BayesianAlgorithm):
+    def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
+        super(Yens_MCMC, self).__init__(config)
+        # set the params decleared in the configuaration file
+        if self.config.config['normalization']:
+            self.norm = self.config.config['normalization']
+        else:
+            self.norm = None
+           
+        self.time = self.config.config['time_length']
+        self.adaptive = self.config.config['adaptive']
+        # The iteration number that the adaptive starts at
+        self.valid_range = self.burn_in + self.adaptive
+        # The length of the ouput arrays and the number of iterations before they are written out
+        self.arr_length = 1
+        # set recorders
+        self.acceptances = 0
+        self.acceptance_rates = 0
+        self.attempts = 0
+        self.factor = [0] * self.num_parallel
+        self.staged = []
+        # start lists
+        self.saved_score = [0] * self.num_parallel
+        self.store_score = [0] * self.num_parallel
+        self.current_param_set = [0] * self.num_parallel
+        self.scores = np.zeros((self.num_parallel, self.arr_length))
+        # set arrays for features and graphs
+        self.parameter_index = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
+        
+        # set graphing stuff needs to be changed to a user defined setting with a default
+        #self.qtlMark = [25, 50 ,75]
+        self.qtlMark = np.linspace(0, 100, 21)
+        self.output_std = 1
+        if self.output_std == 2:
+            self.qtlMark[0] = 2.5
+            self.qtlMark[-1] = 97.5
+        elif self.output_std == 1:                
+            self.qtl_1 = self.qtlMark[3:-3]
+            self.qtl_1[0] = 16
+            self.qtl_1[-1] = 84
+            self.qtlMark = self.qtl_1
+        # The column that contains the desired output from the simulation
+        self.data_column = []
+        # warm start features
+        self.file_type = self.config.config['file_type']
+        if self.file_type == '.png' or self.file_type == '.pdf':
+            pass
+        else:
+            raise PybnfError('PyBNF supports .png or .pdf for figure file types. Please specify a supported file type in the configuration file')
+        
+        
+        os.makedirs(self.config.config['output_dir'] + '/A_MCMC', exist_ok=True)
+        os.makedirs(self.config.config['output_dir'] + '/Results/A_MCMC/Graphs', exist_ok=True)
+        os.makedirs(self.config.config['output_dir'] + '/Results/A_MCMC/Runs', exist_ok=True)
+
+        self.output_columns = []
+        for i in self.config.config['graph_stuff']:
+            new = i.replace(',', '')
+            self.output_columns.append(new)
+        self.output_run_current = {}
+        self.output_run_MLE = {}
+        self.output_run_all = {}
+
+        for i in self.output_columns:
+            for k in self.time.keys():     
+                if '_Cum' in i:
+                    print(self.time[k])
+                    self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                    self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                    self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                else:     
+                    self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1)) 
+                    self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
+                    self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))      
+
+        # for i in self.output_columns:
+        #     for k in self.time.keys():     
+        #         if '_Cum' in i:
+        #             print(self.time[k])
+        #             self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+        #         else:     
+        #             self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
+
+        # for i in self.output_columns:
+        #     for k in self.time.keys():     
+        #         if '_Cum' in i:
+        #             print(self.time[k])
+        #             self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+        #         else:     
+        #             self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))    
+        # self.output_run_MLE = {}
+        # for i in self.output_columns:
+        #     if '_Cum' in i:
+        #         self.output_run_MLE[i] = np.zeros((1, self.time))
+        #     else:
+        #         self.output_run_MLE[i] = np.zeros((1, self.time + 1))        
+        # self.output_run_all = {}
+        # for i in self.output_columns:
+        #     if '_Cum' in i:
+        #         self.output_run_all[i] = np.zeros((self.num_parallel, 1000, self.time))
+        #     else:
+        #         self.output_run_all[i] = np.zeros((self.num_parallel, 1000, self.time + 1))              
+
+        if self.config.config['continue_run'] == 1:
+            for i in self.output_columns:
+                self.output_run_MLE[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/mle_traj_' + i + '.txt')
+            self.diff = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diff.txt')
+            self.diffMatrix = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix.txt')
+            self.mle = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt')
+        else:
+            self.mle = 0
+            self.diff = [self.config.config['step_size']]
+            self.diffMatrix = 0    
+    ''' Used for resuming runs and adding iterations'''
+    def reset(self, bootstrap=None):
+        super(Yens_MCMC, self).reset(bootstrap)
+
+        self.current_pset = None
+        self.ln_current_P = None
+        self.iteration = [0] * self.num_parallel
+
+        self.wait_for_sync = [False] * self.num_parallel
+        self.samples_file = None
+    def start_run(self):
+        """
+        Called by the scheduler at the start of a fitting run.
+        Must return a list of PSets that the scheduler should run.
+        :return: list of PSets
+        """
+
+        print2(
+                'Running Adaptive Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
+                % (self.num_parallel, self.max_iterations))
+
+
+        return super(Yens_MCMC, self).start_run()
+
+    def got_result(self, res):
+        """
+        Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
+        data
+        :param res: PSet that was run in this simulation
+        :type res: Result
+        :return: List of PSet(s) to be run next.
+        """
+        pset = res.pset
+        score = res.score
+       
+        # Figure out which parallel run this is from based on the .name field.
+        m = re.search(r'(?<=run)\d+', pset.name)
+        index = int(m.group(0))
+        # Get the prefix of the file and the prefix of the simulation
+        for i in self.exp_data:
+            prefix = i
+            for p in self.exp_data[i]:
+                model_prefix = p       
+          
+        # setting the data column
+        # if self.iteration[index] == 0:
+        #     self.compare_cols = set(self.exp_data[prefix][model_prefix].cols).intersection(set(res.out[prefix][model_prefix].cols))
+        #     for col in self.compare_cols:
+        #         if col != 'time':
+        #             column = col
+        #     self.data_column =  res.out[prefix][model_prefix].cols[column]
+
+
+        self.saved_score[index] = self.store_score[index]
+        self.accept = False
+        self.attempts += 1
+        # Decide whether to accept move
+        if score < self.saved_score[index] or np.isnan(self.ln_current_P[index]):
+            self.accept = True
+            self.alpha = 1
+
+        else:
+            self.alpha = np.exp((-score) - (-self.saved_score[index]))
+            if np.random.rand() < self.alpha:
+                self.accept = True
+        # if accept then update the lists
+        if self.accept == True:
+            self.store_score[index] = score
+            self.current_pset[index] = pset
+            self.ln_current_P[index] = -score
+            self.acceptances += 1
+            self.list_trajactory = []      
+            self.cp = []
+            for i in self.current_pset[index]:
+                self.cp.append(i.value)
+            self.current_param_set[index] = self.cp
+            for l in self.output_columns:     
+                for i in res.out:
+                    for j in res.out[i]:
+                        if l in res.out[i][j].cols:
+                            if self.norm:
+                                res.out[i][j].normalize(self.norm)
+                            column = res.out[i][j].cols[l]
+                            self.list_trajactory = []
+                            for z in res.out[i][j].data:
+                                self.list_trajactory.append(z.data[column])      
+                            if '_Cum' in l:
+                                self.output_run_current[j+l][index]= np.diff(self.list_trajactory)
+                            else:
+                                self.output_run_current[j+l][index]= self.list_trajactory
+                            
+                            if score < min(self.saved_score):
+                                self.mle = self.current_param_set[index]       
+                                self.output_run_MLE[j+l] = self.output_run_current[j+l][index][0]
+                            self.list_trajactory = []
+
+                            
+                                                       
+        if self.iteration[index] == 0:
+            self.cp = []
+            for i in self.current_pset[index]:
+                self.cp.append(i.value)
+            self.current_param_set[index] = self.cp
+        # After the burn in period start to record the accepted params for the adaptive feature.
+        if self.iteration[index] >= self.burn_in:
+            self.parameter_index[index][self.factor] = self.current_param_set[index]
+        
+                            
+        # record the trajactorys for the graphs
+        if self.iteration[index] >= self.valid_range:
+            # if the objective function is negbin then add the negbin noise to the traj output else record accepted sim vals as is
+            if self.config.config['objfunc'] == 'neg_bin':
+                for l in self.output_columns:     
+                    for i in res.out:
+                        for j in res.out[i]:
+                            if l in res.out[i][j].cols:
+                                self.output_run_all[j+l][index][self.factor] =  self.generateBinomialNoise(self.output_run_current[j+l][index][0], self.current_pset[index])
+            else:
+                for l in self.output_columns:     
+                    for i in res.out:
+                        for j in res.out[i]:
+                            if l in res.out[i][j].cols:
+                                self.output_run_all[j+l][index][self.factor] = self.output_run_current[j+l][index][0]
+
+        # Using either the newly accepted PSet or the old PSet, propose the next PSet.
+        # Record that this individual is complete
+        self.scores[index][self.factor] = -self.store_score[index]
+        self.iteration[index] += 1
+        self.wait_for_sync[index] = True
+        # Wait for entire generation to finish
+        if np.all(self.wait_for_sync):
+            self.acceptance_rates = self.acceptances / self.attempts
+            self.wait_for_sync = [False] * self.num_parallel
+            # Increase or reset the factor number and see if it's time to write things out
+            for i in range(self.num_parallel):
+                self.factor[i] +=1
+                if self.factor[i] == self.arr_length:
+                    self.factor[i] = 0
+            if self.iteration[index] % self.arr_length == 0:
+                for i in range(self.num_parallel):
+                    self.write_out_scores(i)
+            if self.iteration[i] >= self.burn_in:
+                for i in range(self.num_parallel):
+                    if self.iteration[i] % self.arr_length == 0:
+                        self.write_out_params(i)
+            if self.iteration[index] >= self.valid_range:
+                if self.iteration[index] % self.arr_length == 0:
+                    for i in range(self.num_parallel):
+                        self.write_out_trajactorys(i, res.out)
+            # Set here because I don't want these commands to exacute more then once.
+            if min(self.iteration) >= self.max_iterations:
+                # Save the current postion of the MCMC run
+                self.diff = [self.diff]
+                for i in range(self.num_parallel):
+                        self.write_out_trajactorys(i, res.out)
+                np.savetxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt', self.mle)
+                np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diff.txt', self.diff)
+                np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix.txt', self.diffMatrix)
+                return 'STOP'
+            # Check if it's time to report stuff
+            if self.iteration[index] % 10 == 0:
+                print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
+                print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
+            print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+
+            
+            # Propose next Pset
+            next_generation = []
+            for i, p in enumerate(self.current_pset):
+                new_pset = self.pick_new_pset(i)
+                if new_pset:
+                    new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
+                    next_generation.append(new_pset)
+            return next_generation
+        return []
+
+    def generateBinomialNoise(self, timeseries, pset):
+
+        self.output = np.copy(timeseries)
+        self.pset = pset
+        for p in self.pset:
+            if p.name == 'r__FREE':
+                self.r = p.value
+
+        for i in range(len(timeseries)):
+            self.prob = np.clip( self.r/(self.r+timeseries[i]), 1e-10, 1-1e-10)
+            self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1)
+
+        return self.output
+
+    def write_out_scores(self, idx):
+        self.write_out_score = self.scores[idx]
+        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/scores_' + str(idx) + '.txt', 'a') as f:
+            np.savetxt(f, self.write_out_score)
+
+    def write_out_params(self, idx):
+        self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+
+        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', 'a') as f:
+            np.savetxt(f, self.write_out_p)
+
+    def write_out_trajactorys(self, idx, results):
+        resultsNstuff = results
+        for l in self.output_columns:     
+                    for i in resultsNstuff:
+                        for j in resultsNstuff[i]:
+                            if l in resultsNstuff[i][j].cols:
+                                self.write_out_t = self.output_run_all[j+l][idx][~(self.output_run_all[j+l][idx]==0).all(1)]
+                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + j+l + '_chain_' + str(idx) + '.txt', 'a') as f:
+                                    np.savetxt(f, self.write_out_t)
+    
+    def pick_new_pset(self, idx):
+        """
+        :param idx: Index of PSet to update
+        :return:
+        """
+        # Per Yen's advice if something is going to be altered the stabilizingCov is a canadatie. Should it be a .config with a default?
+        self.stablizingCov = 0.001*np.eye(len(self.current_param_set[idx]))
+
+        if self.iteration[idx] >= self.burn_in + self.adaptive:
+            if self.iteration[idx] == self.burn_in + self.adaptive:
+                self.parameter_index_file = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt')
+                self.mu = np.reshape(np.mean(self.parameter_index_file[:self.iteration[idx]],axis=0), [1, len(self.current_param_set[idx])])  # compute the mean parameters along the past chain
+                self.diffMatrix = np.matmul(self.parameter_index_file[:self.iteration[idx]].T, self.parameter_index_file[:self.iteration[idx]])/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu.T, self.mu)+self.stablizingCov
+                self.diff = 2.38**2/len(self.current_param_set[idx])
+            self.mu = self.mu + (1./(1+self.iteration[idx]))*(self.current_param_set[idx] - self.mu)
+            self.diffVector = np.reshape(self.current_param_set[idx] -self.mu, [1, len(self.current_param_set[idx])])
+            self.diffMatrix = self.diffMatrix + (1./(1 + self.iteration[idx]))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix)
+            self.diff = np.exp( np.log(self.diff) + (1./(1 + self.iteration[idx]- self.adaptive - self.burn_in))*(self.alpha-0.234))
+        elif self.config.config['continue_run'] == 1:
+            self.diffMatrix = self.diffMatrix
+        else:
+            self.diffMatrix = np.diag(np.array(self.current_param_set[idx]))
+
+        # Loop until acceptable params are proposed
+        self.max_attemps = 0
+        while True:
+            oldpset = self.current_pset[idx]
+            delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix)
+            delta_vector = {k: np.random.normal() for k in oldpset.keys()}
+            delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
+            delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
+            
+            new_vars = []
+            try:
+                for i, p in enumerate(oldpset):
+                    k = self.variables[i]
+                    new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
+                    new_vars.append(new_var)
+                proposed_psets = PSet(new_vars)
+                lower_bound = []
+                upper_bound = []
+                parameter_value = []
+                for i,p in enumerate(proposed_psets):
+                    lower_bound.append(p.p1)
+                    upper_bound.append(p.p2)
+                    parameter_value.append(p.value)
+                self.max_attemps += 1
+                if np.all(lower_bound < parameter_value < upper_bound) or self.max_attemps == 100000:
+                    break
+            except OutOfBoundsException:
+                logger.debug("Variable %s is outside of bounds")
+        return PSet(new_vars)
 
 class SimplexAlgorithm(Algorithm):
     """
