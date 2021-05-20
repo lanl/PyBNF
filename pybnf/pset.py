@@ -244,6 +244,35 @@ class BNGLModel(Model):
                 return act_type, match.group(1)
         return None
 
+    def find_t_length(self):
+        text_list = []
+        fileText = self.bngl_file_text.split('\n')
+        timeDict = {}
+        
+                # have to clear any possible commented out lines that have n_steps in them
+        text_list = []
+        final_text = {}
+        for i in fileText:
+            if '#' in i:
+                pass
+            else:
+                text_list.append(i)
+            for i in text_list:
+                if 'simulate' not in i:
+                    pass
+                else:
+                    stuffStart = i.rfind('suffix=>')
+                    stuffEnd = i.rfind('method=>')
+                    stuff = i[stuffStart:stuffEnd].split('=>')
+                    start = i.rfind('n_steps=>')
+                    end = i.rfind('print_functions')
+                    text = i[start:end]
+                    new_text = re.findall(r'[ 0-9]+', text)
+                    time = int(new_text[0])
+                    stuff = stuff[1].replace(',', '').replace('"', '')
+                    timeDict[stuff] = time
+        return timeDict                
+
     def copy_with_param_set(self, pset):
         """
         Returns a copy of this model containing the specified parameter set.
@@ -428,6 +457,7 @@ class BNGLModel(Model):
             for mut in self.mutants:
                 result.append(s[1]+mut.suffix)
         return result
+
 
 
 class NetModel(BNGLModel):
@@ -741,6 +771,7 @@ class TimeCourse(Action):
         self.model = ''
         self.suffix = 'time_course'
         self.method = 'ode'
+    
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -771,7 +802,6 @@ class TimeCourse(Action):
 
         self.stepnumber = int(np.round(self.time/self.step))
         self.bng_codeword = 'simulate'
-
 
 class ParamScan(Action):
 
@@ -1059,6 +1089,19 @@ class FreeParameter(object):
             return self.set_value(10**(np.log10(self.value) + summand), reflect)
         else:
             return self.set_value(self.value + summand, reflect)
+
+    def add_norm(self, summand, reflect=True):
+        """
+        Adds a value to the existing value and returns a new FreeParameter instance. This version of add does
+        not consider the space that the value is in and just sums them
+
+        :param summand: Value to add
+        :return:
+        """
+        if self.value is None:
+            logger.error('Cannot add to FreeParameter with "None" value')
+        
+        return self.set_value(self.value + summand, reflect)
 
     def add_rand(self, lb, ub, reflect=True):
         """
