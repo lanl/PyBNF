@@ -201,7 +201,7 @@ def main():
                 # Note: mh vs pt difference is handled in Config by setting or not setting the exchange_every key.
                 alg = algs.BasicBayesMCMCAlgorithm(config)
             elif config.config['fit_type'] == 'ym':
-                alg = algs.Yens_MCMC(config, sa=True)
+                alg = algs.Yens_MCMC(config)
             elif config.config['fit_type'] == 'sa':
                 alg = algs.BasicBayesMCMCAlgorithm(config, sa=True)    
             elif config.config['fit_type'] == 'sim':
