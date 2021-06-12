@@ -3,7 +3,7 @@
 
 from .data import Data, DuplicateColumnError
 from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
-    AveNormSumOfSquaresObjective, SumOfDiffsObjective
+    AveNormSumOfSquaresObjective, SumOfDiffsObjective, NegBinLikelihood, KLLikelihood
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
     Mutation, MutationSet
@@ -92,15 +92,17 @@ def reinit_logging(file_prefix, debug=False, log_level_name='info'):
     init_logging(file_prefix, debug, log_level_name)
 
 class Configuration(object):
-    def __init__(self, d=dict()):
+    def __init__(self, d=None):
         """
         Instantiates a Configuration object using a dictionary generated
         by the configuration file parser.  Default key, value pairs are used
         when possible for pairs not present in the provided dictionary.
-
         :param d: The result from parsing a configuration file
         :type d: dict
         """
+        if d is None:
+            d = dict()
+            
         if 'models' not in d or len(d['models']) == 0:
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
         if 'fit_type' not in d:
@@ -122,12 +124,12 @@ class Configuration(object):
             d = self.check_unused_keys_model_checking(d)
         elif verbosity >= 1:
             self.check_unused_keys(d)
-        if d['fit_type'] in ('mh', 'pt', 'sa', 'dream'):
+        if d['fit_type'] in ('mh', 'pt', 'sa', 'dream', 'ym'):
             self.postprocess_mcmc_keys(d)
         self.config = self.default_config()
         for k, v in d.items():
             self.config[k] = v
-
+        
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
         logger.debug('Loaded models')
@@ -148,6 +150,7 @@ class Configuration(object):
         logger.debug('Loaded variables')
         self._postprocess_normalization()
         self._load_postprocessing()
+        self.config['time_length'] = self._load_t_length()
         logger.debug('Completed configuration')
 
     @staticmethod
@@ -158,13 +161,14 @@ class Configuration(object):
         except KeyError:
             bng_command = ''
 
+
         default = {
             'objfunc': 'chi_sq', 'output_dir': 'pybnf_output', 'delete_old_files': 1, 'num_to_output': 5000,
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
             'sbml_integrator': 'cvode', 'parallel_count': None, 'save_best_data': 0, 'simulation_dir': None,
-            'parallelize_models': 1,
+            'parallelize_models': 1, 'starting_params':None,
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
@@ -174,8 +178,8 @@ class Configuration(object):
 
             'local_min_limit': 5,
 
-            'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 100, 'hist_bins': 10,
-            'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01,
+            'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 100, 'hist_bins': 10, 'adaptive': 10000,
+            'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01, 'continue_run': 0, 
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
             'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,
@@ -188,6 +192,8 @@ class Configuration(object):
             'scheduler_node': None,
             'scheduler_file': None,
             'worker_nodes': None,
+            'graph_stuff': None,
+            'file_type': '.png',
 
             'gamma_prob': 0.1,
             'zeta': 1e-6,
@@ -210,14 +216,14 @@ class Configuration(object):
                         'ss': {'init_size', 'local_min_limit', 'reserve_size'},
                         'mh': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
                                 'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling',
-                                'crossover_number', 'zeta', 'lambda', 'gamma_prob'},
+                                'crossover_number', 'zeta', 'lambda', 'gamma_prob', 'adaptive', 'time_length', 'graph_stuff'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',
                                 'simplex_stop_tol'}
                         }
         ignored_params = set()
         thisalg = conf_dict['fit_type']
-        if thisalg in ('pt', 'sa', 'dream'):
+        if thisalg in ('pt', 'sa', 'dream','ym'):
             thisalg = 'mh'
         for alg in alg_specific:
             if (thisalg != alg
@@ -256,7 +262,6 @@ class Configuration(object):
         """
         Algorithms 'mh', 'pt', 'dream', and 'sa' have similar but non-identical valid config keys. This helper method
         does post-processing of config keys for these 3 algorithms
-
         :param conf_dict:
         :return:
         """
@@ -280,7 +285,7 @@ class Configuration(object):
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
-        if conf_dict['fit_type'] in ['mh', 'sa', 'pt']:
+        if conf_dict['fit_type'] in ['mh', 'sa', 'pt', 'ym']:
             for k in ['crossover_numer', 'zeta', 'lambda', 'gamma_prob']:
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
@@ -354,6 +359,11 @@ class Configuration(object):
             else:
                 return os.path.join(home_dir, directory)
         return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
+
+    def _load_t_length(self):
+        for mf in self.config['models']:
+            time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
+        return time           
 
     def _load_models(self):
         """
@@ -575,16 +585,32 @@ class Configuration(object):
             return AveNormSumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'sod':
             return SumOfDiffsObjective(self.config['ind_var_rounding'])
+        elif self.config['objfunc'] == 'neg_bin':
+            if 'neg_bin_r' in self.config:
+                return NegBinLikelihood(self.config['ind_var_rounding'])
+            else:
+                raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined without "
+                                                    "configuration neg_bin_r defined")
+        elif self.config['objfunc'] == 'kl':
+            return KLLikelihood(self.config['ind_var_rounding'])
         raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
               "Objective function %s is not defined. Valid objective function choices are: "
-              "chi_sq, sos, sod, norm_sos, ave_norm_sos" % self.config['objfunc'])
+              "chi_sq, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl" % self.config['objfunc'])
 
     def _load_variables(self):
         """
         Loads the variable names from the config dict into FreeParameter instances.
-
         :return: a list of FreeParameter instances
         """
+        #Compile a list of the varible names to determine if the reqired var is present
+        if self.config['objfunc'] == 'neg_bin':
+            r_check = []
+            for k in self.config.keys():
+                r_check.append(k[1])
+            if np.any('r__FREE' in r_check):
+                pass
+            else:
+                raise PybnfError('Using the neg_bin objective function requires the r__FREE parameter')
         variables = []
         for k in self.config.keys():
             if isinstance(k, tuple):

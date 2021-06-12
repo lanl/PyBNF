@@ -20,20 +20,20 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'local_min_limit', 'reserve_size', 'burn_in', 'sample_every', 'output_hist_every',
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
-               'local_objective_eval', 'reps_per_beta', 'save_best_data', 'parallelize_models']
+               'local_objective_eval', 'reps_per_beta', 'save_best_data', 'parallelize_models', 'adaptive', 'continue_run']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
-                 'constraint_scale']
-multnumkeys = ['credible_intervals', 'beta', 'beta_range']
+                 'constraint_scale', 'neg_bin_r']
+multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params']
 b_var_def_keys = ['uniform_var', 'loguniform_var']
 var_def_keys = ['lognormal_var', 'normal_var']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
-              'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator', 'simulation_dir']
-multstrkeys = ['worker_nodes', 'postprocess']
+              'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator', 'simulation_dir', 'file_type']
+multstrkeys = ['worker_nodes', 'postprocess', 'graph_stuff']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
 

@@ -29,11 +29,13 @@ Required Keys
     * ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`
     * ``ss`` - :ref:`alg-ss`
     * ``pso`` - :ref:`Particle Swarm Optimization <alg-pso>`
-    * ``mh`` - :ref:`Metropolis-Hastings MCMC <alg-mcmc>`
+    * ``mh`` - :ref:`Metropolis-Hastings MCMC (deprecated) <alg-mcmc>`
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
-    * ``sa`` - :ref:`Simulated Annealing <alg-sa>`
-    * ``pt`` - :ref:`Parallel tempering <alg-pt>`
+    * ``sa`` - :ref:`Simulated Annealing (deprecated) <alg-sa>`
+    * ``pt`` - :ref:`Parallel tempering (deprecated) <alg-pt>
+    * ``am`` - :ref:`Adaptive MCMC <alg-am>
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
+
 
   Example:
   
@@ -43,10 +45,16 @@ Required Keys
   Which :ref:`objective function <objective>` to use. 
   
    - ``chi_sq`` - Chi squared
+   - ``chi_sq_dynamic`` - Chi squared with sigma as a free parameter (Requires sigma__FREE in the model and the configuration file)
+   - ``neg_bin`` - Negative Binomial (Requires neg_bin_r set to a number in the configuration file i.e neg_bin_r = 2, Default = 24)
+   - ``neg_bin_dynamic`` - Negative Binomial with r as a free parameter (Requires r__FREE in the model and the configuration file)
+   - ``kl`` - Kullback-Leibler
    - ``sos`` - Sum of squares
    - ``sod`` - Sum of differences
    - ``norm_sos`` - Sum of squares, normalized by the value at each point,
    - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. 
+  
+   
    
   Default: chi_sq
   
@@ -920,9 +928,63 @@ For Parallel Tempering
   Example:
   
     * ``beta_range = 0.5 1`` 
+    
+    
+For Adaptive MCMC
+""""""""""""""""""""""
+
+**stablizingCov**
+  Stabilize the covariant matrix of the proposal. 
   
+  Default: 0.001
+  
+  Example:
+  
+    * ``stablizingCov = 0.1``
+    
+    
+**adaptive**
+  The number of iterations that the simulation will spend collecting data to train the differential matrix.``.
+  
+  Default: 10000
+  
+  Example:
+  
+    * ``adaptive = 50000``
+  
+  
+**output_noise_trajectory (Only for use with neg_bin and neg_bin_dynamic functions)**
+  Calculate and add the binomial noise to the specified observables or functions then save the output of the user defined observable or function from the simulation output to a .txt file.
+  
+  Default: None (multiple values can be defined separated by a comma)
+  
+  Note: output_trajectory and output_noise_trajectory can both be declared in the same configuration file but may       result in slower performance
+  
+  Example:
+  
+    * ``output_noise_trajectory = ObservableA`` 
+    * ``output_noise_trajectory = ObservableA, ObservableB, FunctionA ``
+    
 
-
+**output_trajectory**
+  Save the output of the user defined observable or function from the simulation output to a .txt file.
+  
+  Default: None (multiple values can be defined separated by a comma)
+  
+  Example:
+  
+    * ``output_trajectory = ObservableA`
+    * ``output_trajectory = ObservableA, ObservableB, FunctionA`
+    
+    
+**continue_run**
+  When set to 1 the chains began at the MLE posterior from the previous chain. 
+  
+  Default: 0
+  
+  Example:
+  
+    * ``continue_run = 1`   
 .. For DREAM
 .. """""""""
 

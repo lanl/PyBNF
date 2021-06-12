@@ -1,5 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
+from scipy.special import loggamma
 
 from .printing import PybnfError, print1
 
@@ -17,7 +18,7 @@ class ObjectiveCalculator:
         self.exp_data_dict = exp_data_dict
         self.constraints = constraints
 
-    def evaluate_objective(self, sim_data_dict, show_warnings=True):
+    def evaluate_objective(self, sim_data_dict, pset, show_warnings=True):
         """
         Evaluate the objective using the input simulation data and the info contained in this object
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
@@ -25,7 +26,9 @@ class ObjectiveCalculator:
         :type show_warnings: bool
         :return:
         """
-        return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, self.constraints, show_warnings)
+        
+        
+        return self.objective.evaluate_multiple(sim_data_dict, self.exp_data_dict, pset, self.constraints, show_warnings)
 
 
 
@@ -36,11 +39,10 @@ class ObjectiveFunction(object):
     The base class includes all the support we need for constraints.
     """
 
-    def evaluate_multiple(self, sim_data_dict, exp_data_dict, constraints=(), show_warnings=True):
+    def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
         Optionally may pass an iterable of ConstraintSets whose penalties will be added to the total
-
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
         :param exp_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing experimental Data objects
@@ -52,9 +54,15 @@ class ObjectiveFunction(object):
         :type show_warnings: bool
         :return:
         """
+       
+        self.pset = pset
+        for p in self.pset:
+            if p.name == 'r__FREE':
+                self.r = p.value
+
         with np.errstate(all='ignore'):  # Suppress numpy warnings printed to terminal
             total = 0.
-
+            
             # Dictionary mapping suffix strings to experimental Data objects
             # exp_data_dict = self.conf.exp_data
 
@@ -92,8 +100,7 @@ class ObjectiveFunction(object):
 class SummationObjective(ObjectiveFunction):
     """
     Represents a type of objective function in which we perform some kind of summation over all available experimental
-    data points.
-    Currently, this describes all objective functions in PyBNF.
+    data points individually.
     """
 
     def __init__(self, ind_var_rounding=0):
@@ -111,7 +118,7 @@ class SummationObjective(ObjectiveFunction):
         :type show_warnings: bool
         :return: float, value of the objective function, with a lower value indicating a better fit.
         """
-
+        
         indvar = min(exp_data.cols, key=exp_data.cols.get)  # Get the name of column 0, the independent variable
 
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
@@ -166,13 +173,76 @@ class SummationObjective(ObjectiveFunction):
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """
         Calculate the objective function for a single point in the data
-
         This evaluation is what differentiates the different objective functions.
-
         :param sim_data: The simulation Data object
         :param exp_data: The experimental Data object
         :param sim_row: The row number to look at in sim_data
         :param exp_row: The row number to look at in exp_data
+        :param col_name: The column name to look at  (same for the sim_data and the exp_data)
+        :return:
+        """
+        raise NotImplementedError('Subclasses of SummationObjective must override eval_point')
+
+    def _check_columns(self, exp_cols, compare_cols):
+        """
+        Check that all exp_cols are being read in compare_cols; give a warning if not.
+        :param exp_cols: Iterable of all experimental data column names
+        :param compare_cols: Iterable of the names being used
+        :return: None
+        """
+        missed = set(exp_cols).difference(set(compare_cols))
+        if len(missed) > 0:
+            raise PybnfError('The following experimental data columns were not found in the simulation output: '
+                             + str(missed))
+
+
+class ColumnSummationObjective(ObjectiveFunction):
+    """
+    Represents a type of objective function in which we perform some kind of summation for one column at a time.
+    The assumption is that the independent variable is the same for each row.
+    """
+
+    def __init__(self, ind_var_rounding=0):
+        # Keep track of which warnings we've printed, so we only print each one once.
+        self.warned = set()
+        self.rounding = ind_var_rounding
+
+    def evaluate(self, sim_data, exp_data, show_warnings=True):
+        """
+        :param sim_data: A Data object containing simulated data
+        :type sim_data: Data
+        :param exp_data: A Data object containing experimental data
+        :type exp_data: Data
+        :param show_warnings: If True, print warnings about unused data
+        :type show_warnings: bool
+        :return: float, value of the objective function, with a lower value indicating a better fit.
+        """
+
+        indvar = min(exp_data.cols, key=exp_data.cols.get)  # Get the name of column 0, the independent variable
+
+        compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
+        # Warn if experiment columns are going unused
+        if show_warnings:
+            self._check_columns(exp_data.cols, compare_cols)
+        try:
+            compare_cols.remove(indvar)
+        except KeyError:
+            raise PybnfError('The independent variable "%s" in your exp file was not found in the simulation data.'
+                             % indvar)
+
+        func_value = 0.0
+        # Iterate through rows of experimental data
+        for col_name in compare_cols:
+            func_value += self.eval_column(sim_data, exp_data, col_name)
+
+        return func_value
+
+    def eval_column(self, sim_data, exp_data, col_name):
+        """
+        Calculate the objective function for a single column in the data
+        This evaluation is what differentiates the different column based objective functions.
+        :param sim_data: The simulation Data object
+        :param exp_data: The experimental Data object
         :param col_name: The column name to look at  (same for the sim_data and the exp_data)
         :return:
         """
@@ -207,7 +277,7 @@ class ChiSquareObjective(SummationObjective):
         exp_sigma = exp_data.data[exp_row, sd_col]
         return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
 
-    def  _check_columns(self, exp_cols, compare_cols):
+    def _check_columns(self, exp_cols, compare_cols):
         """
         Check that all exp_cols are being read in compare_cols; give a warning if not.
         :param exp_cols: Iterable of all experimental data column names
@@ -223,28 +293,36 @@ class ChiSquareObjective(SummationObjective):
 class SumOfSquaresObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
+        # list_stuff = []
+        # for i in sim_data.data:
+        #     list_stuff.append(i[sim_data.cols[col_name]])
+        # normFactor = max(list_stuff)
+        # print(normFactor)
+        # print(sim_val)
+        # sim_val = sim_val/normFactor
+        print(sim_val)
         return (sim_val - exp_val) ** 2.
+
 
 class SumOfDiffsObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return abs(sim_val - exp_val)
+
 
 class NormSumOfSquaresObjective(SummationObjective):
     """
     Sum of squares where each point is normalized by the y value at that point, ((y-y')/y)^2
     """
-    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
 
+    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        return ((sim_val - exp_val)/exp_val) ** 2.
+        return ((sim_val - exp_val) / exp_val) ** 2.
 
 
 class AveNormSumOfSquaresObjective(SummationObjective):
@@ -252,6 +330,7 @@ class AveNormSumOfSquaresObjective(SummationObjective):
     Sum of squares where each point is normalized by the average value of that variable,
     ((y-y')/ybar)^2
     """
+
     def evaluate(self, sim_data, exp_data, show_warnings=True):
         # Precalculate the average of each exp column to use for all points in this call.
         self.aves = {name: np.average(exp_data[name]) for name in exp_data.cols}
@@ -261,6 +340,43 @@ class AveNormSumOfSquaresObjective(SummationObjective):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
+
+
+class NegBinLikelihood(SummationObjective):
+    """
+    Negative binomial likelihood
+    """
+
+    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        sim_val_1 = sim_data.data[sim_row, sim_data.cols[col_name]]
+        sim_val_2 = sim_data.data[sim_row + 1, sim_data.cols[col_name]]
+        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]   
+        if '_C' in col_name:
+            sim_val = sim_val_2 - sim_val_1
+        else:
+            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        if exp_val >= 0:
+            prob = np.clip(self.r / (self.r + sim_val), 1e-10, 1 - 1e-10)
+            # log(1e-10+stats.nbinom.pmf(incidents[i], n=r, p=prob))
+            assert isinstance(self.r, float)
+            val = loggamma(exp_val + self.r) - loggamma(exp_val + 1) - loggamma(self.r) + self.r * np.log(prob) + \
+                   exp_val * np.log(1 - prob)
+        
+            return abs(val)
+        else:
+            return 0
+
+
+class KLLikelihood(ColumnSummationObjective):
+    """
+    The Kullback-Leibler likelihood.
+    It should be more efficient in parameter fitting as numerical experiments suggest
+    """
+
+    def eval_column(self, sim_data, exp_data, col_name):
+        sim_column = sim_data[:, sim_data.cols[col_name]]
+        exp_column = exp_data[:, exp_data.cols[col_name]]
+        return sum(exp_column * np.log(sim_column / sum(sim_column)))
 
 
 class ConstraintCounter(ObjectiveFunction):

@@ -15,16 +15,19 @@ Summary of Available Algorithms
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Particle Swarm`_           | Population-based | Asynchronous    | Fitting models with high variability in runtime                           | 
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `Metropolis-Hastings MCMC`_ | Metropolis       | Independent     | Finding probability distributions of parameters                           |
+| `Metropolis-Hastings MCMC`_ | Metropolis       | Independent     | Finding probability distributions of parameters (deprecated)              |
 |                             | sampling         | Markov Chains   |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `Simulated Annealing`_      | Metropolis       | Independent     | Problem-specific applications                                             |
+| `Simulated Annealing`_      | Metropolis       | Independent     | Problem-specific applications (deprecated)                                |
 |                             | sampling         | Markov Chains   |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Parallel Tempering`_       | Metropolis       | Synchronized    | Finding probability distributions in challenging probablity landscapes    |
-|                             | sampling         | Markov Chains   |                                                                           |
+|                             | sampling         | Markov Chains   | (deprecated)                                                              |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Simplex`_                  | Local search     | Synchronous     | Local optimization, or refinement of a result from another algorithm.     |
++-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
+| `Adaptive MCMC`_            | Metropolis       | Independent     | Finding probability distributions in challenging probablity landscapes    |
+|                             | sampling         | Markov Chains   |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 
 .. | `DREAM`_                    | Hybrid           | Synchronous     | \?\?\?\?                                                                  |
@@ -271,6 +274,28 @@ Applications
 Like conventional Metropolis-Hastings MCMC, the goal of parallel tempering is to provide a distribution of possible parameter values rather than a single point estimate. 
 
 Compared to Metropolis-Hastings MCMC, parallel tempering offers a trade-off: Parallel tempering generates fewer samples per unit CPU time (because most of the processors run higher temperature simulations that don't sample the distribution of interest), but traverses parameter space more efficiently, making each sample more valuable. The decision between parallel tempering and Metropolis-Hastings therefore depends on the nature of your parameter space: parallel tempering is expected to perform better when the space is complex, with many local minima that make it challenging to explore. 
+
+
+
+Adaptive MCMC
+------------------
+
+Algorithm
+^^^^^^^^^
+Adaptive Markov chain Monte Carlo (MCMC) is a Bayesian sampling method. The Bayesian method is described in further detail under the Metropolis-Hasting definition.
+When running this algorithm in PyBNF, it is assumed that the objective function is a likelihood function, that is, the objective function value gives the negative log probability of the data given the parameter set. It is recommended that the Chi-squared or negative binomial or their dynamic versions are used with this algorithm.
+The output when using the adaptive MCMC in PyBNF consists of the posterior from each chain and a file containing parameters from all chains saved in the ‘/Results/AMCMC/Run’ folder.
+
+Parallelization
+^^^^^^^^^^^^^^^
+Like Metropolis-Hastings, Adaptive MCMC is not an inherently parallel algorithm. Like the Metropolis-Hastings algorithm PyBNF supports running several independent Markov chains using the populations_size key.
+Note as stated in the Metropolis-Hastings description each chain must independently go through the burn-in period, but after the burn-in, your rate of sampling will be improved proportional to the number of parallel chains in your run.
+
+Implementation details
+^^^^^^^^^^^^^^^^^^^^^^
+The implementation algorithm can be found in Andrieu and Thoms, Stat Comput 18: 343–373 (2008). The algorithm uses a random walk like MCMC during the training period. While in the training period data is collected to determine the covariance of the posterior. Once the training phase is completed real time on the fly calculation of the diffusivity and covariance is performed for the remaining iterations.
+Note: as stated in the Metropolis-Hastings description if a uniform or loguniform prior is used, the prior does not affect the result other than to confine the distribution within the specified range. If a normal or lognormal prior is used, the prior does affect the probability of accepting each proposed move, and therefore the choice of prior affects the final sampled probability distribution.
+ 
 
 .. _alg-dream:
 
