@@ -606,7 +606,7 @@ class Configuration(object):
             if 'neg_bin_r' in self.config:
                 return NegBinLikelihood(self.config['neg_bin_r'], self.config['ind_var_rounding'])
             else:
-                raise UnknownObjectiveFunctionError("Objective function neg_bin_static cannot be defined without "
+                raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined without "
                                                     "configuration neg_bin_r defined")
         elif self.config['objfunc'] == 'kl':
             return KLLikelihood(self.config['ind_var_rounding'])
