@@ -262,15 +262,18 @@ class BNGLModel(Model):
                     pass
                 else:
                     stuffStart = i.rfind('suffix=>')
-                    stuffEnd = i.rfind('method=>')
-                    stuff = i[stuffStart:stuffEnd].split('=>')
-                    start = i.rfind('n_steps=>')
-                    end = i.rfind('print_functions')
-                    text = i[start:end]
-                    new_text = re.findall(r'[ 0-9]+', text)
-                    time = int(new_text[0])
-                    stuff = stuff[1].replace(',', '').replace('"', '')
-                    timeDict[stuff] = time
+                    stuff = i[stuffStart:].split(',')
+                    for suf in stuff:
+                        if 'suffix' in suf:
+                            stuff = suf.split('=>')
+                            stuff = stuff[1]
+                            start = i.rfind('n_steps=>')
+                            text = i[start:]
+                            new_text = re.findall(r'[ 0-9]+', text)
+                            time = int(new_text[0])
+                            stuff = stuff.replace('"', '')
+                            timeDict[stuff] = time
+                
         return timeDict                
 
     def copy_with_param_set(self, pset):
