@@ -2,7 +2,7 @@
 
 
 from .data import Data, DuplicateColumnError
-from .objective import ChiSquareObjective, SumOfSquaresObjective, NormSumOfSquaresObjective, \
+from .objective import ChiSquareObjective, ChiSquareObjective_Dynamic, NegBinLikelihood_Dynamic, NegBinLikelihood, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective, SumOfDiffsObjective, NegBinLikelihood, KLLikelihood
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
@@ -124,7 +124,7 @@ class Configuration(object):
             d = self.check_unused_keys_model_checking(d)
         elif verbosity >= 1:
             self.check_unused_keys(d)
-        if d['fit_type'] in ('mh', 'pt', 'sa', 'dream', 'ym'):
+        if d['fit_type'] in ('mh', 'pt', 'sa', 'dream', 'am'):
             self.postprocess_mcmc_keys(d)
         self.config = self.default_config()
         for k, v in d.items():
@@ -180,6 +180,7 @@ class Configuration(object):
 
             'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 100, 'hist_bins': 10, 'adaptive': 10000,
             'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01, 'continue_run': 0, 
+            'neg_bin_r': 24.0, 'stablizingCov': 0.001,  
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
             'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,
@@ -192,8 +193,8 @@ class Configuration(object):
             'scheduler_node': None,
             'scheduler_file': None,
             'worker_nodes': None,
-            'graph_stuff': None,
-            'file_type': '.png',
+            'output_trajectory': None,
+            'output_noise_trajectory': None,
 
             'gamma_prob': 0.1,
             'zeta': 1e-6,
@@ -223,7 +224,7 @@ class Configuration(object):
                         }
         ignored_params = set()
         thisalg = conf_dict['fit_type']
-        if thisalg in ('pt', 'sa', 'dream','ym'):
+        if thisalg in ('pt', 'sa', 'dream','am'):
             thisalg = 'mh'
         for alg in alg_specific:
             if (thisalg != alg
@@ -285,7 +286,7 @@ class Configuration(object):
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
-        if conf_dict['fit_type'] in ['mh', 'sa', 'pt', 'ym']:
+        if conf_dict['fit_type'] in ['mh', 'sa', 'pt', 'am']:
             for k in ['crossover_numer', 'zeta', 'lambda', 'gamma_prob']:
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
@@ -361,9 +362,21 @@ class Configuration(object):
         return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
 
     def _load_t_length(self):
+        timeDict = {}
+        
+        
         for mf in self.config['models']:
-            time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
-        return time           
+            if re.search('\.bngl$', mf):
+                time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
+                for i,v in time.items():
+                    timeDict[i] = v
+            elif re.search('\.xml$', mf):
+                suffix = self.config['time_course'][0]['suffix']
+                time = self.config['time_course'][0]['step']    
+                timeDict[suffix] = int(time)  
+        return timeDict    
+        
+                
 
     def _load_models(self):
         """
@@ -577,6 +590,8 @@ class Configuration(object):
     def _load_obj_func(self):
         if self.config['objfunc'] == 'chi_sq':
             return ChiSquareObjective(self.config['ind_var_rounding'])
+        elif self.config['objfunc'] == 'chi_sq_dynamic':
+            return ChiSquareObjective_Dynamic(self.config['ind_var_rounding'])    
         elif self.config['objfunc'] == 'sos':
             return SumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'norm_sos':
@@ -585,11 +600,13 @@ class Configuration(object):
             return AveNormSumOfSquaresObjective(self.config['ind_var_rounding'])
         elif self.config['objfunc'] == 'sod':
             return SumOfDiffsObjective(self.config['ind_var_rounding'])
+        elif self.config['objfunc'] == 'neg_bin_dynamic':
+            return NegBinLikelihood_Dynamic(self.config['ind_var_rounding'])    
         elif self.config['objfunc'] == 'neg_bin':
             if 'neg_bin_r' in self.config:
-                return NegBinLikelihood(self.config['ind_var_rounding'])
+                return NegBinLikelihood(self.config['neg_bin_r'], self.config['ind_var_rounding'])
             else:
-                raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined without "
+                raise UnknownObjectiveFunctionError("Objective function neg_bin_static cannot be defined without "
                                                     "configuration neg_bin_r defined")
         elif self.config['objfunc'] == 'kl':
             return KLLikelihood(self.config['ind_var_rounding'])
@@ -603,14 +620,22 @@ class Configuration(object):
         :return: a list of FreeParameter instances
         """
         #Compile a list of the varible names to determine if the reqired var is present
-        if self.config['objfunc'] == 'neg_bin':
+        if self.config['objfunc'] == 'neg_bin_dynamic':
             r_check = []
             for k in self.config.keys():
                 r_check.append(k[1])
             if np.any('r__FREE' in r_check):
                 pass
             else:
-                raise PybnfError('Using the neg_bin objective function requires the r__FREE parameter')
+                raise PybnfError('Using the neg_bin_dynamic objective function requires the r__FREE parameter in the .conf file and the model file')
+        if self.config['objfunc'] == 'chi_sq_dynamic':
+            sigma_check = []
+            for k in self.config.keys():
+                sigma_check.append(k[1])
+            if np.any('sigma__FREE' in sigma_check):
+                pass
+            else:
+                raise PybnfError('Using the chi_sq_dynamic objective function requires the sigma__FREE parameter in the .conf file and the model file')        
         variables = []
         for k in self.config.keys():
             if isinstance(k, tuple):
