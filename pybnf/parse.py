@@ -26,14 +26,14 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
-                 'constraint_scale', 'neg_bin_r']
+                 'constraint_scale', 'neg_bin_r', 'stablizingCov']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params']
 b_var_def_keys = ['uniform_var', 'loguniform_var']
 var_def_keys = ['lognormal_var', 'normal_var']
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
-              'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator', 'simulation_dir', 'file_type']
-multstrkeys = ['worker_nodes', 'postprocess', 'graph_stuff']
+              'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator', 'simulation_dir']
+multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
 

@@ -2484,9 +2484,9 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                     logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
                     self.staged.append(ps)
 
-class Yens_MCMC(BayesianAlgorithm):
+class Adaptive_MCMC(BayesianAlgorithm):
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
-        super(Yens_MCMC, self).__init__(config)
+        super(Adaptive_MCMC, self).__init__(config)
         # set the params decleared in the configuaration file
         if self.config.config['normalization']:
             self.norm = self.config.config['normalization']
@@ -2494,6 +2494,7 @@ class Yens_MCMC(BayesianAlgorithm):
             self.norm = None
            
         self.time = self.config.config['time_length']
+       
         self.adaptive = self.config.config['adaptive']
         # The iteration number that the adaptive starts at
         self.valid_range = self.burn_in + self.adaptive
@@ -2512,81 +2513,51 @@ class Yens_MCMC(BayesianAlgorithm):
         self.scores = np.zeros((self.num_parallel, self.arr_length))
         # set arrays for features and graphs
         self.parameter_index = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
-        
-        # set graphing stuff needs to be changed to a user defined setting with a default
-        #self.qtlMark = [25, 50 ,75]
-        self.qtlMark = np.linspace(0, 100, 21)
-        self.output_std = 1
-        if self.output_std == 2:
-            self.qtlMark[0] = 2.5
-            self.qtlMark[-1] = 97.5
-        elif self.output_std == 1:                
-            self.qtl_1 = self.qtlMark[3:-3]
-            self.qtl_1[0] = 16
-            self.qtl_1[-1] = 84
-            self.qtlMark = self.qtl_1
-        # The column that contains the desired output from the simulation
-        self.data_column = []
+        self.samples_file = None
         # warm start features
-        self.file_type = self.config.config['file_type']
-        if self.file_type == '.png' or self.file_type == '.pdf':
-            pass
-        else:
-            raise PybnfError('PyBNF supports .png or .pdf for figure file types. Please specify a supported file type in the configuration file')
-        
         
         os.makedirs(self.config.config['output_dir'] + '/A_MCMC', exist_ok=True)
-        os.makedirs(self.config.config['output_dir'] + '/Results/A_MCMC/Graphs', exist_ok=True)
         os.makedirs(self.config.config['output_dir'] + '/Results/A_MCMC/Runs', exist_ok=True)
 
-        self.output_columns = []
-        for i in self.config.config['graph_stuff']:
-            new = i.replace(',', '')
-            self.output_columns.append(new)
-        self.output_run_current = {}
-        self.output_run_MLE = {}
-        self.output_run_all = {}
-
-        for i in self.output_columns:
-            for k in self.time.keys():     
-                if '_Cum' in i:
-                    print(self.time[k])
-                    self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                    self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                    self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                else:     
-                    self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1)) 
-                    self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
-                    self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))      
-
-        # for i in self.output_columns:
-        #     for k in self.time.keys():     
-        #         if '_Cum' in i:
-        #             print(self.time[k])
-        #             self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-        #         else:     
-        #             self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
-
-        # for i in self.output_columns:
-        #     for k in self.time.keys():     
-        #         if '_Cum' in i:
-        #             print(self.time[k])
-        #             self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-        #         else:     
-        #             self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))    
-        # self.output_run_MLE = {}
-        # for i in self.output_columns:
-        #     if '_Cum' in i:
-        #         self.output_run_MLE[i] = np.zeros((1, self.time))
-        #     else:
-        #         self.output_run_MLE[i] = np.zeros((1, self.time + 1))        
-        # self.output_run_all = {}
-        # for i in self.output_columns:
-        #     if '_Cum' in i:
-        #         self.output_run_all[i] = np.zeros((self.num_parallel, 1000, self.time))
-        #     else:
-        #         self.output_run_all[i] = np.zeros((self.num_parallel, 1000, self.time + 1))              
-
+        
+        if self.config.config['output_trajectory']:
+            self.output_columns = []
+            for i in self.config.config['output_trajectory']:
+                new = i.replace(',', '')
+                self.output_columns.append(new)
+            self.output_run_current = {}
+            self.output_run_MLE = {}
+            self.output_run_all = {}
+            for i in self.output_columns:
+                for k in self.time.keys():     
+                    if '_Cum' in i:
+                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                    else:     
+                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1)) 
+                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
+                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))      
+                     
+        
+        if self.config.config['output_noise_trajectory']:
+            self.output_noise_columns = []
+            for i in self.config.config['output_noise_trajectory']:
+                new = i.replace(',', '')
+                self.output_noise_columns.append(new)
+            self.output_run_noise_current = {}
+            self.output_run_noise_MLE = {}
+            self.output_run_noise_all = {}
+            for i in self.output_noise_columns:
+                for k in self.time.keys():     
+                    if '_Cum' in i:
+                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                    else:     
+                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1)) 
+                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
+                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
         if self.config.config['continue_run'] == 1:
             for i in self.output_columns:
                 self.output_run_MLE[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/mle_traj_' + i + '.txt')
@@ -2594,12 +2565,12 @@ class Yens_MCMC(BayesianAlgorithm):
             self.diffMatrix = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix.txt')
             self.mle = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt')
         else:
-            self.mle = 0
+            self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
             self.diff = [self.config.config['step_size']]
-            self.diffMatrix = 0    
+            self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables)))  
     ''' Used for resuming runs and adding iterations'''
     def reset(self, bootstrap=None):
-        super(Yens_MCMC, self).reset(bootstrap)
+        super(Adaptive_MCMC, self).reset(bootstrap)
 
         self.current_pset = None
         self.ln_current_P = None
@@ -2619,7 +2590,7 @@ class Yens_MCMC(BayesianAlgorithm):
                 % (self.num_parallel, self.max_iterations))
 
 
-        return super(Yens_MCMC, self).start_run()
+        return super(Adaptive_MCMC, self).start_run(setup_samples = False)
 
     def got_result(self, res):
         """
@@ -2631,24 +2602,11 @@ class Yens_MCMC(BayesianAlgorithm):
         """
         pset = res.pset
         score = res.score
+        
        
         # Figure out which parallel run this is from based on the .name field.
         m = re.search(r'(?<=run)\d+', pset.name)
-        index = int(m.group(0))
-        # Get the prefix of the file and the prefix of the simulation
-        for i in self.exp_data:
-            prefix = i
-            for p in self.exp_data[i]:
-                model_prefix = p       
-          
-        # setting the data column
-        # if self.iteration[index] == 0:
-        #     self.compare_cols = set(self.exp_data[prefix][model_prefix].cols).intersection(set(res.out[prefix][model_prefix].cols))
-        #     for col in self.compare_cols:
-        #         if col != 'time':
-        #             column = col
-        #     self.data_column =  res.out[prefix][model_prefix].cols[column]
-
+        index = int(m.group(0))      
 
         self.saved_score[index] = self.store_score[index]
         self.accept = False
@@ -2673,26 +2631,45 @@ class Yens_MCMC(BayesianAlgorithm):
             for i in self.current_pset[index]:
                 self.cp.append(i.value)
             self.current_param_set[index] = self.cp
-            for l in self.output_columns:     
-                for i in res.out:
-                    for j in res.out[i]:
-                        if l in res.out[i][j].cols:
-                            if self.norm:
-                                res.out[i][j].normalize(self.norm)
-                            column = res.out[i][j].cols[l]
-                            self.list_trajactory = []
-                            for z in res.out[i][j].data:
-                                self.list_trajactory.append(z.data[column])      
-                            if '_Cum' in l:
-                                self.output_run_current[j+l][index]= np.diff(self.list_trajactory)
-                            else:
-                                self.output_run_current[j+l][index]= self.list_trajactory
-                            
-                            if score < min(self.saved_score):
-                                self.mle = self.current_param_set[index]       
-                                self.output_run_MLE[j+l] = self.output_run_current[j+l][index][0]
-                            self.list_trajactory = []
-
+            if self.config.config['output_trajectory']:
+                for l in self.output_columns:     
+                    for i in res.out:
+                        for j in res.out[i]:
+                            if l in res.out[i][j].cols:
+                                if self.norm:
+                                    res.out[i][j].normalize(self.norm)
+                                column = res.out[i][j].cols[l]
+                                self.list_trajactory = []
+                                for z in res.out[i][j].data:
+                                    self.list_trajactory.append(z.data[column])      
+                                if '_Cum' in l:
+                                    self.output_run_current[j+l][index]= np.diff(self.list_trajactory)
+                                else:
+                                    self.output_run_current[j+l][index]= self.list_trajactory
+                                if score < min(self.saved_score):
+                                    self.mle[index] = self.current_param_set[index]       
+                                    self.output_run_MLE[j+l][index] = self.output_run_current[j+l][index][0]
+                                self.list_trajactory = []
+            if self.config.config['output_noise_trajectory']:
+                for la in self.output_noise_columns:     
+                    for ib in res.out:
+                        for js in res.out[ib]:
+                            if la in res.out[ib][js].cols:
+                                if self.norm:
+                                    res.out[ib][js].normalize(self.norm)
+                                column = res.out[ib][js].cols[la]
+                                self.list_trajactory = []
+                                for z in res.out[ib][js].data:
+                                    self.list_trajactory.append(z.data[column])      
+                                if '_Cum' in la:
+                                    self.output_run_noise_current[js+la][index]= np.diff(self.list_trajactory)
+                                else:
+                                    self.output_run_noise_current[js+la][index]= self.list_trajactory
+                                
+                                if score < min(self.saved_score):
+                                    self.mle[index] = self.current_param_set[index]       
+                                    self.output_run_noise_MLE[js+la][index] = self.output_run_noise_current[js+la][index][0]
+                                self.list_trajactory = []    
                             
                                                        
         if self.iteration[index] == 0:
@@ -2706,20 +2683,18 @@ class Yens_MCMC(BayesianAlgorithm):
         
                             
         # record the trajactorys for the graphs
-        if self.iteration[index] >= self.valid_range:
+        if self.iteration[index] >= self.valid_range and self.iteration[index] % self.config.config['sample_every'] == 0:
             # if the objective function is negbin then add the negbin noise to the traj output else record accepted sim vals as is
-            if self.config.config['objfunc'] == 'neg_bin':
-                for l in self.output_columns:     
-                    for i in res.out:
-                        for j in res.out[i]:
-                            if l in res.out[i][j].cols:
-                                self.output_run_all[j+l][index][self.factor] =  self.generateBinomialNoise(self.output_run_current[j+l][index][0], self.current_pset[index])
-            else:
-                for l in self.output_columns:     
-                    for i in res.out:
-                        for j in res.out[i]:
-                            if l in res.out[i][j].cols:
-                                self.output_run_all[j+l][index][self.factor] = self.output_run_current[j+l][index][0]
+            if (self.config.config['objfunc'] == 'neg_bin' and self.config.config['output_noise_trajectory']) or (self.config.config['objfunc'] == 'neg_bin_dynamic' and self.config.config['output_noise_trajectory']):
+                for l in self.output_noise_columns:     
+                    for i in self.output_run_noise_current.keys():
+                        if l in i:
+                            self.output_run_noise_all[i][index][self.factor] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index])
+            if self.config.config['output_trajectory']:
+                for l in self.output_columns:
+                    for i in self.output_run_current.keys():
+                        if l in i:
+                            self.output_run_all[i][index][self.factor] = self.output_run_current[i][index][0]
 
         # Using either the newly accepted PSet or the old PSet, propose the next PSet.
         # Record that this individual is complete
@@ -2735,26 +2710,38 @@ class Yens_MCMC(BayesianAlgorithm):
                 self.factor[i] +=1
                 if self.factor[i] == self.arr_length:
                     self.factor[i] = 0
-            if self.iteration[index] % self.arr_length == 0:
+            if self.iteration[index] % self.arr_length == 0 :
                 for i in range(self.num_parallel):
                     self.write_out_scores(i)
-            if self.iteration[i] >= self.burn_in:
+            if self.iteration[i] >= (self.burn_in - 1) and self.iteration[index] <= (self.burn_in + self.adaptive):
                 for i in range(self.num_parallel):
                     if self.iteration[i] % self.arr_length == 0:
-                        self.write_out_params(i)
-            if self.iteration[index] >= self.valid_range:
-                if self.iteration[index] % self.arr_length == 0:
-                    for i in range(self.num_parallel):
-                        self.write_out_trajactorys(i, res.out)
+                        self.write_out_params(i, pset)        
+            if self.iteration[i] > (self.burn_in + self.adaptive) and self.iteration[index] % self.config.config['sample_every'] == 0:
+                for i in range(self.num_parallel):
+                    if self.iteration[i] % self.arr_length == 0:
+                        self.write_out_params(i, pset)
+            if self.config.config['output_trajectory']:            
+                if self.iteration[index] >= self.valid_range:
+                    if self.iteration[index] % self.arr_length == 0:
+                        for i in range(self.num_parallel):
+                            self.write_out_trajactorys(i)
+            if self.config.config['output_noise_trajectory']:
+                if self.iteration[index] >= self.valid_range:
+                    if self.iteration[index] % self.arr_length == 0:
+                        for i in range(self.num_parallel):
+                            self.write_out_trajactorys_noise(i)
             # Set here because I don't want these commands to exacute more then once.
             if min(self.iteration) >= self.max_iterations:
                 # Save the current postion of the MCMC run
                 self.diff = [self.diff]
                 for i in range(self.num_parallel):
-                        self.write_out_trajactorys(i, res.out)
-                np.savetxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt', self.mle)
+                        np.savetxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' + str(i) + '.txt', self.mle[i])
+                        np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix_Chain_' + str(i) + '.txt', self.diffMatrix[i])
                 np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diff.txt', self.diff)
-                np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix.txt', self.diffMatrix)
+                self.combine_chains_params(pset)
+                self.combine_chains_traj()
+                
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
@@ -2766,6 +2753,7 @@ class Yens_MCMC(BayesianAlgorithm):
             # Propose next Pset
             next_generation = []
             for i, p in enumerate(self.current_pset):
+
                 new_pset = self.pick_new_pset(i)
                 if new_pset:
                     new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
@@ -2777,10 +2765,12 @@ class Yens_MCMC(BayesianAlgorithm):
 
         self.output = np.copy(timeseries)
         self.pset = pset
-        for p in self.pset:
-            if p.name == 'r__FREE':
-                self.r = p.value
-
+        if self.config.config['objfunc'] == 'neg_bin_dynamic':
+            for p in self.pset:
+                if p.name == 'r__FREE':
+                    self.r = p.value
+        else:
+            self.r = self.config.config['neg_bin_r']
         for i in range(len(timeseries)):
             self.prob = np.clip( self.r/(self.r+timeseries[i]), 1e-10, 1-1e-10)
             self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1)
@@ -2792,50 +2782,95 @@ class Yens_MCMC(BayesianAlgorithm):
         with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/scores_' + str(idx) + '.txt', 'a') as f:
             np.savetxt(f, self.write_out_score)
 
-    def write_out_params(self, idx):
-        self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+    def write_out_params(self, idx, pset):
+        if self.iteration[idx] == self.burn_in -1:
+            self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+            with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', 'a') as f:
+                f.write(pset.keys_to_string()+'\n')
+        else:
+            self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+            with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', 'a') as f:
+                np.savetxt(f, self.write_out_p)
 
-        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', 'a') as f:
-            np.savetxt(f, self.write_out_p)
-
-    def write_out_trajactorys(self, idx, results):
-        resultsNstuff = results
+    def write_out_trajactorys(self, idx):
         for l in self.output_columns:     
-                    for i in resultsNstuff:
-                        for j in resultsNstuff[i]:
-                            if l in resultsNstuff[i][j].cols:
-                                self.write_out_t = self.output_run_all[j+l][idx][~(self.output_run_all[j+l][idx]==0).all(1)]
-                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + j+l + '_chain_' + str(idx) + '.txt', 'a') as f:
-                                    np.savetxt(f, self.write_out_t)
-    
+            for i in self.output_run_current.keys():
+                if l in i:
+                    self.write_out_t = self.output_run_all[i][idx][~(self.output_run_all[i][idx]==0).all(1)]
+                    if len(self.write_out_t) != 0:
+                        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + i + '_chain_' + str(idx) + '.txt', 'a') as f:
+                            np.savetxt(f, self.write_out_t)
+    def write_out_trajactorys_noise(self, idx):
+        for l in self.output_noise_columns:     
+            for i in self.output_run_noise_current.keys():
+                if l in i:
+                    self.write_out_t = self.output_run_noise_all[i][idx][~(self.output_run_noise_all[i][idx]==0).all(1)]
+                    if len(self.write_out_t) != 0:
+                        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_noise_' + i + '_chain_' + str(idx) + '.txt', 'a') as f:
+                            np.savetxt(f, self.write_out_t)
+    def combine_chains_params(self, pset):
+        if self.num_parallel != 1:
+            with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_params.txt', 'a') as f:
+                f.write(pset.keys_to_string()+'\n')
+                for i in range(self.num_parallel):
+                    file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(i) + '.txt', skiprows=1)
+                    np.savetxt(f, file_append)   
+    def combine_chains_traj(self):
+        if self.num_parallel != 1:
+            if self.config.config['output_trajectory']:
+                for j in range(self.num_parallel):
+                    for l in self.output_noise_columns:     
+                        for i in self.output_run_noise_current.keys():
+                            if l in i:
+                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj' + i + '.txt', 'a') as f:
+                                    file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + i + '_chain_' + str(j) + '.txt')
+                                    np.savetxt(f, file_append)
+            if self.config.config['output_noise_trajectory']:
+                for j in range(self.num_parallel):
+                    for l in self.output_noise_columns:     
+                        for i in self.output_run_noise_current.keys():
+                            if l in i:
+                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj_noise_' + i + '.txt', 'a') as f:
+                                    file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_noise_' + i + '_chain_' + str(j) + '.txt')
+                                    np.savetxt(f, file_append)                                     
+            # for l in self.output_columns:
+            #     for i in self.output_run_noise_current.keys():
+            #         if l in i:
+            #             for k in range(self.num_parallel):
+            #                 list_stuff = []
+            #                 list_stuff.append(np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_chain_' + str(k) + '.txt', skiprows=1))
+            #             ok = np.asarray(list_stuff)
+            #             np.savetxt('shouldbesomething.txt', ok)
+
+
     def pick_new_pset(self, idx):
         """
         :param idx: Index of PSet to update
         :return:
         """
         # Per Yen's advice if something is going to be altered the stabilizingCov is a canadatie. Should it be a .config with a default?
-        self.stablizingCov = 0.001*np.eye(len(self.current_param_set[idx]))
+        self.stablizingCov = self.config.config['stablizingCov']*np.eye(len(self.current_param_set[idx]))
 
         if self.iteration[idx] >= self.burn_in + self.adaptive:
             if self.iteration[idx] == self.burn_in + self.adaptive:
-                self.parameter_index_file = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt')
+                self.parameter_index_file = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', skiprows=1)
                 self.mu = np.reshape(np.mean(self.parameter_index_file[:self.iteration[idx]],axis=0), [1, len(self.current_param_set[idx])])  # compute the mean parameters along the past chain
-                self.diffMatrix = np.matmul(self.parameter_index_file[:self.iteration[idx]].T, self.parameter_index_file[:self.iteration[idx]])/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu.T, self.mu)+self.stablizingCov
+                self.diffMatrix[idx] = np.matmul(self.parameter_index_file[:self.iteration[idx]].T, self.parameter_index_file[:self.iteration[idx]])/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu.T, self.mu)+self.stablizingCov
                 self.diff = 2.38**2/len(self.current_param_set[idx])
             self.mu = self.mu + (1./(1+self.iteration[idx]))*(self.current_param_set[idx] - self.mu)
             self.diffVector = np.reshape(self.current_param_set[idx] -self.mu, [1, len(self.current_param_set[idx])])
-            self.diffMatrix = self.diffMatrix + (1./(1 + self.iteration[idx]))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix)
+            self.diffMatrix[idx] = self.diffMatrix[idx] + (1./(1 + self.iteration[idx]))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix[idx])
             self.diff = np.exp( np.log(self.diff) + (1./(1 + self.iteration[idx]- self.adaptive - self.burn_in))*(self.alpha-0.234))
         elif self.config.config['continue_run'] == 1:
-            self.diffMatrix = self.diffMatrix
+            self.diffMatrix[idx] = self.diffMatrix[idx]
         else:
-            self.diffMatrix = np.diag(np.array(self.current_param_set[idx]))
+            self.diffMatrix[idx] = np.diag(np.array(self.current_param_set[idx]))
 
         # Loop until acceptable params are proposed
         self.max_attemps = 0
         while True:
             oldpset = self.current_pset[idx]
-            delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix)
+            delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
             delta_vector = {k: np.random.normal() for k in oldpset.keys()}
             delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
             delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
@@ -2860,7 +2895,7 @@ class Yens_MCMC(BayesianAlgorithm):
             except OutOfBoundsException:
                 logger.debug("Variable %s is outside of bounds")
         return PSet(new_vars)
-
+    
 class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
