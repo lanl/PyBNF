@@ -59,6 +59,11 @@ class ObjectiveFunction(object):
         for p in self.pset:
             if p.name == 'r__FREE':
                 self.r = p.value
+            elif p.name == 'sigma__FREE':
+                self.sigma = p.value
+            else:
+                pass    
+
 
         with np.errstate(all='ignore'):  # Suppress numpy warnings printed to terminal
             total = 0.
@@ -289,6 +294,14 @@ class ChiSquareObjective(SummationObjective):
             raise PybnfError('The following experimental data columns were not found in the simulation output: '
                              + str(missed))
 
+class ChiSquareObjective_Dynamic(SummationObjective):
+
+    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
+        
+        exp_sigma = self.sigma
+        return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
 
 class SumOfSquaresObjective(SummationObjective):
 
@@ -342,16 +355,16 @@ class AveNormSumOfSquaresObjective(SummationObjective):
         return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
 
 
-class NegBinLikelihood(SummationObjective):
+class NegBinLikelihood_Dynamic(SummationObjective):
     """
-    Negative binomial likelihood
+    Negative binomial likelihood with r as a free param
     """
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val_1 = sim_data.data[sim_row, sim_data.cols[col_name]]
         sim_val_2 = sim_data.data[sim_row + 1, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]   
-        if '_C' in col_name:
+        if '_Cum' in col_name:
             sim_val = sim_val_2 - sim_val_1
         else:
             sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
@@ -365,7 +378,27 @@ class NegBinLikelihood(SummationObjective):
             return abs(val)
         else:
             return 0
+class NegBinLikelihood(SummationObjective):
+    """
+    Negative binomial likelihood
+    """
 
+    def __init__(self, r, ind_var_rounding):
+        super().__init__(ind_var_rounding)
+        self.r_static = r
+
+    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
+        if exp_val >= 0:
+            prob = np.clip(self.r_static / (self.r_static + sim_val), 1e-10, 1 - 1e-10)
+            # log(1e-10+stats.nbinom.pmf(incidents[i], n=r, p=prob))
+            assert isinstance(self.r_static, float)
+            val =  loggamma(exp_val + self.r_static) - loggamma(exp_val + 1) - loggamma(self.r_static) + self.r_static * np.log(prob) + \
+                   exp_val * np.log(1 - prob)
+            return abs(val)       
+        else:
+            return 0
 
 class KLLikelihood(ColumnSummationObjective):
     """
