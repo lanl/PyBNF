@@ -32,8 +32,8 @@ Required Keys
     * ``mh`` - :ref:`Metropolis-Hastings MCMC (deprecated) <alg-mcmc>`
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
     * ``sa`` - :ref:`Simulated Annealing (deprecated) <alg-sa>`
-    * ``pt`` - :ref:`Parallel tempering (deprecated) <alg-pt>
-    * ``am`` - :ref:`Adaptive MCMC <alg-am>
+    * ``pt`` - :ref:`Parallel tempering (deprecated) <alg-pt>`
+    * ``am`` - :ref:`Adaptive MCMC <alg-am>`
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
 
@@ -963,7 +963,7 @@ For Adaptive MCMC
   Example:
   
     * ``output_noise_trajectory = ObservableA`` 
-    * ``output_noise_trajectory = ObservableA, ObservableB, FunctionA ``
+    * ``output_noise_trajectory = ObservableA, ObservableB, FunctionA``
     
 
 **output_trajectory**
@@ -973,8 +973,8 @@ For Adaptive MCMC
   
   Example:
   
-    * ``output_trajectory = ObservableA`
-    * ``output_trajectory = ObservableA, ObservableB, FunctionA`
+    * ``output_trajectory = ObservableA``
+    * ``output_trajectory = ObservableA, ObservableB, FunctionA``
     
     
 **continue_run**
@@ -984,7 +984,7 @@ For Adaptive MCMC
   
   Example:
   
-    * ``continue_run = 1`   
+    * ``continue_run = 1``   
 .. For DREAM
 .. """""""""
 
