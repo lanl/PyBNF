@@ -1905,12 +1905,14 @@ class BayesianAlgorithm(Algorithm):
 
         self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
         self.current_pset = [None]*self.num_parallel
-
+        
         if self.config.config['continue_run'] == 1:
-            mle = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt')
+            self.mle_start = np.zeros((self.num_parallel, 1, len(self.variables)))
+            for q in range(self.num_parallel):
+                self.mle_start[q] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' +str(q)+ '.txt')
             for n in range(self.num_parallel):
                 for i,p in enumerate(first_psets[n]):
-                    p.value = mle[i]
+                    p.value = self.mle_start[n][0][i]
         if self.config.config['starting_params'] and self.config.config['continue_run'] != 1:
             for n in range(self.num_parallel):
                 for i,p in enumerate(first_psets[n]):
@@ -2559,11 +2561,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
                         self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
         if self.config.config['continue_run'] == 1:
-            for i in self.output_columns:
-                self.output_run_MLE[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/mle_traj_' + i + '.txt')
+            self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
             self.diff = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diff.txt')
-            self.diffMatrix = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix.txt')
-            self.mle = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE.txt')
+            self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables))) 
+            for i in range(self.num_parallel):
+                self.diffMatrix[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix_Chain_' + str(i) + '.txt')
+                self.mle[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' + str(i) + '.txt')
         else:
             self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
             self.diff = [self.config.config['step_size']]
@@ -2646,8 +2649,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     self.output_run_current[j+l][index]= np.diff(self.list_trajactory)
                                 else:
                                     self.output_run_current[j+l][index]= self.list_trajactory
-                                if score < min(self.saved_score):
-                                    self.mle[index] = self.current_param_set[index]       
+                                if score < min(self.saved_score):    
                                     self.output_run_MLE[j+l][index] = self.output_run_current[j+l][index][0]
                                 self.list_trajactory = []
             if self.config.config['output_noise_trajectory']:
@@ -2666,11 +2668,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                 else:
                                     self.output_run_noise_current[js+la][index]= self.list_trajactory
                                 
-                                if score < min(self.saved_score):
-                                    self.mle[index] = self.current_param_set[index]       
+                                if score < min(self.saved_score):      
                                     self.output_run_noise_MLE[js+la][index] = self.output_run_noise_current[js+la][index][0]
                                 self.list_trajactory = []    
-                            
+        if self.store_score[index] < self.saved_score[index]:
+            self.mle[index] = self.current_param_set[index]                     
                                                        
         if self.iteration[index] == 0:
             self.cp = []
@@ -2865,36 +2867,23 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.diffMatrix[idx] = self.diffMatrix[idx]
         else:
             self.diffMatrix[idx] = np.diag(np.array(self.current_param_set[idx]))
-
-        # Loop until acceptable params are proposed
-        self.max_attemps = 0
-        while True:
-            oldpset = self.current_pset[idx]
-            delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
-            delta_vector = {k: np.random.normal() for k in oldpset.keys()}
-            delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
-            delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
+        
+        oldpset = self.current_pset[idx]
+        delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
+        delta_vector = {k: np.random.normal() for k in oldpset.keys()}
+        delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
+        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
             
-            new_vars = []
-            try:
-                for i, p in enumerate(oldpset):
-                    k = self.variables[i]
-                    new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
-                    new_vars.append(new_var)
-                proposed_psets = PSet(new_vars)
-                lower_bound = []
-                upper_bound = []
-                parameter_value = []
-                for i,p in enumerate(proposed_psets):
-                    lower_bound.append(p.p1)
-                    upper_bound.append(p.p2)
-                    parameter_value.append(p.value)
-                self.max_attemps += 1
-                if np.all(lower_bound < parameter_value < upper_bound) or self.max_attemps == 100000:
-                    break
-            except OutOfBoundsException:
-                logger.debug("Variable %s is outside of bounds")
-        return PSet(new_vars)
+        new_vars = []
+        try:
+            for i, p in enumerate(oldpset):
+                k = self.variables[i]
+                new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
+                new_vars.append(new_var)
+                new_set = PSet(new_vars)
+        except OutOfBoundsException:
+            logger.debug("Variable %s is outside of bounds")
+        return new_set
     
 class SimplexAlgorithm(Algorithm):
     """

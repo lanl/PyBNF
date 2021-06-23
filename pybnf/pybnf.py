@@ -21,7 +21,7 @@ import traceback
 import pickle
 
 
-__version__ = "1.1.2"
+__version__ = "1.1.6"
 
 
 def main():
@@ -200,8 +200,8 @@ def main():
             elif config.config['fit_type'] == 'mh' or config.config['fit_type'] == 'pt':
                 # Note: mh vs pt difference is handled in Config by setting or not setting the exchange_every key.
                 alg = algs.BasicBayesMCMCAlgorithm(config)
-            elif config.config['fit_type'] == 'ym':
-                alg = algs.Yens_MCMC(config)
+            elif config.config['fit_type'] == 'am':
+                alg = algs.Adaptive_MCMC(config)
             elif config.config['fit_type'] == 'sa':
                 alg = algs.BasicBayesMCMCAlgorithm(config, sa=True)    
             elif config.config['fit_type'] == 'sim':
@@ -213,7 +213,7 @@ def main():
             elif config.config['fit_type'] == 'check':
                 alg = algs.ModelCheck(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, check' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am check' % config.config['fit_type'])
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
