@@ -1910,7 +1910,6 @@ class BayesianAlgorithm(Algorithm):
             self.mle_start = np.zeros((self.num_parallel, 1, len(self.variables)))
             for q in range(self.num_parallel):
                 self.mle_start[q] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' +str(q)+ '.txt')
-            print(self.mle_start[1])
             for n in range(self.num_parallel):
                 for i,p in enumerate(first_psets[n]):
                     p.value = self.mle_start[n][0][i]
