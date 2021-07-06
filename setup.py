@@ -23,6 +23,6 @@ setup(name='pybnf',
       long_description=long_desc,
       author='Eshan Mitra, Ryan Suderman, Alex Ionkov',
       package=['pybnf'],
-      install_requires=['distributed>=1.24.0', 'paramiko', 'msgpack==0.6.2', 'numpy', 'nose', 'pyparsing', 'libroadrunner>=1.5.2',
-                        'dask>=', 'tornado >= 6.1'],
+      install_requires=['distributed>=2021.6.2', 'paramiko', 'msgpack==0.6.2', 'numpy', 'nose', 'pyparsing', 'libroadrunner>=1.5.2',
+                        'dask>=2021.5.0', 'tornado >= 6.1'],
       python_requires=">=3.5")
