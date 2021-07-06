@@ -1867,6 +1867,7 @@ class BayesianAlgorithm(Algorithm):
         self.ln_current_P = None  # List of n probabilities of those n PSets.
 
         self.burn_in = config.config['burn_in']  # todo: 'auto' option
+        self.adaptive = config.config['adaptive']
         self.sample_every = config.config['sample_every']
         self.output_hist_every = config.config['output_hist_every']
         # A list of the % credible intervals to save, eg [68. 95]
@@ -1879,6 +1880,9 @@ class BayesianAlgorithm(Algorithm):
         self.load_priors()
 
         self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+
+        # Check that the iteration range is valid with respect to the burnin and or adaptive iterations
+        
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
@@ -1909,7 +1913,7 @@ class BayesianAlgorithm(Algorithm):
         if self.config.config['continue_run'] == 1:
             self.mle_start = np.zeros((self.num_parallel, 1, len(self.variables)))
             for q in range(self.num_parallel):
-                self.mle_start[q] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' +str(q)+ '.txt')
+                self.mle_start[q] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/MLE_Params_Chain_' +str(q)+ '.txt')
             for n in range(self.num_parallel):
                 for i,p in enumerate(first_psets[n]):
                     p.value = self.mle_start[n][0][i]
@@ -2512,13 +2516,14 @@ class Adaptive_MCMC(BayesianAlgorithm):
         self.saved_score = [0] * self.num_parallel
         self.store_score = [0] * self.num_parallel
         self.current_param_set = [0] * self.num_parallel
+        self.current_param_set_diff = [0] * self.num_parallel
         self.scores = np.zeros((self.num_parallel, self.arr_length))
         # set arrays for features and graphs
         self.parameter_index = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
         self.samples_file = None
         # warm start features
         
-        os.makedirs(self.config.config['output_dir'] + '/A_MCMC', exist_ok=True)
+        os.makedirs(self.config.config['output_dir'] + '/adaptive_files', exist_ok=True)
         os.makedirs(self.config.config['output_dir'] + '/Results/A_MCMC/Runs', exist_ok=True)
 
         
@@ -2562,15 +2567,18 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
         if self.config.config['continue_run'] == 1:
             self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
-            self.diff = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diff.txt')
+            self.diff = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt')
             self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables))) 
             for i in range(self.num_parallel):
-                self.diffMatrix[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix_Chain_' + str(i) + '.txt')
-                self.mle[i] = np.loadtxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' + str(i) + '.txt')
+                self.diffMatrix[i] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diffMatrix_Chain_' + str(i) + '.txt')
+                self.mle[i] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/MLE_Params_Chain_' + str(i) + '.txt')
         else:
             self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
             self.diff = [self.config.config['step_size']]
             self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables)))  
+        # make sure that the adaptive and burn in iterations are less then the max iterations
+        if self.adaptive + self.burn_in >= self.max_iterations + 1:
+            raise PybnfError('The max iterations must be at least 2 more then the sum of the adaptive and burn-in iterations.')    
     ''' Used for resuming runs and adding iterations'''
     def reset(self, bootstrap=None):
         super(Adaptive_MCMC, self).reset(bootstrap)
@@ -2678,7 +2686,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.cp = []
             for i in self.current_pset[index]:
                 self.cp.append(i.value)
-            self.current_param_set[index] = self.cp
+            self.current_param_set_diff[index] = self.cp   
         # After the burn in period start to record the accepted params for the adaptive feature.
         if self.iteration[index] >= self.burn_in:
             self.parameter_index[index][self.factor] = self.current_param_set[index]
@@ -2738,9 +2746,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 # Save the current postion of the MCMC run
                 self.diff = [self.diff]
                 for i in range(self.num_parallel):
-                        np.savetxt(self.config.config['output_dir'] + '/A_MCMC/MLE_Params_Chain_' + str(i) + '.txt', self.mle[i])
-                        np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diffMatrix_Chain_' + str(i) + '.txt', self.diffMatrix[i])
-                np.savetxt(self.config.config['output_dir'] + '/A_MCMC/diff.txt', self.diff)
+                        np.savetxt(self.config.config['output_dir'] + '/adaptive_files/MLE_Params_Chain_' + str(i) + '.txt', self.mle[i])
+                        np.savetxt(self.config.config['output_dir'] + '/adaptive_files/diffMatrix_Chain_' + str(i) + '.txt', self.diffMatrix[i])
+                np.savetxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt', self.diff)
                 self.combine_chains_params(pset)
                 self.combine_chains_traj()
                 
@@ -2816,6 +2824,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 f.write(pset.keys_to_string()+'\n')
                 for i in range(self.num_parallel):
                     file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(i) + '.txt', skiprows=1)
+                    file_append = file_append[self.adaptive:]
                     np.savetxt(f, file_append)   
     def combine_chains_traj(self):
         if self.num_parallel != 1:
@@ -2835,15 +2844,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                 with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj_noise_' + i + '.txt', 'a') as f:
                                     file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_noise_' + i + '_chain_' + str(j) + '.txt')
                                     np.savetxt(f, file_append)                                     
-            # for l in self.output_columns:
-            #     for i in self.output_run_noise_current.keys():
-            #         if l in i:
-            #             for k in range(self.num_parallel):
-            #                 list_stuff = []
-            #                 list_stuff.append(np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_chain_' + str(k) + '.txt', skiprows=1))
-            #             ok = np.asarray(list_stuff)
-            #             np.savetxt('shouldbesomething.txt', ok)
-
 
     def pick_new_pset(self, idx):
         """
@@ -2866,13 +2866,12 @@ class Adaptive_MCMC(BayesianAlgorithm):
         elif self.config.config['continue_run'] == 1:
             self.diffMatrix[idx] = self.diffMatrix[idx]
         else:
-            self.diffMatrix[idx] = np.diag(np.array(self.current_param_set[idx]))
+            self.diffMatrix[idx] = np.diag(np.array(self.current_param_set_diff[idx]))
         
         oldpset = self.current_pset[idx]
         delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
-        delta_vector = {k: np.random.normal() for k in oldpset.keys()}
-        delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
-        delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
+        delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector]))
+        delta_vector_normalized = {k: self.step_size * delta_vector[i] / delta_vector_magnitude for i,k in enumerate(oldpset.keys())}
             
         new_vars = []
         try:
