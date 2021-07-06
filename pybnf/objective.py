@@ -54,16 +54,18 @@ class ObjectiveFunction(object):
         :type show_warnings: bool
         :return:
         """
-       
-        self.pset = pset
-        for p in self.pset:
-            if p.name == 'r__FREE':
-                self.r = p.value
-            elif p.name == 'sigma__FREE':
-                self.sigma = p.value
-            else:
-                pass    
-
+        try:
+            self.pset = pset
+            for p in self.pset:
+                if p.name == 'r__FREE':
+                    self.r = p.value
+                elif p.name == 'sigma__FREE':
+                    self.sigma = p.value
+                else:
+                    pass    
+        except AttributeError:
+            constraints = pset
+            pass
 
         with np.errstate(all='ignore'):  # Suppress numpy warnings printed to terminal
             total = 0.
