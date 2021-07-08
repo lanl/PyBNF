@@ -2567,14 +2567,14 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
         if self.config.config['continue_run'] == 1:
             self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
-            self.diff = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt')
+            self.diff = self.step_size
             self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables))) 
             for i in range(self.num_parallel):
                 self.diffMatrix[i] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diffMatrix_Chain_' + str(i) + '.txt')
                 self.mle[i] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/MLE_Params_Chain_' + str(i) + '.txt')
         else:
             self.mle = np.zeros((self.num_parallel, self.arr_length, len(self.variables)))
-            self.diff = [self.config.config['step_size']]
+            self.diff = self.step_size
             self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables)))  
         # make sure that the adaptive and burn in iterations are less then the max iterations
         if self.adaptive + self.burn_in >= self.max_iterations + 1:
@@ -2642,6 +2642,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
             for i in self.current_pset[index]:
                 self.cp.append(i.value)
             self.current_param_set[index] = self.cp
+            if self.config.config['parallelize_models'] != 1:
+                res.out = res.simdata
             if self.config.config['output_trajectory']:
                 for l in self.output_columns:     
                     for i in res.out:
@@ -2830,10 +2832,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
         if self.num_parallel != 1:
             if self.config.config['output_trajectory']:
                 for j in range(self.num_parallel):
-                    for l in self.output_noise_columns:     
-                        for i in self.output_run_noise_current.keys():
+                    for l in self.output_columns:     
+                        for i in self.output_run_current.keys():
                             if l in i:
-                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj' + i + '.txt', 'a') as f:
+                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj_' + i + '.txt', 'a') as f:
                                     file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + i + '_chain_' + str(j) + '.txt')
                                     np.savetxt(f, file_append)
             if self.config.config['output_noise_trajectory']:
@@ -2863,26 +2865,57 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.diffVector = np.reshape(self.current_param_set[idx] -self.mu, [1, len(self.current_param_set[idx])])
             self.diffMatrix[idx] = self.diffMatrix[idx] + (1./(1 + self.iteration[idx]))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix[idx])
             self.diff = np.exp( np.log(self.diff) + (1./(1 + self.iteration[idx]- self.adaptive - self.burn_in))*(self.alpha-0.234))
+
+            oldpset = self.current_pset[idx]
+            delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
+            delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector]))
+            delta_vector_normalized = {k: self.diff * delta_vector[i] / delta_vector_magnitude for i,k in enumerate(oldpset.keys())}
+                
+            new_vars = []
+            try:
+                for i, p in enumerate(oldpset):
+                    k = self.variables[i]
+                    new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
+                    new_vars.append(new_var)
+                    new_set = PSet(new_vars)
+            except OutOfBoundsException:
+                logger.debug("Variable %s is outside of bounds")
+ 
+            return new_set
         elif self.config.config['continue_run'] == 1:
-            self.diffMatrix[idx] = self.diffMatrix[idx]
+            oldpset = self.current_pset[idx]
+            delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
+            delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector]))
+            delta_vector_normalized = {k: self.diff * delta_vector[i] / delta_vector_magnitude for i,k in enumerate(oldpset.keys())}
+                
+            new_vars = []
+            try:
+                for i, p in enumerate(oldpset):
+                    k = self.variables[i]
+                    new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
+                    new_vars.append(new_var)
+                    new_set = PSet(new_vars)
+            except OutOfBoundsException:
+                logger.debug("Variable %s is outside of bounds")
+ 
+            return new_set
+    
         else:
-            self.diffMatrix[idx] = np.diag(np.array(self.current_param_set_diff[idx]))
-        
-        oldpset = self.current_pset[idx]
-        delta_vector = np.random.multivariate_normal(mean=np.zeros((len(self.current_param_set[idx]),)), cov=self.diffMatrix[idx])
-        delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector]))
-        delta_vector_normalized = {k: self.step_size * delta_vector[i] / delta_vector_magnitude for i,k in enumerate(oldpset.keys())}
-            
-        new_vars = []
-        try:
-            for i, p in enumerate(oldpset):
-                k = self.variables[i]
-                new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
-                new_vars.append(new_var)
-                new_set = PSet(new_vars)
-        except OutOfBoundsException:
-            logger.debug("Variable %s is outside of bounds")
-        return new_set
+            oldpset = self.current_pset[idx]
+            delta_vector = {k: np.random.normal() for k in oldpset.keys()}
+            delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
+            delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
+                
+            new_vars = []
+            try:
+                for i, p in enumerate(oldpset):
+                    k = self.variables[i]
+                    new_var = oldpset.get_param(k.name).add(delta_vector_normalized[k.name], True)
+                    new_vars.append(new_var)
+                    new_set = PSet(new_vars)
+            except OutOfBoundsException:
+                logger.debug("Variable %s is outside of bounds")
+            return new_set            
     
 class SimplexAlgorithm(Algorithm):
     """
