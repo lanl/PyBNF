@@ -2629,7 +2629,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
         index = int(m.group(0))      
 
         lnprior = self.ln_prior(pset)
-        print(lnprior)
         lnlikelihood = -score
         lnposterior = lnlikelihood + lnprior
 
