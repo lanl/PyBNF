@@ -2902,8 +2902,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 new_vars = []
                 delta_vector = np.random.multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
                 delta_vector_add = {k: self.diff[idx]*delta_vector[i] for i,k in enumerate(oldpset.keys())}
-                delta_vector_log = np.exp(delta_vector)
-                delta_vector_multiply_log = {k: self.diff[idx]*delta_vector_log[i] for i,k in enumerate(oldpset.keys())}
                 try:
                     for i, p in enumerate(oldpset):
                         k = self.variables[i]
