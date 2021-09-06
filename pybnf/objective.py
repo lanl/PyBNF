@@ -303,7 +303,8 @@ class ChiSquareObjective_Dynamic(SummationObjective):
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         
         exp_sigma = self.sigma
-        return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
+        val = 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2. + np.log(exp_sigma)
+        return val
 
 class SumOfSquaresObjective(SummationObjective):
 
@@ -363,13 +364,15 @@ class NegBinLikelihood_Dynamic(SummationObjective):
     """
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val_1 = sim_data.data[sim_row, sim_data.cols[col_name]]
-        sim_val_2 = sim_data.data[sim_row + 1, sim_data.cols[col_name]]
+        sim_val_1 = sim_data.data[sim_row -1, sim_data.cols[col_name]]
+        sim_val_2 = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]   
         if '_Cum' in col_name:
             sim_val = sim_val_2 - sim_val_1
         else:
-            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]] 
+        if sim_row == 0:
+            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]] 
         if exp_val >= 0:
             prob = np.clip(self.r / (self.r + sim_val), 1e-10, 1 - 1e-10)
             # log(1e-10+stats.nbinom.pmf(incidents[i], n=r, p=prob))
@@ -380,6 +383,7 @@ class NegBinLikelihood_Dynamic(SummationObjective):
             return abs(val)
         else:
             return 0
+            
 class NegBinLikelihood(SummationObjective):
     """
     Negative binomial likelihood

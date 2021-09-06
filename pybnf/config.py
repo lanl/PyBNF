@@ -180,7 +180,7 @@ class Configuration(object):
 
             'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 100, 'hist_bins': 10, 'adaptive': 10000,
             'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01, 'continue_run': 0, 
-            'neg_bin_r': 24.0, 'stablizingCov': 0.001,  
+            'neg_bin_r': 24.0, 'stablizingCov': 0.001,'calculate_covari':None,  
 
             'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
             'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,

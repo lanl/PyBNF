@@ -1093,18 +1093,18 @@ class FreeParameter(object):
         else:
             return self.set_value(self.value + summand, reflect)
 
-    def add_norm(self, summand, reflect=True):
+    def multiply(self, summand, reflect=True):
         """
         Adds a value to the existing value and returns a new FreeParameter instance. This version of add does
         not consider the space that the value is in and just sums them
 
-        :param summand: Value to add
+        :param summand: Value to a multiply
         :return:
         """
         if self.value is None:
-            logger.error('Cannot add to FreeParameter with "None" value')
+            logger.error('Cannot multiply to FreeParameter with "None" value')
         
-        return self.set_value(self.value + summand, reflect)
+        return self.set_value(self.value * summand, reflect)
 
     def add_rand(self, lb, ub, reflect=True):
         """
