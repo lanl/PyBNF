@@ -632,7 +632,6 @@ class Algorithm(object):
         """
         Adds the information from a Result to the Trajectory instance
         """
-
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
             res.normalize(self.config.config['normalization'])
@@ -914,6 +913,8 @@ class Algorithm(object):
                                      'Your simulations are failing to run. Logs from failed simulations are saved in '
                                      'the FailedSimLogs directory. For help troubleshooting this error, refer to '
                                      'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
+            elif isinstance(res, CancelledError):
+                pass
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete')
@@ -2500,7 +2501,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
         else:
             self.norm = None
            
-        self.time = self.config.config['time_length']
+        self.time = self.config.config['time_length'] 
        
         self.adaptive = self.config.config['adaptive']
         # The iteration number that the adaptive starts at
@@ -2539,13 +2540,13 @@ class Adaptive_MCMC(BayesianAlgorithm):
             for i in self.output_columns:
                 for k in self.time.keys():     
                     if '_Cum' in i:
-                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                     else:     
-                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1)) 
-                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
-                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))      
+                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1)) 
+                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))      
                      
         
         if self.config.config['output_noise_trajectory']:
@@ -2559,13 +2560,13 @@ class Adaptive_MCMC(BayesianAlgorithm):
             for i in self.output_noise_columns:
                 for k in self.time.keys():     
                     if '_Cum' in i:
-                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
-                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]))
+                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                     else:     
-                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1)) 
-                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
-                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k] + 1))
+                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1)) 
+                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
         if self.config.config['continue_run'] == 1:
             self.diff = [self.step_size] * self.num_parallel
             self.diff_best = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt')
@@ -2656,6 +2657,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.mle_best = self.current_param_set[index]
                 self.diffMatrix_best = self.diffMatrix[index]
                 self.diff_best = self.diff[index]
+            if self.iteration[index] == 0:
+                self.mle_best = self.current_param_set[index]
+                self.diffMatrix_best = np.eye(len(self.variables))
+                self.diff_best = self.diff[index]
+
             # The order of varible reassignment is very important here    
             self.ln_current_P[index] = lnposterior    
             if self.config.config['parallelize_models'] != 1:
@@ -2675,7 +2681,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     for z in res.out[i][j].data:
                                         self.list_trajactory.append(z.data[column])      
                                     if '_Cum' in l:
-                                        self.output_run_current[j+l][index]= np.diff(self.list_trajactory)
+                                        getFirstValue = np.concatenate((self.list_trajactory[0],np.diff(self.list_trajactory)))
+                                        self.output_run_current[j+l][index]= getFirstValue
                                     else:
                                         self.output_run_current[j+l][index]= self.list_trajactory
                                     if lnposterior > max(self.ln_current_P):    
@@ -2693,7 +2700,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                     for z in res.out[ib][js].data:
                                         self.list_trajactory.append(z.data[column])      
                                     if '_Cum' in la:
-                                        self.output_run_noise_current[js+la][index]= np.diff(self.list_trajactory)
+                                        getFirstValue = np.concatenate(([self.list_trajactory[0]],np.diff(self.list_trajactory)))
+                                        self.output_run_noise_current[js+la][index]= getFirstValue
                                     else:
                                         self.output_run_noise_current[js+la][index]= self.list_trajactory
                                     
@@ -2758,7 +2766,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.combine_chains_params()
                 self.combine_chains_traj()
                 self.samples_file = self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_params.txt'
-                self.update_histograms('_final')
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
@@ -2901,6 +2908,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 new_vars = []
                 delta_vector = np.random.multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
                 delta_vector_add = {k: self.diff[idx]*delta_vector[i] for i,k in enumerate(oldpset.keys())}
+                delta_vector_log = np.exp(delta_vector)
                 try:
                     for i, p in enumerate(oldpset):
                         k = self.variables[i]
@@ -2927,15 +2935,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     self.parameter_index_file_range = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
                     self.parameter_index_file = self.parameter_index_file_range[start:end]
                     self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 
-                    self.diffMatrix[idx] = np.matmul(self.parameter_index_file.T, self.parameter_index_file)/(self.iteration[idx])-np.matmul(self.mu[idx].T, self.mu[idx])+self.stablizingCov
-                    self.diff[idx] = 2.38**2/len_params
-                self.mu[idx] = self.mu[idx] + (1./(1+self.iteration[idx]))*(params - self.mu[idx])     
-                self.diffVector = np.reshape(params - self.mu[idx], [1, len_params])
-                self.diffMatrix[idx] = self.diffMatrix[idx] + (1./(1 + self.iteration[idx]))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix[idx])
-                self.diff[idx] = np.exp( np.log(self.diff[idx]) + (1./(self.iteration[idx])*(self.alpha[idx]-0.234)))
+                    self.diffMatrix[idx] = (np.matmul(self.parameter_index_file.T, self.parameter_index_file)-np.matmul(self.mu[idx].T, self.mu[idx]))/(len(self.parameter_index_file_input)*0.75)
+                    self.diff[idx] = self.config.config['step_size']
             oldpset = self.current_pset[idx]
             num = 0
-            print(self.diff[idx])
             while num != 10000*len_params:
                 new_vars = []
                 delta_vector = np.random.multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
@@ -2983,47 +2986,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     pass        
     
     def update_histograms(self, file_ext):
-            """
-            Updates the files that contain histogram points for each variable
-            :param file_ext: String to append to the save file names
-            :type file_ext: str
-            :return:
-            """
-            # Read the samples file into an array, ignoring the first row (header)
-            # and first 2 columns (pset names, probabilities)
-            dat_array = np.loadtxt(self.samples_file, skiprows=1)
-
-            # Open the file(s) to save the credible intervals
-            cred_files = []
-            for i in self.credible_intervals:
-                f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
-                f.write('# param\tlower_bound\tupper_bound\n')
-                cred_files.append(f)
-
-            for i in range(len(self.variables)):
-                v = self.variables[i]
-                fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
-                # For log-space variables, we want the histogram in log space
-                if v.log_space:
-                    histdata = np.log10(dat_array[:, i])
-                    header = 'log10_lower_bound\tlog10_upper_bound\tcount'
-                else:
-                    histdata = dat_array[:, i]
-                    header = 'lower_bound\tupper_bound\tcount'
-                hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
-                result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
-                np.savetxt(fname, result_array, delimiter='\t', header=header)
-
-                sorted_data = sorted(dat_array[:, i])
-                for interval, file in zip(self.credible_intervals, cred_files):
-                    n = len(sorted_data)
-                    want = n * (interval/100)
-                    min_index = int(np.round(n/2 - want/2))
-                    max_index = int(np.round(n/2 + want/2 - 1))
-                    file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
-
-            for file in cred_files:
-                file.close()    
+            pass   
 class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
