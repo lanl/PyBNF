@@ -243,9 +243,7 @@ class BNGLModel(Model):
             if match is not None:
                 return act_type, match.group(1)
         return None
-    def check_for_observables(self):
-        str_bngl_model = self.bngl_file_text
-        return str_bngl_model    
+
     def find_t_length(self):
         text_list = []
         fileText = self.bngl_file_text.split('\n')
