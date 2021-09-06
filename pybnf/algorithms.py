@@ -914,7 +914,8 @@ class Algorithm(object):
                                      'the FailedSimLogs directory. For help troubleshooting this error, refer to '
                                      'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
             elif isinstance(res, CancelledError):
-                pass
+                raise PybnfError('PyBNF has encounted a fatel error. If the error has occured on the inital run please varify your model '
+                                'is funcational. To resume run please restart PyBNF using the -r flag')
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete')
