@@ -152,7 +152,6 @@ class Configuration(object):
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
         logger.debug('Completed configuration')
-        self._check_for_outputs()
 
     @staticmethod
     def default_config():
@@ -361,28 +360,11 @@ class Configuration(object):
             else:
                 return os.path.join(home_dir, directory)
         return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
-    def _check_for_outputs(self):        
-        for mf in self.config['models']:
-            if re.search('\.bngl$', mf):
-                str_model = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').check_for_observables()
-                if self.config['output_trajectory']:
-                    for obs in self.config['output_trajectory']:
-                        if obs in str_model:
-                            pass
-                        else:
-                            raise PybnfError('The output set using output_trajectory was not found in the bngl model')
-                if self.config['output_noise_trajectory']:
-                    for obs in self.config['output_noise_trajectory']:
-                        if obs in str_model:
-                            pass
-                        else:
-                            raise PybnfError('The output set using output_noise_trajectory was not found in the bngl model')            
-            elif re.search('\.xml$', mf):
-                suffix = self.config['time_course'][0]['suffix']
-                time = self.config['time_course'][0]['step']     
-        return []
+
     def _load_t_length(self):
         timeDict = {}
+        
+        
         for mf in self.config['models']:
             if re.search('\.bngl$', mf):
                 time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
