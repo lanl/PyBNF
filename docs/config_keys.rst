@@ -984,7 +984,24 @@ For Adaptive MCMC
   
   Example:
   
-    * ``continue_run = 1``   
+    * ``continue_run = 1`` 
+    
+**calculate_covari**
+  Calculate the covairance matrix of a defined segment of the previous run 
+  
+  Default: None
+  
+  Example:
+  
+    * ``continue_run = 1 50000``
+**starting_params**
+  Seed the run from a defined set of starting parameters listed in the same order they are defined with a space seperating each value
+  
+  Default: None
+  
+  Example: 
+  
+    * ``continue_run = 5.5 2 3``     
 .. For DREAM
 .. """""""""
 
