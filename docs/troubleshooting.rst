@@ -108,6 +108,11 @@ Ordinarily, PyBNF kills simulation jobs that run longer than the time limit. How
 If the undead jobs become problematic, it is possible to kill them manually. Use the command ``top`` to see if you have any such jobs: the processes will have the name ``run_network``, ``NFsim``, or ``python``, depending on which simulator you are using. Note the PID of the offending process(es), and then run ``kill <PID>`` on the appropriate PIDs. It is also possible to kill all of the jobs at once by running ``killall run_network``, ``killall NFsim``, or ``killall python``, provided that you have no running processes of the same name that you want to keep. 
 
 
+
+PyBNF has encountered a Fatel error
+----------------
+This error occurs when the scheduler loses connection with the cluster. The simulation data is generally backed up and the simulation can be resumed from the point it exited using the -r flag 'pybnf -c .conf -r'. 
+
 An unknown error occurred
 -------------------------
 If you get this message, you found an error that we did not catch during development. Sorry. It might be an unusual, user-generated situation that we didn't think of but is fixable on your end, or could be a bug in the PyBNF source code. 
