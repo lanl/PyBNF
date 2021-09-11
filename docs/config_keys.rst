@@ -954,7 +954,7 @@ For Adaptive MCMC
   
   
 **output_noise_trajectory (Only for use with neg_bin and neg_bin_dynamic functions)**
-  Calculate and add the binomial noise to the specified observables or functions then save the output of the user defined observable or function from the simulation output to a .txt file.
+  Calculate and add the negative binomial noise to the specified observables or functions then save the output of the user defined observable or function from the simulation output to a .txt file.
   
   Default: None (multiple values can be defined separated by a comma)
   
@@ -993,15 +993,15 @@ For Adaptive MCMC
   
   Example:
   
-    * ``continue_run = 1 50000``
+    * ``calculate_covari = 1 50000``
 **starting_params**
-  Seed the run from a defined set of starting parameters listed in the same order they are defined with a space seperating each value
+  Seed the run from a defined set of starting parameters listed in the same order they are defined with a space seperating each value in the order they are listed as free parameters in the configuratuib file
   
   Default: None
   
   Example: 
   
-    * ``continue_run = 5.5 2 3``     
+    * ``starting_params = 5.5 2 3``     
 .. For DREAM
 .. """""""""
 
