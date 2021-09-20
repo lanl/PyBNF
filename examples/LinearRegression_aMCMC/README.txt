@@ -11,4 +11,3 @@ and can be found in the associated output folder under the adaptive_files subdir
 
 The specifics of the resources used for the run can be found in the .sh file in this folder.
 
-A full description of the model can be found in the supplementary methods.
