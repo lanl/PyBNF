@@ -1,5 +1,5 @@
 A model parameterization of the two-phase exponential decay model for viral dynamics under therapy 
-generated from published models (1,2).
+generated from the following publications (1,2).
 
 The first run was done for 100000 iterations to find a suitable covariance matrix and to find convergence. 
 The Warm start following was ran for 200000 total iterations and was able to properly sample the posterior distribution. 
