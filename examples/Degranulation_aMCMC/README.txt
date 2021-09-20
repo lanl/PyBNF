@@ -8,8 +8,6 @@ folder under the adaptive files subdirectory
 
 The specifics of the resources used for the run can be found in the .sh file in this folder.
 
-A full description of the model can be found in the supplementary methods.
-
 1. Harmon,B. et al. (2017) Timescale separation of positive and negative signaling creates history-dependent responses to IgE receptor stimulation. Sci. Rep., 7, 15586.
 
 
