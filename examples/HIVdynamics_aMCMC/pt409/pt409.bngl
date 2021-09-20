@@ -1,0 +1,58 @@
+begin model
+# pt409
+# c = 0.39 /d t_1/2 = 1.8 d (inferred)
+# c = 0.47 /d t_1/2 = 1.5 d (published estimates)
+begin parameters
+
+##########################################
+A A__FREE # dimensionless
+d1 d1__FREE # /d
+d2 d2__FREE # /d
+V0 V0__FREE # copies per mL
+sigma sigma__FREE
+end parameters
+begin molecule types
+counter()
+end molecule types
+begin seed species
+counter() 0
+end seed species
+begin observables
+Molecules t counter()
+end observables
+begin functions
+V()=if(t>=7,if(d2<d1,V0*(A*exp(-d1*(t-7))+(1-A)*exp(-d2*(t-7))),V0*(A*exp(-d2*(t-7))+(1-A)*exp(-d1*(t-7)))),V0)
+lnV()=if(t>=7,if(d2<d1,ln(V0*(A*exp(-d1*(t-7))+(1-A)*exp(-d2*(t-7)))),ln(V0*(A*exp(-d2*(t-7))+(1-A)*exp(-d1*(t-7))))),ln(V0))
+S()=if(d2<d1,-d1*A-d2*(1-A),-d2*A-d1*(1-A))
+c()=if(d2<d1,d1*A+d2*(1-A),d2*A+d1*(1-A))
+half_life()=if(d2<d1,ln(2)/(d1*A+d2*(1-A)),ln(2)/(d2*A+d1*(1-A)))
+lnV_tangent()=if(t>=7,if(d2<d1,ln(V0)+(-d1*A-d2*(1-A))*(t-7),ln(V0)+(-d2*A-d1*(1-A))*(t-7)),ln(V0))
+Vdat()=if(t<=0,406,\
+       if(t<=3,541,\
+       if(t<=8,555,\
+       if(t<=12,109,\
+       if(t<=15,12.7,\
+       if(t<=19,5.45,\
+       if(t<=22,8.17,\
+       if(t<=29,2.20,\
+       if(t<=36,1.89,\
+       0)))))))))
+lnVdat()=if(t<=0,ln(406),\
+         if(t<=3,ln(541),\
+         if(t<=8,ln(555),\
+         if(t<=12,ln(109),\
+         if(t<=15,ln(12.7),\
+         if(t<=19,ln(5.45),\
+         if(t<=22,ln(8.17),\
+         if(t<=29,ln(2.20),\
+         if(t<=36,ln(1.89),\
+         0)))))))))
+end functions
+begin reaction rules
+0->counter() 1
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"pt409",method=>"ode",t_end=>36,n_steps=>36,print_functions=>1})
+end actions
