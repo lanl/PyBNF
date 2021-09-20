@@ -7,7 +7,5 @@ The configuration of the warm start was preserved and can be found in the config
 The calculated covariance matrix and diffusivity was also saved and can be found in the associated output folder under the adaptive_files
 subdirectory.
 
-A full description of the model can be found in the supplementary methods.
-
 1. Perelson,A.S. et al. (1996) HIV-1 dynamics in vivo: virion clearance rate, infected cell life-span, and viral generation time. Science, 271, 1582–1586.
 2. Ho,D.D. et al. (1995) Rapid turnover of plasma virions and CD4 lymphocytes in HIV-1 infection. Nature, 373, 123–126.
