@@ -4,7 +4,7 @@ PyBioNetFit (PyBNF) is a general-purpose program for parameterizing biological m
 rule-based modeling language (BNGL) or the Systems Biology Markup Language (SBML). PyBioNetFit offers a suite of
 parallelized metaheuristic algorithms (differential evolution, particle swarm optimization, scatter search) for
 parameter optimization. In addition to model parameterization, PyBNF supports uncertainty quantification by
-bootstrapping or Bayesian approaches, and model checking. PyBNF includes the Biological Property Specification Language
+bootstrapping or Bayesian approaches, and model checking. PyBNF includes an adaptive Markov chain Monte Carlo (MCMC) sampling algorithm, which supports Bayesian inference. PyBNF includes the Biological Property Specification Language
 (BPSL) for defining qualitative data for use in parameterization or checking. It runs on most Linux and macOS
 workstations as well on computing clusters.
 
