@@ -29,10 +29,10 @@ Required Keys
     * ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`
     * ``ss`` - :ref:`alg-ss`
     * ``pso`` - :ref:`Particle Swarm Optimization <alg-pso>`
-    * ``mh`` - :ref:`Metropolis-Hastings MCMC (deprecated) <alg-mcmc>`
+    * ``mh`` - :ref:`Metropolis-Hastings MCMC (Not recommended) <alg-mcmc>`
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
-    * ``sa`` - :ref:`Simulated Annealing (deprecated) <alg-sa>`
-    * ``pt`` - :ref:`Parallel tempering (deprecated) <alg-pt>`
+    * ``sa`` - :ref:`Simulated Annealing (Not recommended) <alg-sa>`
+    * ``pt`` - :ref:`Parallel tempering (Not recommended) <alg-pt>`
     * ``am`` - :ref:`Adaptive MCMC <alg-am>`
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
@@ -944,7 +944,7 @@ For Adaptive MCMC
     
     
 **adaptive**
-  The number of iterations that the simulation will spend collecting data to train the differential matrix.``.
+  The number of iterations that the simulation will spend collecting data to observe the data for calcualtion of the differential matrix.``.
   
   Default: 10000
   
@@ -978,7 +978,7 @@ For Adaptive MCMC
     
     
 **continue_run**
-  When set to 1 the chains began at the MLE posterior from the previous chain. 
+  When set to 1 the chains began at the MAP parameters, calculated covarience matrix, and diffusivity from the previous chain. 
   
   Default: 0
   
