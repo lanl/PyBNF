@@ -363,8 +363,6 @@ class Configuration(object):
 
     def _load_t_length(self):
         timeDict = {}
-        
-        
         for mf in self.config['models']:
             if re.search('\.bngl$', mf):
                 time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
@@ -372,7 +370,10 @@ class Configuration(object):
                     timeDict[i] = v
             elif re.search('\.xml$', mf):
                 suffix = self.config['time_course'][0]['suffix']
-                time = self.config['time_course'][0]['step']    
+                try:
+                    time = self.config['time_course'][0]['step']  
+                except KeyError:
+                    time = 1      
                 timeDict[suffix] = int(time)  
         return timeDict    
         
