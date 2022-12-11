@@ -9,7 +9,7 @@ This folder serves as supplementary material for the following preprint on medRx
 Differential contagiousness of respiratory disease across the United States. Abhishek Mallela, Yen Ting Lin, and William S. Hlavacek.
 
 ## Files
-* [DataS1](https://github.com/lanl/PyBNF/new/master/examples/Mallela2022MSAs/DataS1) - Model, data, and configuration files required to perform model parameterization for each of the 50 states in PyBioNetFit
+Model, data, and configuration files required to perform model parameterization for each of the 280 MSAs in PyBioNetFit
 
 ## Notes
 
