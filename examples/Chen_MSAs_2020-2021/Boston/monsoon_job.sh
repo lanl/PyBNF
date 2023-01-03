@@ -1,13 +1,12 @@
 #!/bin/bash
-# Example batch script for running tlbr example on a SLURM cluster
 
-# set the number of nodesT
+# set the number of nodes
 #SBATCH --nodes=1
 
-# set the number of cpus per node.
+# set the number of cpus per node
 #SBATCH --mincpus=4
 
-# set max wallclock time for the entire fitting job (1 day)
+# set max wallclock time for the entire fitting job
 #SBATCH --time=2-00:00:00
 
 # set name of job
