@@ -1,69 +1,70 @@
 begin model
 #---
 # About: 
-#  - This model is intended to be consistent with the compartmental model
+#  - The models is intended to be consistent with the compartmental model
 #    of Ye C, Lin YT et al. (2021), which describes COVID-19 transmission dynamics.
-#  - The model is specified in terms of building blocks labeled
+#  - The first model is specified in terms of building blocks labeled
 #    S, E, A, I, V, H, D, and R.
 #     - The building blocks represent distinct populations.
 #     - Some of the populations have population features, which have
 #       multiple possible values.
 #---
 #---
-# Reference:
+# References:
 #  - Ye C, Lin YT et al. (2021) medRxiv
 #    https://www.medrxiv.org/content/10.1101/2021.10.19.21265223v1
 #---
 begin parameters
 #######################################
-# fixed population-secific parameters #
+# fixed population-specific parameters #
 #######################################
 # total population
-# region-specific and fixed
+# region specific
 S0 7573136
 #############################################
 # adjustable population-specific parameters #
+# Paramters have been moved around to better match python code #
 #############################################
-# NB: parameter names are not the same as in the reference.
 # start time of the local epidemic 
 #  Consider choosing ts0 to correspond to the first day for which
 #  the cumulative number of detected cases was 200 or more.
-#  NB: sigma -> ts0. ts0 is called sigma in the reference.
+#  NB: sigma -> ts0. Defined as sigma in the paper.
 ts0 ts0__FREE
 # start time of 1st social distancing period
 ts1 ts1__FREE
-# start times of social distancing periods *after* the initial
+# start time of 1st social distancing *after* the initial
 #  social-distancing period ts1
 ts2 ts2__FREE 
 ts3 ts3__FREE
 ts4 ts4__FREE
 ts5 ts5__FREE
-#theta0, theta1: takeover times of Alpha and Delta, respectively
+#theta- start time of of alpha and delta strains, respectively
 theta0 theta0__FREE
 theta1 theta1__FREE
-#y0, y1: transmissibility factors of Alpha and Delta, respectively 
+#y0,y1- mutation multipier of alpha and delta strains, respectively
 y0 y0__FREE
 y1 y1__FREE
-# eigenvalues (sums of rate constants) that determine the time scales
-#  for establishment of the stationary states of the various social distancing periods
+# eigenvalue (a sum of rate constants) that determines the time scale
+#  for establishment of a quasi-stationary state of the
+#  1-5th social-distancing period
 lambda0 lambda0__FREE
 lambda1 lambda1__FREE
 lambda2 lambda2__FREE
 lambda3 lambda3__FREE   
 lambda4 lambda4__FREE
-# stationary social distancing setpoints of the various social distancing periods
-# The setpoint during a given period is the fraction of the regional population 
-# practicing social distancing.
+# quasi-stationary setpoint fraction of population practicing
+#  social distancing of the 1-5th social-distancing period
 p0 p0__FREE
 p1 p1__FREE#
 p2 p2__FREE
 p3 p3__FREE
 p4 p4__FREE
+# eigenvalue
 # rate constant for disease transmission 
 beta beta__FREE
 # fraction of new symptomatic infections detected 
 fD fD__FREE
-# dispersion parameter of negative binomial dist characterizing noise in case detection
+#fD # dimensionless
 r r__FREE
 ##############################
 # fixed universal parameters #
@@ -99,9 +100,9 @@ cH 0.17 # /d
 fR 0.79 # dimensionless
 # effectiveness of vaccination agaist ancestral strain
 f0 0.9
-# effectiveness of vaccination agaist Alpha variant
+# effectiveness of vaccination agaist alpha variant
 f1 0.81
-# effectiveness of vaccination agaist Delta variant
+# effectiveness of vaccination agaist delta variant
 f2 0.69
 # rate constant for progression through stages of the vaccine immunity
 Kv 0.3
@@ -111,7 +112,7 @@ begin molecule types
 #  We need to track time to account for changes in social distancing
 #  and emergence of new SARS-CoV-2 variants.
 counter()
-# auxilliary function to track case counts
+# auxilliary function to track the case counts
 fDCS()
 #---
 # S: susceptible population
@@ -144,8 +145,8 @@ S(SD~M~P)
 #     strains: suseptible to different virus strains
 #     possible feature values:
 #            -1: suseptible to ancestral strain
-#            -2: suseptible to Alpha strain
-#            -3: suseptible to Delta strain
+#            -2: suseptible to alpha strain
+#            -3: suseptible to delta strain
 #            -4: not suseptible
 SV(strains~1~2~3~4)
 #---
@@ -279,16 +280,13 @@ end observables
 begin functions
 # vaccination rate of fully vaccination population
 # data is obtained from COVID Act Now
-# In the Python code, we use reports of completed vaccinations to set the 
-# daily vaccination rate. Here, as a simplification, we use reports of completed
-# vaccinations to set the weekly vaccination rate. 
-# This difference does not significantly change simulation results.
+# Daily vaccination rate is converted to weekly vaccination rate
 # region specific
-v_rate()=if(t<=360,0,if(t<=368,0.0008367782228386362,if(t<=375,0.0007958248882347,if(t<=382,0.0012877004997661286,if(t<=389,0.002290154803191014,if(t<=396,0.0008332755635030001,if(t<=403,0.0028412231907250715,if(t<=410,0.002662577636505257,if(t<=417,0.0020873713553835,if(t<=424,0.0013650702405351284,if(t<=431,0.0030253118370125428,if(t<=438,0.0047625355395403855,if(t<=445,0.0042974457303232285,if(t<=452,0.004976954741879114,if(t<=459,0.0045848665511474,if(t<=466,0.004209568715551786,if(t<=473,0.0037928554552823573,if(t<=480,0.002811598270298986,if(t<=487,0.0020802768543608427,if(t<=494,0.0018659196322865286,if(t<=501,0.0015576960708830001,if(t<=508,0.0018125191045841713,if(t<=515,0.0027040122337210716,if(t<=522,0.001345885850912243,if(t<=529,0.0011303143905167716,if(t<=536,0.000625481725592057,if(t<=543,0.0008754070197190144,if(t<=550,0.0007214546484021714,if(t<=557,0.0007310677829431286,if(t<=564,0.0009840598162640713,if(t<=571,0.001045302421600657,if(t<=578,0.0011529894225133428,if(t<=585,0.0001489124382869857,if(t<=592,0.0,if(t<=599,0.0,if(t<=606,0.0,if(t<=613,0.0,if(t<=620,0.0,0))))))))))))))))))))))))))))))))))))))
-# Total number of persons that are eligible for vaccination
+v_rate()=if(t<=349,0,if(t<=357,0.0003575195616733143,if(t<=364,0.00047326263140792856,if(t<=371,0.0007541730670792,if(t<=378,0.0010454027691178857,if(t<=385,0.0021527389357378713,if(t<=392,0.0026758409702074,if(t<=399,0.0024056270392570573,if(t<=406,0.0024639345926844997,if(t<=413,0.0024990517675972574,if(t<=420,0.0030800492292485286,if(t<=427,0.0028786842626495716,if(t<=434,0.0045039136507428424,if(t<=441,0.005302167206284167,if(t<=448,0.005969433374593843,if(t<=455,0.004914240767336486,if(t<=462,0.005618792433864013,if(t<=469,0.005486606500338186,if(t<=476,0.005632856816132201,if(t<=483,0.0040288542772121,if(t<=490,0.0034599525154047285,if(t<=497,0.002247974288694142,if(t<=504,0.0025484005521874574,if(t<=511,0.003391321588717557,if(t<=518,0.0022513440310490715,if(t<=525,0.0019642006953376856,if(t<=532,0.0011112794707277287,if(t<=539,0.0009986303261589002,if(t<=546,0.0009482064991153287,if(t<=553,0.0009940729472357143,if(t<=560,0.0008278480031038572,if(t<=567,0.0008592505227269714,if(t<=574,0.0009181889691199571,if(t<=581,0.0008938555624711716,if(t<=588,0.0,if(t<=595,0.0,if(t<=602,0.0,if(t<=609,0.0,if(t<=616,0.0,if(t<=623,0.0,0))))))))))))))))))))))))))))))))))))))))
+# Total population that are eligible for vaccination
 PhiV()=if(t>=ts0,R_MP+Einf_P_1+Einf_M_1+S_M+S_P+A_MP,0)
 # region specific
-v_times_PhiV()=if(t<=360,0,S0*v_rate()/PhiV())
+v_times_PhiV()=if(t<=349,0,S0*v_rate()/PhiV())
 #v_times_PhiV_python()=if(t<=346,0,S0*v_rate()/PhiV())
 # Set the values of the rate constants kQ, jQ, and cI to 0 if t<ts0.
 # (We want [I] to remain constant at I0 until t=ts0.)
@@ -300,10 +298,10 @@ cIfunc()=if(t>=ts0,cI,0)
 phiM()=if(t>=ts0,rhoE*Einf_M_+rhoA*A_M+rhoE*nE_V+I_M+rhoA*A_V+I_V,0)
 # effective population of infectious persons with SD~P state (protected)
 phiP()=if(t>=ts0,rhoE*Einf_P_+rhoA*A_P+I_P,0)
-# Step function for variant-specific transmissibility multiplier
+# Step function for mutation multiplier
 Ytheta1_()=if(t<=theta0,1,\
       if(t<=theta1,y0,y1))
-# Heaviside function 
+# Heaviside function for different mutation dominated period
 U()=if(t>=ts0,1,0)
 U_theta1()=if(t<theta0,0,1)
 U_theta2()=if(t<theta1,0,1)
@@ -418,13 +416,12 @@ V(stage~3)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
 V(stage~4)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
 V(stage~5)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
 V(stage~6)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
-# a fraction of vaccinated persons remain susceptible to infection
+# 1-effectiveness percentage of vaccinated people are still susceptible
 V(stage~6)->SV(strains~1) Kv*(1-f0)
 V(stage~6)->SV(strains~2) Kv*(f0-f1)
 V(stage~6)->SV(strains~3) Kv*(f1-f2)
 V(stage~6)->SV(strains~4) Kv*f2
-#For vaccinated persons, as a simplification,
-# we assume that the incubation period consists of only a single stage.
+#For vaccinated people, assume there is only one incubation period, that this stage~1.
 SV(strains~1)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
 SV(strains~2)->E(stage~1,SD~M,V~1) (Ytheta1_()*U_theta1()*beta/S0)*(phiM()+mb*phiP())
 SV(strains~3)->E(stage~1,SD~M,V~1) (Ytheta1_()*U_theta2()*beta/S0)*(phiM()+mb*phiP())
@@ -437,12 +434,11 @@ I(SD~M,V~1)->R(V~1) cIfunc()*(1-fH/25)
 I(SD~M,V~1)->H(V~1) cIfunc()*(fH/25)
 H(V~1)->R(V~1) cH*fR
 H(V~1)->D() cH*(1-fR)
-# recovered and unvaccinated persons are elegible for vaccination 
+# recovered and unvaccinated people are elegible for vaccination 
 R(V~0)->R(V~1) v_times_PhiV()
 end reaction rules
 end model
 begin actions
 generate_network({overwrite=>1})
-simulate({suffix=>"Dallas",method=>"ode",t_end=>645,n_steps=>645,print_functions=>1,atol=>1e-7,rtol=>1e-7})
+simulate({suffix=>"Dallas",method=>"ode",t_end=>649,n_steps=>649,print_functions=>1,atol=>1e-7,rtol=>1e-7})
 end actions
-

@@ -20,7 +20,7 @@ begin parameters
 #######################################
 # total population
 # region specific
-S0 4873019
+S0 19216182
 #############################################
 # adjustable population-specific parameters #
 # Paramters have been moved around to better match python code #
@@ -37,7 +37,6 @@ ts1 ts1__FREE
 ts2 ts2__FREE 
 ts3 ts3__FREE
 ts4 ts4__FREE
-ts5 ts5__FREE
 #theta- start time of of alpha and delta strains, respectively
 theta0 theta0__FREE
 theta1 theta1__FREE
@@ -51,14 +50,12 @@ lambda0 lambda0__FREE
 lambda1 lambda1__FREE
 lambda2 lambda2__FREE
 lambda3 lambda3__FREE   
-lambda4 lambda4__FREE
 # quasi-stationary setpoint fraction of population practicing
 #  social distancing of the 1-5th social-distancing period
 p0 p0__FREE
-p1 p1__FREE#
+p1 p1__FREE
 p2 p2__FREE
 p3 p3__FREE
-p4 p4__FREE
 # eigenvalue
 # rate constant for disease transmission 
 beta beta__FREE
@@ -316,18 +313,16 @@ sum5=ts1+ts2+ts3+ts4+ts5
 Lambda()=if(t>=ts1 && t<sum2,lambda0,\
          if(t>=sum2 && t<sum3,lambda1,\
          if(t>=sum3 && t<sum4,lambda2,\
-         if(t>=sum4 && t<sum5,lambda3,\
-         if(t>=sum5,lambda4,\
-         0)))))
+         if(t>=sum4,lambda3,\
+         0))))
 # social-distancing setpoint fractions
 #  P() is a step function.
 #  Currently, P() provides setpoint fractions for 5 social-distancing periods.
 P()=if(t>=ts1 && t<sum2,p0,\
     if(t>=sum2 && t<sum3,p1,\
     if(t>=sum3 && t<sum4,p2,\
-    if(t>=sum4 && t<sum5,p3,\
-    if(t>=sum5,p4,\
-    0)))))
+    if(t>=sum4,p3,\
+    0))))
 end functions
 begin reaction rules
 # cummulative infected population
@@ -440,5 +435,5 @@ end reaction rules
 end model
 begin actions
 generate_network({overwrite=>1})
-simulate({suffix=>"Phoenix",method=>"ode",t_end=>649,n_steps=>649,print_functions=>1,atol=>1e-7,rtol=>1e-7})
+simulate({suffix=>"NYC",method=>"ode",t_end=>649,n_steps=>649,print_functions=>1,atol=>1e-7,rtol=>1e-7})
 end actions
