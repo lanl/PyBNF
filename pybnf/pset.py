@@ -247,7 +247,7 @@ class BNGLModel(Model):
     def find_t_length(self):
         text_list = []
         fileText = self.bngl_file_text.replace('\\\n', '')
-        fileText = self.bngl_file_text.split('\n')
+        fileText = fileText.split('\n')
         timeDict = {}
         
                 # have to clear any possible commented out lines that have n_steps in them
