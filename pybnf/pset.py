@@ -246,6 +246,7 @@ class BNGLModel(Model):
 
     def find_t_length(self):
         text_list = []
+        fileText = self.bngl_file_text.replace('\\\n', '')
         fileText = self.bngl_file_text.split('\n')
         timeDict = {}
         
