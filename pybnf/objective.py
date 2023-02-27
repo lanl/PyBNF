@@ -311,14 +311,6 @@ class SumOfSquaresObjective(SummationObjective):
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        # list_stuff = []
-        # for i in sim_data.data:
-        #     list_stuff.append(i[sim_data.cols[col_name]])
-        # normFactor = max(list_stuff)
-        # print(normFactor)
-        # print(sim_val)
-        # sim_val = sim_val/normFactor
-        print(sim_val)
         return (sim_val - exp_val) ** 2.
 
 
