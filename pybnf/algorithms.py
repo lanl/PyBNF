@@ -309,7 +309,6 @@ class Job:
                     self.jlogger.error('Failed to remove folder %s.' % self.folder)
             else:
                 try:
-                    print('Hello')
                     run(['rm', '-rf', self.folder], check=True, timeout=1800)
                     self.jlogger.debug('Removed folder %s' % self.folder)
                 except (CalledProcessError, TimeoutExpired):
