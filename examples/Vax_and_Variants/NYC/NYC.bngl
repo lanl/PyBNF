@@ -306,7 +306,6 @@ U_theta2()=if(t<theta1,0,1)
 sum2=ts1+ts2
 sum3=ts1+ts2+ts3
 sum4=ts1+ts2+ts3+ts4
-sum5=ts1+ts2+ts3+ts4+ts5
 # social-distancing eigenvalues
 #  Lambda() is a step function.
 #  Currently, Lambda() provides eigenvalues for 5 social-distancing periods.
