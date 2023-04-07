@@ -1,0 +1,453 @@
+begin model
+#---
+# About: 
+#  - This model is intended to be consistent with the compartmental model
+#    of Mallela et al. (2023), which describes COVID-19 transmission dynamics.
+#  - The model is specified in terms of building blocks labeled
+#    S, SV, E, A, I, V, H, R, and D.
+#     - The building blocks represent distinct populations.
+#     - Some of the populations have population features, which have
+#       multiple possible values.
+#---
+#---
+# References:
+#  - Mallela et al. (2023) medRxiv
+#    https://www.medrxiv.org/content/10.1101/2021.10.19.21265223v3
+#---
+begin parameters
+#######################################
+# fixed population-specific parameters #
+#######################################
+# total population
+# region-specific
+S0 7573136
+#############################################
+# adjustable population-specific parameters #
+#############################################
+# start time of the local epidemic 
+#  Consider choosing ts0 to correspond to the first day for which
+#  the cumulative number of detected cases was 200 or more.
+#  NB: sigma -> ts0. Defined as sigma in the paper.
+ts0 1
+# start time of 1st social distancing period
+ts1 1
+# start time of 1st social distancing *after* the initial
+#  social-distancing period ts1
+ts2 1 
+ts3 1
+ts4 1
+ts5 1
+#theta- start time of of alpha and delta strains, respectively
+theta0 1
+theta1 1
+#y0,y1- mutation multipier of alpha and delta strains, respectively
+y0 1
+y1 1
+# eigenvalue (a sum of rate constants) that determines the time scale
+#  for establishment of a quasi-stationary state of the
+#  1-5th social-distancing period
+lambda0 1
+lambda1 1
+lambda2 1
+lambda3 1   
+lambda4 1
+# quasi-stationary setpoint fraction of population practicing
+#  social distancing of the 1-5th social-distancing period
+p0 1
+p1 1
+p2 1
+p3 1
+p4 1
+# eigenvalue
+# rate constant for disease transmission 
+beta 1
+# fraction of new symptomatic infections detected 
+fD 1
+#fD # dimensionless
+r 1
+##############################
+# fixed universal parameters #
+##############################
+# initial number of infectious persons
+I0 1 # dimensionless
+# reporting period
+#  (delta_t=1 => daily case reports)
+delta_t 1 # d
+# parameter characterizing protective effect of social distancing
+mb 0.1 # dimensionless
+# relative infectiousness of E vs. I
+rhoE 1.1 # dimensionless
+# relative infectiousness of A vs. I
+rhoA 0.9 # dimensionless
+# rate constant for progression through stages of the incubation period
+kL 0.94 # /d
+# rate constant for I->H or R transition
+cI 0.12 # /d
+# fraction of exposed individuals who never develop symptoms
+fA 0.44 # dimensionless
+# fraction of symptomatic cases that progress to severe disease
+fH 0.054 # dimensionless
+# rate constant for quarantine
+kQ 0.0038 # /d
+# rate constant for self-isolation
+jQ 0.4 # /d
+# rate constant for A->R transition
+cA 0.26 # /d
+# rate constant for H->D or R transition
+cH 0.17 # /d
+# fraction of hospitalized patients who recover
+fR 0.79 # dimensionless
+# effectiveness of vaccination agaist ancestral strain
+f0 0.9
+# effectiveness of vaccination agaist alpha variant
+f1 0.81
+# effectiveness of vaccination agaist delta variant
+f2 0.69
+# rate constant for progression through stages of the vaccine immunity
+Kv 0.3
+end parameters
+begin molecule types
+# time tracker
+#  We need to track time to account for changes in social distancing
+#  and emergence of new SARS-CoV-2 variants.
+counter()
+# auxilliary function to track the case counts
+fDCS()
+#---
+# S: susceptible population
+#  comments:
+#   - The entire population (less I0) is initially susceptible.
+#  population features:
+#   SD: non-pharmaceutical intervention (SD) adopted
+#    comments:
+#     - Persons in the S, E, A, I, and R compartments may
+#       change their behavior to prevent disease transmission.
+#    possible feature values:
+#     - 0: none
+#     - P: social distancing
+#     - Q: quarantine or self-isolation
+#     - M: mixing
+#     - V: vaccination
+#     comments:
+#      - Persons in the SD~M state are mixing/socializing freely.
+#        They do not take precautions to prevent disease transmission.
+#      - Persons in the SD~P state take precautions to prevent
+#        disease transmission.
+#      - Persons in the SD~Q state are separated from susceptible persons.
+#        They are incapable of transmitting disease.
+#      - Persons in the SD~V state are vaccinated. V~0~1~2~3 tracks the
+#        number of vaccine doses that a person has received.
+#---
+S(SD~M~P)
+#---
+# SV: vaccinated and susceptible population
+#     strains: susceptible to different virus strains
+#     possible feature values:
+#            -1: susceptible to ancestral strain
+#            -2: susceptible to alpha strain
+#            -3: susceptible to delta strain
+#            -4: not susceptible
+SV(strains~1~2~3~4)
+#---
+# E: exposed population in the incubation period of disease progression
+#  population features:
+#   stage: incubation period stage
+#    comments:
+#     - The incubation period is divided into 5 stages.
+#     - Exposed persons do not have symptoms
+#       throughout the incubation period.
+#     - Exposed persons are infectious except in the first stage
+#       of the incubation period.
+#    possible feature values:
+#     - 1: 1st stage of the incubation period
+#     - 2: 2nd stage of the incubation period
+#     - 3: 3rd stage of the incubation period
+#     - 4: 4th stage of the incubation period
+#     - 5: 5th stage of the incubation period
+#     comments:
+#      - Exposed persons in the first stage of the incubation period
+#        are ineligible for quarantine (because virus cannot be detected).
+#   SD: non-pharmaceutical intervention (SD) adopted
+#      possible feature values:
+#     - 0: none
+#     - P: social distancing
+#     - Q: quarantine or self-isolation
+#---
+E(stage~1~2~3~4~5,SD~M~P~Q,V~0~1)
+#---
+# A: asymptomatic population
+#  comments:
+#   - Asymptomatic persons have passed through the incubation period.
+#   - Asympotmatic persons are infectious.
+#   - Asymptomatic persions will never develop symptoms.
+#  population feature values:
+#   SD: non-pharmaceutical intervention (SD) adopted
+#    possible feature values:
+#     - 0: none
+#     - P: social distancing
+#     - Q: quarantine or self-isolation
+#---
+A(SD~M~P~Q,V~0~1)
+#---
+# I: population with mild symptomatic disease
+#  comments:
+#   - Symptomatic persons are more likely to self-isolate than
+#     pre-symptomatic or asymptomatic persons because of symptom awareness.
+#  population features:
+#    SD: non-pharmaceutical intervention (SD) adopted
+#     possible feature values:
+#      - 0: none
+#      - P: social distancing
+#      - Q: quarantine or self-isolation
+#---
+I(SD~M~P~Q,V~0~1)
+# V: vaccinated population
+#  comments:
+#   - Vaccinated person in the SD~M do not take precautions to prevent
+#     disease transmission. This population is still at risk of infection.
+#---
+V(stage~1~2~3~4~5~6)
+#---
+# H: population with severe disease
+#  comments:
+#   - Persons with severe disease are in hospital or isolated at home.
+#     Consequently, they are unable to transmit disease.
+#---
+H(V~0~1)
+#---
+# R: recovered population
+#  population features:
+#   SD: non-pharmaceutical intervention (SD) adopted
+#    possible feature values:
+#     - 0: none
+#     - P: social distancing
+#     - Q: quarantine or self-isolation
+#---
+R(V~0~1)
+#---
+# D: deceased population
+D()
+end molecule types
+begin seed species
+counter() 0
+S(SD~M) S0-I0
+I(SD~M,V~0) I0
+fDCS() 0
+#
+end seed species
+begin observables
+Molecules S_M S(SD~M)
+Molecules S_P S(SD~P)
+Molecules E1_M E(stage~1,SD~M,V~0)
+Molecules E1_P E(stage~1,SD~P,V~0)
+Molecules E2_M E(stage~2,SD~M,V~0)
+Molecules E2_P E(stage~2,SD~P,V~0)
+Molecules E2_Q E(stage~2,SD~Q,V~0)
+Molecules E3_M E(stage~3,SD~M,V~0)
+Molecules E3_P E(stage~3,SD~P,V~0)
+Molecules E3_Q E(stage~3,SD~Q,V~0)
+Molecules E4_M E(stage~4,SD~M,V~0)
+Molecules E4_P E(stage~4,SD~P,V~0)
+Molecules E4_Q E(stage~4,SD~Q,V~0)
+Molecules E5_M E(stage~5,SD~M,V~0)
+Molecules E5_P E(stage~5,SD~P,V~0)
+Molecules E5_Q E(stage~5,SD~Q,V~0)
+Molecules A_M A(SD~M,V~0) 
+Molecules A_P A(SD~P,V~0) 
+Molecules A_Q A(SD~Q,V~0) 
+Molecules I_M I(SD~M,V~0)
+Molecules I_P I(SD~P,V~0)
+Molecules I_Q I(SD~Q,V~0)
+Molecules I_H H(V~0)
+Molecules R_MP R(V~0)
+Molecules D_ D()
+Molecules V_1 V(stage~1)
+Molecules V_2 V(stage~2)
+Molecules V_3 V(stage~3)
+Molecules V_4 V(stage~4)
+Molecules V_5 V(stage~5)
+Molecules V_6 V(stage~6)
+Molecules SV_1 SV(strains~1)
+Molecules SV_2 SV(strains~2)
+Molecules SV_3 SV(strains~3)
+Molecules SV_4 SV(strains~4)
+Molecules E_V E(V~1)
+Molecules A_V A(SD~M,V~1)
+Molecules I_V I(SD~M,V~1)
+Molecules H_V H(V~1)
+Molecules R_V R(V~1)
+Molecules fDCs_Cum fDCS()
+Molecules Einf_P_1 E(stage~1,SD~P) E(stage~2,SD~P) E(stage~3,SD~P) E(stage~4,SD~P) E(stage~5,SD~P)
+Molecules Einf_M_1 E(stage~1,SD~M,V~0) E(stage~2,SD~M,V~0) E(stage~3,SD~M,V~0) E(stage~4,SD~M,V~0) E(stage~5,SD~M,V~0)
+Molecules A_MP A(SD~M,V~0) A(SD~P,V~0)
+Molecules Einf_M_ E(stage~2,SD~M,V~0) E(stage~3,SD~M,V~0) E(stage~4,SD~M,V~0) E(stage~5,SD~M,V~0)
+Molecules Einf_P_ E(stage~2,SD~P) E(stage~3,SD~P) E(stage~4,SD~P) E(stage~5,SD~P)
+Molecules nE_V E(V~1)
+Molecules nE5_MPQ E(stage~5,SD~M,V~0) E(stage~5,SD~P,V~0) E(stage~5,SD~Q,V~0)
+Molecules t counter()
+end observables
+begin functions
+# weekly vaccination rate of fully vaccinated population
+# data is obtained from COVID Act Now
+# region-specific
+v_rate()=if(t<=583,0,if(t<=584,0.00805307414,if(t<=585,3.59512238e-05,if(t<=586,0,if(t<=587,1.79756119e-05,if(t<=588,0,if(t<=589,1.79756119e-05,if(t<=590,1.79756119e-05,if(t<=591,0.00762261272,if(t<=592,3.68434652e-05,if(t<=593,0.0070790825,if(t<=594,3.18290023e-05,if(t<=595,1.88678533e-05,if(t<=596,3.18290023e-05,if(t<=597,1.88678533e-05,if(t<=598,0.009389631900000001,if(t<=599,5.59415983e-05,if(t<=600,0.0162599969,if(t<=601,0.469902921,if(t<=602,0.000925500559,if(t<=603,0.000662709406,if(t<=604,5.6293549e-05,if(t<=605,0.000712264167,if(t<=606,0.000661749783,if(t<=607,0.000470467419,if(t<=608,0.0005539412760000001,if(t<=609,0.000776118913,if(t<=610,0.000106733247,if(t<=611,0.000756636891,if(t<=612,0.000210899022,if(t<=613,0.000868938818,if(t<=614,0.00048709952,if(t<=615,5.59415983e-05,if(t<=616,0.000795917949,if(t<=617,7.86216622e-05,if(t<=618,0.000898281216,if(t<=619,6.05228178e-05,if(t<=620,0.000766003856,if(t<=621,7.01469394e-05,if(t<=622,0.000850130916,if(t<=623,0.0006290328460000001,if(t<=624,0.000705093713,if(t<=625,2.2260732e-05,if(t<=626,0.0003230324,if(t<=627,0.000666831627,if(t<=628,7.76620396e-05,if(t<=629,0.000944950643,if(t<=630,6.00638198e-05,if(t<=631,0.000807947915,if(t<=632,0.000173441389,if(t<=633,7.29575876e-05,if(t<=634,0.000812962378,if(t<=635,1.38533904e-05,if(t<=636,7.39172102e-05,if(t<=637,5.50493569e-05,if(t<=638,0.000130506859,if(t<=639,0.00128678364,if(t<=640,0.000629703467,if(t<=641,0.00060096718,if(t<=642,0.00092608279,if(t<=643,0.0012845791,if(t<=644,0.000967278756,if(t<=645,0.00106373924,if(t<=646,0.000690118944,if(t<=647,0.000900039721,if(t<=648,0.000916487107,if(t<=649,0.00131024755,0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+# Total population that are eligible for vaccination
+PhiV()=if(t>=ts0,R_MP+Einf_P_1+Einf_M_1+S_M+S_P+A_MP,0)
+# region-specific
+v_times_PhiV()=if(t<=582,0,S0*v_rate()/PhiV())
+#v_times_PhiV_python()=if(t<=346,0,S0*v_rate()/PhiV())
+# Set the values of the rate constants kQ, jQ, and cI to 0 if t<ts0.
+# (We want [I] to remain constant at I0 until t=ts0.)
+kQfunc()=if(t>=ts0,kQ,0)
+jQfunc()=if(t>=ts0,jQ,0)
+cIfunc()=if(t>=ts0,cI,0)
+# effective population of infectious persons with SD~M state (mixing)
+#  The effective population size is set to 0 if t<ts0.
+phiM()=if(t>=ts0,rhoE*Einf_M_+rhoA*A_M+rhoE*nE_V+I_M+rhoA*A_V+I_V,0)
+# effective population of infectious persons with SD~P state (protected)
+phiP()=if(t>=ts0,rhoE*Einf_P_+rhoA*A_P+I_P,0)
+# Step function for mutation multiplier
+Ytheta1_()=if(t<=theta0,1,if(t<=theta0+theta1,y0,y1))
+# Heaviside function for different mutation-dominated period
+U()=if(t>=ts0,1,0)
+U_theta1()=if(t<theta0,0,1)
+U_theta2()=if(t<theta0+theta1,0,1)
+#cumulative sum to compute social distancing start time
+sum1=ts0+ts1
+sum2=ts0+ts1+ts2
+sum3=ts0+ts1+ts2+ts3
+sum4=ts0+ts1+ts2+ts3+ts4
+sum5=ts0+ts1+ts2+ts3+ts4+ts5
+# social-distancing eigenvalues
+#  Lambda() is a step function.
+#  Currently, Lambda() provides eigenvalues for 5 social-distancing periods.
+Lambda()=if(t>=sum1 && t<sum2,lambda0,\
+         if(t>=sum2 && t<sum3,lambda1,\
+         if(t>=sum3 && t<sum4,lambda2,\
+         if(t>=sum4 && t<sum5,lambda3,\
+         if(t>=sum5,lambda4,\
+         0)))))
+# social-distancing setpoint fractions
+#  P() is a step function.
+#  Currently, P() provides setpoint fractions for 5 social-distancing periods.
+P()=if(t>=sum1 && t<sum2,p0,\
+    if(t>=sum2 && t<sum3,p1,\
+    if(t>=sum3 && t<sum4,p2,\
+    if(t>=sum4 && t<sum5,p3,\
+    if(t>=sum5,p4,\
+    0)))))
+end functions
+begin reaction rules
+# cumulative infected population
+0->fDCS() fD*(1-fA)*(kL*nE5_MPQ+kL/5*nE_V)
+# increment time
+0->counter() 1
+########################################
+# EID model in near original BNGL form #
+########################################
+# disease transmission
+S(SD~M)->E(stage~1,SD~M,V~0) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+S(SD~P)->E(stage~1,SD~P,V~0) mb*(Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+# social distancing
+S(SD~M)<->S(SD~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+# there are five stages between E(SD~M) and E(SD~P)
+E(stage~1,SD~M,V~0)<->E(stage~1,SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E(stage~2,SD~M,V~0)<->E(stage~2,SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E(stage~3,SD~M,V~0)<->E(stage~3,SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E(stage~4,SD~M,V~0)<->E(stage~4,SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E(stage~5,SD~M,V~0)<->E(stage~5,SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+# social distancing
+A(SD~M,V~0)<->A(SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+I(SD~M,V~0)<->I(SD~P,V~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+# testing-driven quarantine
+E(stage~2,SD~M,V~0)->E(stage~2,SD~Q,V~0) kQ
+E(stage~3,SD~M,V~0)->E(stage~3,SD~Q,V~0) kQ
+E(stage~4,SD~M,V~0)->E(stage~4,SD~Q,V~0) kQ
+E(stage~5,SD~M,V~0)->E(stage~5,SD~Q,V~0) kQ
+E(stage~2,SD~P,V~0)->E(stage~2,SD~Q,V~0) kQ
+E(stage~3,SD~P,V~0)->E(stage~3,SD~Q,V~0) kQ
+E(stage~4,SD~P,V~0)->E(stage~4,SD~Q,V~0) kQ
+E(stage~5,SD~P,V~0)->E(stage~5,SD~Q,V~0) kQ
+# progression through stages of the incubation period
+E(stage~1,SD~M,V~0)->E(stage~2,SD~M,V~0) kL
+E(stage~2,SD~M,V~0)->E(stage~3,SD~M,V~0) kL
+E(stage~3,SD~M,V~0)->E(stage~4,SD~M,V~0) kL
+E(stage~4,SD~M,V~0)->E(stage~5,SD~M,V~0) kL
+E(stage~1,SD~P,V~0)->E(stage~2,SD~P,V~0) kL
+E(stage~2,SD~P,V~0)->E(stage~3,SD~P,V~0) kL
+E(stage~3,SD~P,V~0)->E(stage~4,SD~P,V~0) kL
+E(stage~4,SD~P,V~0)->E(stage~5,SD~P,V~0) kL
+E(stage~2,SD~Q,V~0)->E(stage~3,SD~Q,V~0) kL
+E(stage~3,SD~Q,V~0)->E(stage~4,SD~Q,V~0) kL
+E(stage~4,SD~Q,V~0)->E(stage~5,SD~Q,V~0) kL
+# entry into the immune clearance phase without generation of symptoms
+E(stage~5,SD~M,V~0)->A(SD~M,V~0) kL*fA
+E(stage~5,SD~P,V~0)->A(SD~P,V~0) kL*fA
+E(stage~5,SD~Q,V~0)->A(SD~Q,V~0) kL*fA
+# entry into the immune clearance phase *with* generation of mild symptoms
+E(stage~5,SD~M,V~0)->I(SD~M,V~0) kL*(1-fA)
+E(stage~5,SD~P,V~0)->I(SD~P,V~0) kL*(1-fA)
+E(stage~5,SD~Q,V~0)->I(SD~Q,V~0) kL*(1-fA)
+# self-isolation because of symptom awareness
+I(SD~M,V~0)->I(SD~Q,V~0) jQfunc()+kQfunc()
+I(SD~P,V~0)->I(SD~Q,V~0) jQfunc()+kQfunc()
+A(SD~M,V~0)->A(SD~Q,V~0) kQfunc()
+A(SD~P,V~0)->A(SD~Q,V~0) kQfunc()
+# immune clearance, recovery from asymptomatic infection
+A(SD~M,V~0)->R(V~0) cA
+A(SD~P,V~0)->R(V~0) cA
+A(SD~Q,V~0)->R(V~0) cA
+# immune clearance, recovery from mild symptomatic infection
+I(SD~M,V~0)->R(V~0) cIfunc()*(1-fH)
+I(SD~P,V~0)->R(V~0) cIfunc()*(1-fH)
+I(SD~Q,V~0)->R(V~0) cIfunc()*(1-fH)
+# progression from mild to severe disease & hospitalization/isolation-at-home
+I(V~0)->H(V~0) cIfunc()*fH
+# recovery from severe disease
+H(V~0)->R(V~0) cH*fR
+# progression from severe disease to death
+H(V~0)->D() cH*(1-fR)
+# vaccination
+#  Rules are added to capture the effects of vaccination.
+# vaccinate
+S(SD~M)->V(stage~1) v_times_PhiV()
+S(SD~P)->V(stage~1) v_times_PhiV()
+V(stage~1)->V(stage~2) Kv
+V(stage~2)->V(stage~3) Kv
+V(stage~3)->V(stage~4) Kv
+V(stage~4)->V(stage~5) Kv
+V(stage~5)->V(stage~6) Kv
+#Assume infected and vaccinated population are SD~M.
+V(stage~1)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+V(stage~2)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+V(stage~3)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+V(stage~4)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+V(stage~5)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+V(stage~6)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+# 1-effectiveness percentage of vaccinated people are still susceptible
+V(stage~6)->SV(strains~1) Kv*(1-f0)
+V(stage~6)->SV(strains~2) Kv*(f0-f1)
+V(stage~6)->SV(strains~3) Kv*(f1-f2)
+V(stage~6)->SV(strains~4) Kv*f2
+#For vaccinated people, assume there is only one incubation period, that this stage~1.
+SV(strains~1)->E(stage~1,SD~M,V~1) (Ytheta1_()*beta/S0)*(phiM()+mb*phiP())
+SV(strains~2)->E(stage~1,SD~M,V~1) (Ytheta1_()*U_theta1()*beta/S0)*(phiM()+mb*phiP())
+SV(strains~3)->E(stage~1,SD~M,V~1) (Ytheta1_()*U_theta2()*beta/S0)*(phiM()+mb*phiP())
+# entry into the immune clearance phase without generation of symptoms
+E(stage~1,SD~M,V~1)->A(SD~M,V~1) (kL/5)*fA
+E(stage~1,SD~M,V~1)->I(SD~M,V~1) (kL/5)*(1-fA)
+# immune clearance, recovery
+A(SD~M,V~1)->R(V~1) cA
+I(SD~M,V~1)->R(V~1) cIfunc()*(1-fH/25)
+I(SD~M,V~1)->H(V~1) cIfunc()*(fH/25)
+H(V~1)->R(V~1) cH*fR
+H(V~1)->D() cH*(1-fR)
+# recovered and unvaccinated people are eligible for vaccination 
+R(V~0)->R(V~1) v_times_PhiV()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+writeMfile();
+simulate({suffix=>"Dallas",method=>"ode",t_end=>649,n_steps=>649,print_functions=>1,atol=>1e-7,rtol=>1e-7})
+end actions
