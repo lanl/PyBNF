@@ -1,71 +1,70 @@
 begin model
 #---
 # About: 
-#  - The models is intended to be consistent with the compartmental model
-#    of Ye C, Lin YT et al. (2021), which describes COVID-19 transmission dynamics.
-#  - The first model is specified in terms of building blocks labeled
-#    S, E, A, I, V, H, D, and R.
+#  - This model is intended to be consistent with the compartmental model
+#    of Mallela et al. (2023), which describes COVID-19 transmission dynamics.
+#  - The model is specified in terms of building blocks labeled
+#    S, SV, E, A, I, V, H, R, and D.
 #     - The building blocks represent distinct populations.
 #     - Some of the populations have population features, which have
 #       multiple possible values.
 #---
 #---
 # References:
-#  - Ye C, Lin YT et al. (2021) medRxiv
-#    https://www.medrxiv.org/content/10.1101/2021.10.19.21265223v1
+#  - Mallela et al. (2023) medRxiv
+#    https://www.medrxiv.org/content/10.1101/2021.10.19.21265223v3
 #---
 begin parameters
 #######################################
 # fixed population-specific parameters #
 #######################################
 # total population
-# region specific
+# region-specific
 S0 4873019
 #############################################
 # adjustable population-specific parameters #
-# Paramters have been moved around to better match python code #
 #############################################
 # start time of the local epidemic 
 #  Consider choosing ts0 to correspond to the first day for which
 #  the cumulative number of detected cases was 200 or more.
 #  NB: sigma -> ts0. Defined as sigma in the paper.
-ts0 ts0__FREE
+ts0 1
 # start time of 1st social distancing period
-ts1 ts1__FREE
+ts1 1
 # start time of 1st social distancing *after* the initial
 #  social-distancing period ts1
-ts2 ts2__FREE 
-ts3 ts3__FREE
-ts4 ts4__FREE
-ts5 ts5__FREE
+ts2 1 
+ts3 1
+ts4 1
+ts5 1
 #theta- start time of of alpha and delta strains, respectively
-theta0 theta0__FREE
-theta1 theta1__FREE
+theta0 1
+theta1 1
 #y0,y1- mutation multipier of alpha and delta strains, respectively
-y0 y0__FREE
-y1 y1__FREE
+y0 1
+y1 1
 # eigenvalue (a sum of rate constants) that determines the time scale
 #  for establishment of a quasi-stationary state of the
 #  1-5th social-distancing period
-lambda0 lambda0__FREE
-lambda1 lambda1__FREE
-lambda2 lambda2__FREE
-lambda3 lambda3__FREE   
-lambda4 lambda4__FREE
+lambda0 1
+lambda1 1
+lambda2 1
+lambda3 1   
+lambda4 1
 # quasi-stationary setpoint fraction of population practicing
 #  social distancing of the 1-5th social-distancing period
-p0 p0__FREE
-p1 p1__FREE#
-p2 p2__FREE
-p3 p3__FREE
-p4 p4__FREE
+p0 1
+p1 1
+p2 1
+p3 1
+p4 1
 # eigenvalue
 # rate constant for disease transmission 
-beta beta__FREE
+beta 1
 # fraction of new symptomatic infections detected 
-fD fD__FREE
+fD 1
 #fD # dimensionless
-r r__FREE
+r 1
 ##############################
 # fixed universal parameters #
 ##############################
@@ -136,18 +135,18 @@ fDCS()
 #        disease transmission.
 #      - Persons in the SD~Q state are separated from susceptible persons.
 #        They are incapable of transmitting disease.
-#      - Persons in the SD~V state are vaccinated. V~0~1~2~3 is to track
-#        the different number of vaccine doses that a person has received.
+#      - Persons in the SD~V state are vaccinated. V~0~1~2~3 tracks the
+#        number of vaccine doses that a person has received.
 #---
 S(SD~M~P)
 #---
-# SV: vaccinated and suseptible population
-#     strains: suseptible to different virus strains
+# SV: vaccinated and susceptible population
+#     strains: susceptible to different virus strains
 #     possible feature values:
-#            -1: suseptible to ancestral strain
-#            -2: suseptible to alpha strain
-#            -3: suseptible to delta strain
-#            -4: not suseptible
+#            -1: susceptible to ancestral strain
+#            -2: susceptible to alpha strain
+#            -3: susceptible to delta strain
+#            -4: not susceptible
 SV(strains~1~2~3~4)
 #---
 # E: exposed population in the incubation period of disease progression
@@ -237,56 +236,65 @@ fDCS() 0
 #
 end seed species
 begin observables
-Molecules S S()
-Molecules E E()
-Molecules A A()
-Molecules I I()
-Molecules H H()
-Molecules R R()
-Molecules D D()
-Molecules fDCs_Cum fDCS()
 Molecules S_M S(SD~M)
 Molecules S_P S(SD~P)
-Molecules Einf_M_ E(stage~2,SD~M,V~0) E(stage~3,SD~M,V~0) E(stage~4,SD~M,V~0) E(stage~5,SD~M,V~0)
-Molecules Einf_M_1 E(stage~1,SD~M,V~0) E(stage~2,SD~M,V~0) E(stage~3,SD~M,V~0) E(stage~4,SD~M,V~0) E(stage~5,SD~M,V~0)
+Molecules E1_M E(stage~1,SD~M,V~0)
+Molecules E1_P E(stage~1,SD~P,V~0)
+Molecules E2_M E(stage~2,SD~M,V~0)
+Molecules E2_P E(stage~2,SD~P,V~0)
+Molecules E2_Q E(stage~2,SD~Q,V~0)
+Molecules E3_M E(stage~3,SD~M,V~0)
+Molecules E3_P E(stage~3,SD~P,V~0)
+Molecules E3_Q E(stage~3,SD~Q,V~0)
+Molecules E4_M E(stage~4,SD~M,V~0)
+Molecules E4_P E(stage~4,SD~P,V~0)
+Molecules E4_Q E(stage~4,SD~Q,V~0)
+Molecules E5_M E(stage~5,SD~M,V~0)
+Molecules E5_P E(stage~5,SD~P,V~0)
+Molecules E5_Q E(stage~5,SD~Q,V~0)
 Molecules A_M A(SD~M,V~0) 
-#Molecules I_M_python I(SD~M,V~0) I(SD~M,V~1)
-Molecules I_M I(SD~M,V~0) 
-Molecules Einf_P_ E(stage~2,SD~P) E(stage~3,SD~P) E(stage~4,SD~P) E(stage~5,SD~P)
-Molecules Einf_P_1 E(stage~1,SD~P) E(stage~2,SD~P) E(stage~3,SD~P) E(stage~4,SD~P) E(stage~5,SD~P)
-Molecules A_P A(SD~P)
-#Molecules A_P_python A(SD~P,V~0) 
-Molecules A_ A(SD~M) A(SD~P)
-Molecules A_MP A(SD~M,V~0) A(SD~P,V~0)
+Molecules A_P A(SD~P,V~0) 
+Molecules A_Q A(SD~Q,V~0) 
+Molecules I_M I(SD~M,V~0)
 Molecules I_P I(SD~P,V~0)
-#Molecules I_P_python I(SD~P,V~0)
-Molecules I_ I()
-Molecules A_V A(SD~M,V~1)
-Molecules I_V I(SD~M,V~1)
-Molecules V V()
-Molecules H_ H()
-Molecules H_v H(V~0)
-Molecules R_ R()
+Molecules I_Q I(SD~Q,V~0)
+Molecules I_H H(V~0)
 Molecules R_MP R(V~0)
 Molecules D_ D()
-Molecules E5 E(SD~M,stage~5)
-Molecules nE5_MP E(stage~5,SD~M,V~0) E(stage~5,SD~P,V~0) 
+Molecules V_1 V(stage~1)
+Molecules V_2 V(stage~2)
+Molecules V_3 V(stage~3)
+Molecules V_4 V(stage~4)
+Molecules V_5 V(stage~5)
+Molecules V_6 V(stage~6)
+Molecules SV_1 SV(strains~1)
+Molecules SV_2 SV(strains~2)
+Molecules SV_3 SV(strains~3)
+Molecules SV_4 SV(strains~4)
+Molecules E_V E(V~1)
+Molecules A_V A(SD~M,V~1)
+Molecules I_V I(SD~M,V~1)
+Molecules H_V H(V~1)
+Molecules R_V R(V~1)
+Molecules fDCs_Cum fDCS()
+Molecules Einf_P_1 E(stage~1,SD~P) E(stage~2,SD~P) E(stage~3,SD~P) E(stage~4,SD~P) E(stage~5,SD~P)
+Molecules Einf_M_1 E(stage~1,SD~M,V~0) E(stage~2,SD~M,V~0) E(stage~3,SD~M,V~0) E(stage~4,SD~M,V~0) E(stage~5,SD~M,V~0)
+Molecules A_MP A(SD~M,V~0) A(SD~P,V~0)
+Molecules Einf_M_ E(stage~2,SD~M,V~0) E(stage~3,SD~M,V~0) E(stage~4,SD~M,V~0) E(stage~5,SD~M,V~0)
+Molecules Einf_P_ E(stage~2,SD~P) E(stage~3,SD~P) E(stage~4,SD~P) E(stage~5,SD~P)
 Molecules nE_V E(V~1)
-Molecules nE4_MP E(stage~4,SD~M) E(stage~4,SD~P)
-Molecules nE2_MP E(stage~2,SD~M) E(stage~2,SD~P)
-Molecules nE3_MP E(stage~3,SD~M) E(stage~3,SD~P)
+Molecules nE5_MPQ E(stage~5,SD~M,V~0) E(stage~5,SD~P,V~0) E(stage~5,SD~Q,V~0)
 Molecules t counter()
 end observables
 begin functions
-# vaccination rate of fully vaccination population
+# daily vaccination rate of fully vaccinated population
 # data is obtained from COVID Act Now
-# Daily vaccination rate is converted to weekly vaccination rate
-# region specific
-v_rate()=if(t<=349,0,if(t<=357,0.0003575195616733143,if(t<=364,0.00047326263140792856,if(t<=371,0.0007541730670792,if(t<=378,0.0010454027691178857,if(t<=385,0.0021527389357378713,if(t<=392,0.0026758409702074,if(t<=399,0.0024056270392570573,if(t<=406,0.0024639345926844997,if(t<=413,0.0024990517675972574,if(t<=420,0.0030800492292485286,if(t<=427,0.0028786842626495716,if(t<=434,0.0045039136507428424,if(t<=441,0.005302167206284167,if(t<=448,0.005969433374593843,if(t<=455,0.004914240767336486,if(t<=462,0.005618792433864013,if(t<=469,0.005486606500338186,if(t<=476,0.005632856816132201,if(t<=483,0.0040288542772121,if(t<=490,0.0034599525154047285,if(t<=497,0.002247974288694142,if(t<=504,0.0025484005521874574,if(t<=511,0.003391321588717557,if(t<=518,0.0022513440310490715,if(t<=525,0.0019642006953376856,if(t<=532,0.0011112794707277287,if(t<=539,0.0009986303261589002,if(t<=546,0.0009482064991153287,if(t<=553,0.0009940729472357143,if(t<=560,0.0008278480031038572,if(t<=567,0.0008592505227269714,if(t<=574,0.0009181889691199571,if(t<=581,0.0008938555624711716,if(t<=588,0.0,if(t<=595,0.0,if(t<=602,0.0,if(t<=609,0.0,if(t<=616,0.0,if(t<=623,0.0,0))))))))))))))))))))))))))))))))))))))))
+# region-specific
+v_rate()=if(t<=309,0,if(t<=310,0.00011758,if(t<=311,0.00036362,if(t<=312,0.00065919,if(t<=313,0.00015943,if(t<=314,0.00015943,if(t<=315,0.00065919,if(t<=316,0.00015943,if(t<=317,0.00065919,if(t<=318,0,if(t<=319,0.00080006,if(t<=320,0,if(t<=321,0.00015943,if(t<=322,0,if(t<=323,0,if(t<=324,0.0012008,if(t<=325,0.00065919,if(t<=326,0.00031887,if(t<=327,0.00081862,if(t<=328,0,if(t<=329,0.00064063,if(t<=330,0.00077676,if(t<=331,0.00147781,if(t<=332,0.00113749,if(t<=333,0.00134167,if(t<=334,0.0009362,if(t<=335,0.00049686,if(t<=336,0.0004812,if(t<=337,0.00099661,if(t<=338,0.00118224,if(t<=339,0.00115604,if(t<=340,0.00147781,if(t<=341,0.00081862,if(t<=342,0.00101991,if(t<=343,0.00149975,if(t<=344,0.00164063,if(t<=345,0.00131547,if(t<=346,0.00199661,if(t<=347,0.00236023,if(t<=348,0.00031887,if(t<=349,0.00218224,if(t<=350,0.00083718,if(t<=351,0.00186048,if(t<=352,0.00147781,if(t<=353,0.0019328,if(t<=354,0.00229642,if(t<=355,0.00206127,if(t<=356,0.00165968,if(t<=357,0.00170104,if(t<=358,0.00211844,if(t<=359,0.00211418,if(t<=360,0.00247441,if(t<=361,0.00324265,if(t<=362,0.00333403,if(t<=363,0.00211758,if(t<=364,0.0029561,if(t<=365,0.00233403,if(t<=366,0.00325457,if(t<=367,0.00395222,if(t<=368,0.00299661,if(t<=369,0.0041307,if(t<=370,0.00177726,if(t<=371,0.00433779,if(t<=372,0.00350314,if(t<=373,0.00423397,if(t<=374,0.00361529,if(t<=375,0.0036791,if(t<=376,0.00385369,if(t<=377,0.00100049,if(t<=378,0.00477762,if(t<=379,0.00305992,if(t<=380,0.0009566000000000001,if(t<=381,0.00579193,if(t<=382,0.00197756,if(t<=383,0.00363434,if(t<=384,0.00286048,if(t<=385,0.00335684,if(t<=386,0.00367774,if(t<=387,0.0033878,if(t<=388,0.00381523,if(t<=389,0.00381523,if(t<=390,0.00375481,if(t<=391,0.00309902,if(t<=392,0.00459113,if(t<=393,0.00449975,if(t<=394,0.00455063,if(t<=395,0.00134217,if(t<=396,0.009047349999999999,if(t<=397,0.00311708,if(t<=398,0.00393515,if(t<=399,0.00601941,if(t<=400,0.00529846,if(t<=401,0.0051569,if(t<=402,0.0015016,if(t<=403,0.01084692,if(t<=404,0.00412372,if(t<=405,0.00521216,if(t<=406,0.00614124,if(t<=407,0.00498095,if(t<=408,0.00579753,if(t<=409,0.00111603,if(t<=410,0.00954283,if(t<=411,0.00390048,if(t<=412,0.00416777,if(t<=413,0.00542743,if(t<=414,0.00538304,if(t<=415,0.00584143,if(t<=416,0.00629728,if(t<=417,0.00220518,if(t<=418,0.01040331,if(t<=419,0.00366547,if(t<=420,0.00727632,if(t<=421,0.00554586,if(t<=422,0.00597552,if(t<=423,0.00634339,if(t<=424,0.00658433,if(t<=425,0.00422459,if(t<=426,0.0040233,if(t<=427,0.00384228,if(t<=428,0.00713137,if(t<=429,0.00772761,if(t<=430,0.00730578,if(t<=431,0.00722835,if(t<=432,0.00618699,if(t<=433,0.0060495,if(t<=434,0.00574887,if(t<=435,0.007965079999999999,if(t<=436,0.00568674,if(t<=437,0.00634592,if(t<=438,0.00573063,if(t<=439,0.00490826,if(t<=440,0.0040643,if(t<=441,0.00283514,if(t<=442,0.00245358,if(t<=443,0.0057543,if(t<=444,0.00909925,if(t<=445,0.00484531,if(t<=446,0.0054992,if(t<=447,0.0035455,if(t<=448,0.00440666,if(t<=449,0.00347866,if(t<=450,0.00649715,if(t<=451,0.00450111,if(t<=452,0.00593106,if(t<=453,0.00392681,if(t<=454,0.00357084,if(t<=455,0.00276652,if(t<=456,0.00398926,if(t<=457,0.00294913,if(t<=458,0.00356356,if(t<=459,0.009297949999999999,if(t<=460,0.00511109,if(t<=461,0.00490875,if(t<=462,0.00439813,if(t<=463,0.00411109,if(t<=464,0.00358261,if(t<=465,0.00324519,if(t<=466,0.00306634,if(t<=467,0.00324433,if(t<=468,0.0024291,if(t<=469,0.00124772,if(t<=470,0.00640702,if(t<=471,0.00108914,if(t<=472,0.00454859,if(t<=473,0.0020439,if(t<=474,0.00207368,if(t<=475,0.00240715,if(t<=476,0.00349544,if(t<=477,0.00226713,if(t<=478,0.00148034,if(t<=479,0.00188242,if(t<=480,0.00154414,if(t<=481,0.00338471,if(t<=482,0.00172892,if(t<=483,0.00174543,if(t<=484,0.00183971,if(t<=485,0.00190437,if(t<=486,0.00079581,if(t<=487,0.00115943,if(t<=488,0.00142657,if(t<=489,0.00048034,if(t<=490,0.00088496,if(t<=491,0.00226967,if(t<=492,0.00108575,if(t<=493,0.00034081,if(t<=494,0.00138132,if(t<=495,0.00120333,if(t<=496,0.00152219,if(t<=497,0.00052219,if(t<=498,0.00120333,if(t<=499,0.001,if(t<=500,0.00065833,if(t<=501,0.00070104,if(t<=502,0.00172892,if(t<=503,0.00017799,if(t<=504,0.00136615,if(t<=505,0.00054075,if(t<=506,0.00118138,if(t<=507,0.00034081,if(t<=508,0.00084057,if(t<=509,0.00063638,if(t<=510,0.00072638,if(t<=511,0.00052219,if(t<=512,0.00084057,if(t<=513,0.00065833,if(t<=514,0.00070443,if(t<=515,0.00063638,if(t<=516,0.00072299,if(t<=517,0.00045839,if(t<=518,0.000545,if(t<=519,0.001,if(t<=520,0.00035937,if(t<=521,0.00064063,if(t<=522,0.00035937,if(t<=523,0.00045839,if(t<=524,0.00072299,if(t<=525,0.00027701,if(t<=526,0.00090437,if(t<=527,0.00084057,if(t<=528,0.000455,if(t<=529,0.00082201,if(t<=530,0.00035937,if(t<=531,0.00034081,if(t<=532,0.00095814,if(t<=533,0.00084057,if(t<=534,0.00049686,if(t<=535,0.00082201,if(t<=536,0.00065919,if(t<=537,0.00063638,if(t<=538,0.00070443,if(t<=539,0,if(t<=540,0.00129557,if(t<=541,0.00084057,if(t<=542,0.00027701,if(t<=543,0.001,if(t<=544,0.00054161,if(t<=545,0.00045839,if(t<=546,0.001,if(t<=547,0,if(t<=548,0.00129557,if(t<=549,0.00065919,if(t<=550,0.001,if(t<=551,0.00034081,if(t<=552,0.000455,if(t<=553,0.000545,if(t<=554,0.00027701,if(t<=555,0.00072299,if(t<=556,0.00029557,if(t<=557,0.001,if(t<=558,0.00018138,if(t<=559,0.00081862,if(t<=560,0.00034081,if(t<=561,0.00084057,if(t<=562,0,if(t<=563,0.00111418,if(t<=564,0.00018138,if(t<=565,0.001,if(t<=566,0.00045839,if(t<=567,0.00018138,if(t<=568,0.00088242,if(t<=569,0.00065919,if(t<=570,0.00018138,if(t<=571,0.00081862,if(t<=572,0.00063638,if(t<=573,0.000545,if(t<=574,0.00063638,if(t<=575,0.00018138,if(t<=576,0.001,if(t<=577,0,if(t<=578,0.00035937,if(t<=579,0.0009362,if(t<=580,0.00102195,if(t<=581,0.00034081,if(t<=582,0.00045839,if(t<=583,0.00054161,if(t<=584,0.00047695,if(t<=585,0.00064063,if(t<=586,0.00035937,if(t<=587,0.00064063,if(t<=588,0.00035937,if(t<=589,0.00034081,if(t<=590,0.00065919,if(t<=591,0.00029896,if(t<=592,0.00070104,if(t<=593,0.00029896,if(t<=594,0.000455,if(t<=595,0.00072638,if(t<=596,0.00063638,if(t<=597,0.00036362,if(t<=598,0.00117799,if(t<=599,0.00011758,if(t<=600,0.00070104,if(t<=601,0.00018138,if(t<=602,0.00045839,if(t<=603,0.00072299,if(t<=604,0.00011758,if(t<=605,0.001,if(t<=606,0.00033742,if(t<=607,0.000545,if(t<=608,0.000455,if(t<=609,0.00018138,if(t<=610,0.00064063,if(t<=611,0.00035937,if(t<=612,0.000545,if(t<=613,0.00063638,if(t<=614,0.00065919,if(t<=615,0.00045839,if(t<=616,0,if(t<=617,0.00088242,if(t<=618,0.00047695,if(t<=619,0.00036362,if(t<=620,0.00015943,if(t<=621,0.001,if(t<=622,0.00047695,if(t<=623,0.00015943,if(t<=624,0.00066258,if(t<=625,0.00035937,if(t<=626,0.00064063,if(t<=627,0.00035937,if(t<=628,0.00081862,if(t<=629,0.00018138,if(t<=630,0.00052219,if(t<=631,0.00065919,if(t<=632,0.00018138,if(t<=633,0.00015943,if(t<=634,0,if(t<=635,0.00018138,if(t<=636,0.00131837,if(t<=637,0.00084057,if(t<=638,0.00115943,if(t<=639,0.00136023,if(t<=640,0.00172724,if(t<=641,0.00151966,if(t<=642,0.00152305,if(t<=643,0.0027281,if(t<=644,0.00115943,if(t<=645,0.00117934,if(t<=646,0.00218224,if(t<=647,0.00154161,if(t<=648,0.00145925,if(t<=649,0.00151966,0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
 # Total population that are eligible for vaccination
 PhiV()=if(t>=ts0,R_MP+Einf_P_1+Einf_M_1+S_M+S_P+A_MP,0)
-# region specific
-v_times_PhiV()=if(t<=349,0,S0*v_rate()/PhiV())
+# region-specific
+v_times_PhiV()=if(t<=582,0,S0*v_rate()/PhiV())
 #v_times_PhiV_python()=if(t<=346,0,S0*v_rate()/PhiV())
 # Set the values of the rate constants kQ, jQ, and cI to 0 if t<ts0.
 # (We want [I] to remain constant at I0 until t=ts0.)
@@ -299,21 +307,21 @@ phiM()=if(t>=ts0,rhoE*Einf_M_+rhoA*A_M+rhoE*nE_V+I_M+rhoA*A_V+I_V,0)
 # effective population of infectious persons with SD~P state (protected)
 phiP()=if(t>=ts0,rhoE*Einf_P_+rhoA*A_P+I_P,0)
 # Step function for mutation multiplier
-Ytheta1_()=if(t<=theta0,1,\
-      if(t<=theta1,y0,y1))
-# Heaviside function for different mutation dominated period
+Ytheta1_()=if(t<=theta0,1,if(t<=theta0+theta1,y0,y1))
+# Heaviside function for different mutation-dominated period
 U()=if(t>=ts0,1,0)
 U_theta1()=if(t<theta0,0,1)
-U_theta2()=if(t<theta1,0,1)
-#cummulative sum to compute social distancing start time
-sum2=ts1+ts2
-sum3=ts1+ts2+ts3
-sum4=ts1+ts2+ts3+ts4
-sum5=ts1+ts2+ts3+ts4+ts5
+U_theta2()=if(t<theta0+theta1,0,1)
+#cumulative sum to compute social distancing start time
+sum1=ts0+ts1
+sum2=ts0+ts1+ts2
+sum3=ts0+ts1+ts2+ts3
+sum4=ts0+ts1+ts2+ts3+ts4
+sum5=ts0+ts1+ts2+ts3+ts4+ts5
 # social-distancing eigenvalues
 #  Lambda() is a step function.
 #  Currently, Lambda() provides eigenvalues for 5 social-distancing periods.
-Lambda()=if(t>=ts1 && t<sum2,lambda0,\
+Lambda()=if(t>=sum1 && t<sum2,lambda0,\
          if(t>=sum2 && t<sum3,lambda1,\
          if(t>=sum3 && t<sum4,lambda2,\
          if(t>=sum4 && t<sum5,lambda3,\
@@ -322,7 +330,7 @@ Lambda()=if(t>=ts1 && t<sum2,lambda0,\
 # social-distancing setpoint fractions
 #  P() is a step function.
 #  Currently, P() provides setpoint fractions for 5 social-distancing periods.
-P()=if(t>=ts1 && t<sum2,p0,\
+P()=if(t>=sum1 && t<sum2,p0,\
     if(t>=sum2 && t<sum3,p1,\
     if(t>=sum3 && t<sum4,p2,\
     if(t>=sum4 && t<sum5,p3,\
@@ -330,8 +338,8 @@ P()=if(t>=ts1 && t<sum2,p0,\
     0)))))
 end functions
 begin reaction rules
-# cummulative infected population
-0->fDCS() fD*(1-fA)*(kL*nE5_MP+kL/5*nE_V)
+# cumulative infected population
+0->fDCS() fD*(1-fA)*(kL*nE5_MPQ+kL/5*nE_V)
 # increment time
 0->counter() 1
 ########################################
@@ -434,11 +442,12 @@ I(SD~M,V~1)->R(V~1) cIfunc()*(1-fH/25)
 I(SD~M,V~1)->H(V~1) cIfunc()*(fH/25)
 H(V~1)->R(V~1) cH*fR
 H(V~1)->D() cH*(1-fR)
-# recovered and unvaccinated people are elegible for vaccination 
+# recovered and unvaccinated people are eligible for vaccination 
 R(V~0)->R(V~1) v_times_PhiV()
 end reaction rules
 end model
 begin actions
 generate_network({overwrite=>1})
+writeMfile();
 simulate({suffix=>"Phoenix",method=>"ode",t_end=>649,n_steps=>649,print_functions=>1,atol=>1e-7,rtol=>1e-7})
 end actions
