@@ -25,46 +25,43 @@ S0 4873019
 # adjustable population-specific parameters #
 #############################################
 # start time of the local epidemic 
-#  Consider choosing ts0 to correspond to the first day for which
-#  the cumulative number of detected cases was 200 or more.
-#  NB: sigma -> ts0. Defined as sigma in the paper.
-ts0 1
+ts0 ts0__FREE
 # start time of 1st social distancing period
-ts1 1
+ts1 ts1__FREE
 # start time of 1st social distancing *after* the initial
 #  social-distancing period ts1
-ts2 1 
-ts3 1
-ts4 1
-ts5 1
+ts2 ts2__FREE 
+ts3 ts3__FREE
+ts4 ts4__FREE
+ts5 ts5__FREE
 #theta- start time of of alpha and delta strains, respectively
-theta0 1
-theta1 1
+theta0 theta0__FREE
+theta1 theta1__FREE
 #y0,y1- mutation multipier of alpha and delta strains, respectively
-y0 1
-y1 1
+y0 y0__FREE
+y1 y1__FREE
 # eigenvalue (a sum of rate constants) that determines the time scale
 #  for establishment of a quasi-stationary state of the
 #  1-5th social-distancing period
-lambda0 1
-lambda1 1
-lambda2 1
-lambda3 1   
-lambda4 1
+lambda0 lambda0__FREE
+lambda1 lambda1__FREE
+lambda2 lambda2__FREE
+lambda3 lambda3__FREE   
+lambda4 lambda4__FREE
 # quasi-stationary setpoint fraction of population practicing
 #  social distancing of the 1-5th social-distancing period
-p0 1
-p1 1
-p2 1
-p3 1
-p4 1
+p0 p0__FREE
+p1 p1__FREE
+p2 p2__FREE
+p3 p3__FREE
+p4 p4__FREE
 # eigenvalue
 # rate constant for disease transmission 
-beta 1
+beta beta__FREE
 # fraction of new symptomatic infections detected 
-fD 1
+fD fD__FREE
 #fD # dimensionless
-r 1
+r r__FREE
 ##############################
 # fixed universal parameters #
 ##############################
