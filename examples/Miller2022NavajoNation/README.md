@@ -2,7 +2,7 @@
 Miller2022NavajoNation
 
 ## Description
-This folder serves as supplementary material for the following preprint on medRxiv:
+This folder serves as supplementary material for the following publication in PLOS Global Public Health:
 
 Quantification of early nonpharmaceutical interventions aimed at slowing transmission of Coronavirus Disease 2019 in the Navajo Nation and surrounding states (Arizona, Colorado, New Mexico, and Utah). Ely F. Miller, Jacob Neumann, Ye Chen, Abhishek Mallela, Yen Ting Lin, William S. Hlavacek, and Richard G. Posner.
 
