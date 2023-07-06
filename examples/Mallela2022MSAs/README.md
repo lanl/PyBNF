@@ -15,4 +15,5 @@ Model, data, and configuration files required to perform model parameterization 
 
 This model was parameterized using PyBioNetFit v1.1.9
 
-Data corresponding to population features was obtained from the following repository: [https://www.kaggle.com/datasets/johnjdavisiv/us-counties-covid19-weather-sociohealth-data](url)
+Data corresponding to population features was obtained from the following repository: 
+[https://www.kaggle.com/datasets/johnjdavisiv/us-counties-covid19-weather-sociohealth-data](url)
