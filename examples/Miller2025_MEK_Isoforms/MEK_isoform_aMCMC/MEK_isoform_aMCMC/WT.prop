@@ -1,0 +1,39 @@
+WT.MEK_pRDS_WT at time=300>WT.MEK_pRDS_WT at time=1800 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=1800>WT.MEK_pRDS_WT at time=3600 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=300>WT.MEK_pRDS_WT at time=3600 confidence 0.98 tolerance 1
+
+WT.MEK_pRDS_WT at time=300>KO.MEK_pRDS_KO at time=300 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=1800<KO.MEK_pRDS_KO at time=1800 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=3600<KO.MEK_pRDS_KO at time=3600 confidence 0.98 tolerance 1
+
+WT.MEK_pRDS_WT at time=300<N78G.MEK_pRDS_N78G at time=300 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=1800<N78G.MEK_pRDS_N78G at time=1800 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=3600<N78G.MEK_pRDS_N78G at time=3600 confidence 0.98 tolerance 1
+
+WT.MEK_pRDS_WT at time=300<T292A.MEK_pRDS_T292A at time=300 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=1800<T292A.MEK_pRDS_T292A at time=1800 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=3600<T292A.MEK_pRDS_T292A at time=3600 confidence 0.98 tolerance 1
+
+WT.MEK_pRDS_WT at time=300>T292D.MEK_pRDS_T292D at time=300 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=1800>T292D.MEK_pRDS_T292D at time=1800 confidence 0.98 tolerance 1
+WT.MEK_pRDS_WT at time=3600>T292D.MEK_pRDS_T292D at time=3600 confidence 0.98 tolerance 1
+
+WT.pERK1_2_wt at time=300>WT.pERK1_2_wt at time=1800 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=1800>WT.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=300>WT.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
+
+WT.pERK1_2_wt at time=300>KO.pERK1_2_wt at time=300 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=1800<KO.pERK1_2_wt at time=1800 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=3600<KO.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
+
+WT.pERK1_2_wt at time=300>N78G.pERK1_2_wt at time=300 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=1800<N78G.pERK1_2_wt at time=1800 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=3600<N78G.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
+
+WT.pERK1_2_wt at time=300<T292A.pERK1_2_wt at time=300 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=1800<T292A.pERK1_2_wt at time=1800 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=3600<T292A.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
+
+WT.pERK1_2_wt at time=300>T292D.pERK1_2_wt at time=300 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=1800>T292D.pERK1_2_wt at time=1800 confidence 0.98 tolerance 1
+WT.pERK1_2_wt at time=3600>T292D.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
