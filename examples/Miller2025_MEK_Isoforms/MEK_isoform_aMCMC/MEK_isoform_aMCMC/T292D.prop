@@ -1,7 +1,0 @@
-T292D.MEK_pRDS_T292D at time=300>T292D.MEK_pRDS_T292D at time=1800 confidence 0.98 tolerance 1
-T292D.MEK_pRDS_T292D at time=300>T292D.MEK_pRDS_T292D at time=3600 confidence 0.98 tolerance 1
-T292D.MEK_pRDS_T292D at time=1800>T292D.MEK_pRDS_T292D at time=3600 confidence 0.98 tolerance 1
-
-T292D.pERK1_2_wt at time=300>T292D.pERK1_2_wt at time=1800 confidence 0.98 tolerance 1
-T292D.pERK1_2_wt at time=1800>T292D.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
-T292D.pERK1_2_wt at time=300>T292D.pERK1_2_wt at time=3600 confidence 0.98 tolerance 1
