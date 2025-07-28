@@ -4,8 +4,8 @@ import shutil
 
 
 class TestDiffEvolution:
-    def __init__(self):
-        pass
+    # def __init__(self):
+    #     pass
 
     @classmethod
     def setup_class(cls):
@@ -14,7 +14,7 @@ class TestDiffEvolution:
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
-        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
+        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
         # Note mutation_rate is set to 1.0 because for tests with few params, with a lower mutation_rate might randomly
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.

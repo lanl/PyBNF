@@ -8,8 +8,8 @@ import re
 
 
 class TestModel:
-    def __init__(self):
-        pass
+    # def __init__(self):
+    #     pass
 
     @classmethod
     def setup_class(cls):
@@ -93,7 +93,7 @@ class TestModel:
         with open(self.savefile4_prefix + '.net') as f:
             nmodel1b_lines = f.readlines()
 
-        assert re.search('Nchannel\s+20\s',nmodel1b_lines[6])
+        assert re.search(r'Nchannel\s+20\s',nmodel1b_lines[6])
 
     @raises(PybnfError)
     def test_set_param_set_error(self):

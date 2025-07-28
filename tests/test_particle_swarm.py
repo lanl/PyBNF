@@ -6,8 +6,8 @@ from copy import deepcopy
 
 
 class TestParticleSwarm:
-    def __init__(self):
-        pass
+    # def __init__(self):
+    #     pass
 
     @classmethod
     def setup_class(cls):
@@ -17,21 +17,21 @@ class TestParticleSwarm:
         ]
 
         cls.d1e = data.Data()
-        cls.d1e.data = cls.d1e._read_file_lines(cls.data1e, '\s+')
+        cls.d1e.data = cls.d1e._read_file_lines(cls.data1e, r'\s+')
 
         cls.data1s = [
             '# time    v1_result    v2_result    v3_result\n',
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
-        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
+        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
         cls.data2s = [
             '# time    v1_result    v2_result    v3_result\n',
             ' 1 2.2   3.2   6.2\n',
         ]
         cls.d2s = data.Data()
-        cls.d2s.data = cls.d2s._read_file_lines(cls.data2s, '\s+')
+        cls.d2s.data = cls.d2s._read_file_lines(cls.data2s, r'\s+')
 
         cls.variables = ['v1__FREE', 'v2__FREE', 'v3__FREE']
 

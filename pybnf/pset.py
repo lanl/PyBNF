@@ -161,24 +161,24 @@ class BNGLModel(Model):
                 param_names_set.add(p)
 
             # Make sure setOption (if present) doesn't get passed to the actions block
-            if re.match('\s*(setOption|setModelName|substanceUnits|version)', line):
+            if re.match(r'\s*(setOption|setModelName|substanceUnits|version)', line):
                 continue
 
             # Check if this is the 'begin parameters' line
-            if re.match('begin\s+parameters', line.strip()):
+            if re.match(r'begin\s+parameters', line.strip()):
                 # Generate index into self.model_lines based on i and number of skipped lines (probably 0 at this point)
                 self.split_line_index = i + 1 - len(skip_lines)
 
             # "begin model" doesn't work like a regular block, so escape before we start handling blocks.
-            if re.match('(begin|end)\s+model', line.strip()):
+            if re.match(r'(begin|end)\s+model', line.strip()):
                 continue
 
-            if re.match('begin\s+actions', line.strip()):
+            if re.match(r'begin\s+actions', line.strip()):
                 in_action_block = True
                 in_no_block = False
                 skip_lines.update(indices)
                 continue
-            elif re.match('end\s+actions', line.strip()):
+            elif re.match(r'end\s+actions', line.strip()):
                 in_action_block = False
                 in_no_block = True
                 skip_lines.update(indices)
@@ -186,7 +186,7 @@ class BNGLModel(Model):
 
             # To keep track of whether we're in no block, which counts as an action block, check for
             # begin and end keywords
-            if re.match('begin\s+[a-z][a-z\s]*', line.strip()):
+            if re.match(r'begin\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = False
 
             if in_action_block or in_no_block:
@@ -205,11 +205,11 @@ class BNGLModel(Model):
                 if re.search('simulate_((nf)|(ssa)|(pla))', line) or re.search(
                         '(simulate|parameter_scan|bifurcate).*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
                     self.stochastic = True
-                if re.search('seed=>\d+', line):
+                if re.search(r'seed=>\d+', line):
                     self.seeded = True
                 self.actions.append(rawline)
 
-            if re.match('end\s+[a-z][a-z\s]*', line.strip()):
+            if re.match(r'end\s+[a-z][a-z\s]*', line.strip()):
                 in_no_block = True
 
         if self.split_line_index is None:
@@ -239,7 +239,7 @@ class BNGLModel(Model):
         sim_match = re.match("(simulate|parameter_scan)", line.strip())
         if sim_match:
             act_type = sim_match.group(1)
-            match = re.search("suffix\s*=>\s*['\"](.*?)['\"]\s*[,}]", line)
+            match = re.search(r"suffix\s*=>\s*['\"](.*?)['\"]\s*[,}]", line)
             if match is not None:
                 return act_type, match.group(1)
         return None
@@ -494,12 +494,12 @@ class NetModel(BNGLModel):
         lines_copy = copy.deepcopy(self.netfile_lines)
         in_params_block = False
         for i, l in enumerate(lines_copy):
-            if re.match('begin\s+parameters', l.strip()):
+            if re.match(r'begin\s+parameters', l.strip()):
                 in_params_block = True
-            elif re.match('end\s+parameters', l.strip()):
+            elif re.match(r'end\s+parameters', l.strip()):
                 in_params_block = False
             elif in_params_block:
-                m = re.match('(\s+)(\d+)\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
+                m = re.match(r'(\s+)(\d+)\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
                     if m.group(3) in pset.keys():
                         lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
@@ -1365,11 +1365,11 @@ class Trajectory(object):
             lines = f.readlines()
         if len(lines) == 0:
             raise IOError('Empty parameters file %s' % filename)
-        var_names = re.split('\s+', lines[0].strip('#').strip())[2:]
+        var_names = re.split(r'\s+', lines[0].strip('#').strip())[2:]
 
         t = Trajectory(max_output)
         for l in lines[1:]:
-            xs = re.split('\s+', l.strip())
+            xs = re.split(r'\s+', l.strip())
             name = xs[0]
             obj = float(xs[1])
             var_dict = {var_names[i]: float(x) for i, x in enumerate(xs[2:])}

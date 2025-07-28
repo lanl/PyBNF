@@ -5,8 +5,8 @@ import numpy as np
 
 
 class TestBayes:
-    def __init__(self):
-        pass
+    # def __init__(self):
+    #     pass
 
     @classmethod
     def setup_class(cls):
@@ -16,7 +16,7 @@ class TestBayes:
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
-        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
+        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
         os.makedirs('noseoutput1/Results', exist_ok=True)
         os.makedirs('noseoutput2/Results', exist_ok=True)

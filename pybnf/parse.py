@@ -129,7 +129,7 @@ def ploop(ls):  # parse loop
     models = set()
     exp_data = set()
     for i, line in enumerate(ls):
-        if re.match('\s*$', line) or re.match('\s*#', line):
+        if re.match(r'\s*$', line) or re.match(r'\s*#', line):
             continue
         try:
             logger.debug('Parsing line %s' % line.strip())
@@ -309,7 +309,7 @@ def parse_normalization_def(s):
         return result
 
     # Remove all spaces
-    s = re.sub('\s', '', s)
+    s = re.sub(r'\s', '', s)
     if ':' in s:
         # List of exp files
         res = dict()
@@ -326,7 +326,7 @@ def parse_normalization_def(s):
                     res[pair[0]] = normtype
                 elif len(pair) == 2:
                     e, cols = pair
-                    if re.match('^[\d,\-]+$', cols):
+                    if re.match(r'^[\d,\-]+$', cols):
                         col_nums = parse_range(cols)
                         res[e] = (normtype, col_nums)
                     else:

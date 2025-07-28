@@ -5,8 +5,8 @@ from nose.tools import raises
 
 
 class TestObjectiveFunctions:
-    def __init__(self):
-        pass
+    # def __init__(self):
+    #     pass
 
     @classmethod
     def setup_class(cls):
@@ -18,7 +18,7 @@ class TestObjectiveFunctions:
             ' 2 4   10\n'
         ]
         cls.d1e = data.Data()
-        cls.d1e.data = cls.d1e._read_file_lines(cls.data1e, '\s+')
+        cls.d1e.data = cls.d1e._read_file_lines(cls.data1e, r'\s+')
 
         cls.data1e_sd = [
             '# x    obs1    obs3  obs1_SD  obs3_SD\n',
@@ -27,7 +27,7 @@ class TestObjectiveFunctions:
             ' 2 4   10  0.3   1.0\n'
         ]
         cls.d1e_sd = data.Data()
-        cls.d1e_sd.data = cls.d1e_sd._read_file_lines(cls.data1e_sd, '\s+')
+        cls.d1e_sd.data = cls.d1e_sd._read_file_lines(cls.data1e_sd, r'\s+')
 
         cls.data1s = [
             '# x    obs1    obs3\n',
@@ -38,7 +38,7 @@ class TestObjectiveFunctions:
             ' 2   4.2   10.2\n'
         ]
         cls.d1s = data.Data()
-        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
+        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
         cls.data1round = [
             '# x    obs1    obs3\n',
@@ -47,7 +47,7 @@ class TestObjectiveFunctions:
             ' 2.8   4.2   10.2\n'
         ]
         cls.d1round = data.Data()
-        cls.d1round.data = cls.d1round._read_file_lines(cls.data1round, '\s+')
+        cls.d1round.data = cls.d1round._read_file_lines(cls.data1round, r'\s+')
 
         cls.data1s_nan = [
             '# x    obs1    obs3\n',
@@ -58,7 +58,7 @@ class TestObjectiveFunctions:
             ' 2   4.2   10.2\n'
         ]
         cls.d1s_nan = data.Data()
-        cls.d1s_nan.data = cls.d1s_nan._read_file_lines(cls.data1s_nan, '\s+')
+        cls.d1s_nan.data = cls.d1s_nan._read_file_lines(cls.data1s_nan, r'\s+')
 
         cls.data1s_inf = [
             '# x    obs1    obs3\n',
@@ -69,7 +69,7 @@ class TestObjectiveFunctions:
             ' 2   4.2   10.2\n'
         ]
         cls.d1s_inf = data.Data()
-        cls.d1s_inf.data = cls.d1s_inf._read_file_lines(cls.data1s_inf, '\s+')
+        cls.d1s_inf.data = cls.d1s_inf._read_file_lines(cls.data1s_inf, r'\s+')
 
         cls.data1e_extracol = [
             '# x    obs1    obs2    obs3\n',
@@ -78,7 +78,7 @@ class TestObjectiveFunctions:
             ' 2 4 3 10\n'
         ]
         cls.d1e_extracol = data.Data()
-        cls.d1e_extracol.data = cls.d1e_extracol._read_file_lines(cls.data1e_extracol, '\s+')
+        cls.d1e_extracol.data = cls.d1e_extracol._read_file_lines(cls.data1e_extracol, r'\s+')
 
         cls.data1e_extrarow = [
             '# x    obs1    obs3\n',
@@ -88,7 +88,7 @@ class TestObjectiveFunctions:
             ' 3 6   12\n'
         ]
         cls.d1e_extrarow = data.Data()
-        cls.d1e_extrarow.data = cls.d1e_extrarow._read_file_lines(cls.data1e_extrarow, '\s+')
+        cls.d1e_extrarow.data = cls.d1e_extrarow._read_file_lines(cls.data1e_extrarow, r'\s+')
 
         cls.chi_sq = objective.ChiSquareObjective()
         cls.sos = objective.SumOfSquaresObjective()

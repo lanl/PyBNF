@@ -138,7 +138,7 @@ class Data(object):
         else:
             return float(x)
 
-    def load_data(self, file_name, sep='\s+'):
+    def load_data(self, file_name, sep=r'\s+'):
         """
         Loads column data from a text file
 
@@ -183,7 +183,7 @@ class Data(object):
 
         data = []
         for i, l in enumerate(lines[1:]):
-            if re.match('^\s*$', l) or re.match('\s*#', l):
+            if re.match(r'^\s*$', l) or re.match(r'\s*#', l):
                 continue
             try:
                 num_list = [self._to_number(x) for x in re.split(sep, l.strip())]

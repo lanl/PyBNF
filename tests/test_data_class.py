@@ -10,8 +10,8 @@ np.seterr(invalid='ignore', divide='ignore')
 
 
 class TestData:
-    def __init__(self):
-        pass
+    # def __init__(self):
+    #     pass
 
     @classmethod
     def setup_class(cls):
