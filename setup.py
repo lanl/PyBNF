@@ -34,14 +34,13 @@ setup(
     #  Runtime dependencies – what users really need to *run* PyBNF
     # ------------------------------------------------------------------
     install_requires=[
-        "numpy>=1.22",
-        "scipy",
-        "pyparsing",
-        "dask[distributed]>=2021.5.0",
+        "numpy>=2.0",
+        "scipy>=1.15",
+        "pyparsing>=3.0",
+        "dask[distributed]>=2022.5",
         "tornado>=6.1",
-        "paramiko",
-        "msgpack==0.6.2",
-        "libroadrunner>=1.5.2",
+        "paramiko>=3.0",
+        "libroadrunner>=2.8",
     ],
 
     # ------------------------------------------------------------------
