@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=65.5.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybnf"
+version = "1.2.2"
+description = "Tool for parameterization of BNGL and SBML models"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "numpy>=2.0",
+  "scipy>=1.15",
+  "pyparsing>=3.0",
+  "dask[distributed]>=2022.5",
+  "tornado>=6.1",
+  "paramiko>=3.0",
+  "libroadrunner>=2.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "nose",    # drop once you’ve removed all nose.tools usage
+  "black",
+  "ruff",
+]
