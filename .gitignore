@@ -6,4 +6,5 @@ build/**
 **/__pycache__
 **/*.pyc
 examples/output/**
-docs/_build/**
+docs/_build/**.DS_Store
+readme_dev.txt
