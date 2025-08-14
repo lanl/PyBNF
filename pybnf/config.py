@@ -250,7 +250,7 @@ class Configuration(object):
         would_crash = {'refine', 'bootstrap'}
 
         for k in conf_dict:
-            if k not in used and not re.search('\.(bngl|xml)', k):
+            if k not in used and not re.search(r'\.(bngl|xml)', k):
                 print1('Warning: Configuration key '+str(k)+' is not used in fit_type "check", so I am ignoring it')
                 logger.warning('Ignoring unused key %s for fitting algorithm "check"' % k)
         for k in would_crash:
@@ -364,11 +364,11 @@ class Configuration(object):
     def _load_t_length(self):
         timeDict = {}
         for mf in self.config['models']:
-            if re.search('\.bngl$', mf):
+            if re.search(r'\.bngl$', mf):
                 time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
                 for i,v in time.items():
                     timeDict[i] = v
-            elif re.search('\.xml$', mf):
+            elif re.search(r'\.xml$', mf):
                 suffix = self.config['time_course'][0]['suffix']
                 try:
                     time = self.config['time_course'][0]['step']  
@@ -389,7 +389,7 @@ class Configuration(object):
         if self.config['wall_time_sim'] is None:
             self.config['wall_time_sim'] = 0
             for mf in self.config['models']:
-                if re.search('\.bngl$', mf):
+                if re.search(r'\.bngl$', mf):
                     self.config['wall_time_sim'] = 3600
                     break
 
@@ -397,11 +397,11 @@ class Configuration(object):
         for mf in self.config['models']:
             # Initialize model type based on extension
             try:
-                if re.search('\.bngl$', mf):
+                if re.search(r'\.bngl$', mf):
                     model = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check')
                     model.bng_command = self._absolute(self.config['bng_command'])
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
-                elif re.search('\.xml$', mf):
+                elif re.search(r'\.xml$', mf):
                     save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['wall_time_sim'] == 0:
                         model = SbmlModelNoTimeout(mf, self._absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
@@ -541,7 +541,7 @@ class Configuration(object):
 
     @staticmethod
     def _file_prefix(ef, ext="exp"):
-        return re.sub("\."+ext, "", re.split('/', ef)[-1])
+        return re.sub(r"\."+ext, "", re.split('/', ef)[-1])
 
     def _load_exp_data(self):
         """
@@ -575,7 +575,7 @@ class Configuration(object):
         mapping = dict()
         for model in self.models.values():
             suffs = set(model.get_suffixes())
-            efs_per_m = {self._file_prefix(ef) for ef in self.config[model.file_path] if re.search("\.exp$", ef)}
+            efs_per_m = {self._file_prefix(ef) for ef in self.config[model.file_path] if re.search(r"\.exp$", ef)}
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
                     if ef not in suffs:

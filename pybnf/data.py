@@ -129,11 +129,11 @@ class Data(object):
         :param x: str
         :return: float
         """
-        if re.match('\b[nN][aA][nN]\b', x):
+        if re.match(r'\b[nN][aA][nN]\b', x):
             return math.nan
-        elif re.match('\b[iI][nN][fF]\b', x):
+        elif re.match(r'\b[iI][nN][fF]\b', x):
             return math.inf
-        elif re.match('\b-[iI][nN][fF]\b', x):
+        elif re.match(r'\b-[iI][nN][fF]\b', x):
             return -math.inf
         else:
             return float(x)

@@ -156,7 +156,7 @@ class BNGLModel(Model):
                 continue
 
             # Find every item matching [alphanumeric]__FREE
-            params = re.findall('[A-Za-z_]\w*__FREE', line)
+            params = re.findall(r'[A-Za-z_]\w*__FREE', line)
             for p in params:
                 param_names_set.add(p)
 
@@ -200,10 +200,10 @@ class BNGLModel(Model):
                     self.generate_network_line = line
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
-                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
+                        r'(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
                     self.generates_network = True  # in case there is no "generate_network" command present
                 if re.search('simulate_((nf)|(ssa)|(pla))', line) or re.search(
-                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
+                        r'(simulate|parameter_scan|bifurcate).*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
                     self.stochastic = True
                 if re.search(r'seed=>\d+', line):
                     self.seeded = True
