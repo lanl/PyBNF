@@ -8,7 +8,7 @@ from os import getcwd
 from os.path import isfile
 from os.path import isdir
 from shutil import rmtree
-from nose.tools import raises
+from pybnf.testing_compat import raises
 import copy
 
 import numpy as np

@@ -49,7 +49,6 @@ setup(
     extras_require={
         "dev": [
             "pytest",
-            "nose",         # <-- keep here only while a few tests still use nose.tools
             "black",
             "ruff",
         ],

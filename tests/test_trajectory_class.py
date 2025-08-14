@@ -1,6 +1,6 @@
 import re
 from .context import pset
-from nose.tools import raises
+from pybnf.testing_compat import raises
 
 
 class TestTrajectory:

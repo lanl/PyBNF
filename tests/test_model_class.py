@@ -1,5 +1,5 @@
 from .context import pset
-from nose.tools import raises
+from pybnf.testing_compat import raises
 from os import remove
 from os.path import exists
 from pybnf.printing import PybnfError

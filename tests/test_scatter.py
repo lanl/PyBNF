@@ -1,5 +1,5 @@
 from .context import data, algorithms, pset, objective, config, parse, printing
-from nose.tools import raises
+from pybnf.testing_compat import raises
 from os import mkdir
 from shutil import rmtree
 from copy import deepcopy

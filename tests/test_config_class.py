@@ -4,7 +4,7 @@ from .context import objective
 from .context import pset
 from .context import printing
 
-from nose.tools import raises
+from pybnf.testing_compat import raises
 
 import operator
 

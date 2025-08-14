@@ -1,5 +1,5 @@
 from .context import pset
-from nose.tools import raises
+from pybnf.testing_compat import raises
 
 import numpy as np
 

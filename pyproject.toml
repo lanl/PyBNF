@@ -21,7 +21,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest",
-  "nose",    # drop once you’ve removed all nose.tools usage
   "black",
   "ruff",
 ]

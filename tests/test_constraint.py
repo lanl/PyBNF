@@ -1,7 +1,7 @@
 from .context import constraint, data
 import copy
 import numpy as np
-from nose.tools import raises
+from pybnf.testing_compat import raises
 from pyparsing import ParseBaseException
 from math import erf, sqrt
 

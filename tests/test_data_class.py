@@ -2,7 +2,7 @@ import math
 import numpy as np
 import numpy.testing as npt
 from .context import data, printing
-from nose.tools import raises
+from pybnf.testing_compat import raises
 import copy
 
 # Doesn't print warnings when dividing by zero
