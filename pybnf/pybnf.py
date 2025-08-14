@@ -22,7 +22,7 @@ from .parse import load_config
 from .printing import PybnfError, print0, print1, print2
 from .pset import Trajectory
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 
 def main():

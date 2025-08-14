@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pybnf"
-version = "1.2.2"
+dynamic = ["version"]
 description = "Tool for parameterization of BNGL and SBML models"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -24,3 +24,6 @@ dev = [
   "black",
   "ruff",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "pybnf.pybnf.__version__" }
