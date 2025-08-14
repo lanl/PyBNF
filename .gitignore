@@ -1,10 +1,44 @@
-*~
-.idea/**
-dist/**
-pybnf.egg-info/**
-build/**
-**/__pycache__
-**/*.pyc
-examples/output/**
-docs/_build/**.DS_Store
-readme_dev.txt
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Virtual environments
+.venv/
+venv/
+.env/
+
+# Python cache & bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Test / coverage / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Build & packaging
+build/
+dist/
+.eggs/
+*.egg-info/
+pybnf.egg-info/
+wheelhouse/
+pip-wheel-metadata/
+
+# Docs build artifacts
+docs/_build/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Examples / project outputs
+examples/output/
+runs/
