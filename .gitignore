@@ -46,3 +46,27 @@ full-environment.yml
 pip-installed-packages.txt
 readme_dev.txt
 tests/noseoutput2/
+noseoutput*/
+
+# --- PyBNF run artifacts (local & tests) ---
+# Top-level outputs (if users accidentally run in repo)
+Simulations/
+Results/
+Initialize/
+FailedSimLogs/
+alg_backup.bp
+alg_finished.bp
+alg_refine_finished.bp
+dask-worker-space/
+
+# Test suite run outputs
+tests/**/fit/
+tests/**/*.log
+tests/**/*_stdout.out
+tests/**/*_stderr.out
+tests/**/bnf_*.log
+test-*.log
+tests/full_tests/test_summary.txt
+
+# Local helper scripts you don't want in repo
+kill-zombie-jobs.sh
