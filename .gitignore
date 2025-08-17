@@ -1,72 +1,46 @@
-# OS / IDE
-.DS_Store
-.idea/
-.vscode/
-
-# Virtual environments
-.venv/
-venv/
-.env/
-
-# Python cache & bytecode
+# --- Python bytecode / caches ---
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
 
-# Test / coverage / tooling caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.tox/
-.nox/
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-
-# Build & packaging
+# --- Packaging / build ---
 build/
 dist/
 .eggs/
 *.egg-info/
-pybnf.egg-info/
-wheelhouse/
-pip-wheel-metadata/
+# Keep MANIFEST.in tracked (don’t ignore)
 
-# Docs build artifacts
-docs/_build/
+# --- Test & coverage caches ---
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
 
-# Notebooks
-.ipynb_checkpoints/
+# --- Editors / OS junk ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
 
-# Examples / project outputs
-examples/output/
-environment.yml
-full-environment.yml
-pip-installed-packages.txt
-readme_dev.txt
-tests/noseoutput2/
-noseoutput*/
+# --- Virtual envs (local only; don’t commit them) ---
+.venv/
+venv/
+env/
+.env/
+.conda/
+.mamba/
 
-# --- PyBNF run artifacts (local & tests) ---
-# Top-level outputs (if users accidentally run in repo)
-Simulations/
-Results/
-Initialize/
-FailedSimLogs/
-alg_backup.bp
-alg_finished.bp
-alg_refine_finished.bp
+# --- Dask / PyBNF local temp junk ---
 dask-worker-space/
+pybnf-dask-*/
 
-# Test suite run outputs
-tests/**/fit/
-tests/**/*.log
-tests/**/*_stdout.out
-tests/**/*_stderr.out
-tests/**/bnf_*.log
-test-*.log
-tests/full_tests/test_summary.txt
+# --- Logs generated during runs/tests ---
+*.log
+tests/*.log
+tests/*_stdout.out
+tests/*_stderr.out
 
-# Local helper scripts you don't want in repo
-kill-zombie-jobs.sh
+# --- PyBNF full-tests generated outputs ---
+# Ignore per-test run artifacts under tests/full_tests/*/fit/
+tests/full_tests/*/fit/
