@@ -1,6 +1,6 @@
 # pybnf/algorithms/__init__.py
 
-from ..base import Algorithm, exp10, FailedSimulation, Job, Result
+from ..base import Algorithm, exp10, FailedSimulation, Job, Result, ModelCheck
 from ..pset import OutOfBoundsException
 
 from .optimizers import *
@@ -13,6 +13,7 @@ __all__ = [
     "FailedSimulation",
     "Job",
     "Result",
+    "ModelCheck",
     # optimizers
     "ParticleSwarm",
     "DifferentialEvolution",

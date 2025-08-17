@@ -9,7 +9,7 @@ import re
 import numpy as np
 
 from ...base import Algorithm
-from ...printing import print1, print2, PybnfError
+from ...printing import print1, print2, format_numbers, PybnfError
 from ...pset import PSet
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
                     print2('Completed %i of %i iterations' % (self.iter_num[island], self.max_iterations))
                 print2('Current population fitnesses:')
                 for l in self.fitnesses:
-                    print2(sorted(l))
+                    print2(format_numbers(sorted(l)))
 
             if self.iter_num[island] == self.max_iterations:
                 # Submit no more jobs for this island
@@ -422,7 +422,7 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
             else:
                 print2('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
             print2('Current population fitnesses:')
-            print2(sorted(self.fitnesses))
+            print2(format_numbers(sorted(self.fitnesses)))
             if iters_complete % 20 == 0:
                 logger.info('Completed %i simulations' % self.sims_completed)
             if iters_complete >= self.max_iterations:

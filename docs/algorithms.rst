@@ -1,5 +1,5 @@
-Fitting Algorithms
-==================
+Algorithms
+==========
 
 Summary of Available Algorithms
 -------------------------------

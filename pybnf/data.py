@@ -20,6 +20,7 @@ class Data(object):
 
         :param file_name:
         :param arr:
+
         """
         self.cols = dict()  # dict of column headers to column indices
         self.headers = dict()  # dict of column indices to headers
@@ -72,6 +73,7 @@ class Data(object):
         for bootstrapped data.  Used for experimental data sets
 
         :return:
+
         """
         indices = np.array(self._valid_indices())
         samples = indices[np.random.choice(indices.shape[0], size=indices.shape[0], replace=True)]
@@ -86,6 +88,7 @@ class Data(object):
         :param col_header: Data column name
         :type col_header: str
         :return: Numpy array corresponding to name
+
         """
         idx = self.cols[col_header]
         return self.data[:, idx]
@@ -97,20 +100,22 @@ class Data(object):
         :type key: str
         :param value: New column contents
         :type value: np.array
+
         """
         idx = self.cols[key]
         self.data[:, idx] = value
 
     def get_row(self, col_header, value):
         """
-        Returns the (first) data row in which field col_header is equal to value.
+        Returns the (first) data row in which field ``col_header`` is equal to ``value``.
         This should typically be used for col_header as the independent variable.
 
-        :param col_header: Data column name
-        :type col_header str
-        :param value:
+        :param col_header: Data column name.
+        :type col_header: str
+        :param value: Value to match in the given column.
         :type value: str
-        :return: 1D numpy array consisting of the requested row
+        :return: 1D NumPy array consisting of the requested row.
+
         """
 
         c_idx = self.cols[col_header]
@@ -124,11 +129,14 @@ class Data(object):
     @staticmethod
     def _to_number(x):
         """
-        Attempts to convert a string to a float
+        Attempts to convert a string to a float.
 
-        :param x: str
-        :return: float
+        :param x: Input string.
+        :type x: str
+        :return: Converted float value.
+
         """
+
         if re.match(r'\b[nN][aA][nN]\b', x):
             return math.nan
         elif re.match(r'\b[iI][nN][fF]\b', x):
@@ -147,6 +155,7 @@ class Data(object):
         :param sep: String that separates columns
         :type sep: str
         :return: None
+
         """
         with open(file_name) as f:
             lines = f.readlines()
@@ -157,6 +166,7 @@ class Data(object):
         """
         Loads the header from a RoadRunner NamedArray
         :param header: The colnames attribute of a RoadRunner NamedArray (a list of str)
+
         """
         self.indvar = header[0].strip('[]')
         self.cols = {header[i].strip('[]'): i for i in range(len(header))}
@@ -203,6 +213,7 @@ class Data(object):
         :param idx: Column index for independent variable (defaults to 0)
         :type idx: int
         :return: Numpy array of observable data
+
         """
         return np.delete(self.data, idx, axis=1)
 
@@ -213,6 +224,7 @@ class Data(object):
         :param idx: Column index for independent variable (defaults to 0)
         :type idx: int
         :return: 1-D Numpy array of independent variable values
+
         """
         return self.data[:, idx]
 
@@ -227,6 +239,7 @@ class Data(object):
         :type idx: int
         :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
         :return: Normalized Numpy array (including independent variable column)
+
         """
         with np.errstate(all='ignore'):  # Suppress divide by 0 warnings printed to terminal
             if cols == 'all':
@@ -245,6 +258,7 @@ class Data(object):
         :param idx: Index of independent variable
         :type idx: int
         :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
+
         """
         with np.errstate(all='ignore'):  # Suppress divide by 0 warnings printed to terminal
             if cols == 'all':
@@ -264,6 +278,7 @@ class Data(object):
         :param bc: If True, the standard deviation is normalized by 1/(N-1). If False, by 1/N.
         :type bc: bool
         :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
+
         """
         with np.errstate(all='ignore'):  # Suppress divide by 0 warnings printed to terminal
             if cols == 'all':
@@ -288,16 +303,18 @@ class Data(object):
 
     def normalize_to_unit_scale(self, idx=0, cols='all'):
         """
-        Scales data so that the range of values is between (min-init)/(max-init) and 1.  If the maximum value is 0
-        (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value
-        so that the range of values is between 0 and -1
+        Scales data so that the range of values is between (min - init) / (max - init) and 1.  
+        If the maximum value is 0 (i.e., max == init), then the data is scaled by the minimum value 
+        after subtracting the initial value, so that the range of values is between 0 and -1.
 
-        :param idx: Index of independent variable
+        :param idx: Index of independent variable.
         :type idx: int
-        :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
-        :type: list or str
-        :return:
+        :param cols: List of column indices to normalize, or 'all' for all columns but the independent variable.
+        :type cols: list or str
+        :return: None
+
         """
+
         if cols == 'all':
             cols = list(range(self.data.shape[1]))
             cols.remove(idx)
@@ -312,13 +329,15 @@ class Data(object):
     @staticmethod
     def average(datas):
         """
-        Calculates the average of several data objects.
-        The input Data objects should have the same column labels and independent variable values (NOT CURRENTLY
-        CHECKED)
+        Calculates the average of several Data objects.
+        The input objects should have the same column labels and independent variable values 
+        (NOT CURRENTLY CHECKED).
 
-        :param datas: Iterable of Data objects of identical size to be averaged
-        :return: Data object
+        :param datas: Iterable of Data objects of identical size to be averaged.
+        :return: A new Data object containing the averaged values.
+
         """
+
         output = Data()
         output.cols = datas[0].cols
         output.data = np.mean(np.stack([d.data for d in datas]), axis=0)

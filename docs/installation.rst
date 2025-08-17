@@ -5,25 +5,44 @@ Installation
 
 Operating System
 ----------------
-PyBNF can be installed on any recent Linux or macOS operating system.
+PyBNF can be installed on any recent Linux or macOS (Apple Silicon and Intel) operating system.
 
 PyBNF can also be installed on Windows, but functionality on Windows has been less extensively tested (in particular, Windows clusters and multicore workstations have not been tested). 
 
 Python
 ------
 
-PyBNF requires an installation of Python version 3.5 or higher. 
+PyBNF requires an installation of Python version 3.10 or higher. 
 
-Linux and Mac
-^^^^^^^^^^^^^
+Installation of PyBNF in a virtual environment (``python -m venv .venv``) is recommended. You can also create an environment using Conda.
 
-Python 3 comes built-in on many new Linux and Mac operating systems. 
-To check if you have Python 3, run the command ``python3``. This will start Python and print
-the version number, or will give an error if you don't have Python 3.
+.. code-block:: bash
+    
+    conda create -n pybnf_env python=3.12
+    conda activate pybnf_env
+    python -m pip install -U pip
+    python -m pip install "pybnf[sbml]"
 
-Also confirm that your Python 3 has the ``pip`` package manager, which is used to install PyBNF. Run the command ``python3 -m pip``. This will give a help message if you have pip, or an error if not. 
+If you use Conda, install packages with ``python -m pip`` **inside the activated Conda environment** (as shown above). Do not install into the base environment.
 
-If you are missing python3 or pip, an easy way to get them is by installing the `Anaconda`_ Python distribution for Python v3.5 or higher.
+Linux and macOS
+^^^^^^^^^^^^^^^
+
+Linux distributions typically include Python 3; current macOS releases often do not, so you may need to install it (e.g., via Anaconda/Conda or Homebrew). To check if you have Python 3, run ``python3 --version``. To install Python 3 using Homebrew:
+
+.. code-block:: bash
+
+    brew install python
+
+Confirm the CLI is on PATH:
+
+.. code-block:: bash
+
+    command -v pybnf # POSIX
+
+Confirm that your installation of Python 3 has the ``pip`` package manager, which is used to install PyBNF. Run the command ``python3 -m pip --version``.
+
+If you are missing Python 3 or pip, an easy way to get them is by installing the `Anaconda`_ Python distribution for Python v3.10 or higher.
 Instructions for installing on various platforms can be found on the `Anaconda`_ website.
 
 .. _windows_install:
@@ -31,9 +50,14 @@ Instructions for installing on various platforms can be found on the `Anaconda`_
 Windows
 ^^^^^^^
 
-Windows does not come with built-in Python, so it must be installed separately. Additionally, if :ref:`BioNetGen <bng_install>` will be used, Perl installation is required in the same environment as the python installation (i.e., the commands ``python`` and ``perl`` must both work on the same command line).
+Windows does not come with built-in Python, so it must be installed separately. Additionally, if :ref:`BioNetGen <bng_install>` will be used, Perl installation is required in the same environment as the Python installation (i.e., the commands ``python`` and ``perl`` must both work on the same command line).
 
-Our recommended configuration consists of installing `Strawberry Perl`_ and `Anaconda`_ Python 3. The Windows distribution of Anaconda includes the application "Anaconda Prompt", which provides a command line. This is the command line that you should use whenever this documentation refers to the command line or terminal. After installing both Anaconda and Strawberry Perl, a system restart may be required for Anaconda Prompt to find the Perl installation. 
+Our recommended configuration consists of installing `Strawberry Perl`_ and `Anaconda`_ Python 3. The Windows distribution of Anaconda includes the application "Anaconda Prompt", which provides a command line. This is the command line that you should use whenever this documentation refers to the command line or terminal. After installing both Anaconda and Strawberry Perl, a system restart may be required for Anaconda Prompt to find the Perl installation. Do not mix base cmd.exe and Anaconda Prompt. Use one shell per environment. Quick checks:
+
+.. code-block:: bat
+
+    where python
+    perl -v
 
 For troubleshooting, or more advanced configuration, note that the requirement is to have both Python 3 and Perl on the current path. The current path can be checked with the command ``echo %PATH%`` and set (temporarily) with the command ``set PATH=[newpath]``, where ``[newpath]`` is a semicolon-delimited list of directories to search. 
 
@@ -46,28 +70,74 @@ PyBNF
 Installing from PyPI
 ^^^^^^^^^^^^^^^^^^^^
 
-Simply type the following in a terminal:
+Use a clean virtual environment if possible.
 
-    :command:`python3 -m pip install pybnf`
+.. code-block:: bash
 
-Windows users running Anaconda Python 3 from "Anaconda Prompt" should instead type only ``pip install pybnf``.
+   python3 -m pip install -U pip
+   python3 -m pip install "pybnf[sbml]"
 
-The above command will use your current version of Python 3 to install the most recent version of PyBNF released on the Python Package Index, along with all required dependencies. 
+Windows users running Anaconda Python from "Anaconda Prompt" can use:
 
-Depending on your Python configuration, the above command may require root access and install PyBNF for all users on the computer. If you don't want to do this, you may add the flag ``--user`` to the end of the command, to install without root access for only the current user. 
+.. code-block:: bat
 
-Advanced Python users may consider installing PyBNF in a `virtualenv`_ (which also does not require root access) to avoid conflicts between PyBNF's dependencies and other uses of Python on the computer. 
+   python -m pip install -U pip
+   python -m pip install "pybnf[sbml]"
+
+The command above installs PyBNF plus SBML support (via ``libroadrunner``). For BNGL-only workflows:
+
+.. code-block:: bash
+
+   python3 -m pip install pybnf
+
+If you lack write permissions, append ``--user`` or install inside a virtual environment.
 
 Installing from source
 ^^^^^^^^^^^^^^^^^^^^^^
-To use bleeding edge PyBNF, the source code may be found on GitHub at https://github.com/lanl/PyBNF .  To use,
-simply download or clone the repository and run the following command in the repository's root directory:
+Bleeding-edge source is at https://github.com/lanl/PyBNF
 
-    :command:`python3 -m pip install -e .`
+Choose one of the following editable install options, depending on whether you need SBML support.
 
-This also allows developers to modify the source code while still having access to the commmand line functionality
-anywhere in the filesystem.
+.. code-block:: bash
 
+   # upgrade pip (optional but recommended):
+   python3 -m pip install -U pip
+
+   # Editable install for development (without SBML):
+   python3 -m pip install -e ".[dev]"
+
+   # Editable install with SBML support:
+   python3 -m pip install -e ".[dev,sbml]"
+
+This lets you edit the source while keeping the ``pybnf`` CLI on your PATH.
+
+Verify installation
+^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   # Check CLI is installed
+   pybnf --help
+
+   # If using BNGL, verify BioNetGen is visible
+   echo "$BNGPATH"
+   test -f "$BNGPATH/BNG2.pl" && echo "Found BNG2.pl" || echo "BNG2.pl not found"
+   "$BNGPATH/BNG2.pl" --help | head -n 3
+
+If the last command fails, set ``BNGPATH`` as described above or specify ``bng_command`` in your ``.conf`` file.
+
+.. code-block:: bash
+
+   # If using SBML/libRoadRunner, verify RoadRunner import (POSIX shells)
+   python3 - <<'PY'
+   import roadrunner as rr
+   print("libRoadRunner:", rr.__version__)
+   PY
+
+.. code-block:: bat
+
+    rem On Windows (Anaconda Prompt):
+    python -c "import roadrunner as rr; print('libRoadRunner:', rr.__version__)"
 
 Installation of External Simulators
 -----------------------------------
@@ -76,42 +146,52 @@ Installation of External Simulators
 
 BioNetGen
 ^^^^^^^^^
-PyBNF is designed to work with simulators present in the BioNetGen software suite, version 2.3, available for download from 
-the `BioNetGen`_ website. 
-Note that for Linux distributions other than Ubuntu, the pre-built binary is unreliable, and it is necessary to rebuild BioNetGen from source. 
-For Windows, Perl must be installed separately, as described :ref:`above <windows_install>`.
-The current BioNetGen distribution includes support for both network-based simulations and network-free simulations. 
 
-.. _set_bng_path:
-\
+PyBNF works with simulators from the BioNetGen suite. We recommend BioNetGen **2.9.x** or newer.
+Prebuilt distributions are available for Linux, macOS, and Windows from the `BioNetGen`_ website.
 
+PyBNF needs the location of ``BNG2.pl``. You can either set it per-run in your ``.conf`` file
+via ``bng_command`` or 
+set the environment variable ``BNGPATH`` to the directory **containing** ``BNG2.pl`` (not to the script itself).
 
-PyBNF will need to know the location of BioNetGen – specifically the location of the script ``BNG2.pl`` within the
-BioNetGen installation. This path can be included in the PyBNF configuration file with the :ref:`bng_command <bng_command>` key. 
-A convenient alternative is to set the environment variable ``BNGPATH`` to the BioNetGen directory using the following command:
+.. code-block:: bash
 
-    :command:`export BNGPATH=/path/to/bng2`
+   # Example (macOS or Linux):
+   export BNGPATH=/path/to/BioNetGen-2.9.3
 
-where ``/path/to/bng2`` is the path to the folder containing ``BNG2.pl``, not including the "BNG2.pl" file name. This 
-setting may be made permanent as of your next login, by copying above command into the file ``.bash_profile``
-in your home directory.
+   # Alternative: put BNG in PATH so BNG2.pl is directly runnable
+   export PATH="$BNGPATH:$PATH"
 
-On Windows systems, the equivalent commands are ``set BNGPATH=C:\path\to\bng2`` to set on the current command line, 
-and ``setx BNGPATH C:\path\to\bng2`` to permanently set for all future command lines (but not the current one). 
+On Windows (Anaconda Prompt):
+
+.. code-block:: bat
+
+   set BNGPATH=C:\BioNetGen-2.9.3
+   rem (Optional) add to PATH for this session:
+   set PATH=%BNGPATH%;%PATH%
+
+If the path contains spaces, quote it: ``set BNGPATH="C:\Program Files\BioNetGen-2.9.3"``
+
+Perl is required to run ``BNG2.pl`` (macOS/Linux users typically have it; Windows users can install Strawberry Perl).
 
 SBML
 ^^^^
-PyBNF runs simulations of `SBML`_ models using `libroadrunner`_, which is installed automatically through ``pip`` as part of 
-PyBNF installation. 
 
-To work with SBML files, it is useful to install software such as `COPASI`_ that is capable of reading and writing models in
-SBML format. 
+PyBNF runs SBML models via ``libroadrunner``. Install SBML support with:
+
+.. code-block:: bash
+
+   python3 -m pip install "pybnf[sbml]"
+
+SBML support requires available wheels for your OS/Python (PyBNF supports Python 3.10–3.13). If import fails, ensure that you installed with ``[sbml]`` and that your Python version is supported.
+
+To work with SBML files, tools such as `COPASI`_ can be useful for viewing and editing models.
 
 
 .. _Anaconda: https://www.anaconda.com/download
-.. _BioNetGen: http://www.bionetgen.org
-.. _SBML: http://sbml.org/
-.. _libroadrunner: http://libroadrunner.org/
-.. _COPASI: http://copasi.org/
+.. _BioNetGen: https://www.bionetgen.org
+.. _SBML: https://sbml.org/
+.. _libRoadRunner: https://libroadrunner.org/
+.. _COPASI: https://copasi.org/
 .. _virtualenv: https://packaging.python.org/guides/installing-using-pip-and-virtualenv/
-.. _Strawberry Perl: http://strawberryperl.com/
+.. _Strawberry Perl: https://strawberryperl.com/

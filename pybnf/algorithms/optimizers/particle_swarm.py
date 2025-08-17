@@ -8,7 +8,7 @@ import re
 import numpy as np
 
 from ...base import Algorithm
-from ...printing import print1, print2
+from ...printing import print1, print2, format_numbers
 from ...pset import PSet
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ class ParticleSwarm(Algorithm):
                 print1('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
             else:
                 print2('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
-            print2('Current best score: %f' % self.global_best[1])
+            print2('Current best score: ' + format_numbers([self.global_best[1]])[1:-1])
             # End of one "pseudoflight", check if it was productive.
             if (self.last_best != np.inf and
                     np.abs(self.last_best - self.global_best[1]) <

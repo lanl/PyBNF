@@ -11,14 +11,22 @@ from subprocess import run, STDOUT, PIPE, DEVNULL
 from .data import Data
 import heapq
 import traceback
-import roadrunner as rr
 import pickle
 from os.path import abspath, dirname, join, isfile
 import os
 from sys import executable
 
+try:
+    import roadrunner as rr # libRoadRunner simulation engine for SBML models
+    _RR_AVAILABLE = True
+except Exception:
+    rr = None
+    _RR_AVAILABLE = False
+
 ROOT_DIRECTORY = join(dirname(abspath(__file__)), '..')
-rr.Logger.disableLogging()
+
+if _RR_AVAILABLE:
+    rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
 

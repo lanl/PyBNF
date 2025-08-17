@@ -19,15 +19,32 @@
 
 # -- Project information -----------------------------------------------------
 
-project = 'PyBNF'
-copyright = '2018, Ryan Suderman, Eshan Mitra'
-author = 'Ryan Suderman, Eshan Mitra'
+import os
+import sys
+from pathlib import Path
+import re
 
-# The short X.Y version
-version = '1.1.9'
-# The full version, including alpha/beta/rc tags
-release = 'v1.1.9'
+# Add repo root to sys.path so `import pybnf` works when building docs
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
+project = "PyBNF"
+
+copyright = 'v1.1.9, 2018, Ryan Suderman, Eshan Mitra'
+author = 'v1.1.9, 2018, Ryan Suderman, Eshan Mitra'
+
+# Prefer importing the version from the installed source; fall back to parsing __init__.py
+try:
+    from pybnf import __version__ as _ver
+except Exception:
+    init_py = (ROOT / "pybnf" / "__init__.py").read_text(encoding="utf-8")
+    m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', init_py)
+    _ver = m.group(1) if m else "0.0.0"
+
+release = _ver              # full version string
+version = _ver              # short version; fine to keep same
+
+html_title = f"PyBioNetFit — PyBNF v{_ver} documentation"
 
 # -- General configuration ---------------------------------------------------
 
@@ -40,9 +57,13 @@ release = 'v1.1.9'
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx.ext.autosummary',
+    'sphinx.ext.napoleon',
     'sphinx.ext.viewcode',
     'sphinx.ext.imgmath'
 ]
+
+autosummary_generate = True
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -61,7 +82,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = "en"
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.

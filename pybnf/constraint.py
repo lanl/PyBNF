@@ -30,6 +30,7 @@ class ConstraintSet:
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :return:
+
         """
         return sum([c.penalty(sim_data_dict) for c in self.constraints])
 
@@ -39,6 +40,7 @@ class ConstraintSet:
 
         :param sim_data_dict:
         :return:
+
         """
         return sum([0 if c.penalty(sim_data_dict) == 0 else 1 for c in self.constraints])
 
@@ -50,6 +52,7 @@ class ConstraintSet:
         :param sim_data_dict:
         :param output_dir: Directory where the file should be saved
         :return:
+
         """
         with open('%s/%s_constraint_eval.txt' % (output_dir, self.base_suffix), 'w') as out:
             for c in self.constraints:
@@ -60,6 +63,7 @@ class ConstraintSet:
         Parse the constraint file filename and load them all into my constraint list
         :param filename: Path of constraint file
         :param scale: Factor by which we multiply all constraint weights
+
         """
         logger.info('Loading constraints for %s suffix %s from %s' % (self.base_model, self.base_suffix, filename))
         with open(filename) as f:
@@ -263,6 +267,7 @@ class Constraint:
         :param pmax: Using the log likelihood penalty, the maximum possible probability of this constraint.
         Represents the probability that the constraint is violated regardless of the output of the model
         :param tolerance: Using the log likelihood penalty, the standard deviation of the Gaussian CDF.
+
         """
         # Flip the inequality if it's a '>', so we can always assume a '<'
         if sign in ('>', '>='):
@@ -338,6 +343,7 @@ class Constraint:
         possible the input is poorly defined by referring to a suffix that exists in multiple models.
         :param sim_data_dict:
         :return:
+
         """
         keylist = []
         for q in (self.quant1, self.quant2, self.alt1, self.alt2):
@@ -353,6 +359,7 @@ class Constraint:
 
         :param q:
         :return:
+
         """
         if not isinstance(q, str):
             return None
@@ -393,6 +400,7 @@ class Constraint:
         """
         Shortcut function for applying all 3 indices to the data object
         :return:
+
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
@@ -413,21 +421,20 @@ class Constraint:
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
         Calculates the difference between the two sides of the inequality. A negative value means the inequality is
-        satisfied.
-        Considers the worst case over the specified interval, or the best case if once=True.
+        satisfied. Considers the worst case over the specified interval, or the best case if ``once=True``.
 
         The result can be used to calculate the penalty using a static penalty model or a likelihood model.
 
-        :param sim_data_dict: The dictionary of data objects
-        :param imin: First index at which to check the constraint
-        :param imax: Last index at which to check the constraint (exclusive)
-        :param once: If true, enforce that the constraint holds once at some point during the time interval
-        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
-        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
-        case)
-        :param imin2: If specified, use this different index for quantity 2
-        :param imax2: If specified, use this different index for quantity 2
-        :return:
+        :param sim_data_dict: The dictionary of data objects.
+        :param imin: First index at which to check the constraint.
+        :param imax: Last index at which to check the constraint (exclusive).
+        :param once: If True, enforce that the constraint holds once at some point during the time interval.
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s)
+            is not equal to that value. (Used to check that "at" and "between" constraints are not supported.)
+        :param imin2: If specified, use this different index for quantity 2.
+        :param imax2: If specified, use this different index for quantity 2.
+        :return: The scalar “difference” value used to compute penalties.
+
         """
 
         def length_error():
@@ -474,17 +481,18 @@ class Constraint:
         """
         Helper function for calculating the static penalty, that can be called from the subclasses.
 
-        :param sim_data_dict: The dictionary of data objects
-        :param imin: First index at which to check the constraint
-        :param imax: Last index at which to check the constraint (exclusive)
-        :param once: If true, enforce that the constraint holds once at some point during the time interval
-        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
-        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
-        case)
-        :param imin2: If specified, use this different index for quantity 2
-        :param imax2: If specified, use this different index for quantity 2
-        :return:
+        :param sim_data_dict: The dictionary of data objects.
+        :param imin: First index at which to check the constraint.
+        :param imax: Last index at which to check the constraint (exclusive).
+        :param once: If True, enforce that the constraint holds once at some point during the time interval.
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s)
+            is not equal to that value. (Used to check that "at" and "between" constraints are not supported.)
+        :param imin2: If specified, use this different index for quantity 2.
+        :param imax2: If specified, use this different index for quantity 2.
+        :return: The non-negative static penalty value.
+
         """
+
         penalty = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
 
         if penalty > 0 or (penalty == 0. and not self.or_equal):
@@ -515,21 +523,20 @@ class Constraint:
 
     def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
-        Helper function for calculating the negative log likelihood of constraint satisfaction given the parameters,
-        i.e. a likelihood-based penalty function.
-        The likelihood is calculated with a Gaussian CDF defined in terms of this constraint's confidence
-        and tolerance
+        Helper function for calculating the **negative** log-likelihood of constraint satisfaction given the parameters
+        (a likelihood-based penalty function). The likelihood is calculated with a Gaussian CDF defined in terms of
+        this constraint's confidence and tolerance.
 
-        :param sim_data_dict: The dictionary of data objects
-        :param imin: First index at which to check the constraint
-        :param imax: Last index at which to check the constraint (exclusive)
-        :param once: If true, enforce that the constraint holds once at some point during the time interval
-        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
-        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
-        case)
-        :param imin2: If specified, use this different index for quantity 2
-        :param imax2: If specified, use this different index for quantity 2
-        :return:
+        :param sim_data_dict: The dictionary of data objects.
+        :param imin: First index at which to check the constraint.
+        :param imax: Last index at which to check the constraint (exclusive).
+        :param once: If True, enforce that the constraint holds once at some point during the time interval.
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s)
+            is not equal to that value. (Used to check that "at" and "between" constraints are not supported.)
+        :param imin2: If specified, use this different index for quantity 2.
+        :param imax2: If specified, use this different index for quantity 2.
+        :return: The non-negative negative-log-likelihood penalty value.
+
         """
 
         def cdf(x):
@@ -565,6 +572,7 @@ class Constraint:
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
+
         """
 
         raise NotImplementedError('Subclasses of Constraint must override penalty()')
@@ -583,6 +591,7 @@ class AtConstraint(Constraint):
         :param repeat: If True, enforce the constraint every time the 'at' condition is met. If False, only enforce
         the first time
         :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
+
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
@@ -604,6 +613,7 @@ class AtConstraint(Constraint):
         possible the input is poorly defined by referring to a suffix that exists in multiple models.
         :param sim_data_dict:
         :return:
+
         """
 
         keylist = []
@@ -664,6 +674,7 @@ class SplitAtConstraint(Constraint):
         :param repeat: If True, enforce the constraint every time the 'at' condition is met. If False, only enforce
         the first time
         :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
+
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
@@ -700,6 +711,7 @@ class SplitAtConstraint(Constraint):
         possible the input is poorly defined by referring to a suffix that exists in multiple models.
         :param sim_data_dict:
         :return:
+
         """
 
         keylist = []
@@ -778,6 +790,7 @@ class BetweenConstraint(Constraint):
         :param startval: Value that the startvar must take to trigger the start of the interval
         :param endvar: Variable checked to determine the end of the interval, or None for the independent variable
         :param endval: Value that the endvar must take to trigger the start of the interval
+
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
@@ -802,6 +815,7 @@ class BetweenConstraint(Constraint):
         possible the input is poorly defined by referring to a suffix that exists in multiple models.
         :param sim_data_dict:
         :return:
+        
         """
 
         keylist = []

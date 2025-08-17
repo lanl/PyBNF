@@ -78,9 +78,10 @@ class Result(object):
         :param simdata: The simulation results corresponding to this evaluation, as a nested dictionary structure.
         Top-level keys are model names and values are dictionaries whose keys are action suffixes and values are
         Data instances
-        :type simdata: dict Returns a
+        :type simdata: dict
         :param log: The stdout + stderr of the simulations
         :type log: list of str
+
         """
         self.pset = paramset
         self.simdata = simdata
@@ -93,6 +94,7 @@ class Result(object):
         :param settings: Config value for 'normalization': a string representing the normalization type, a dict mapping
         exp files to normalization type, or None
         :return:
+
         """
         if settings is None:
             return
@@ -111,6 +113,7 @@ class Result(object):
         That file is expected to contain the definition for the function postprocess(data),
         which takes a Data object and returns a processed data object
         :return: None
+
         """
         for m, suff in settings:
             rawdata = self.simdata[m][suff]
@@ -137,6 +140,7 @@ class Result(object):
         Add simulation data of other models from another Result object into this Result object
         :param other: The other Result object
         :return:
+
         """
         self.simdata.update(other.simdata)
 
@@ -153,6 +157,7 @@ class FailedSimulation(Result):
         :type fail_type: int
         :param einfo:
         :type einfo: tuple
+
         """
         super(FailedSimulation, self).__init__(paramset, None, name)
         self.fail_type = fail_type
@@ -166,17 +171,17 @@ class FailedSimulation(Result):
         return
 
 
-def run_job(j, debug=False, failed_logs_dir=''):
+def run_job(j, calc_obj, debug=False, failed_logs_dir=None):
     """
     Runs the Job j.
     This function is passed to Dask instead of j.run_simulation because if you pass j.run_simulation, Dask leaks memory
     associated with j.
     """
     try:
-        return j.run_simulation(debug, failed_logs_dir)
+        return j.run_simulation(calc_obj, debug, failed_logs_dir)
     except RuntimeError as e:
         # Catch the error for running out of threads here - it's the only place outside dask where we can catch it.
-        if e.args[0] == "can't start new thread":
+        if "can't start new thread" in str(e):
             logger.error("Reached thread limit - can't start new thread")
             print0('Too many threads! See "Troubleshooting" in the documentation for how to deal with this problem')
             return FailedSimulation(j.params, j.job_id, 1)
@@ -193,8 +198,8 @@ class Job:
     # "pybnf.algorithms.job" logger
     jlogger = logging.getLogger('pybnf.algorithms.job')
 
-    def __init__(self, models, params, job_id, output_dir, timeout, calc_future, norm_settings, postproc_settings,
-                 delete_folder=False):
+    def __init__(self, models, params, job_id, output_dir, timeout=None, calc_obj=None, norm_settings=None, postproc_settings=None,
+                 delete_folder=False, **kwargs):
         """
         Instantiates a Job
 
@@ -204,23 +209,36 @@ class Job:
         :type params: PSet
         :param job_id: Job identification; also the folder name that the job gets saved to
         :type job_id: str
-        :param output_dir path to the directory where I should create my simulation folder
+        :param output_dir: path to the directory where I should create my simulation folder
         :type output_dir: str
-        :param calc_future: Future for an ObjectiveCalculator containing the objective function and experimental data,
-        which we can use to calculate the objective value.
-        :type calc_future: Future
+        :param calc_obj: ObjectiveCalculator instance containing the objective function and experimental data,
+            which can be used to calculate the objective value. Pass None to evaluate on the scheduler.
+        :type calc_obj: ObjectiveCalculator | None
         :param norm_settings: Config value for 'normalization': a string representing the normalization type, a dict
         mapping exp files to normalization type, or None
-        :type norm_settings: Union[str, dict, NoneType]
+        :type norm_settings: str | dict | None
         :param postproc_settings: dict mapping (model, suffix) tuples to the path of a Python postprocessing file to
         run on the result.
         :param delete_folder: If True, delete the folder and files created after the simulation runs
         :type delete_folder: bool
+
         """
+        # --- Backward-compatibility shim for legacy keyword ---
+        if 'calc_future' in kwargs:
+            if calc_obj is not None:
+                raise TypeError("Pass only one of 'calc_obj' or legacy 'calc_future'.")
+            calc_obj = kwargs.pop('calc_future')
+            logging.getLogger(__name__).debug("Job.__init__: using legacy 'calc_future' kw; prefer 'calc_obj'.")
+        if kwargs:
+            # Surface any truly unexpected keywords early
+            unknown = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"Unexpected keyword argument(s): {unknown}")
+        # ------------------------------------------------------
+
         self.models = models
         self.params = params
         self.job_id = job_id
-        self.calc_future = calc_future
+        self.calc_obj = calc_obj
         self.norm_settings = norm_settings
         self.postproc_settings = postproc_settings
         # Whether to show warnings about missing data if the job includes an objective evaluation. Toggle this after
@@ -261,7 +279,7 @@ class Job:
                 self.jlogger.debug('Copying log file %s' % lf)
                 shutil.copy(lf, failed_logs_dir)
 
-    def run_simulation(self, debug=False, failed_logs_dir=''):
+    def run_simulation(self, calc_obj=None, debug=False, failed_logs_dir=''):
         """Runs the simulation and reads in the result"""
         # Force absolute path for failed_logs_dir
         if len(failed_logs_dir) > 0 and failed_logs_dir[0] != '/':
@@ -276,7 +294,8 @@ class Job:
                 self.jlogger.debug('Created folder %s for simulation' % self.folder)
                 made_folder = True
             except OSError:
-                self.jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
+                # Collisions can happen under parallel submission; retrying is normal.
+                self.jlogger.debug('Failed to create folder %s, trying again.' % self.folder)
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
@@ -295,9 +314,11 @@ class Job:
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 0)
         except FileNotFoundError:
-            self.jlogger.exception('File not found during job %s. This should only happen if the fitting '
-                                   'is already done.' % self.job_id)
-            res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
+            # This commonly happens during shutdown after the client is closed and
+            # pending jobs are being cancelled. It is not an actionable error.
+            self.jlogger.warning('File not found during job %s; likely occurred during shutdown after client close.',
+                                 self.job_id)
+            res = FailedSimulation(self.params, self.job_id, 2)
         except Exception:
             if debug:
                 self._copy_log_files(failed_logs_dir)
@@ -306,7 +327,7 @@ class Job:
             self.jlogger.exception('Unknown error during job %s' % self.job_id)
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         else:
-            if self.calc_future is not None:
+            if calc_obj is not None:
                 res.normalize(self.norm_settings)
                 try:
                     res.postprocess_data(self.postproc_settings)
@@ -316,7 +337,7 @@ class Job:
                     print0('User-defined post-processing script failed')
                     res.score = np.inf
                 else:
-                    res.score = self.calc_future.result().evaluate_objective(res.simdata, res.pset, show_warnings=self.show_warnings)
+                    res.score = calc_obj.evaluate_objective(res.simdata, res.pset, show_warnings=self.show_warnings)
                     res.out = simdata
                     if res.score is None:
                         # res.score = np.inf
@@ -349,6 +370,7 @@ class JobGroup:
         """
         :param job_id: The name of the Job this group is representing
         :param subjob_ids: A list of the ids of the identical replicate Jobs.
+
         """
         self.job_id = job_id
         self.subjob_ids = subjob_ids
@@ -360,6 +382,7 @@ class JobGroup:
         Called when one job in this group has finished
         :param res: Result object for the completed job
         :return: Boolean, whether everything in this job group has finished
+
         """
         # Handle edge cases of failed simulations - if we get one FailedSimulation, we declare the group is done,
         # and return a FailedSimulation object as the average
@@ -381,12 +404,13 @@ class JobGroup:
         Averages the results and returns a new Result object containing the averages
 
         :return: New Result object with the job_id of this JobGroup and the averaged Data as the simdata
+
         """
         if self.failed:
             self.failed.name = self.job_id
             return self.failed
 
-        # Iterate through the models and suffixes in the simdata strucutre, and calculate the average for each
+        # Iterate through the models and suffixes in the simdata structure, and calculate the average for each
         # Data object it contains
         avedata = dict()
         for m in self.result_list[0].simdata:
@@ -406,6 +430,7 @@ class MultimodelJobGroup(JobGroup):
         To be called after all results are in for this group.
         Combines all results from the submodels into a single Result object
         :return:
+
         """
         if self.failed:
             self.failed.name = self.job_id
@@ -469,6 +494,7 @@ class Algorithm(object):
 
         :param config: The fitting configuration
         :type config: Configuration
+
         """
         self.config = config
         self.exp_data = self.config.exp_data
@@ -502,7 +528,7 @@ class Algorithm(object):
 
         self.bootstrap_number = None
         self.best_fit_obj = None
-        self.calc_future = None  # Created during Algorithm.run()
+        self.calc_obj = None  # Created during Algorithm.run()
         self.refine = False
 
     def reset(self, bootstrap):
@@ -512,6 +538,7 @@ class Algorithm(object):
         :param bootstrap: The bootstrap number (None if not bootstrapping)
         :type bootstrap: int or None
         :return:
+
         """
         logger.info('Resetting Algorithm for another run')
         self.trajectory = Trajectory(self.config.config['num_to_output'])
@@ -541,12 +568,13 @@ class Algorithm(object):
     def should_pickle(k):
         """
         Checks to see if key 'k' should be included in pickling.  Currently allows all entries in instance dictionary
-        except for 'trajectory'
+        except for 'trajectory'. Also excludes 'calc_obj'.
 
         :param k:
         :return:
+
         """
-        return k not in set(['trajectory', 'calc_future'])
+        return k not in set(['trajectory', 'calc_obj'])
 
     def __getstate__(self):
         return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
@@ -569,6 +597,7 @@ class Algorithm(object):
         can be reinstantiated as NetModel instances
 
         :return: list of Model instances
+
         """
         # Todo: Move to config or BNGL model class?
         home_dir = os.getcwd()
@@ -637,6 +666,7 @@ class Algorithm(object):
         Uniqueness will not be checked elsewhere.
 
         :return: list of PSets
+
         """
         raise NotImplementedError("Subclasses must implement start_run()")
 
@@ -648,6 +678,7 @@ class Algorithm(object):
         :param res: result from the completed simulation
         :type res: Result
         :return: List of PSet(s) to be run next or 'STOP' string.
+
         """
         raise NotImplementedError("Subclasses must implement got_result()")
 
@@ -681,6 +712,7 @@ class Algorithm(object):
         Generates a random PSet based on the distributions and bounds for each parameter specified in the configuration
 
         :return:
+
         """
         logger.debug("Generating a randomly distributed PSet")
         pset_vars = []
@@ -696,6 +728,7 @@ class Algorithm(object):
 
         :param n: Number of psets to generate
         :return:
+
         """
         logger.debug("Generating PSets using Latin hypercube sampling")
         num_uniform_vars = 0
@@ -735,6 +768,7 @@ class Algorithm(object):
         :param params:
         :type params: PSet
         :return: list of Jobs (of length equal to smoothing setting)
+        
         """
         if params.name:
             job_id = params.name
@@ -749,10 +783,10 @@ class Algorithm(object):
             for i in range(self.config.config['smoothing']):
                 thisname = '%s_rep%i' % (job_id, i)
                 newnames.append(thisname)
-                # calc_future is supposed to be None here - the workers don't have enough info to calculate the
-                # objective on their own
+                # Note: calc_obj will be None unless local-objective evaluation is enabled
+                # (we only construct it when local_objective_eval==0 AND smoothing==1 AND parallelize_models==1).
                 newjobs.append(Job(self.model_list, params, thisname,
-                                   self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
+                                   self.sim_dir, self.config.config['wall_time_sim'], self.calc_obj,
                                    self.config.config['normalization'], dict(),
                                    bool(self.config.config['delete_old_files'])))
             new_group = JobGroup(job_id, newnames)
@@ -768,11 +802,11 @@ class Algorithm(object):
             for i in range(rep_count):
                 thisname = '%s_part%i' % (job_id, i)
                 newnames.append(thisname)
-                # calc_future is supposed to be None here - the workers don't have enough info to calculate the
-                # objective on their own
+                # Note: calc_obj will be None unless local-objective evaluation is enabled
+                # (we only construct it when local_objective_eval==0 AND smoothing==1 AND parallelize_models==1).        
                 newjobs.append(Job(self.model_list[model_count*i//rep_count:model_count*(i+1)//rep_count],
                                    params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
-                                   self.calc_future, self.config.config['normalization'], dict(),
+                                   self.calc_obj, self.config.config['normalization'], dict(),
                                    bool(self.config.config['delete_old_files'])))
             new_group = MultimodelJobGroup(job_id, newnames)
             for n in newnames:
@@ -781,7 +815,7 @@ class Algorithm(object):
         else:
             # Create a single job
             return [Job(self.model_list, params, job_id,
-                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
+                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_obj,
                     self.config.config['normalization'], self.config.postprocessing,
                     bool(self.config.config['delete_old_files']))]
 
@@ -798,6 +832,7 @@ class Algorithm(object):
         :param no_move: If True, overrides the config setting delete_old_files=2, and does not move the result to
         overwrite sorted_params.txt
         :type name: str
+
         """
         if name == '':
             name = str(self.output_counter)
@@ -824,6 +859,7 @@ class Algorithm(object):
         :param pending_psets: Iterable of PSets that are currently submitted as jobs, and will need to get re-submitted
         when resuming the algorithm
         :return:
+
         """
 
         logger.info('Saving a backup of the algorithm')
@@ -882,10 +918,10 @@ class Algorithm(object):
 
         if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1 and \
                 self.config.config['parallelize_models'] == 1:
-            calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
-            [self.calc_future] = client.scatter([calculator], broadcast=True)
+            # Pass the calculator object to workers (do NOT scatter to a Future)
+            self.calc_obj = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
         else:
-            self.calc_future = None
+            self.calc_obj = None
 
         jobs = []
         pending = dict()  # Maps pending futures to tuple (PSet, job_id).
@@ -895,7 +931,7 @@ class Algorithm(object):
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = []
         for job in jobs:
-            f = client.submit(run_job, job, True, self.failed_logs_dir)
+            f = client.submit(run_job, job, self.calc_obj, True, self.failed_logs_dir)
             futures.append(f)
             pending[f] = (job.params, job.job_id)
         pool = custom_as_completed(futures, with_results=True, raise_errors=False)
@@ -937,8 +973,8 @@ class Algorithm(object):
                                      'the FailedSimLogs directory. For help troubleshooting this error, refer to '
                                      'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
             elif isinstance(res, CancelledError):
-                raise PybnfError('PyBNF has encounted a fatel error. If the error has occured on the inital run please varify your model '
-                                'is funcational. To resume run please restart PyBNF using the -r flag')
+                raise PybnfError('PyBNF has encounted a fatal error. If the error occured on the initial run, please verify that your model '
+                                'is functional. To resume the run, please restart PyBNF using the -r flag')
             else:
                 self.success_count += 1
                 logger.debug('Job %s complete')
@@ -959,7 +995,7 @@ class Algorithm(object):
                 for ps in response:
                     new_js = self.make_job(ps)
                     for new_j in new_js:
-                        new_f = client.submit(run_job, new_j, (debug or self.fail_count < 10), self.failed_logs_dir)
+                        new_f = client.submit(run_job, new_j, self.calc_obj, (debug or self.fail_count < 10), self.failed_logs_dir)
                         pending[new_f] = (ps, new_j.job_id)
                         new_futures.append(new_f)
                 logger.debug('Submitting %d new Jobs' % len(new_futures))
@@ -1004,7 +1040,7 @@ class Algorithm(object):
                            self.config.config['normalization'], self.config.postprocessing,
                            False)
             try:
-                run_job(finaljob)
+                run_job(finaljob, None)
             except Exception:
                 logger.exception('Failed to rerun best fit parameter set')
                 print1('Failed to rerun best fit parameter set. See log for details')
@@ -1027,14 +1063,15 @@ class Algorithm(object):
             except OSError:
                 logger.warning('Tried to move pickled algorithm, but it was not found')
 
-        if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
-            # End of fitting; delete unneeded files
+        # Cleanup sim dir for non-refine runs, or when the algorithm explicitly opts in.
+        if (getattr(self, "_force_cleanup", False) or self.config.config['refine'] != 1) \
+                and self.bootstrap_number is None:
             if self.config.config['delete_old_files'] >= 1:
                 if os.name == 'nt':  # Windows
                     try:
                         shutil.rmtree(self.sim_dir)
                     except OSError:
-                        logger.error('Failed to remove simulations directory '+self.sim_dir)
+                        logger.error('Failed to remove simulations directory ' + self.sim_dir)
                 else:
                     run(['rm', '-rf', self.sim_dir])  # More likely to succeed than rmtree()
 
@@ -1044,6 +1081,7 @@ class Algorithm(object):
         """
         Called before the program exits due to an exception.
         :return:
+
         """
         self.output_results('end')
 
@@ -1130,7 +1168,7 @@ class BayesianAlgorithm(Algorithm):
         return first_psets
 
     def got_result(self, res):
-        NotImplementedError("got_result() must be implemented in BayesianAlgorithm subclass")
+        raise NotImplementedError("got_result() must be implemented in BayesianAlgorithm subclass")
 
     def ln_prior(self, pset):
         """
@@ -1139,6 +1177,7 @@ class BayesianAlgorithm(Algorithm):
         :param pset:
         :type pset: PSet
         :return: float value of ln times the prior distribution
+
         """
         total = 0.
         for v in self.prior:
@@ -1156,7 +1195,7 @@ class BayesianAlgorithm(Algorithm):
                 if x1 <= val <= x2:
                     total += -np.log(x2-x1)
                 else:
-                    logger.warning('Box-constrained parameter %s reached a value outside the box.')
+                    logger.warning('Box-constrained parameter %s reached a value outside the box.', v)
                     total += -np.inf
         return total
 
@@ -1167,6 +1206,7 @@ class BayesianAlgorithm(Algorithm):
         :type pset: PSet
         :param ln_prob - The probability of this PSet to record in the samples file.
         :type ln_prob: float
+
         """
         with open(self.samples_file, 'a') as f:
             f.write(pset.name+'\t'+str(ln_prob)+'\t'+pset.values_to_string()+'\n')
@@ -1177,6 +1217,7 @@ class BayesianAlgorithm(Algorithm):
         :param file_ext: String to append to the save file names
         :type file_ext: str
         :return:
+
         """
         # Read the samples file into an array, ignoring the first row (header)
         # and first 2 columns (pset names, probabilities)
@@ -1251,6 +1292,7 @@ class ModelCheck(object):
         Instantiates ModelCheck with a Configuration object.
         :param config: The fitting configuration
         :type config: Configuration
+
         """
         self.config = config
         self.exp_data = self.config.exp_data
@@ -1278,7 +1320,7 @@ class ModelCheck(object):
         empty.name = 'check'
         job = Job(self.model_list, empty, 'check', self.sim_dir, self.config.config['wall_time_sim'], None,
                   None, dict(), delete_folder=False)
-        result = run_job(job, debug, self.sim_dir)
+        result = run_job(job, None, debug, self.sim_dir)
 
         if isinstance(result, FailedSimulation):
             print0('Simulation failed.')
@@ -1310,7 +1352,8 @@ def exp10(n):
     """
     Raise 10 to the power of a possibly user-defined value, and raise a helpful error if it overflows
     :param n: A float
-    :return: 10.** n
+    :return: 10.**n
+
     """
     try:
         with np.errstate(over='raise'):

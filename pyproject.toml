@@ -6,24 +6,75 @@ build-backend = "setuptools.build_meta"
 name = "pybnf"
 dynamic = ["version"]
 description = "Tool for parameterization of BNGL and SBML models"
-readme = "README.md"
-requires-python = ">=3.8"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "PyBNF Developers" }]
+maintainers = [{ name = "Bill Hlavacek", email = "hlavacek@lanl.gov" }]
+keywords = [
+  "BioNetGen", "BNGL", "libRoadRunner", "SBML",
+  "parameter estimation", "parameter identification", "uncertainty quantification (UQ)",
+  "statistical inference", "Bayesian inference",
+  "optimization", "curve fitting", "sampling",
+  "bootstrapping", "profile likelihood", "parameter posterior", "posterior predictive",
+  "systems biology",
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
 dependencies = [
-  "numpy>=2.0",
-  "scipy>=1.15",
-  "pyparsing>=3.0",
-  "dask[distributed]>=2022.5",
-  "tornado>=6.1",
-  "paramiko>=3.0",
-  "libroadrunner>=2.8",
+  "numpy>=2,<3",
+  "scipy>=1.15,<2",
+  "pyparsing>=3,<4",
+  "dask[distributed]>=2024.4",
 ]
 
 [project.optional-dependencies]
+# Developers
 dev = [
   "pytest",
+  "pytest-cov",
+  "hypothesis",
   "black",
   "ruff",
+  "mypy",
+  "build",
+  "twine",
 ]
+
+# SBML support (optional)
+sbml = ["libroadrunner>=2.8,<3"]
+
+[project.scripts]
+pybnf = "pybnf.pybnf:main"
+
+[project.urls]
+Homepage = "https://bionetfit.nau.edu/"
+Source = "https://github.com/lanl/PyBNF"
+Documentation = "https://pybnf.readthedocs.io/"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pybnf*"]
+exclude = ["tests*", "docs*", "examples*", "noseoutput*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "pybnf.pybnf.__version__" }
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=pybnf --cov-report=term-missing:skip-covered --cov-fail-under=60"
+testpaths = ["tests"]
+filterwarnings = [
+  "error::DeprecationWarning",
+]

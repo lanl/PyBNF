@@ -109,8 +109,8 @@ If the undead jobs become problematic, it is possible to kill them manually. Use
 
 
 
-PyBNF has encountered a Fatel error
-----------------
+PyBNF has encountered a fatal error
+-----------------------------------
 This error occurs when the scheduler loses connection with the cluster. The simulation data is generally backed up and the simulation can be resumed from the point it exited using the -r flag 'pybnf -c .conf -r'. 
 
 An unknown error occurred

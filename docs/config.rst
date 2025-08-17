@@ -6,11 +6,12 @@ Configuring a Fitting Job
 The Configuration File
 ----------------------
 
-The configuration file is a plain text file with the extension “.conf” that specifies all of the information that PyBNF needs to perform the fitting: the location of the model and data files, and the details of the fitting algorithm to be run.
+The configuration file is a plain text file with the extension ``.conf``. It lists models, data files, and the details of the fitting algorithm to be run.
 
-Several examples of .conf files are included in the examples/ folder.
+Several examples of ``.conf`` files are included in the ``examples/`` folder.
 
-Each line of a conf file has the general format config_key=value, which assigns the configuration key “config_key” to the value “value”.
+Each line of a conf file has the general format ``config_key = value``.
+This assigns the configuration key ``config_key`` to the value ``value``.
 
 The available configuration keys to be specified are detailed in :ref:`config_keys`.
 
@@ -29,26 +30,22 @@ Two small modifications of a BioNetGen-compatible BNGL file are necessary to use
 
 1) Replace each value to be fit with a name that ends in the string “__FREE”.
 
-For example, if the parameters block in our original file was the following:
-::
-    begin parameters
+For example, if the parameters block in our original file was the following::
 
+    begin parameters
         v1 17
         v2 42
         v3 37
         NA 6.02e23
-
     end parameters
 
-the revised version for PyBNF should look like:
-::
-    begin parameters
+the revised version for PyBNF should look like::
 
+    begin parameters
         v1 v1__FREE
         v2 v2__FREE
         v3 v3__FREE
         NA 6.02e23
-
     end parameters
 
 We have replaced each fixed parameter value in the original file with a “FREE” parameter to be fit. Parameters that we do not want to fit (such as the physical constant NA) are left as is.
@@ -77,23 +74,23 @@ Experimental Data Files
 
 Experimental data file are plain text files with the extension “.exp” that contain whitespace-delimited tables of data to be used for fitting.
 
-The first line of the .exp file is the header. It should contain the character ``#`` (optional, to match the output format of BioNetGen), followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
-::
-    #    time    X    Y
-        0    5    1e4
-        5    7    1.5e4
-        10    9    4e4
-        15    nan    6.5e4
-        20    15    1.1e5
+The first line of the .exp file is the header. It should contain the character ``#`` (optional, to match the output format of BioNetGen), followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y::
 
-If your are fitting with the chi-squared objective function, you also need to provide a standard deviation for each experimental data point. To do so, include a column in the .exp file with "_SD" appended to the variable name. For example:
-::
-    #    time    X    Y        X_SD    Y_SD
-        0    5    1e4        1    2e2
-        5    7    1.5e4    1.2    2e2
-        10    9    4e4        1.4    4e2
-        15    nan    6.5e4    nan    5e2
-        20    15    1.1e5    0.9    5e2
+    #   time    X    Y
+        0       5    1e4
+        5       7    1.5e4
+        10      9    4e4
+        15      nan  6.5e4
+        20      15   1.1e5
+
+If your are fitting with the chi-squared objective function, you also need to provide a standard deviation for each experimental data point. To do so, include a column in the .exp file with "_SD" appended to the variable name. For example::
+  
+    #   time    X    Y        X_SD   Y_SD
+        0       5    1e4      1      2e2
+        5       7    1.5e4    1.2    2e2
+        10      9    4e4      1.4    4e2
+        15      nan  6.5e4    nan    5e2
+        20      15   1.1e5    0.9    5e2
 
 .. _con-file:
 
@@ -208,17 +205,19 @@ Constraints involving multiple models
 By default, observables in property files are assumed to come from the model that the .prop file is mapped to, and the simulation suffix matching the .prop file's name (the same convention as for .exp files). However, it is possible to use "dot notation" to refer to observables in other simulations, as in the following example.
 
 fit.conf::
-    
+
     model = model1.bngl : wt.exp
     model = model2.bngl : mut.prop
 
-mut.prop::
-    
-    A < wt.A always 
-    
-In this example, the constraint would check that the value of ``A`` in the simulation of model2 with suffix "mut" is less than the value of ``A`` in the simulation of model1 with suffix "wt". In this way, it is possible to write constraints involving the outputs of multiple models. 
+An example constraint in mut.prop::
 
-To use this feature, all simulation suffixes must be unique across all models. In addition all observables used in a single constraint must have the same independent variable with the same step size. 
+    A < wt.A always
+
+In this example, the constraint would check that the value of ``A`` in the
+``mut.prop`` simulation is always less than the value of ``A`` in the
+``wt.exp`` simulation. Constraints can reference outputs from multiple models.
+To use this feature, all simulation suffixes must be unique across models, and
+all simulations used in a constraint must share the same independent variable
+with the same step size.
 
 .. _COPASI: http://copasi.org/
-

@@ -1,6 +1,5 @@
 """The entry point for the PyBNF application containing the main function and version"""
 
-
 import argparse
 import logging
 import os
@@ -9,34 +8,109 @@ import shutil
 import time
 import traceback
 from subprocess import run
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+import importlib
+import sys
+import signal
+import warnings
 
-from numpy import inf
-
-import pybnf.algorithms as algs
-import pybnf.printing as printing
-
-from .base import *
-from .cluster import Cluster
-from .config import init_logging
-from .parse import load_config
-from .printing import PybnfError, print0, print1, print2
-from .pset import Trajectory
 
 __version__ = "1.2.3"
 
 
+# --- Dask worker/nanny: silence KeyboardInterrupt stacktraces ---
+def _append_preload_env(var: str, module: str) -> None:
+    """
+    Append `module` to the comma-separated Dask preload env var `var`
+    without duplicating or overwriting existing entries.
+    """
+    current = os.environ.get(var, "")
+    parts = [p.strip() for p in current.split(",") if p.strip()]
+    if module not in parts:
+        parts.append(module)
+        os.environ[var] = ",".join(parts)
+
+# Ensure both Worker and Nanny preload our hook in child processes
+_preload_mod = "pybnf.dask_preload.silence_kbi"
+_append_preload_env("DASK_DISTRIBUTED__WORKER__PRELOAD", _preload_mod)
+_append_preload_env("DASK_DISTRIBUTED__NANNY__PRELOAD",  _preload_mod)
+# --- end preload setup ---
+
+
+# --- test/CLI-friendly proxy so tests can monkeypatch `pybnf.load_config`
+def load_config(*args, **kwargs):
+    from .parse import load_config as _real_load_config
+    return _real_load_config(*args, **kwargs)
+
+
+def _get_version() -> str:
+    # Prefer the installed distribution’s version (editable install included),
+    # fall back to the module’s __version__.
+    try:
+        return _dist_version("pybnf")
+    except PackageNotFoundError:
+        return __version__
+
+
+def _detect_roadrunner_version():
+    """Return (version_str, detail) or (None, reason). Strictly identifies libRoadRunner."""
+    dist_ver = None
+    try:
+        # Primary: distribution name for the SBML engine
+        dist_ver = _dist_version("libroadrunner")
+    except PackageNotFoundError:
+        dist_ver = None
+
+    try:
+        rr = importlib.import_module("roadrunner")
+    except Exception as e:
+        return (None, f"roadrunner module not importable: {e}")
+
+    # Reject lookalikes: must be the SBML engine exposing the RoadRunner API
+    if not hasattr(rr, "RoadRunner"):
+        # If the distribution is missing AND the module lacks RoadRunner, treat as missing.
+        # (There are unrelated 'roadrunner' packages on PyPI/conda.)
+        mod_path = getattr(rr, "__file__", "unknown")
+        return (None, f'found a different "roadrunner" module at {mod_path}')
+
+    ver = dist_ver or getattr(rr, "__version__", None)
+    if not ver and hasattr(rr, "getVersionStr"):
+        try:
+            ver = rr.getVersionStr()
+        except Exception:
+            ver = None
+    return (ver, "ok" if ver else "unknown version")
+
+
+def _print_roadrunner_version_and_exit() -> None:
+    ver, detail = _detect_roadrunner_version()
+    if ver:
+        print(f"simulator for SBML models: libRoadRunner {ver}")
+        sys.exit(0)
+    else:
+        msg = (
+            "simulator for SBML models: libRoadRunner not available.\n"
+            'Install SBML support with: python -m pip install "pybnf[sbml]"'
+        )
+        if detail:
+            msg += f"\nDetail: {detail}"
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     """The main function for running a fitting job"""
+
     start_time = time.time()
 
     success = False
     alg = None
     cluster = None
 
-    parser = argparse.ArgumentParser(description='Performs parameter fitting on systems biology models defined in '
-                                                 'BNGL or SBML. For documentation, examples, and source code, go to '
-                                                 'https://github.com/lanl/PyBNF')
-
+    parser = argparse.ArgumentParser(prog="pybnf", description=("PyBioNetFit CLI\n"
+                                                               "Source: https://github.com/lanl/pybnf\n"
+                                                               "Documentation: https://pybnf.readthedocs.io/"),
+                                                               formatter_class=argparse.RawDescriptionHelpFormatter,)
     parser.add_argument('-c', action='store', dest='conf_file',
                         help='Path to the BioNetFit configuration file', metavar='config.conf')
     parser.add_argument('-o', '--overwrite', action='store_true',
@@ -57,7 +131,47 @@ def main():
                         choices=['debug', 'info', 'warning', 'error', 'critical', 'none', 'd', 'i', 'w', 'e', 'c', 'n'],
                         help='set the level of output to the log file. Options in decreasing order of verbosity are: '
                              'debug, info, warning, error, critical, none.')
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"pybnf {_get_version()}",
+        help="show version and exit",
+    )
+    parser.add_argument(
+        "--roadrunner-version", "--rr-version",
+        dest="rr_version",
+        action="store_true",
+        help="print libRoadRunner version if available and exit (exit 0 if found, 1 if missing)",
+    )
+    
     cmdline_args = parser.parse_args()
+
+    # --- Make Ctrl-Z a no-op in interactive shells (prevents zombie clusters) ---
+    if sys.stdin.isatty():
+        try:
+            signal.signal(signal.SIGTSTP, signal.SIG_IGN)  # ignore suspend
+        except Exception:
+            pass
+    # --- end Ctrl-Z handling ---
+    # Ctrl-C still works, stops jobs cleanly
+
+    # ---- Early exits (no heavy imports yet)
+    if cmdline_args.rr_version:
+        _print_roadrunner_version_and_exit()  # will sys.exit(0/1)
+
+    if cmdline_args.conf_file is None:
+        print("No configuration file given, so I won't do anything.\nFor more information, try pybnf --help")
+        sys.exit(0)
+
+    # ---- Heavy imports only after we know we’re running a job
+    from numpy import inf
+    from . import printing
+    from .printing import PybnfError, print0, print1, print2
+    from .config import init_logging
+#    from .parse import load_config
+    from .cluster import Cluster
+    from .pset import Trajectory
+    from . import algorithms as algs
 
     if cmdline_args.log_prefix:
         log_prefix = cmdline_args.log_prefix
@@ -74,14 +188,31 @@ def main():
     init_logging(log_prefix, debug, cmdline_args.log_level)
     logger = logging.getLogger(__name__)
 
-    print0("PyBNF v%s" % __version__)
-    logger.info('Running PyBNF v%s' % __version__)
+    # Log effective Dask preloads (helps confirm KeyboardInterrupt silencer is active)
+    logger.debug(
+        "Dask preloads: worker=%r nanny=%r",
+        os.environ.get("DASK_DISTRIBUTED__WORKER__PRELOAD", ""),
+        os.environ.get("DASK_DISTRIBUTED__NANNY__PRELOAD", ""),
+    )
+
+    # --- Hide noisy "Port 8787 is already in use" dashboard warning from Dask ---
+    # Dask will still bind an ephemeral port; we just suppress the console warning.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Port \d+ is already in use\.",
+        category=UserWarning,
+        module=r"distributed\.node",
+    )
+    # --- end warning filter ---
+
+    print0(f"PyBNF v{_get_version()}")
+    logger.info('Running PyBNF v%s' % _get_version())
 
     try:
         # Load the conf file and create the algorithm
-        if cmdline_args.conf_file is None:
-            print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
-            exit(0)
+#        if cmdline_args.conf_file is None:
+#            print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
+#            exit(0)
         logger.info('Loading configuration file: %s' % cmdline_args.conf_file)
 
         config = load_config(cmdline_args.conf_file)
@@ -156,10 +287,10 @@ def main():
                         print0('Your output directory contains files from a previous run: %s.' % ', '.join(will_overwrite))
                         ans = input(
                             'Overwrite them with the current run? [y/n] (n) ')
-                    if not(ans.lower() == 'y' or ans.lower() == 'yes'):
+                    if not (ans.lower() in ('y', 'yes')):
                         logger.info("Overwrite rejected... exiting")
                         print0('Quitting')
-                        exit(0)
+                        sys.exit(0)
                 # If we get here, safe to overwrite files
                 for subdir in subdirs:
                     try:
@@ -214,7 +345,7 @@ def main():
             elif config.config['fit_type'] == 'check':
                 alg = algs.ModelCheck(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am check' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, check' % config.config['fit_type'])
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
@@ -350,9 +481,35 @@ def main():
         logger.error(e.log_message)
         print0('Error: %s' % e.message)
     except KeyboardInterrupt:
+        # Turn down Dask/Tornado chatter while aborting
+        for name in ("distributed", "distributed.client",
+                     "distributed.nanny", "distributed.worker", "tornado"):
+            logging.getLogger(name).setLevel(logging.ERROR)
+
         print0('Fitting aborted.')
-        logger.info('Terminating due to keyboard interrupt')
-        logger.exception('Keyboard interrupt')
+        logger.debug('Exiting due to KeyboardInterrupt')
+        # Proactively shut down workers to avoid noisy KeyboardInterrupt traces from child processes
+        try:
+            if 'cluster' in locals() and getattr(cluster, 'client', None) is not None:
+                # Best effort, ignore any errors—shutdown should be quick and quiet
+                try:
+                    # Cancel outstanding work if the client is still around
+                    cluster.client.cancel(futures=None, force=True)
+                except Exception:
+                    pass
+                try:
+                    cluster.client.close()
+                except Exception:
+                    pass
+            if 'cluster' in locals():
+                try:
+                    cluster.teardown()
+                except Exception:
+                    pass
+        except Exception:
+            # Don't let cleanup errors spam the console while aborting
+            logger.debug('Ignored error while tearing down cluster after KeyboardInterrupt', exc_info=True)
+        success = False           
     except Exception:
         # Sends any unhandled errors to log instead of to user output
         logger.exception('Internal error')
@@ -403,4 +560,7 @@ def main():
             hrs, mins = divmod(mins, 60)
             print2('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
             logger.info('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
-            exit(0 if success else 1)
+    sys.exit(0 if success else 1) # return 0 if success else 1
+
+if __name__ == "__main__":
+    sys.exit(main())

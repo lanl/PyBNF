@@ -4,6 +4,10 @@ import os
 import numpy as np
 import shutil
 
+import pytest, importlib.util
+if importlib.util.find_spec("roadrunner") is None:
+    pytest.skip("libRoadRunner not installed; skipping SBML tests", allow_module_level=True)
+    
 
 class TestSbmlModel:
     # def __init__(self):

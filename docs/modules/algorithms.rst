@@ -4,7 +4,10 @@
 PyBNF algorithms (:py:mod:`pybnf.algorithms`)
 =============================================
 
-.. automodule:: pybnf.algorithms
-   :members:
-   :special-members:
-   :exclude-members: __weakref__, DreamAlgorithm
+This section documents the available optimizers and samplers.
+
+.. toctree::
+   :maxdepth: 2
+
+   optimizers/index
+   samplers/index

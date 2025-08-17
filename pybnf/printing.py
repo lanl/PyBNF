@@ -21,6 +21,25 @@ def print2(s):
         print(s)
 
 
+def format_numbers(seq, prec=3, sci=True):
+    from math import isnan, isinf
+    out = []
+    for x in seq:
+        try:
+            xv = float(x)
+        except Exception:
+            out.append(str(x))
+            continue
+        if isnan(xv):
+            out.append('nan')
+        elif isinf(xv):
+            out.append('inf' if xv > 0 else '-inf')
+        else:
+            spec = f'.{prec}e' if sci else f'.{prec}g'
+            out.append(format(xv, spec))
+    return '[' + ', '.join(out) + ']'
+
+
 class PybnfError(RuntimeError):
     """
     Represents a user-generated error for which we can provide an informative message to the user about what

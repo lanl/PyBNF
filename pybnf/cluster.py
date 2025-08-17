@@ -10,6 +10,8 @@ import re
 import time
 import numpy as np
 import os
+import tempfile
+import shutil
 from multiprocessing import cpu_count
 from distributed import Client, LocalCluster
 from dask import __version__ as daskv
@@ -37,8 +39,12 @@ class Cluster:
         :type debug: bool
         :param log_level_name: The logging level for the application
         :type log_level_name: str
+
         """
         logger.info('Initializing the Cluster')
+        # Keep handles so we can close/cleanup local clusters cleanly
+        self._local_cluster = None
+        self._local_tempdir = None
 
         # Find the name of the scheduler node, and a list of all available nodes (node_string), depending on what
         # cluster options are set
@@ -71,15 +77,83 @@ class Cluster:
             logger.info('Creating a client by connecting to the scheduler node %s:8786' % scheduler_node)
             self.client = Client('%s:8786' % scheduler_node)
             self.local = False
+        # elif config.config['parallel_count'] is not None:
+        #     logger.info('Creating a local client manually set to %i workers' % config.config['parallel_count'])
+        #     lc = LocalCluster(n_workers=config.config['parallel_count'], threads_per_worker=1)
+        #     self.client = Client(lc)
+        #     self.client.run(init_logging, log_prefix, debug, log_level_name)
+        #     self.local = True
         elif config.config['parallel_count'] is not None:
-            logger.info('Creating a local client manually set to %i workers' % config.config['parallel_count'])
-            lc = LocalCluster(n_workers=config.config['parallel_count'], threads_per_worker=1)
+            # Clamp requested workers to leave one core free (helps UI/network responsiveness)
+            total = cpu_count()
+            safe_max = max(1, total - 1)
+            requested = int(config.config['parallel_count'])
+            effective = max(1, min(requested, safe_max))
+            if effective != requested:
+                logger.info('parallel_count=%d clamped to %d (total cores=%d, reserving one core)',
+                            requested, effective, total)
+            logger.info('Creating a local client with %d workers (threads_per_worker=1, dashboard disabled)',
+                        effective)
+            tmpdir = tempfile.mkdtemp(prefix="pybnf-dask-")
+            try:
+                lc = LocalCluster(
+                    host="127.0.0.1",
+                    n_workers=effective,
+                    threads_per_worker=1,
+                    processes=True,
+                    dashboard_address=None,   # disable Bokeh dashboard -> fewer sockets/ports
+                    local_directory=tmpdir,
+                    scheduler_port=0          # random free port
+                )
+            except TypeError:
+                # Older distributed doesn't support scheduler_port
+                lc = LocalCluster(
+                    host="127.0.0.1",
+                    n_workers=effective,
+                    threads_per_worker=1,
+                    processes=True,
+                    dashboard_address=None,
+                    local_directory=tmpdir
+                )
+            self._local_cluster = lc
+            self._local_tempdir = tmpdir
             self.client = Client(lc)
             self.client.run(init_logging, log_prefix, debug, log_level_name)
             self.local = True
+        # else:
+        #     logger.info('Creating a local client with default parallel count')
+        #     self.client = Client()
+        #     self.client.run(init_logging, log_prefix, debug, log_level_name)
+        #     self.local = True
         else:
-            logger.info('Creating a local client with default parallel count')
-            self.client = Client()
+            # Default: use (cores - 1) workers to keep the machine responsive; disable dashboard
+            total = cpu_count()
+            n_workers = max(1, total - 1)
+            logger.info('Creating a local client with %d workers (of %d cores); dashboard disabled',
+                        n_workers, total)
+            tmpdir = tempfile.mkdtemp(prefix="pybnf-dask-")
+            try:
+                lc = LocalCluster(
+                    host="127.0.0.1",
+                    n_workers=n_workers,
+                    threads_per_worker=1,
+                    processes=True,
+                    dashboard_address=None,   # disable Bokeh dashboard
+                    local_directory=tmpdir,
+                    scheduler_port=0
+                )
+            except TypeError:
+                lc = LocalCluster(
+                    host="127.0.0.1",
+                    n_workers=n_workers,
+                    threads_per_worker=1,
+                    processes=True,
+                    dashboard_address=None,
+                    local_directory=tmpdir
+                )
+            self._local_cluster = lc
+            self._local_tempdir = tmpdir
+            self.client = Client(lc)
             self.client.run(init_logging, log_prefix, debug, log_level_name)
             self.local = True
 
@@ -96,6 +170,7 @@ class Cluster:
         :type config: pybnf.config.Configuration
 
         :return: scheduler node, string composed of all available nodes
+
         """
         scheduler_node, node_string = None, None  # Local run (Default if nothing set)
         # Set up cluster if necessary
@@ -132,9 +207,11 @@ class Cluster:
         :param node_string: A string composed of a list of compute nodes
         :param out_dir: A directory for cluster logging output
         :param parallel_count: Total number of parallel threads to use over all nodes. If None, use all available threads
-        (the dask-ssh default)
+            (the dask-ssh default)
         :return: subprocess.Popen
+
         """
+
         logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
         if parallel_count is None:
             dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nthreads 1 --nprocs %i' % (node_string, out_dir, cpu_count())
@@ -151,8 +228,31 @@ class Cluster:
         Terminates the process running the `dask-ssh` script after completion of fitting run
 
         """
-        logger.info('Closing client')
-        self.client.close()
-        if self._dask_proc:
-            logger.info('Closing dask-ssh subprocess')
-            self._dask_proc.terminate()
+        logger.info('Tearing down Dask client/cluster')
+        try:
+            # If we created LocalCluster, close it 
+            if getattr(self, "local", False) and self._local_cluster is not None:
+                try:
+                    self._local_cluster.close(timeout=5)
+                except Exception:
+                    logger.debug('Ignoring error while closing LocalCluster', exc_info=True)
+                self._local_cluster = None
+            # Close client
+            try:
+                self.client.close()
+            except Exception:
+                logger.debug('Ignoring error while closing client', exc_info=True)
+
+            # Remove temp local_directory if we created one
+            if self._local_tempdir and os.path.isdir(self._local_tempdir):
+                try:
+                    shutil.rmtree(self._local_tempdir, ignore_errors=True)
+                except Exception:
+                    logger.debug('Ignoring error while removing temp local_directory %s',
+                                 self._local_tempdir, exc_info=True)
+                finally:
+                    self._local_tempdir = None
+        finally:
+            if self._dask_proc:
+                logger.info('Closing dask-ssh subprocess')
+                self._dask_proc.terminate()

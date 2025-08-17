@@ -33,7 +33,7 @@ Required Keys
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
     * ``sa`` - :ref:`Simulated Annealing (Not recommended) <alg-sa>`
     * ``pt`` - :ref:`Parallel tempering (Not recommended) <alg-pt>`
-    * ``am`` - :ref:`Adaptive MCMC <alg-am>`
+    * ``am`` - :ref:`Adaptive MCMC <alg-mcmc>`
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
 
@@ -193,6 +193,7 @@ Simulation Actions
 These keys specify what simulations should be performed with the models. For SBML models, simulation actions are required. For BNGL models, the same information can be specified in the actions block of the BNGL file, so use of these keys is optional. 
 
 .. _time_course_key:
+
 **time_course**
   Run a time course simulation on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
   
@@ -213,6 +214,7 @@ These keys specify what simulations should be performed with the models. For SBM
     * ``time_course = time:60, model:model1, suffix:data1``
 
 .. _param_scan_key:
+
 **param_scan**
   Run a parameter scan on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
   
@@ -440,6 +442,7 @@ Algorithm Options
    - ``peak`` - normalize to the maximum value
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
    - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1). 
+  
   If only the type is specified, the normalization is applied to all exp files. If the type is followed by a ':' and a comma-delimited list of exp files, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)``. Multiple lines with this key can be used. 
    
   Default: No normalization
@@ -628,11 +631,13 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
    - ``best2``
    - ``all1``
    - ``all2``
+  
   The first part of the string determines which parameter set we mutate:
   
    - ``rand`` - a random one
    - ``best`` - the one with the lowest objective value
    - ``all`` - the one we are proposing to replace (so all psets are mutated once per iteration). 
+  
   The second part of the string specifies how we calculate the amount by which to mutate each parameter: 
   
    - ``1`` - Use 1 pair of other parameter sets: :math:`(p_1-p_2)`
@@ -1002,6 +1007,7 @@ For Adaptive MCMC
   Example: 
   
     * ``starting_params = 5.5 2 3``     
+    
 .. For DREAM
 .. """""""""
 

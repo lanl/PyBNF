@@ -11,7 +11,7 @@ import numpy as np
 
 # 3. PyBNF application/library
 from ...base import BayesianAlgorithm
-from ...printing import print0, print1, print2
+from ...printing import print0, print1, print2, format_numbers
 from ...pset import PSet
 
 logger = logging.getLogger(__name__)
@@ -216,8 +216,8 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 if self.exchange_attempts > 0:
                     logger.info('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
                 if self.sa:
-                    logger.debug('Current betas: ' + str(self.betas))
-                print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
+                    logger.debug('Current betas: ' + format_numbers(self.betas))
+                print2('Current -Ln Likelihoods: ' + format_numbers(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logger.info('Finished replicate number %i' % index)
                 print2('Finished replicate number %i' % index)
@@ -616,8 +616,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
-                print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
-                print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
+                print2('Acceptance rates: %s\n' % format_numbers(self.acceptance_rates))
+                print2('Current -Ln Posteriors: %s' % format_numbers(self.ln_current_P))
             print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
 
             

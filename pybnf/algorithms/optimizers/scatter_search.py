@@ -7,7 +7,7 @@ import logging
 import numpy as np
 
 from ...base import Algorithm
-from ...printing import print1, print2
+from ...printing import print1, print2, format_numbers
 from ...pset import PSet
 
 logger = logging.getLogger(__name__)
@@ -107,11 +107,12 @@ class ScatterSearch(Algorithm):
 
     def got_result(self, res):
         """
-        Called when a simulation run finishes
+        Called when a simulation run finishes.
 
-        :param res:
-        :type res Result
-        :return:
+        :param res: Result object from the completed simulation.
+        :type res: Result
+        :return: A list of new PSets to evaluate, or 'STOP' if finished.
+
         """
 
         ps = res.pset
@@ -159,8 +160,8 @@ class ScatterSearch(Algorithm):
                 print1('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
             else:
                 print2('Completed iteration %i of %i' % (self.iteration, self.max_iterations))
-            print2('Current scores: ' + str([x[1] for x in self.refs]))
-            print2('Best archived scores: ' + str([x[1] for x in self.local_mins]))
+            print2('Current scores: ' + format_numbers([x[1] for x in self.refs]))
+            print2('Best archived scores: ' + format_numbers([x[1] for x in self.local_mins]))
 
             if self.iteration % self.config.config['output_every'] == 0:
                 self.output_results()

@@ -7,7 +7,7 @@ import logging
 import numpy as np
 
 from ...base import Algorithm, exp10
-from ...printing import print1, print2
+from ...printing import print1, print2, format_numbers
 from ...pset import PSet
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,8 @@ class SimplexAlgorithm(Algorithm):
     Computational Economics
 
     """
+
+    _force_cleanup = True # enables end-of-run sim dir cleanup
 
     def __init__(self, config, refine=False):
         super(SimplexAlgorithm, self).__init__(config)
@@ -189,7 +191,10 @@ class SimplexAlgorithm(Algorithm):
                 print1('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
             else:
                 print2('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
-            print2('Current best score: %f' % sorted(self.simplex, key=lambda x: x[0])[0][0])
+            print2(
+                 'Current best score: '
+                 + format_numbers([sorted(self.simplex, key=lambda x: x[0])[0][0]])[1:-1]
+            )
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:
