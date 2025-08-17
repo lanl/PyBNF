@@ -44,3 +44,9 @@ tests/*_stderr.out
 # --- PyBNF full-tests generated outputs ---
 # Ignore per-test run artifacts under tests/full_tests/*/fit/
 tests/full_tests/*/fit/
+# Sphinx build output
+docs/_build/
+# Local helpers
+kill-zombie-jobs.sh
+# Dev notes
+readme_dev.txt
