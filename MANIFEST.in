@@ -1,0 +1,17 @@
+# Include top-level docs people expect
+include README.md
+include LICENSE
+include CONTRIBUTORS.md
+
+# If you have a CHANGELOG, include it
+include CHANGELOG.md
+
+# Package discovery is via setuptools; no need to 'graft pybnf' explicitly
+
+# Exclude caches, compiled files, build output, big docs, big examples
+global-exclude __pycache__ *.py[cod] .DS_Store .mypy_cache* .pytest_cache* *.so *.dylib
+prune build
+prune dist
+prune docs/_build
+# If you ever add large example data, prune it:
+# prune examples/large
