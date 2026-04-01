@@ -1,5 +1,8 @@
+import functools
 import os
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -17,3 +20,17 @@ import pybnf.algorithms as algorithms
 import pybnf.config as config
 import pybnf.printing as printing
 import pybnf.constraint as constraint
+
+
+def raises(expected_exception):
+    """Provide a lightweight decorator compatible with legacy nose-style tests."""
+
+    def decorator(function):
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            with pytest.raises(expected_exception):
+                function(*args, **kwargs)
+
+        return wrapper
+
+    return decorator

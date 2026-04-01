@@ -1,13 +1,9 @@
-from .context import pset
-from nose.tools import raises
+from .context import pset, raises
 
 import numpy as np
 
 
 class TestFreeParameter:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.p0 = pset.FreeParameter('var0__FREE', 'normal_var', 0, 1)

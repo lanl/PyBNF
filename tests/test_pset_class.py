@@ -1,12 +1,9 @@
 from .context import pset
 from .context import printing
-from nose.tools import raises
+from .context import raises
 
 
 class TestPSet:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""

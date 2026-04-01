@@ -6,9 +6,6 @@ from copy import deepcopy
 
 
 class TestParticleSwarm:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.data1e = [
@@ -117,5 +114,4 @@ class TestParticleSwarm:
         for i in range(10):
             # Latin hypercube should distribute starting values evenly (one in each bin) in each dimension.
             assert len([x for x in ps.swarm if i < x[0]['v1__FREE'] < i+1]) == 1
-
 
