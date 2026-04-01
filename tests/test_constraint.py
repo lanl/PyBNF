@@ -1,15 +1,11 @@
-from .context import constraint, data
+from .context import constraint, data, raises
 import copy
 import numpy as np
-from nose.tools import raises
 from pyparsing import ParseBaseException
 from math import erf, sqrt
 
 
 class TestConstraint:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
 

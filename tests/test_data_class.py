@@ -1,8 +1,7 @@
 import math
 import numpy as np
 import numpy.testing as npt
-from .context import data, algorithms, printing
-from nose.tools import raises
+from .context import data, algorithms, printing, raises
 import copy
 
 # Doesn't print warnings when dividing by zero
@@ -10,9 +9,6 @@ np.seterr(invalid='ignore', divide='ignore')
 
 
 class TestData:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.str0 = "inf"

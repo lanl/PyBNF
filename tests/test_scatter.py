@@ -1,14 +1,10 @@
-from .context import data, algorithms, pset, objective, config, parse, printing
-from nose.tools import raises
+from .context import data, algorithms, pset, objective, config, parse, printing, raises
 from os import mkdir
 from shutil import rmtree
 from copy import deepcopy
 
 
 class TestScatter:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.data1s = [
