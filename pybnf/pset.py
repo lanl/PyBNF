@@ -3,6 +3,7 @@
 
 from .printing import print0, print1, PybnfError
 
+import hashlib
 import logging
 import numpy as np
 import re
@@ -16,6 +17,7 @@ import roadrunner as rr
 import pickle
 from os.path import join
 import os
+import shutil
 import tempfile
 from sys import executable
 
@@ -24,7 +26,137 @@ rr.Logger.disableLogging()
 logger = logging.getLogger(__name__)
 
 
-def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None):
+_TFUN_FILE_REF_RE = re.compile(
+    r'(?P<prefix>\btfun\s*\(\s*)(?P<quote>[\'"])(?P<path>[^\'"]+)(?P=quote)'
+)
+
+
+def _collapse_line_continuations(text):
+    """Collapse BNGL-style trailing backslash continuations."""
+    return re.sub(r'\\\s*\n\s*', '', text)
+
+
+def _strip_hash_comments(text):
+    """Remove # comments line by line for lightweight tfun path discovery."""
+    stripped = []
+    for line in text.splitlines():
+        comment_index = line.find('#')
+        stripped.append(line if comment_index < 0 else line[:comment_index])
+    return '\n'.join(stripped)
+
+
+def _extract_tfun_file_refs(text):
+    """
+    Return the ordered list of file-based lowercase tfun() path arguments.
+
+    Inline tfun([..], [..], ..) calls are ignored because there is no external
+    file dependency to stage.
+    """
+    refs = []
+    collapsed = _collapse_line_continuations(text)
+    uncommented = _strip_hash_comments(collapsed)
+    for match in _TFUN_FILE_REF_RE.finditer(uncommented):
+        path_ref = match.group('path').strip()
+        if path_ref not in refs:
+            refs.append(path_ref)
+    return refs
+
+
+def _rewrite_tfun_file_refs(text, path_map):
+    """Rewrite lowercase file-based tfun() paths according to path_map."""
+
+    def repl(match):
+        path_ref = match.group('path')
+        if path_ref not in path_map:
+            return match.group(0)
+        return '%s%s%s%s' % (
+            match.group('prefix'),
+            match.group('quote'),
+            path_map[path_ref],
+            match.group('quote'),
+        )
+
+    return _TFUN_FILE_REF_RE.sub(repl, text)
+
+
+def _stage_and_rewrite_tfun_files(text, source_dir, dest_dir):
+    """
+    Copy relative .tfun dependencies into dest_dir and rewrite tfun() paths.
+
+    This keeps BNGL and .net files runnable after PyBNF stages them into a
+    different working directory.
+    """
+    if source_dir is None:
+        return text
+
+    refs = _extract_tfun_file_refs(text)
+    if len(refs) == 0:
+        return text
+
+    source_dir = os.path.abspath(source_dir if source_dir else os.curdir)
+    dest_dir = os.path.abspath(dest_dir if dest_dir else os.curdir)
+    path_map = {}
+
+    for path_ref in refs:
+        if os.path.isabs(path_ref):
+            continue
+
+        source_path = os.path.abspath(os.path.join(source_dir, path_ref))
+        if not os.path.isfile(source_path):
+            raise FileNotFoundError(
+                "Required tfun file '%s' referenced from '%s' was not found at '%s'" %
+                (path_ref, source_dir, source_path)
+            )
+
+        staged_name = '%s_%s' % (
+            hashlib.sha1(path_ref.encode('utf-8')).hexdigest()[:12],
+            os.path.basename(path_ref),
+        )
+        staged_rel = os.path.join('__pybnf_tfun__', staged_name)
+        staged_path = os.path.join(dest_dir, staged_rel)
+        staged_parent = os.path.dirname(staged_path)
+        if staged_parent and not os.path.isdir(staged_parent):
+            os.makedirs(staged_parent)
+        shutil.copy2(source_path, staged_path)
+        path_map[path_ref] = staged_rel.replace(os.sep, '/')
+
+    if len(path_map) == 0:
+        return text
+
+    return _rewrite_tfun_file_refs(text, path_map)
+
+
+def _subprocess_env(cmd, env=None):
+    """
+    Return an environment for cmd, aligning BioNetGen scripts with their Perl2 root.
+
+    BioNetGen's BNG2.pl prefers $BNGPATH/$BioNetGenRoot over its own location when
+    resolving Perl modules. If the user's shell exports an older BNGPATH, invoking a
+    newer checkout via an absolute bng_command path can silently load mismatched Perl2
+    modules. When cmd includes BNG2.pl, force those variables to the script's parent
+    directory so the command uses a self-consistent BioNetGen tree.
+    """
+    bng_root = None
+    for token in cmd:
+        if not isinstance(token, str):
+            continue
+        expanded = os.path.expanduser(token)
+        if os.path.basename(expanded) == 'BNG2.pl':
+            bng_root = os.path.dirname(os.path.abspath(expanded))
+            break
+
+    if bng_root is None:
+        return env
+
+    resolved_env = dict(os.environ)
+    if env is not None:
+        resolved_env.update(env)
+    resolved_env['BNGPATH'] = bng_root
+    resolved_env['BioNetGenRoot'] = bng_root
+    return resolved_env
+
+
+def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None, env=None):
     """
     Run a subprocess with process-group-based cleanup on timeout.
 
@@ -39,6 +171,7 @@ def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None):
     :param stdout: File object or subprocess constant for stdout
     :param stderr: File object or subprocess constant for stderr
     :param input: Bytes to send to stdin, or None
+    :param env: Optional environment overrides
     :raises CalledProcessError: If the subprocess exits with non-zero return code
     :raises TimeoutExpired: If the subprocess exceeds the timeout
     :return: stdout bytes if stdout=PIPE, else None
@@ -46,7 +179,8 @@ def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None):
     use_pgid = (os.name != 'nt')
     proc = Popen(cmd, stdout=stdout, stderr=stderr,
                  stdin=PIPE if input is not None else None,
-                 start_new_session=use_pgid)
+                 start_new_session=use_pgid,
+                 env=_subprocess_env(cmd, env))
     try:
         stdout_data, _ = proc.communicate(input=input, timeout=timeout)
     except TimeoutExpired:
@@ -400,9 +534,13 @@ class BNGLModel(Model):
             self.param_set = pset
 
         text = self.model_text(gen_only)
-        f = open(file_prefix + '.bngl', 'w')
-        f.write(text)
-        f.close()
+        text = _stage_and_rewrite_tfun_files(
+            text,
+            os.path.dirname(self.file_path),
+            os.path.dirname(file_prefix),
+        )
+        with open(file_prefix + '.bngl', 'w') as f:
+            f.write(text)
 
     def save_all(self, file_prefix):
         """
@@ -515,7 +653,7 @@ class BNGLModel(Model):
 
 
 class NetModel(BNGLModel):
-    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None):
+    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None):
         self.name = name
         self.actions = acts
         self.config_actions = []
@@ -523,13 +661,17 @@ class NetModel(BNGLModel):
         self.mutants = mutants
         self.param_set = None
         self.bng_command = ''
+        self.net_file_dir = None
 
         if not (ls or nf):
             raise ModelError("Must specify a file name or a list of strings corresponding to the .net file's lines")
         elif ls:
             self.netfile_lines = ls
+            if source_dir is not None:
+                self.net_file_dir = os.path.abspath(source_dir)
         else:
             self.file_name = nf
+            self.net_file_dir = os.path.dirname(os.path.abspath(nf))
             with open(self.file_name, encoding='utf-8', errors='replace') as f:
                 self.netfile_lines = f.readlines()
 
@@ -554,14 +696,21 @@ class NetModel(BNGLModel):
                     if m.group(3) in pset.keys():
                         lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
 
-        newmodel = NetModel(self.name, self.actions, self.suffixes, self.mutants, ls=lines_copy)
+        newmodel = NetModel(self.name, self.actions, self.suffixes, self.mutants, ls=lines_copy,
+                            source_dir=self.net_file_dir)
         newmodel.bng_command = self.bng_command
         newmodel.param_set = pset
         return newmodel
 
     def save(self, file_prefix):
+        net_text = ''.join(self.netfile_lines)
+        net_text = _stage_and_rewrite_tfun_files(
+            net_text,
+            self.net_file_dir,
+            os.path.dirname(file_prefix),
+        )
         with open(file_prefix + '.net', 'w') as wf:
-            wf.write(''.join(self.netfile_lines))
+            wf.write(net_text)
         with open(file_prefix + '.bngl', 'w') as wf:
             wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
             wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
