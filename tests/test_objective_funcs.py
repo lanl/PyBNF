@@ -1,13 +1,9 @@
-from .context import data, objective, printing
+from .context import data, objective, printing, raises
 import numpy as np
 import numpy.testing as npt
-from nose.tools import raises
 
 
 class TestObjectiveFunctions:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
 

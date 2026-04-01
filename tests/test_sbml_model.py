@@ -1,14 +1,10 @@
-from .context import pset, printing
-from nose.tools import raises
+from .context import pset, printing, raises
 import os
 import numpy as np
 import shutil
 
 
 class TestSbmlModel:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""
@@ -105,4 +101,3 @@ class TestSbmlModel:
     @raises(printing.PybnfError)
     def test_invalid_num(self):
         pset.ParamScan({'param': 'K3', 'min': '500', 'max': '1000f', 'step': '500', 'time': '1000'})
-

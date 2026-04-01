@@ -3,9 +3,6 @@ from .context import parse
 
 
 class TestParse:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.s = ['output_dir =  world #test test', 'verbosity = 3', 'model = thing.bngl: data.exp', 'loguniform_var = derp 1 3',

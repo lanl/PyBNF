@@ -1,5 +1,4 @@
-from .context import pset
-from nose.tools import raises
+from .context import pset, raises
 from os import remove
 from os.path import exists
 from pybnf.printing import PybnfError
@@ -8,9 +7,6 @@ import re
 
 
 class TestModel:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""
@@ -244,6 +240,4 @@ end actions
             bf_lines = bf.readlines()
 
         assert re.match('readFile', bf_lines[0])
-
-
 

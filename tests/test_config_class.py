@@ -3,16 +3,12 @@ from .context import data
 from .context import objective
 from .context import pset
 from .context import printing
-
-from nose.tools import raises
+from .context import raises
 
 import operator
 
 
 class TestConfig(object):
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.cf0 = {'models': {'bngl_files/Tricky.bngl'},

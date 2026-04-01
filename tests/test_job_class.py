@@ -8,16 +8,13 @@ from os import getcwd
 from os.path import isfile
 from os.path import isdir
 from shutil import rmtree
-from nose.tools import raises
+from .context import raises
 import copy
 
 import numpy as np
 
 
 class TestJob(object):
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         cls.model = pset.BNGLModel('bngl_files/Tricky.bngl')

@@ -1,12 +1,8 @@
 import re
-from .context import pset
-from nose.tools import raises
+from .context import pset, raises
 
 
 class TestTrajectory:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""

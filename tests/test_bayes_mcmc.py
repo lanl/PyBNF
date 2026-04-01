@@ -5,9 +5,6 @@ import numpy as np
 
 
 class TestBayes:
-    def __init__(self):
-        pass
-
     @classmethod
     def setup_class(cls):
 
