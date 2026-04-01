@@ -737,6 +737,7 @@ class SbmlModelNoTimeout(Model):
         self.suffixes = [a.suffix for a in actions]
         self.stochastic = True if integrator == 'gillespie' else False
         self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
+        self._state_file = None
 
         try:
             rr.Logger.enableConsoleLogging()
@@ -753,11 +754,26 @@ class SbmlModelNoTimeout(Model):
             raise PybnfError('Failed to load model %s.xml - %s' % (self.name, message))
 
         self.species_names = set(runner.model.getFloatingSpeciesIds()).union(set(runner.model.getBoundarySpeciesIds()))
-        self.param_names = self.species_names.union(set(runner.model.getGlobalParameterIds()))
+        self.global_param_names = tuple(runner.model.getGlobalParameterIds())
+        self.param_names = self.species_names.union(set(self.global_param_names))
 
-        # Save compiled RoadRunner state to a temp file to avoid re-parsing XML on every execute() call
-        self._state_file = tempfile.NamedTemporaryFile(suffix='.rr', delete=False).name
-        runner.saveState(self._state_file)
+        # Cache compiled RoadRunner state only when round-tripped runners still honor
+        # PyBNF's global-parameter mutation API. RoadRunner 2.9.2 loads the state file
+        # successfully but ignores later global parameter writes during simulation.
+        state_file = tempfile.NamedTemporaryFile(suffix='.rr', delete=False).name
+        runner.saveState(state_file)
+        if self._state_cache_supports_global_params(state_file):
+            self._state_file = state_file
+        else:
+            logger.warning(
+                'RoadRunner state caching is incompatible with global parameter updates '
+                'for model %s; falling back to fresh XML loads.',
+                self.name,
+            )
+            try:
+                os.unlink(state_file)
+            except OSError:
+                pass
 
         logger.debug('Loaded model %s with Roadrunner' % self.name)
 
@@ -768,10 +784,48 @@ class SbmlModelNoTimeout(Model):
         return newmodel
 
     def _load_runner(self):
-        """Load a RoadRunner instance from the saved state file, avoiding slow XML re-parsing."""
+        """Load a RoadRunner instance, using cached state only when it is safe."""
+        if self._state_file is None:
+            return rr.RoadRunner(self.abs_file_path)
         runner = rr.RoadRunner()
         runner.loadState(self._state_file)
         return runner
+
+    def _state_cache_supports_global_params(self, state_file):
+        """
+        Return True if a loadState() runner reflects global-parameter writes.
+
+        Some RoadRunner versions accept setattr(runner, name, value) after loadState()
+        without actually updating the compiled model used during simulation. In that case
+        PyBNF must reload the XML fresh for correctness.
+        """
+        if len(self.global_param_names) == 0:
+            return True
+
+        probe = rr.RoadRunner()
+        probe.loadState(state_file)
+        checked_any = False
+
+        for name in self.global_param_names:
+            try:
+                original = float(probe.model[name])
+            except Exception:
+                return False
+
+            if not np.isfinite(original):
+                continue
+
+            trial = original + 1.0 if original != 0.0 else 1.0
+            try:
+                setattr(probe, name, trial)
+                if not np.isclose(float(probe.model[name]), trial):
+                    return False
+            except Exception:
+                return False
+
+            checked_any = True
+
+        return checked_any
 
     def model_text(self, mut=None):
         """
