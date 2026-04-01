@@ -40,3 +40,4 @@ full-environment.yml
 pip-installed-packages.txt
 readme_dev.txt
 dev/
+.venv/
