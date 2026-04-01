@@ -10,6 +10,7 @@ from .pset import run_subprocess
 
 from numpy.core.fromnumeric import mean
 
+from .bngsim_model import BngsimModel, BNGSIM_AVAILABLE, actions_compatible_with_bngsim
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
@@ -596,7 +597,29 @@ class Algorithm(object):
 
                 logger.info('Output for network generation of model %s logged in %s/%s.log' %
                              (m.name, init_dir, gnm_name))
-                final_model_list.append(NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=init_dir + '/' + gnm_name + '.net'))
+                net_path = init_dir + '/' + gnm_name + '.net'
+                use_bngsim = BNGSIM_AVAILABLE and actions_compatible_with_bngsim(m.actions)
+                if BNGSIM_AVAILABLE and not use_bngsim:
+                    logger.info(
+                        'Model %s uses actions not supported by the bngsim bridge; '
+                        'falling back to BioNetGen subprocess simulation',
+                        m.name,
+                    )
+
+                if use_bngsim:
+                    try:
+                        logger.info('Using bngsim for in-process simulation of model %s' % m.name)
+                        model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
+                    except Exception:
+                        logger.exception(
+                            'Failed to initialize bngsim bridge for model %s. Falling back to NetModel.',
+                            m.name,
+                        )
+                        model = NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
+                else:
+                    model = NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
+
+                final_model_list.append(model)
                 final_model_list[-1].bng_command = m.bng_command
             else:
                 logger.info('Model %s does not require network generation' % m.name)
