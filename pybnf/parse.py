@@ -85,7 +85,7 @@ def parse(s):
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
     nonetoken = pp.Suppress(pp.CaselessLiteral("none"))
-    model_file = pp.Regex(".*?\.(bngl|xml|target)")
+    model_file = pp.Regex(".*?\.(bngl|xml|ant|target)")
     exp_file = pp.Regex(".*?\.(exp|con|prop)")
     mdmgram = mdmkey - equals - model_file - colon - (pp.delimitedList(exp_file) ^ nonetoken) - comment
 
@@ -263,7 +263,7 @@ def ploop(ls):  # parse loop
                 fmt = "'%s=s' where s is a string" % key
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'" \
-                      " Supported modelfile extensions are .bngl and .xml"
+                      " Supported modelfile extensions are .bngl, .xml, .ant, and .target"
             elif key == 'normalization':
                 fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
                       "'unit', or 'zero')"\
