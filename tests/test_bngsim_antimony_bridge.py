@@ -1,4 +1,5 @@
 import math
+import types
 
 import pytest
 
@@ -45,6 +46,50 @@ def _decay_pset(rate):
 
 def test_parse_accepts_antimony_model_extension():
     assert parse.parse('model = thing.ant: data.exp') == ['model', 'thing.ant', 'data.exp']
+
+
+@pytest.mark.parametrize(
+    'bngsim_available, has_loader, antimony_available, libsbml_available, expected',
+    [
+        (False, False, False, False, (False, 'bngsim is not available')),
+        (True, False, True, True, (False, 'installed bngsim does not expose Antimony loading')),
+        (
+            True,
+            True,
+            False,
+            True,
+            (False, 'antimony is not installed. Install with: pip install antimony python-libsbml'),
+        ),
+        (
+            True,
+            True,
+            True,
+            False,
+            (False, 'python-libsbml is not installed. Install with: pip install antimony python-libsbml'),
+        ),
+        (True, True, True, True, (True, '')),
+    ],
+)
+def test_detect_bngsim_antimony_support(
+    monkeypatch,
+    bngsim_available,
+    has_loader,
+    antimony_available,
+    libsbml_available,
+    expected,
+):
+    if has_loader:
+        model_cls = type('FakeAntimonyModel', (), {'from_antimony': staticmethod(lambda path: path)})
+    else:
+        model_cls = type('FakeAntimonyModel', (), {})
+
+    fake_bngsim = types.SimpleNamespace(Model=model_cls)
+    monkeypatch.setattr(bngsim_antimony_model, 'BNGSIM_AVAILABLE', bngsim_available)
+    monkeypatch.setattr(bngsim_antimony_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_antimony_model, 'ANTIMONY_AVAILABLE', antimony_available)
+    monkeypatch.setattr(bngsim_antimony_model, 'LIBSBML_AVAILABLE', libsbml_available)
+
+    assert bngsim_antimony_model._detect_bngsim_antimony_support() == expected
 
 
 @pytest.mark.skipif(

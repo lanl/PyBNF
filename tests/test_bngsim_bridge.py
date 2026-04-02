@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from .context import algorithms, pset
 import pybnf.bngsim_model as bngsim_model
@@ -255,6 +256,77 @@ def test_classify_actions_for_bngsim_routes_nf_aliases():
         assert bngsim_model.classify_actions_for_bngsim([
             'simulate({method=>"%s",t_end=>4,n_steps=>40,suffix=>"tc"})' % method
         ]) == bngsim_model.BNGSIM_BACKEND_NF
+
+
+def test_normalize_nf_action_method_normalizes_supported_aliases():
+    for method in ('nf', 'nf_reject', 'nfsim'):
+        assert bngsim_model._normalize_nf_action_method(method) == 'nf_reject'
+
+
+@pytest.mark.parametrize('method', ['nf_exact', 'nf_fixed', 'rulemonkey', 'rm', 'dynstoc', 'ds'])
+def test_normalize_nf_action_method_rejects_recognized_but_unsupported_aliases(method):
+    with pytest.raises(ValueError, match='recognized but not supported'):
+        bngsim_model._normalize_nf_action_method(method)
+
+
+def test_normalize_nf_action_method_rejects_non_nf_method():
+    with pytest.raises(ValueError, match="method=>'ode' is not supported"):
+        bngsim_model._normalize_nf_action_method('ode')
+
+
+@pytest.mark.parametrize(
+    'method, expected_backend',
+    [
+        ('ode', bngsim_model.BNGSIM_BACKEND_NET),
+        ('ssa', bngsim_model.BNGSIM_BACKEND_NET),
+        ('psa', bngsim_model.BNGSIM_BACKEND_NET),
+        ('nf', bngsim_model.BNGSIM_BACKEND_NF),
+        ('nf_reject', bngsim_model.BNGSIM_BACKEND_NF),
+        ('nfsim', bngsim_model.BNGSIM_BACKEND_NF),
+        ('pla', None),
+        ('nf_exact', None),
+        ('unknown_method', None),
+    ],
+)
+def test_classify_action_method_backend_maps_methods(method, expected_backend):
+    assert bngsim_model._classify_action_method_backend(method) == expected_backend
+
+
+def test_classify_actions_for_bngsim_defaults_methodless_simulate_to_net():
+    assert bngsim_model.classify_actions_for_bngsim([
+        'simulate({t_end=>4,n_steps=>40,suffix=>"tc"})'
+    ]) == bngsim_model.BNGSIM_BACKEND_NET
+
+
+def test_classify_actions_for_bngsim_routes_nf_parameter_scan_aliases():
+    for method in ('nf', 'nf_reject', 'nfsim'):
+        assert bngsim_model.classify_actions_for_bngsim([
+            'parameter_scan({method=>"%s",parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>4,suffix=>"scan"})'
+            % method
+        ]) == bngsim_model.BNGSIM_BACKEND_NF
+
+
+def test_allowed_bngsim_backends_for_action_marks_nf_setconcentration_expression():
+    backends, is_simulation_action = bngsim_model._allowed_bngsim_backends_for_action(
+        'setConcentration("L(r)", "EGF_copy_number")'
+    )
+
+    assert backends == frozenset((bngsim_model.BNGSIM_BACKEND_NF,))
+    assert not is_simulation_action
+
+
+def test_classify_actions_for_bngsim_rejects_nf_setconcentration_with_net_simulation():
+    assert bngsim_model.classify_actions_for_bngsim([
+        'setConcentration("L(r)", "EGF_copy_number")',
+        'simulate({method=>"ode",t_end=>4,n_steps=>40,suffix=>"tc"})',
+    ]) is None
+
+
+def test_classify_actions_for_bngsim_requires_a_simulation_action():
+    assert bngsim_model.classify_actions_for_bngsim([
+        'generate_network({overwrite=>1})',
+        'setParameter("k", 1.0)',
+    ]) is None
 
 
 def test_classify_actions_for_bngsim_rejects_mixed_backends():

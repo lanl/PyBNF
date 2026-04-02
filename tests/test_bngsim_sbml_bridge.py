@@ -1,4 +1,5 @@
 from pathlib import Path
+import types
 
 import numpy.testing as npt
 import pytest
@@ -45,6 +46,29 @@ def _model_loader_config(sbml_backend='roadrunner'):
 
 def test_parse_accepts_sbml_backend():
     assert parse.parse('sbml_backend = bngsim') == ['sbml_backend', 'bngsim']
+
+
+@pytest.mark.parametrize(
+    'bngsim_available, has_loader, libsbml_available, expected',
+    [
+        (False, False, False, (False, 'bngsim is not available')),
+        (True, False, True, (False, 'installed bngsim does not expose SBML loading')),
+        (True, True, False, (False, 'python-libsbml is not installed')),
+        (True, True, True, (True, '')),
+    ],
+)
+def test_detect_bngsim_sbml_support(monkeypatch, bngsim_available, has_loader, libsbml_available, expected):
+    if has_loader:
+        model_cls = type('FakeSbmlModel', (), {'from_sbml': staticmethod(lambda path: path)})
+    else:
+        model_cls = type('FakeSbmlModel', (), {})
+
+    fake_bngsim = types.SimpleNamespace(Model=model_cls)
+    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_AVAILABLE', bngsim_available)
+    monkeypatch.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_sbml_model, 'LIBSBML_AVAILABLE', libsbml_available)
+
+    assert bngsim_sbml_model._detect_bngsim_sbml_support() == expected
 
 
 def test_config_routes_xml_to_roadrunner_by_default():
