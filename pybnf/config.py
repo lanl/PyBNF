@@ -13,6 +13,12 @@ from .bngsim_sbml_model import (
     BngsimSbmlModel,
     BngsimSbmlModelNoTimeout,
 )
+from .bngsim_antimony_model import (
+    BNGSIM_HAS_ANTIMONY,
+    BNGSIM_ANTIMONY_ERROR,
+    BngsimAntimonyModel,
+    BngsimAntimonyModelNoTimeout,
+)
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -280,7 +286,7 @@ class Configuration(object):
         would_crash = {'refine', 'bootstrap'}
 
         for k in conf_dict:
-            if k not in used and not re.search('\.(bngl|xml)', k):
+            if k not in used and not re.search('\.(bngl|xml|ant)', k):
                 print1('Warning: Configuration key '+str(k)+' is not used in fit_type "check", so I am ignoring it')
                 logger.warning('Ignoring unused key %s for fitting algorithm "check"' % k)
         for k in would_crash:
@@ -398,7 +404,7 @@ class Configuration(object):
                 time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
                 for i,v in time.items():
                     timeDict[i] = v
-            elif re.search('\.xml$', mf):
+            elif re.search('\.(xml|ant)$', mf):
                 for tc in self.config['time_course']:
                     suffix = tc['suffix']
                     try:
@@ -470,6 +476,26 @@ class Configuration(object):
                         model = SbmlModel(
                             mf,
                             self._absolute(mf),
+                                save_files=save_flag,
+                                integrator=self.config['sbml_integrator'],
+                            )
+                elif re.search('\.ant$', mf):
+                    save_flag = (self.config['delete_old_files'] == 0)
+                    if not BNGSIM_HAS_ANTIMONY:
+                        raise PybnfError(
+                            'Antimony model support was requested, but %s.' % BNGSIM_ANTIMONY_ERROR
+                        )
+                    if self.config['wall_time_sim'] == 0:
+                        model = BngsimAntimonyModelNoTimeout(
+                            mf,
+                            self._absolute(mf),
+                            save_files=save_flag,
+                            integrator=self.config['sbml_integrator'],
+                        )
+                    else:
+                        model = BngsimAntimonyModel(
+                            mf,
+                            self._absolute(mf),
                             save_files=save_flag,
                             integrator=self.config['sbml_integrator'],
                         )
@@ -518,7 +544,7 @@ class Configuration(object):
             return
 
         for base, name, mutations, exps in self.config['mutant']:
-            base = self._file_prefix(base, '(bngl|xml)')
+            base = self._file_prefix(base, '(bngl|xml|ant)')
             if base not in self.models:
                 raise PybnfError('Mutant %s declared corresponding to model %s, but that model was not found' %
                                  (name, base))
@@ -609,7 +635,7 @@ class Configuration(object):
                     action = ActionType(action_dict)
                     try:
                         # Model lookup - should work if model name included the extension or not.
-                        model_key = self._file_prefix(action_dict['model'], '(bngl|xml)')
+                        model_key = self._file_prefix(action_dict['model'], '(bngl|xml|ant)')
                         self.models[model_key].add_action(action)
                     except KeyError:
                         raise PybnfError('%s declared for model %s, but that model was not found.' %
@@ -645,7 +671,7 @@ class Configuration(object):
                         raise PybnfError('Parsing data file %s. %s' % (ef, err.args[0]))
                     ed[m][self._file_prefix(ef)] = d
                 else:
-                    cs = ConstraintSet(self._file_prefix(m, '(bngl|xml)'), self._file_prefix(ef, '(con|prop)'))
+                    cs = ConstraintSet(self._file_prefix(m, '(bngl|xml|ant)'), self._file_prefix(ef, '(con|prop)'))
                     try:
                         cs.load_constraint_file(ef, scale=self.config['constraint_scale'])
                     except FileNotFoundError:
@@ -663,9 +689,9 @@ class Configuration(object):
                     if ef not in suffs:
                         raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef,
                               "You specified that model %s corresponds to data file %s.exp, but I can't find the "
-                              "corresponding action in the model file or config file. One of the actions in %s.bngl "
+                              "corresponding action in the model file or config file. One of the actions in %s "
                               "needs to include the argument 'suffix=>\"%s\" ', or your config file needs to include "
-                              "an action with the suffix %s." % (model.name, ef, model.name, ef, ef))
+                              "an action with the suffix %s." % (model.name, ef, model.file_path, ef, ef))
             logger.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
             mapping[model.name] = efs_per_m
         return mapping
@@ -808,7 +834,7 @@ class Configuration(object):
                 m = None
                 for modelpath in self.config['models']:
                     if ef in self.config[modelpath]:
-                        m = self._file_prefix(modelpath, '(bngl|xml)')
+                        m = self._file_prefix(modelpath, '(bngl|xml|ant)')
                         break
                 suff = self._file_prefix(ef)
 
