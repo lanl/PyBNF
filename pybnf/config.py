@@ -7,6 +7,12 @@ from .objective import ChiSquareObjective, ChiSquareObjective_Dynamic, NegBinLik
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
     Mutation, MutationSet
+from .bngsim_sbml_model import (
+    BNGSIM_HAS_SBML,
+    BNGSIM_SBML_ERROR,
+    BngsimSbmlModel,
+    BngsimSbmlModelNoTimeout,
+)
 from .printing import verbosity, print1, PybnfError
 from .constraint import ConstraintSet
 
@@ -174,7 +180,8 @@ class Configuration(object):
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
-            'sbml_integrator': 'cvode', 'parallel_count': None, 'save_best_data': 0, 'simulation_dir': None,
+            'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'parallel_count': None, 'save_best_data': 0,
+            'simulation_dir': None,
             'parallelize_models': 1, 'starting_params':None,
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
@@ -267,7 +274,8 @@ class Configuration(object):
         :return: A modified config dictionary, after removing any extraneous keys that would crash PyBNF
         """
         used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
-                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'time_course', 'param_scan', 'mutant',
+                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'time_course',
+                'param_scan', 'mutant',
                 'models', 'exp_data'}
         would_crash = {'refine', 'bootstrap'}
 
@@ -409,6 +417,11 @@ class Configuration(object):
         Model.name
         """
 
+        allowed_sbml_backends = ('roadrunner', 'bngsim')
+        if self.config['sbml_backend'] not in allowed_sbml_backends:
+            raise PybnfError('Invalid sbml_backend %s. Options are: %s.' %
+                             (self.config['sbml_backend'], ', '.join(allowed_sbml_backends)))
+
         # If needed, choose the default timeout, which depends on what simulators the models use.
         if self.config['wall_time_sim'] is None:
             self.config['wall_time_sim'] = 0
@@ -427,10 +440,39 @@ class Configuration(object):
                     logger.debug('Set model %s command to %s' % (mf, model.bng_command))
                 elif re.search('\.xml$', mf):
                     save_flag = (self.config['delete_old_files'] == 0)
-                    if self.config['wall_time_sim'] == 0:
-                        model = SbmlModelNoTimeout(mf, self._absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
+                    if self.config['sbml_backend'] == 'bngsim':
+                        if not BNGSIM_HAS_SBML:
+                            raise PybnfError(
+                                'sbml_backend = bngsim was requested, but %s.' % BNGSIM_SBML_ERROR
+                            )
+                        if self.config['wall_time_sim'] == 0:
+                            model = BngsimSbmlModelNoTimeout(
+                                mf,
+                                self._absolute(mf),
+                                save_files=save_flag,
+                                integrator=self.config['sbml_integrator'],
+                            )
+                        else:
+                            model = BngsimSbmlModel(
+                                mf,
+                                self._absolute(mf),
+                                save_files=save_flag,
+                                integrator=self.config['sbml_integrator'],
+                            )
+                    elif self.config['wall_time_sim'] == 0:
+                        model = SbmlModelNoTimeout(
+                            mf,
+                            self._absolute(mf),
+                            save_files=save_flag,
+                            integrator=self.config['sbml_integrator'],
+                        )
                     else:
-                        model = SbmlModel(mf, self._absolute(mf), save_files=save_flag, integrator=self.config['sbml_integrator'])
+                        model = SbmlModel(
+                            mf,
+                            self._absolute(mf),
+                            save_files=save_flag,
+                            integrator=self.config['sbml_integrator'],
+                        )
                 elif re.search('\.target$', mf):
                     from .analytical_model import AnalyticalModel
                     model = AnalyticalModel(mf)
@@ -536,16 +578,23 @@ class Configuration(object):
                                      'If BioNetGen is not yet installed, please refer to installation instructions at '
                                      'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
         # Check that the integrator is valid
-        integrators = ('cvode', 'euler', 'rk4', 'gillespie')
-        if self.config['sbml_integrator'] not in integrators:
-            raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
-                                                                               ', '.join(integrators)))
-        if self.config['sbml_integrator'] == 'euler':
-            if roadrunner.__version__ < '1.5.1':
-                raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
-                                 'have version %s' % roadrunner.__version__)
-            print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
-                   'producing reasonable output.')
+        if self.config['sbml_backend'] == 'bngsim':
+            if self.config['sbml_integrator'] != 'cvode':
+                raise PybnfError(
+                    'Config option "sbml_backend = bngsim" currently supports only '
+                    '"sbml_integrator = cvode".'
+                )
+        else:
+            integrators = ('cvode', 'euler', 'rk4', 'gillespie')
+            if self.config['sbml_integrator'] not in integrators:
+                raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
+                                                                                   ', '.join(integrators)))
+            if self.config['sbml_integrator'] == 'euler':
+                if roadrunner.__version__ < '1.5.1':
+                    raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
+                                     'have version %s' % roadrunner.__version__)
+                print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
+                       'producing reasonable output.')
 
     def _load_actions(self):
 
