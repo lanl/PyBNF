@@ -2,15 +2,17 @@
 
 
 import copy
+import hashlib
 import logging
 import math
 import os
 import re
+import shutil
 
 import numpy as np
 
 from .data import Data
-from .pset import FreeParameter, NetModel, PSet
+from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,40 @@ try:
 except ImportError:
     bngsim = None
     BNGSIM_AVAILABLE = False
+
+
+BNGSIM_HAS_NFSIM = False
+if BNGSIM_AVAILABLE:
+    if hasattr(bngsim, 'HAS_NFSIM'):
+        BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM'))
+    elif hasattr(bngsim, '_bngsim_core'):
+        BNGSIM_HAS_NFSIM = bool(getattr(bngsim._bngsim_core, 'HAS_NFSIM', False))
+    else:
+        try:
+            from bngsim._bngsim_core import HAS_NFSIM
+
+            BNGSIM_HAS_NFSIM = bool(HAS_NFSIM)
+        except ImportError:
+            pass
+
+
+BNGSIM_BACKEND_NET = 'net'
+BNGSIM_BACKEND_NF = 'nf'
+
+_BNGSIM_ACTION_BACKENDS = frozenset((BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF))
+_SUPPORTED_NF_METHOD_ALIASES = {
+    'nf': 'nf_reject',
+    'nf_reject': 'nf_reject',
+    'nfsim': 'nf_reject',
+}
+_UNSUPPORTED_NF_METHOD_ALIASES = frozenset((
+    'nf_exact',
+    'nf_fixed',
+    'rulemonkey',
+    'rm',
+    'dynstoc',
+    'ds',
+))
 
 
 _PARAMETER_SCAN_KEY_ALIASES = {
@@ -176,6 +212,17 @@ def _is_save_parameters(action_line):
     return bool(re.match(r'\s*saveParameters\s*\(', action_line))
 
 
+def _parse_set_concentration_nf(action_line):
+    """Parse NF-style setConcentration("species", "expr") -> (pattern, expr) or None."""
+    match = re.match(
+        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*["\']?([^"\')\s]+)["\']?\s*\)',
+        action_line,
+    )
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
 def _normalize_action_method(method, poplevel_text=None):
     """Normalize BNGL methods to the bngsim simulator API."""
     lower = method.strip().lower()
@@ -203,31 +250,114 @@ def _normalize_action_method(method, poplevel_text=None):
     return lower, None
 
 
+def _normalize_nf_action_method(method):
+    """Normalize BNGL network-free methods to the supported bngsim NF token."""
+    lower = method.strip().lower()
+    if lower in _SUPPORTED_NF_METHOD_ALIASES:
+        return _SUPPORTED_NF_METHOD_ALIASES[lower]
+    if lower in _UNSUPPORTED_NF_METHOD_ALIASES:
+        raise ValueError(
+            "method=>'%s' is recognized but not supported by the bngsim NF bridge" % lower
+        )
+    raise ValueError(
+        "method=>'%s' is not supported by the bngsim NF bridge" % lower
+    )
+
+
+def _classify_action_method_backend(method):
+    """Map a BNGL method token to the relevant bngsim bridge backend."""
+    lower = method.strip().lower()
+
+    if lower == 'pla':
+        return None
+    if lower in ('ode', 'ssa', 'psa'):
+        return BNGSIM_BACKEND_NET
+    if lower in _SUPPORTED_NF_METHOD_ALIASES:
+        return BNGSIM_BACKEND_NF
+    if lower in _UNSUPPORTED_NF_METHOD_ALIASES:
+        return None
+    return None
+
+
+def _allowed_bngsim_backends_for_action(action_line):
+    """Return (allowed_backends, is_simulation_action) for one BNGL action line."""
+    line = _collapse_action_line_continuations(action_line).strip()
+    if not line or line.startswith('#'):
+        return None, False
+
+    if re.match(r'\s*(begin|end)\s+actions', line):
+        return _BNGSIM_ACTION_BACKENDS, False
+
+    if re.match(r'\s*generate_network\s*\(', line):
+        return frozenset((BNGSIM_BACKEND_NET,)), False
+
+    sim_params = _parse_simulate_action(line)
+    if sim_params is not None:
+        backend = _classify_action_method_backend(sim_params.get('method', 'ode'))
+        if backend is None:
+            return frozenset(), True
+        return frozenset((backend,)), True
+
+    ps_params = _parse_parameter_scan_action(line)
+    if ps_params is not None:
+        backend = _classify_action_method_backend(ps_params.get('method', 'ode'))
+        if backend is None:
+            return frozenset(), True
+        return frozenset((backend,)), True
+
+    if _parse_set_parameter(line) is not None:
+        return _BNGSIM_ACTION_BACKENDS, False
+
+    if _parse_set_concentration(line) is not None:
+        return _BNGSIM_ACTION_BACKENDS, False
+
+    if _parse_set_concentration_nf(line) is not None:
+        return frozenset((BNGSIM_BACKEND_NF,)), False
+
+    if _is_reset_concentrations(line) or _is_reset_parameters(line):
+        return frozenset((BNGSIM_BACKEND_NET,)), False
+
+    if _is_save_concentrations(line) or _is_save_parameters(line):
+        return frozenset((BNGSIM_BACKEND_NET,)), False
+
+    return frozenset(), False
+
+
+def classify_actions_for_bngsim(actions):
+    """
+    Classify an action set as the `.net` bridge, the NFsim bridge, or unsupported.
+
+    Returns:
+        `BNGSIM_BACKEND_NET`, `BNGSIM_BACKEND_NF`, or `None`.
+    """
+    candidates = set(_BNGSIM_ACTION_BACKENDS)
+    saw_simulation_action = False
+
+    for action_line in actions:
+        allowed_backends, is_simulation_action = _allowed_bngsim_backends_for_action(action_line)
+        if allowed_backends is None:
+            continue
+
+        candidates.intersection_update(allowed_backends)
+        if len(candidates) == 0:
+            return None
+
+        if is_simulation_action:
+            saw_simulation_action = True
+
+    if not saw_simulation_action or len(candidates) != 1:
+        return None
+
+    return next(iter(candidates))
+
+
 def actions_compatible_with_bngsim(actions):
     """
     Return True if all simulation actions are compatible with BngsimModel.
 
     Unsupported simulation methods should stay on the subprocess NetModel path.
     """
-    for action_line in actions:
-        line = _collapse_action_line_continuations(action_line).strip()
-        if not line or line.startswith('#'):
-            continue
-
-        sim_params = _parse_simulate_action(line)
-        if sim_params is not None:
-            method = sim_params.get('method', 'ode').strip().lower()
-            if method not in ('ode', 'ssa', 'psa') or method == 'pla':
-                return False
-            continue
-
-        ps_params = _parse_parameter_scan_action(line)
-        if ps_params is not None:
-            method = ps_params.get('method', 'ode').strip().lower()
-            if method not in ('ode', 'ssa', 'psa') or method == 'pla':
-                return False
-
-    return True
+    return classify_actions_for_bngsim(actions) == BNGSIM_BACKEND_NET
 
 
 def _resolve_scan_points(ps_params):
@@ -306,6 +436,69 @@ def _parse_net_species_initializers(net_lines):
             initializers.append((match.group(1), match.group(2).strip()))
 
     return initializers
+
+
+def _parse_bngl_param_block(model_lines):
+    """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
+    params = []
+    in_block = False
+
+    for raw_line in model_lines:
+        line = raw_line.strip()
+        comment_idx = line.find('#')
+        if comment_idx >= 0:
+            line = line[:comment_idx].strip()
+        if not line:
+            continue
+
+        if re.match(r'begin\s+parameters', line):
+            in_block = True
+            continue
+        if re.match(r'end\s+parameters', line):
+            break
+        if not in_block:
+            continue
+
+        eq_match = re.match(r'([A-Za-z_]\w*)\s*=\s*(.+)', line)
+        if eq_match:
+            params.append((eq_match.group(1), eq_match.group(2).strip()))
+            continue
+
+        space_match = re.match(r'([A-Za-z_]\w*)\s+(.+)', line)
+        if space_match:
+            params.append((space_match.group(1), space_match.group(2).strip()))
+
+    return params
+
+
+def _evaluate_bngl_params(param_exprs, input_overrides=None):
+    """Evaluate ordered BNGL parameter expressions top-to-bottom."""
+    if input_overrides is None:
+        input_overrides = {}
+
+    ns = _build_safe_eval_namespace()
+    result = {}
+
+    for name, expr in param_exprs:
+        if expr in input_overrides:
+            value = float(input_overrides[expr])
+        elif name in input_overrides:
+            value = float(input_overrides[name])
+        else:
+            try:
+                value = float(eval(expr, ns))  # noqa: S307
+            except Exception:
+                logger.warning(
+                    "BngsimNfModel: could not evaluate param %s = %r; using 0.0",
+                    name,
+                    expr,
+                )
+                value = 0.0
+
+        ns[name] = value
+        result[name] = value
+
+    return result
 
 
 class BngsimModel(NetModel):
@@ -708,3 +901,386 @@ class BngsimModel(NetModel):
     def save(self, file_prefix, **kwargs):
         """Still write debug/export files via the NetModel implementation."""
         super(BngsimModel, self).save(file_prefix)
+
+
+class BngsimNfModel(Model):
+    """In-process NFsim simulation model using bngsim's XML-backed session API."""
+
+    def __init__(
+        self,
+        name,
+        acts,
+        suffs,
+        mutants,
+        xml_path,
+        bngl_model_lines=None,
+        split_line_index=None,
+        param_names=(),
+        source_dir=None,
+    ):
+        if not BNGSIM_AVAILABLE:
+            raise RuntimeError('bngsim is not available')
+        if not BNGSIM_HAS_NFSIM:
+            raise RuntimeError('bngsim does not provide NFsim support')
+
+        self.name = name
+        self.actions = acts
+        self.suffixes = suffs
+        self.mutants = mutants
+        self._xml_path = xml_path
+        self._bngl_model_lines = list(bngl_model_lines) if bngl_model_lines is not None else None
+        self._split_line_index = split_line_index
+        self._source_dir = source_dir
+        self.param_names = tuple(param_names)
+        self.param_set = None
+        self.bng_command = ''
+
+        if bngl_model_lines is not None:
+            self._param_exprs = _parse_bngl_param_block(bngl_model_lines)
+        else:
+            self._param_exprs = []
+
+    def copy_with_param_set(self, pset):
+        """Return a shallow copy with the requested parameter set."""
+        newmodel = copy.copy(self)
+        newmodel.param_set = pset
+        return newmodel
+
+    def _initial_param_inputs(self):
+        """Return the current PSet as direct parameter inputs for BNGL re-evaluation."""
+        if self.param_set is None:
+            return {}
+        return {
+            pname: float(self.param_set[pname])
+            for pname in self.param_set.keys()
+        }
+
+    def _build_nf_param_overrides(self, input_overrides=None):
+        """Compute parameter overrides to apply to NFsim before initialize()."""
+        if input_overrides is None:
+            input_overrides = self._initial_param_inputs()
+
+        if self._param_exprs:
+            return _evaluate_bngl_params(self._param_exprs, input_overrides)
+
+        return {
+            pname: float(input_overrides[pname])
+            for pname in input_overrides
+        }
+
+    @staticmethod
+    def _stable_seed(input_overrides, filename):
+        """Generate a deterministic per-evaluation NF seed."""
+        if not input_overrides:
+            return 42
+
+        seed_parts = [
+            '%s=%r' % (name, input_overrides[name])
+            for name in sorted(input_overrides)
+        ]
+        seed_parts.append(filename)
+        digest = hashlib.sha256('|'.join(seed_parts).encode('utf-8')).digest()
+        return int.from_bytes(digest[:4], byteorder='big') & 0x7fffffff
+
+    @staticmethod
+    def _apply_param_overrides(nfsim, param_overrides):
+        """Apply all known parameter overrides to one NFsim session."""
+        try:
+            if hasattr(nfsim, 'clear_param_overrides'):
+                nfsim.clear_param_overrides()
+        except Exception:
+            logger.debug('BngsimNfModel: could not clear previous NF parameter overrides')
+
+        for pname, pval in param_overrides.items():
+            try:
+                nfsim.set_param(pname, pval)
+            except Exception:
+                logger.debug(
+                    'BngsimNfModel: could not set NF parameter %s=%s',
+                    pname,
+                    pval,
+                )
+
+    def _run_nf_parameter_scan(self, ps_params, seed, current_param_inputs):
+        """Execute one NF parameter_scan() action using one short session per point."""
+        from bngsim._bngsim_core import NfsimSimulator
+
+        _normalize_nf_action_method(ps_params.get('method', 'nf'))
+
+        param_name = ps_params.get('parameter', '')
+        t_start = float(ps_params.get('t_start', 0))
+        t_end = float(ps_params.get('t_end', 100))
+        n_steps = int(ps_params.get('n_steps', 1))
+        suffix = ps_params.get('suffix', 'param_scan')
+        gml = ps_params.get('gml')
+        gml_int = int(gml) if gml is not None else None
+
+        points = _resolve_scan_points(ps_params)
+        obs_names = []
+        expr_names = []
+        rows = []
+
+        for i, value in enumerate(points):
+            point_inputs = dict(current_param_inputs)
+            if param_name:
+                point_inputs[param_name] = float(value)
+            point_param_overrides = self._build_nf_param_overrides(point_inputs)
+            point_seed = int(ps_params.get('seed', (seed + i) % (2**31)))
+
+            nfsim = NfsimSimulator(self._xml_path)
+            try:
+                if gml_int is not None:
+                    nfsim.set_molecule_limit(gml_int)
+                self._apply_param_overrides(nfsim, point_param_overrides)
+                nfsim.initialize(point_seed)
+
+                result = bngsim.Result(
+                    nfsim.simulate(t_start, t_end, n_steps + 1)
+                )
+                row, row_obs, row_expr = BngsimModel._scan_result_to_row(result, value)
+                if len(obs_names) == 0:
+                    obs_names = row_obs
+                    expr_names = row_expr
+                rows.append(row)
+            finally:
+                try:
+                    nfsim.destroy_session()
+                except Exception:
+                    pass
+
+        if rows:
+            arr = np.vstack(rows)
+        else:
+            arr = np.zeros((0, 1))
+
+        data = Data(arr=arr)
+        headers = [param_name] + obs_names + expr_names
+        data.cols = {h: i for i, h in enumerate(headers)}
+        data.headers = {i: h for i, h in enumerate(headers)}
+        data.indvar = param_name
+        return {suffix: data}
+
+    @staticmethod
+    def _result_to_data(result):
+        """Convert a bngsim Result to a PyBNF Data object."""
+        return BngsimModel._result_to_data(result)
+
+    def execute(self, folder, filename, timeout, with_mutants=True):
+        """Execute all NF actions in-process using XML-backed NFsim sessions."""
+        from bngsim._bngsim_core import NfsimSimulator
+
+        ds = {}
+        current_param_inputs = self._initial_param_inputs()
+        current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
+        saved_param_inputs = dict(current_param_inputs)
+        seed = self._stable_seed(current_param_inputs, filename)
+        nfsim = None
+        current_gml = None
+
+        def _start_session(seed_value, gml_value):
+            sim = NfsimSimulator(self._xml_path)
+            if gml_value is not None:
+                sim.set_molecule_limit(gml_value)
+            self._apply_param_overrides(sim, current_param_overrides)
+            sim.initialize(seed_value)
+            return sim
+
+        def _stop_session(sim):
+            if sim is None:
+                return
+            try:
+                sim.destroy_session()
+            except Exception:
+                pass
+
+        try:
+            for action_line in self.actions:
+                line = _collapse_action_line_continuations(action_line).strip()
+                if not line or line.startswith('#'):
+                    continue
+
+                ps_params = _parse_parameter_scan_action(line)
+                if ps_params is not None:
+                    ds.update(self._run_nf_parameter_scan(
+                        ps_params,
+                        seed,
+                        current_param_inputs,
+                    ))
+                    continue
+
+                sim_params = _parse_simulate_action(line)
+                if sim_params is not None:
+                    _normalize_nf_action_method(sim_params.get('method', 'nf'))
+
+                    t_start = float(sim_params.get('t_start', 0))
+                    t_end = float(sim_params.get('t_end', 100))
+                    n_steps = int(sim_params.get('n_steps', 100))
+                    suffix = sim_params.get('suffix', 'time_course')
+                    gml = sim_params.get('gml')
+                    gml_int = int(gml) if gml is not None else None
+                    action_seed = int(sim_params.get('seed', seed))
+
+                    if nfsim is None:
+                        nfsim = _start_session(action_seed, gml_int)
+                        current_gml = gml_int
+                    elif gml_int is not None and gml_int != current_gml:
+                        nfsim.set_molecule_limit(gml_int)
+                        current_gml = gml_int
+
+                    result = bngsim.Result(
+                        nfsim.simulate(t_start, t_end, n_steps + 1)
+                    )
+                    ds[suffix] = self._result_to_data(result)
+                    continue
+
+                sp = _parse_set_parameter(line)
+                if sp is not None:
+                    param_name, param_value = sp
+                    current_param_inputs[param_name] = float(param_value)
+                    current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
+                    if nfsim is not None:
+                        self._apply_param_overrides(nfsim, current_param_overrides)
+                    continue
+
+                sc = _parse_set_concentration_nf(line)
+                if sc is not None:
+                    species_pattern, expr_text = sc
+                    if nfsim is None:
+                        nfsim = _start_session(seed, current_gml)
+
+                    if expr_text in current_param_overrides:
+                        count = int(round(current_param_overrides[expr_text]))
+                    else:
+                        try:
+                            count = int(round(float(expr_text)))
+                        except ValueError:
+                            try:
+                                count = int(round(nfsim.get_parameter(expr_text)))
+                            except Exception:
+                                logger.warning(
+                                    "BngsimNfModel: cannot evaluate '%s' for setConcentration",
+                                    expr_text,
+                                )
+                                continue
+
+                    mol_type = species_pattern.split('(')[0]
+                    current = nfsim.get_molecule_count(mol_type)
+                    to_add = count - current
+                    if to_add < 0:
+                        logger.warning(
+                            "BngsimNfModel: cannot decrease %s from %d to %d with the current bridge; leaving state unchanged",
+                            mol_type,
+                            current,
+                            count,
+                        )
+                        continue
+                    if to_add > 0:
+                        nfsim.add_molecules(mol_type, to_add)
+                    continue
+
+                if _is_save_parameters(line):
+                    saved_param_inputs = dict(current_param_inputs)
+                    continue
+
+                if _is_reset_parameters(line):
+                    current_param_inputs = dict(saved_param_inputs)
+                    current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
+                    if nfsim is not None:
+                        self._apply_param_overrides(nfsim, current_param_overrides)
+                    continue
+
+                if line and not re.match(r'\s*(begin|end)\s+actions', line):
+                    logger.debug("BngsimNfModel: skipping unsupported action: %s", line)
+        finally:
+            _stop_session(nfsim)
+
+        if with_mutants:
+            for mut in self.mutants:
+                logger.debug('Working on mutant %s', mut.suffix)
+                mut_model = self._get_mutant_model_nf(mut)
+                mut_data = mut_model.execute(
+                    folder,
+                    filename + mut.suffix,
+                    timeout,
+                    with_mutants=False,
+                )
+                for suff in mut_data:
+                    ds[suff + mut.suffix] = mut_data[suff]
+                logger.debug('Finished mutant %s', mut.suffix)
+
+        return ds
+
+    def _get_mutant_model_nf(self, mut):
+        """Create a mutant copy with a mutated parameter set."""
+        params = {p.name: p.value for p in self.param_set}
+        for mi in mut:
+            params[mi.name] = mi.mutate(params[mi.name])
+        mut_param_list = [
+            FreeParameter(
+                pname,
+                'uniform_var',
+                -np.inf,
+                np.inf,
+                value=params[pname],
+                bounded=True,
+            )
+            for pname in params
+        ]
+        mut_pset = PSet(mut_param_list)
+        mut_model = copy.copy(self)
+        mut_model.param_set = mut_pset
+        return mut_model
+
+    def _saved_bngl_text(self):
+        """Build a runnable BNGL copy for export/debugging when source text is available."""
+        if (
+            self._bngl_model_lines is None or
+            self._split_line_index is None or
+            self.param_set is None
+        ):
+            return None
+
+        param_text_lines = [
+            '%s %s' % (k, str(self.param_set[k]))
+            for k in self.param_names
+        ]
+        action_lines = ['begin actions\n'] + list(self.actions) + ['end actions']
+        all_lines = (
+            self._bngl_model_lines[:self._split_line_index] +
+            param_text_lines +
+            self._bngl_model_lines[self._split_line_index:] +
+            action_lines
+        )
+        return '\n'.join(all_lines) + '\n'
+
+    def save(self, file_prefix, **kwargs):
+        """Save the generated XML plus a runnable BNGL copy when possible."""
+        del kwargs
+        if self._xml_path and os.path.isfile(self._xml_path):
+            shutil.copyfile(self._xml_path, file_prefix + '.xml')
+
+        text = self._saved_bngl_text()
+        if text is None:
+            return
+
+        text = _stage_and_rewrite_tfun_files(
+            text,
+            self._source_dir,
+            os.path.dirname(file_prefix),
+        )
+        with open(file_prefix + '.bngl', 'w') as f:
+            f.write(text)
+
+    def save_all(self, file_prefix):
+        """Save the current model and all mutant exports."""
+        self.save(file_prefix)
+        for mut in self.mutants:
+            self._get_mutant_model_nf(mut).save(file_prefix + mut.suffix)
+
+    def __getstate__(self):
+        """Support pickling for worker processes."""
+        return self.__dict__.copy()
+
+    def __setstate__(self, state):
+        """Restore from pickle."""
+        self.__dict__.update(state)
