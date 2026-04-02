@@ -10,7 +10,15 @@ from .pset import run_subprocess
 
 from numpy.core.fromnumeric import mean
 
-from .bngsim_model import BngsimModel, BNGSIM_AVAILABLE, actions_compatible_with_bngsim
+from .bngsim_model import (
+    BngsimModel,
+    BngsimNfModel,
+    BNGSIM_AVAILABLE,
+    BNGSIM_BACKEND_NET,
+    BNGSIM_BACKEND_NF,
+    BNGSIM_HAS_NFSIM,
+    classify_actions_for_bngsim,
+)
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
@@ -557,6 +565,10 @@ class Algorithm(object):
         init_dir = os.getcwd() + '/Initialize'
 
         for m in init_model_list:
+            bridge_backend = None
+            if isinstance(m, BNGLModel):
+                bridge_backend = classify_actions_for_bngsim(m.actions)
+
             if isinstance(m, BNGLModel) and m.generates_network:
                 logger.debug('Model %s requires network generation' % m.name)
 
@@ -598,10 +610,10 @@ class Algorithm(object):
                 logger.info('Output for network generation of model %s logged in %s/%s.log' %
                              (m.name, init_dir, gnm_name))
                 net_path = init_dir + '/' + gnm_name + '.net'
-                use_bngsim = BNGSIM_AVAILABLE and actions_compatible_with_bngsim(m.actions)
-                if BNGSIM_AVAILABLE and not use_bngsim:
+                use_bngsim = BNGSIM_AVAILABLE and bridge_backend == BNGSIM_BACKEND_NET
+                if BNGSIM_AVAILABLE and bridge_backend != BNGSIM_BACKEND_NET:
                     logger.info(
-                        'Model %s uses actions not supported by the bngsim bridge; '
+                        'Model %s uses actions not supported by the `.net` bngsim bridge; '
                         'falling back to BioNetGen subprocess simulation',
                         m.name,
                     )
@@ -621,6 +633,121 @@ class Algorithm(object):
 
                 final_model_list.append(model)
                 final_model_list[-1].bng_command = m.bng_command
+            elif isinstance(m, BNGLModel) and bridge_backend == BNGSIM_BACKEND_NF:
+                if not BNGSIM_AVAILABLE:
+                    logger.info(
+                        'Model %s uses NF actions, but bngsim is not available; '
+                        'falling back to BioNetGen subprocess simulation',
+                        m.name,
+                    )
+                    final_model_list.append(m)
+                    continue
+
+                if not BNGSIM_HAS_NFSIM:
+                    logger.info(
+                        'Model %s uses NF actions, but the installed bngsim lacks NFsim support; '
+                        'falling back to BioNetGen subprocess simulation',
+                        m.name,
+                    )
+                    final_model_list.append(m)
+                    continue
+
+                logger.info('Model %s is NF-only; generating XML for bngsim NFsim' % m.name)
+
+                if not os.path.isdir(init_dir):
+                    logger.debug('Creating initialization directory: %s' % init_dir)
+                    os.mkdir(init_dir)
+                os.chdir(init_dir)
+
+                gnm_name = '%s_gen_xml' % m.name
+                default_pset = PSet([var.set_value(var.default_value) for var in self.variables])
+                m_copy = copy.deepcopy(m)
+                m_copy.actions = ['writeXML()']
+                try:
+                    m_copy.save(gnm_name, pset=default_pset)
+                except Exception:
+                    logger.exception(
+                        'Failed to stage the XML-generation BNGL for model %s. '
+                        'Falling back to subprocess simulation.',
+                        m.name,
+                    )
+                    os.chdir(home_dir)
+                    final_model_list.append(m)
+                    continue
+
+                gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
+                if os.name == 'nt':
+                    gn_cmd = ['perl'] + gn_cmd
+                try:
+                    with open('%s.log' % gnm_name, 'w') as lf:
+                        print2('Generating XML for NFsim model %s.bngl' % gnm_name)
+                        run_subprocess(
+                            gn_cmd,
+                            timeout=self.config.config['wall_time_gen'],
+                            stdout=lf,
+                            stderr=STDOUT,
+                        )
+                except CalledProcessError as c:
+                    logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                    logger.error(c.stdout)
+                    logger.warning(
+                        'XML generation failed for model %s. Falling back to subprocess simulation.',
+                        m.name,
+                    )
+                    os.chdir(home_dir)
+                    final_model_list.append(m)
+                    continue
+                except TimeoutExpired:
+                    logger.warning(
+                        'XML generation timed out for model %s. Falling back to subprocess simulation.',
+                        m.name,
+                    )
+                    os.chdir(home_dir)
+                    final_model_list.append(m)
+                    continue
+                except Exception:
+                    logger.exception(
+                        'Unknown error during XML generation for model %s. '
+                        'Falling back to subprocess simulation.',
+                        m.name,
+                    )
+                    os.chdir(home_dir)
+                    final_model_list.append(m)
+                    continue
+                finally:
+                    os.chdir(home_dir)
+
+                xml_path = init_dir + '/' + gnm_name + '.xml'
+                if not os.path.isfile(xml_path):
+                    logger.warning(
+                        'XML file not found at %s for model %s. Falling back to subprocess simulation.',
+                        xml_path,
+                        m.name,
+                    )
+                    final_model_list.append(m)
+                    continue
+
+                try:
+                    model = BngsimNfModel(
+                        m.name,
+                        m.actions,
+                        m.suffixes,
+                        m.mutants,
+                        xml_path,
+                        bngl_model_lines=m.model_lines,
+                        split_line_index=m.split_line_index,
+                        param_names=m.param_names,
+                        source_dir=os.path.dirname(os.path.abspath(m.file_path)),
+                    )
+                    model.bng_command = m.bng_command
+                    final_model_list.append(model)
+                except Exception:
+                    logger.exception(
+                        'Failed to initialize the bngsim NF bridge for model %s. '
+                        'Falling back to BNGLModel subprocess simulation.',
+                        m.name,
+                    )
+                    final_model_list.append(m)
             else:
                 logger.info('Model %s does not require network generation' % m.name)
                 final_model_list.append(m)
