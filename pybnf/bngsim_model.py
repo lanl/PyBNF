@@ -174,25 +174,71 @@ def _parse_parameter_scan_action(action_line):
     )
 
 
+def _parse_bifurcate_action(action_line):
+    return _parse_action_dict(
+        action_line,
+        'bifurcate',
+        key_aliases=_PARAMETER_SCAN_KEY_ALIASES,
+    )
+
+
+def _eval_numeric(expr_str, extra_ns=None):
+    """Safely evaluate a numeric expression from BNGL action args.
+
+    Handles plain numbers, arithmetic expressions, and standard math functions.
+    """
+    text = expr_str.strip().strip('"').strip("'")
+    try:
+        return float(text)
+    except (ValueError, TypeError):
+        pass
+    ns = _build_safe_eval_namespace(extra_ns)
+    return float(eval(text, ns))  # noqa: S307
+
+
 def _parse_set_parameter(action_line):
     """Parse setParameter("name", value) -> (name, value) or None."""
     match = re.match(
-        r'\s*setParameter\s*\(\s*["\'](\w+)["\']\s*,\s*([\d.eE+\-]+)\s*\)',
+        r'\s*setParameter\s*\(\s*["\'](\w+)["\']\s*,\s*(.+)\s*\)',
         action_line,
     )
     if match:
-        return match.group(1), float(match.group(2))
+        try:
+            return match.group(1), _eval_numeric(match.group(2))
+        except Exception:
+            return None
     return None
 
 
 def _parse_set_concentration(action_line):
-    """Parse setConcentration("species_name", value) -> (name, value) or None."""
+    """Parse setConcentration("species_name", value) -> (name, value) or None.
+
+    Returns None for NF-style string expressions (e.g. ``"EGF_copy_number"``),
+    which are handled by ``_parse_set_concentration_nf`` instead.
+    """
     match = re.match(
-        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*([\d.eE+\-]+)\s*\)',
+        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.+)\s*\)',
         action_line,
     )
     if match:
-        return match.group(1), float(match.group(2))
+        try:
+            return match.group(1), _eval_numeric(match.group(2))
+        except Exception:
+            return None
+    return None
+
+
+def _parse_add_concentration(action_line):
+    """Parse addConcentration("species_name", value) -> (name, value) or None."""
+    match = re.match(
+        r'\s*addConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.+)\s*\)',
+        action_line,
+    )
+    if match:
+        try:
+            return match.group(1), _eval_numeric(match.group(2))
+        except Exception:
+            return None
     return None
 
 
@@ -305,10 +351,20 @@ def _allowed_bngsim_backends_for_action(action_line):
             return frozenset(), True
         return frozenset((backend,)), True
 
+    bf_params = _parse_bifurcate_action(line)
+    if bf_params is not None:
+        backend = _classify_action_method_backend(bf_params.get('method', 'ode'))
+        if backend is None:
+            return frozenset(), True
+        return frozenset((backend,)), True
+
     if _parse_set_parameter(line) is not None:
         return _BNGSIM_ACTION_BACKENDS, False
 
     if _parse_set_concentration(line) is not None:
+        return _BNGSIM_ACTION_BACKENDS, False
+
+    if _parse_add_concentration(line) is not None:
         return _BNGSIM_ACTION_BACKENDS, False
 
     if _parse_set_concentration_nf(line) is not None:
@@ -410,6 +466,22 @@ def _build_safe_eval_namespace(seed=None):
     if seed:
         ns.update(seed)
     return ns
+
+
+def _try_prepare_codegen(net_path):
+    """Attempt to compile ODE RHS to a shared library for faster simulation.
+
+    Returns the path to the compiled ``.so`` or ``""`` if codegen is
+    unavailable or compilation fails.
+    """
+    if os.environ.get('PYBNF_NO_CODEGEN') or os.environ.get('BNGSIM_NO_CODEGEN'):
+        return ""
+    try:
+        from bngsim._codegen import prepare_codegen
+        return str(prepare_codegen(net_path))
+    except Exception as exc:
+        logger.debug("Codegen compilation failed: %s", exc)
+        return ""
 
 
 def _parse_net_species_initializers(net_lines):
@@ -523,6 +595,7 @@ class BngsimModel(NetModel):
         if nf is not None:
             self._net_path = nf
             self._engine_model = bngsim.Model.from_net(nf)
+            self._codegen_so = _try_prepare_codegen(nf)
         elif ls is not None:
             raise ValueError('BngsimModel requires nf so the .net path is stable')
         else:
@@ -568,9 +641,12 @@ class BngsimModel(NetModel):
     def _execute_actions(self, model):
         """Interpret and execute action lines using bngsim."""
         ds = {}
-        sim = bngsim.Simulator(model, method='ode')
+        sim = bngsim.Simulator(model, method='ode', **self._codegen_kwargs())
         current_method = 'ode'
         current_poplevel = None
+        model_time = 0.0
+
+        _has_stop_condition = hasattr(bngsim, 'StopConditionMet')
 
         base_params = {}
         for pname in model.param_names:
@@ -590,10 +666,34 @@ class BngsimModel(NetModel):
                     sim_params.get('method', 'ode'),
                     sim_params.get('poplevel'),
                 )
-                t_start = float(sim_params.get('t_start', 0))
+
+                # Gap 1: continue=>1
+                continue_flag = bool(int(float(sim_params.get('continue', 0))))
+                if continue_flag and 't_start' not in sim_params:
+                    t_start = model_time
+                else:
+                    t_start = float(sim_params.get('t_start', 0))
+
                 t_end = float(sim_params.get('t_end', 100))
                 n_steps = int(sim_params.get('n_steps', 100))
                 suffix = sim_params.get('suffix', 'time_course')
+
+                # Gap 4: print_functions
+                print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
+
+                # Gap 3: atol, rtol, seed
+                run_kwargs = {}
+                if 'atol' in sim_params:
+                    run_kwargs['atol'] = float(sim_params['atol'])
+                if 'rtol' in sim_params:
+                    run_kwargs['rtol'] = float(sim_params['rtol'])
+                if 'seed' in sim_params:
+                    run_kwargs['seed'] = int(float(sim_params['seed']))
+
+                # Gap 2: stop_if
+                stop_if = sim_params.get('stop_if')
+                if stop_if is not None:
+                    stop_if = stop_if.strip().strip('"').strip("'")
 
                 if method == 'psa':
                     if current_method != 'psa' or current_poplevel != poplevel:
@@ -605,15 +705,31 @@ class BngsimModel(NetModel):
                         current_method = 'psa'
                         current_poplevel = poplevel
                 elif current_method != method:
-                    sim = bngsim.Simulator(model, method=method)
+                    sim = bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
                     current_method = method
                     current_poplevel = None
 
-                result = sim.run(
-                    t_span=(t_start, t_end),
-                    n_points=n_steps + 1,
-                )
-                ds[suffix] = self._result_to_data(result)
+                if stop_if and _has_stop_condition:
+                    sim.add_stop_condition(stop_if, label=stop_if)
+
+                try:
+                    result = sim.run(
+                        t_span=(t_start, t_end),
+                        n_points=n_steps + 1,
+                        **run_kwargs,
+                    )
+                except Exception as exc:
+                    if _has_stop_condition and isinstance(exc, bngsim.StopConditionMet):
+                        logger.info("stop_if triggered: %s", stop_if)
+                        result = exc.result
+                    else:
+                        raise
+
+                if stop_if and _has_stop_condition and hasattr(sim, 'clear_stop_conditions'):
+                    sim.clear_stop_conditions()
+
+                model_time = t_end
+                ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
                 continue
 
             sp = _parse_set_parameter(line)
@@ -666,15 +782,40 @@ class BngsimModel(NetModel):
                     )
                 continue
 
+            ac = _parse_add_concentration(line)
+            if ac is not None:
+                species_name, delta = ac
+                try:
+                    current = model.get_concentration(species_name)
+                    model.set_concentration(species_name, current + delta)
+                except Exception:
+                    logger.warning(
+                        "addConcentration(%s, %s) failed - species not found",
+                        species_name,
+                        delta,
+                    )
+                continue
+
             ps_params = _parse_parameter_scan_action(line)
             if ps_params is not None:
                 ds.update(self._run_parameter_scan(model, ps_params))
+                continue
+
+            bf_params = _parse_bifurcate_action(line)
+            if bf_params is not None:
+                ds.update(self._run_parameter_scan(model, bf_params, is_bifurcate=True))
                 continue
 
             if line and not re.match(r'\s*(begin|end)\s+actions', line):
                 logger.debug("BngsimModel: skipping unknown action: %s", line)
 
         return ds
+
+    def _codegen_kwargs(self, method='ode'):
+        """Return codegen keyword args for ODE Simulator construction."""
+        if method == 'ode' and getattr(self, '_codegen_so', ''):
+            return {'codegen': True, 'net_path': self._net_path}
+        return {}
 
     def _make_scan_simulator(self, model, method, poplevel):
         """Construct a fresh simulator for one parameter-scan point."""
@@ -684,7 +825,7 @@ class BngsimModel(NetModel):
                 method='psa',
                 poplevel=poplevel,
             )
-        return bngsim.Simulator(model, method=method)
+        return bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
 
     def _sync_species_initial_concentrations(self, model):
         """Re-evaluate .net species initializers using the model's current params."""
@@ -727,17 +868,24 @@ class BngsimModel(NetModel):
         point_model.reset()
         return point_model
 
-    def _run_parameter_scan(self, model, ps_params):
-        """Execute a parameter_scan() action."""
+    def _run_parameter_scan(self, model, ps_params, is_bifurcate=False):
+        """Execute a parameter_scan() or bifurcate() action."""
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
         t_end = float(ps_params.get('t_end', 100))
         suffix = ps_params.get('suffix', 'param_scan')
         use_ss = int(ps_params.get('steady_state', 0))
+        print_funcs = bool(int(float(ps_params.get('print_functions', 0))))
         method, poplevel = _normalize_action_method(
             ps_params.get('method', 'ode'),
             ps_params.get('poplevel'),
         )
+
+        # bifurcate forces reset_conc=False; parameter_scan defaults to True
+        if is_bifurcate:
+            reset_conc = False
+        else:
+            reset_conc = bool(int(float(ps_params.get('reset_conc', 1))))
 
         if use_ss and method != 'ode':
             logger.warning(
@@ -774,7 +922,29 @@ class BngsimModel(NetModel):
                 point_model.reset()
                 eval_sim = self._make_scan_simulator(point_model, 'ode', None)
                 result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
-                row, row_obs, row_expr = self._scan_result_to_row(result, value)
+                row, row_obs, row_expr = self._scan_result_to_row(
+                    result, value, print_functions=print_funcs,
+                )
+                if len(obs_names) == 0:
+                    obs_names = row_obs
+                    expr_names = row_expr
+                rows.append(row)
+        elif not reset_conc:
+            # bifurcate / reset_conc=>0: carry model state between points
+            running_model = model.clone()
+            for value in points:
+                if param_name:
+                    running_model.set_param(param_name, float(value))
+                self._sync_species_initial_concentrations(running_model)
+                point_sim = self._make_scan_simulator(
+                    running_model,
+                    method,
+                    poplevel,
+                )
+                result = point_sim.run(t_span=(t_start, t_end), n_points=2)
+                row, row_obs, row_expr = self._scan_result_to_row(
+                    result, value, print_functions=print_funcs,
+                )
                 if len(obs_names) == 0:
                     obs_names = row_obs
                     expr_names = row_expr
@@ -792,7 +962,9 @@ class BngsimModel(NetModel):
                     poplevel,
                 )
                 result = point_sim.run(t_span=(t_start, t_end), n_points=2)
-                row, row_obs, row_expr = self._scan_result_to_row(result, value)
+                row, row_obs, row_expr = self._scan_result_to_row(
+                    result, value, print_functions=print_funcs,
+                )
                 if len(obs_names) == 0:
                     obs_names = row_obs
                     expr_names = row_expr
@@ -811,7 +983,7 @@ class BngsimModel(NetModel):
         return {suffix: data}
 
     @staticmethod
-    def _scan_result_to_row(result, scan_value):
+    def _scan_result_to_row(result, scan_value, print_functions=False):
         """Convert the final point of a scan result into one row plus headers."""
         obs_names = list(result.observable_names)
         obs_array = np.asarray(result.observables)
@@ -820,12 +992,16 @@ class BngsimModel(NetModel):
         else:
             final_obs = np.array([])
 
-        core = result._core
-        expr_names = list(getattr(core, 'expression_names', []))
-        expr_array = np.asarray(getattr(core, 'expression_data', np.zeros((0, 0))))
-        if expr_array.ndim == 2 and expr_array.shape[0] > 0 and expr_array.shape[1] > 0:
-            final_expr = expr_array[-1, :]
+        if print_functions:
+            core = result._core
+            expr_names = list(getattr(core, 'expression_names', []))
+            expr_array = np.asarray(getattr(core, 'expression_data', np.zeros((0, 0))))
+            if expr_array.ndim == 2 and expr_array.shape[0] > 0 and expr_array.shape[1] > 0:
+                final_expr = expr_array[-1, :]
+            else:
+                final_expr = np.array([])
         else:
+            expr_names = []
             final_expr = np.array([])
 
         row = np.concatenate((
@@ -836,16 +1012,21 @@ class BngsimModel(NetModel):
         return row, obs_names, expr_names
 
     @staticmethod
-    def _result_to_data(result):
+    def _result_to_data(result, print_functions=False):
         """Convert a bngsim Result to a PyBNF Data object."""
         obs_names = list(result.observable_names)
         n_times = result.n_times
         n_obs = result.n_observables
 
-        core = result._core
-        expr_names = list(getattr(core, 'expression_names', []))
-        expr_array = np.asarray(getattr(core, 'expression_data', np.zeros((n_times, 0))))
-        n_expr = len(expr_names)
+        if print_functions:
+            core = result._core
+            expr_names = list(getattr(core, 'expression_names', []))
+            expr_array = np.asarray(getattr(core, 'expression_data', np.zeros((n_times, 0))))
+            n_expr = len(expr_names)
+        else:
+            expr_names = []
+            expr_array = np.zeros((n_times, 0))
+            n_expr = 0
 
         arr = np.zeros((n_times, 1 + n_obs + n_expr))
         arr[:, 0] = result.time
@@ -888,6 +1069,7 @@ class BngsimModel(NetModel):
         """Support pickling for Dask workers by dropping the C++ model object."""
         state = self.__dict__.copy()
         state.pop('_engine_model', None)
+        state.pop('_codegen_so', None)
         return state
 
     def __setstate__(self, state):
@@ -895,6 +1077,7 @@ class BngsimModel(NetModel):
         self.__dict__.update(state)
         if hasattr(self, '_net_path') and self._net_path:
             self._engine_model = bngsim.Model.from_net(self._net_path)
+            self._codegen_so = _try_prepare_codegen(self._net_path)
         else:
             raise RuntimeError("Cannot unpickle BngsimModel: no _net_path")
 
@@ -1174,6 +1357,17 @@ class BngsimNfModel(Model):
                             count,
                         )
                         continue
+                    if to_add > 0:
+                        nfsim.add_molecules(mol_type, to_add)
+                    continue
+
+                ac = _parse_add_concentration(line)
+                if ac is not None:
+                    species_pattern, delta = ac
+                    if nfsim is None:
+                        nfsim = _start_session(seed, current_gml)
+                    mol_type = species_pattern.split('(')[0]
+                    to_add = int(round(delta))
                     if to_add > 0:
                         nfsim.add_molecules(mol_type, to_add)
                     continue

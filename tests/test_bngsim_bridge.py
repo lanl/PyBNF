@@ -542,3 +542,673 @@ def test_bngsim_nf_model_preserves_state_across_actions(monkeypatch):
     assert ds['post'].data[-1, 1] == 7.0
     assert len([c for c in calls if c[0] == 'init']) == 1
     assert ('add', 'L', 7, 7) in calls
+
+
+# ── addConcentration parser tests ─────────────────────────────────────────────
+
+class TestParseAddConcentration:
+    def test_basic(self):
+        result = bngsim_model._parse_add_concentration(
+            'addConcentration("Ligand()", 500)'
+        )
+        assert result == ("Ligand()", 500.0)
+
+    def test_scientific_notation(self):
+        result = bngsim_model._parse_add_concentration(
+            'addConcentration("A(b)", 1.5e3)'
+        )
+        assert result == ("A(b)", 1500.0)
+
+    def test_single_quotes(self):
+        result = bngsim_model._parse_add_concentration(
+            "addConcentration('X()', 42)"
+        )
+        assert result == ("X()", 42.0)
+
+    def test_leading_whitespace(self):
+        result = bngsim_model._parse_add_concentration(
+            '    addConcentration("S()", 10)'
+        )
+        assert result == ("S()", 10.0)
+
+    def test_returns_none_for_setConcentration(self):
+        assert bngsim_model._parse_add_concentration(
+            'setConcentration("A()", 100)'
+        ) is None
+
+    def test_returns_none_for_empty(self):
+        assert bngsim_model._parse_add_concentration('') is None
+
+    def test_returns_none_for_garbage(self):
+        assert bngsim_model._parse_add_concentration('simulate({t_end=>10})') is None
+
+
+# ── addConcentration backend classification tests ─────────────────────────────
+
+def test_allowed_bngsim_backends_for_action_recognizes_addConcentration():
+    backends, is_sim = bngsim_model._allowed_bngsim_backends_for_action(
+        'addConcentration("Ligand()", 500)'
+    )
+    assert backends == bngsim_model._BNGSIM_ACTION_BACKENDS
+    assert not is_sim
+
+
+def test_classify_actions_for_bngsim_accepts_addConcentration_with_ode():
+    result = bngsim_model.classify_actions_for_bngsim([
+        'generate_network({overwrite=>1})',
+        'simulate({method=>"ode",t_end=>100,n_steps=>100,suffix=>"phase1"})',
+        'addConcentration("Ligand()", 500)',
+        'simulate({method=>"ode",t_end=>200,n_steps=>100,suffix=>"phase2"})',
+    ])
+    assert result == bngsim_model.BNGSIM_BACKEND_NET
+
+
+# ── addConcentration NF execution test ────────────────────────────────────────
+
+def test_bngsim_nf_model_addConcentration_increments_molecules(monkeypatch):
+    calls = _install_fake_nfsim(monkeypatch)
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        [
+            'simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"phase1"})',
+            'addConcentration("L(r)", 500)',
+            'simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"phase2"})',
+        ],
+        [('simulate', 'phase1'), ('simulate', 'phase2')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=[
+            'begin parameters\n',
+            'end parameters\n',
+        ],
+        param_names=(),
+    )
+    model.param_set = pset.PSet([])
+
+    ds = model.execute('/tmp', 'job0', 10)
+
+    # Both phases should produce data
+    assert 'phase1' in ds
+    assert 'phase2' in ds
+    # 500 molecules should have been added
+    assert ('add', 'L', 500, 500) in calls
+
+
+def test_bngsim_nf_model_addConcentration_stacks_on_existing(monkeypatch):
+    """addConcentration adds to the current count, not replacing it."""
+    calls = _install_fake_nfsim(monkeypatch)
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        [
+            'simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"equil"})',
+            'setConcentration("L(r)", "200")',
+            'addConcentration("L(r)", 300)',
+            'simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"post"})',
+        ],
+        [('simulate', 'equil'), ('simulate', 'post')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=[
+            'begin parameters\n',
+            'end parameters\n',
+        ],
+        param_names=(),
+    )
+    model.param_set = pset.PSet([])
+
+    ds = model.execute('/tmp', 'job0', 10)
+
+    # setConcentration sets L to 200, then addConcentration adds 300 more
+    add_calls = [c for c in calls if c[0] == 'add']
+    # setConcentration("L(r)", "200") → adds 200 (from 0)
+    # addConcentration("L(r)", 300) → adds 300 (from 200)
+    assert ('add', 'L', 200, 200) in add_calls
+    assert ('add', 'L', 300, 500) in add_calls
+
+
+# ── Gap 8: Expression evaluation tests ──────────────────────────────────────────
+
+class TestEvalNumeric:
+    def test_plain_float(self):
+        assert bngsim_model._eval_numeric('3.14') == pytest.approx(3.14)
+
+    def test_plain_int(self):
+        assert bngsim_model._eval_numeric('42') == 42.0
+
+    def test_scientific_notation(self):
+        assert bngsim_model._eval_numeric('1.5e3') == 1500.0
+
+    def test_arithmetic_expression(self):
+        assert bngsim_model._eval_numeric('((1/52)*50000/0.04)') == pytest.approx((1/52)*50000/0.04)
+
+    def test_math_function(self):
+        import math
+        assert bngsim_model._eval_numeric('exp(1)') == pytest.approx(math.e)
+
+    def test_quoted_expression(self):
+        assert bngsim_model._eval_numeric('"100"') == 100.0
+
+    def test_extra_namespace(self):
+        assert bngsim_model._eval_numeric('x + 1', {'x': 9.0}) == 10.0
+
+
+def test_parse_set_concentration_with_expression():
+    result = bngsim_model._parse_set_concentration(
+        'setConcentration("TNF()", ((1/52)*50000/0.04))'
+    )
+    assert result is not None
+    name, value = result
+    assert name == 'TNF()'
+    assert value == pytest.approx((1/52)*50000/0.04)
+
+
+def test_parse_add_concentration_with_expression():
+    result = bngsim_model._parse_add_concentration(
+        'addConcentration("Ligand()", 500 + 100)'
+    )
+    assert result is not None
+    assert result == ("Ligand()", 600.0)
+
+
+def test_parse_set_parameter_with_expression():
+    result = bngsim_model._parse_set_parameter(
+        'setParameter("kf", 1e-3 * 2)'
+    )
+    assert result is not None
+    assert result == ("kf", 0.002)
+
+
+# ── Gap 1: continue=>1 tests ────────────────────────────────────────────────────
+
+class TestContinueFlag:
+    def _make_fake_bngsim_model(self, actions, monkeypatch):
+        """Build a BngsimModel-like object that can call _execute_actions."""
+        run_log = []
+
+        class FakeCoreResult:
+            def __init__(self, times):
+                self.expression_names = []
+                self.expression_data = np.zeros((len(times), 0))
+
+        class FakeResult:
+            def __init__(self, times):
+                self._core = FakeCoreResult(times)
+                self.time = np.asarray(times)
+                self.observables = np.zeros((len(times), 1))
+                self.observable_names = ['obs']
+                self.n_times = len(times)
+                self.n_observables = 1
+
+        class FakeSimulator:
+            def __init__(self, model, method='ode', **kw):
+                self._model = model
+                self.method = method
+
+            def run(self, t_span=None, n_points=2, **kw):
+                run_log.append({'t_span': t_span, 'n_points': n_points, **kw})
+                return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+
+            def add_stop_condition(self, expr, label=None):
+                pass
+
+            def clear_stop_conditions(self):
+                pass
+
+        class FakeModel:
+            param_names = []
+            def get_param(self, name): return 0.0
+            def set_param(self, name, val): pass
+            def reset(self): pass
+            def clone(self): return FakeModel()
+            def set_concentration(self, name, val): pass
+            def get_concentration(self, name): return 0.0
+            def save_concentrations(self): pass
+
+        fake_bngsim = types.ModuleType('bngsim')
+        fake_bngsim.Simulator = FakeSimulator
+        fake_bngsim.Model = FakeModel
+        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+
+        # Build a minimal BngsimModel without going through __init__
+        obj = object.__new__(bngsim_model.BngsimModel)
+        obj.actions = actions
+        obj._net_species_initializers = []
+        obj._codegen_so = ''
+        obj._net_path = '/tmp/fake.net'
+
+        return obj, FakeModel(), run_log
+
+    def test_continue_uses_model_time(self, monkeypatch):
+        actions = [
+            'simulate({method=>"ode",t_end=>50,n_steps=>10,suffix=>"phase1"})',
+            'simulate({method=>"ode",t_end=>100,n_steps=>10,continue=>1,suffix=>"phase2"})',
+        ]
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+        ds = obj._execute_actions(model)
+
+        assert 'phase1' in ds
+        assert 'phase2' in ds
+        assert run_log[0]['t_span'] == (0, 50)
+        # continue=>1 with no explicit t_start → uses model_time=50
+        assert run_log[1]['t_span'] == (50, 100)
+
+    def test_explicit_t_start_overrides_continue(self, monkeypatch):
+        actions = [
+            'simulate({method=>"ode",t_end=>50,n_steps=>10,suffix=>"phase1"})',
+            'simulate({method=>"ode",t_start=>25,t_end=>100,n_steps=>10,continue=>1,suffix=>"phase2"})',
+        ]
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+        ds = obj._execute_actions(model)
+
+        # Explicit t_start=25 is used even with continue=>1
+        assert run_log[1]['t_span'] == (25, 100)
+
+    def test_no_continue_defaults_to_zero(self, monkeypatch):
+        actions = [
+            'simulate({method=>"ode",t_end=>50,n_steps=>10,suffix=>"phase1"})',
+            'simulate({method=>"ode",t_end=>100,n_steps=>10,suffix=>"phase2"})',
+        ]
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+        ds = obj._execute_actions(model)
+
+        assert run_log[0]['t_span'] == (0, 50)
+        assert run_log[1]['t_span'] == (0, 100)
+
+
+# ── Gap 3: atol/rtol/seed passthrough tests ─────────────────────────────────────
+
+class TestSimulatorKwargs(TestContinueFlag):
+    def test_atol_rtol_seed_passed_to_run(self, monkeypatch):
+        actions = [
+            'simulate({method=>"ode",t_end=>10,n_steps=>5,atol=>1e-12,rtol=>1e-10,seed=>99,suffix=>"tc"})',
+        ]
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+        obj._execute_actions(model)
+
+        assert run_log[0]['atol'] == 1e-12
+        assert run_log[0]['rtol'] == 1e-10
+        assert run_log[0]['seed'] == 99
+
+    def test_defaults_omit_kwargs(self, monkeypatch):
+        actions = [
+            'simulate({method=>"ode",t_end=>10,n_steps=>5,suffix=>"tc"})',
+        ]
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+        obj._execute_actions(model)
+
+        assert 'atol' not in run_log[0]
+        assert 'rtol' not in run_log[0]
+        assert 'seed' not in run_log[0]
+
+
+# ── Gap 2: stop_if tests ────────────────────────────────────────────────────────
+
+class TestStopIf:
+    def test_stop_if_catches_exception(self, monkeypatch):
+        """stop_if triggers StopConditionMet → uses truncated result."""
+
+        class FakeCoreResult:
+            def __init__(self, times):
+                self.expression_names = []
+                self.expression_data = np.zeros((len(times), 0))
+
+        class FakeResult:
+            def __init__(self, times):
+                self._core = FakeCoreResult(times)
+                self.time = np.asarray(times)
+                self.observables = np.zeros((len(times), 1))
+                self.observable_names = ['obs']
+                self.n_times = len(times)
+                self.n_observables = 1
+
+        class FakeStopConditionMet(Exception):
+            def __init__(self, result):
+                self.result = result
+
+        class FakeSimulator:
+            def __init__(self, model, method='ode', **kw):
+                pass
+
+            def run(self, t_span=None, n_points=2, **kw):
+                # Simulate early stop at t=5 instead of t=10
+                truncated = FakeResult(np.linspace(t_span[0], 5, 3))
+                raise FakeStopConditionMet(truncated)
+
+            def add_stop_condition(self, expr, label=None):
+                pass
+
+            def clear_stop_conditions(self):
+                pass
+
+        class FakeModel:
+            param_names = []
+
+        fake_bngsim = types.ModuleType('bngsim')
+        fake_bngsim.Simulator = FakeSimulator
+        fake_bngsim.StopConditionMet = FakeStopConditionMet
+        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+
+        obj = object.__new__(bngsim_model.BngsimModel)
+        obj.actions = [
+            'simulate({method=>"ode",t_end=>10,n_steps=>10,stop_if=>"A<1",suffix=>"tc"})',
+        ]
+        obj._net_species_initializers = []
+        obj._codegen_so = ''
+        obj._net_path = '/tmp/fake.net'
+
+        ds = obj._execute_actions(FakeModel())
+        assert 'tc' in ds
+        # Truncated result should have 3 time points (not 11)
+        assert ds['tc'].data.shape[0] == 3
+        assert ds['tc'].data[-1, 0] == pytest.approx(5.0)
+
+
+# ── Gap 4: print_functions tests ─────────────────────────────────────────────────
+
+class TestPrintFunctions:
+    def _make_result_with_expressions(self):
+        """Build a fake result with both observables and expressions."""
+        class FakeCoreResult:
+            observable_names = ['obs1']
+            observable_data = np.array([[1.0], [2.0]])
+            expression_names = ['func1']
+            expression_data = np.array([[10.0], [20.0]])
+
+        class FakeResult:
+            def __init__(self):
+                self._core = FakeCoreResult()
+                self.time = np.array([0.0, 1.0])
+                self.observables = FakeCoreResult.observable_data
+                self.observable_names = ['obs1']
+                self.n_times = 2
+                self.n_observables = 1
+
+        return FakeResult()
+
+    def test_default_excludes_functions(self):
+        result = self._make_result_with_expressions()
+        data = bngsim_model.BngsimModel._result_to_data(result)
+        assert 'func1' not in data.cols
+        assert data.data.shape[1] == 2  # time + obs1
+
+    def test_print_functions_true_includes_functions(self):
+        result = self._make_result_with_expressions()
+        data = bngsim_model.BngsimModel._result_to_data(result, print_functions=True)
+        assert 'func1' in data.cols
+        assert data.data.shape[1] == 3  # time + obs1 + func1
+        assert data.data[0, 2] == 10.0
+
+    def test_scan_row_default_excludes_functions(self):
+        result = self._make_result_with_expressions()
+        row, obs, expr = bngsim_model.BngsimModel._scan_result_to_row(result, 1.0)
+        assert expr == []
+        assert len(row) == 2  # scan_value + obs1
+
+    def test_scan_row_print_functions_includes(self):
+        result = self._make_result_with_expressions()
+        row, obs, expr = bngsim_model.BngsimModel._scan_result_to_row(
+            result, 1.0, print_functions=True,
+        )
+        assert expr == ['func1']
+        assert len(row) == 3  # scan_value + obs1 + func1
+
+
+# ── Gap 5: bifurcate tests ──────────────────────────────────────────────────────
+
+def test_parse_bifurcate_action():
+    result = bngsim_model._parse_bifurcate_action(
+        'bifurcate({parameter=>"k",par_min=>0.1,par_max=>10,n_scan_pts=>5,'
+        'method=>"ode",t_end=>100,suffix=>"bif"})'
+    )
+    assert result is not None
+    assert result['parameter'] == 'k'
+    assert result['par_min'] == '0.1'
+    assert result['suffix'] == 'bif'
+
+
+def test_classify_actions_for_bngsim_accepts_bifurcate():
+    result = bngsim_model.classify_actions_for_bngsim([
+        'bifurcate({parameter=>"k",par_min=>0.1,par_max=>10,n_scan_pts=>5,'
+        'method=>"ode",t_end=>100,suffix=>"bif"})',
+    ])
+    assert result == bngsim_model.BNGSIM_BACKEND_NET
+
+
+def test_allowed_bngsim_backends_for_action_recognizes_bifurcate():
+    backends, is_sim = bngsim_model._allowed_bngsim_backends_for_action(
+        'bifurcate({parameter=>"k",method=>"ode",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>10,suffix=>"bf"})'
+    )
+    assert bngsim_model.BNGSIM_BACKEND_NET in backends
+    assert is_sim
+
+
+class TestBifurcateExecution(TestContinueFlag):
+    """Verify bifurcate carries model state (concentrations) between scan points."""
+
+    def test_bifurcate_carries_state_between_points(self, monkeypatch):
+        concentrations = {}
+        param_values = {'k': 1.0}
+        clone_count = [0]
+
+        class FakeCoreResult:
+            def __init__(self, times):
+                self.expression_names = []
+                self.expression_data = np.zeros((len(times), 0))
+
+        class FakeResult:
+            def __init__(self, times):
+                self._core = FakeCoreResult(times)
+                self.time = np.asarray(times)
+                self.observables = np.zeros((len(times), 1))
+                self.observable_names = ['obs']
+                self.n_times = len(times)
+                self.n_observables = 1
+
+        class FakeSimulator:
+            def __init__(self, model, method='ode', **kw):
+                self._model = model
+            def run(self, t_span=None, n_points=2, **kw):
+                return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+
+        class FakeModel:
+            param_names = ['k']
+            def get_param(self, name):
+                return param_values.get(name, 0.0)
+            def set_param(self, name, val):
+                param_values[name] = val
+            def reset(self):
+                pass
+            def clone(self):
+                clone_count[0] += 1
+                return FakeModel()
+            def set_concentration(self, name, val):
+                concentrations[name] = val
+            def get_concentration(self, name):
+                return concentrations.get(name, 0.0)
+            def save_concentrations(self):
+                pass
+
+        fake_bngsim = types.ModuleType('bngsim')
+        fake_bngsim.Simulator = FakeSimulator
+        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+
+        obj = object.__new__(bngsim_model.BngsimModel)
+        obj.actions = [
+            'bifurcate({parameter=>"k",par_scan_vals=>[1,2,3],'
+            'method=>"ode",t_end=>10,suffix=>"bif"})',
+        ]
+        obj._net_species_initializers = []
+        obj._codegen_so = ''
+        obj._net_path = '/tmp/fake.net'
+
+        ds = obj._execute_actions(FakeModel())
+        assert 'bif' in ds
+        # bifurcate clones only once (not per point)
+        assert clone_count[0] == 1
+        # 3 scan points -> 3 rows
+        assert ds['bif'].data.shape[0] == 3
+
+    def test_parameter_scan_resets_between_points(self, monkeypatch):
+        """Regular parameter_scan clones per point (reset_conc default=1)."""
+        clone_count = [0]
+
+        class FakeCoreResult:
+            def __init__(self, times):
+                self.expression_names = []
+                self.expression_data = np.zeros((len(times), 0))
+
+        class FakeResult:
+            def __init__(self, times):
+                self._core = FakeCoreResult(times)
+                self.time = np.asarray(times)
+                self.observables = np.zeros((len(times), 1))
+                self.observable_names = ['obs']
+                self.n_times = len(times)
+                self.n_observables = 1
+
+        class FakeSimulator:
+            def __init__(self, model, method='ode', **kw):
+                pass
+            def run(self, t_span=None, n_points=2, **kw):
+                return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+
+        class FakeModel:
+            param_names = ['k']
+            def get_param(self, name): return 1.0
+            def set_param(self, name, val): pass
+            def reset(self): pass
+            def clone(self):
+                clone_count[0] += 1
+                return FakeModel()
+            def set_concentration(self, name, val): pass
+            def get_concentration(self, name): return 0.0
+            def save_concentrations(self): pass
+
+        fake_bngsim = types.ModuleType('bngsim')
+        fake_bngsim.Simulator = FakeSimulator
+        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+
+        obj = object.__new__(bngsim_model.BngsimModel)
+        obj.actions = [
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2,3],'
+            'method=>"ode",t_end=>10,suffix=>"scan"})',
+        ]
+        obj._net_species_initializers = []
+        obj._codegen_so = ''
+        obj._net_path = '/tmp/fake.net'
+
+        ds = obj._execute_actions(FakeModel())
+        assert 'scan' in ds
+        # parameter_scan with reset_conc=>1 clones per point
+        assert clone_count[0] == 3
+
+
+# ── Gap 7: codegen tests ─────────────────────────────────────���──────────────────
+
+def test_try_prepare_codegen_returns_empty_when_disabled(monkeypatch):
+    monkeypatch.setenv('PYBNF_NO_CODEGEN', '1')
+    assert bngsim_model._try_prepare_codegen('/tmp/fake.net') == ''
+
+
+def test_try_prepare_codegen_returns_empty_when_bngsim_no_codegen(monkeypatch):
+    monkeypatch.setenv('BNGSIM_NO_CODEGEN', '1')
+    assert bngsim_model._try_prepare_codegen('/tmp/fake.net') == ''
+
+
+def test_try_prepare_codegen_returns_empty_on_import_error(monkeypatch):
+    monkeypatch.delenv('PYBNF_NO_CODEGEN', raising=False)
+    monkeypatch.delenv('BNGSIM_NO_CODEGEN', raising=False)
+    # No bngsim._codegen available → should return ""
+    assert bngsim_model._try_prepare_codegen('/tmp/nonexistent.net') == ''
+
+
+def test_codegen_kwargs_returns_empty_without_codegen():
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj._codegen_so = ''
+    obj._net_path = '/tmp/fake.net'
+    assert obj._codegen_kwargs() == {}
+
+
+def test_codegen_kwargs_returns_dict_with_codegen():
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj._codegen_so = '/tmp/fake.so'
+    obj._net_path = '/tmp/fake.net'
+    kw = obj._codegen_kwargs('ode')
+    assert kw == {'codegen': True, 'net_path': '/tmp/fake.net'}
+
+
+def test_codegen_kwargs_empty_for_non_ode():
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj._codegen_so = '/tmp/fake.so'
+    obj._net_path = '/tmp/fake.net'
+    assert obj._codegen_kwargs('ssa') == {}
+
+
+# ── Gap 6: addConcentration in network-backed path (verification) ────────────────
+
+class TestAddConcentrationNetBackend(TestContinueFlag):
+    def test_add_concentration_in_execute_actions(self, monkeypatch):
+        """Verify addConcentration works in the BngsimModel (network) path."""
+        concentrations = {'A()': 100.0}
+
+        class FakeCoreResult:
+            def __init__(self, times):
+                self.expression_names = []
+                self.expression_data = np.zeros((len(times), 0))
+
+        class FakeResult:
+            def __init__(self, times):
+                self._core = FakeCoreResult(times)
+                self.time = np.asarray(times)
+                self.observables = np.zeros((len(times), 1))
+                self.observable_names = ['obs']
+                self.n_times = len(times)
+                self.n_observables = 1
+
+        class FakeSimulator:
+            def __init__(self, model, method='ode', **kw):
+                pass
+            def run(self, t_span=None, n_points=2, **kw):
+                return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+            def add_stop_condition(self, expr, label=None):
+                pass
+            def clear_stop_conditions(self):
+                pass
+
+        class FakeModel:
+            param_names = []
+            def get_concentration(self, name):
+                return concentrations.get(name, 0.0)
+            def set_concentration(self, name, val):
+                concentrations[name] = val
+            def reset(self):
+                pass
+            def save_concentrations(self):
+                pass
+
+        fake_bngsim = types.ModuleType('bngsim')
+        fake_bngsim.Simulator = FakeSimulator
+        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+
+        obj = object.__new__(bngsim_model.BngsimModel)
+        obj.actions = [
+            'simulate({method=>"ode",t_end=>10,n_steps=>5,suffix=>"phase1"})',
+            'addConcentration("A()", 50)',
+            'simulate({method=>"ode",t_end=>20,n_steps=>5,suffix=>"phase2"})',
+        ]
+        obj._net_species_initializers = []
+        obj._codegen_so = ''
+        obj._net_path = '/tmp/fake.net'
+
+        ds = obj._execute_actions(FakeModel())
+        assert 'phase1' in ds
+        assert 'phase2' in ds
+        # addConcentration should have added 50 to the initial 100
+        assert concentrations['A()'] == 150.0
