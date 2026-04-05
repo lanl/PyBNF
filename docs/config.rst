@@ -98,7 +98,7 @@ To avoid mistakes in configuration, you may optionally append “__FREE” to th
 
 Caution: If you are using `COPASI`_ to export SBML files, renaming a parameter is not straightforward. Typically, renaming a parameter only changes its ``name`` field, but PyBNF reads the ``id`` field.
 
-Note that SBML files do not contain information about what time course or parameter scan simulations should be run on the model. Therefore, when using SBML files, it is required to specify this information in the configuration file with the :ref:`time_course <time_course_key>` and :ref:`param_scan <param_scan_key>` keys. 
+Note that SBML files do not contain information about what time course or parameter scan simulations should be run on the model. Therefore, when using SBML files, it is required to specify this information in the configuration file with the :ref:`time_course <time_course_key>` and :ref:`param_scan <param_scan_key>` keys. For BNGL models, simulation actions should be specified in the BNGL file's ``begin actions`` block, which supports the full set of BioNetGen action arguments.
 
 .. _exp-file:
 

@@ -646,6 +646,13 @@ class BNGLModel(Model):
         return ds
 
     def add_action(self, action):
+        """Append a config-file action as a BNGL action string.
+
+        Translates a :class:`TimeCourse` or :class:`ParamScan` object into a
+        BNGL action line and appends it to the model's action list.  Only a
+        subset of BioNetGen arguments are supported here; for full control,
+        write actions in the BNGL file's ``begin actions`` block instead.
+        """
         if isinstance(action, TimeCourse):
             line = 'simulate({method=>"%s",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s",print_functions=>1})' % \
                    (action.method, action.time, action.stepnumber, action.suffix)
@@ -1038,6 +1045,15 @@ class Action:
 
 
 class TimeCourse(Action):
+    """A time-course simulation action parsed from the PyBNF configuration file.
+
+    This supports a subset of BioNetGen's ``simulate`` arguments.  For BNGL
+    models, users should prefer writing actions directly in the BNGL file's
+    ``begin actions`` block, which supports the full set of BioNetGen arguments
+    (e.g., ``steady_state``, ``atol``, ``rtol``, ``continue``, ``stop_if``).
+    Config-file actions are primarily intended for SBML models, which have no
+    native action syntax.
+    """
 
     def __init__(self, d):
         """
@@ -1091,6 +1107,15 @@ class TimeCourse(Action):
         self.bng_codeword = 'simulate'
 
 class ParamScan(Action):
+    """A parameter-scan action parsed from the PyBNF configuration file.
+
+    This supports a subset of BioNetGen's ``parameter_scan`` arguments.  For
+    BNGL models, users should prefer writing actions directly in the BNGL
+    file's ``begin actions`` block, which supports the full set of BioNetGen
+    arguments (e.g., ``steady_state``, ``atol``, ``rtol``).  Config-file
+    actions are primarily intended for SBML models, which have no native action
+    syntax.
+    """
 
     def __init__(self, d):
         """

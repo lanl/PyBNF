@@ -191,7 +191,11 @@ algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
 Simulation Actions
 ------------------
 
-These keys specify what simulations should be performed with the models. For SBML models, simulation actions are required. For BNGL models, the same information can be specified in the actions block of the BNGL file, so use of these keys is optional. 
+These keys specify what simulations should be performed with the models. For SBML models, simulation actions are required. For BNGL models, the same information can be specified in the actions block of the BNGL file, so use of these keys is optional.
+
+.. note::
+
+   For BNGL models, we recommend specifying simulation actions in the BNGL file's ``begin actions`` block rather than in the configuration file. The BNGL actions block supports the full set of BioNetGen action arguments (e.g., ``steady_state``, ``atol``, ``rtol``, ``sparse``, ``continue``, ``stop_if``), whereas the configuration file keys below only support a subset. Configuration file actions are primarily intended for SBML models, which have no native action syntax.
 
 .. _time_course_key:
 **time_course**
