@@ -122,6 +122,10 @@ def test_config_rejects_antimony_models_without_support(tmp_path, monkeypatch):
         cfg._load_models()
 
 
+@pytest.mark.skipif(
+    not bngsim_antimony_model.BNGSIM_HAS_ANTIMONY,
+    reason='bngsim Antimony backend is not available in this environment',
+)
 def test_config_rejects_non_cvode_integrator_for_antimony_models(tmp_path):
     model_path = _write_antimony_model(tmp_path)
     cfg = _make_model_loader_config(model_path, sbml_integrator='rk4')
