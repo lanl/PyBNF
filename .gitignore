@@ -41,3 +41,4 @@ pip-installed-packages.txt
 readme_dev.txt
 dev/
 .venv/
+uv.lock
