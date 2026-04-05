@@ -45,6 +45,7 @@ if BNGSIM_AVAILABLE:
 
 BNGSIM_BACKEND_NET = 'net'
 BNGSIM_BACKEND_NF = 'nf'
+BNGSIM_BACKEND_HYBRID = 'hybrid'
 
 _BNGSIM_ACTION_BACKENDS = frozenset((BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF))
 _SUPPORTED_NF_METHOD_ALIASES = {
@@ -388,14 +389,25 @@ def classify_actions_for_bngsim(actions):
     """
     candidates = set(_BNGSIM_ACTION_BACKENDS)
     saw_simulation_action = False
+    saw_generate_network = False
+    saw_nf_simulation = False
 
     for action_line in actions:
         allowed_backends, is_simulation_action = _allowed_bngsim_backends_for_action(action_line)
         if allowed_backends is None:
             continue
 
+        if re.match(r'\s*generate_network\s*\(', _collapse_action_line_continuations(action_line).strip()):
+            saw_generate_network = True
+
+        if is_simulation_action and allowed_backends == frozenset((BNGSIM_BACKEND_NF,)):
+            saw_nf_simulation = True
+
         candidates.intersection_update(allowed_backends)
         if len(candidates) == 0:
+            # Check for hybrid: generate_network (net-only) + NF simulate
+            if saw_generate_network and saw_nf_simulation:
+                return BNGSIM_BACKEND_HYBRID
             return None
 
         if is_simulation_action:

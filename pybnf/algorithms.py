@@ -611,14 +611,103 @@ class Algorithm(object):
                              (m.name, init_dir, gnm_name))
                 net_path = init_dir + '/' + gnm_name + '.net'
                 use_bngsim = BNGSIM_AVAILABLE and bridge_backend == BNGSIM_BACKEND_NET
-                if BNGSIM_AVAILABLE and bridge_backend != BNGSIM_BACKEND_NET:
+                use_hybrid = (
+                    BNGSIM_AVAILABLE
+                    and BNGSIM_HAS_NFSIM
+                    and bridge_backend == BNGSIM_BACKEND_NF
+                )
+                if BNGSIM_AVAILABLE and bridge_backend not in (BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF):
                     logger.info(
                         'Model %s uses actions not supported by the `.net` bngsim bridge; '
                         'falling back to BioNetGen subprocess simulation',
                         m.name,
                     )
 
-                if use_bngsim:
+                if use_hybrid:
+                    # Hybrid path: generate_network already ran; now generate XML
+                    # by running BNG2.pl again with generate_network + writeXML
+                    logger.info(
+                        'Model %s is hybrid (generate_network + NF simulate); '
+                        'generating XML for bngsim NFsim',
+                        m.name,
+                    )
+                    os.chdir(init_dir)
+                    hybrid_name = '%s_gen_hybrid' % m.name
+                    m_copy = copy.deepcopy(m)
+                    m_copy.actions = ['writeXML()']
+                    try:
+                        m_copy.save(hybrid_name, pset=default_pset)
+                    except Exception:
+                        logger.exception(
+                            'Failed to stage the hybrid BNGL for model %s. '
+                            'Falling back to subprocess simulation.',
+                            m.name,
+                        )
+                        os.chdir(home_dir)
+                        final_model_list.append(m)
+                        final_model_list[-1].bng_command = m.bng_command
+                        continue
+
+                    hybrid_cmd = [self.config.config['bng_command'], '%s.bngl' % hybrid_name]
+                    if os.name == 'nt':
+                        hybrid_cmd = ['perl'] + hybrid_cmd
+                    try:
+                        with open('%s.log' % hybrid_name, 'w') as lf:
+                            print2('Generating XML for hybrid model %s.bngl' % hybrid_name)
+                            run_subprocess(
+                                hybrid_cmd,
+                                timeout=self.config.config['wall_time_gen'],
+                                stdout=lf,
+                                stderr=STDOUT,
+                            )
+                    except (CalledProcessError, TimeoutExpired, Exception):
+                        logger.exception(
+                            'Hybrid XML generation failed for model %s. '
+                            'Falling back to subprocess simulation.',
+                            m.name,
+                        )
+                        os.chdir(home_dir)
+                        final_model_list.append(m)
+                        final_model_list[-1].bng_command = m.bng_command
+                        continue
+                    finally:
+                        os.chdir(home_dir)
+
+                    xml_path = init_dir + '/' + hybrid_name + '.xml'
+                    if not os.path.isfile(xml_path):
+                        logger.warning(
+                            'XML file not found at %s for model %s. '
+                            'Falling back to subprocess simulation.',
+                            xml_path,
+                            m.name,
+                        )
+                        final_model_list.append(m)
+                        final_model_list[-1].bng_command = m.bng_command
+                        continue
+
+                    try:
+                        model = BngsimNfModel(
+                            m.name,
+                            m.actions,
+                            m.suffixes,
+                            m.mutants,
+                            xml_path,
+                            bngl_model_lines=m.model_lines,
+                            split_line_index=m.split_line_index,
+                            param_names=m.param_names,
+                            source_dir=os.path.dirname(os.path.abspath(m.file_path)),
+                        )
+                        model.bng_command = m.bng_command
+                        final_model_list.append(model)
+                    except Exception:
+                        logger.exception(
+                            'Failed to initialize the bngsim NF bridge for hybrid model %s. '
+                            'Falling back to BNGLModel subprocess simulation.',
+                            m.name,
+                        )
+                        final_model_list.append(m)
+                        final_model_list[-1].bng_command = m.bng_command
+                elif use_bngsim:
                     try:
                         logger.info('Using bngsim for in-process simulation of model %s' % m.name)
                         model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
@@ -628,11 +717,12 @@ class Algorithm(object):
                             m.name,
                         )
                         model = NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
+                    final_model_list.append(model)
+                    final_model_list[-1].bng_command = m.bng_command
                 else:
                     model = NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
-
-                final_model_list.append(model)
-                final_model_list[-1].bng_command = m.bng_command
+                    final_model_list.append(model)
+                    final_model_list[-1].bng_command = m.bng_command
             elif isinstance(m, BNGLModel) and bridge_backend == BNGSIM_BACKEND_NF:
                 if not BNGSIM_AVAILABLE:
                     logger.info(

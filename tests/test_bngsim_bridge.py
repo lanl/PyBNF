@@ -12,9 +12,9 @@ from .context import algorithms, pset
 import pybnf.bngsim_model as bngsim_model
 
 
-def _write_tfun_model(model_path, method='ode'):
+def _write_tfun_model(model_path, method='ode', force_generate_network=False):
     action_lines = []
-    if method not in ('nf', 'nf_reject', 'nfsim'):
+    if method not in ('nf', 'nf_reject', 'nfsim') or force_generate_network:
         action_lines.append('    generate_network({overwrite=>1})')
     action_lines.append(
         '    simulate({method=>"%s",t_end=>4,n_steps=>40,suffix=>"tc"})' % method
@@ -55,9 +55,9 @@ end actions
     )
 
 
-def _make_tfun_bngl_model(tmp_path, method='ode'):
+def _make_tfun_bngl_model(tmp_path, method='ode', force_generate_network=False):
     source_dir = tmp_path / 'source_model'
-    source_dir.mkdir()
+    source_dir.mkdir(exist_ok=True)
     tfun_file = source_dir / 'test_data.tfun'
     tfun_file.write_text(
         "# time f_time\n"
@@ -65,7 +65,7 @@ def _make_tfun_bngl_model(tmp_path, method='ode'):
         "1 1\n"
     )
     model_path = source_dir / 'bridge_test.bngl'
-    _write_tfun_model(model_path, method=method)
+    _write_tfun_model(model_path, method=method, force_generate_network=force_generate_network)
     model = pset.BNGLModel(
         str(model_path),
         suppress_free_param_error=True,
@@ -123,6 +123,19 @@ def _fake_xml_generation(cmd, timeout, stdout=None, stderr=None, input=None):
     _fake_xml_generation.last_bngl_path = bngl_path
     _fake_xml_generation.last_bngl_text = bngl_path.read_text()
     bngl_path.with_suffix('.xml').write_text('<bngxml/>')
+
+
+def _fake_hybrid_generation(cmd, timeout, stdout=None, stderr=None, input=None):
+    """Fake that handles both the network gen call and the XML gen call."""
+    del timeout, stdout, stderr, input
+    bngl_path = Path(os.getcwd()) / cmd[1]
+    bngl_text = bngl_path.read_text()
+    _fake_hybrid_generation.last_bngl_path = bngl_path
+    _fake_hybrid_generation.last_bngl_text = bngl_text
+    if 'writeXML' in bngl_text:
+        bngl_path.with_suffix('.xml').write_text('<bngxml/>')
+    else:
+        _write_dummy_net(bngl_path.with_suffix('.net'))
 
 
 def _make_free_param(name, value):
@@ -1212,3 +1225,139 @@ class TestAddConcentrationNetBackend(TestContinueFlag):
         assert 'phase2' in ds
         # addConcentration should have added 50 to the initial 100
         assert concentrations['A()'] == 150.0
+
+
+# ---------------------------------------------------------------------------
+# Hybrid backend (generate_network + NF simulate) — classification tests
+# ---------------------------------------------------------------------------
+
+def test_classify_actions_for_bngsim_returns_hybrid_for_gennet_plus_nf():
+    """When classify sees both generate_network and NF simulate, returns hybrid."""
+    assert bngsim_model.classify_actions_for_bngsim([
+        'generate_network({overwrite=>1})',
+        'simulate({method=>"nf",t_end=>10,n_steps=>10,suffix=>"tc"})',
+    ]) == bngsim_model.BNGSIM_BACKEND_HYBRID
+
+
+def test_classify_actions_for_bngsim_returns_hybrid_with_nfsim_alias():
+    assert bngsim_model.classify_actions_for_bngsim([
+        'generate_network({overwrite=>1})',
+        'simulate({method=>"nfsim",t_end=>10,n_steps=>10,suffix=>"tc"})',
+    ]) == bngsim_model.BNGSIM_BACKEND_HYBRID
+
+
+def test_classify_actions_for_bngsim_returns_net_not_hybrid_for_gennet_plus_ode():
+    """generate_network + ODE is the normal net path, not hybrid."""
+    assert bngsim_model.classify_actions_for_bngsim([
+        'generate_network({overwrite=>1})',
+        'simulate({method=>"ode",t_end=>10,n_steps=>10,suffix=>"tc"})',
+    ]) == bngsim_model.BNGSIM_BACKEND_NET
+
+
+def test_classify_actions_for_bngsim_returns_none_for_gennet_plus_pla():
+    """generate_network + PLA is unsupported — should return None."""
+    assert bngsim_model.classify_actions_for_bngsim([
+        'generate_network({overwrite=>1})',
+        'simulate({method=>"pla",t_end=>10,n_steps=>10,suffix=>"tc"})',
+    ]) is None
+
+
+def test_hybrid_detected_via_generates_network_flag():
+    """BNGLModel strips generate_network from actions; hybrid is detected
+    by the combination of generates_network=True and bridge_backend=NF
+    in _initialize_models, not by the classifier."""
+    # With generate_network stripped (as BNGLModel does), classifier returns NF
+    assert bngsim_model.classify_actions_for_bngsim([
+        'simulate({method=>"nf",t_end=>10,n_steps=>10,suffix=>"tc"})',
+    ]) == bngsim_model.BNGSIM_BACKEND_NF
+
+
+# ---------------------------------------------------------------------------
+# Hybrid backend — _initialize_models tests
+# ---------------------------------------------------------------------------
+
+def test_initialize_models_hybrid_uses_bngsim_nf(monkeypatch, tmp_path):
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+
+    class FakeBngsimNfModel(object):
+        def __init__(self, name, acts, suffs, mutants, xml_path, **kwargs):
+            self.name = name
+            self.actions = acts
+            self.suffixes = suffs
+            self.mutants = mutants
+            self.xml_path = xml_path
+            self.kwargs = kwargs
+            self.bng_command = ''
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_hybrid_generation):
+        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+                with patch.object(algorithms, 'BNGSIM_HAS_NFSIM', True):
+                    models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], FakeBngsimNfModel)
+    assert Path(models[0].xml_path).is_file()
+    # The simulate action should be preserved
+    assert any('simulate' in a for a in models[0].actions)
+    # The last BNG2.pl call (XML generation) should have writeXML
+    assert 'writeXML()' in _fake_hybrid_generation.last_bngl_text
+
+
+def test_initialize_models_hybrid_falls_back_to_netmodel_when_bngsim_unavailable(monkeypatch, tmp_path):
+    """When bngsim is unavailable, hybrid falls through to NetModel (not BNGLModel)
+    because generates_network branch still runs BNG2.pl for .net generation."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms, 'BNGSIM_AVAILABLE', False):
+            models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], pset.NetModel)
+
+
+def test_initialize_models_hybrid_falls_back_to_netmodel_when_nfsim_missing(monkeypatch, tmp_path):
+    """When bngsim lacks NFsim, hybrid falls through to NetModel."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+            with patch.object(algorithms, 'BNGSIM_HAS_NFSIM', False):
+                models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], pset.NetModel)
+
+
+def test_initialize_models_hybrid_falls_back_when_bridge_init_fails(monkeypatch, tmp_path):
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+
+    class BrokenBngsimNfModel(object):
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError('bridge init failed')
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_hybrid_generation):
+        with patch.object(algorithms, 'BngsimNfModel', BrokenBngsimNfModel):
+            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+                with patch.object(algorithms, 'BNGSIM_HAS_NFSIM', True):
+                    models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], pset.BNGLModel)
