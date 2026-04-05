@@ -281,6 +281,9 @@ def _normalize_action_method(method, poplevel_text=None):
         except (TypeError, ValueError):
             poplevel = None
 
+    if lower == 'protocol':
+        return 'protocol', None
+
     if lower == 'pla':
         raise ValueError(
             "method=>'pla' is not supported by the bngsim bridge"
@@ -317,7 +320,7 @@ def _classify_action_method_backend(method):
 
     if lower == 'pla':
         return None
-    if lower in ('ode', 'ssa', 'psa'):
+    if lower in ('ode', 'ssa', 'psa', 'protocol'):
         return BNGSIM_BACKEND_NET
     if lower in _SUPPORTED_NF_METHOD_ALIASES:
         return BNGSIM_BACKEND_NF
@@ -446,6 +449,44 @@ def _resolve_scan_points(ps_params):
     if log_scale:
         return np.logspace(np.log10(par_min), np.log10(par_max), n_scan_pts)
     return np.linspace(par_min, par_max, n_scan_pts)
+
+
+def _resolve_sample_times(sim_params):
+    """Extract and validate sample_times from parsed simulate/parameter_scan params.
+
+    Returns a sorted list of floats, or None if sample_times is not specified.
+    If both n_steps and sample_times are present, n_steps takes precedence
+    (with a warning), matching BioNetGen behavior.
+    """
+    raw = sim_params.get('sample_times')
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) == 0:
+        return None
+
+    sample_times = sorted(float(t) for t in raw)
+
+    if len(sample_times) < 3:
+        logger.warning(
+            "sample_times must contain at least 3 points, got %d — ignoring",
+            len(sample_times))
+        return None
+
+    # n_steps takes precedence over sample_times (BioNetGen compat)
+    if 'n_steps' in sim_params or 'n_output_steps' in sim_params:
+        precedence_key = 'n_steps' if 'n_steps' in sim_params else 'n_output_steps'
+        logger.warning(
+            "%s and sample_times both defined. %s takes precedence.",
+            precedence_key, precedence_key)
+        return None
+
+    # If t_end is also specified, append it (BioNetGen compat)
+    if 't_end' in sim_params:
+        t_end = float(sim_params['t_end'])
+        if t_end > sample_times[-1]:
+            sample_times.append(t_end)
+
+    return sample_times
 
 
 def _build_safe_eval_namespace(seed=None):
@@ -588,7 +629,7 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
 class BngsimModel(NetModel):
     """In-process simulation model using the optional bngsim engine."""
 
-    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None):
+    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None):
         super(BngsimModel, self).__init__(
             name,
             acts,
@@ -600,6 +641,7 @@ class BngsimModel(NetModel):
         )
         if not BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
+        self._protocol = protocol or []
 
         self._net_species_initializers = _parse_net_species_initializers(
             self.netfile_lines
@@ -617,6 +659,7 @@ class BngsimModel(NetModel):
         """Return a shallow copy with a cloned engine model and new PSet."""
         newmodel = copy.copy(self)
         newmodel._engine_model = self._engine_model.clone()
+        newmodel._protocol = self._protocol
         newmodel.param_set = pset
         return newmodel
 
@@ -679,6 +722,9 @@ class BngsimModel(NetModel):
                     sim_params.get('poplevel'),
                 )
 
+                # Parse sample_times (list of string values from BNGL)
+                sample_times = _resolve_sample_times(sim_params)
+
                 # Gap 1: continue=>1
                 continue_flag = bool(int(float(sim_params.get('continue', 0))))
                 if continue_flag and 't_start' not in sim_params:
@@ -707,6 +753,13 @@ class BngsimModel(NetModel):
                 if stop_if is not None:
                     stop_if = stop_if.strip().strip('"').strip("'")
 
+                # sample_times is not supported for NFsim (possible future
+                # BNGsim / NFsim enhancement)
+                if method == 'nf' and sample_times is not None:
+                    logger.warning(
+                        "sample_times is not supported for NFsim — ignoring")
+                    sample_times = None
+
                 if method == 'psa':
                     if current_method != 'psa' or current_poplevel != poplevel:
                         sim = bngsim.Simulator(
@@ -725,11 +778,19 @@ class BngsimModel(NetModel):
                     sim.add_stop_condition(stop_if, label=stop_if)
 
                 try:
-                    result = sim.run(
-                        t_span=(t_start, t_end),
-                        n_points=n_steps + 1,
-                        **run_kwargs,
-                    )
+                    if sample_times is not None:
+                        result = sim.run(
+                            t_span=(sample_times[0], sample_times[-1]),
+                            n_points=len(sample_times),
+                            sample_times=sample_times,
+                            **run_kwargs,
+                        )
+                    else:
+                        result = sim.run(
+                            t_span=(t_start, t_end),
+                            n_points=n_steps + 1,
+                            **run_kwargs,
+                        )
                 except Exception as exc:
                     if _has_stop_condition and isinstance(exc, bngsim.StopConditionMet):
                         logger.info("stop_if triggered: %s", stop_if)
@@ -823,6 +884,153 @@ class BngsimModel(NetModel):
 
         return ds
 
+    def _run_protocol(self, model):
+        """Execute the stored protocol: a sequence of action lines.
+
+        Returns the Result from the last simulate action, or None if the
+        protocol contains no simulate actions.
+        """
+        sim = bngsim.Simulator(model, method='ode', **self._codegen_kwargs())
+        current_method = 'ode'
+        current_poplevel = None
+        current_time = 0.0
+        last_result = None
+
+        _has_stop_condition = hasattr(bngsim, 'StopConditionMet')
+
+        for action_line in self._protocol:
+            line = _collapse_action_line_continuations(action_line).strip()
+            if not line or line.startswith('#'):
+                continue
+
+            # ── simulate() ──
+            sim_params = _parse_simulate_action(line)
+            if sim_params is not None:
+                method, poplevel = _normalize_action_method(
+                    sim_params.get('method', 'ode'),
+                    sim_params.get('poplevel'),
+                )
+
+                # continue=>1
+                continue_flag = bool(int(float(sim_params.get('continue', 0))))
+                if continue_flag and 't_start' not in sim_params:
+                    t_start = current_time
+                else:
+                    t_start = float(sim_params.get('t_start', 0))
+                t_end = float(sim_params.get('t_end', 100))
+                n_steps = int(sim_params.get('n_steps', 100))
+
+                # sample_times
+                sample_times = _resolve_sample_times(sim_params)
+
+                # atol, rtol, seed
+                run_kwargs = {}
+                if 'atol' in sim_params:
+                    run_kwargs['atol'] = float(sim_params['atol'])
+                if 'rtol' in sim_params:
+                    run_kwargs['rtol'] = float(sim_params['rtol'])
+                if 'seed' in sim_params:
+                    run_kwargs['seed'] = int(float(sim_params['seed']))
+
+                # stop_if
+                stop_if = sim_params.get('stop_if')
+                if stop_if is not None:
+                    stop_if = stop_if.strip().strip('"').strip("'")
+
+                # Recreate simulator if method changed
+                if method == 'psa':
+                    if current_method != 'psa' or current_poplevel != poplevel:
+                        sim = bngsim.Simulator(model, method='psa', poplevel=poplevel)
+                        current_method = 'psa'
+                        current_poplevel = poplevel
+                elif current_method != method:
+                    sim = bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
+                    current_method = method
+                    current_poplevel = None
+
+                if stop_if and _has_stop_condition:
+                    sim.add_stop_condition(stop_if, label=stop_if)
+
+                try:
+                    if sample_times is not None:
+                        last_result = sim.run(
+                            t_span=(sample_times[0], sample_times[-1]),
+                            n_points=len(sample_times),
+                            sample_times=sample_times,
+                            **run_kwargs,
+                        )
+                    else:
+                        last_result = sim.run(
+                            t_span=(t_start, t_end),
+                            n_points=n_steps + 1,
+                            **run_kwargs,
+                        )
+                except Exception as exc:
+                    if _has_stop_condition and isinstance(exc, bngsim.StopConditionMet):
+                        logger.info("protocol stop_if triggered: %s", stop_if)
+                        last_result = exc.result
+                    else:
+                        raise
+
+                if stop_if and _has_stop_condition and hasattr(sim, 'clear_stop_conditions'):
+                    sim.clear_stop_conditions()
+
+                current_time = t_end
+                continue
+
+            # ── setConcentration() ──
+            sc = _parse_set_concentration(line)
+            if sc is not None:
+                species_name, conc_value = sc
+                try:
+                    model.set_concentration(species_name, conc_value)
+                except Exception:
+                    logger.warning("protocol: setConcentration(%s, %s) failed",
+                                   species_name, conc_value)
+                continue
+
+            # ── addConcentration() ──
+            ac = _parse_add_concentration(line)
+            if ac is not None:
+                species_name, delta = ac
+                try:
+                    current = model.get_concentration(species_name)
+                    model.set_concentration(species_name, current + delta)
+                except Exception:
+                    logger.warning("protocol: addConcentration(%s, %s) failed",
+                                   species_name, delta)
+                continue
+
+            # ── setParameter() ──
+            sp = _parse_set_parameter(line)
+            if sp is not None:
+                param_name, param_value = sp
+                try:
+                    model.set_param(param_name, param_value)
+                except Exception:
+                    logger.warning("protocol: setParameter(%s, %s) failed",
+                                   param_name, param_value)
+                continue
+
+            # ── resetConcentrations() ──
+            if _is_reset_concentrations(line):
+                model.reset()
+                continue
+
+            # ── saveConcentrations() ──
+            if _is_save_concentrations(line):
+                model.save_concentrations()
+                continue
+
+            # ── saveParameters() / resetParameters() ──
+            if _is_save_parameters(line) or _is_reset_parameters(line):
+                logger.debug("protocol: %s — not yet implemented in protocol context", line.strip())
+                continue
+
+            logger.debug("protocol: skipping unrecognized command: %s", line)
+
+        return last_result
+
     def _codegen_kwargs(self, method='ode'):
         """Return codegen keyword args for ODE Simulator construction."""
         if method == 'ode' and getattr(self, '_codegen_so', ''):
@@ -893,6 +1101,12 @@ class BngsimModel(NetModel):
             ps_params.get('poplevel'),
         )
 
+        # Resolve sample_times for passthrough to each scan-point simulation
+        sample_times = _resolve_sample_times(ps_params)
+        if sample_times is not None:
+            t_start = sample_times[0]
+            t_end = sample_times[-1]
+
         # bifurcate forces reset_conc=False; parameter_scan defaults to True
         if is_bifurcate:
             reset_conc = False
@@ -941,6 +1155,28 @@ class BngsimModel(NetModel):
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
+        elif method == 'protocol':
+            if not self._protocol:
+                raise ValueError(
+                    'parameter_scan method=>"protocol" but no '
+                    'begin protocol...end protocol block found'
+                )
+            for value in points:
+                point_model = self._prepare_scan_point_model(
+                    model, param_name, value,
+                )
+                last_result = self._run_protocol(point_model)
+                if last_result is None:
+                    raise ValueError(
+                        'protocol contains no simulate actions'
+                    )
+                row, row_obs, row_expr = self._scan_result_to_row(
+                    last_result, value, print_functions=print_funcs,
+                )
+                if len(obs_names) == 0:
+                    obs_names = row_obs
+                    expr_names = row_expr
+                rows.append(row)
         elif not reset_conc:
             # bifurcate / reset_conc=>0: carry model state between points
             running_model = model.clone()
@@ -953,7 +1189,14 @@ class BngsimModel(NetModel):
                     method,
                     poplevel,
                 )
-                result = point_sim.run(t_span=(t_start, t_end), n_points=2)
+                if sample_times is not None:
+                    result = point_sim.run(
+                        t_span=(sample_times[0], sample_times[-1]),
+                        n_points=len(sample_times),
+                        sample_times=sample_times,
+                    )
+                else:
+                    result = point_sim.run(t_span=(t_start, t_end), n_points=2)
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )
@@ -973,7 +1216,14 @@ class BngsimModel(NetModel):
                     method,
                     poplevel,
                 )
-                result = point_sim.run(t_span=(t_start, t_end), n_points=2)
+                if sample_times is not None:
+                    result = point_sim.run(
+                        t_span=(sample_times[0], sample_times[-1]),
+                        n_points=len(sample_times),
+                        sample_times=sample_times,
+                    )
+                else:
+                    result = point_sim.run(t_span=(t_start, t_end), n_points=2)
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )
@@ -1202,6 +1452,12 @@ class BngsimNfModel(Model):
 
         _normalize_nf_action_method(ps_params.get('method', 'nf'))
 
+        # sample_times is not supported for NFsim (possible future
+        # BNGsim / NFsim enhancement)
+        if ps_params.get('sample_times') is not None:
+            logger.warning(
+                "sample_times is not supported for NFsim parameter_scan — ignoring")
+
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
         t_end = float(ps_params.get('t_end', 100))
@@ -1306,6 +1562,12 @@ class BngsimNfModel(Model):
                 sim_params = _parse_simulate_action(line)
                 if sim_params is not None:
                     _normalize_nf_action_method(sim_params.get('method', 'nf'))
+
+                    # sample_times is not supported for NFsim (possible future
+                    # BNGsim / NFsim enhancement)
+                    if sim_params.get('sample_times') is not None:
+                        logger.warning(
+                            "sample_times is not supported for NFsim — ignoring")
 
                     t_start = float(sim_params.get('t_start', 0))
                     t_end = float(sim_params.get('t_end', 100))

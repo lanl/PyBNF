@@ -291,6 +291,7 @@ class BNGLModel(Model):
         self.generate_network_line = None
         self.seeded = False
         self.actions = []
+        self.protocol = []
         self.mutants = []
         self.stochastic = False  # Update during parsing. Used to warn about misuse of 'smoothing'
         self.has_observables = False
@@ -300,6 +301,7 @@ class BNGLModel(Model):
         skip_lines = set()  # Indices of lines that should not go into self.model_lines
 
         in_action_block = False
+        in_protocol_block = False
         in_no_block = True
         in_observables_block = False
         continuation = ''
@@ -314,6 +316,9 @@ class BNGLModel(Model):
                 if in_action_block:
                     # Keep it in the actions block
                     self.actions.append(rawline)
+                    skip_lines.add(i)
+                elif in_protocol_block:
+                    self.protocol.append(rawline)
                     skip_lines.add(i)
                 continue
 
@@ -361,6 +366,22 @@ class BNGLModel(Model):
                 skip_lines.update(indices)
                 continue
 
+            if re.match(r'begin\s+protocol', line.strip()):
+                in_protocol_block = True
+                in_no_block = False
+                skip_lines.update(indices)
+                continue
+            elif re.match(r'end\s+protocol', line.strip()):
+                in_protocol_block = False
+                in_no_block = True
+                skip_lines.update(indices)
+                continue
+
+            if in_protocol_block:
+                skip_lines.update(indices)
+                self.protocol.append(rawline)
+                continue
+
             # To keep track of whether we're in no block, which counts as an action block, check for
             # begin and end keywords
             if re.match('begin\s+[a-z][a-z\s]*', line.strip()):
@@ -384,7 +405,7 @@ class BNGLModel(Model):
                     self.generate_network_line = line
                     continue
                 if re.search('simulate_((ode)|(ssa)|(pla))', line) or re.search(
-                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla))("|\')', line):
+                        '(simulate|parameter_scan|bifurcate).*method=>(\'|")((ode)|(ssa)|(pla)|(protocol))("|\')', line):
                     self.generates_network = True  # in case there is no "generate_network" command present
                 if re.search('simulate_((nf)|(ssa)|(pla))', line) or re.search(
                         '(simulate|parameter_scan|bifurcate).*method=>(\'|")((nf)|(ssa)|(pla))("|\')', line):
@@ -512,10 +533,15 @@ class BNGLModel(Model):
                 action_lines.append(self.generate_network_line)
             action_lines += self.actions + ['end actions']
 
+        protocol_lines = []
+        if self.protocol:
+            protocol_lines = ['begin protocol\n'] + self.protocol + ['end protocol\n']
+
         all_lines = \
             self.model_lines[:self.split_line_index] + \
             param_text_lines + \
             self.model_lines[self.split_line_index:] + \
+            protocol_lines + \
             action_lines
 
         return '\n'.join(all_lines) + '\n'

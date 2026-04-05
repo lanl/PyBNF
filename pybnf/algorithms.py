@@ -710,7 +710,7 @@ class Algorithm(object):
                 elif use_bngsim:
                     try:
                         logger.info('Using bngsim for in-process simulation of model %s' % m.name)
-                        model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
+                        model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path, protocol=m.protocol)
                     except Exception:
                         logger.exception(
                             'Failed to initialize bngsim bridge for model %s. Falling back to NetModel.',

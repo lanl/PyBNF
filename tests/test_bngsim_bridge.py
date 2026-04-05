@@ -370,7 +370,8 @@ def test_initialize_models_uses_bngsim_when_available(monkeypatch, tmp_path):
     algo = _make_dummy_algorithm(model, output_dir)
 
     class FakeBngsimModel(pset.NetModel):
-        pass
+        def __init__(self, *args, protocol=None, **kwargs):
+            super().__init__(*args, **kwargs)
 
     monkeypatch.chdir(tmp_path)
     with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
