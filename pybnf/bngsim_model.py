@@ -1138,16 +1138,41 @@ class BngsimModel(NetModel):
                     method,
                     poplevel,
                 )
-                ss_result = point_sim.steady_state()
-                for i, name in enumerate(ss_result.species_names):
-                    point_model.set_concentration(
-                        name,
-                        ss_result.concentrations[i],
+                ss_ok = False
+                try:
+                    ss_result = point_sim.steady_state()
+                    if ss_result.converged:
+                        for i, name in enumerate(ss_result.species_names):
+                            point_model.set_concentration(
+                                name,
+                                ss_result.concentrations[i],
+                            )
+                        point_model.save_concentrations()
+                        point_model.reset()
+                        eval_sim = self._make_scan_simulator(point_model, 'ode', None)
+                        result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
+                        ss_ok = True
+                    else:
+                        logger.warning(
+                            "BngsimModel: steady-state solver did not converge for "
+                            "%s=%s (residual=%.2e). Falling back to long time-course.",
+                            param_name, value, ss_result.residual,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "BngsimModel: steady-state solver failed for %s=%s: %s. "
+                        "Falling back to long time-course.",
+                        param_name, value, exc,
                     )
-                point_model.save_concentrations()
-                point_model.reset()
-                eval_sim = self._make_scan_simulator(point_model, 'ode', None)
-                result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
+                if not ss_ok:
+                    # Fallback: simulate for a long time and take the final state
+                    point_model = self._prepare_scan_point_model(
+                        model, param_name, value,
+                    )
+                    fallback_sim = self._make_scan_simulator(
+                        point_model, method, poplevel,
+                    )
+                    result = fallback_sim.run(t_span=(t_start, t_end), n_points=2)
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )
