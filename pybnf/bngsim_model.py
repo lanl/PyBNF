@@ -2,6 +2,7 @@
 
 
 import copy
+import concurrent.futures
 import hashlib
 import logging
 import math
@@ -1088,6 +1089,92 @@ class BngsimModel(NetModel):
         point_model.reset()
         return point_model
 
+    def _run_ss_scan_threaded(
+        self, model, param_name, points, method, poplevel,
+        t_start, t_end, print_funcs,
+    ):
+        """Run steady-state parameter scan with threaded parallelism.
+
+        Prepares all point models sequentially (species initializer sync is not
+        thread-safe), then submits steady_state() calls to a thread pool.
+        Falls back to long time-course per point on non-convergence or error.
+        """
+        n_workers = min(len(points), 4)
+        obs_names = []
+        expr_names = []
+        rows = []
+
+        # Prepare models and simulators sequentially (not thread-safe)
+        point_models = []
+        point_sims = []
+        for value in points:
+            pm = self._prepare_scan_point_model(model, param_name, value)
+            ps = self._make_scan_simulator(pm, method, poplevel)
+            point_models.append(pm)
+            point_sims.append(ps)
+
+        # Run steady_state() in parallel
+        def _solve_ss(idx):
+            """Returns (idx, ss_result_or_None, exception_or_None)."""
+            try:
+                ss_result = point_sims[idx].steady_state()
+                return (idx, ss_result, None)
+            except Exception as exc:
+                return (idx, None, exc)
+
+        ss_outcomes = [None] * len(points)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_solve_ss, i): i for i in range(len(points))}
+            for fut in concurrent.futures.as_completed(futures):
+                idx, ss_result, exc = fut.result()
+                ss_outcomes[idx] = (ss_result, exc)
+
+        # Process results and handle fallbacks
+        for i, value in enumerate(points):
+            ss_result, exc = ss_outcomes[i]
+            ss_ok = False
+
+            if exc is not None:
+                logger.warning(
+                    "BngsimModel: steady-state solver failed for %s=%s: %s. "
+                    "Falling back to long time-course.",
+                    param_name, value, exc,
+                )
+            elif ss_result.converged:
+                point_model = point_models[i]
+                for j, name in enumerate(ss_result.species_names):
+                    point_model.set_concentration(
+                        name, ss_result.concentrations[j],
+                    )
+                point_model.save_concentrations()
+                point_model.reset()
+                eval_sim = self._make_scan_simulator(point_model, 'ode', None)
+                result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
+                ss_ok = True
+            else:
+                logger.warning(
+                    "BngsimModel: steady-state solver did not converge for "
+                    "%s=%s (residual=%.2e). Falling back to long time-course.",
+                    param_name, value, ss_result.residual,
+                )
+
+            if not ss_ok:
+                fb_model = self._prepare_scan_point_model(
+                    model, param_name, value,
+                )
+                fb_sim = self._make_scan_simulator(fb_model, method, poplevel)
+                result = fb_sim.run(t_span=(t_start, t_end), n_points=2)
+
+            row, row_obs, row_expr = self._scan_result_to_row(
+                result, value, print_functions=print_funcs,
+            )
+            if len(obs_names) == 0:
+                obs_names = row_obs
+                expr_names = row_expr
+            rows.append(row)
+
+        return rows, obs_names, expr_names
+
     def _run_parameter_scan(self, model, ps_params, is_bifurcate=False):
         """Execute a parameter_scan() or bifurcate() action."""
         param_name = ps_params.get('parameter', '')
@@ -1127,59 +1214,72 @@ class BngsimModel(NetModel):
         rows = []
 
         if use_ss:
-            for value in points:
-                point_model = self._prepare_scan_point_model(
-                    model,
-                    param_name,
-                    value,
+            # Use threaded path when safe: ODE method, no expression-based
+            # species initializers, and enough points to justify threading.
+            use_threaded_ss = (
+                method == 'ode'
+                and not self._net_species_initializers
+                and len(points) >= 4
+            )
+            if use_threaded_ss:
+                rows, obs_names, expr_names = self._run_ss_scan_threaded(
+                    model, param_name, points, method, poplevel,
+                    t_start, t_end, print_funcs,
                 )
-                point_sim = self._make_scan_simulator(
-                    point_model,
-                    method,
-                    poplevel,
-                )
-                ss_ok = False
-                try:
-                    ss_result = point_sim.steady_state()
-                    if ss_result.converged:
-                        for i, name in enumerate(ss_result.species_names):
-                            point_model.set_concentration(
-                                name,
-                                ss_result.concentrations[i],
-                            )
-                        point_model.save_concentrations()
-                        point_model.reset()
-                        eval_sim = self._make_scan_simulator(point_model, 'ode', None)
-                        result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
-                        ss_ok = True
-                    else:
-                        logger.warning(
-                            "BngsimModel: steady-state solver did not converge for "
-                            "%s=%s (residual=%.2e). Falling back to long time-course.",
-                            param_name, value, ss_result.residual,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "BngsimModel: steady-state solver failed for %s=%s: %s. "
-                        "Falling back to long time-course.",
-                        param_name, value, exc,
-                    )
-                if not ss_ok:
-                    # Fallback: simulate for a long time and take the final state
+            else:
+                for value in points:
                     point_model = self._prepare_scan_point_model(
-                        model, param_name, value,
+                        model,
+                        param_name,
+                        value,
                     )
-                    fallback_sim = self._make_scan_simulator(
-                        point_model, method, poplevel,
+                    point_sim = self._make_scan_simulator(
+                        point_model,
+                        method,
+                        poplevel,
                     )
-                    result = fallback_sim.run(t_span=(t_start, t_end), n_points=2)
-                row, row_obs, row_expr = self._scan_result_to_row(
-                    result, value, print_functions=print_funcs,
-                )
-                if len(obs_names) == 0:
-                    obs_names = row_obs
-                    expr_names = row_expr
-                rows.append(row)
+                    ss_ok = False
+                    try:
+                        ss_result = point_sim.steady_state()
+                        if ss_result.converged:
+                            for i, name in enumerate(ss_result.species_names):
+                                point_model.set_concentration(
+                                    name,
+                                    ss_result.concentrations[i],
+                                )
+                            point_model.save_concentrations()
+                            point_model.reset()
+                            eval_sim = self._make_scan_simulator(point_model, 'ode', None)
+                            result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
+                            ss_ok = True
+                        else:
+                            logger.warning(
+                                "BngsimModel: steady-state solver did not converge for "
+                                "%s=%s (residual=%.2e). Falling back to long time-course.",
+                                param_name, value, ss_result.residual,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "BngsimModel: steady-state solver failed for %s=%s: %s. "
+                            "Falling back to long time-course.",
+                            param_name, value, exc,
+                        )
+                    if not ss_ok:
+                        # Fallback: simulate for a long time and take the final state
+                        point_model = self._prepare_scan_point_model(
+                            model, param_name, value,
+                        )
+                        fallback_sim = self._make_scan_simulator(
+                            point_model, method, poplevel,
+                        )
+                        result = fallback_sim.run(t_span=(t_start, t_end), n_points=2)
+                    row, row_obs, row_expr = self._scan_result_to_row(
+                        result, value, print_functions=print_funcs,
+                    )
+                    if len(obs_names) == 0:
+                        obs_names = row_obs
+                        expr_names = row_expr
+                    rows.append(row)
         elif method == 'protocol':
             if not self._protocol:
                 raise ValueError(
@@ -1230,32 +1330,69 @@ class BngsimModel(NetModel):
                     expr_names = row_expr
                 rows.append(row)
         else:
-            for value in points:
-                point_model = self._prepare_scan_point_model(
-                    model,
-                    param_name,
-                    value,
-                )
-                point_sim = self._make_scan_simulator(
-                    point_model,
-                    method,
-                    poplevel,
-                )
-                if sample_times is not None:
-                    result = point_sim.run(
-                        t_span=(sample_times[0], sample_times[-1]),
-                        n_points=len(sample_times),
-                        sample_times=sample_times,
+            # Use run_batch() when safe: no expression-based species
+            # initializers, no sample_times, enough points, API available.
+            use_batch = (
+                not self._net_species_initializers
+                and sample_times is None
+                and len(points) >= 4
+                and hasattr(bngsim.Simulator, 'run_batch')
+            )
+            if use_batch:
+                params = [{param_name: float(v)} for v in points]
+                n_workers = min(len(points), 4)
+                batch_sim = self._make_scan_simulator(model, method, poplevel)
+                try:
+                    batch_results = batch_sim.run_batch(
+                        t_span=(t_start, t_end),
+                        n_points=2,
+                        params=params,
+                        num_processors=n_workers,
                     )
-                else:
-                    result = point_sim.run(t_span=(t_start, t_end), n_points=2)
-                row, row_obs, row_expr = self._scan_result_to_row(
-                    result, value, print_functions=print_funcs,
-                )
-                if len(obs_names) == 0:
-                    obs_names = row_obs
-                    expr_names = row_expr
-                rows.append(row)
+                except Exception:
+                    logger.warning(
+                        "BngsimModel: run_batch() failed; falling back to "
+                        "sequential scan.",
+                        exc_info=True,
+                    )
+                    use_batch = False
+
+            if use_batch:
+                for i, value in enumerate(points):
+                    row, row_obs, row_expr = self._scan_result_to_row(
+                        batch_results[i], value, print_functions=print_funcs,
+                    )
+                    if len(obs_names) == 0:
+                        obs_names = row_obs
+                        expr_names = row_expr
+                    rows.append(row)
+            else:
+                for value in points:
+                    point_model = self._prepare_scan_point_model(
+                        model,
+                        param_name,
+                        value,
+                    )
+                    point_sim = self._make_scan_simulator(
+                        point_model,
+                        method,
+                        poplevel,
+                    )
+                    if sample_times is not None:
+                        result = point_sim.run(
+                            t_span=(sample_times[0], sample_times[-1]),
+                            n_points=len(sample_times),
+                            sample_times=sample_times,
+                        )
+                    else:
+                        result = point_sim.run(t_span=(t_start, t_end), n_points=2)
+                    row, row_obs, row_expr = self._scan_result_to_row(
+                        result, value, print_functions=print_funcs,
+                    )
+                    if len(obs_names) == 0:
+                        obs_names = row_obs
+                        expr_names = row_expr
+                    rows.append(row)
 
         if rows:
             arr = np.vstack(rows)
