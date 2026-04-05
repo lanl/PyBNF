@@ -1550,3 +1550,35 @@ class TestProtocolBnglFileText:
         m.param_set = pset.PSet([])
         text = m.model_text()
         assert 'begin protocol' not in text
+
+
+class TestSaveResetParametersInProtocol(TestContinueFlag):
+    """Test saveParameters() / resetParameters() inside protocol blocks."""
+
+    def test_save_reset_parameters_restores_values(self, monkeypatch):
+        actions = ['simulate({method=>"ode",t_end=>10,n_steps=>2})']
+        obj, model, run_log = self._make_fake_bngsim_model(actions, monkeypatch)
+
+        # Give the model trackable param names and values
+        param_vals = {'k1': 0.1, 'k2': 0.5}
+        model.param_names = ['k1', 'k2']
+        model.get_param = lambda n: param_vals[n]
+        set_calls = []
+        def mock_set_param(name, val):
+            param_vals[name] = val
+            set_calls.append((name, val))
+        model.set_param = mock_set_param
+
+        obj._protocol = [
+            'saveParameters()',
+            'setParameter("k1",99.0)',
+            'resetParameters()',
+        ]
+        obj._run_protocol(model)
+
+        # First call: setParameter("k1", 99.0)
+        assert set_calls[0] == ('k1', 99.0)
+        # resetParameters restores both k1=0.1 and k2=0.5
+        restore = {name: val for name, val in set_calls[1:]}
+        assert restore['k1'] == 0.1
+        assert restore['k2'] == 0.5

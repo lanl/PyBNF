@@ -897,6 +897,14 @@ class BngsimModel(NetModel):
         current_time = 0.0
         last_result = None
 
+        # Baseline saved parameters (used by saveParameters/resetParameters)
+        saved_params = {}
+        for pname in model.param_names:
+            try:
+                saved_params[pname] = model.get_param(pname)
+            except Exception:
+                pass
+
         _has_stop_condition = hasattr(bngsim, 'StopConditionMet')
 
         for action_line in self._protocol:
@@ -1023,9 +1031,24 @@ class BngsimModel(NetModel):
                 model.save_concentrations()
                 continue
 
-            # ── saveParameters() / resetParameters() ──
-            if _is_save_parameters(line) or _is_reset_parameters(line):
-                logger.debug("protocol: %s — not yet implemented in protocol context", line.strip())
+            # ── saveParameters() ──
+            if _is_save_parameters(line):
+                saved_params = {}
+                for pname in model.param_names:
+                    try:
+                        saved_params[pname] = model.get_param(pname)
+                    except Exception:
+                        pass
+                continue
+
+            # ── resetParameters() ──
+            if _is_reset_parameters(line):
+                for pname, pval in saved_params.items():
+                    try:
+                        model.set_param(pname, pval)
+                    except Exception:
+                        pass
+                sim = bngsim.Simulator(model, method=current_method, **self._codegen_kwargs(current_method))
                 continue
 
             logger.debug("protocol: skipping unrecognized command: %s", line)
@@ -1155,7 +1178,7 @@ class BngsimModel(NetModel):
                 logger.warning(
                     "BngsimModel: steady-state solver did not converge for "
                     "%s=%s (residual=%.2e). Falling back to long time-course.",
-                    param_name, value, ss_result.residual,
+                    param_name, value, getattr(ss_result, 'residual', None),
                 )
 
             if not ss_ok:
@@ -1256,7 +1279,7 @@ class BngsimModel(NetModel):
                             logger.warning(
                                 "BngsimModel: steady-state solver did not converge for "
                                 "%s=%s (residual=%.2e). Falling back to long time-course.",
-                                param_name, value, ss_result.residual,
+                                param_name, value, getattr(ss_result, 'residual', None),
                             )
                     except Exception as exc:
                         logger.warning(
