@@ -1362,3 +1362,191 @@ def test_initialize_models_hybrid_falls_back_when_bridge_init_fails(monkeypatch,
 
     assert len(models) == 1
     assert isinstance(models[0], pset.BNGLModel)
+
+
+# ── Protocol support tests ───────────────────────────────────────────────────
+
+
+def test_normalize_action_method_protocol():
+    method, poplevel = bngsim_model._normalize_action_method('protocol')
+    assert method == 'protocol'
+    assert poplevel is None
+
+
+def test_normalize_action_method_protocol_case_insensitive():
+    method, _ = bngsim_model._normalize_action_method('Protocol')
+    assert method == 'protocol'
+
+
+def test_classify_action_method_backend_protocol():
+    assert bngsim_model._classify_action_method_backend('protocol') == bngsim_model.BNGSIM_BACKEND_NET
+
+
+def test_classify_actions_for_bngsim_accepts_protocol_parameter_scan():
+    actions = [
+        'generate_network({overwrite=>1})',
+        'parameter_scan({method=>"protocol",parameter=>"k",par_scan_vals=>[1,2],suffix=>"scan"})',
+    ]
+    assert bngsim_model.classify_actions_for_bngsim(actions) == bngsim_model.BNGSIM_BACKEND_NET
+
+
+def _write_protocol_bngl(model_path):
+    """Write a minimal BNGL file with a protocol block and a protocol parameter_scan."""
+    model_path.write_text("""\
+begin model
+
+begin parameters
+  k__FREE 1.0
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A() 100
+end seed species
+
+begin observables
+  Molecules Atot A()
+end observables
+
+begin reaction rules
+  A() -> 0 k__FREE
+end reaction rules
+
+end model
+
+begin protocol
+  simulate({method=>"ode", t_start=>0, t_end=>10, n_steps=>1})
+  setConcentration("A()", 50)
+  simulate({method=>"ode", t_start=>0, t_end=>5, n_steps=>10})
+end protocol
+
+begin actions
+  generate_network({overwrite=>1})
+  parameter_scan({method=>"protocol", parameter=>"k__FREE", par_scan_vals=>[0.1, 1.0], suffix=>"scan"})
+end actions
+""")
+
+
+def _write_protocol_bngl_with_comments(model_path):
+    """Write a protocol block containing blank lines and comments."""
+    model_path.write_text("""\
+begin model
+
+begin parameters
+  k__FREE 1.0
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A() 100
+end seed species
+
+begin observables
+  Molecules Atot A()
+end observables
+
+begin reaction rules
+  A() -> 0 k__FREE
+end reaction rules
+
+end model
+
+begin protocol
+  # equilibration phase
+  simulate({method=>"ode", t_start=>0, t_end=>10, n_steps=>1})
+
+  # perturbation
+  setConcentration("A()", 50)
+  simulate({method=>"ode", t_start=>0, t_end=>5, n_steps=>10})
+end protocol
+
+begin actions
+  generate_network({overwrite=>1})
+  parameter_scan({method=>"protocol", parameter=>"k__FREE", par_scan_vals=>[1], suffix=>"scan"})
+end actions
+""")
+
+
+class TestProtocolParsing:
+    """Tests for begin protocol / end protocol parsing in BNGLModel."""
+
+    def test_protocol_lines_stored(self, tmp_path):
+        model_path = tmp_path / 'proto.bngl'
+        _write_protocol_bngl(model_path)
+        m = pset.BNGLModel(str(model_path))
+        assert len(m.protocol) == 3
+        assert 'setConcentration' in m.protocol[1]
+
+    def test_protocol_lines_not_in_actions(self, tmp_path):
+        model_path = tmp_path / 'proto.bngl'
+        _write_protocol_bngl(model_path)
+        m = pset.BNGLModel(str(model_path))
+        joined_actions = ' '.join(m.actions)
+        assert 'setConcentration' not in joined_actions
+
+    def test_protocol_with_comments_and_blanks(self, tmp_path):
+        model_path = tmp_path / 'proto.bngl'
+        _write_protocol_bngl_with_comments(model_path)
+        m = pset.BNGLModel(str(model_path))
+        # 2 simulate + 1 setConcentration + 1 comment + 1 blank + 1 comment = 6
+        assert len(m.protocol) == 6
+        comment_lines = [l for l in m.protocol if l.strip().startswith('#')]
+        assert len(comment_lines) == 2
+
+    def test_generates_network_set_for_protocol_method(self, tmp_path):
+        model_path = tmp_path / 'proto.bngl'
+        _write_protocol_bngl(model_path)
+        m = pset.BNGLModel(str(model_path))
+        assert m.generates_network is True
+
+    def test_empty_protocol_attribute_when_no_block(self, tmp_path):
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        tfun_file = source_dir / 'test_data.tfun'
+        tfun_file.write_text("0 0\n1 1\n")
+        model_path = source_dir / 'no_proto.bngl'
+        _write_tfun_model(model_path)
+        m = pset.BNGLModel(str(model_path), suppress_free_param_error=True)
+        assert m.protocol == []
+
+
+class TestProtocolBnglFileText:
+    """Tests for protocol block in _bngl_file_text() output."""
+
+    def test_protocol_block_written(self, tmp_path):
+        model_path = tmp_path / 'proto.bngl'
+        _write_protocol_bngl(model_path)
+        m = pset.BNGLModel(str(model_path))
+        m.param_set = pset.PSet([_make_free_param('k__FREE', 0.5)])
+        text = m.model_text()
+        assert 'begin protocol' in text
+        assert 'end protocol' in text
+        assert 'setConcentration' in text
+
+    def test_protocol_block_before_actions(self, tmp_path):
+        model_path = tmp_path / 'proto.bngl'
+        _write_protocol_bngl(model_path)
+        m = pset.BNGLModel(str(model_path))
+        m.param_set = pset.PSet([_make_free_param('k__FREE', 0.5)])
+        text = m.model_text()
+        proto_pos = text.index('begin protocol')
+        actions_pos = text.index('begin actions')
+        assert proto_pos < actions_pos
+
+    def test_no_protocol_block_when_empty(self, tmp_path):
+        source_dir = tmp_path / 'source'
+        source_dir.mkdir()
+        tfun_file = source_dir / 'test_data.tfun'
+        tfun_file.write_text("0 0\n1 1\n")
+        model_path = source_dir / 'no_proto.bngl'
+        _write_tfun_model(model_path)
+        m = pset.BNGLModel(str(model_path), suppress_free_param_error=True)
+        m.param_set = pset.PSet([])
+        text = m.model_text()
+        assert 'begin protocol' not in text
