@@ -6,12 +6,32 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **BNGsim in-process simulation bridge** — optional bngsim backend for BNGL models, avoiding subprocess BNG2.pl on every fitting iteration. Supports ODE, SSA, PSA, and NFsim methods with codegen ODE RHS compilation
+- BNGsim SBML backend via bngsim's SBML loader
+- BNGsim Antimony backend via bngsim's Antimony loader
+- BNGsim NFsim backend for network-free BNGL simulation
+- Hybrid BNGL path: models combining `generate_network()` with `simulate({method=>"nf"})` now run BNG2.pl once for network generation, then use in-process NFsim for all fitting iterations
+- BNGsim `parameter_scan` support for time-course, steady-state, and protocol scan modes
+- BNGsim `parameter_scan` steady-state solver with automatic fallback to long time-course when the solver does not converge
+- Threaded steady-state and batch time-course parallelization in `parameter_scan`
+- BNGsim protocol execution: `begin protocol`/`end protocol` blocks with multi-step simulate, `setConcentration`, `saveConcentrations`, `resetConcentrations`, `setParameter`, `saveParameters`, `resetParameters`, method switching, and `stop_if` support
+- `method=>"protocol"` support in `parameter_scan` for executing protocol blocks at each scan point
+- `continue=>1` flag for multi-phase simulations with model time tracking
+- `stop_if` conditional early stopping in simulate actions
+- `atol`/`rtol`/`seed` passthrough to bngsim simulator
+- `print_functions` control for observable selection
+- Bifurcate action support (`reset_conc=0`)
+- Safe expression evaluation in action arguments
+- `addConcentration` support in network-backed NFsim path
+- Species IC re-evaluation from `.net` expressions
+- Table function support (file-based and inline) for network-backed models
 - Constraint satisfaction reporting for Bayesian samplers: after MCMC runs, a summary file reports the percentage of posterior samples satisfying each constraint (#324)
 - Formal EBNF grammar for BPSL in the documentation (#271)
 - `max_failed_simulations` config key to control early abort threshold (#146)
 - Command-line options reference in documentation
 
 ### Changed
+- Replaced nose test dependency with pytest
 - Demoted high-frequency per-iteration log messages from INFO to DEBUG to reduce log file size (#173)
 
 ### Fixed
