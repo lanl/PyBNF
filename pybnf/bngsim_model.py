@@ -492,7 +492,10 @@ def _resolve_sample_times(sim_params):
 
 def _build_safe_eval_namespace(seed=None):
     """Build a safe expression-evaluation namespace for .net math."""
-    ns = {
+    # Start from seed so that builtin math names always take precedence.
+    # BNG2.pl reserves these names; no valid model should shadow them.
+    ns = dict(seed) if seed else {}
+    ns.update({
         'exp': math.exp,
         'log': math.log,
         'log10': math.log10,
@@ -516,9 +519,7 @@ def _build_safe_eval_namespace(seed=None):
         'if': lambda cond, t, f: t if cond else f,
         'rint': round,
         '__builtins__': {},
-    }
-    if seed:
-        ns.update(seed)
+    })
     return ns
 
 
@@ -534,7 +535,7 @@ def _try_prepare_codegen(net_path):
         from bngsim._codegen import prepare_codegen
         return str(prepare_codegen(net_path))
     except Exception as exc:
-        logger.debug("Codegen compilation failed: %s", exc)
+        logger.warning("Codegen compilation failed (%s); falling back to interpreted ODE RHS (slower)", exc)
         return ""
 
 
@@ -597,6 +598,13 @@ def _parse_bngl_param_block(model_lines):
     return params
 
 
+_BUILTIN_EVAL_NAMES = frozenset({
+    'exp', 'log', 'log10', 'log2', 'sqrt', 'abs',
+    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+    'pi', 'e', 'ceil', 'floor', 'min', 'max', 'pow', 'if', 'rint',
+})
+
+
 def _evaluate_bngl_params(param_exprs, input_overrides=None):
     """Evaluate ordered BNGL parameter expressions top-to-bottom."""
     if input_overrides is None:
@@ -621,7 +629,9 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
                 )
                 value = 0.0
 
-        ns[name] = value
+        # Don't let parameter values shadow builtin math functions
+        if name not in _BUILTIN_EVAL_NAMES:
+            ns[name] = value
         result[name] = value
 
     return result
@@ -1114,7 +1124,7 @@ class BngsimModel(NetModel):
 
     def _run_ss_scan_threaded(
         self, model, param_name, points, method, poplevel,
-        t_start, t_end, print_funcs,
+        t_start, t_end, print_funcs, max_workers=4,
     ):
         """Run steady-state parameter scan with threaded parallelism.
 
@@ -1122,7 +1132,7 @@ class BngsimModel(NetModel):
         thread-safe), then submits steady_state() calls to a thread pool.
         Falls back to long time-course per point on non-convergence or error.
         """
-        n_workers = min(len(points), 4)
+        n_workers = min(len(points), max_workers)
         obs_names = []
         expr_names = []
         rows = []
