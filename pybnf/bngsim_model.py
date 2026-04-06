@@ -31,17 +31,7 @@ except ImportError:
 
 BNGSIM_HAS_NFSIM = False
 if BNGSIM_AVAILABLE:
-    if hasattr(bngsim, 'HAS_NFSIM'):
-        BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM'))
-    elif hasattr(bngsim, '_bngsim_core'):
-        BNGSIM_HAS_NFSIM = bool(getattr(bngsim._bngsim_core, 'HAS_NFSIM', False))
-    else:
-        try:
-            from bngsim._bngsim_core import HAS_NFSIM
-
-            BNGSIM_HAS_NFSIM = bool(HAS_NFSIM)
-        except ImportError:
-            pass
+    BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM', False))
 
 
 BNGSIM_BACKEND_NET = 'net'
@@ -467,9 +457,9 @@ def _resolve_sample_times(sim_params):
 
     sample_times = sorted(float(t) for t in raw)
 
-    if len(sample_times) < 3:
+    if len(sample_times) < 2:
         logger.warning(
-            "sample_times must contain at least 3 points, got %d — ignoring",
+            "sample_times must contain at least 2 points, got %d — ignoring",
             len(sample_times))
         return None
 
@@ -1450,9 +1440,8 @@ class BngsimModel(NetModel):
             final_obs = np.array([])
 
         if print_functions:
-            core = result._core
-            expr_names = list(getattr(core, 'expression_names', []))
-            expr_array = np.asarray(getattr(core, 'expression_data', np.zeros((0, 0))))
+            expr_names = list(result.expression_names)
+            expr_array = np.asarray(result.expressions)
             if expr_array.ndim == 2 and expr_array.shape[0] > 0 and expr_array.shape[1] > 0:
                 final_expr = expr_array[-1, :]
             else:
@@ -1476,9 +1465,8 @@ class BngsimModel(NetModel):
         n_obs = result.n_observables
 
         if print_functions:
-            core = result._core
-            expr_names = list(getattr(core, 'expression_names', []))
-            expr_array = np.asarray(getattr(core, 'expression_data', np.zeros((n_times, 0))))
+            expr_names = list(result.expression_names)
+            expr_array = np.asarray(result.expressions)
             n_expr = len(expr_names)
         else:
             expr_names = []
@@ -1643,8 +1631,6 @@ class BngsimNfModel(Model):
 
     def _run_nf_parameter_scan(self, ps_params, seed, current_param_inputs):
         """Execute one NF parameter_scan() action using one short session per point."""
-        from bngsim._bngsim_core import NfsimSimulator
-
         _normalize_nf_action_method(ps_params.get('method', 'nf'))
 
         # sample_times is not supported for NFsim (possible future
@@ -1673,26 +1659,15 @@ class BngsimNfModel(Model):
             point_param_overrides = self._build_nf_param_overrides(point_inputs)
             point_seed = int(ps_params.get('seed', (seed + i) % (2**31)))
 
-            nfsim = NfsimSimulator(self._xml_path)
-            try:
-                if gml_int is not None:
-                    nfsim.set_molecule_limit(gml_int)
+            with bngsim.NfsimSession(self._xml_path, molecule_limit=gml_int) as nfsim:
                 self._apply_param_overrides(nfsim, point_param_overrides)
                 nfsim.initialize(point_seed)
-
-                result = bngsim.Result(
-                    nfsim.simulate(t_start, t_end, n_steps + 1)
-                )
+                result = nfsim.simulate(t_start, t_end, n_steps + 1)
                 row, row_obs, row_expr = BngsimModel._scan_result_to_row(result, value)
                 if len(obs_names) == 0:
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
-            finally:
-                try:
-                    nfsim.destroy_session()
-                except Exception:
-                    pass
 
         if rows:
             arr = np.vstack(rows)
@@ -1713,8 +1688,6 @@ class BngsimNfModel(Model):
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all NF actions in-process using XML-backed NFsim sessions."""
-        from bngsim._bngsim_core import NfsimSimulator
-
         ds = {}
         current_param_inputs = self._initial_param_inputs()
         current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
@@ -1724,9 +1697,7 @@ class BngsimNfModel(Model):
         current_gml = None
 
         def _start_session(seed_value, gml_value):
-            sim = NfsimSimulator(self._xml_path)
-            if gml_value is not None:
-                sim.set_molecule_limit(gml_value)
+            sim = bngsim.NfsimSession(self._xml_path, molecule_limit=gml_value)
             self._apply_param_overrides(sim, current_param_overrides)
             sim.initialize(seed_value)
             return sim
@@ -1734,10 +1705,7 @@ class BngsimNfModel(Model):
         def _stop_session(sim):
             if sim is None:
                 return
-            try:
-                sim.destroy_session()
-            except Exception:
-                pass
+            sim.destroy()
 
         try:
             for action_line in self.actions:
@@ -1779,9 +1747,7 @@ class BngsimNfModel(Model):
                         nfsim.set_molecule_limit(gml_int)
                         current_gml = gml_int
 
-                    result = bngsim.Result(
-                        nfsim.simulate(t_start, t_end, n_steps + 1)
-                    )
+                    result = nfsim.simulate(t_start, t_end, n_steps + 1)
                     ds[suffix] = self._result_to_data(result)
                     continue
 
