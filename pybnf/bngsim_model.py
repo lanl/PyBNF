@@ -522,7 +522,7 @@ def _try_prepare_codegen(net_path):
     if os.environ.get('PYBNF_NO_CODEGEN') or os.environ.get('BNGSIM_NO_CODEGEN'):
         return ""
     try:
-        from bngsim._codegen import prepare_codegen
+        from bngsim import prepare_codegen
         return str(prepare_codegen(net_path))
     except Exception as exc:
         logger.warning("Codegen compilation failed (%s); falling back to interpreted ODE RHS (slower)", exc)
