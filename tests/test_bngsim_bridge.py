@@ -1153,7 +1153,7 @@ def test_try_prepare_codegen_returns_empty_when_bngsim_no_codegen(monkeypatch):
 def test_try_prepare_codegen_returns_empty_on_import_error(monkeypatch):
     monkeypatch.delenv('PYBNF_NO_CODEGEN', raising=False)
     monkeypatch.delenv('BNGSIM_NO_CODEGEN', raising=False)
-    # No bngsim._codegen available → should return ""
+    # No bngsim.prepare_codegen available → should return ""
     assert bngsim_model._try_prepare_codegen('/tmp/nonexistent.net') == ''
 
 
