@@ -152,36 +152,34 @@ def _make_free_param(name, value):
 def _install_fake_nfsim(monkeypatch):
     calls = []
 
-    class FakeCoreResult(object):
+    class FakeResult(object):
         def __init__(self, times, obs_value):
             self.time = np.asarray(times, dtype=float)
             self.observable_names = ['L_total']
-            self.observable_data = np.full((len(times), 1), obs_value, dtype=float)
+            self.observables = np.full((len(times), 1), obs_value, dtype=float)
             self.expression_names = []
-            self.expression_data = np.zeros((len(times), 0), dtype=float)
+            self.expressions = np.zeros((len(times), 0), dtype=float)
+            self.n_times = len(times)
+            self.n_observables = 1
 
-    class FakeResult(object):
-        def __init__(self, core_result):
-            self._core = core_result
-            self.time = core_result.time
-            self.observables = core_result.observable_data
-            self.observable_names = list(core_result.observable_names)
-            self.n_times = len(core_result.time)
-            self.n_observables = len(self.observable_names)
-
-    class FakeNfsimSimulator(object):
-        def __init__(self, xml_path):
+    class FakeNfsimSession(object):
+        def __init__(self, xml_path, *, molecule_limit=None):
             self.xml_path = xml_path
             self.params = {}
             self.molecules = {}
             calls.append(('create', xml_path))
+            if molecule_limit is not None:
+                calls.append(('gml', molecule_limit))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.destroy()
 
         def clear_param_overrides(self):
             self.params = {}
             calls.append(('clear',))
-
-        def set_molecule_limit(self, limit):
-            calls.append(('gml', limit))
 
         def set_param(self, name, value):
             self.params[name] = float(value)
@@ -195,7 +193,7 @@ def _install_fake_nfsim(monkeypatch):
 
         def simulate(self, t_start, t_end, n_points):
             calls.append(('simulate', t_start, t_end, n_points, dict(self.params), dict(self.molecules)))
-            return FakeCoreResult(np.linspace(t_start, t_end, n_points), self.molecules.get('L', 0))
+            return FakeResult(np.linspace(t_start, t_end, n_points), self.molecules.get('L', 0))
 
         def get_molecule_count(self, mol_type):
             return self.molecules.get(mol_type, 0)
@@ -204,16 +202,13 @@ def _install_fake_nfsim(monkeypatch):
             self.molecules[mol_type] = self.molecules.get(mol_type, 0) + amount
             calls.append(('add', mol_type, amount, self.molecules[mol_type]))
 
-        def destroy_session(self):
+        def destroy(self):
             calls.append(('destroy', dict(self.params), dict(self.molecules)))
 
     fake_pkg = types.ModuleType('bngsim')
-    fake_pkg.Result = FakeResult
-    fake_core = types.ModuleType('bngsim._bngsim_core')
-    fake_core.NfsimSimulator = FakeNfsimSimulator
+    fake_pkg.NfsimSession = FakeNfsimSession
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_pkg)
-    monkeypatch.setitem(sys.modules, 'bngsim._bngsim_core', fake_core)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_pkg)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
@@ -556,6 +551,31 @@ def test_bngsim_nf_model_preserves_state_across_actions(monkeypatch):
     assert ds['post'].data[-1, 1] == 7.0
     assert len([c for c in calls if c[0] == 'init']) == 1
     assert ('add', 'L', 7, 7) in calls
+
+
+# ── sample_times validation tests ────────────────────────────────────────────
+
+class TestResolveSampleTimes:
+    def test_none_when_not_specified(self):
+        assert bngsim_model._resolve_sample_times({}) is None
+
+    def test_none_for_empty_list(self):
+        assert bngsim_model._resolve_sample_times({'sample_times': []}) is None
+
+    def test_none_for_single_point(self):
+        assert bngsim_model._resolve_sample_times({'sample_times': [1.0]}) is None
+
+    def test_two_points_accepted(self):
+        result = bngsim_model._resolve_sample_times({'sample_times': [0.0, 1.0]})
+        assert result == [0.0, 1.0]
+
+    def test_three_points_accepted(self):
+        result = bngsim_model._resolve_sample_times({'sample_times': [0.0, 0.5, 1.0]})
+        assert result == [0.0, 0.5, 1.0]
+
+    def test_returned_sorted(self):
+        result = bngsim_model._resolve_sample_times({'sample_times': [1.0, 0.0, 0.5]})
+        assert result == [0.0, 0.5, 1.0]
 
 
 # ── addConcentration parser tests ─────────────────────────────────────────────
@@ -926,18 +946,13 @@ class TestStopIf:
 class TestPrintFunctions:
     def _make_result_with_expressions(self):
         """Build a fake result with both observables and expressions."""
-        class FakeCoreResult:
-            observable_names = ['obs1']
-            observable_data = np.array([[1.0], [2.0]])
-            expression_names = ['func1']
-            expression_data = np.array([[10.0], [20.0]])
-
         class FakeResult:
             def __init__(self):
-                self._core = FakeCoreResult()
                 self.time = np.array([0.0, 1.0])
-                self.observables = FakeCoreResult.observable_data
+                self.observables = np.array([[1.0], [2.0]])
                 self.observable_names = ['obs1']
+                self.expression_names = ['func1']
+                self.expressions = np.array([[10.0], [20.0]])
                 self.n_times = 2
                 self.n_observables = 1
 
