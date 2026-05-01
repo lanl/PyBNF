@@ -14,6 +14,16 @@ import re
 logger = logging.getLogger(__name__)
 
 
+_one_of = pp.one_of if hasattr(pp, 'one_of') else pp.oneOf
+_DelimitedList = pp.DelimitedList if hasattr(pp, 'DelimitedList') else pp.delimitedList
+
+
+def _parse_all(parser, text):
+    if hasattr(parser, 'parse_string'):
+        return parser.parse_string(text, parse_all=True)
+    return parser.parseString(text, parseAll=True)
+
+
 numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_size',
                'smoothing', 'max_iterations',
                'num_to_output', 'output_every', 'islands', 'migrate_every', 'num_to_migrate', 'init_size',
@@ -50,13 +60,12 @@ def parse(s):
     # set up multiple grammars
 
     # single str value
-    strkeys = pp.oneOf(' '.join(strkeylist),
-                       caseless=True)
+    strkeys = _one_of(' '.join(strkeylist), caseless=True)
     string = pp.Word(pp.alphanums + punctuation)
     strgram = strkeys - equals - string - comment
 
     # single num value
-    numkeys = pp.oneOf(' '.join(numkeys_int + numkeys_float), caseless=True)
+    numkeys = _one_of(' '.join(numkeys_int + numkeys_float), caseless=True)
     point = pp.Literal(".")
     e = pp.CaselessLiteral("E")
     num = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
@@ -65,29 +74,29 @@ def parse(s):
     numgram = numkeys - equals - num - comment
 
     # variable definition grammar
-    strnumkeys = pp.oneOf(' '.join(var_def_keys + b_var_def_keys), caseless=True)
+    strnumkeys = _one_of(' '.join(var_def_keys + b_var_def_keys), caseless=True)
     bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
     varnums = bng_parameter - num - num - pp.Optional(pp.Word("ubBU"))
     strnumgram = strnumkeys - equals - varnums - comment
 
     # multiple string value grammar
-    multstrkey = pp.oneOf(' '.join(multstrkeys), caseless=True)
+    multstrkey = _one_of(' '.join(multstrkeys), caseless=True)
     multstrgram = multstrkey - equals - pp.OneOrMore(string)
 
     # var and logvar alt grammar (only one number given)
-    varkeys = pp.oneOf(' '.join(var_def_keys_1or2nums), caseless=True)
+    varkeys = _one_of(' '.join(var_def_keys_1or2nums), caseless=True)
     vargram = varkeys - equals - bng_parameter - num - pp.Optional(num) - comment
 
     # multiple num value
-    multnumkey = pp.oneOf(' '.join(multnumkeys), caseless=True)
+    multnumkey = _one_of(' '.join(multnumkeys), caseless=True)
     multnumgram = multnumkey - equals - pp.OneOrMore(num) - comment
 
     # model-data mapping grammar
     mdmkey = pp.CaselessLiteral("model")
     nonetoken = pp.Suppress(pp.CaselessLiteral("none"))
-    model_file = pp.Regex(".*?\.(bngl|xml|ant|target)")
-    exp_file = pp.Regex(".*?\.(exp|con|prop)")
-    mdmgram = mdmkey - equals - model_file - colon - (pp.delimitedList(exp_file) ^ nonetoken) - comment
+    model_file = pp.Regex(r".*?\.(bngl|xml|ant|target)")
+    exp_file = pp.Regex(r".*?\.(exp|con|prop)")
+    mdmgram = mdmkey - equals - model_file - colon - (_DelimitedList(exp_file) ^ nonetoken) - comment
 
     # normalization mapping grammar
     normkey = pp.CaselessLiteral("normalization")
@@ -99,18 +108,18 @@ def parse(s):
     # We are intentionally over-permissive here, because the Action class will be able to give more helpful error
     # messages than a failed parse.
     dict_entry = pp.Word(pp.alphas) - colon - pp.Word(pp.alphanums + punctuation_safe)
-    dict_key = pp.oneOf(' '.join(dictkeys), caseless=True)
-    dictgram = dict_key - equals - pp.delimitedList(dict_entry) - comment
+    dict_key = _one_of(' '.join(dictkeys), caseless=True)
+    dictgram = dict_key - equals - _DelimitedList(dict_entry) - comment
 
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
-    mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - pp.oneOf('+ - * / =') - num)
+    mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
     mutgram = mutkey - equals - string - string - pp.Group(pp.OneOrMore(mut_op)) - \
-        pp.Group(colon - (pp.delimitedList(exp_file) ^ nonetoken)) - comment
+        pp.Group(colon - (_DelimitedList(exp_file) ^ nonetoken)) - comment
 
     # check each grammar and output somewhat legible error message
-    line = (mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram
-            | mutgram).parseString(s, parseAll=True).asList()
+    parser = mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    line = _parse_all(parser, s).asList()
 
     return line
 
@@ -134,7 +143,7 @@ def ploop(ls):  # parse loop
     models = set()
     exp_data = set()
     for i, line in enumerate(ls):
-        if re.match('\s*$', line) or re.match('\s*#', line):
+        if re.match(r'\s*$', line) or re.match(r'\s*#', line):
             continue
         try:
             logger.debug('Parsing line %s' % line.strip())
@@ -314,7 +323,7 @@ def parse_normalization_def(s):
         return result
 
     # Remove all spaces
-    s = re.sub('\s', '', s)
+    s = re.sub(r'\s', '', s)
     if ':' in s:
         # List of exp files
         res = dict()
@@ -331,7 +340,7 @@ def parse_normalization_def(s):
                     res[pair[0]] = normtype
                 elif len(pair) == 2:
                     e, cols = pair
-                    if re.match('^[\d,\-]+$', cols):
+                    if re.match(r'^[\d,\-]+$', cols):
                         col_nums = parse_range(cols)
                         res[e] = (normtype, col_nums)
                     else:

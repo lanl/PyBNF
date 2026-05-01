@@ -8,7 +8,7 @@ from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import STDOUT
 from .pset import run_subprocess
 
-from numpy.core.fromnumeric import mean
+from numpy import mean
 
 from .bngsim_model import (
     BngsimModel,
@@ -1868,8 +1868,8 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
         pset = res.pset
         fitness = res.score
 
-        gen = int(re.search('(?<=gen)\d+', pset.name).group(0))
-        j = int(re.search('(?<=ind)\d+', pset.name).group(0))
+        gen = int(re.search(r'(?<=gen)\d+', pset.name).group(0))
+        j = int(re.search(r'(?<=ind)\d+', pset.name).group(0))
 
         if fitness <= self.fitnesses[j]:
             self.individuals[j] = pset
@@ -2773,7 +2773,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         score = res.score
         self.total_evaluations += 1
 
-        m = re.search('(?<=run)\d+', pset.name)
+        m = re.search(r'(?<=run)\d+', pset.name)
         index = int(m.group(0))
 
         # Calculate posterior of finished job
@@ -3227,7 +3227,7 @@ class SCreamAlgorithm(DreamAlgorithm):
         pset = res.pset
         score = res.score
 
-        m = re.search('(?<=run)\d+', pset.name)
+        m = re.search(r'(?<=run)\d+', pset.name)
         index = int(m.group(0))
 
         # Calculate posterior (same as parent)
@@ -3346,7 +3346,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         self.total_evaluations += 1
 
         # Figure out which parallel run this is from based on the .name field.
-        m = re.search('(?<=run)\d+', pset.name)
+        m = re.search(r'(?<=run)\d+', pset.name)
         index = int(m.group(0))
 
         # Calculate the acceptance probability
