@@ -261,7 +261,8 @@ Parallel Computing
 **parallelize_models**
   For fitting jobs that include multiple models, run those models on different cores, utilizing a total of this number of cores per parameter set evaluation. 
   Should not be set higher than the total number of models. Using this option incurs additional communication overhead, and causes the objective function
-  to be evaluated locally, not in parallel. Therefore, only certain types of problems will benefit from this option. 
+  to be evaluated locally, not in parallel. Therefore, only certain types of problems will benefit from this option. This option can be used with
+  ``smoothing``; PyBNF will partition the model list for each smoothing replicate, merge the model results, then average the replicates.
   
   Default: 1
   
@@ -439,7 +440,7 @@ Algorithm Options
 **local_objective_eval**
   If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` or ``parallelize_models`` feature.
    
-  Default: 0 (unless smoothing is enabled)
+  Default: 0 (unless ``smoothing`` or ``parallelize_models`` is enabled)
   
   Example: 
   
@@ -501,7 +502,8 @@ Algorithm Options
     * ``sbml_integrator = rk4``
     
 **smoothing**
-  Number of replicate runs to average together for each parameter set (useful for stochastic simulations). 
+  Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with
+  ``parallelize_models`` to run model partitions independently within each replicate.
   
   Default: 1
   

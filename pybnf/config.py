@@ -539,8 +539,6 @@ class Configuration(object):
                 raise PybnfError('You specified smoothing=%i, but one of your simulation commands contains the "seed" '
                                  'argument. This would cause all of your smoothing replicates to come out the same.'
                                  % self.config['smoothing'])
-        if self.config['smoothing'] > 1 and self.config['parallelize_models'] > 1:
-            raise PybnfError('Simultaneous use of "smoothing" and "parallelize_models" is not supported')
         if self.config['parallelize_models'] > len(md):
             raise PybnfError('Job contains %i models, so "parallelize_models" should be at most %i' % (len(md), len(md)))
 

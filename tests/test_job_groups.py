@@ -1,5 +1,5 @@
 """
-Unit tests for JobGroup, MultimodelJobGroup, Result.add_result(), and
+Unit tests for JobGroup, MultimodelJobGroup, HybridJobGroup, Result.add_result(), and
 the make_job() branching logic (issue #49 pre-implementation tests).
 """
 
@@ -65,7 +65,7 @@ def _make_algo(extra_config):
 
 
 def _cleanup():
-    for d in ['test_jg', 'test_jg_smooth', 'test_jg_par', 'test_jg_default']:
+    for d in ['test_jg', 'test_jg_smooth', 'test_jg_par', 'test_jg_hybrid', 'test_jg_default']:
         if os.path.isdir(d):
             shutil.rmtree(d)
 
@@ -248,6 +248,75 @@ class TestMultimodelJobGroup:
 
 
 # ===========================================================================
+# Tests: HybridJobGroup
+# ===========================================================================
+
+class TestHybridJobGroup:
+
+    def test_job_finished_returns_true_when_all_parts_and_replicates_done(self):
+        group = algorithms.HybridJobGroup(
+            'sim_1',
+            [('sim_1_rep0', ['sim_1_rep0_part0', 'sim_1_rep0_part1']),
+             ('sim_1_rep1', ['sim_1_rep1_part0', 'sim_1_rep1_part1'])]
+        )
+
+        names = ['sim_1_rep0_part0', 'sim_1_rep1_part0', 'sim_1_rep0_part1']
+        for name in names:
+            res = _make_result(name, {'m': {'s': _make_data([[1, 2, 3]])}})
+            assert group.job_finished(res) is False
+
+        res = _make_result('sim_1_rep1_part1', {'m': {'s': _make_data([[1, 2, 3]])}})
+        assert group.job_finished(res) is True
+
+    def test_average_results_merges_models_then_averages_replicates(self):
+        group = algorithms.HybridJobGroup(
+            'sim_1',
+            [('sim_1_rep0', ['sim_1_rep0_part0', 'sim_1_rep0_part1']),
+             ('sim_1_rep1', ['sim_1_rep1_part0', 'sim_1_rep1_part1'])]
+        )
+
+        group.job_finished(_make_result(
+            'sim_1_rep0_part0',
+            {'modelA': {'s': _make_data([[1.0, 2.0, 4.0], [2.0, 4.0, 8.0]])}}
+        ))
+        group.job_finished(_make_result(
+            'sim_1_rep0_part1',
+            {'modelB': {'s': _make_data([[10.0, 20.0, 40.0], [20.0, 40.0, 80.0]])}}
+        ))
+        group.job_finished(_make_result(
+            'sim_1_rep1_part0',
+            {'modelA': {'s': _make_data([[3.0, 6.0, 8.0], [4.0, 8.0, 12.0]])}}
+        ))
+        group.job_finished(_make_result(
+            'sim_1_rep1_part1',
+            {'modelB': {'s': _make_data([[30.0, 60.0, 80.0], [40.0, 80.0, 120.0]])}}
+        ))
+
+        avg = group.average_results()
+
+        assert avg.name == 'sim_1'
+        assert set(avg.simdata.keys()) == {'modelA', 'modelB'}
+        npt.assert_array_almost_equal(avg.simdata['modelA']['s'].data,
+                                      [[2.0, 4.0, 6.0], [3.0, 6.0, 10.0]])
+        npt.assert_array_almost_equal(avg.simdata['modelB']['s'].data,
+                                      [[20.0, 40.0, 60.0], [30.0, 60.0, 100.0]])
+
+    def test_average_results_returns_failed_on_failure(self):
+        group = algorithms.HybridJobGroup(
+            'sim_1',
+            [('sim_1_rep0', ['sim_1_rep0_part0', 'sim_1_rep0_part1']),
+             ('sim_1_rep1', ['sim_1_rep1_part0', 'sim_1_rep1_part1'])]
+        )
+
+        failed = _make_failed('sim_1_rep0_part0')
+        assert group.job_finished(failed) is True
+
+        result = group.average_results()
+        assert isinstance(result, algorithms.FailedSimulation)
+        assert result.name == 'sim_1'
+
+
+# ===========================================================================
 # Tests: make_job() branching
 # ===========================================================================
 
@@ -354,6 +423,36 @@ class TestMakeJob:
         assert jobs[0].models == ['m1', 'm2']
         assert jobs[1].models == ['m3', 'm4']
         assert jobs[2].models == ['m5', 'm6']
+
+    def test_combined_smoothing_and_parallelize_models_creates_hybrid_group(self):
+        """Combined smoothing and model parallelism creates one HybridJobGroup."""
+        algo = _make_algo({
+            'population_size': 2, 'max_iterations': 5,
+            'smoothing': 2,
+            'fit_type': 'pso', 'output_dir': 'test_jg_hybrid'})
+
+        algo.config.config['parallelize_models'] = 3
+        algo.model_list = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6']
+
+        p = algo.random_pset()
+        p.name = 'sim_1'
+        jobs = algo.make_job(p)
+
+        assert len(jobs) == 6
+        names = [j.job_id for j in jobs]
+        assert names == ['sim_1_rep0_part0', 'sim_1_rep0_part1', 'sim_1_rep0_part2',
+                         'sim_1_rep1_part0', 'sim_1_rep1_part1', 'sim_1_rep1_part2']
+
+        groups = [algo.job_group_dir[n] for n in names]
+        assert all(g is groups[0] for g in groups)
+        assert isinstance(groups[0], algorithms.HybridJobGroup)
+
+        assert jobs[0].models == ['m1', 'm2']
+        assert jobs[1].models == ['m3', 'm4']
+        assert jobs[2].models == ['m5', 'm6']
+        assert jobs[3].models == ['m1', 'm2']
+        assert jobs[4].models == ['m3', 'm4']
+        assert jobs[5].models == ['m5', 'm6']
 
     def test_auto_job_id_when_no_name(self):
         """When pset has no name, make_job auto-assigns sim_N."""

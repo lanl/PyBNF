@@ -41,6 +41,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Fixed
 - Simplex collinearity with `simplex_reflection=1` and `population_size>1` in low dimensions (#207)
+- `smoothing` and `parallelize_models` can now be used together for multi-model stochastic jobs (#49)
 - Test failures in test_job_groups and test_seed_determinism caused by incorrect fixture paths (#361)
 - `wall_time_sim` for SBML models now works when PyBNF is installed via PyPI (#249)
 - Dependency warning spam (numpy, YAML, etc.) no longer clutters the terminal; routed to log file (#274)

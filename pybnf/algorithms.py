@@ -404,6 +404,58 @@ class MultimodelJobGroup(JobGroup):
         return final_result
 
 
+class HybridJobGroup(JobGroup):
+    """
+    A JobGroup to handle combined smoothing and model-level parallelism.
+    """
+    def __init__(self, job_id, replica_subjob_ids):
+        """
+        :param job_id: The name of the Job this group is representing
+        :param replica_subjob_ids: List of (replica id, subjob ids) pairs for model partitions in each
+        smoothing replica.
+        """
+        subjob_ids = [sid for _, ids in replica_subjob_ids for sid in ids]
+        super(HybridJobGroup, self).__init__(job_id, subjob_ids)
+        self.replica_groups = [MultimodelJobGroup(replica_id, ids) for replica_id, ids in replica_subjob_ids]
+
+    def job_finished(self, res):
+        """
+        Called when one job in this group has finished.
+        :param res: Result object for the completed job
+        :return: Boolean, whether everything in this job group has finished
+        """
+        if self.failed:
+            return False
+        if isinstance(res, FailedSimulation):
+            self.failed = res
+            return True
+
+        if res.name not in self.subjob_ids:
+            raise ValueError('Job group %s received unwanted result %s' % (self.job_id, res.name))
+
+        for group in self.replica_groups:
+            if res.name in group.subjob_ids:
+                group.job_finished(res)
+                break
+        return all(len(group.result_list) == len(group.subjob_ids) for group in self.replica_groups)
+
+    def average_results(self):
+        """
+        Merge model partitions within each smoothing replica, then average the complete replicas.
+        """
+        if self.failed:
+            self.failed.name = self.job_id
+            return self.failed
+
+        replica_results = [group.average_results() for group in self.replica_groups]
+        avedata = dict()
+        for m in replica_results[0].simdata:
+            avedata[m] = dict()
+            for suf in replica_results[0].simdata[m]:
+                avedata[m][suf] = Data.average([r.simdata[m][suf] for r in replica_results])
+        return Result(replica_results[0].pset, avedata, self.job_id)
+
+
 class custom_as_completed(as_completed):
     """
     Subclass created to modify a section of dask.distributed code
@@ -947,11 +999,11 @@ class Algorithm(object):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
         Algorithm object
-        If smoothing is turned on, makes n identical Jobs and a JobGroup
+        If smoothing or model-level parallelism is turned on, makes grouped subjobs.
 
         :param params:
         :type params: PSet
-        :return: list of Jobs (of length equal to smoothing setting)
+        :return: list of Jobs
         """
         if params.name:
             job_id = params.name
@@ -959,7 +1011,29 @@ class Algorithm(object):
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
         logger.debug('Creating Job %s' % job_id)
-        if self.config.config['smoothing'] > 1:
+        if self.config.config['smoothing'] > 1 and self.config.config['parallelize_models'] > 1:
+            # Create smoothing replicates, and partition each replicate's model list across jobs
+            newjobs = []
+            replica_subjob_ids = []
+            model_count = len(self.model_list)
+            rep_count = self.config.config['parallelize_models']
+            for rep in range(self.config.config['smoothing']):
+                replica_id = '%s_rep%i' % (job_id, rep)
+                newnames = []
+                for part in range(rep_count):
+                    thisname = '%s_part%i' % (replica_id, part)
+                    newnames.append(thisname)
+                    model_slice = self.model_list[model_count*part//rep_count:model_count*(part+1)//rep_count]
+                    newjobs.append(Job(model_slice,
+                                       params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
+                                       self.calc_future, self.config.config['normalization'], dict(),
+                                       bool(self.config.config['delete_old_files'])))
+                replica_subjob_ids.append((replica_id, newnames))
+            new_group = HybridJobGroup(job_id, replica_subjob_ids)
+            for n in new_group.subjob_ids:
+                self.job_group_dir[n] = new_group
+            return newjobs
+        elif self.config.config['smoothing'] > 1:
             # Create multiple identical Jobs for use with smoothing
             newjobs = []
             newnames = []
