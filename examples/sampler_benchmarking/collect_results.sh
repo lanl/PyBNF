@@ -10,7 +10,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ALL_PROBLEMS="Banana Gaussian_d10 Multimodal LinearRegression HIVdynamics COVID19_BigApple Degranulation TCR FcERI_gamma MEK_Isoforms EGFR_d10 EGFR_d37"
-ALL_SAMPLERS="am dream p_dream s_cream"
+ALL_SAMPLERS="am dream p_dream"
 PROBLEMS=""
 
 # Parse arguments
@@ -29,7 +29,6 @@ sampler_label() {
         am)       echo "AM        " ;;
         dream)    echo "DREAM(ZS) " ;;
         p_dream)  echo "P-DREAM   " ;;
-        s_cream)  echo "S-CREAM   " ;;
         *)        echo "$1         " ;;
     esac
 }

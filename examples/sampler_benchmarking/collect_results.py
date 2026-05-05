@@ -28,13 +28,12 @@ ALL_PROBLEMS = [
     "TCR", "FcERI_gamma", "MEK_Isoforms",
     "EGFR_d10", "EGFR_d37",
 ]
-ALL_SAMPLERS = ["am", "dream", "p_dream", "s_cream"]
+ALL_SAMPLERS = ["am", "dream", "p_dream"]
 
 SAMPLER_LABELS = {
     "am": "AM",
     "dream": "DREAM(ZS)",
     "p_dream": "P-DREAM",
-    "s_cream": "S-CREAM",
 }
 
 # ANSI color codes

@@ -212,12 +212,10 @@ def main():
                 alg = algs.DreamAlgorithm(config)
             elif config.config['fit_type'] == 'p_dream':
                 alg = algs.PDreamAlgorithm(config)
-            elif config.config['fit_type'] == 's_cream':
-                alg = algs.SCreamAlgorithm(config)
             elif config.config['fit_type'] == 'check':
                 alg = algs.ModelCheck(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, dream, p_dream, s_cream, check' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, dream, p_dream, check' % config.config['fit_type'])
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:

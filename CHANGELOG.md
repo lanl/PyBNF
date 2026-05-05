@@ -34,6 +34,9 @@ All notable changes to PyBNF are documented below. This project adheres to
 - Replaced nose test dependency with pytest
 - Demoted high-frequency per-iteration log messages from INFO to DEBUG to reduce log file size (#173)
 
+### Removed
+- Removed the experimental S-CREAM (`s_cream`) sampler and its user-facing configuration/docs.
+
 ### Fixed
 - Simplex collinearity with `simplex_reflection=1` and `population_size>1` in low dimensions (#207)
 - Test failures in test_job_groups and test_seed_determinism caused by incorrect fixture paths (#361)
@@ -45,7 +48,6 @@ All notable changes to PyBNF are documented below. This project adheres to
 ### Added
 - New Bayesian sampler: DREAM(ZS) (`dream` fit type) with ZS archive, snooker updates, adaptive gamma, CR adaptation, R-hat convergence diagnostics, and outlier detection
 - New Bayesian sampler: Preconditioned DREAM (`p_dream` fit type) with covariance-preconditioned DE proposals
-- New Bayesian sampler: S-CREAM (`s_cream` fit type) -- Scatter-Search Covariance-Rotated Evolutionary Adaptive MCMC
 - Effective Sample Size (ESS) computation and R-hat convergence diagnostics in BayesianAlgorithm base class
 - Configurable convergence stopping criterion (`converge_criterion`) and configurable delta for R-hat
 - RoadRunner `saveState`/`loadState` optimization to avoid re-parsing XML on every `execute()` (closes #288)

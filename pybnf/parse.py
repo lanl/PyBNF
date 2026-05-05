@@ -31,7 +31,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
                'local_objective_eval', 'reps_per_beta', 'save_best_data', 'parallelize_models', 'adaptive', 'continue_run',
-               'delta', 'archive_size', 'archive_thin_rate', 'refset_size', 'adaptive_step_size',
+               'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size',
                'max_failed_simulations']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
@@ -39,7 +39,7 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
-                 'rhat_threshold', 'snooker_prob', 'refset_quality_fraction']
+                 'rhat_threshold', 'snooker_prob']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
 b_var_def_keys = ['uniform_var', 'loguniform_var']
 var_def_keys = ['lognormal_var', 'normal_var']

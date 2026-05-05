@@ -1064,21 +1064,3 @@ For DREAM
   If set to a positive value, the algorithm stops automatically once all parameters have
   :math:`\hat{R}` below this threshold (checked after burn-in). Set to 0 to disable. A common
   threshold is 1.05. Default: 0 (disabled)
-
-For S-CREAM
-"""""""""""
-
-S-CREAM accepts all DREAM configuration keys above, plus the following:
-
-``refset_size = int``
-  Total size of the curated reference set. Larger values provide more proposal diversity but increase
-  the cost of reference set rebuilding. Default: :math:`\max(2N, 10d)` where :math:`N` is
-  ``population_size`` and :math:`d` is the number of free parameters.
-
-``refset_quality_fraction = float``
-  Fraction of the reference set selected by posterior quality (highest log-posterior). The remaining
-  fraction is selected by diversity (greedy max-min-distance). Values near 1.0 emphasize exploitation;
-  values near 0.0 emphasize exploration. Default: 0.5
-
-
-

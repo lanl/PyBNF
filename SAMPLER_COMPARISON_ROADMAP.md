@@ -1,6 +1,6 @@
 # MCMC Sampler Comparison Roadmap
 
-Compare the three Bayesian samplers in PyBNF: Adaptive MCMC (`am`), DREAM(ZS) (`dream`), and S-CREAM (`s_cream`).
+Compare the Bayesian samplers in PyBNF: Adaptive MCMC (`am`), DREAM(ZS) (`dream`), and P-DREAM (`p_dream`).
 
 ## Phase 1: Infrastructure
 
@@ -9,7 +9,7 @@ Compare the three Bayesian samplers in PyBNF: Adaptive MCMC (`am`), DREAM(ZS) (`
   - Report alongside rank-normalized split-R-hat every 10 iterations
   - Write ESS to output files for post-hoc analysis
 - [x] Refactor rank-normalized split-R-hat out of `DreamAlgorithm` into `BayesianAlgorithm`
-  - All three samplers should use the same convergence diagnostic
+  - All samplers should use the same convergence diagnostic
   - Add automatic convergence stop (`rhat_threshold`) to `BayesianAlgorithm` base class
 - [x] Add ESS/evaluation metric (ESS divided by total model evaluations)
 
@@ -23,8 +23,8 @@ Build lightweight test models that compute score directly from parameters (no Bi
 - [x] **Banana (Rosenbrock)**: correlated curved posterior
   - Tests sampling along non-linear ridges
 - [x] **Multimodal mixture**: 2-3 separated Gaussian modes with known weights
-  - Tests mode-jumping; where snooker and S-CREAM diversity should help
-- [x] Each target needs: trivial `.bngl` or direct-score model, `.conf` files for all 3 samplers, ground truth file with analytical moments
+  - Tests mode-jumping and snooker updates
+- [x] Each target needs: trivial `.bngl` or direct-score model, `.conf` files for all samplers, ground truth file with analytical moments
 
 ## Phase 3: Benchmark Harness
 
@@ -36,11 +36,11 @@ Build lightweight test models that compute score directly from parameters (no Bi
 ## Phase 4: Experiments
 
 All experiment configs and the master runner are ready in `benchmarks/`.
-Samplers: `am`, `dream` (ZS), `p_dream` (preconditioned ZS), `s_cream` (curated ZS).
+Samplers: `am`, `dream` (ZS), `p_dream` (preconditioned ZS).
 Run: `python benchmarks/run_all_experiments.py --replicates 5 --skip-egfr`
 Or specific experiments: `python benchmarks/run_all_experiments.py -e 1 2`
 
-- [ ] **Correctness**: all 4 samplers on multivariate Gaussian, verify sampled moments match truth
+- [ ] **Correctness**: all samplers on multivariate Gaussian, verify sampled moments match truth
   - Config: `benchmarks/gaussian_d5/`, run with `run_benchmark.py gaussian_d5`
 - [ ] **Efficiency (low-d)**: Gaussian d=5, compare ESS/evaluation across samplers
   - Same run as Correctness — both metrics extracted from `gaussian_d5`
@@ -57,6 +57,5 @@ Or specific experiments: `python benchmarks/run_all_experiments.py -e 1 2`
 ## Phase 5: Analysis and Write-up
 
 - [ ] Summarize results: which sampler wins where, and why
-- [ ] Identify failure modes (e.g., does S-CREAM's curation hurt in some regimes?)
+- [ ] Identify failure modes by target geometry and dimensionality
 - [ ] Update documentation with recommendations
-- [ ] Consider writing up S-CREAM as a methods paper if results are promising

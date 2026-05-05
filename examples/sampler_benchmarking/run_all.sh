@@ -1,6 +1,6 @@
 #!/bin/bash
 # Submit all sampler benchmarking jobs to SLURM
-# Usage: ./run_all.sh [--problems PROB1 PROB2 ...] [--samplers am dream p_dream s_cream] [--resume N]
+# Usage: ./run_all.sh [--problems PROB1 PROB2 ...] [--samplers am dream p_dream] [--resume N]
 #
 # Examples:
 #   ./run_all.sh                              # submit everything
@@ -12,7 +12,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 ALL_PROBLEMS="Banana Gaussian_d10 Multimodal LinearRegression HIVdynamics COVID19_BigApple Degranulation TCR FcERI_gamma MEK_Isoforms EGFR_d10 EGFR_d37"
-ALL_SAMPLERS="am dream p_dream s_cream"
+ALL_SAMPLERS="am dream p_dream"
 PROBLEMS=""
 SAMPLERS=""
 RESUME=""

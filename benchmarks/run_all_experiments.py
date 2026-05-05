@@ -87,7 +87,7 @@ def _print_experiment(title, results):
     if not results:
         print('  (not yet run)')
         return
-    for sampler in ['am', 'dream', 'p_dream', 's_cream']:
+    for sampler in ['am', 'dream', 'p_dream']:
         runs = [r for r in results if r['sampler'] == sampler and r.get('success')]
         if not runs:
             continue

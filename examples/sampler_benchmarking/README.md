@@ -1,11 +1,10 @@
 # Sampler Benchmarking Suite
 
-Systematic comparison of four Bayesian MCMC samplers in PyBNF:
+Systematic comparison of three Bayesian MCMC samplers in PyBNF:
 
 - **AM** (Adaptive Metropolis) — single-chain with learned covariance
 - **DREAM(ZS)** — differential evolution with archive
 - **P-DREAM** — preconditioned DREAM
-- **S-CREAM** — scatter-search curated reference set
 
 ## Benchmark Problems
 
@@ -182,12 +181,10 @@ ProblemName/
 ├── am.conf             # Adaptive MCMC config
 ├── dream.conf          # DREAM(ZS) config
 ├── p_dream.conf        # P-DREAM config
-├── s_cream.conf        # S-CREAM config
 ├── run_am.sh           # SLURM job script for AM
 ├── run_dream.sh        # SLURM job script for DREAM
 ├── run_p_dream.sh      # SLURM job script for P-DREAM
-├── run_s_cream.sh      # SLURM job script for S-CREAM
-├── submit_all.sh       # Submit all 4 SLURM jobs for this problem
+├── submit_all.sh       # Submit all sampler SLURM jobs for this problem
 └── output_*/           # Output directories (created by PyBNF)
 ```
 

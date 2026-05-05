@@ -14,7 +14,7 @@ else
     echo "Submitting fresh jobs for LinearRegression..."
 fi
 
-for sampler in am dream p_dream s_cream; do
+for sampler in am dream p_dream; do
     echo "  Submitting $sampler..."
     if [ -n "$RESUME" ]; then
         RESUME_ITERS="$RESUME" sbatch run_${sampler}.sh

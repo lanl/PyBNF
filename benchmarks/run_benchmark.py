@@ -2,7 +2,7 @@
 """
 Benchmark harness for MCMC sampler comparison.
 
-Runs each sampler (am, dream, s_cream) N times on a given analytical target,
+Runs each sampler (am, dream, p_dream) N times on a given analytical target,
 collects convergence diagnostics, and produces comparison tables and plots.
 
 Usage:
@@ -22,7 +22,7 @@ import time
 
 import numpy as np
 
-SAMPLERS = ['am', 'dream', 'p_dream', 's_cream']
+SAMPLERS = ['am', 'dream', 'p_dream']
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ def plot_convergence(all_metrics, output_path):
         print('No trajectory data available for plotting')
         return
 
-    colors = {'am': '#1f77b4', 'dream': '#ff7f0e', 'p_dream': '#d62728', 's_cream': '#2ca02c'}
+    colors = {'am': '#1f77b4', 'dream': '#ff7f0e', 'p_dream': '#d62728'}
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
@@ -416,7 +416,7 @@ def main():
     parser.add_argument('--parallel', '-p', type=int, default=None,
                         help='Number of parallel workers for PyBNF')
     parser.add_argument('--samplers', '-s', nargs='+', default=SAMPLERS,
-                        help='Which samplers to run (default: am dream s_cream)')
+                        help='Which samplers to run (default: am dream p_dream)')
     parser.add_argument('--max-iterations', type=int, default=None,
                         help='Override max_iterations in all configs')
     parser.add_argument('--burn-in', type=int, default=None,
