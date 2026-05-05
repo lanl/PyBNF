@@ -20,6 +20,7 @@ import os
 import shutil
 import tempfile
 from sys import executable
+from scipy import stats
 
 rr.Logger.disableLogging()
 
@@ -1303,11 +1304,26 @@ class FreeParameter(object):
 
         self.log_space = re.search('log', self.type) is not None
 
-        self._distribution = None
-        if re.search('normal', self.type):
-            self._distribution = np.random.normal
-        elif re.search('uniform', self.type):
-            self._distribution = np.random.uniform
+        self._distribution = self._make_distribution()
+
+    def _make_distribution(self):
+        """
+        Build the frozen scipy.stats distribution used for both sampling and priors.
+
+        Log-space parameter types store the distribution in base-10 logarithmic
+        space. Conversion back to regular parameter values is handled by
+        sample_value(), and prior_logpdf() transforms regular values into the
+        same sampling space before evaluating the density.
+        """
+        if self.type == 'normal_var':
+            return stats.norm(loc=self.p1, scale=self.p2)
+        elif self.type == 'lognormal_var':
+            return stats.norm(loc=self.p1, scale=self.p2)
+        elif self.type == 'uniform_var':
+            return stats.uniform(loc=self.p1, scale=self.p2 - self.p1)
+        elif self.type == 'loguniform_var':
+            return stats.uniform(loc=np.log10(self.p1), scale=np.log10(self.p2) - np.log10(self.p1))
+        return None
 
     def set_value(self, new_value, reflect=True):
         """
@@ -1377,14 +1393,29 @@ class FreeParameter(object):
 
         :return: new FreeParameter instance or None
         """
+        if self._distribution is None:
+            raise PybnfError("Parameter %s does not have a sampling distribution" % self.name)
+
+        val = self._distribution.rvs()
         if self.log_space:
-            if re.fullmatch('lognormal_var', self.type):
-                val = 10**(self._distribution(self.p1, self.p2))
-            else:
-                val = 10**(self._distribution(np.log10(self.p1), np.log10(self.p2)))
-        else:
-            val = self._distribution(self.p1, self.p2)
+            val = 10**val
         return self.set_value(val)
+
+    def prior_logpdf(self, value):
+        """
+        Evaluate the log prior density for a regular-space parameter value.
+
+        For log-space variables, the prior is evaluated in base-10 logarithmic
+        space to match the historical parameterization of lognormal_var and
+        loguniform_var.
+        """
+        if self._distribution is None:
+            return 0.
+        if self.log_space:
+            if value <= 0.:
+                return -np.inf
+            value = np.log10(value)
+        return float(self._distribution.logpdf(value))
 
     def add(self, summand, reflect=True):
         """

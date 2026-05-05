@@ -3,7 +3,7 @@ Tests for probability distribution sampling and prior calculations.
 
 These tests lock in the current behavior of:
 1. FreeParameter sampling distributions (normal, lognormal, uniform, loguniform)
-2. BayesianAlgorithm.ln_prior() calculations
+2. BayesianAlgorithm.ln_prior() calculations through scipy.stats distribution objects
 
 These must survive the migration to scipy.stats (issue #5).
 """
@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from pybnf.pset import FreeParameter, PSet
+from pybnf.algorithms import BayesianAlgorithm
 
 
 # ---------------------------------------------------------------------------
@@ -139,34 +140,30 @@ class TestLoguniformVarSampling:
 class TestNormalPrior:
     """Tests for normal prior log-PDF calculation.
 
-    The current implementation computes:
-        ln_prior = -1/(2*sigma^2) * (mu - val)^2
-
-    This is the log-PDF of a normal distribution up to an additive constant
-    (the normalization term -0.5*log(2*pi*sigma^2) is omitted, which is fine
-    for MCMC since it cancels in acceptance ratios).
+    The implementation uses scipy.stats.norm.logpdf(), including the
+    normalization constant.
     """
 
     def test_at_mean(self):
-        """ln_prior should be 0 at the mean (since the omitted constant is 0 at peak)."""
+        """ln_prior should match scipy.stats at the mean."""
         prior = {'x__FREE': ('reg', 'n', 5.0, 2.0)}
         pset = _make_pset({'x__FREE': 5.0})
         result = _ln_prior(prior, pset)
-        assert result == 0.0
+        assert abs(result - stats.norm.logpdf(5.0, 5.0, 2.0)) < 1e-10
 
     def test_one_sigma_away(self):
-        """ln_prior one sigma from mean should be -0.5."""
+        """ln_prior one sigma from mean should match scipy.stats."""
         prior = {'x__FREE': ('reg', 'n', 5.0, 2.0)}
         pset = _make_pset({'x__FREE': 7.0})  # 1 sigma away
         result = _ln_prior(prior, pset)
-        assert abs(result - (-0.5)) < 1e-10
+        assert abs(result - stats.norm.logpdf(7.0, 5.0, 2.0)) < 1e-10
 
     def test_two_sigma_away(self):
-        """ln_prior two sigma from mean should be -2.0."""
+        """ln_prior two sigma from mean should match scipy.stats."""
         prior = {'x__FREE': ('reg', 'n', 5.0, 2.0)}
         pset = _make_pset({'x__FREE': 9.0})  # 2 sigma away
         result = _ln_prior(prior, pset)
-        assert abs(result - (-2.0)) < 1e-10
+        assert abs(result - stats.norm.logpdf(9.0, 5.0, 2.0)) < 1e-10
 
     def test_symmetric(self):
         """ln_prior should be symmetric around the mean."""
@@ -183,13 +180,14 @@ class TestNormalPrior:
         }
         pset = _make_pset({'x__FREE': 1.0, 'y__FREE': 1.0})
         result = _ln_prior(prior, pset)
-        assert abs(result - (-1.0)) < 1e-10  # -0.5 + -0.5
+        expected = stats.norm.logpdf(1.0, 0.0, 1.0) + stats.norm.logpdf(1.0, 0.0, 1.0)
+        assert abs(result - expected) < 1e-10
 
     def test_narrow_vs_wide(self):
-        """Narrower prior should penalize deviation more."""
+        """Narrower prior should penalize a large deviation more."""
         prior_narrow = {'x__FREE': ('reg', 'n', 0.0, 0.5)}
         prior_wide = {'x__FREE': ('reg', 'n', 0.0, 5.0)}
-        pset = _make_pset({'x__FREE': 1.0})
+        pset = _make_pset({'x__FREE': 10.0})
         assert _ln_prior(prior_narrow, pset) < _ln_prior(prior_wide, pset)
 
 
@@ -197,22 +195,28 @@ class TestLognormalPrior:
     """Tests for lognormal prior log-PDF calculation.
 
     For lognormal, the prior is computed in log10-space:
-        ln_prior = -1/(2*sigma^2) * (mu - log10(val))^2
+        ln_prior = scipy.stats.norm(mu, sigma).logpdf(log10(val))
     """
 
     def test_at_mean(self):
-        """ln_prior should be 0 when log10(val) == mu."""
+        """ln_prior should match scipy.stats when log10(val) == mu."""
         prior = {'x__FREE': ('log', 'n', 2.0, 0.5)}
         pset = _make_pset({'x__FREE': 100.0})  # log10(100) = 2.0
         result = _ln_prior(prior, pset)
-        assert abs(result) < 1e-10
+        assert abs(result - stats.norm.logpdf(2.0, 2.0, 0.5)) < 1e-10
 
     def test_one_sigma_away(self):
-        """ln_prior one sigma from mean in log-space should be -0.5."""
+        """ln_prior one sigma from mean in log-space should match scipy.stats."""
         prior = {'x__FREE': ('log', 'n', 2.0, 0.5)}
         pset = _make_pset({'x__FREE': 10**2.5})  # 1 sigma away in log space
         result = _ln_prior(prior, pset)
-        assert abs(result - (-0.5)) < 1e-10
+        assert abs(result - stats.norm.logpdf(2.5, 2.0, 0.5)) < 1e-10
+
+    def test_nonpositive_value(self):
+        """Log-space priors assign zero density to nonpositive regular-space values."""
+        prior = {'x__FREE': ('log', 'n', 2.0, 0.5)}
+        pset = _make_pset({'x__FREE': 0.0})
+        assert _ln_prior(prior, pset) == -np.inf
 
 
 class TestUniformPrior:
@@ -304,9 +308,33 @@ class TestPriorDifferenceForMCMC:
         assert abs(diff_ours - diff_scipy) < 1e-10
 
 
+class TestBayesianPriorStorage:
+    """Tests for the scipy-backed prior objects stored by BayesianAlgorithm."""
+
+    def test_load_priors_stores_freeparameters(self):
+        alg = object.__new__(BayesianAlgorithm)
+        alg.variables = [
+            FreeParameter('x__FREE', 'normal_var', 5.0, 2.0),
+            FreeParameter('y__FREE', 'loguniform_var', 0.01, 100.0),
+        ]
+
+        BayesianAlgorithm.load_priors(alg)
+
+        assert isinstance(alg.prior['x__FREE'], FreeParameter)
+        assert isinstance(alg.prior['y__FREE'], FreeParameter)
+        assert hasattr(alg.prior['x__FREE']._distribution, 'logpdf')
+        assert hasattr(alg.prior['y__FREE']._distribution, 'rvs')
+
+    def test_ln_prior_uses_freeparameter_logpdf(self):
+        prior_var = FreeParameter('x__FREE', 'normal_var', 5.0, 2.0)
+        prior = {'x__FREE': prior_var}
+        pset = _make_pset({'x__FREE': 7.0})
+
+        assert _ln_prior(prior, pset) == prior_var.prior_logpdf(7.0)
+
+
 # ---------------------------------------------------------------------------
-# Helpers — standalone reimplementation of ln_prior to test without
-# needing a full BayesianAlgorithm instance
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _make_pset(param_dict):
@@ -324,22 +352,28 @@ def _make_pset(param_dict):
 
 def _ln_prior(prior, pset):
     """
-    Standalone reimplementation of BayesianAlgorithm.ln_prior().
-    Must match the behavior in algorithms.py lines 1962-1988 exactly.
-    """
-    total = 0.
-    for v in prior:
-        (space, dist, x1, x2) = prior[v]
-        if space == 'log':
-            val = np.log10(pset[v])
-        else:
-            val = pset[v]
+    Evaluate BayesianAlgorithm.ln_prior() without constructing a full algorithm.
 
-        if dist == 'n':
-            total += -1. / (2. * x2 ** 2.) * (x1 - val) ** 2.
-        else:
-            if x1 <= val <= x2:
-                total += -np.log(x2 - x1)
-            else:
-                total += -np.inf
-    return total
+    Tests use the historical compact tuple notation for readability, then
+    convert it to the FreeParameter objects now stored by load_priors().
+    """
+    alg = object.__new__(BayesianAlgorithm)
+    alg.prior = {
+        name: spec if isinstance(spec, FreeParameter) else _prior_param(name, spec)
+        for name, spec in prior.items()
+    }
+    return BayesianAlgorithm.ln_prior(alg, pset)
+
+
+def _prior_param(name, spec):
+    """Convert a compact prior tuple into the FreeParameter used by ln_prior()."""
+    space, dist, x1, x2 = spec
+    if space == 'reg' and dist == 'n':
+        return FreeParameter(name, 'normal_var', x1, x2)
+    elif space == 'log' and dist == 'n':
+        return FreeParameter(name, 'lognormal_var', x1, x2)
+    elif space == 'reg' and dist == 'b':
+        return FreeParameter(name, 'uniform_var', x1, x2)
+    elif space == 'log' and dist == 'b':
+        return FreeParameter(name, 'loguniform_var', 10**x1, 10**x2)
+    raise ValueError('Unknown prior spec %r' % (spec,))

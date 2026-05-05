@@ -2156,19 +2156,10 @@ class BayesianAlgorithm(Algorithm):
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""
-        self.prior = dict()  # Maps each variable to a 4-tuple (space, dist, val1, val2)
-        # space is 'reg' for regular space, 'log' for log space. dist is 'n' for normal, 'b' for box.
-        # For normal distribution, val1 = mean, val2 = sigma (in regular or log space as appropriate)
-        # For box distribution, val1 = min, val2 = max (in regular or log space as appropriate)
+        self.prior = dict()  # Maps each variable name to the FreeParameter containing its scipy.stats distribution.
         for var in self.variables:
-            if var.type == 'normal_var':
-                self.prior[var.name] = ('reg', 'n', var.p1, var.p2)
-            elif var.type == 'lognormal_var':
-                self.prior[var.name] = ('log', 'n', var.p1, var.p2)
-            elif var.type == 'uniform_var':
-                self.prior[var.name] = ('reg', 'b', var.p1, var.p2)
-            elif var.type == 'loguniform_var':
-                self.prior[var.name] = ('log', 'b', np.log10(var.p1), np.log10(var.p2))
+            if var._distribution is not None:
+                self.prior[var.name] = var
 
     def start_run(self, setup_samples=True):
 
@@ -2220,23 +2211,11 @@ class BayesianAlgorithm(Algorithm):
         :return: float value of ln times the prior distribution
         """
         total = 0.
-        for v in self.prior:
-            (space, dist, x1, x2) = self.prior[v]
-            if space == 'log':
-                val = np.log10(pset[v])
-            else:
-                val = pset[v]
-
-            if dist == 'n':
-                # Normal with mean x1 and value x2
-                total += -1. / (2. * x2 ** 2.) * (x1 - val)**2.
-            else:
-                # Uniform from x1 to x2
-                if x1 <= val <= x2:
-                    total += -np.log(x2-x1)
-                else:
-                    logger.warning('Box-constrained parameter %s reached a value outside the box.')
-                    total += -np.inf
+        for v, prior_var in self.prior.items():
+            contribution = prior_var.prior_logpdf(pset[v])
+            if not np.isfinite(contribution) and 'uniform' in prior_var.type:
+                logger.warning('Box-constrained parameter %s reached a value outside the box.' % v)
+            total += contribution
         return total
 
     def evaluate_constraints(self, simdata, chain_index):

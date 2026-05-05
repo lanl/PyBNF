@@ -72,9 +72,18 @@ class TestBayes:
         ba = algorithms.BasicBayesMCMCAlgorithm(self.config)
         start_params = ba.start_run()
         assert len(start_params) == 20
-        assert ba.prior['v1__FREE'] == ('log', 'n', 0., 0.5)
-        assert ba.prior['v2__FREE'] == ('log', 'b', 0., 1.)
-        assert ba.prior['v3__FREE'] == ('reg', 'b', 0, 10)
+        assert ba.prior['v1__FREE'].type == 'lognormal_var'
+        assert ba.prior['v1__FREE'].p1 == 0.
+        assert ba.prior['v1__FREE'].p2 == 0.5
+        assert ba.prior['v2__FREE'].type == 'loguniform_var'
+        assert ba.prior['v2__FREE'].p1 == 1.
+        assert ba.prior['v2__FREE'].p2 == 10.
+        assert ba.prior['v3__FREE'].type == 'uniform_var'
+        assert ba.prior['v3__FREE'].p1 == 0
+        assert ba.prior['v3__FREE'].p2 == 10
+        assert np.isfinite(ba.prior['v1__FREE'].prior_logpdf(1.))
+        assert np.isfinite(ba.prior['v2__FREE'].prior_logpdf(5.))
+        assert np.isfinite(ba.prior['v3__FREE'].prior_logpdf(5.))
 
     def test_updates_box(self):
         # In this test, the variables have box constraints, so the prior contribution should be constant.

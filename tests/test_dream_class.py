@@ -1,6 +1,7 @@
 from .context import algorithms, objective, data, config
 
 import os
+import numpy as np
 import re
 import shutil
 
@@ -40,9 +41,18 @@ class TestDream:
         assert len(dream.variables) == 3
         assert sorted([v.name for v in dream.variables]) == ['v1__FREE', 'v2__FREE', 'v3__FREE']
         assert len(start_psets) == 20
-        assert dream.prior['v1__FREE'] == ('reg', 'b', 0., 0.5)
-        assert dream.prior['v2__FREE'] == ('log', 'b', 0., 1.)
-        assert dream.prior['v3__FREE'] == ('reg', 'b', 0, 10)
+        assert dream.prior['v1__FREE'].type == 'uniform_var'
+        assert dream.prior['v1__FREE'].p1 == 0.
+        assert dream.prior['v1__FREE'].p2 == 0.5
+        assert dream.prior['v2__FREE'].type == 'loguniform_var'
+        assert dream.prior['v2__FREE'].p1 == 1.
+        assert dream.prior['v2__FREE'].p2 == 10.
+        assert dream.prior['v3__FREE'].type == 'uniform_var'
+        assert dream.prior['v3__FREE'].p1 == 0
+        assert dream.prior['v3__FREE'].p2 == 10
+        assert np.isfinite(dream.prior['v1__FREE'].prior_logpdf(0.25))
+        assert np.isfinite(dream.prior['v2__FREE'].prior_logpdf(5.))
+        assert np.isfinite(dream.prior['v3__FREE'].prior_logpdf(5.))
 
     def test_update(self):
         dream = algorithms.DreamAlgorithm(self.config)
