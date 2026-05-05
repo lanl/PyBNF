@@ -419,6 +419,22 @@ Algorithm Options
   Example: 
   
     * ``initialization = rand``
+
+**random_seed**
+  Seed for PyBNF's NumPy random number generator. If specified, the same seed will reproduce PyBNF-side random draws
+  such as parameter initialization, proposal generation, acceptance decisions, and bootstrap resampling when results are
+  processed in the same order. If omitted, PyBNF chooses a seed from system entropy and logs it as ``Random seed: N`` so
+  the run can be repeated later.
+
+  Some parallel runs can still differ if simulation jobs finish in a different order, because several algorithms draw
+  random numbers when each result is processed. Stochastic simulators also require their own simulator-level seed to
+  make simulation output reproducible.
+
+  Default: None
+
+  Example:
+
+    * ``random_seed = 12345``
     
 **local_objective_eval**
   If 1, evaluate the objective function locally, instead of parallelizing this calculation on the workers. This option is automatically enabled when using the ``smoothing`` or ``parallelize_models`` feature.

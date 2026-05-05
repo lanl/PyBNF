@@ -147,6 +147,7 @@ class Configuration(object):
             self.config[k] = v
         if 'step_size' in d:
             self.config['adaptive_step_size'] = False
+        self._check_random_seed()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
@@ -188,7 +189,7 @@ class Configuration(object):
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
             'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'parallel_count': None, 'save_best_data': 0,
             'simulation_dir': None,
-            'parallelize_models': 1, 'starting_params':None,
+            'parallelize_models': 1, 'starting_params': None, 'random_seed': None,
 
             'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
             'stop_tolerance': 0.002, 'de_strategy': 'rand1',
@@ -231,6 +232,16 @@ class Configuration(object):
             'precondition_adapt': None
         }
         return default
+
+    def _check_random_seed(self):
+        """Validate the optional random seed before NumPy consumes it."""
+        seed = self.config['random_seed']
+        if seed is None:
+            return
+        if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, (int, np.integer)) or seed < 0 or seed >= 2**32:
+            raise PybnfError('Invalid random_seed %s' % seed,
+                             "Config key 'random_seed' must be an integer from 0 to %i." % (2**32 - 1))
+        self.config['random_seed'] = int(seed)
 
     @staticmethod
     def check_unused_keys(conf_dict):
@@ -279,7 +290,7 @@ class Configuration(object):
         used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
                 'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'time_course',
                 'param_scan', 'mutant',
-                'models', 'exp_data'}
+                'models', 'exp_data', 'random_seed'}
         would_crash = {'refine', 'bootstrap'}
 
         for k in conf_dict:

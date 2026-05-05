@@ -12,6 +12,7 @@ class TestParse:
                  'normalization=init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)',
                  'normalization=zero: (data2.exp:xyz)',
                  'cluster_type = slurm',
+                 'random_seed = 12345',
                  'time_course = model: thing.bngl, time: 100, step: 10',
                  'param_scan=model:another.bngl, param:var2__FREE, min:10, max:30, step:1, time:100',
                  'mutant=another.bngl m1 a4__FREE=42 b5__FREE*17 : data1m1.exp, data2m1.exp']
@@ -33,9 +34,10 @@ class TestParse:
         assert parse.parse(self.s[10]) == ['var', 'a', '1', '2']
         assert parse.parse(self.s[11]) == ['logvar', 'b', '3']
         assert parse.parse(self.s[12]) == ['normalization', 'init : data1.exp, (data2.exp: 4,6-8), (data3.exp: var1,var2)']
-        assert parse.parse(self.s[15]) == ['time_course', 'model', 'thing.bngl', 'time', '100', 'step', '10']
-        assert parse.parse(self.s[16]) == ['param_scan', 'model', 'another.bngl', 'param', 'var2__FREE', 'min', '10', 'max', '30', 'step', '1', 'time', '100']
-        assert parse.parse(self.s[17]) == \
+        assert parse.parse(self.s[15]) == ['random_seed', '12345']
+        assert parse.parse(self.s[16]) == ['time_course', 'model', 'thing.bngl', 'time', '100', 'step', '10']
+        assert parse.parse(self.s[17]) == ['param_scan', 'model', 'another.bngl', 'param', 'var2__FREE', 'min', '10', 'max', '30', 'step', '1', 'time', '100']
+        assert parse.parse(self.s[18]) == \
                ['mutant', 'another.bngl', 'm1', [['a4__FREE', '=', '42'], ['b5__FREE', '*', '17']], ['data1m1.exp', 'data2m1.exp']]
 
     def test_normalize_parse(self):
@@ -76,6 +78,7 @@ class TestParse:
         assert d[('logvar', 'b')] == [3.]
         assert d['normalization'] == {'data1.exp': 'init', 'data2.exp': [('init', [4,6,7,8]), ('zero', ['xyz'])], 'data3.exp': [('init', ['var1', 'var2'])]}
         assert d['cluster_type'] == 'slurm'
+        assert d['random_seed'] == 12345
         assert d['time_course'] == [{'model': 'thing.bngl', 'time': '100', 'step': '10'}]
         assert d['param_scan'] == [{'model': 'another.bngl', 'param': 'var2__FREE', 'min': '10', 'max': '30', 'step': '1', 'time': '100'}]
         assert d['mutant'] == [['another.bngl', 'm1', [['a4__FREE', '=', '42'], ['b5__FREE', '*', '17']], ['data1m1.exp', 'data2m1.exp']]]

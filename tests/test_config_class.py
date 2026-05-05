@@ -48,6 +48,21 @@ class TestConfig(object):
         assert c.config['normalization']['p1_5'] == [('init', ['R_free'])]
         assert c.config['cluster_type'] is None
 
+    def test_random_seed_default(self):
+        assert config.Configuration.default_config()['random_seed'] is None
+
+    @raises(printing.PybnfError)
+    def test_random_seed_must_be_nonnegative(self):
+        c = dict(self.cf1)
+        c['random_seed'] = -1
+        config.Configuration(c)
+
+    @raises(printing.PybnfError)
+    def test_random_seed_must_fit_numpy_seed_range(self):
+        c = dict(self.cf1)
+        c['random_seed'] = 2**32
+        config.Configuration(c)
+
     def test_config_normalization(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},
                                   'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],

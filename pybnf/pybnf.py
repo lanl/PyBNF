@@ -11,6 +11,7 @@ import pybnf.printing as printing
 
 from subprocess import run
 from numpy import inf
+import numpy as np
 
 import logging
 import argparse
@@ -22,6 +23,24 @@ import pickle
 
 
 __version__ = "1.3.0"
+
+
+def _initialize_random_seed(config):
+    """
+    Seed NumPy's global random number generator and log the effective seed.
+
+    If the config does not specify a seed, choose one from system entropy first
+    so it can be reused later for reproducibility.
+    """
+    seed = config.config['random_seed']
+    if seed is None:
+        np.random.seed()
+        seed = int(np.random.randint(0, 2**31))
+    np.random.seed(seed)
+    config.config['random_seed'] = seed
+    logger = logging.getLogger(__name__)
+    logger.info('Random seed: %d', seed)
+    return seed
 
 
 def main():
@@ -86,6 +105,7 @@ def main():
         config = load_config(cmdline_args.conf_file)
         if 'verbosity' in config.config:
             printing.verbosity = config.config['verbosity']
+        _initialize_random_seed(config)
 
         if cmdline_args.resume is not None and cmdline_args.overwrite:
             raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
