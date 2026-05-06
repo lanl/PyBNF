@@ -1,3 +1,70 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybnf"
+dynamic = ["version"]
+description = "An application for parallel fitting of BioNetGen and SBML models using metaheuristics"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Eshan Mitra" },
+    { name = "Ryan Suderman" },
+    { name = "Alex Ionkov" },
+]
+keywords = ["BioNetGen", "BNGL", "SBML", "parameter-estimation", "systems-biology"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "bngsim>=0.3.0,<1",
+    "dask>=2021.5.0,<2023.0",
+    "distributed>=2021.6.2,<2023.0",
+    "libroadrunner>=1.6.0,<3",
+    "msgpack>=0.6.2,<2",
+    "numpy>=1.24,<3",
+    "paramiko>=2.7,<5",
+    "pyparsing>=2.4,<4",
+    "scipy>=1.10,<2",
+    "tornado>=6.1,<7",
+]
+
+[project.optional-dependencies]
+antimony = [
+    "bngsim[antimony]>=0.3.0,<1",
+]
+tests = [
+    "pytest>=7,<10",
+    "tomli>=2,<3; python_version < '3.11'",
+]
+
+[project.scripts]
+pybnf = "pybnf.pybnf:main"
+
+[project.urls]
+Homepage = "https://github.com/lanl/PyBNF"
+Documentation = "https://pybnf.readthedocs.io/en/latest/"
+Source = "https://github.com/lanl/PyBNF"
+Issues = "https://github.com/lanl/PyBNF/issues"
+
+[tool.setuptools]
+packages = ["pybnf"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pybnf.__version__" }
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]

@@ -1,6 +1,7 @@
 """The entry point for the PyBNF application containing the main function and version"""
 
 
+from . import __version__
 from .parse import load_config
 from .config import init_logging
 from .printing import print0, print1, print2, PybnfError
@@ -20,9 +21,6 @@ import shutil
 import time
 import traceback
 import pickle
-
-
-__version__ = "1.3.0"
 
 
 def _initialize_random_seed(config):

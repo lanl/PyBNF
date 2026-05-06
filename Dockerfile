@@ -2,64 +2,79 @@
 # To build Docker image, run inside PyBNF directory:
 #     docker build -t pybnf .
 #
+# If BNGsim is hosted on a private package index, pass the index URL:
+#     docker build --build-arg PIP_EXTRA_INDEX_URL=https://... -t pybnf .
+#
 # Run inside PyBNF to mount examples directory inside the image:
-#     $ docker run -it --rm -v $(pwd)/examples:/project/examples pybnf
+#     docker run -it --rm -v $(pwd)/examples:/project/examples pybnf
 #
 # And then inside the image:
 #     cd examples/demo
 #     pybnf -c demo_bng.conf
 #
-#
 
-#### Interim build container
-FROM continuumio/anaconda3
+ARG PYTHON_VERSION=3.12
+ARG BIONETGEN_VERSION=BioNetGen-2.9.3
 
-# Build BioNetGen package from source
+
+### BioNetGen build container
+FROM python:${PYTHON_VERSION}-slim AS bionetgen-build
+
+ARG BIONETGEN_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+
 WORKDIR /usr/src
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     build-essential \
+    ca-certificates \
     cmake \
+    git \
     libtool \
-    ninja-build && \
-    git clone https://github.com/RuleWorld/bionetgen.git && \
-    cd bionetgen && \
-    git submodule init && \
-    git submodule update && \
-    git checkout BioNetGen-2.3.1 && \
-    cd bng2 && \
-    perl -i -ne'print unless /isnan/' Network3/src/network.h && \
-    ./make_dist.pl --build
+    ninja-build \
+    perl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy PyBNF source into container
-WORKDIR /usr/PyBNF
-COPY . .
+RUN git clone --depth 1 --recurse-submodules --branch "${BIONETGEN_VERSION}" https://github.com/RuleWorld/bionetgen.git
 
-# Build PyBNF binary wheel
-RUN python3 setup.py bdist_wheel
-
-# Build psutil binary wheel
-WORKDIR /usr/PyBNF/dist
-RUN pip wheel psutil
+WORKDIR /usr/src/bionetgen/bng2
+RUN ./make_dist.pl --build
 
 
-### Minimal PyBNF Docker container
-FROM continuumio/miniconda3
+### PyBNF wheel build container
+FROM python:${PYTHON_VERSION}-slim AS pybnf-build
 
-# Copy compiled packages from build container
-COPY --from=0 /usr/src/bionetgen/bng2/BioNetGen-2.3.1 /usr/BioNetGen-2.3.1
-COPY --from=0 /usr/PyBNF/dist/*.whl /tmp/
+WORKDIR /usr/src/PyBNF
+COPY pyproject.toml README.md LICENSE ./
+COPY pybnf ./pybnf
 
-# Install Python packages
-WORKDIR /tmp
-RUN pip install --no-cache-dir *.whl && \
-    rm *.whl
+RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
 
-# Setup environment
-ENV BNGPATH /usr/BioNetGen-2.3.1
-ENV PATH $BNGPATH:$PATH
+
+### Runtime container
+FROM python:${PYTHON_VERSION}-slim
+
+ARG BIONETGEN_VERSION
+ARG PIP_EXTRA_INDEX_URL
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    perl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=bionetgen-build /usr/src/bionetgen/bng2/${BIONETGEN_VERSION} /usr/BioNetGen
+COPY --from=pybnf-build /wheels /tmp/wheels
+
+RUN python -m pip install --no-cache-dir /tmp/wheels/*.whl && \
+    rm -rf /tmp/wheels
+
+ENV BNGPATH=/usr/BioNetGen
+ENV PATH="${BNGPATH}:${PATH}"
 
 WORKDIR /project
 
-CMD [ "bash" ]
-
+CMD ["bash"]

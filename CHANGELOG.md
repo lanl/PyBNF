@@ -30,8 +30,11 @@ All notable changes to PyBNF are documented below. This project adheres to
 - `max_failed_simulations` config key to control early abort threshold (#146)
 - `random_seed` config key to seed and log PyBNF-side random number generation (#31)
 - Command-line options reference in documentation
+- BNGsim package dependency (`bngsim>=0.3.0`) and optional Antimony install extra (#372)
 
 ### Changed
+- Modernized packaging metadata in `pyproject.toml`, added dependency upper bounds, documented `uv` installation, and refreshed the Dockerfile with Python 3.12 and BioNetGen 2.9.3 (#360)
+- Minimum supported Python version is now 3.10 (#372)
 - Replaced nose test dependency with pytest
 - Demoted high-frequency per-iteration log messages from INFO to DEBUG to reduce log file size (#173)
 - Bayesian parameter priors and initial sampling now use shared `scipy.stats` distribution objects; normal and lognormal prior log-probabilities include SciPy's normalization constant while MCMC acceptance ratios are unchanged (#5)

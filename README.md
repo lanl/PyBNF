@@ -10,5 +10,21 @@ workstations as well on computing clusters.
 
 For documentation, refer to [Documentation_PyBioNetFit.pdf](Documentation_PyBioNetFit.pdf) or the online documentation at <https://pybnf.readthedocs.io/en/latest/>.
 
+## Installation
+
+PyBNF requires Python 3.10 or higher.
+
+```bash
+python3 -m pip install pybnf
+```
+
+With `uv`, PyBNF can also be installed as a command-line tool:
+
+```bash
+uv tool install pybnf
+```
+
+PyBNF installs its Python dependencies, including BNGsim and libRoadRunner, through the package metadata. BNGL workflows can still require a BioNetGen installation for `BNG2.pl`; see the installation documentation for simulator setup details.
+
 PyBioNetFit is released under the BSD-3 license. For more information, refer to the
 [LICENSE](LICENSE). LANL code designation: C18062
