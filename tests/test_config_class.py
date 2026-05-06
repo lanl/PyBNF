@@ -51,6 +51,20 @@ class TestConfig(object):
     def test_random_seed_default(self):
         assert config.Configuration.default_config()['random_seed'] is None
 
+    def test_bngl_backend_default(self):
+        assert config.Configuration.default_config()['bngl_backend'] == 'auto'
+
+    @raises(printing.PybnfError)
+    def test_invalid_bngl_backend(self):
+        c = object.__new__(config.Configuration)
+        c.config = {
+            'models': set(),
+            'sbml_backend': 'roadrunner',
+            'bngl_backend': 'unknown',
+            'wall_time_sim': 0,
+        }
+        c._load_models()
+
     @raises(printing.PybnfError)
     def test_random_seed_must_be_nonnegative(self):
         c = dict(self.cf1)

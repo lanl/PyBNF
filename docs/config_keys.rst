@@ -96,6 +96,24 @@ Other Path Keys
     * ``bng_command = path/to/BNG2.pl``
 
 
+.. _bngl_backend:
+
+**bngl_backend**
+  Backend selection for BNGL simulations. Options are ``auto``, ``bionetgen``, or ``bngsim``. With ``auto``,
+  PyBNF uses BNGsim for supported BNGL network and NFsim paths when BNGsim is available, and otherwise uses the
+  BioNetGen subprocess path. Use ``bionetgen`` to force the legacy BioNetGen path, or ``bngsim`` to require BNGsim
+  and fail if the model's actions are unsupported by the BNGsim bridge. Setting the environment variable
+  ``PYBNF_NO_BNGSIM=1`` disables BNGsim auto-selection.
+
+  BNGL workflows still need ``bng_command`` when PyBNF must run BNG2.pl to generate ``.net`` or XML files.
+
+  Default: auto
+
+  Example:
+
+    * ``bngl_backend = bionetgen``
+
+
 **output_dir**
   Directory where we should save the output.
 

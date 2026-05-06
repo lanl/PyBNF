@@ -4,6 +4,7 @@
 import copy
 import concurrent.futures
 import hashlib
+import importlib.metadata
 import logging
 import math
 import os
@@ -18,15 +19,51 @@ from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_
 
 logger = logging.getLogger(__name__)
 
+_BNGSIM_MIN_VERSION = (0, 3, 0)
+_BNGSIM_MAX_MAJOR = 1
 
+
+def _parse_bngsim_version(version):
+    match = re.match(r'^\s*(\d+)\.(\d+)\.(\d+)', version or '')
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _bngsim_version_compatible(version):
+    parsed = _parse_bngsim_version(version)
+    if parsed is None:
+        return True
+    return _BNGSIM_MIN_VERSION <= parsed and parsed[0] < _BNGSIM_MAX_MAJOR
+
+
+def _detect_bngsim_version(module):
+    version = getattr(module, '__version__', None)
+    if version:
+        return version
+    try:
+        return importlib.metadata.version('bngsim')
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+BNGSIM_VERSION = None
+BNGSIM_ERROR = ''
 try:
     if os.environ.get('PYBNF_NO_BNGSIM'):
         raise ImportError('PYBNF_NO_BNGSIM set')
     import bngsim
+    BNGSIM_VERSION = _detect_bngsim_version(bngsim)
+    if not _bngsim_version_compatible(BNGSIM_VERSION):
+        raise ImportError(
+            'installed bngsim version %s is incompatible; PyBNF requires bngsim>=0.3.0,<1'
+            % BNGSIM_VERSION
+        )
     BNGSIM_AVAILABLE = True
-except ImportError:
+except ImportError as exc:
     bngsim = None
     BNGSIM_AVAILABLE = False
+    BNGSIM_ERROR = str(exc) or 'bngsim is not available'
 
 
 BNGSIM_HAS_NFSIM = False

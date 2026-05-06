@@ -31,8 +31,10 @@ All notable changes to PyBNF are documented below. This project adheres to
 - `random_seed` config key to seed and log PyBNF-side random number generation (#31)
 - Command-line options reference in documentation
 - BNGsim package dependency (`bngsim>=0.3.0`) and optional Antimony install extra (#372)
+- `bngl_backend` config key for BNGL backend control: `auto`, `bionetgen`, or required `bngsim` (#371)
 
 ### Changed
+- Supported BNGL network and NFsim simulations now auto-select BNGsim by default when available; `PYBNF_NO_BNGSIM=1` keeps the legacy BioNetGen path (#371)
 - Modernized packaging metadata in `pyproject.toml`, added dependency upper bounds, documented `uv` installation, and refreshed the Dockerfile with Python 3.12 and BioNetGen 2.9.3 (#360)
 - Minimum supported Python version is now 3.10 (#372)
 - Replaced nose test dependency with pytest

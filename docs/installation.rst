@@ -96,7 +96,7 @@ Installation of External Simulators
 BNGsim
 ^^^^^^
 
-The BNGsim Python package is installed automatically as a PyBNF dependency. PyBNF uses BNGsim for supported in-process BNGL simulation paths when it is available, and for SBML models when ``sbml_backend = bngsim`` is configured.
+The BNGsim Python package is installed automatically as a PyBNF dependency. PyBNF uses BNGsim for supported in-process BNGL simulation paths when it is available, unless ``bngl_backend = bionetgen`` or ``PYBNF_NO_BNGSIM=1`` is set. Use ``bngl_backend = bngsim`` to require BNGsim for BNGL simulations. PyBNF uses BNGsim for SBML models when ``sbml_backend = bngsim`` is configured.
 
 BNGsim does not replace all uses of BioNetGen in PyBNF. BNGL workflows can still require :ref:`BioNetGen <bng_install>` so PyBNF can run ``BNG2.pl`` to prepare ``.net`` or XML simulator inputs.
 

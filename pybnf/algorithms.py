@@ -14,8 +14,10 @@ from .bngsim_model import (
     BngsimModel,
     BngsimNfModel,
     BNGSIM_AVAILABLE,
+    BNGSIM_ERROR,
     BNGSIM_BACKEND_NET,
     BNGSIM_BACKEND_NF,
+    BNGSIM_BACKEND_HYBRID,
     BNGSIM_HAS_NFSIM,
     classify_actions_for_bngsim,
 )
@@ -48,6 +50,21 @@ from concurrent.futures._base import CancelledError
 
 
 logger = logging.getLogger(__name__)
+
+BNGL_BACKEND_AUTO = 'auto'
+BNGL_BACKEND_BIONETGEN = 'bionetgen'
+BNGL_BACKEND_BNGSIM = 'bngsim'
+BNGSIM_SUPPORTED_BNGL_BACKENDS = (BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID)
+
+
+def _bngsim_runtime_available():
+    return BNGSIM_AVAILABLE and not os.environ.get('PYBNF_NO_BNGSIM')
+
+
+def _bngsim_unavailable_reason():
+    if os.environ.get('PYBNF_NO_BNGSIM'):
+        return 'PYBNF_NO_BNGSIM is set'
+    return BNGSIM_ERROR or 'bngsim is not available'
 
 
 class Result(object):
@@ -615,11 +632,33 @@ class Algorithm(object):
         init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
         final_model_list = []
         init_dir = os.getcwd() + '/Initialize'
+        bngl_backend = self.config.config.get('bngl_backend', BNGL_BACKEND_AUTO)
+        auto_bngsim = bngl_backend == BNGL_BACKEND_AUTO
+        explicit_bngsim = bngl_backend == BNGL_BACKEND_BNGSIM
+        allow_bngsim = auto_bngsim or explicit_bngsim
+        bngsim_available = _bngsim_runtime_available()
 
         for m in init_model_list:
             bridge_backend = None
             if isinstance(m, BNGLModel):
                 bridge_backend = classify_actions_for_bngsim(m.actions)
+
+            if isinstance(m, BNGLModel) and explicit_bngsim:
+                if bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
+                    raise PybnfError(
+                        'bngl_backend = bngsim was requested for model %s, but its BNGL actions are not '
+                        'supported by the bngsim bridge.' % m.name
+                    )
+                if not bngsim_available:
+                    raise PybnfError(
+                        'bngl_backend = bngsim was requested for model %s, but %s.' %
+                        (m.name, _bngsim_unavailable_reason())
+                    )
+                if bridge_backend in (BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID) and not BNGSIM_HAS_NFSIM:
+                    raise PybnfError(
+                        'bngl_backend = bngsim was requested for model %s, but the installed bngsim '
+                        'does not provide NFsim support.' % m.name
+                    )
 
             if isinstance(m, BNGLModel) and m.generates_network:
                 logger.debug('Model %s requires network generation' % m.name)
@@ -662,13 +701,14 @@ class Algorithm(object):
                 logger.info('Output for network generation of model %s logged in %s/%s.log' %
                              (m.name, init_dir, gnm_name))
                 net_path = init_dir + '/' + gnm_name + '.net'
-                use_bngsim = BNGSIM_AVAILABLE and bridge_backend == BNGSIM_BACKEND_NET
+                use_bngsim = allow_bngsim and bngsim_available and bridge_backend == BNGSIM_BACKEND_NET
                 use_hybrid = (
-                    BNGSIM_AVAILABLE
+                    allow_bngsim
+                    and bngsim_available
                     and BNGSIM_HAS_NFSIM
-                    and bridge_backend == BNGSIM_BACKEND_NF
+                    and bridge_backend in (BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID)
                 )
-                if BNGSIM_AVAILABLE and bridge_backend not in (BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF):
+                if auto_bngsim and bngsim_available and bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
                     logger.info(
                         'Model %s uses actions not supported by the `.net` bngsim bridge; '
                         'falling back to BioNetGen subprocess simulation',
@@ -689,7 +729,13 @@ class Algorithm(object):
                     m_copy.actions = ['writeXML()']
                     try:
                         m_copy.save(hybrid_name, pset=default_pset)
-                    except Exception:
+                    except Exception as exc:
+                        if explicit_bngsim:
+                            os.chdir(home_dir)
+                            raise PybnfError(
+                                'bngl_backend = bngsim was requested for model %s, but staging the '
+                                'hybrid BNGL for XML generation failed: %s' % (m.name, exc)
+                            )
                         logger.exception(
                             'Failed to stage the hybrid BNGL for model %s. '
                             'Falling back to subprocess simulation.',
@@ -712,7 +758,12 @@ class Algorithm(object):
                                 stdout=lf,
                                 stderr=STDOUT,
                             )
-                    except (CalledProcessError, TimeoutExpired, Exception):
+                    except (CalledProcessError, TimeoutExpired, Exception) as exc:
+                        if explicit_bngsim:
+                            raise PybnfError(
+                                'bngl_backend = bngsim was requested for model %s, but hybrid XML '
+                                'generation failed: %s' % (m.name, exc)
+                            )
                         logger.exception(
                             'Hybrid XML generation failed for model %s. '
                             'Falling back to subprocess simulation.',
@@ -727,6 +778,11 @@ class Algorithm(object):
 
                     xml_path = init_dir + '/' + hybrid_name + '.xml'
                     if not os.path.isfile(xml_path):
+                        if explicit_bngsim:
+                            raise PybnfError(
+                                'bngl_backend = bngsim was requested for model %s, but hybrid XML '
+                                'generation did not produce %s.' % (m.name, xml_path)
+                            )
                         logger.warning(
                             'XML file not found at %s for model %s. '
                             'Falling back to subprocess simulation.',
@@ -751,7 +807,12 @@ class Algorithm(object):
                         )
                         model.bng_command = m.bng_command
                         final_model_list.append(model)
-                    except Exception:
+                    except Exception as exc:
+                        if explicit_bngsim:
+                            raise PybnfError(
+                                'bngl_backend = bngsim was requested for model %s, but bngsim NF '
+                                'bridge initialization failed: %s' % (m.name, exc)
+                            )
                         logger.exception(
                             'Failed to initialize the bngsim NF bridge for hybrid model %s. '
                             'Falling back to BNGLModel subprocess simulation.',
@@ -763,7 +824,12 @@ class Algorithm(object):
                     try:
                         logger.info('Using bngsim for in-process simulation of model %s' % m.name)
                         model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path, protocol=m.protocol)
-                    except Exception:
+                    except Exception as exc:
+                        if explicit_bngsim:
+                            raise PybnfError(
+                                'bngl_backend = bngsim was requested for model %s, but bngsim bridge '
+                                'initialization failed: %s' % (m.name, exc)
+                            )
                         logger.exception(
                             'Failed to initialize bngsim bridge for model %s. Falling back to NetModel.',
                             m.name,
@@ -775,8 +841,13 @@ class Algorithm(object):
                     model = NetModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path)
                     final_model_list.append(model)
                     final_model_list[-1].bng_command = m.bng_command
-            elif isinstance(m, BNGLModel) and bridge_backend == BNGSIM_BACKEND_NF:
-                if not BNGSIM_AVAILABLE:
+            elif isinstance(m, BNGLModel) and allow_bngsim and bridge_backend == BNGSIM_BACKEND_NF:
+                if not bngsim_available:
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but %s.' %
+                            (m.name, _bngsim_unavailable_reason())
+                        )
                     logger.info(
                         'Model %s uses NF actions, but bngsim is not available; '
                         'falling back to BioNetGen subprocess simulation',
@@ -786,6 +857,11 @@ class Algorithm(object):
                     continue
 
                 if not BNGSIM_HAS_NFSIM:
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but the installed bngsim '
+                            'does not provide NFsim support.' % m.name
+                        )
                     logger.info(
                         'Model %s uses NF actions, but the installed bngsim lacks NFsim support; '
                         'falling back to BioNetGen subprocess simulation',
@@ -807,7 +883,13 @@ class Algorithm(object):
                 m_copy.actions = ['writeXML()']
                 try:
                     m_copy.save(gnm_name, pset=default_pset)
-                except Exception:
+                except Exception as exc:
+                    if explicit_bngsim:
+                        os.chdir(home_dir)
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but staging the '
+                            'XML-generation BNGL failed: %s' % (m.name, exc)
+                        )
                     logger.exception(
                         'Failed to stage the XML-generation BNGL for model %s. '
                         'Falling back to subprocess simulation.',
@@ -832,6 +914,11 @@ class Algorithm(object):
                 except CalledProcessError as c:
                     logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
                     logger.error(c.stdout)
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but XML generation '
+                            'failed: %s' % (m.name, c)
+                        )
                     logger.warning(
                         'XML generation failed for model %s. Falling back to subprocess simulation.',
                         m.name,
@@ -840,6 +927,11 @@ class Algorithm(object):
                     final_model_list.append(m)
                     continue
                 except TimeoutExpired:
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but XML generation '
+                            'timed out.' % m.name
+                        )
                     logger.warning(
                         'XML generation timed out for model %s. Falling back to subprocess simulation.',
                         m.name,
@@ -847,7 +939,12 @@ class Algorithm(object):
                     os.chdir(home_dir)
                     final_model_list.append(m)
                     continue
-                except Exception:
+                except Exception as exc:
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but XML generation '
+                            'failed: %s' % (m.name, exc)
+                        )
                     logger.exception(
                         'Unknown error during XML generation for model %s. '
                         'Falling back to subprocess simulation.',
@@ -861,6 +958,11 @@ class Algorithm(object):
 
                 xml_path = init_dir + '/' + gnm_name + '.xml'
                 if not os.path.isfile(xml_path):
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but XML generation did '
+                            'not produce %s.' % (m.name, xml_path)
+                        )
                     logger.warning(
                         'XML file not found at %s for model %s. Falling back to subprocess simulation.',
                         xml_path,
@@ -883,7 +985,12 @@ class Algorithm(object):
                     )
                     model.bng_command = m.bng_command
                     final_model_list.append(model)
-                except Exception:
+                except Exception as exc:
+                    if explicit_bngsim:
+                        raise PybnfError(
+                            'bngl_backend = bngsim was requested for model %s, but bngsim NF bridge '
+                            'initialization failed: %s' % (m.name, exc)
+                        )
                     logger.exception(
                         'Failed to initialize the bngsim NF bridge for model %s. '
                         'Falling back to BNGLModel subprocess simulation.',

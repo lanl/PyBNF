@@ -187,7 +187,8 @@ class Configuration(object):
             'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
-            'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'parallel_count': None, 'save_best_data': 0,
+            'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'bngl_backend': 'auto',
+            'parallel_count': None, 'save_best_data': 0,
             'simulation_dir': None,
             'parallelize_models': 1, 'starting_params': None, 'random_seed': None,
 
@@ -288,7 +289,8 @@ class Configuration(object):
         :return: A modified config dictionary, after removing any extraneous keys that would crash PyBNF
         """
         used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
-                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'time_course',
+                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'bngl_backend',
+                'time_course',
                 'param_scan', 'mutant',
                 'models', 'exp_data', 'random_seed'}
         would_crash = {'refine', 'bootstrap'}
@@ -435,6 +437,12 @@ class Configuration(object):
         if self.config['sbml_backend'] not in allowed_sbml_backends:
             raise PybnfError('Invalid sbml_backend %s. Options are: %s.' %
                              (self.config['sbml_backend'], ', '.join(allowed_sbml_backends)))
+        allowed_bngl_backends = ('auto', 'bionetgen', 'bngsim')
+        bngl_backend = self.config.get('bngl_backend', 'auto')
+        self.config['bngl_backend'] = bngl_backend
+        if bngl_backend not in allowed_bngl_backends:
+            raise PybnfError('Invalid bngl_backend %s. Options are: %s.' %
+                             (bngl_backend, ', '.join(allowed_bngl_backends)))
 
         # If needed, choose the default timeout, which depends on what simulators the models use.
         if self.config['wall_time_sim'] is None:

@@ -55,6 +55,7 @@ class TestParse:
     def test_punctuation(self):
         assert parse.parse('bng_command = some/crazy!!-folder$$=\\"/BNG2.pl') == ['bng_command',
                                                                                   'some/crazy!!-folder$$=\\"/BNG2.pl']
+        assert parse.parse('bngl_backend = bngsim') == ['bngl_backend', 'bngsim']
 
     def test_ploop(self):
         d = parse.ploop(self.s)
