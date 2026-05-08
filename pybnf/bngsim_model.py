@@ -4,6 +4,7 @@
 import copy
 import concurrent.futures
 import hashlib
+import inspect
 import importlib.metadata
 import logging
 import math
@@ -67,25 +68,31 @@ except ImportError as exc:
 
 
 BNGSIM_HAS_NFSIM = False
+BNGSIM_HAS_RULEMONKEY = False
 if BNGSIM_AVAILABLE:
     BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM', False))
+    BNGSIM_HAS_RULEMONKEY = bool(getattr(bngsim, 'HAS_RULEMONKEY', False))
 
 
 BNGSIM_BACKEND_NET = 'net'
 BNGSIM_BACKEND_NF = 'nf'
 BNGSIM_BACKEND_HYBRID = 'hybrid'
+BNGSIM_NF_BACKEND_NFSIM = 'nfsim'
+BNGSIM_NF_BACKEND_RULEMONKEY = 'rulemonkey'
 
 _BNGSIM_ACTION_BACKENDS = frozenset((BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF))
-_SUPPORTED_NF_METHOD_ALIASES = {
+_NFSIM_METHOD_ALIASES = {
     'nf': 'nf_reject',
     'nf_reject': 'nf_reject',
     'nfsim': 'nf_reject',
 }
+_RULEMONKEY_METHOD_ALIASES = {
+    'rm': 'rulemonkey',
+    'rulemonkey': 'rulemonkey',
+    'nf_exact': 'rulemonkey',
+}
 _UNSUPPORTED_NF_METHOD_ALIASES = frozenset((
-    'nf_exact',
     'nf_fixed',
-    'rulemonkey',
-    'rm',
     'dynstoc',
     'ds',
 ))
@@ -331,8 +338,14 @@ def _normalize_action_method(method, poplevel_text=None):
 def _normalize_nf_action_method(method):
     """Normalize BNGL network-free methods to the supported bngsim NF token."""
     lower = method.strip().lower()
-    if lower in _SUPPORTED_NF_METHOD_ALIASES:
-        return _SUPPORTED_NF_METHOD_ALIASES[lower]
+    if lower in _NFSIM_METHOD_ALIASES:
+        return _NFSIM_METHOD_ALIASES[lower]
+    if lower in _RULEMONKEY_METHOD_ALIASES:
+        if BNGSIM_HAS_RULEMONKEY:
+            return _RULEMONKEY_METHOD_ALIASES[lower]
+        raise ValueError(
+            "method=>'%s' is recognized but not supported by the bngsim NF bridge" % lower
+        )
     if lower in _UNSUPPORTED_NF_METHOD_ALIASES:
         raise ValueError(
             "method=>'%s' is recognized but not supported by the bngsim NF bridge" % lower
@@ -340,6 +353,141 @@ def _normalize_nf_action_method(method):
     raise ValueError(
         "method=>'%s' is not supported by the bngsim NF bridge" % lower
     )
+
+
+def _nf_session_backend_for_method(method):
+    """Return the concrete bngsim NF session backend for a normalized method."""
+    normalized = _normalize_nf_action_method(method)
+    if normalized in set(_NFSIM_METHOD_ALIASES.values()):
+        return BNGSIM_NF_BACKEND_NFSIM
+    if normalized in set(_RULEMONKEY_METHOD_ALIASES.values()):
+        return BNGSIM_NF_BACKEND_RULEMONKEY
+    raise ValueError(
+        "method=>'%s' is not supported by the bngsim NF bridge" % method
+    )
+
+
+def _bngsim_has_nf_session_backend(session_backend):
+    if session_backend == BNGSIM_NF_BACKEND_NFSIM:
+        return BNGSIM_HAS_NFSIM
+    if session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
+        return BNGSIM_HAS_RULEMONKEY
+    return False
+
+
+def _nf_session_backend_label(session_backend):
+    if session_backend == BNGSIM_NF_BACKEND_NFSIM:
+        return 'NFsim'
+    if session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
+        return 'RuleMonkey'
+    return session_backend
+
+
+def _nf_method_from_action_params(action_params):
+    if action_params is None:
+        return None
+    return _normalize_nf_action_method(action_params.get('method', 'nf'))
+
+
+def _required_nf_session_backends(actions):
+    backends = set()
+    for action_line in actions:
+        line = _collapse_action_line_continuations(action_line).strip()
+        if not line or line.startswith('#'):
+            continue
+
+        action_params = _parse_simulate_action(line)
+        if action_params is None:
+            action_params = _parse_parameter_scan_action(line)
+        if action_params is None:
+            continue
+
+        normalized = _nf_method_from_action_params(action_params)
+        backends.add(_nf_session_backend_for_method(normalized))
+    return frozenset(backends)
+
+
+def _first_nf_action_method(actions):
+    for action_line in actions:
+        line = _collapse_action_line_continuations(action_line).strip()
+        if not line or line.startswith('#'):
+            continue
+
+        action_params = _parse_simulate_action(line)
+        if action_params is None:
+            action_params = _parse_parameter_scan_action(line)
+        if action_params is None:
+            continue
+
+        return _nf_method_from_action_params(action_params)
+    return 'nf_reject'
+
+
+def missing_bngsim_nf_action_support(actions):
+    """Return labels for required bngsim NF backends that are unavailable."""
+    missing = []
+    for session_backend in sorted(_required_nf_session_backends(actions)):
+        if not _bngsim_has_nf_session_backend(session_backend):
+            missing.append(_nf_session_backend_label(session_backend))
+    return tuple(missing)
+
+
+def _callable_accepts_keyword(callable_obj, keyword):
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return True
+
+    for param in signature.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters
+
+
+def _get_nf_session_class(session_backend):
+    if session_backend == BNGSIM_NF_BACKEND_NFSIM:
+        names = ('NfsimSession',)
+    elif session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
+        names = ('RuleMonkeySession', 'RulemonkeySession')
+    else:
+        names = ()
+
+    for name in names:
+        session_cls = getattr(bngsim, name, None)
+        if session_cls is not None:
+            return session_cls
+
+    raise RuntimeError(
+        'bngsim does not provide %s session support'
+        % _nf_session_backend_label(session_backend)
+    )
+
+
+def _create_nf_session(session_backend, xml_path, molecule_limit=None):
+    session_cls = _get_nf_session_class(session_backend)
+    if molecule_limit is None:
+        return session_cls(xml_path)
+    if _callable_accepts_keyword(session_cls, 'molecule_limit'):
+        return session_cls(xml_path, molecule_limit=molecule_limit)
+
+    session = session_cls(xml_path)
+    if hasattr(session, 'set_molecule_limit'):
+        session.set_molecule_limit(molecule_limit)
+    else:
+        logger.warning(
+            "BngsimNfModel: %s session does not expose molecule_limit support",
+            _nf_session_backend_label(session_backend),
+        )
+    return session
+
+
+def _destroy_nf_session(session):
+    if session is None:
+        return
+    if hasattr(session, 'destroy'):
+        session.destroy()
+    elif hasattr(session, 'close'):
+        session.close()
 
 
 def _classify_action_method_backend(method):
@@ -350,8 +498,12 @@ def _classify_action_method_backend(method):
         return None
     if lower in ('ode', 'ssa', 'psa', 'protocol'):
         return BNGSIM_BACKEND_NET
-    if lower in _SUPPORTED_NF_METHOD_ALIASES:
+    if lower in _NFSIM_METHOD_ALIASES:
         return BNGSIM_BACKEND_NF
+    if lower in _RULEMONKEY_METHOD_ALIASES:
+        if BNGSIM_HAS_RULEMONKEY:
+            return BNGSIM_BACKEND_NF
+        return None
     if lower in _UNSUPPORTED_NF_METHOD_ALIASES:
         return None
     return None
@@ -1569,7 +1721,7 @@ class BngsimModel(NetModel):
 
 
 class BngsimNfModel(Model):
-    """In-process NFsim simulation model using bngsim's XML-backed session API."""
+    """In-process network-free simulation using bngsim's XML-backed session API."""
 
     def __init__(
         self,
@@ -1585,8 +1737,6 @@ class BngsimNfModel(Model):
     ):
         if not BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
-        if not BNGSIM_HAS_NFSIM:
-            raise RuntimeError('bngsim does not provide NFsim support')
 
         self.name = name
         self.actions = acts
@@ -1599,6 +1749,13 @@ class BngsimNfModel(Model):
         self.param_names = tuple(param_names)
         self.param_set = None
         self.bng_command = ''
+        self._default_nf_method = _first_nf_action_method(acts)
+        missing_nf_support = missing_bngsim_nf_action_support(acts)
+        if missing_nf_support:
+            raise RuntimeError(
+                'bngsim does not provide %s support'
+                % ', '.join(missing_nf_support)
+            )
 
         if bngl_model_lines is not None:
             self._param_exprs = _parse_bngl_param_block(bngl_model_lines)
@@ -1621,7 +1778,7 @@ class BngsimNfModel(Model):
         }
 
     def _build_nf_param_overrides(self, input_overrides=None):
-        """Compute parameter overrides to apply to NFsim before initialize()."""
+        """Compute parameter overrides to apply before network-free initialization."""
         if input_overrides is None:
             input_overrides = self._initial_param_inputs()
 
@@ -1649,7 +1806,7 @@ class BngsimNfModel(Model):
 
     @staticmethod
     def _apply_param_overrides(nfsim, param_overrides):
-        """Apply all known parameter overrides to one NFsim session."""
+        """Apply all known parameter overrides to one network-free session."""
         try:
             if hasattr(nfsim, 'clear_param_overrides'):
                 nfsim.clear_param_overrides()
@@ -1668,13 +1825,14 @@ class BngsimNfModel(Model):
 
     def _run_nf_parameter_scan(self, ps_params, seed, current_param_inputs):
         """Execute one NF parameter_scan() action using one short session per point."""
-        _normalize_nf_action_method(ps_params.get('method', 'nf'))
+        method = _normalize_nf_action_method(ps_params.get('method', 'nf'))
+        session_backend = _nf_session_backend_for_method(method)
 
-        # sample_times is not supported for NFsim (possible future
-        # BNGsim / NFsim enhancement)
+        # sample_times is not supported for network-free bngsim sessions
+        # (possible future BNGsim enhancement).
         if ps_params.get('sample_times') is not None:
             logger.warning(
-                "sample_times is not supported for NFsim parameter_scan — ignoring")
+                "sample_times is not supported for bngsim network-free parameter_scan; ignoring")
 
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
@@ -1696,7 +1854,8 @@ class BngsimNfModel(Model):
             point_param_overrides = self._build_nf_param_overrides(point_inputs)
             point_seed = int(ps_params.get('seed', (seed + i) % (2**31)))
 
-            with bngsim.NfsimSession(self._xml_path, molecule_limit=gml_int) as nfsim:
+            nfsim = _create_nf_session(session_backend, self._xml_path, molecule_limit=gml_int)
+            try:
                 self._apply_param_overrides(nfsim, point_param_overrides)
                 nfsim.initialize(point_seed)
                 result = nfsim.simulate(t_start, t_end, n_steps + 1)
@@ -1705,6 +1864,8 @@ class BngsimNfModel(Model):
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
+            finally:
+                _destroy_nf_session(nfsim)
 
         if rows:
             arr = np.vstack(rows)
@@ -1724,7 +1885,7 @@ class BngsimNfModel(Model):
         return BngsimModel._result_to_data(result)
 
     def execute(self, folder, filename, timeout, with_mutants=True):
-        """Execute all NF actions in-process using XML-backed NFsim sessions."""
+        """Execute all NF actions in-process using XML-backed network-free sessions."""
         ds = {}
         current_param_inputs = self._initial_param_inputs()
         current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
@@ -1732,17 +1893,17 @@ class BngsimNfModel(Model):
         seed = self._stable_seed(current_param_inputs, filename)
         nfsim = None
         current_gml = None
+        current_method = None
 
-        def _start_session(seed_value, gml_value):
-            sim = bngsim.NfsimSession(self._xml_path, molecule_limit=gml_value)
+        def _start_session(seed_value, gml_value, method):
+            session_backend = _nf_session_backend_for_method(method)
+            sim = _create_nf_session(session_backend, self._xml_path, molecule_limit=gml_value)
             self._apply_param_overrides(sim, current_param_overrides)
             sim.initialize(seed_value)
             return sim
 
         def _stop_session(sim):
-            if sim is None:
-                return
-            sim.destroy()
+            _destroy_nf_session(sim)
 
         try:
             for action_line in self.actions:
@@ -1761,13 +1922,13 @@ class BngsimNfModel(Model):
 
                 sim_params = _parse_simulate_action(line)
                 if sim_params is not None:
-                    _normalize_nf_action_method(sim_params.get('method', 'nf'))
+                    method = _normalize_nf_action_method(sim_params.get('method', 'nf'))
 
-                    # sample_times is not supported for NFsim (possible future
-                    # BNGsim / NFsim enhancement)
+                    # sample_times is not supported for network-free bngsim
+                    # sessions (possible future BNGsim enhancement).
                     if sim_params.get('sample_times') is not None:
                         logger.warning(
-                            "sample_times is not supported for NFsim — ignoring")
+                            "sample_times is not supported for bngsim network-free simulation; ignoring")
 
                     t_start = float(sim_params.get('t_start', 0))
                     t_end = float(sim_params.get('t_end', 100))
@@ -1778,7 +1939,19 @@ class BngsimNfModel(Model):
                     action_seed = int(sim_params.get('seed', seed))
 
                     if nfsim is None:
-                        nfsim = _start_session(action_seed, gml_int)
+                        nfsim = _start_session(action_seed, gml_int, method)
+                        current_method = method
+                        current_gml = gml_int
+                    elif method != current_method:
+                        logger.warning(
+                            "BngsimNfModel: switching network-free backends from %s to %s; "
+                            "simulator state cannot be transferred",
+                            current_method,
+                            method,
+                        )
+                        _stop_session(nfsim)
+                        nfsim = _start_session(action_seed, gml_int, method)
+                        current_method = method
                         current_gml = gml_int
                     elif gml_int is not None and gml_int != current_gml:
                         nfsim.set_molecule_limit(gml_int)
@@ -1801,7 +1974,8 @@ class BngsimNfModel(Model):
                 if sc is not None:
                     species_pattern, expr_text = sc
                     if nfsim is None:
-                        nfsim = _start_session(seed, current_gml)
+                        current_method = current_method or self._default_nf_method
+                        nfsim = _start_session(seed, current_gml, current_method)
 
                     if expr_text in current_param_overrides:
                         count = int(round(current_param_overrides[expr_text]))
@@ -1837,7 +2011,8 @@ class BngsimNfModel(Model):
                 if ac is not None:
                     species_pattern, delta = ac
                     if nfsim is None:
-                        nfsim = _start_session(seed, current_gml)
+                        current_method = current_method or self._default_nf_method
+                        nfsim = _start_session(seed, current_gml, current_method)
                     mol_type = species_pattern.split('(')[0]
                     to_add = int(round(delta))
                     if to_add > 0:

@@ -18,8 +18,8 @@ from .bngsim_model import (
     BNGSIM_BACKEND_NET,
     BNGSIM_BACKEND_NF,
     BNGSIM_BACKEND_HYBRID,
-    BNGSIM_HAS_NFSIM,
     classify_actions_for_bngsim,
+    missing_bngsim_nf_action_support,
 )
 from .data import Data
 from .pset import PSet
@@ -642,6 +642,9 @@ class Algorithm(object):
             bridge_backend = None
             if isinstance(m, BNGLModel):
                 bridge_backend = classify_actions_for_bngsim(m.actions)
+            missing_nf_support = ()
+            if isinstance(m, BNGLModel) and bridge_backend in (BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID):
+                missing_nf_support = missing_bngsim_nf_action_support(m.actions)
 
             if isinstance(m, BNGLModel) and explicit_bngsim:
                 if bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
@@ -654,10 +657,10 @@ class Algorithm(object):
                         'bngl_backend = bngsim was requested for model %s, but %s.' %
                         (m.name, _bngsim_unavailable_reason())
                     )
-                if bridge_backend in (BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID) and not BNGSIM_HAS_NFSIM:
+                if missing_nf_support:
                     raise PybnfError(
                         'bngl_backend = bngsim was requested for model %s, but the installed bngsim '
-                        'does not provide NFsim support.' % m.name
+                        'does not provide %s support.' % (m.name, ', '.join(missing_nf_support))
                     )
 
             if isinstance(m, BNGLModel) and m.generates_network:
@@ -705,8 +708,8 @@ class Algorithm(object):
                 use_hybrid = (
                     allow_bngsim
                     and bngsim_available
-                    and BNGSIM_HAS_NFSIM
                     and bridge_backend in (BNGSIM_BACKEND_NF, BNGSIM_BACKEND_HYBRID)
+                    and not missing_nf_support
                 )
                 if auto_bngsim and bngsim_available and bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
                     logger.info(
@@ -720,7 +723,7 @@ class Algorithm(object):
                     # by running BNG2.pl again with generate_network + writeXML
                     logger.info(
                         'Model %s is hybrid (generate_network + NF simulate); '
-                        'generating XML for bngsim NFsim',
+                        'generating XML for bngsim network-free simulation',
                         m.name,
                     )
                     os.chdir(init_dir)
@@ -856,21 +859,22 @@ class Algorithm(object):
                     final_model_list.append(m)
                     continue
 
-                if not BNGSIM_HAS_NFSIM:
+                if missing_nf_support:
                     if explicit_bngsim:
                         raise PybnfError(
                             'bngl_backend = bngsim was requested for model %s, but the installed bngsim '
-                            'does not provide NFsim support.' % m.name
+                            'does not provide %s support.' % (m.name, ', '.join(missing_nf_support))
                         )
                     logger.info(
-                        'Model %s uses NF actions, but the installed bngsim lacks NFsim support; '
+                        'Model %s uses NF actions, but the installed bngsim lacks %s support; '
                         'falling back to BioNetGen subprocess simulation',
                         m.name,
+                        ', '.join(missing_nf_support),
                     )
                     final_model_list.append(m)
                     continue
 
-                logger.info('Model %s is NF-only; generating XML for bngsim NFsim' % m.name)
+                logger.info('Model %s is NF-only; generating XML for bngsim network-free simulation' % m.name)
 
                 if not os.path.isdir(init_dir):
                     logger.debug('Creating initialization directory: %s' % init_dir)
@@ -904,7 +908,7 @@ class Algorithm(object):
                     gn_cmd = ['perl'] + gn_cmd
                 try:
                     with open('%s.log' % gnm_name, 'w') as lf:
-                        print2('Generating XML for NFsim model %s.bngl' % gnm_name)
+                        print2('Generating XML for network-free model %s.bngl' % gnm_name)
                         run_subprocess(
                             gn_cmd,
                             timeout=self.config.config['wall_time_gen'],
