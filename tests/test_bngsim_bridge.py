@@ -395,12 +395,17 @@ def test_normalize_nf_action_method_rejects_non_nf_method():
         ('nf_reject', bngsim_model.BNGSIM_BACKEND_NF),
         ('nfsim', bngsim_model.BNGSIM_BACKEND_NF),
         ('pla', None),
-        ('nf_exact', None),
         ('unknown_method', None),
     ],
 )
 def test_classify_action_method_backend_maps_methods(method, expected_backend):
     assert bngsim_model._classify_action_method_backend(method) == expected_backend
+
+
+@pytest.mark.parametrize('method', ['rm', 'rulemonkey', 'nf_exact'])
+def test_classify_action_method_backend_rejects_rulemonkey_methods_when_unavailable(monkeypatch, method):
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', False)
+    assert bngsim_model._classify_action_method_backend(method) is None
 
 
 @pytest.mark.parametrize('method', ['rm', 'rulemonkey', 'nf_exact'])
