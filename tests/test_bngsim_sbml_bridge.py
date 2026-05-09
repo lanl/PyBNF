@@ -110,7 +110,7 @@ def test_config_rejects_non_cvode_integrator_for_bngsim_backend():
         'sbml_integrator': 'rk4',
     }
 
-    with pytest.raises(printing.PybnfError, match='sbml_integrator = cvode'):
+    with pytest.raises(printing.PybnfError, match='cvode, gillespie'):
         cfg._load_simulators()
 
 

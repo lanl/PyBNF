@@ -5,6 +5,7 @@ import copy
 import logging
 import os
 import pickle
+import secrets
 import tempfile
 from subprocess import PIPE
 from sys import executable
@@ -22,6 +23,9 @@ from .pset import (
     TimeCourse,
     run_subprocess,
 )
+
+
+_SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
 
 
 logger = logging.getLogger(__name__)
@@ -111,9 +115,10 @@ def _mutate_scalar(value, operation, amount):
 
 class BngsimSbmlModelNoTimeout(Model):
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode'):
-        if integrator != 'cvode':
+        if integrator not in _SUPPORTED_INTEGRATORS:
             raise ModelError(
-                'sbml_backend = bngsim currently supports only sbml_integrator = cvode'
+                'sbml_backend = bngsim supports sbml_integrator in %s; got %s' %
+                (', '.join(_SUPPORTED_INTEGRATORS), integrator)
             )
 
         _require_bngsim_sbml_support()
@@ -126,7 +131,9 @@ class BngsimSbmlModelNoTimeout(Model):
         self.actions = list(actions)
         self.integrator = integrator
         self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
-        self.stochastic = False
+        self.stochastic = integrator == 'gillespie' or any(
+            getattr(a, 'method', 'ode') == 'ssa' for a in actions
+        )
         self.mutants = [MutationSet()]
 
         try:
@@ -278,13 +285,15 @@ class BngsimSbmlModelNoTimeout(Model):
                 out.write(self.model_text(mut=mut))
 
     def add_action(self, action):
-        if action.method != 'ode':
+        if action.method not in ('ode', 'ssa'):
             raise PybnfError(
                 'time_course or param_scan method %s is not currently supported with '
-                'sbml_backend = bngsim. Option is ode.' % action.method
+                'sbml_backend = bngsim. Options are ode or ssa.' % action.method
             )
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
+        if action.method == 'ssa':
+            self.stochastic = True
 
     def get_suffixes(self):
         result = []
@@ -302,7 +311,10 @@ class BngsimSbmlModelNoTimeout(Model):
         return data
 
     @classmethod
-    def _result_to_data(cls, result):
+    def _result_to_data(cls, result, *, stochastic=False):
+        if stochastic:
+            arr = result.as_roadrunner()
+            return Data(named_arr=arr)
         species = np.asarray(result.species, dtype=float)
         arr = np.zeros((result.n_times, 1 + species.shape[1]))
         arr[:, 0] = result.time
@@ -325,9 +337,26 @@ class BngsimSbmlModelNoTimeout(Model):
         headers = [data.headers[i] for i in range(data.data.shape[1])]
         np.savetxt(path, data.data, header=' '.join(headers))
 
+    def _resolve_method(self, action):
+        if action.method == 'ssa' or self.integrator == 'gillespie':
+            return 'ssa'
+        return 'ode'
+
     @staticmethod
-    def _run_simulation(engine_model, end_time, n_points):
-        sim = bngsim.Simulator(engine_model, method='ode')
+    def _make_simulator(engine_model, method):
+        try:
+            return bngsim.Simulator(engine_model, method=method)
+        except Exception as exc:
+            ssa_validation_error = getattr(bngsim, 'SsaValidationError', None)
+            if ssa_validation_error is not None and isinstance(exc, ssa_validation_error):
+                raise ModelError(str(exc)) from exc
+            raise
+
+    def _run_simulation(self, engine_model, end_time, n_points, *, method='ode'):
+        sim = self._make_simulator(engine_model, method)
+        if method == 'ssa':
+            seed = secrets.randbits(31) or 1
+            return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), seed=seed)
         return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points))
 
     def execute(self, folder, filename, timeout):
@@ -337,11 +366,14 @@ class BngsimSbmlModelNoTimeout(Model):
         for mut in self.mutants:
             for act in self.actions:
                 try:
+                    method = self._resolve_method(act)
                     if isinstance(act, TimeCourse):
                         doc = self._build_sbml_doc(mut=mut)
                         engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
-                        result = self._run_simulation(engine_model, act.time, act.stepnumber + 1)
-                        data = self._result_to_data(result)
+                        result = self._run_simulation(
+                            engine_model, act.time, act.stepnumber + 1, method=method,
+                        )
+                        data = self._result_to_data(result, stochastic=method == 'ssa')
                         result_dict[act.suffix + mut.suffix] = data
                         if self.save_files:
                             self._write_saved_output(
@@ -363,7 +395,9 @@ class BngsimSbmlModelNoTimeout(Model):
                         for x in points:
                             doc = self._build_sbml_doc(mut=mut, scan_override=(act.param, x))
                             engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
-                            result = self._run_simulation(engine_model, act.time, 2)
+                            result = self._run_simulation(
+                                engine_model, act.time, 2, method=method,
+                            )
                             row, point_headers = self._scan_point_to_row(result, x, scan_label)
                             rows.append(row)
                             if headers is None:

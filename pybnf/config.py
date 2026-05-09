@@ -619,10 +619,11 @@ class Configuration(object):
                                      'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
         # Check that the integrator is valid
         if self.config['sbml_backend'] == 'bngsim':
-            if self.config['sbml_integrator'] != 'cvode':
+            bngsim_integrators = ('cvode', 'gillespie')
+            if self.config['sbml_integrator'] not in bngsim_integrators:
                 raise PybnfError(
-                    'Config option "sbml_backend = bngsim" currently supports only '
-                    '"sbml_integrator = cvode".'
+                    'Config option "sbml_backend = bngsim" supports sbml_integrator in %s; got %s.' %
+                    (', '.join(bngsim_integrators), self.config['sbml_integrator'])
                 )
         else:
             integrators = ('cvode', 'euler', 'rk4', 'gillespie')
