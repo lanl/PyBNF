@@ -114,7 +114,8 @@ def _mutate_scalar(value, operation, amount):
 
 
 class BngsimSbmlModelNoTimeout(Model):
-    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode'):
+    def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
+                 strict_ssa=True):
         if integrator not in _SUPPORTED_INTEGRATORS:
             raise ModelError(
                 'sbml_backend = bngsim supports sbml_integrator in %s; got %s' %
@@ -130,6 +131,7 @@ class BngsimSbmlModelNoTimeout(Model):
         self.save_files = save_files
         self.actions = list(actions)
         self.integrator = integrator
+        self.strict_ssa = bool(strict_ssa)
         self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
         self.stochastic = integrator == 'gillespie' or any(
             getattr(a, 'method', 'ode') == 'ssa' for a in actions
@@ -342,10 +344,12 @@ class BngsimSbmlModelNoTimeout(Model):
             return 'ssa'
         return 'ode'
 
-    @staticmethod
-    def _make_simulator(engine_model, method):
+    def _make_simulator(self, engine_model, method):
+        kwargs = {'method': method}
+        if method == 'ssa':
+            kwargs['strict_ssa'] = getattr(self, 'strict_ssa', True)
         try:
-            return bngsim.Simulator(engine_model, method=method)
+            return bngsim.Simulator(engine_model, **kwargs)
         except Exception as exc:
             ssa_validation_error = getattr(bngsim, 'SsaValidationError', None)
             if ssa_validation_error is not None and isinstance(exc, ssa_validation_error):

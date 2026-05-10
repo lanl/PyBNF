@@ -235,6 +235,94 @@ def test_bngsim_ssa_action_method_path(abc_split_xml, tmp_path):
     assert abs(final_total - 20.0) < 1e-9
 
 
+def test_bngsim_ssa_chi_sq_matches_roadrunner(abc_split_xml, tmp_path):
+    """Chi^2 regression smoke test (GH #7 closeout): at fixed parameters,
+    PyBNF's chi_sq objective must agree between sbml_backend='roadrunner'
+    and sbml_backend='bngsim' within tolerance.
+
+    Both backends simulate the same SBML at the same parameters; we
+    average each backend's per-time mean over N replicates, then score
+    that mean against synthetic exp data (deterministic mean from a fixed
+    seed, with constant per-species sigma). chi^2 is bounded by
+    finite-replicate noise, so the two backends' chi^2 values should
+    differ by less than the within-backend noise floor.
+    """
+    from pybnf.objective import ChiSquareObjective
+    from pybnf.data import Data
+
+    empty = pset.PSet([])
+    rr_model = pset.SbmlModelNoTimeout(
+        abc_split_xml, abc_split_xml, pset=empty, actions=(_ssa_action(),),
+        integrator='gillespie',
+    )
+    bn_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        abc_split_xml, abc_split_xml, pset=empty, actions=(_ssa_action(),),
+        integrator='gillespie',
+    )
+
+    rr_times, rr_samples = _collect_replicates(rr_model, tmp_path, 'rr_chi')
+    bn_times, bn_samples = _collect_replicates(bn_model, tmp_path, 'bn_chi')
+
+    np.testing.assert_allclose(rr_times, bn_times, rtol=0, atol=1e-9)
+
+    # Synthetic exp data: average rr+bn means as the reference signal so
+    # the chi^2 baseline is symmetric in the two backends. Sigma scales
+    # are the per-species standard deviations of the rr replicate cloud.
+    n_t = len(rr_times)
+    n_sp = len(SPECIES)
+    headers = ['time'] + list(SPECIES) + ['%s_SD' % sp for sp in SPECIES]
+    arr = np.zeros((n_t, 1 + 2 * n_sp))
+    arr[:, 0] = rr_times
+    for i, sp in enumerate(SPECIES):
+        rr_mu = rr_samples[sp].mean(axis=0)
+        bn_mu = bn_samples[sp].mean(axis=0)
+        rr_sd = np.maximum(rr_samples[sp].std(axis=0, ddof=1), 0.5)
+        arr[:, 1 + i] = 0.5 * (rr_mu + bn_mu)
+        arr[:, 1 + n_sp + i] = rr_sd
+    exp_data = Data()
+    exp_data.data = arr
+    exp_data.cols = {h: i for i, h in enumerate(headers)}
+    exp_data.headers = {i: h for i, h in enumerate(headers)}
+    exp_data.indvar = 'time'
+    exp_data.weights = np.ones_like(arr)
+
+    def _sim_data(samples):
+        mean_arr = np.zeros((n_t, 1 + n_sp))
+        mean_arr[:, 0] = rr_times
+        for i, sp in enumerate(SPECIES):
+            mean_arr[:, 1 + i] = samples[sp].mean(axis=0)
+        d = Data()
+        d.data = mean_arr
+        sim_headers = ['time'] + list(SPECIES)
+        d.cols = {h: j for j, h in enumerate(sim_headers)}
+        d.headers = {j: h for j, h in enumerate(sim_headers)}
+        d.indvar = 'time'
+        return d
+
+    rr_sim = _sim_data(rr_samples)
+    bn_sim = _sim_data(bn_samples)
+
+    objective = ChiSquareObjective(ind_var_rounding=0)
+    chi2_rr = objective.evaluate(rr_sim, exp_data, show_warnings=False)
+    chi2_bn = objective.evaluate(bn_sim, exp_data, show_warnings=False)
+
+    # Each backend's mean estimator has variance ~ sigma^2 / N per point;
+    # the (mu - exp)^2 / (2 sigma^2) summand has expectation ~ 1/(2 N)
+    # → chi2 ~ (n_t-1)*n_sp/(2 N). For n_t=51, n_sp=3, N=200 that's ~0.4.
+    # Difference between the two chi^2 values reflects only the
+    # difference of their two sample means, which under H0 has the same
+    # noise scale, so we bound the absolute difference at a few times the
+    # expected magnitude rather than chase a relative tolerance.
+    n_compare = (n_t - 1) * n_sp
+    chi2_floor = n_compare / (2.0 * N_REPLICATES)
+    chi2_tol = max(5.0 * chi2_floor, 0.5)
+
+    assert abs(chi2_rr - chi2_bn) < chi2_tol, (
+        'chi^2 disagreement: rr=%g, bn=%g, tol=%g (floor=%g, n_compare=%d, N=%d)'
+        % (chi2_rr, chi2_bn, chi2_tol, chi2_floor, n_compare, N_REPLICATES)
+    )
+
+
 def test_bngsim_ssa_runs_copasi_reversible_abc(tmp_path):
     """Phase 7: COPASI-style reversible kineticLaws (the original abc.xml
     shape, ``compartment * (kf*A - kr*B)``) must simulate under SSA, not

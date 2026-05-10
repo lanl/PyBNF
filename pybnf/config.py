@@ -188,6 +188,7 @@ class Configuration(object):
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
             'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'bngl_backend': 'auto',
+            'sbml_ssa_strict': 1,
             'parallel_count': None, 'save_best_data': 0,
             'simulation_dir': None,
             'parallelize_models': 1, 'starting_params': None, 'random_seed': None,
@@ -290,6 +291,7 @@ class Configuration(object):
         """
         used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
                 'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'bngl_backend',
+                'sbml_ssa_strict',
                 'time_course',
                 'param_scan', 'mutant',
                 'models', 'exp_data', 'random_seed'}
@@ -467,12 +469,14 @@ class Configuration(object):
                             raise PybnfError(
                                 'sbml_backend = bngsim was requested, but %s.' % BNGSIM_SBML_ERROR
                             )
+                        strict_ssa = bool(self.config.get('sbml_ssa_strict', 1))
                         if self.config['wall_time_sim'] == 0:
                             model = BngsimSbmlModelNoTimeout(
                                 mf,
                                 self._absolute(mf),
                                 save_files=save_flag,
                                 integrator=self.config['sbml_integrator'],
+                                strict_ssa=strict_ssa,
                             )
                         else:
                             model = BngsimSbmlModel(
@@ -480,6 +484,7 @@ class Configuration(object):
                                 self._absolute(mf),
                                 save_files=save_flag,
                                 integrator=self.config['sbml_integrator'],
+                                strict_ssa=strict_ssa,
                             )
                     elif self.config['wall_time_sim'] == 0:
                         model = SbmlModelNoTimeout(
@@ -501,12 +506,14 @@ class Configuration(object):
                         raise PybnfError(
                             'Antimony model support was requested, but %s.' % BNGSIM_ANTIMONY_ERROR
                         )
+                    strict_ssa = bool(self.config.get('sbml_ssa_strict', 1))
                     if self.config['wall_time_sim'] == 0:
                         model = BngsimAntimonyModelNoTimeout(
                             mf,
                             self._absolute(mf),
                             save_files=save_flag,
                             integrator=self.config['sbml_integrator'],
+                            strict_ssa=strict_ssa,
                         )
                     else:
                         model = BngsimAntimonyModel(
@@ -514,6 +521,7 @@ class Configuration(object):
                             self._absolute(mf),
                             save_files=save_flag,
                             integrator=self.config['sbml_integrator'],
+                            strict_ssa=strict_ssa,
                         )
                 elif re.search('\.target$', mf):
                     from .analytical_model import AnalyticalModel
@@ -636,6 +644,11 @@ class Configuration(object):
                                      'have version %s' % roadrunner.__version__)
                 print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
                        'producing reasonable output.')
+            if self.config.get('sbml_ssa_strict', 1) != 1:
+                raise PybnfError(
+                    'Config option "sbml_ssa_strict" is only supported when sbml_backend = bngsim. '
+                    'Current sbml_backend is "%s".' % self.config['sbml_backend']
+                )
 
     def _load_actions(self):
 

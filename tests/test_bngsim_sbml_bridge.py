@@ -48,6 +48,99 @@ def test_parse_accepts_sbml_backend():
     assert parse.parse('sbml_backend = bngsim') == ['sbml_backend', 'bngsim']
 
 
+def test_parse_accepts_sbml_ssa_strict():
+    # parse.parse returns the raw string token; type coercion happens
+    # downstream in Configuration based on parse.numkeys_int membership.
+    assert parse.parse('sbml_ssa_strict = 0') == ['sbml_ssa_strict', '0']
+    assert parse.parse('sbml_ssa_strict = 1') == ['sbml_ssa_strict', '1']
+    assert 'sbml_ssa_strict' in parse.numkeys_int
+
+
+def test_default_config_sets_sbml_ssa_strict_to_one():
+    assert config.Configuration.default_config()['sbml_ssa_strict'] == 1
+
+
+@pytest.mark.skipif(
+    not bngsim_sbml_model.BNGSIM_HAS_SBML,
+    reason='bngsim SBML backend is not available in this environment',
+)
+def test_config_propagates_sbml_ssa_strict_default_to_bngsim_model():
+    cfg = _model_loader_config(sbml_backend='bngsim')
+    cfg.config['sbml_ssa_strict'] = 1
+
+    models = cfg._load_models()
+
+    assert models['raf'].strict_ssa is True
+
+
+@pytest.mark.skipif(
+    not bngsim_sbml_model.BNGSIM_HAS_SBML,
+    reason='bngsim SBML backend is not available in this environment',
+)
+def test_config_propagates_sbml_ssa_strict_override_to_bngsim_model():
+    cfg = _model_loader_config(sbml_backend='bngsim')
+    cfg.config['sbml_ssa_strict'] = 0
+
+    models = cfg._load_models()
+
+    assert models['raf'].strict_ssa is False
+
+
+def test_config_rejects_sbml_ssa_strict_under_roadrunner_backend():
+    cfg = object.__new__(config.Configuration)
+    cfg.models = {}
+    cfg.config = {
+        'bng_command': '',
+        'sbml_backend': 'roadrunner',
+        'sbml_integrator': 'cvode',
+        'sbml_ssa_strict': 0,
+    }
+
+    with pytest.raises(printing.PybnfError, match='sbml_ssa_strict.*bngsim'):
+        cfg._load_simulators()
+
+
+def test_make_simulator_passes_strict_ssa_for_ssa_method(monkeypatch):
+    captured = {}
+
+    class _FakeSimulator:
+        def __init__(self, model, **kwargs):
+            captured['model'] = model
+            captured['kwargs'] = kwargs
+
+    fake_bngsim = types.SimpleNamespace(
+        Simulator=_FakeSimulator,
+        SsaValidationError=None,
+    )
+    monkeypatch.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
+
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    model.strict_ssa = False
+    model._make_simulator(object(), 'ssa')
+
+    assert captured['kwargs'] == {'method': 'ssa', 'strict_ssa': False}
+
+
+def test_make_simulator_omits_strict_ssa_for_ode_method(monkeypatch):
+    captured = {}
+
+    class _FakeSimulator:
+        def __init__(self, model, **kwargs):
+            captured['kwargs'] = kwargs
+
+    fake_bngsim = types.SimpleNamespace(
+        Simulator=_FakeSimulator,
+        SsaValidationError=None,
+    )
+    monkeypatch.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
+
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    model.strict_ssa = False
+    model._make_simulator(object(), 'ode')
+
+    assert captured['kwargs'] == {'method': 'ode'}
+
+
 @pytest.mark.parametrize(
     'bngsim_available, has_loader, libsbml_available, expected',
     [
