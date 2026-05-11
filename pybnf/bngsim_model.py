@@ -3,7 +3,6 @@
 
 import copy
 import concurrent.futures
-import hashlib
 import inspect
 import importlib.metadata
 import logging
@@ -16,6 +15,7 @@ import numpy as np
 
 from .data import Data
 from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
+from ._seed import POLICY_AUTO, resolve_seed
 
 
 logger = logging.getLogger(__name__)
@@ -853,6 +853,31 @@ class BngsimModel(NetModel):
         newmodel.param_set = pset
         return newmodel
 
+    def _resolve_action_seed(self, *, explicit_seed, action_index, suffix, method):
+        """Apply the stochastic_seed policy to one stochastic action.
+
+        Returns the seed integer to pass to bngsim, or None to delegate to
+        bngsim's own randomization.
+        """
+        policy = getattr(self, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
+        seed_value, overridden = resolve_seed(
+            explicit_seed=explicit_seed,
+            policy=policy,
+            param_set=getattr(self, 'param_set', None),
+            model_name=self.name,
+            action_index=action_index,
+            suffix=suffix,
+            method=method,
+            replicate_index=getattr(self, '_pybnf_replicate_index', 0),
+        )
+        if overridden:
+            logger.debug(
+                "BngsimModel %s action #%d (suffix=%r): overrode explicit BNGL "
+                "seed=%s under stochastic_seed=%s",
+                self.name, action_index, suffix, explicit_seed, policy,
+            )
+        return seed_value
+
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
         model = self._engine_model
@@ -900,7 +925,7 @@ class BngsimModel(NetModel):
             except Exception:
                 pass
 
-        for action_line in self.actions:
+        for action_index, action_line in enumerate(self.actions):
             line = _collapse_action_line_continuations(action_line).strip()
             if not line or line.startswith('#'):
                 continue
@@ -935,8 +960,20 @@ class BngsimModel(NetModel):
                     run_kwargs['atol'] = float(sim_params['atol'])
                 if 'rtol' in sim_params:
                     run_kwargs['rtol'] = float(sim_params['rtol'])
+                explicit_seed = None
                 if 'seed' in sim_params:
-                    run_kwargs['seed'] = int(float(sim_params['seed']))
+                    explicit_seed = int(float(sim_params['seed']))
+                if method in ('ssa', 'psa'):
+                    seed_value = self._resolve_action_seed(
+                        explicit_seed=explicit_seed,
+                        action_index=action_index,
+                        suffix=suffix,
+                        method=method,
+                    )
+                    if seed_value is not None:
+                        run_kwargs['seed'] = seed_value
+                elif explicit_seed is not None:
+                    run_kwargs['seed'] = explicit_seed
 
                 # Gap 2: stop_if
                 stop_if = sim_params.get('stop_if')
@@ -1061,12 +1098,13 @@ class BngsimModel(NetModel):
 
             ps_params = _parse_parameter_scan_action(line)
             if ps_params is not None:
-                ds.update(self._run_parameter_scan(model, ps_params))
+                ds.update(self._run_parameter_scan(model, ps_params, action_index=action_index))
                 continue
 
             bf_params = _parse_bifurcate_action(line)
             if bf_params is not None:
-                ds.update(self._run_parameter_scan(model, bf_params, is_bifurcate=True))
+                ds.update(self._run_parameter_scan(model, bf_params, is_bifurcate=True,
+                                                   action_index=action_index))
                 continue
 
             if line and not re.match(r'\s*(begin|end)\s+actions', line):
@@ -1096,7 +1134,7 @@ class BngsimModel(NetModel):
 
         _has_stop_condition = hasattr(bngsim, 'StopConditionMet')
 
-        for action_line in self._protocol:
+        for action_index, action_line in enumerate(self._protocol):
             line = _collapse_action_line_continuations(action_line).strip()
             if not line or line.startswith('#'):
                 continue
@@ -1117,6 +1155,7 @@ class BngsimModel(NetModel):
                     t_start = float(sim_params.get('t_start', 0))
                 t_end = float(sim_params.get('t_end', 100))
                 n_steps = int(sim_params.get('n_steps', 100))
+                suffix = sim_params.get('suffix', 'time_course')
 
                 # sample_times
                 sample_times = _resolve_sample_times(sim_params)
@@ -1127,8 +1166,20 @@ class BngsimModel(NetModel):
                     run_kwargs['atol'] = float(sim_params['atol'])
                 if 'rtol' in sim_params:
                     run_kwargs['rtol'] = float(sim_params['rtol'])
+                explicit_seed = None
                 if 'seed' in sim_params:
-                    run_kwargs['seed'] = int(float(sim_params['seed']))
+                    explicit_seed = int(float(sim_params['seed']))
+                if method in ('ssa', 'psa'):
+                    seed_value = self._resolve_action_seed(
+                        explicit_seed=explicit_seed,
+                        action_index=action_index,
+                        suffix='protocol:' + suffix,
+                        method=method,
+                    )
+                    if seed_value is not None:
+                        run_kwargs['seed'] = seed_value
+                elif explicit_seed is not None:
+                    run_kwargs['seed'] = explicit_seed
 
                 # stop_if
                 stop_if = sim_params.get('stop_if')
@@ -1387,7 +1438,7 @@ class BngsimModel(NetModel):
 
         return rows, obs_names, expr_names
 
-    def _run_parameter_scan(self, model, ps_params, is_bifurcate=False):
+    def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0):
         """Execute a parameter_scan() or bifurcate() action."""
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
@@ -1399,6 +1450,24 @@ class BngsimModel(NetModel):
             ps_params.get('method', 'ode'),
             ps_params.get('poplevel'),
         )
+
+        # Resolve seed once per scan action; bngsim varies per scan-point in
+        # run_batch (base+i), and same-seed-different-θ in per-point fallback
+        # produces distinct trajectories per the user's clarification.
+        explicit_seed = None
+        if 'seed' in ps_params:
+            explicit_seed = int(float(ps_params['seed']))
+        if method in ('ssa', 'psa'):
+            scan_seed = self._resolve_action_seed(
+                explicit_seed=explicit_seed,
+                action_index=action_index,
+                suffix=suffix,
+                method=method,
+            )
+        elif explicit_seed is not None:
+            scan_seed = explicit_seed
+        else:
+            scan_seed = None
 
         # Resolve sample_times for passthrough to each scan-point simulation
         sample_times = _resolve_sample_times(ps_params)
@@ -1531,9 +1600,11 @@ class BngsimModel(NetModel):
                         t_span=(sample_times[0], sample_times[-1]),
                         n_points=len(sample_times),
                         sample_times=sample_times,
+                        seed=scan_seed,
                     )
                 else:
-                    result = point_sim.run(t_span=(t_start, t_end), n_points=2)
+                    result = point_sim.run(t_span=(t_start, t_end), n_points=2,
+                                           seed=scan_seed)
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )
@@ -1560,6 +1631,7 @@ class BngsimModel(NetModel):
                         n_points=2,
                         params=params,
                         num_processors=n_workers,
+                        seed=scan_seed,
                     )
                 except Exception:
                     logger.warning(
@@ -1595,9 +1667,11 @@ class BngsimModel(NetModel):
                             t_span=(sample_times[0], sample_times[-1]),
                             n_points=len(sample_times),
                             sample_times=sample_times,
+                            seed=scan_seed,
                         )
                     else:
-                        result = point_sim.run(t_span=(t_start, t_end), n_points=2)
+                        result = point_sim.run(t_span=(t_start, t_end), n_points=2,
+                                               seed=scan_seed)
                     row, row_obs, row_expr = self._scan_result_to_row(
                         result, value, print_functions=print_funcs,
                     )
@@ -1768,6 +1842,36 @@ class BngsimNfModel(Model):
         newmodel.param_set = pset
         return newmodel
 
+    def _resolve_action_seed(self, *, explicit_seed, action_index, suffix, method):
+        """Apply the stochastic_seed policy to one NF/RM action.
+
+        Always returns an int. Under `random*` policies with no honored
+        explicit seed, materializes one fresh `secrets.randbits(31)` so that
+        callers using arithmetic like `(seed + i)` for per-scan-point
+        variation keep working.
+        """
+        policy = getattr(self, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
+        seed_value, overridden = resolve_seed(
+            explicit_seed=explicit_seed,
+            policy=policy,
+            param_set=getattr(self, 'param_set', None),
+            model_name=self.name,
+            action_index=action_index,
+            suffix=suffix,
+            method=method,
+            replicate_index=getattr(self, '_pybnf_replicate_index', 0),
+        )
+        if overridden:
+            logger.debug(
+                "BngsimNfModel %s action #%d (suffix=%r): overrode explicit BNGL "
+                "seed=%s under stochastic_seed=%s",
+                self.name, action_index, suffix, explicit_seed, policy,
+            )
+        if seed_value is None:
+            import secrets
+            seed_value = secrets.randbits(31) or 1
+        return seed_value
+
     def _initial_param_inputs(self):
         """Return the current PSet as direct parameter inputs for BNGL re-evaluation."""
         if self.param_set is None:
@@ -1791,20 +1895,6 @@ class BngsimNfModel(Model):
         }
 
     @staticmethod
-    def _stable_seed(input_overrides, filename):
-        """Generate a deterministic per-evaluation NF seed."""
-        if not input_overrides:
-            return 42
-
-        seed_parts = [
-            '%s=%r' % (name, input_overrides[name])
-            for name in sorted(input_overrides)
-        ]
-        seed_parts.append(filename)
-        digest = hashlib.sha256('|'.join(seed_parts).encode('utf-8')).digest()
-        return int.from_bytes(digest[:4], byteorder='big') & 0x7fffffff
-
-    @staticmethod
     def _apply_param_overrides(nfsim, param_overrides):
         """Apply all known parameter overrides to one network-free session."""
         try:
@@ -1823,7 +1913,7 @@ class BngsimNfModel(Model):
                     pval,
                 )
 
-    def _run_nf_parameter_scan(self, ps_params, seed, current_param_inputs):
+    def _run_nf_parameter_scan(self, ps_params, current_param_inputs, action_index=0):
         """Execute one NF parameter_scan() action using one short session per point."""
         method = _normalize_nf_action_method(ps_params.get('method', 'nf'))
         session_backend = _nf_session_backend_for_method(method)
@@ -1842,6 +1932,14 @@ class BngsimNfModel(Model):
         gml = ps_params.get('gml')
         gml_int = int(gml) if gml is not None else None
 
+        explicit_seed = int(float(ps_params['seed'])) if 'seed' in ps_params else None
+        scan_base_seed = self._resolve_action_seed(
+            explicit_seed=explicit_seed,
+            action_index=action_index,
+            suffix=suffix,
+            method=method,
+        )
+
         points = _resolve_scan_points(ps_params)
         obs_names = []
         expr_names = []
@@ -1852,7 +1950,7 @@ class BngsimNfModel(Model):
             if param_name:
                 point_inputs[param_name] = float(value)
             point_param_overrides = self._build_nf_param_overrides(point_inputs)
-            point_seed = int(ps_params.get('seed', (seed + i) % (2**31)))
+            point_seed = (scan_base_seed + i) % (2**31)
 
             nfsim = _create_nf_session(session_backend, self._xml_path, molecule_limit=gml_int)
             try:
@@ -1890,10 +1988,19 @@ class BngsimNfModel(Model):
         current_param_inputs = self._initial_param_inputs()
         current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
         saved_param_inputs = dict(current_param_inputs)
-        seed = self._stable_seed(current_param_inputs, filename)
         nfsim = None
         current_gml = None
         current_method = None
+
+        # Bootstrap seed for sessions that need to be lazily started by a
+        # setConcentration / addConcentration action before any simulate runs.
+        # action_index=-1 distinguishes this seed from real action seeds.
+        bootstrap_seed = self._resolve_action_seed(
+            explicit_seed=None,
+            action_index=-1,
+            suffix='_bootstrap',
+            method='nf',
+        )
 
         def _start_session(seed_value, gml_value, method):
             session_backend = _nf_session_backend_for_method(method)
@@ -1906,7 +2013,7 @@ class BngsimNfModel(Model):
             _destroy_nf_session(sim)
 
         try:
-            for action_line in self.actions:
+            for action_index, action_line in enumerate(self.actions):
                 line = _collapse_action_line_continuations(action_line).strip()
                 if not line or line.startswith('#'):
                     continue
@@ -1915,8 +2022,8 @@ class BngsimNfModel(Model):
                 if ps_params is not None:
                     ds.update(self._run_nf_parameter_scan(
                         ps_params,
-                        seed,
                         current_param_inputs,
+                        action_index=action_index,
                     ))
                     continue
 
@@ -1936,7 +2043,13 @@ class BngsimNfModel(Model):
                     suffix = sim_params.get('suffix', 'time_course')
                     gml = sim_params.get('gml')
                     gml_int = int(gml) if gml is not None else None
-                    action_seed = int(sim_params.get('seed', seed))
+                    explicit_seed = int(float(sim_params['seed'])) if 'seed' in sim_params else None
+                    action_seed = self._resolve_action_seed(
+                        explicit_seed=explicit_seed,
+                        action_index=action_index,
+                        suffix=suffix,
+                        method=method,
+                    )
 
                     if nfsim is None:
                         nfsim = _start_session(action_seed, gml_int, method)
@@ -1975,7 +2088,7 @@ class BngsimNfModel(Model):
                     species_pattern, expr_text = sc
                     if nfsim is None:
                         current_method = current_method or self._default_nf_method
-                        nfsim = _start_session(seed, current_gml, current_method)
+                        nfsim = _start_session(bootstrap_seed, current_gml, current_method)
 
                     if expr_text in current_param_overrides:
                         count = int(round(current_param_overrides[expr_text]))
@@ -2012,7 +2125,7 @@ class BngsimNfModel(Model):
                     species_pattern, delta = ac
                     if nfsim is None:
                         current_method = current_method or self._default_nf_method
-                        nfsim = _start_session(seed, current_gml, current_method)
+                        nfsim = _start_session(bootstrap_seed, current_gml, current_method)
                     mol_type = species_pattern.split('(')[0]
                     to_add = int(round(delta))
                     if to_add > 0:

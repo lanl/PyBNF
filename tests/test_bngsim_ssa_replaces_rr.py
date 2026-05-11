@@ -148,6 +148,10 @@ def _collect_replicates(model, tmp_path, prefix):
     samples = {sp: [] for sp in SPECIES}
     times = None
     for i in range(N_REPLICATES):
+        # Mimic what Job._run_models stamps onto the model copy: a unique
+        # replicate_index per call so each replicate derives a distinct seed
+        # under the default (`auto`) stochastic_seed policy.
+        model._pybnf_replicate_index = i
         result = model.execute(str(tmp_path), '%s_%d' % (prefix, i), 1000)
         data = result['time_course']
         if times is None:

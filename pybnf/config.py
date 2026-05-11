@@ -188,7 +188,7 @@ class Configuration(object):
             'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
             'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
             'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'bngl_backend': 'auto',
-            'sbml_ssa_strict': 1,
+            'sbml_ssa_strict': 1, 'stochastic_seed': 'auto',
             'parallel_count': None, 'save_best_data': 0,
             'simulation_dir': None,
             'parallelize_models': 1, 'starting_params': None, 'random_seed': None,
@@ -291,7 +291,7 @@ class Configuration(object):
         """
         used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
                 'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'bngl_backend',
-                'sbml_ssa_strict',
+                'sbml_ssa_strict', 'stochastic_seed',
                 'time_course',
                 'param_scan', 'mutant',
                 'models', 'exp_data', 'random_seed'}
@@ -446,6 +446,13 @@ class Configuration(object):
             raise PybnfError('Invalid bngl_backend %s. Options are: %s.' %
                              (bngl_backend, ', '.join(allowed_bngl_backends)))
 
+        allowed_stochastic_seed = ('auto', 'auto_honorbngl', 'random', 'random_honorbngl')
+        stochastic_seed = self.config.get('stochastic_seed', 'auto')
+        self.config['stochastic_seed'] = stochastic_seed
+        if stochastic_seed not in allowed_stochastic_seed:
+            raise PybnfError('Invalid stochastic_seed %s. Options are: %s.' %
+                             (stochastic_seed, ', '.join(allowed_stochastic_seed)))
+
         # If needed, choose the default timeout, which depends on what simulators the models use.
         if self.config['wall_time_sim'] is None:
             self.config['wall_time_sim'] = 0
@@ -551,10 +558,28 @@ class Configuration(object):
             if not stochastic:
                 print1('Warning: You specified smoothing=%i, but it looks like none of your models use a stochastic '
                        'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
-            if np.any([m.seeded for m in md.values() if isinstance(m, BNGLModel)]):
-                raise PybnfError('You specified smoothing=%i, but one of your simulation commands contains the "seed" '
-                                 'argument. This would cause all of your smoothing replicates to come out the same.'
-                                 % self.config['smoothing'])
+            seeded_models = [m for m in md.values() if isinstance(m, BNGLModel) and m.seeded]
+            if seeded_models and self.config['stochastic_seed'].endswith('_honorbngl'):
+                raise PybnfError(
+                    'You specified smoothing=%i with stochastic_seed=%s, and one of your simulation '
+                    'commands contains an explicit "seed" argument. Under the "_honorbngl" policies, '
+                    'that seed is honored verbatim, which would cause all of your smoothing replicates '
+                    'to come out the same. Switch to stochastic_seed=auto (default) or stochastic_seed=random '
+                    'so PyBNF overrides the BNGL seed per replicate.'
+                    % (self.config['smoothing'], self.config['stochastic_seed'])
+                )
+
+        # Warn once per model when explicit BNGL seeds will be overridden by the
+        # current policy. Saves the user from "this fit gives different numbers
+        # than I expected and I forgot model.bngl had seed=>42 in it" debugging.
+        if self.config['stochastic_seed'] in ('auto', 'random'):
+            for m in md.values():
+                if isinstance(m, BNGLModel) and m.seeded:
+                    print1('Warning: model %s contains an explicit "seed" argument; it will be '
+                           'overridden by stochastic_seed=%s. Use stochastic_seed=%s_honorbngl to '
+                           'honor the BNGL seed.' %
+                           (m.name, self.config['stochastic_seed'], self.config['stochastic_seed']))
+
         if self.config['parallelize_models'] > len(md):
             raise PybnfError('Job contains %i models, so "parallelize_models" should be at most %i' % (len(md), len(md)))
 

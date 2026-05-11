@@ -197,7 +197,7 @@ class Job:
     jlogger = logging.getLogger('pybnf.algorithms.job')
 
     def __init__(self, models, params, job_id, output_dir, timeout, calc_future, norm_settings, postproc_settings,
-                 delete_folder=False):
+                 delete_folder=False, replicate_index=0, stochastic_seed_policy='auto'):
         """
         Instantiates a Job
 
@@ -219,6 +219,12 @@ class Job:
         run on the result.
         :param delete_folder: If True, delete the folder and files created after the simulation runs
         :type delete_folder: bool
+        :param replicate_index: Smoothing replicate index (0..smoothing-1); folded into stochastic seed
+        derivation so replicates of the same param set yield distinct deterministic trajectories.
+        :type replicate_index: int
+        :param stochastic_seed_policy: One of 'auto', 'auto_honorbngl', 'random', 'random_honorbngl'
+        from the `stochastic_seed` config option. Stamped onto each model copy at execute time.
+        :type stochastic_seed_policy: str
         """
         self.models = models
         self.params = params
@@ -240,6 +246,8 @@ class Job:
         # Folder where we save the model files and outputs.
         self.folder = '%s/%s' % (self.output_dir, self.job_id)
         self.delete_folder = delete_folder
+        self.replicate_index = replicate_index
+        self.stochastic_seed_policy = stochastic_seed_policy
 
     def _name_with_id(self, model):
         return '%s_%s' % (model.name, self.job_id)
@@ -250,6 +258,11 @@ class Job:
         for model in self.models:
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
+            # Stamp seed-policy context onto the per-evaluation copy so model
+            # backends can derive deterministic seeds without plumbing config
+            # through every execute() signature.
+            model_with_params._pybnf_replicate_index = self.replicate_index
+            model_with_params._pybnf_stochastic_seed_policy = self.stochastic_seed_policy
             ds[model.name] = model_with_params.execute(self.folder, model_file_prefix, self.timeout)
 
         return ds
@@ -1138,7 +1151,9 @@ class Algorithm(object):
                     newjobs.append(Job(model_slice,
                                        params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
                                        self.calc_future, self.config.config['normalization'], dict(),
-                                       bool(self.config.config['delete_old_files'])))
+                                       bool(self.config.config['delete_old_files']),
+                                       replicate_index=rep,
+                                       stochastic_seed_policy=self.config.config['stochastic_seed']))
                 replica_subjob_ids.append((replica_id, newnames))
             new_group = HybridJobGroup(job_id, replica_subjob_ids)
             for n in new_group.subjob_ids:
@@ -1156,7 +1171,9 @@ class Algorithm(object):
                 newjobs.append(Job(self.model_list, params, thisname,
                                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                                    self.config.config['normalization'], dict(),
-                                   bool(self.config.config['delete_old_files'])))
+                                   bool(self.config.config['delete_old_files']),
+                                   replicate_index=i,
+                                   stochastic_seed_policy=self.config.config['stochastic_seed']))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
@@ -1175,7 +1192,8 @@ class Algorithm(object):
                 newjobs.append(Job(self.model_list[model_count*i//rep_count:model_count*(i+1)//rep_count],
                                    params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
                                    self.calc_future, self.config.config['normalization'], dict(),
-                                   bool(self.config.config['delete_old_files'])))
+                                   bool(self.config.config['delete_old_files']),
+                                   stochastic_seed_policy=self.config.config['stochastic_seed']))
             new_group = MultimodelJobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
@@ -1185,7 +1203,8 @@ class Algorithm(object):
             return [Job(self.model_list, params, job_id,
                     self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                     self.config.config['normalization'], self.config.postprocessing,
-                    bool(self.config.config['delete_old_files']))]
+                    bool(self.config.config['delete_old_files']),
+                    stochastic_seed_policy=self.config.config['stochastic_seed'])]
 
 
     def output_results(self, name='', no_move=False):
@@ -1411,7 +1430,8 @@ class Algorithm(object):
             finaljob = Job(self.model_list, best_pset, 'bestfit',
                            self.sim_dir, self.config.config['wall_time_sim'], None,
                            self.config.config['normalization'], self.config.postprocessing,
-                           False)
+                           False,
+                           stochastic_seed_policy=self.config.config['stochastic_seed'])
             try:
                 run_job(finaljob)
             except Exception:
@@ -4610,7 +4630,8 @@ class ModelCheck(object):
         empty = PSet([])
         empty.name = 'check'
         job = Job(self.model_list, empty, 'check', self.sim_dir, self.config.config['wall_time_sim'], None,
-                  None, dict(), delete_folder=False)
+                  None, dict(), delete_folder=False,
+                  stochastic_seed_policy=self.config.config['stochastic_seed'])
         result = run_job(job, debug, self.sim_dir)
 
         if isinstance(result, FailedSimulation):

@@ -23,6 +23,7 @@ from .pset import (
     TimeCourse,
     run_subprocess,
 )
+from ._seed import POLICY_AUTO, resolve_seed
 
 
 _SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
@@ -356,29 +357,61 @@ class BngsimSbmlModelNoTimeout(Model):
                 raise ModelError(str(exc)) from exc
             raise
 
-    def _run_simulation(self, engine_model, end_time, n_points, *, method='ode'):
+    def _run_simulation(self, engine_model, end_time, n_points, *, method='ode', seed=None):
         sim = self._make_simulator(engine_model, method)
         if method == 'ssa':
-            seed = secrets.randbits(31) or 1
+            if seed is None:
+                seed = secrets.randbits(31) or 1
             return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), seed=seed)
         return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points))
+
+    def _resolve_action_seed(self, *, explicit_seed, action_index, suffix, method):
+        """Apply the stochastic_seed policy to one SBML stochastic action."""
+        if method != 'ssa':
+            return None
+        policy = getattr(self, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
+        seed_value, overridden = resolve_seed(
+            explicit_seed=explicit_seed,
+            policy=policy,
+            param_set=getattr(self, 'param_set', None),
+            model_name=self.name,
+            action_index=action_index,
+            suffix=suffix,
+            method=method,
+            replicate_index=getattr(self, '_pybnf_replicate_index', 0),
+        )
+        if overridden:
+            logger.debug(
+                "BngsimSbmlModel %s action #%d (suffix=%r): overrode explicit "
+                "seed=%s under stochastic_seed=%s",
+                self.name, action_index, suffix, explicit_seed, policy,
+            )
+        return seed_value
 
     def execute(self, folder, filename, timeout):
         del timeout
         result_dict = {}
 
         for mut in self.mutants:
-            for act in self.actions:
+            for action_index, act in enumerate(self.actions):
                 try:
                     method = self._resolve_method(act)
+                    suffix_with_mut = act.suffix + mut.suffix
+                    seed_value = self._resolve_action_seed(
+                        explicit_seed=None,
+                        action_index=action_index,
+                        suffix=suffix_with_mut,
+                        method=method,
+                    )
                     if isinstance(act, TimeCourse):
                         doc = self._build_sbml_doc(mut=mut)
                         engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
                         result = self._run_simulation(
-                            engine_model, act.time, act.stepnumber + 1, method=method,
+                            engine_model, act.time, act.stepnumber + 1,
+                            method=method, seed=seed_value,
                         )
                         data = self._result_to_data(result, stochastic=method == 'ssa')
-                        result_dict[act.suffix + mut.suffix] = data
+                        result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(
                                 '%s/%s_%s%s.gdat' % (folder, filename, act.suffix, mut.suffix),
@@ -400,7 +433,8 @@ class BngsimSbmlModelNoTimeout(Model):
                             doc = self._build_sbml_doc(mut=mut, scan_override=(act.param, x))
                             engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
                             result = self._run_simulation(
-                                engine_model, act.time, 2, method=method,
+                                engine_model, act.time, 2,
+                                method=method, seed=seed_value,
                             )
                             row, point_headers = self._scan_point_to_row(result, x, scan_label)
                             rows.append(row)
@@ -408,7 +442,7 @@ class BngsimSbmlModelNoTimeout(Model):
                                 headers = point_headers
 
                         data = self._data_with_headers(np.vstack(rows), headers)
-                        result_dict[act.suffix + mut.suffix] = data
+                        result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(
                                 '%s/%s_%s%s.scan' % (folder, filename, act.suffix, mut.suffix),
