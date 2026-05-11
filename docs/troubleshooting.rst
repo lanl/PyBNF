@@ -55,6 +55,15 @@ PyBNF enforces a maximum run time for simulations, with a default value of 1 hou
 
 A time limit is also enforced for network generation in BNGL models. The default value is 1 hour, and this can be modified with the ``wall_time_gen`` key.
 
+.. note::
+
+   For models simulated with the bngsim backend, ``wall_time_sim`` is honored
+   in-process for ODE, SSA, PSA, and NFsim/``nf_reject`` backends. The
+   RuleMonkey/``nf_exact`` backend has no cancellation hook yet (upstream
+   issue ``richardposner/RuleMonkey#3``), so ``wall_time_sim`` is best-effort
+   for that method — a hung ``nf_exact`` run will not be interrupted at the
+   simulator boundary.
+
 
 Unexpected behavior when generating SBML files in COPASI
 --------------------------------------------------------
