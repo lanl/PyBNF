@@ -32,6 +32,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 - Command-line options reference in documentation
 - BNGsim package dependency (`bngsim>=0.3.0`) and optional Antimony install extra (#372)
 - `bngl_backend` config key for BNGL backend control: `auto`, `bionetgen`, or required `bngsim` (#371)
+- `stochastic_seed` config key for BNGsim stochastic simulations (`auto`, `auto_honorbngl`, `random`, `random_honorbngl`); under the default `auto`, PyBNF derives deterministic per-action seeds from the evaluation context so re-evaluations of the same parameter point reproduce, smoothing replicates yield distinct trajectories, and explicit BNGL `seed=>N` arguments are overridden with a warning. Covers SSA, PSA, NFsim, RuleMonkey, and SBML/Antimony stochastic backends (#373)
 
 ### Changed
 - Supported BNGL network and NFsim simulations now auto-select BNGsim by default when available; `PYBNF_NO_BNGSIM=1` keeps the legacy BioNetGen path (#371)
@@ -40,6 +41,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 - Replaced nose test dependency with pytest
 - Demoted high-frequency per-iteration log messages from INFO to DEBUG to reduce log file size (#173)
 - Bayesian parameter priors and initial sampling now use shared `scipy.stats` distribution objects; normal and lognormal prior log-probabilities include SciPy's normalization constant while MCMC acceptance ratios are unchanged (#5)
+- BNGsim stochastic simulations (SSA/PSA/NFsim/RuleMonkey, plus SBML/Antimony SSA) now use deterministic context-derived seeds by default; trajectories from re-runs of the same parameter point reproduce bit-for-bit. Set `stochastic_seed = random` to restore the previous wall-clock-style randomization (#373)
 
 ### Removed
 - Removed the experimental S-CREAM (`s_cream`) sampler and its user-facing configuration/docs.

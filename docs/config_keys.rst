@@ -114,6 +114,46 @@ Other Path Keys
     * ``bngl_backend = bionetgen``
 
 
+.. _stochastic_seed:
+
+**stochastic_seed**
+  Policy controlling how PyBNF supplies RNG seeds to stochastic simulations
+  (``ssa``, ``psa``, NFsim, RuleMonkey) on the BNGsim backend. Affects BNGL
+  ``.net`` / ``.xml``, SBML, and Antimony models. Four modes:
+
+    * ``auto`` *(default)* — PyBNF derives a deterministic 31-bit seed from
+      the evaluation context (parameter set, model name, action index, suffix,
+      method, smoothing replicate index). Same evaluation reproduces the same
+      trajectory; distinct evaluations get distinct seeds. Any explicit
+      ``seed=>N`` written in a BNGL action is **overridden** with a one-time
+      warning per (model, action) at fit start.
+    * ``auto_honorbngl`` — Same derivation as ``auto``, but explicit BNGL
+      ``seed=>N`` is honored verbatim for that one action.
+    * ``random`` — PyBNF passes no seed; BNGsim draws fresh entropy
+      (``secrets.randbits(31)``) per call. Each run produces different
+      trajectories. Explicit BNGL seeds are overridden with a warning.
+    * ``random_honorbngl`` — Random by default, but explicit BNGL ``seed=>N``
+      is honored verbatim for that one action.
+
+  The default ``auto`` is recommended for fitting workflows: it gives a
+  well-defined stochastic objective (same parameter point → same chi²) and
+  makes failed fits reproducible. Use ``random`` for one-shot exploratory
+  Monte Carlo runs where you want fresh entropy each invocation. The
+  ``_honorbngl`` variants are escape hatches for power users with
+  deliberate per-action explicit seeds.
+
+  Under the ``_honorbngl`` modes, combining ``smoothing > 1`` with a model
+  that contains an explicit BNGL ``seed=>N`` is rejected at config load,
+  because it would cause every smoothing replicate to produce the same
+  trajectory.
+
+  Default: auto
+
+  Example:
+
+    * ``stochastic_seed = random``
+
+
 **output_dir**
   Directory where we should save the output.
 
@@ -522,11 +562,19 @@ Algorithm Options
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with
   ``parallelize_models`` to run model partitions independently within each replicate.
-  
+
+  Each replicate gets a distinct deterministic seed under the default
+  :ref:`stochastic_seed` policy (``auto``), so smoothing replicates yield
+  different stochastic trajectories while remaining reproducible across
+  runs. If you set ``stochastic_seed = auto_honorbngl`` or
+  ``random_honorbngl`` and any of your BNGL actions specifies an explicit
+  ``seed=>N``, PyBNF rejects the run at config load — that combination
+  would force every replicate to share the same trajectory.
+
   Default: 1
-  
+
   Example:
-  
+
     * ``smoothing = 2``
     
 **wall_time_gen**
