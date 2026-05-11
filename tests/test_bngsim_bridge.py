@@ -1954,3 +1954,281 @@ class TestSaveResetParametersInProtocol(TestContinueFlag):
         restore = {name: val for name, val in set_calls[1:]}
         assert restore['k1'] == 0.1
         assert restore['k2'] == 0.5
+
+
+# ── wall_time_sim trip-path tests (issue #374) ──────────────────────────────
+
+
+class _FakeSimulationTimeout(RuntimeError):
+    """Stand-in for bngsim.SimulationTimeout — same shape (BngsimError,
+    RuntimeError) and the same .timeout / .elapsed attrs."""
+
+    def __init__(self, message, *, timeout, elapsed):
+        super().__init__(message)
+        self.timeout = float(timeout)
+        self.elapsed = float(elapsed)
+
+
+def _install_fake_simulator_raising_timeout(monkeypatch, *, timeout, elapsed):
+    """Wire a fake bngsim whose Simulator.run raises a SimulationTimeout."""
+
+    class FakeSimulator:
+        def __init__(self, model, method='ode', **kw):
+            self._model = model
+            self.method = method
+
+        def run(self, *args, **kwargs):
+            raise _FakeSimulationTimeout(
+                f"wall-clock budget {timeout}s exceeded at {elapsed:.3f}s",
+                timeout=timeout,
+                elapsed=elapsed,
+            )
+
+        def add_stop_condition(self, expr, label=None):
+            pass
+
+        def clear_stop_conditions(self):
+            pass
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = FakeSimulator
+    fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.HAS_NFSIM = False
+    fake_bngsim.HAS_RULEMONKEY = False
+
+    monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
+    return fake_bngsim
+
+
+def _make_minimal_bngsim_model(actions):
+    """Construct a BngsimModel skipping __init__ — enough to call execute()."""
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj.name = 'trip_model'
+    obj.actions = actions
+    obj.param_set = None
+    obj.mutants = []
+    obj._net_species_initializers = []
+    obj._codegen_so = ''
+    obj._net_path = '/tmp/fake.net'
+    obj._protocol = []
+    obj._pybnf_replicate_index = 0
+    obj._pybnf_stochastic_seed_policy = 'auto'
+
+    class FakeEngineModel:
+        param_names = []
+        def get_param(self, name): return 0.0
+        def set_param(self, name, val): pass
+        def reset(self): pass
+        def clone(self): return self
+        def set_concentration(self, name, val): pass
+        def get_concentration(self, name): return 0.0
+        def save_concentrations(self): pass
+
+    obj._engine_model = FakeEngineModel()
+    return obj
+
+
+def test_bngsim_model_simulate_timeout_reraises_failedsimulationerror(monkeypatch, caplog):
+    _install_fake_simulator_raising_timeout(monkeypatch, timeout=0.5, elapsed=0.62)
+    model = _make_minimal_bngsim_model([
+        'simulate({method=>"ode",t_end=>1000,n_steps=>100,suffix=>"tc"})',
+    ])
+
+    caplog.set_level('WARNING')
+    with pytest.raises(pset.FailedSimulationError):
+        model.execute('/tmp', 'trip_test', 0.5)
+
+    log_text = '\n'.join(rec.getMessage() for rec in caplog.records)
+    assert 'wall_time_sim' in log_text
+    assert 'trip_model' in log_text
+
+
+def _install_fake_session_raising_timeout(monkeypatch, *, backend, timeout, elapsed):
+    """Wire a fake bngsim NF session class whose simulate() raises a timeout.
+
+    Returns a list that records ('destroy', backend) when the session is
+    torn down so tests can assert cleanup-on-timeout safety.
+    """
+    teardown_log = []
+
+    class FakeResult:
+        observable_names = ['x']
+        time = np.zeros(1)
+        observables = np.zeros((1, 1))
+        expression_names = []
+        expressions = np.zeros((1, 0))
+        n_times = 1
+        n_observables = 1
+
+    class FakeSession:
+        def __init__(self, xml_path, *, molecule_limit=None):
+            self.xml_path = xml_path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.destroy()
+
+        def clear_param_overrides(self):
+            pass
+
+        def set_param(self, name, value):
+            pass
+
+        def get_parameter(self, name):
+            return 0.0
+
+        def initialize(self, seed):
+            pass
+
+        def simulate(self, t_start, t_end, n_points, *, timeout=None):
+            seen_timeout = timeout
+            raise _FakeSimulationTimeout(
+                f"wall-clock budget {seen_timeout}s exceeded at {elapsed:.3f}s",
+                timeout=seen_timeout if seen_timeout is not None else 0.0,
+                elapsed=elapsed,
+            )
+
+        def get_molecule_count(self, mol_type):
+            return 0
+
+        def add_molecules(self, mol_type, amount):
+            pass
+
+        def destroy(self):
+            teardown_log.append(('destroy', backend))
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    if backend == bngsim_model.BNGSIM_NF_BACKEND_NFSIM:
+        fake_bngsim.NfsimSession = FakeSession
+        fake_bngsim.HAS_NFSIM = True
+        fake_bngsim.HAS_RULEMONKEY = False
+    else:
+        fake_bngsim.RuleMonkeySession = FakeSession
+        fake_bngsim.HAS_NFSIM = False
+        fake_bngsim.HAS_RULEMONKEY = True
+
+    monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM',
+                        backend == bngsim_model.BNGSIM_NF_BACKEND_NFSIM)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY',
+                        backend == bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM_SESSION_TIMEOUT',
+                        backend == bngsim_model.BNGSIM_NF_BACKEND_NFSIM)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT',
+                        backend == bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY)
+    return teardown_log
+
+
+@pytest.mark.parametrize('backend,method_token', [
+    (bngsim_model.BNGSIM_NF_BACKEND_NFSIM, 'nf'),
+    (bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY, 'rm'),
+])
+def test_bngsim_nf_model_simulate_timeout_reraises_failedsimulationerror(
+    monkeypatch, caplog, backend, method_token,
+):
+    teardown = _install_fake_session_raising_timeout(
+        monkeypatch, backend=backend, timeout=0.5, elapsed=0.71,
+    )
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_trip_model',
+        [
+            'simulate({method=>"%s",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})' % method_token,
+        ],
+        [('simulate', 'tc')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=[
+            'begin parameters\n',
+            'end parameters\n',
+        ],
+        param_names=(),
+    )
+    model.param_set = pset.PSet([])
+
+    caplog.set_level('WARNING')
+    with pytest.raises(pset.FailedSimulationError):
+        model.execute('/tmp', 'job0', 0.5)
+
+    # Cleanup-on-timeout: session must be destroyed even though execute()
+    # re-raised — otherwise a hung NF session could poison later evaluations.
+    assert ('destroy', backend) in teardown
+    log_text = '\n'.join(rec.getMessage() for rec in caplog.records)
+    assert 'wall_time_sim' in log_text
+
+
+def test_bngsim_sim_timeout_kwarg_passes_through_on_success(monkeypatch):
+    """Positive wall_time_sim is forwarded as timeout= to sim.run on success."""
+    run_log = []
+
+    class FakeCoreResult:
+        expression_names = []
+        expression_data = np.zeros((2, 0))
+
+    class FakeResult:
+        def __init__(self, times):
+            self._core = FakeCoreResult()
+            self.time = np.asarray(times)
+            self.observables = np.zeros((len(times), 1))
+            self.observable_names = ['obs']
+            self.expression_names = []
+            self.expressions = np.zeros((len(times), 0))
+            self.n_times = len(times)
+            self.n_observables = 1
+
+    class FakeSimulator:
+        def __init__(self, model, method='ode', **kw):
+            self.method = method
+
+        def run(self, t_span=None, n_points=2, **kw):
+            run_log.append({'method': self.method, **kw})
+            return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+
+        def add_stop_condition(self, *a, **kw):
+            pass
+
+        def clear_stop_conditions(self):
+            pass
+
+    class FakeModel:
+        param_names = []
+        def get_param(self, name): return 0.0
+        def set_param(self, name, val): pass
+        def reset(self): pass
+        def clone(self): return FakeModel()
+        def set_concentration(self, name, val): pass
+        def get_concentration(self, name): return 0.0
+        def save_concentrations(self): pass
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = FakeSimulator
+    fake_bngsim.Model = FakeModel
+    fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
+
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj.actions = [
+        'simulate({method=>"ode",t_end=>10,n_steps=>2,suffix=>"tc"})',
+    ]
+    obj._net_species_initializers = []
+    obj._codegen_so = ''
+    obj._net_path = '/tmp/fake.net'
+
+    obj._execute_actions(FakeModel(), timeout=12.5)
+
+    assert run_log, "FakeSimulator.run was not called"
+    assert run_log[0].get('timeout') == 12.5, (
+        f"timeout=12.5 was not forwarded; got run kwargs {run_log[0]}"
+    )

@@ -303,3 +303,60 @@ def test_bngsim_sbml_species_ic_scan_matches_roadrunner(tmp_path):
     npt.assert_allclose(bngsim_data.data[:, 0], rr_data.data[:, 0], rtol=0, atol=1e-12)
     npt.assert_allclose(bngsim_data['R'], rr_data['R'], rtol=1e-3, atol=1e-4)
     npt.assert_allclose(bngsim_data['RIRI'], rr_data['RIRI'], rtol=1e-3, atol=1e-4)
+
+
+# ── wall_time_sim trip-path tests (issue #374) ──────────────────────────────
+
+
+class _FakeSimulationTimeout(RuntimeError):
+    def __init__(self, message, *, timeout, elapsed):
+        super().__init__(message)
+        self.timeout = float(timeout)
+        self.elapsed = float(elapsed)
+
+
+def test_bngsim_sbml_model_timeout_reraises_failedsimulationerror(tmp_path, monkeypatch, caplog):
+    """sim.run raising SimulationTimeout becomes FailedSimulationError."""
+    if not bngsim_sbml_model.BNGSIM_HAS_SBML:
+        pytest.skip('bngsim SBML backend is not available')
+
+    timeout_seen = {}
+
+    class FakeSimulator:
+        def __init__(self, engine_model, **kw):
+            self.method = kw.get('method', 'ode')
+
+        def run(self, *args, **kwargs):
+            timeout_seen['timeout'] = kwargs.get('timeout')
+            raise _FakeSimulationTimeout(
+                'wall_time_sim exceeded', timeout=0.25, elapsed=0.40,
+            )
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = FakeSimulator
+    fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.Model = bngsim_sbml_model.bngsim.Model
+    # Preserve other attributes the SBML bridge may read at module scope
+    for attr in ('SsaValidationError',):
+        if hasattr(bngsim_sbml_model.bngsim, attr):
+            setattr(fake_bngsim, attr, getattr(bngsim_sbml_model.bngsim, attr))
+
+    monkeypatch.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
+
+    xml_path = _raf_xml_path()
+    ps = pset.PSet(_raf_params())
+    action = pset.TimeCourse({'time': '1000', 'step': '10'})
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,),
+    )
+
+    caplog.set_level('WARNING')
+    with pytest.raises(pset.FailedSimulationError):
+        model.execute(str(tmp_path), 'sbml_trip_test', 0.25)
+
+    assert timeout_seen.get('timeout') == 0.25, (
+        f"timeout=0.25 was not forwarded; got {timeout_seen}"
+    )
+    log_text = '\n'.join(rec.getMessage() for rec in caplog.records)
+    assert 'wall_time_sim' in log_text
