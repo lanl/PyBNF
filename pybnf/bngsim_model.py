@@ -69,9 +69,19 @@ except ImportError as exc:
 
 BNGSIM_HAS_NFSIM = False
 BNGSIM_HAS_RULEMONKEY = False
+BNGSIM_HAS_SIM_TIMEOUT = False
+BNGSIM_HAS_SESSION_TIMEOUT = False
 if BNGSIM_AVAILABLE:
     BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM', False))
     BNGSIM_HAS_RULEMONKEY = bool(getattr(bngsim, 'HAS_RULEMONKEY', False))
+    BNGSIM_HAS_SIM_TIMEOUT = hasattr(bngsim, 'SimulationTimeout')
+    if BNGSIM_HAS_NFSIM:
+        try:
+            BNGSIM_HAS_SESSION_TIMEOUT = (
+                'timeout' in inspect.signature(bngsim.NfsimSession.simulate).parameters
+            )
+        except (TypeError, ValueError):
+            BNGSIM_HAS_SESSION_TIMEOUT = False
 
 
 BNGSIM_BACKEND_NET = 'net'
@@ -105,6 +115,50 @@ _PARAMETER_SCAN_KEY_ALIASES = {
     'max': 'par_max',
     'logspace': 'log_scale',
 }
+
+
+def _normalize_sim_timeout(timeout, method=None):
+    """Return a float timeout to pass to bngsim, or None to omit the kwarg.
+
+    bngsim treats None / non-positive as 'no budget', and RuleMonkey rejects
+    any positive timeout. Callers should add ``timeout=value`` only when
+    this returns a positive float.
+    """
+    if not BNGSIM_HAS_SIM_TIMEOUT:
+        return None
+    if timeout is None:
+        return None
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0.0:
+        return None
+    if method == 'rulemonkey':
+        return None
+    return value
+
+
+def _normalize_session_timeout(timeout, session_backend):
+    """Return a float timeout for NfsimSession.simulate, or None to omit.
+
+    Returns None when the installed bngsim doesn't accept a ``timeout`` kwarg
+    on the session API, or when the backend is RuleMonkey (no cancellation
+    hook yet).
+    """
+    if not BNGSIM_HAS_SESSION_TIMEOUT:
+        return None
+    if session_backend != BNGSIM_NF_BACKEND_NFSIM:
+        return None
+    if timeout is None:
+        return None
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0.0:
+        return None
+    return value
 
 
 def _collapse_action_line_continuations(action_line):
@@ -880,6 +934,8 @@ class BngsimModel(NetModel):
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
+        from .pset import FailedSimulationError
+
         model = self._engine_model
 
         if self.param_set is not None:
@@ -890,7 +946,18 @@ class BngsimModel(NetModel):
                     pass
 
         model.reset()
-        ds = self._execute_actions(model)
+        try:
+            ds = self._execute_actions(model, timeout=timeout)
+        except Exception as exc:
+            if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+                logger.warning(
+                    "BngsimModel %s: wall_time_sim=%s exceeded at %.3fs",
+                    self.name,
+                    getattr(exc, 'timeout', timeout),
+                    float(getattr(exc, 'elapsed', 0.0) or 0.0),
+                )
+                raise FailedSimulationError(str(exc)) from exc
+            raise
 
         if with_mutants:
             for mut in self.mutants:
@@ -908,7 +975,7 @@ class BngsimModel(NetModel):
 
         return ds
 
-    def _execute_actions(self, model):
+    def _execute_actions(self, model, timeout=None):
         """Interpret and execute action lines using bngsim."""
         ds = {}
         sim = bngsim.Simulator(model, method='ode', **self._codegen_kwargs())
@@ -1004,6 +1071,10 @@ class BngsimModel(NetModel):
                 if stop_if and _has_stop_condition:
                     sim.add_stop_condition(stop_if, label=stop_if)
 
+                run_timeout = _normalize_sim_timeout(timeout, method=method)
+                if run_timeout is not None:
+                    run_kwargs['timeout'] = run_timeout
+
                 try:
                     if sample_times is not None:
                         result = sim.run(
@@ -1098,13 +1169,16 @@ class BngsimModel(NetModel):
 
             ps_params = _parse_parameter_scan_action(line)
             if ps_params is not None:
-                ds.update(self._run_parameter_scan(model, ps_params, action_index=action_index))
+                ds.update(self._run_parameter_scan(model, ps_params,
+                                                   action_index=action_index,
+                                                   timeout=timeout))
                 continue
 
             bf_params = _parse_bifurcate_action(line)
             if bf_params is not None:
                 ds.update(self._run_parameter_scan(model, bf_params, is_bifurcate=True,
-                                                   action_index=action_index))
+                                                   action_index=action_index,
+                                                   timeout=timeout))
                 continue
 
             if line and not re.match(r'\s*(begin|end)\s+actions', line):
@@ -1112,7 +1186,7 @@ class BngsimModel(NetModel):
 
         return ds
 
-    def _run_protocol(self, model):
+    def _run_protocol(self, model, timeout=None):
         """Execute the stored protocol: a sequence of action lines.
 
         Returns the Result from the last simulate action, or None if the
@@ -1199,6 +1273,10 @@ class BngsimModel(NetModel):
 
                 if stop_if and _has_stop_condition:
                     sim.add_stop_condition(stop_if, label=stop_if)
+
+                run_timeout = _normalize_sim_timeout(timeout, method=method)
+                if run_timeout is not None:
+                    run_kwargs['timeout'] = run_timeout
 
                 try:
                     if sample_times is not None:
@@ -1354,7 +1432,7 @@ class BngsimModel(NetModel):
 
     def _run_ss_scan_threaded(
         self, model, param_name, points, method, poplevel,
-        t_start, t_end, print_funcs, max_workers=4,
+        t_start, t_end, print_funcs, max_workers=4, timeout=None,
     ):
         """Run steady-state parameter scan with threaded parallelism.
 
@@ -1412,7 +1490,11 @@ class BngsimModel(NetModel):
                 point_model.save_concentrations()
                 point_model.reset()
                 eval_sim = self._make_scan_simulator(point_model, 'ode', None)
-                result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
+                eval_kwargs = {}
+                eval_timeout = _normalize_sim_timeout(timeout, method='ode')
+                if eval_timeout is not None:
+                    eval_kwargs['timeout'] = eval_timeout
+                result = eval_sim.run(t_span=(0, 1e-10), n_points=2, **eval_kwargs)
                 ss_ok = True
             else:
                 logger.warning(
@@ -1426,7 +1508,11 @@ class BngsimModel(NetModel):
                     model, param_name, value,
                 )
                 fb_sim = self._make_scan_simulator(fb_model, method, poplevel)
-                result = fb_sim.run(t_span=(t_start, t_end), n_points=2)
+                fb_kwargs = {}
+                fb_timeout = _normalize_sim_timeout(timeout, method=method)
+                if fb_timeout is not None:
+                    fb_kwargs['timeout'] = fb_timeout
+                result = fb_sim.run(t_span=(t_start, t_end), n_points=2, **fb_kwargs)
 
             row, row_obs, row_expr = self._scan_result_to_row(
                 result, value, print_functions=print_funcs,
@@ -1438,7 +1524,8 @@ class BngsimModel(NetModel):
 
         return rows, obs_names, expr_names
 
-    def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0):
+    def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0,
+                            timeout=None):
         """Execute a parameter_scan() or bifurcate() action."""
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
@@ -1494,6 +1581,14 @@ class BngsimModel(NetModel):
         expr_names = []
         rows = []
 
+        scan_timeout = _normalize_sim_timeout(timeout, method=method)
+        scan_eval_timeout = _normalize_sim_timeout(timeout, method='ode')
+
+        def _with_timeout(kwargs, normalized):
+            if normalized is not None:
+                kwargs['timeout'] = normalized
+            return kwargs
+
         if use_ss:
             # Use threaded path when safe: ODE method, no expression-based
             # species initializers, and enough points to justify threading.
@@ -1505,7 +1600,7 @@ class BngsimModel(NetModel):
             if use_threaded_ss:
                 rows, obs_names, expr_names = self._run_ss_scan_threaded(
                     model, param_name, points, method, poplevel,
-                    t_start, t_end, print_funcs,
+                    t_start, t_end, print_funcs, timeout=timeout,
                 )
             else:
                 for value in points:
@@ -1531,7 +1626,10 @@ class BngsimModel(NetModel):
                             point_model.save_concentrations()
                             point_model.reset()
                             eval_sim = self._make_scan_simulator(point_model, 'ode', None)
-                            result = eval_sim.run(t_span=(0, 1e-10), n_points=2)
+                            result = eval_sim.run(
+                                t_span=(0, 1e-10), n_points=2,
+                                **_with_timeout({}, scan_eval_timeout),
+                            )
                             ss_ok = True
                         else:
                             logger.warning(
@@ -1553,7 +1651,10 @@ class BngsimModel(NetModel):
                         fallback_sim = self._make_scan_simulator(
                             point_model, method, poplevel,
                         )
-                        result = fallback_sim.run(t_span=(t_start, t_end), n_points=2)
+                        result = fallback_sim.run(
+                            t_span=(t_start, t_end), n_points=2,
+                            **_with_timeout({}, scan_timeout),
+                        )
                     row, row_obs, row_expr = self._scan_result_to_row(
                         result, value, print_functions=print_funcs,
                     )
@@ -1571,7 +1672,7 @@ class BngsimModel(NetModel):
                 point_model = self._prepare_scan_point_model(
                     model, param_name, value,
                 )
-                last_result = self._run_protocol(point_model)
+                last_result = self._run_protocol(point_model, timeout=timeout)
                 if last_result is None:
                     raise ValueError(
                         'protocol contains no simulate actions'
@@ -1601,10 +1702,14 @@ class BngsimModel(NetModel):
                         n_points=len(sample_times),
                         sample_times=sample_times,
                         seed=scan_seed,
+                        **_with_timeout({}, scan_timeout),
                     )
                 else:
-                    result = point_sim.run(t_span=(t_start, t_end), n_points=2,
-                                           seed=scan_seed)
+                    result = point_sim.run(
+                        t_span=(t_start, t_end), n_points=2,
+                        seed=scan_seed,
+                        **_with_timeout({}, scan_timeout),
+                    )
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )
@@ -1632,8 +1737,11 @@ class BngsimModel(NetModel):
                         params=params,
                         num_processors=n_workers,
                         seed=scan_seed,
+                        **_with_timeout({}, scan_timeout),
                     )
-                except Exception:
+                except Exception as exc:
+                    if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+                        raise
                     logger.warning(
                         "BngsimModel: run_batch() failed; falling back to "
                         "sequential scan.",
@@ -1668,10 +1776,14 @@ class BngsimModel(NetModel):
                             n_points=len(sample_times),
                             sample_times=sample_times,
                             seed=scan_seed,
+                            **_with_timeout({}, scan_timeout),
                         )
                     else:
-                        result = point_sim.run(t_span=(t_start, t_end), n_points=2,
-                                               seed=scan_seed)
+                        result = point_sim.run(
+                            t_span=(t_start, t_end), n_points=2,
+                            seed=scan_seed,
+                            **_with_timeout({}, scan_timeout),
+                        )
                     row, row_obs, row_expr = self._scan_result_to_row(
                         result, value, print_functions=print_funcs,
                     )
@@ -1913,10 +2025,12 @@ class BngsimNfModel(Model):
                     pval,
                 )
 
-    def _run_nf_parameter_scan(self, ps_params, current_param_inputs, action_index=0):
+    def _run_nf_parameter_scan(self, ps_params, current_param_inputs, action_index=0,
+                               timeout=None):
         """Execute one NF parameter_scan() action using one short session per point."""
         method = _normalize_nf_action_method(ps_params.get('method', 'nf'))
         session_backend = _nf_session_backend_for_method(method)
+        scan_timeout = _normalize_session_timeout(timeout, session_backend)
 
         # sample_times is not supported for network-free bngsim sessions
         # (possible future BNGsim enhancement).
@@ -1956,7 +2070,10 @@ class BngsimNfModel(Model):
             try:
                 self._apply_param_overrides(nfsim, point_param_overrides)
                 nfsim.initialize(point_seed)
-                result = nfsim.simulate(t_start, t_end, n_steps + 1)
+                sim_kwargs = {}
+                if scan_timeout is not None:
+                    sim_kwargs['timeout'] = scan_timeout
+                result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
                 row, row_obs, row_expr = BngsimModel._scan_result_to_row(result, value)
                 if len(obs_names) == 0:
                     obs_names = row_obs
@@ -1984,6 +2101,8 @@ class BngsimNfModel(Model):
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all NF actions in-process using XML-backed network-free sessions."""
+        from .pset import FailedSimulationError
+
         ds = {}
         current_param_inputs = self._initial_param_inputs()
         current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
@@ -2024,6 +2143,7 @@ class BngsimNfModel(Model):
                         ps_params,
                         current_param_inputs,
                         action_index=action_index,
+                        timeout=timeout,
                     ))
                     continue
 
@@ -2070,7 +2190,13 @@ class BngsimNfModel(Model):
                         nfsim.set_molecule_limit(gml_int)
                         current_gml = gml_int
 
-                    result = nfsim.simulate(t_start, t_end, n_steps + 1)
+                    sim_kwargs = {}
+                    nf_timeout = _normalize_session_timeout(
+                        timeout, _nf_session_backend_for_method(method),
+                    )
+                    if nf_timeout is not None:
+                        sim_kwargs['timeout'] = nf_timeout
+                    result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
                     ds[suffix] = self._result_to_data(result)
                     continue
 
@@ -2145,6 +2271,16 @@ class BngsimNfModel(Model):
 
                 if line and not re.match(r'\s*(begin|end)\s+actions', line):
                     logger.debug("BngsimNfModel: skipping unsupported action: %s", line)
+        except Exception as exc:
+            if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+                logger.warning(
+                    "BngsimNfModel %s: wall_time_sim=%s exceeded at %.3fs",
+                    self.name,
+                    getattr(exc, 'timeout', timeout),
+                    float(getattr(exc, 'elapsed', 0.0) or 0.0),
+                )
+                raise FailedSimulationError(str(exc)) from exc
+            raise
         finally:
             _stop_session(nfsim)
 

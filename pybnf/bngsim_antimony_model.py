@@ -2,9 +2,6 @@
 
 
 import logging
-import pickle
-from subprocess import PIPE
-from sys import executable
 
 from .bngsim_sbml_model import (
     BNGSIM_AVAILABLE,
@@ -12,7 +9,6 @@ from .bngsim_sbml_model import (
     BngsimSbmlModelNoTimeout,
     _sbml_doc_from_text,
     bngsim,
-    run_subprocess,
 )
 from .pset import ModelError, MutationSet
 
@@ -178,20 +174,6 @@ class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
                 out.write(self.model_text(mut=mut))
 
 
-class BngsimAntimonyModel(BngsimAntimonyModelNoTimeout):
-    def execute(self, folder, filename, timeout):
-        self.curr_folder = folder
-        self.curr_file = filename
-        arg = pickle.dumps(self)
-        with open('%s/%s.log' % (folder, filename), 'w') as errout:
-            stdout_data = run_subprocess(
-                [executable, '-m', 'pybnf.sbml_runner'],
-                timeout=timeout,
-                stdout=PIPE,
-                stderr=errout,
-                input=arg,
-            )
-        return pickle.loads(stdout_data)
-
-    def super_execute(self):
-        return super().execute(self.curr_folder, self.curr_file, None)
+# Retained as an alias for backwards compatibility. bngsim now enforces the
+# wall-clock budget in-process, so the subprocess wrapper is unnecessary.
+BngsimAntimonyModel = BngsimAntimonyModelNoTimeout

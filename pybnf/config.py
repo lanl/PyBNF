@@ -477,22 +477,16 @@ class Configuration(object):
                                 'sbml_backend = bngsim was requested, but %s.' % BNGSIM_SBML_ERROR
                             )
                         strict_ssa = bool(self.config.get('sbml_ssa_strict', 1))
-                        if self.config['wall_time_sim'] == 0:
-                            model = BngsimSbmlModelNoTimeout(
-                                mf,
-                                self._absolute(mf),
-                                save_files=save_flag,
-                                integrator=self.config['sbml_integrator'],
-                                strict_ssa=strict_ssa,
-                            )
-                        else:
-                            model = BngsimSbmlModel(
-                                mf,
-                                self._absolute(mf),
-                                save_files=save_flag,
-                                integrator=self.config['sbml_integrator'],
-                                strict_ssa=strict_ssa,
-                            )
+                        # bngsim now enforces wall_time_sim in-process via
+                        # SimulationTimeout, so the subprocess wrapper is no
+                        # longer needed for either zero or positive timeouts.
+                        model = BngsimSbmlModelNoTimeout(
+                            mf,
+                            self._absolute(mf),
+                            save_files=save_flag,
+                            integrator=self.config['sbml_integrator'],
+                            strict_ssa=strict_ssa,
+                        )
                     elif self.config['wall_time_sim'] == 0:
                         model = SbmlModelNoTimeout(
                             mf,
@@ -514,22 +508,16 @@ class Configuration(object):
                             'Antimony model support was requested, but %s.' % BNGSIM_ANTIMONY_ERROR
                         )
                     strict_ssa = bool(self.config.get('sbml_ssa_strict', 1))
-                    if self.config['wall_time_sim'] == 0:
-                        model = BngsimAntimonyModelNoTimeout(
-                            mf,
-                            self._absolute(mf),
-                            save_files=save_flag,
-                            integrator=self.config['sbml_integrator'],
-                            strict_ssa=strict_ssa,
-                        )
-                    else:
-                        model = BngsimAntimonyModel(
-                            mf,
-                            self._absolute(mf),
-                            save_files=save_flag,
-                            integrator=self.config['sbml_integrator'],
-                            strict_ssa=strict_ssa,
-                        )
+                    # bngsim now enforces wall_time_sim in-process via
+                    # SimulationTimeout, so the subprocess wrapper is no
+                    # longer needed for either zero or positive timeouts.
+                    model = BngsimAntimonyModelNoTimeout(
+                        mf,
+                        self._absolute(mf),
+                        save_files=save_flag,
+                        integrator=self.config['sbml_integrator'],
+                        strict_ssa=strict_ssa,
+                    )
                 elif re.search('\.target$', mf):
                     from .analytical_model import AnalyticalModel
                     model = AnalyticalModel(mf)

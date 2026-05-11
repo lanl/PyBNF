@@ -4,11 +4,8 @@
 import copy
 import logging
 import os
-import pickle
 import secrets
 import tempfile
-from subprocess import PIPE
-from sys import executable
 
 import numpy as np
 
@@ -21,7 +18,6 @@ from .pset import (
     MutationSet,
     ParamScan,
     TimeCourse,
-    run_subprocess,
 )
 from ._seed import POLICY_AUTO, resolve_seed
 
@@ -37,9 +33,11 @@ try:
         raise ImportError('PYBNF_NO_BNGSIM set')
     import bngsim
     BNGSIM_AVAILABLE = True
+    BNGSIM_HAS_SIM_TIMEOUT = hasattr(bngsim, 'SimulationTimeout')
 except ImportError:
     bngsim = None
     BNGSIM_AVAILABLE = False
+    BNGSIM_HAS_SIM_TIMEOUT = False
 
 
 try:
@@ -357,13 +355,22 @@ class BngsimSbmlModelNoTimeout(Model):
                 raise ModelError(str(exc)) from exc
             raise
 
-    def _run_simulation(self, engine_model, end_time, n_points, *, method='ode', seed=None):
+    def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
+                        seed=None, timeout=None):
         sim = self._make_simulator(engine_model, method)
+        run_kwargs = {}
+        if BNGSIM_HAS_SIM_TIMEOUT and timeout is not None:
+            try:
+                timeout_value = float(timeout)
+            except (TypeError, ValueError):
+                timeout_value = 0.0
+            if timeout_value > 0.0:
+                run_kwargs['timeout'] = timeout_value
         if method == 'ssa':
             if seed is None:
                 seed = secrets.randbits(31) or 1
-            return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), seed=seed)
-        return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points))
+            run_kwargs['seed'] = seed
+        return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), **run_kwargs)
 
     def _resolve_action_seed(self, *, explicit_seed, action_index, suffix, method):
         """Apply the stochastic_seed policy to one SBML stochastic action."""
@@ -389,7 +396,6 @@ class BngsimSbmlModelNoTimeout(Model):
         return seed_value
 
     def execute(self, folder, filename, timeout):
-        del timeout
         result_dict = {}
 
         for mut in self.mutants:
@@ -408,7 +414,7 @@ class BngsimSbmlModelNoTimeout(Model):
                         engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
                         result = self._run_simulation(
                             engine_model, act.time, act.stepnumber + 1,
-                            method=method, seed=seed_value,
+                            method=method, seed=seed_value, timeout=timeout,
                         )
                         data = self._result_to_data(result, stochastic=method == 'ssa')
                         result_dict[suffix_with_mut] = data
@@ -434,7 +440,7 @@ class BngsimSbmlModelNoTimeout(Model):
                             engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
                             result = self._run_simulation(
                                 engine_model, act.time, 2,
-                                method=method, seed=seed_value,
+                                method=method, seed=seed_value, timeout=timeout,
                             )
                             row, point_headers = self._scan_point_to_row(result, x, scan_label)
                             rows.append(row)
@@ -453,26 +459,21 @@ class BngsimSbmlModelNoTimeout(Model):
                 except PybnfError:
                     raise
                 except Exception as exc:
-                    logger.exception('bngsim SBML simulation failed for model %s', self.name)
+                    if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+                        logger.warning(
+                            'bngsim SBML model %s: wall_time_sim=%s exceeded at %.3fs',
+                            self.name,
+                            getattr(exc, 'timeout', timeout),
+                            float(getattr(exc, 'elapsed', 0.0) or 0.0),
+                        )
+                    else:
+                        logger.exception('bngsim SBML simulation failed for model %s', self.name)
                     raise FailedSimulationError from exc
 
         return result_dict
 
 
-class BngsimSbmlModel(BngsimSbmlModelNoTimeout):
-    def execute(self, folder, filename, timeout):
-        self.curr_folder = folder
-        self.curr_file = filename
-        arg = pickle.dumps(self)
-        with open('%s/%s.log' % (folder, filename), 'w') as errout:
-            stdout_data = run_subprocess(
-                [executable, '-m', 'pybnf.sbml_runner'],
-                timeout=timeout,
-                stdout=PIPE,
-                stderr=errout,
-                input=arg,
-            )
-        return pickle.loads(stdout_data)
-
-    def super_execute(self):
-        return super().execute(self.curr_folder, self.curr_file, None)
+# Retained as an alias for backwards compatibility with code that previously
+# imported the subprocess-wrapper subclass. bngsim now enforces the wall-clock
+# budget in-process, so the wrapper is unnecessary.
+BngsimSbmlModel = BngsimSbmlModelNoTimeout
