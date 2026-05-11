@@ -58,11 +58,10 @@ A time limit is also enforced for network generation in BNGL models. The default
 .. note::
 
    For models simulated with the bngsim backend, ``wall_time_sim`` is honored
-   in-process for ODE, SSA, PSA, and NFsim/``nf_reject`` backends. The
-   RuleMonkey/``nf_exact`` backend has no cancellation hook yet (upstream
-   issue ``richardposner/RuleMonkey#3``), so ``wall_time_sim`` is best-effort
-   for that method — a hung ``nf_exact`` run will not be interrupted at the
-   simulator boundary.
+   in-process on every supported backend: ODE, SSA, PSA, NFsim/``nf_reject``,
+   and RuleMonkey/``nf_exact``. RuleMonkey polls a cooperative cancellation
+   callback every ~1024 SSA events, so an over-budget ``nf_exact`` run is
+   stopped at the next polling boundary.
 
 
 Unexpected behavior when generating SBML files in COPASI

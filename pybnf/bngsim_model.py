@@ -70,18 +70,23 @@ except ImportError as exc:
 BNGSIM_HAS_NFSIM = False
 BNGSIM_HAS_RULEMONKEY = False
 BNGSIM_HAS_SIM_TIMEOUT = False
-BNGSIM_HAS_SESSION_TIMEOUT = False
+BNGSIM_HAS_NFSIM_SESSION_TIMEOUT = False
+BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT = False
 if BNGSIM_AVAILABLE:
     BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM', False))
     BNGSIM_HAS_RULEMONKEY = bool(getattr(bngsim, 'HAS_RULEMONKEY', False))
     BNGSIM_HAS_SIM_TIMEOUT = hasattr(bngsim, 'SimulationTimeout')
-    if BNGSIM_HAS_NFSIM:
+
+    def _session_class_has_timeout(cls):
         try:
-            BNGSIM_HAS_SESSION_TIMEOUT = (
-                'timeout' in inspect.signature(bngsim.NfsimSession.simulate).parameters
-            )
+            return 'timeout' in inspect.signature(cls.simulate).parameters
         except (TypeError, ValueError):
-            BNGSIM_HAS_SESSION_TIMEOUT = False
+            return False
+
+    if BNGSIM_HAS_NFSIM:
+        BNGSIM_HAS_NFSIM_SESSION_TIMEOUT = _session_class_has_timeout(bngsim.NfsimSession)
+    if BNGSIM_HAS_RULEMONKEY:
+        BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT = _session_class_has_timeout(bngsim.RuleMonkeySession)
 
 
 BNGSIM_BACKEND_NET = 'net'
@@ -120,10 +125,11 @@ _PARAMETER_SCAN_KEY_ALIASES = {
 def _normalize_sim_timeout(timeout, method=None):
     """Return a float timeout to pass to bngsim, or None to omit the kwarg.
 
-    bngsim treats None / non-positive as 'no budget', and RuleMonkey rejects
-    any positive timeout. Callers should add ``timeout=value`` only when
-    this returns a positive float.
+    bngsim treats None / non-positive as 'no budget'. Method is accepted for
+    backend-specific gating but is unused now that every Simulator backend
+    (ODE, SSA, PSA, NFsim, RuleMonkey) honors the kwarg.
     """
+    del method
     if not BNGSIM_HAS_SIM_TIMEOUT:
         return None
     if timeout is None:
@@ -134,21 +140,22 @@ def _normalize_sim_timeout(timeout, method=None):
         return None
     if value <= 0.0:
         return None
-    if method == 'rulemonkey':
-        return None
     return value
 
 
 def _normalize_session_timeout(timeout, session_backend):
-    """Return a float timeout for NfsimSession.simulate, or None to omit.
+    """Return a float timeout for an NF session's simulate(), or None to omit.
 
-    Returns None when the installed bngsim doesn't accept a ``timeout`` kwarg
-    on the session API, or when the backend is RuleMonkey (no cancellation
-    hook yet).
+    Returns None when the installed bngsim's session class for this backend
+    doesn't accept a ``timeout`` kwarg.
     """
-    if not BNGSIM_HAS_SESSION_TIMEOUT:
-        return None
-    if session_backend != BNGSIM_NF_BACKEND_NFSIM:
+    if session_backend == BNGSIM_NF_BACKEND_NFSIM:
+        supported = BNGSIM_HAS_NFSIM_SESSION_TIMEOUT
+    elif session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
+        supported = BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT
+    else:
+        supported = False
+    if not supported:
         return None
     if timeout is None:
         return None

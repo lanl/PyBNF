@@ -214,7 +214,8 @@ def _install_fake_nfsim(monkeypatch):
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', False)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SESSION_TIMEOUT', False)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM_SESSION_TIMEOUT', False)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT', False)
     return calls
 
 
@@ -290,7 +291,8 @@ def _install_fake_nf_sessions(monkeypatch, *, has_nfsim=True, has_rulemonkey=Tru
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', has_nfsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', has_rulemonkey)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', False)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SESSION_TIMEOUT', False)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM_SESSION_TIMEOUT', False)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT', False)
     return calls
 
 
