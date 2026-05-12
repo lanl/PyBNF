@@ -1927,6 +1927,7 @@ class BngsimNfModel(Model):
         split_line_index=None,
         param_names=(),
         source_dir=None,
+        protocol=(),
     ):
         if not BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
@@ -1939,6 +1940,7 @@ class BngsimNfModel(Model):
         self._bngl_model_lines = list(bngl_model_lines) if bngl_model_lines is not None else None
         self._split_line_index = split_line_index
         self._source_dir = source_dir
+        self._protocol = list(protocol)
         self.param_names = tuple(param_names)
         self.param_set = None
         self.bng_command = ''
@@ -2342,10 +2344,14 @@ class BngsimNfModel(Model):
             for k in self.param_names
         ]
         action_lines = ['begin actions\n'] + list(self.actions) + ['end actions']
+        protocol_lines = []
+        if self._protocol:
+            protocol_lines = ['begin protocol\n'] + list(self._protocol) + ['end protocol\n']
         all_lines = (
             self._bngl_model_lines[:self._split_line_index] +
             param_text_lines +
             self._bngl_model_lines[self._split_line_index:] +
+            protocol_lines +
             action_lines
         )
         return '\n'.join(all_lines) + '\n'

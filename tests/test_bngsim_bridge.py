@@ -811,6 +811,87 @@ def test_bngsim_nf_model_recomputes_derived_params_from_pset(monkeypatch):
     assert overrides['total'] == 5.0
 
 
+def test_bngsim_nf_model_save_preserves_protocol_block(monkeypatch, tmp_path):
+    """Regression for #383: protocol blocks must round-trip through the saved
+    debug .bngl, positioned between the model body and the actions block."""
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+
+    protocol_lines = [
+        '    equilibrate({duration=>10})\n',
+        '    perturb({param=>"k",factor=>2.0})\n',
+    ]
+    actions = [
+        'simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})',
+    ]
+    model_lines = [
+        'begin model\n',
+        'begin parameters\n',
+        'end parameters\n',
+        'end model\n',
+    ]
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        actions,
+        [('simulate', 'tc')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=model_lines,
+        split_line_index=1,
+        param_names=(),
+        protocol=protocol_lines,
+    )
+    model.param_set = pset.PSet([])
+
+    out_prefix = tmp_path / 'saved'
+    model.save(str(out_prefix))
+
+    saved_text = (tmp_path / 'saved.bngl').read_text()
+    proto_start = saved_text.find('begin protocol')
+    proto_end = saved_text.find('end protocol')
+    actions_start = saved_text.find('begin actions')
+    params_end = saved_text.find('end parameters')
+
+    assert proto_start != -1, 'protocol block missing from saved bngl'
+    assert proto_end > proto_start
+    assert 'equilibrate({duration=>10})' in saved_text
+    assert 'perturb({param=>"k",factor=>2.0})' in saved_text
+    # Order: parameters → protocol → actions
+    assert params_end < proto_start < actions_start
+    assert proto_end < actions_start
+
+
+def test_bngsim_nf_model_save_omits_protocol_block_when_absent(monkeypatch, tmp_path):
+    """Models constructed without a protocol must not emit empty protocol blocks."""
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        ['simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})'],
+        [('simulate', 'tc')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=[
+            'begin model\n',
+            'begin parameters\n',
+            'end parameters\n',
+            'end model\n',
+        ],
+        split_line_index=1,
+        param_names=(),
+    )
+    model.param_set = pset.PSet([])
+
+    out_prefix = tmp_path / 'saved'
+    model.save(str(out_prefix))
+
+    saved_text = (tmp_path / 'saved.bngl').read_text()
+    assert 'begin protocol' not in saved_text
+    assert 'end protocol' not in saved_text
+
+
 def test_bngsim_nf_model_preserves_state_across_actions(monkeypatch):
     calls = _install_fake_nfsim(monkeypatch)
 

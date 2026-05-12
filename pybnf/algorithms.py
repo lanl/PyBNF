@@ -820,6 +820,7 @@ class Algorithm(object):
                             split_line_index=m.split_line_index,
                             param_names=m.param_names,
                             source_dir=os.path.dirname(os.path.abspath(m.file_path)),
+                            protocol=m.protocol,
                         )
                         model.bng_command = m.bng_command
                         final_model_list.append(model)
@@ -999,6 +1000,7 @@ class Algorithm(object):
                         split_line_index=m.split_line_index,
                         param_names=m.param_names,
                         source_dir=os.path.dirname(os.path.abspath(m.file_path)),
+                        protocol=m.protocol,
                     )
                     model.bng_command = m.bng_command
                     final_model_list.append(model)
