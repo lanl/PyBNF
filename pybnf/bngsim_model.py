@@ -20,7 +20,7 @@ from ._seed import POLICY_AUTO, resolve_seed
 
 logger = logging.getLogger(__name__)
 
-_BNGSIM_MIN_VERSION = (0, 3, 0)
+_BNGSIM_MIN_VERSION = (0, 5, 0)
 _BNGSIM_MAX_MAJOR = 1
 
 
@@ -57,7 +57,7 @@ try:
     BNGSIM_VERSION = _detect_bngsim_version(bngsim)
     if not _bngsim_version_compatible(BNGSIM_VERSION):
         raise ImportError(
-            'installed bngsim version %s is incompatible; PyBNF requires bngsim>=0.3.0,<1'
+            'installed bngsim version %s is incompatible; PyBNF requires bngsim>=0.5.0,<1'
             % BNGSIM_VERSION
         )
     BNGSIM_AVAILABLE = True
@@ -96,21 +96,9 @@ BNGSIM_NF_BACKEND_NFSIM = 'nfsim'
 BNGSIM_NF_BACKEND_RULEMONKEY = 'rulemonkey'
 
 _BNGSIM_ACTION_BACKENDS = frozenset((BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF))
-_NFSIM_METHOD_ALIASES = {
-    'nf': 'nf_reject',
-    'nf_reject': 'nf_reject',
-    'nfsim': 'nf_reject',
-}
-_RULEMONKEY_METHOD_ALIASES = {
-    'rm': 'rulemonkey',
-    'rulemonkey': 'rulemonkey',
-    'nf_exact': 'rulemonkey',
-}
-_UNSUPPORTED_NF_METHOD_ALIASES = frozenset((
-    'nf_fixed',
-    'dynstoc',
-    'ds',
-))
+# Canonical NF tokens returned by bngsim.normalize_method() — anything outside
+# this pair is non-NF (ode/ssa/psa) for our purposes.
+_BNGSIM_NF_CANONICAL_METHODS = frozenset(('nf_reject', 'nf_exact'))
 
 
 _PARAMETER_SCAN_KEY_ALIASES = {
@@ -396,36 +384,38 @@ def _normalize_action_method(method, poplevel_text=None):
     return lower, None
 
 
+def _bngsim_normalize_method(method):
+    """Delegate to bngsim.normalize_method, raising a uniform ValueError."""
+    if not BNGSIM_AVAILABLE:
+        raise ValueError(
+            "method=>'%s' cannot be normalized: %s" % (method, BNGSIM_ERROR)
+        )
+    return bngsim.normalize_method(method)
+
+
 def _normalize_nf_action_method(method):
-    """Normalize BNGL network-free methods to the supported bngsim NF token."""
-    lower = method.strip().lower()
-    if lower in _NFSIM_METHOD_ALIASES:
-        return _NFSIM_METHOD_ALIASES[lower]
-    if lower in _RULEMONKEY_METHOD_ALIASES:
-        if BNGSIM_HAS_RULEMONKEY:
-            return _RULEMONKEY_METHOD_ALIASES[lower]
+    """Normalize a BNGL network-free method token via bngsim's stable mapping.
+
+    Returns bngsim's canonical NF token (``'nf_reject'`` for NFsim,
+    ``'nf_exact'`` for RuleMonkey). Raises ``ValueError`` for non-NF
+    tokens or NF tokens whose backend isn't built into this bngsim install.
+    """
+    canonical, _ = _bngsim_normalize_method(method)
+    if canonical not in _BNGSIM_NF_CANONICAL_METHODS:
         raise ValueError(
-            "method=>'%s' is recognized but not supported by the bngsim NF bridge" % lower
+            "method=>'%s' is not supported by the bngsim NF bridge" % method
         )
-    if lower in _UNSUPPORTED_NF_METHOD_ALIASES:
-        raise ValueError(
-            "method=>'%s' is recognized but not supported by the bngsim NF bridge" % lower
-        )
-    raise ValueError(
-        "method=>'%s' is not supported by the bngsim NF bridge" % lower
-    )
+    return canonical
 
 
 def _nf_session_backend_for_method(method):
-    """Return the concrete bngsim NF session backend for a normalized method."""
-    normalized = _normalize_nf_action_method(method)
-    if normalized in set(_NFSIM_METHOD_ALIASES.values()):
-        return BNGSIM_NF_BACKEND_NFSIM
-    if normalized in set(_RULEMONKEY_METHOD_ALIASES.values()):
-        return BNGSIM_NF_BACKEND_RULEMONKEY
-    raise ValueError(
-        "method=>'%s' is not supported by the bngsim NF bridge" % method
-    )
+    """Return the concrete bngsim NF session backend for an action method."""
+    canonical, dispatch = _bngsim_normalize_method(method)
+    if canonical not in _BNGSIM_NF_CANONICAL_METHODS:
+        raise ValueError(
+            "method=>'%s' is not supported by the bngsim NF bridge" % method
+        )
+    return dispatch
 
 
 def _bngsim_has_nf_session_backend(session_backend):
@@ -552,21 +542,24 @@ def _destroy_nf_session(session):
 
 
 def _classify_action_method_backend(method):
-    """Map a BNGL method token to the relevant bngsim bridge backend."""
-    lower = method.strip().lower()
+    """Map a BNGL method token to the relevant bngsim bridge backend.
 
-    if lower == 'pla':
-        return None
+    Returns ``BNGSIM_BACKEND_NET`` for network-based methods (ode/ssa/psa/
+    protocol), ``BNGSIM_BACKEND_NF`` for vendored NFsim or RuleMonkey via
+    bngsim, or ``None`` for anything bngsim can't handle in this install
+    (callers then fall back to the BioNetGen subprocess path).
+    """
+    lower = method.strip().lower()
     if lower in ('ode', 'ssa', 'psa', 'protocol'):
         return BNGSIM_BACKEND_NET
-    if lower in _NFSIM_METHOD_ALIASES:
+    if not BNGSIM_AVAILABLE:
+        return None
+    try:
+        canonical, _ = bngsim.normalize_method(lower)
+    except ValueError:
+        return None
+    if canonical in _BNGSIM_NF_CANONICAL_METHODS:
         return BNGSIM_BACKEND_NF
-    if lower in _RULEMONKEY_METHOD_ALIASES:
-        if BNGSIM_HAS_RULEMONKEY:
-            return BNGSIM_BACKEND_NF
-        return None
-    if lower in _UNSUPPORTED_NF_METHOD_ALIASES:
-        return None
     return None
 
 

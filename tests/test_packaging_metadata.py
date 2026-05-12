@@ -12,4 +12,4 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     project = metadata['project']
 
     assert project['requires-python'] == '>=3.10'
-    assert 'bngsim>=0.3.0,<1' in project['dependencies']
+    assert 'bngsim>=0.5.0,<1' in project['dependencies']

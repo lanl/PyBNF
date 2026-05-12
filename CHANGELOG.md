@@ -30,12 +30,13 @@ All notable changes to PyBNF are documented below. This project adheres to
 - `max_failed_simulations` config key to control early abort threshold (#146)
 - `random_seed` config key to seed and log PyBNF-side random number generation (#31)
 - Command-line options reference in documentation
-- BNGsim package dependency (`bngsim>=0.3.0`) and optional Antimony install extra (#372)
+- BNGsim package dependency (`bngsim>=0.5.0`) and optional Antimony install extra (#372)
 - `bngl_backend` config key for BNGL backend control: `auto`, `bionetgen`, or required `bngsim` (#371)
 - `stochastic_seed` config key for BNGsim stochastic simulations (`auto`, `auto_honorbngl`, `random`, `random_honorbngl`); under the default `auto`, PyBNF derives deterministic per-action seeds from the evaluation context so re-evaluations of the same parameter point reproduce, smoothing replicates yield distinct trajectories, and explicit BNGL `seed=>N` arguments are overridden with a warning. Covers SSA, PSA, NFsim, RuleMonkey, and SBML/Antimony stochastic backends (#373)
 
 ### Changed
 - Supported BNGL network and NFsim simulations now auto-select BNGsim by default when available; `PYBNF_NO_BNGSIM=1` keeps the legacy BioNetGen path (#371)
+- BNGL `method=>"nf"` routes to BNGsim's vendored NFsim and `method=>"rm"` to vendored RuleMonkey; PyBNF now delegates network-free method normalization and capability detection to bngsim's public `normalize_method()` / `HAS_NFSIM` / `HAS_RULEMONKEY` surface instead of maintaining its own alias tables. Missing vendored backends surface bngsim's "recognized but not present in this install" message. PyBNF no longer carries `nf_exact`/`nf_fixed`/`dynstoc`/`ds` as first-class aliases; bngsim's normalization governs their acceptance. Requires `bngsim>=0.5.0` (#377)
 - Modernized packaging metadata in `pyproject.toml`, added dependency upper bounds, documented `uv` installation, and refreshed the Dockerfile with Python 3.12 and BioNetGen 2.9.3 (#360)
 - Minimum supported Python version is now 3.10 (#372)
 - Replaced nose test dependency with pytest

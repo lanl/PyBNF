@@ -112,6 +112,33 @@ def _make_dummy_algorithm(model, output_dir, bngl_backend='auto'):
     return algo
 
 
+def _make_fake_normalize_method(*, has_nfsim=True, has_rulemonkey=True):
+    """Build a normalize_method() stub for a fake bngsim ModuleType.
+
+    Mirrors the contract of bngsim.normalize_method(): returns a
+    (canonical, dispatch) pair for supported tokens, raises ValueError
+    for unknown tokens or for NF tokens whose backend isn't built.
+    """
+    nf_aliases = {'nf', 'nf_reject', 'nfsim'}
+    rm_aliases = {'rm', 'rulemonkey', 'nf_exact'}
+
+    def normalize_method(requested):
+        lower = requested.strip().lower()
+        if lower in ('ode', 'ssa', 'psa'):
+            return lower, lower
+        if lower in nf_aliases:
+            if not has_nfsim:
+                raise ValueError("method='nf_reject' is recognized but NFsim is not present")
+            return 'nf_reject', 'nfsim'
+        if lower in rm_aliases:
+            if not has_rulemonkey:
+                raise ValueError("method='nf_exact' is recognized but RuleMonkey is not present")
+            return 'nf_exact', 'rulemonkey'
+        raise ValueError("Unknown method '%s'" % requested)
+
+    return normalize_method
+
+
 def _fake_network_generation(cmd, timeout, stdout=None, stderr=None, input=None):
     del timeout, stdout, stderr, input
     bngl_path = Path(os.getcwd()) / cmd[1]
@@ -208,6 +235,7 @@ def _install_fake_nfsim(monkeypatch):
 
     fake_pkg = types.ModuleType('bngsim')
     fake_pkg.NfsimSession = FakeNfsimSession
+    fake_pkg.normalize_method = _make_fake_normalize_method(has_nfsim=True, has_rulemonkey=False)
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_pkg)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_pkg)
@@ -284,6 +312,9 @@ def _install_fake_nf_sessions(monkeypatch, *, has_nfsim=True, has_rulemonkey=Tru
         fake_pkg.NfsimSession = FakeNfsimSession
     if has_rulemonkey:
         fake_pkg.RuleMonkeySession = FakeRuleMonkeySession
+    fake_pkg.normalize_method = _make_fake_normalize_method(
+        has_nfsim=has_nfsim, has_rulemonkey=has_rulemonkey,
+    )
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_pkg)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_pkg)
@@ -341,10 +372,32 @@ def test_actions_compatible_with_bngsim_rejects_pla():
 
 
 def test_bngsim_version_compatibility_bounds():
-    assert bngsim_model._bngsim_version_compatible('0.3.0')
+    assert bngsim_model._bngsim_version_compatible('0.5.0')
     assert bngsim_model._bngsim_version_compatible('0.9.1')
-    assert not bngsim_model._bngsim_version_compatible('0.2.9')
+    assert not bngsim_model._bngsim_version_compatible('0.4.9')
     assert not bngsim_model._bngsim_version_compatible('1.0.0')
+
+
+_rulemonkey_required = pytest.mark.skipif(
+    not bngsim_model.BNGSIM_HAS_RULEMONKEY,
+    reason='bngsim was built without vendored RuleMonkey',
+)
+
+
+def _stub_normalize_method_without_rulemonkey(method):
+    """Stand-in for bngsim.normalize_method when RuleMonkey is missing.
+
+    Mirrors bngsim's ValueError shape for rulemonkey-family inputs so the
+    PyBNF wrapper exercises the missing-vendored-backend code path even
+    on installs where RuleMonkey is actually built.
+    """
+    lower = method.strip().lower()
+    if lower in ('rm', 'rulemonkey', 'nf_exact'):
+        raise ValueError(
+            "method='nf_exact' (exact non-local network-free) is recognized "
+            "but RuleMonkey is not present in this bngsim install."
+        )
+    return bngsim_model.bngsim.normalize_method(method)
 
 
 def test_classify_actions_for_bngsim_routes_nf_aliases():
@@ -354,35 +407,41 @@ def test_classify_actions_for_bngsim_routes_nf_aliases():
         ]) == bngsim_model.BNGSIM_BACKEND_NF
 
 
-def test_classify_actions_for_bngsim_routes_rulemonkey_aliases_when_available(monkeypatch):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True)
-    for method in ('rm', 'rulemonkey', 'nf_exact'):
+@_rulemonkey_required
+def test_classify_actions_for_bngsim_routes_rulemonkey_public_aliases():
+    for method in ('rm', 'rulemonkey'):
         assert bngsim_model.classify_actions_for_bngsim([
             'simulate({method=>"%s",t_end=>4,n_steps=>40,suffix=>"tc"})' % method
         ]) == bngsim_model.BNGSIM_BACKEND_NF
 
 
-def test_normalize_nf_action_method_normalizes_supported_aliases():
+def test_normalize_nf_action_method_normalizes_nfsim_aliases():
     for method in ('nf', 'nf_reject', 'nfsim'):
         assert bngsim_model._normalize_nf_action_method(method) == 'nf_reject'
 
 
-def test_normalize_nf_action_method_normalizes_rulemonkey_aliases_when_available(monkeypatch):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True)
-    for method in ('rm', 'rulemonkey', 'nf_exact'):
-        assert bngsim_model._normalize_nf_action_method(method) == 'rulemonkey'
+@_rulemonkey_required
+def test_normalize_nf_action_method_normalizes_rulemonkey_public_aliases():
+    for method in ('rm', 'rulemonkey'):
+        assert bngsim_model._normalize_nf_action_method(method) == 'nf_exact'
 
 
-@pytest.mark.parametrize('method', ['rm', 'rulemonkey', 'nf_exact'])
-def test_normalize_nf_action_method_rejects_rulemonkey_aliases_when_unavailable(monkeypatch, method):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', False)
-    with pytest.raises(ValueError, match='recognized but not supported'):
+@pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
+def test_normalize_nf_action_method_rejects_rulemonkey_when_unavailable(monkeypatch, method):
+    monkeypatch.setattr(
+        bngsim_model.bngsim,
+        'normalize_method',
+        _stub_normalize_method_without_rulemonkey,
+    )
+    with pytest.raises(ValueError, match='RuleMonkey is not present'):
         bngsim_model._normalize_nf_action_method(method)
 
 
 @pytest.mark.parametrize('method', ['nf_fixed', 'dynstoc', 'ds'])
-def test_normalize_nf_action_method_rejects_recognized_but_unsupported_aliases(method):
-    with pytest.raises(ValueError, match='recognized but not supported'):
+def test_normalize_nf_action_method_rejects_unavailable_canonical_aliases(method):
+    # bngsim recognizes these tokens but no current release ships the backend.
+    # Delegation surfaces bngsim's own "recognized but unavailable" error.
+    with pytest.raises(ValueError):
         bngsim_model._normalize_nf_action_method(method)
 
 
@@ -408,15 +467,19 @@ def test_classify_action_method_backend_maps_methods(method, expected_backend):
     assert bngsim_model._classify_action_method_backend(method) == expected_backend
 
 
-@pytest.mark.parametrize('method', ['rm', 'rulemonkey', 'nf_exact'])
-def test_classify_action_method_backend_rejects_rulemonkey_methods_when_unavailable(monkeypatch, method):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', False)
+@pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
+def test_classify_action_method_backend_returns_none_when_rulemonkey_unavailable(monkeypatch, method):
+    monkeypatch.setattr(
+        bngsim_model.bngsim,
+        'normalize_method',
+        _stub_normalize_method_without_rulemonkey,
+    )
     assert bngsim_model._classify_action_method_backend(method) is None
 
 
-@pytest.mark.parametrize('method', ['rm', 'rulemonkey', 'nf_exact'])
-def test_classify_action_method_backend_maps_rulemonkey_methods_when_available(monkeypatch, method):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True)
+@_rulemonkey_required
+@pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
+def test_classify_action_method_backend_maps_rulemonkey_public_aliases(method):
     assert bngsim_model._classify_action_method_backend(method) == bngsim_model.BNGSIM_BACKEND_NF
 
 
@@ -434,8 +497,8 @@ def test_classify_actions_for_bngsim_routes_nf_parameter_scan_aliases():
         ]) == bngsim_model.BNGSIM_BACKEND_NF
 
 
-def test_classify_actions_for_bngsim_routes_rulemonkey_parameter_scan_when_available(monkeypatch):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True)
+@_rulemonkey_required
+def test_classify_actions_for_bngsim_routes_rulemonkey_parameter_scan():
     assert bngsim_model.classify_actions_for_bngsim([
         'parameter_scan({method=>"rm",parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>4,suffix=>"scan"})'
     ]) == bngsim_model.BNGSIM_BACKEND_NF
@@ -2416,6 +2479,10 @@ def _install_fake_session_raising_timeout(monkeypatch, *, backend, timeout, elap
         fake_bngsim.RuleMonkeySession = FakeSession
         fake_bngsim.HAS_NFSIM = False
         fake_bngsim.HAS_RULEMONKEY = True
+    fake_bngsim.normalize_method = _make_fake_normalize_method(
+        has_nfsim=fake_bngsim.HAS_NFSIM,
+        has_rulemonkey=fake_bngsim.HAS_RULEMONKEY,
+    )
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
