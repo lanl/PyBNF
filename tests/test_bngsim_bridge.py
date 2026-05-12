@@ -2335,7 +2335,7 @@ def _make_minimal_bngsim_model(actions):
     return obj
 
 
-def test_bngsim_model_simulate_timeout_reraises_failedsimulationerror(monkeypatch, caplog):
+def test_bngsim_model_simulate_timeout_reraises_failedsimulationerror(monkeypatch, caplog, tmp_path):
     _install_fake_simulator_raising_timeout(monkeypatch, timeout=0.5, elapsed=0.62)
     model = _make_minimal_bngsim_model([
         'simulate({method=>"ode",t_end=>1000,n_steps=>100,suffix=>"tc"})',
@@ -2343,7 +2343,7 @@ def test_bngsim_model_simulate_timeout_reraises_failedsimulationerror(monkeypatc
 
     caplog.set_level('WARNING')
     with pytest.raises(pset.FailedSimulationError):
-        model.execute('/tmp', 'trip_test', 0.5)
+        model.execute(str(tmp_path), 'trip_test', 0.5)
 
     log_text = '\n'.join(rec.getMessage() for rec in caplog.records)
     assert 'wall_time_sim' in log_text
@@ -2437,7 +2437,7 @@ def _install_fake_session_raising_timeout(monkeypatch, *, backend, timeout, elap
     (bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY, 'rm'),
 ])
 def test_bngsim_nf_model_simulate_timeout_reraises_failedsimulationerror(
-    monkeypatch, caplog, backend, method_token,
+    monkeypatch, caplog, backend, method_token, tmp_path,
 ):
     teardown = _install_fake_session_raising_timeout(
         monkeypatch, backend=backend, timeout=0.5, elapsed=0.71,
@@ -2461,7 +2461,7 @@ def test_bngsim_nf_model_simulate_timeout_reraises_failedsimulationerror(
 
     caplog.set_level('WARNING')
     with pytest.raises(pset.FailedSimulationError):
-        model.execute('/tmp', 'job0', 0.5)
+        model.execute(str(tmp_path), 'job0', 0.5)
 
     # Cleanup-on-timeout: session must be destroyed even though execute()
     # re-raised — otherwise a hung NF session could poison later evaluations.
@@ -2536,3 +2536,160 @@ def test_bngsim_sim_timeout_kwarg_passes_through_on_success(monkeypatch):
     assert run_log[0].get('timeout') == 12.5, (
         f"timeout=12.5 was not forwarded; got run kwargs {run_log[0]}"
     )
+
+
+# ── failed-simulation logging tests (issue #376) ─────────────────────────────
+
+
+def _install_fake_simulator_raising(monkeypatch, exc):
+    """Wire a fake bngsim whose Simulator.run raises `exc`."""
+
+    class FakeSimulator:
+        def __init__(self, model, method='ode', **kw):
+            self.method = method
+
+        def run(self, *args, **kwargs):
+            raise exc
+
+        def add_stop_condition(self, expr, label=None):
+            pass
+
+        def clear_stop_conditions(self):
+            pass
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = FakeSimulator
+    fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.HAS_NFSIM = False
+    fake_bngsim.HAS_RULEMONKEY = False
+
+    monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_VERSION', '9.9.9-test')
+    return fake_bngsim
+
+
+def test_bngsim_model_failure_writes_report(monkeypatch, tmp_path):
+    """A BNGsim network failure produces a failure-report log next to the
+    simulation folder containing backend, version, model identity, action
+    context, parameter set, and exception details."""
+
+    boom = RuntimeError('synthetic bngsim crash')
+    _install_fake_simulator_raising(monkeypatch, boom)
+
+    fp = pset.FreeParameter('k1', 'random_var', 0.0, 1.0, value=0.25)
+    ps = pset.PSet([fp])
+
+    model = _make_minimal_bngsim_model([
+        'simulate({method=>"ode",t_end=>10,n_steps=>2,suffix=>"tc"})',
+    ])
+    model.param_set = ps
+    model._net_path = str(tmp_path / 'source.net')
+    (tmp_path / 'source.net').write_text('# fake net contents\n')
+
+    folder = tmp_path / 'sim_folder'
+    folder.mkdir()
+    with pytest.raises(RuntimeError, match='synthetic bngsim crash'):
+        model.execute(str(folder), 'jobX', timeout=None)
+
+    report = folder / 'jobX.log'
+    assert report.is_file(), "failure report was not written"
+    text = report.read_text()
+    assert '# BNGsim failure report' in text
+    assert 'backend: bngsim-net' in text
+    assert 'bngsim_version: 9.9.9-test' in text
+    assert 'model_name: trip_model' in text
+    assert 'job_filename: jobX' in text
+    assert 'input_path: %s' % model._net_path in text
+    assert 'input_present: True' in text
+    assert 'action_index: 0' in text
+    assert 'method: ode' in text
+    assert 'suffix: tc' in text
+    assert 'k1 = 0.25' in text
+    assert 'exception_type: builtins.RuntimeError' in text
+    assert 'exception_message: synthetic bngsim crash' in text
+
+
+def test_bngsim_nf_model_failure_writes_report(monkeypatch, tmp_path):
+    """A BNGsim NF failure produces a failure-report log with backend
+    bngsim-nf, the XML input path, action context, and exception details."""
+
+    boom = _FakeSimulationTimeout(
+        'wall-clock budget 0.5s exceeded at 0.71s',
+        timeout=0.5,
+        elapsed=0.71,
+    )
+    _install_fake_session_raising_timeout(
+        monkeypatch,
+        backend=bngsim_model.BNGSIM_NF_BACKEND_NFSIM,
+        timeout=0.5,
+        elapsed=0.71,
+    )
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_VERSION', '9.9.9-test')
+
+    xml_path = tmp_path / 'source.xml'
+    xml_path.write_text('<sbml/>\n')
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_trip_model',
+        [
+            'simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})',
+        ],
+        [('simulate', 'tc')],
+        [],
+        str(xml_path),
+        bngl_model_lines=[
+            'begin parameters\n',
+            'end parameters\n',
+        ],
+        param_names=(),
+    )
+    model.param_set = pset.PSet([])
+
+    folder = tmp_path / 'sim_folder'
+    folder.mkdir()
+    with pytest.raises(pset.FailedSimulationError):
+        model.execute(str(folder), 'jobNF', 0.5)
+
+    report = folder / 'jobNF.log'
+    assert report.is_file(), "NF failure report was not written"
+    text = report.read_text()
+    assert '# BNGsim failure report' in text
+    assert 'backend: bngsim-nf' in text
+    assert 'bngsim_version: 9.9.9-test' in text
+    assert 'model_name: nf_trip_model' in text
+    assert 'job_filename: jobNF' in text
+    assert 'input_path: %s' % str(xml_path) in text
+    assert 'input_present: True' in text
+    assert 'method: nf' in text
+    assert 'suffix: tc' in text
+    # The timeout is a SimulationTimeout from the fake bngsim module — the
+    # exception's qualname is _FakeSimulationTimeout in this test scope.
+    assert 'exception_type:' in text
+    assert 'wall-clock budget' in text
+
+
+def test_bngsim_failure_report_path_matches_copy_log_files_pattern(monkeypatch, tmp_path):
+    """The failure report is written at ``{folder}/{filename}.log`` so it is
+    picked up by ``Job._copy_log_files`` into ``failed_logs_dir``."""
+
+    boom = ValueError('forced')
+    _install_fake_simulator_raising(monkeypatch, boom)
+
+    fp = pset.FreeParameter('p', 'random_var', 0.0, 1.0, value=0.5)
+    model = _make_minimal_bngsim_model([
+        'simulate({method=>"ode",t_end=>1,n_steps=>1,suffix=>"tc"})',
+    ])
+    model.param_set = pset.PSet([fp])
+
+    folder = tmp_path / 'sim'
+    folder.mkdir()
+    with pytest.raises(ValueError):
+        model.execute(str(folder), 'model_name_jobid', timeout=None)
+
+    # `_copy_log_files` looks for `{folder}/{name_with_id}.log`.
+    expected_log = folder / 'model_name_jobid.log'
+    assert expected_log.is_file()
+

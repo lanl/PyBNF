@@ -967,6 +967,7 @@ class BngsimModel(NetModel):
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
         from .pset import FailedSimulationError
+        from ._bngsim_failure import write_failure_report
 
         model = self._engine_model
 
@@ -978,9 +979,19 @@ class BngsimModel(NetModel):
                     pass
 
         model.reset()
+        self._pybnf_current_action_info = None
         try:
             ds = self._execute_actions(model, timeout=timeout)
         except Exception as exc:
+            write_failure_report(
+                folder, filename,
+                backend='bngsim-net',
+                bngsim_version=BNGSIM_VERSION,
+                model=self,
+                exception=exc,
+                input_path=getattr(self, '_net_path', None),
+                action_info=getattr(self, '_pybnf_current_action_info', None),
+            )
             if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
                 logger.warning(
                     "BngsimModel %s: wall_time_sim=%s exceeded at %.3fs",
@@ -1031,6 +1042,11 @@ class BngsimModel(NetModel):
             line = _collapse_action_line_continuations(action_line).strip()
             if not line or line.startswith('#'):
                 continue
+
+            self._pybnf_current_action_info = {
+                'action_index': action_index,
+                'action_line': line,
+            }
 
             sim_params = _parse_simulate_action(line)
             if sim_params is not None:
@@ -1109,6 +1125,15 @@ class BngsimModel(NetModel):
                 run_timeout = _normalize_sim_timeout(timeout, method=method)
                 if run_timeout is not None:
                     run_kwargs['timeout'] = run_timeout
+
+                self._pybnf_current_action_info.update({
+                    'method': method,
+                    'suffix': suffix,
+                    'seed': run_kwargs.get('seed'),
+                    't_start': t_start,
+                    't_end': t_end,
+                    'n_steps': n_steps,
+                })
 
                 try:
                     if sample_times is not None:
@@ -2141,6 +2166,7 @@ class BngsimNfModel(Model):
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all NF actions in-process using XML-backed network-free sessions."""
         from .pset import FailedSimulationError
+        from ._bngsim_failure import write_failure_report
 
         ds = {}
         current_param_inputs = self._initial_param_inputs()
@@ -2149,6 +2175,7 @@ class BngsimNfModel(Model):
         nfsim = None
         current_gml = None
         current_method = None
+        self._pybnf_current_action_info = None
 
         # Bootstrap seed for sessions that need to be lazily started by a
         # setConcentration / addConcentration action before any simulate runs.
@@ -2175,6 +2202,11 @@ class BngsimNfModel(Model):
                 line = _collapse_action_line_continuations(action_line).strip()
                 if not line or line.startswith('#'):
                     continue
+
+                self._pybnf_current_action_info = {
+                    'action_index': action_index,
+                    'action_line': line,
+                }
 
                 ps_params = _parse_parameter_scan_action(line)
                 if ps_params is not None:
@@ -2235,6 +2267,15 @@ class BngsimNfModel(Model):
                     )
                     if nf_timeout is not None:
                         sim_kwargs['timeout'] = nf_timeout
+                    self._pybnf_current_action_info.update({
+                        'method': method,
+                        'suffix': suffix,
+                        'seed': action_seed,
+                        't_start': t_start,
+                        't_end': t_end,
+                        'n_steps': n_steps,
+                        'gml': gml_int,
+                    })
                     result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
                     ds[suffix] = self._result_to_data(result)
                     continue
@@ -2311,6 +2352,15 @@ class BngsimNfModel(Model):
                 if line and not re.match(r'\s*(begin|end)\s+actions', line):
                     logger.debug("BngsimNfModel: skipping unsupported action: %s", line)
         except Exception as exc:
+            write_failure_report(
+                folder, filename,
+                backend='bngsim-nf',
+                bngsim_version=BNGSIM_VERSION,
+                model=self,
+                exception=exc,
+                input_path=getattr(self, '_xml_path', None),
+                action_info=getattr(self, '_pybnf_current_action_info', None),
+            )
             if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
                 logger.warning(
                     "BngsimNfModel %s: wall_time_sim=%s exceeded at %.3fs",

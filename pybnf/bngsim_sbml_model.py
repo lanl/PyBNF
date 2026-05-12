@@ -396,13 +396,23 @@ class BngsimSbmlModelNoTimeout(Model):
         return seed_value
 
     def execute(self, folder, filename, timeout):
+        from ._bngsim_failure import write_failure_report
+        from .bngsim_model import BNGSIM_VERSION as _BNGSIM_VERSION
+
+        backend_name = (
+            'bngsim-antimony'
+            if type(self).__name__.startswith('BngsimAntimony')
+            else 'bngsim-sbml'
+        )
         result_dict = {}
 
         for mut in self.mutants:
             for action_index, act in enumerate(self.actions):
+                method = None
+                seed_value = None
+                suffix_with_mut = act.suffix + mut.suffix
                 try:
                     method = self._resolve_method(act)
-                    suffix_with_mut = act.suffix + mut.suffix
                     seed_value = self._resolve_action_seed(
                         explicit_seed=None,
                         action_index=action_index,
@@ -459,6 +469,22 @@ class BngsimSbmlModelNoTimeout(Model):
                 except PybnfError:
                     raise
                 except Exception as exc:
+                    write_failure_report(
+                        folder, filename,
+                        backend=backend_name,
+                        bngsim_version=_BNGSIM_VERSION,
+                        model=self,
+                        exception=exc,
+                        input_path=getattr(self, 'abs_file_path', None),
+                        action_info={
+                            'action_index': action_index,
+                            'method': method,
+                            'suffix': suffix_with_mut,
+                            'seed': seed_value,
+                            'action_type': type(act).__name__,
+                            'mutation_suffix': mut.suffix,
+                        },
+                    )
                     if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
                         logger.warning(
                             'bngsim SBML model %s: wall_time_sim=%s exceeded at %.3fs',
