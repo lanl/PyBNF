@@ -624,6 +624,49 @@ def test_initialize_models_no_bngsim_env_disables_auto_selection(monkeypatch, tm
     assert isinstance(models[0], pset.NetModel)
 
 
+def test_initialize_models_no_bngsim_env_disables_nf_auto(monkeypatch, tmp_path):
+    """NF-only BNGL with auto backend + PYBNF_NO_BNGSIM=1 must fall back to
+    the BNGLModel subprocess path (no XML generation, no bngsim NF bridge)."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf')
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
+    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
+        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], pset.BNGLModel)
+    # Must not have been promoted to a bngsim NF bridge.
+    assert not isinstance(models[0], bngsim_model.BngsimNfModel)
+
+
+def test_initialize_models_no_bngsim_env_disables_hybrid_auto(monkeypatch, tmp_path):
+    """Hybrid (generate_network + NF simulate) BNGL with auto backend +
+    PYBNF_NO_BNGSIM=1 must fall back to NetModel (BNG2.pl already produced
+    the .net during the generates_network branch; bngsim NF must not run)."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], pset.NetModel)
+    # bngsim NF bridge must not have been used for hybrid either.
+    assert not isinstance(models[0], bngsim_model.BngsimNfModel)
+
+
 def test_initialize_models_bngsim_backend_rejects_unavailable_bngsim(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path)
     output_dir = tmp_path / 'pybnf_output'
@@ -636,6 +679,27 @@ def test_initialize_models_bngsim_backend_rejects_unavailable_bngsim(monkeypatch
             with patch.object(algorithms, 'BNGSIM_ERROR', 'bngsim is not available'):
                 with pytest.raises(printing.PybnfError, match='bngsim is not available'):
                     algorithms.Algorithm._initialize_models(algo)
+
+
+def test_initialize_models_bngsim_backend_rejects_when_pybnf_no_bngsim(monkeypatch, tmp_path):
+    """Explicit `bngl_backend = bngsim` with PYBNF_NO_BNGSIM=1 must surface an
+    error that names the env var, not the generic 'bngsim is not available'.
+
+    BNGSIM_AVAILABLE is captured at import time; the realistic path is for
+    _bngsim_runtime_available() to return False because the env var is set
+    while BNGSIM_AVAILABLE is still True.
+    """
+    model = _make_tfun_bngl_model(tmp_path)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bngsim')
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
+    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
+        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+            with pytest.raises(printing.PybnfError, match='PYBNF_NO_BNGSIM is set'):
+                algorithms.Algorithm._initialize_models(algo)
 
 
 def test_initialize_models_bngsim_backend_rejects_unsupported_actions(monkeypatch, tmp_path):
@@ -2044,6 +2108,62 @@ def test_initialize_models_hybrid_uses_bngsim_nf(monkeypatch, tmp_path):
     assert any('simulate' in a for a in models[0].actions)
     # The last BNG2.pl call (XML generation) should have writeXML
     assert 'writeXML()' in _fake_hybrid_generation.last_bngl_text
+
+
+def test_initialize_models_hybrid_explicit_bngsim_backend_uses_nf_bridge(monkeypatch, tmp_path):
+    """Explicit `bngl_backend = bngsim` for hybrid models must take the same
+    happy path as the auto case (XML generation + BngsimNfModel)."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bngsim')
+
+    class FakeBngsimNfModel(object):
+        def __init__(self, name, acts, suffs, mutants, xml_path, **kwargs):
+            self.name = name
+            self.actions = acts
+            self.suffixes = suffs
+            self.mutants = mutants
+            self.xml_path = xml_path
+            self.kwargs = kwargs
+            self.bng_command = ''
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_hybrid_generation):
+        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                    models = algorithms.Algorithm._initialize_models(algo)
+
+    assert len(models) == 1
+    assert isinstance(models[0], FakeBngsimNfModel)
+    assert Path(models[0].xml_path).is_file()
+    assert any('simulate' in a for a in models[0].actions)
+
+
+def test_initialize_models_hybrid_explicit_bngsim_backend_errors_on_xml_failure(monkeypatch, tmp_path):
+    """Explicit `bngl_backend = bngsim` must raise when hybrid XML generation
+    fails — silent fallback to BNG2.pl is the auto behavior, not the explicit
+    behavior."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bngsim')
+
+    def _net_ok_then_xml_fail(cmd, timeout, stdout=None, stderr=None, input=None):
+        del timeout, stdout, stderr, input
+        bngl_path = Path(os.getcwd()) / cmd[1]
+        bngl_text = bngl_path.read_text()
+        if 'writeXML' in bngl_text:
+            raise RuntimeError('forced hybrid XML failure')
+        _write_dummy_net(bngl_path.with_suffix('.net'))
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_net_ok_then_xml_fail):
+        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with pytest.raises(printing.PybnfError, match='hybrid XML generation failed'):
+                    algorithms.Algorithm._initialize_models(algo)
 
 
 def test_initialize_models_hybrid_falls_back_to_netmodel_when_bngsim_unavailable(monkeypatch, tmp_path):

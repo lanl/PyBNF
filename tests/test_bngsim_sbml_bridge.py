@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 import types
 
@@ -150,6 +154,37 @@ def test_config_routes_xml_to_roadrunner_by_default():
     assert not isinstance(models['raf'], bngsim_sbml_model.BngsimSbmlModelNoTimeout)
 
 
+def test_config_routes_xml_to_sbmlmodel_when_wall_time_sim_positive():
+    """RoadRunner path: wall_time_sim>0 must select SbmlModel (subprocess
+    wrapper with timeout), not SbmlModelNoTimeout. Pins the post-#382
+    invariant that only the RR path branches on wall_time_sim — the BNGsim
+    path always uses NoTimeout regardless."""
+    cfg = _model_loader_config()
+    cfg.config['wall_time_sim'] = 60
+
+    models = cfg._load_models()
+
+    # SbmlModel is a subclass of SbmlModelNoTimeout, so check the concrete type.
+    assert type(models['raf']) is pset.SbmlModel
+
+
+@pytest.mark.skipif(
+    not bngsim_sbml_model.BNGSIM_HAS_SBML,
+    reason='bngsim SBML backend is not available in this environment',
+)
+def test_config_routes_xml_to_bngsim_notimeout_regardless_of_wall_time_sim():
+    """BNGsim SBML path always uses NoTimeout — wall_time_sim is enforced
+    in-process via SimulationTimeout (issue #382)."""
+    cfg = _model_loader_config(sbml_backend='bngsim')
+    cfg.config['wall_time_sim'] = 60
+
+    models = cfg._load_models()
+
+    assert isinstance(models['raf'], bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    # Bngsim SBML path must not promote to a subprocess-timeout-wrapped class.
+    assert not isinstance(models['raf'], pset.SbmlModel)
+
+
 @pytest.mark.skipif(
     not bngsim_sbml_model.BNGSIM_HAS_SBML,
     reason='bngsim SBML backend is not available in this environment',
@@ -169,6 +204,58 @@ def test_config_rejects_bngsim_backend_without_support(monkeypatch):
 
     with pytest.raises(printing.PybnfError, match='python-libsbml is not installed'):
         cfg._load_models()
+
+
+def test_subprocess_pybnf_no_bngsim_rejects_sbml_backend_bngsim():
+    """`sbml_backend = bngsim` must fail at config load when PYBNF_NO_BNGSIM=1.
+
+    Uses a subprocess because PYBNF_NO_BNGSIM is read by `_bngsim_caps` at
+    import time; an in-process monkeypatch wouldn't exercise the realistic
+    failure shape (`BNGSIM_SBML_ERROR` falls back to the env-var message).
+    """
+    xml_path = str(Path(__file__).resolve().parent / 'bngl_files' / 'raf.xml')
+    script = textwrap.dedent('''
+        import sys
+        from pybnf import config, printing
+        from pybnf._bngsim_caps import BNGSIM_AVAILABLE, BNGSIM_SBML_ERROR
+        assert BNGSIM_AVAILABLE is False, 'env var did not disable bngsim'
+        assert 'PYBNF_NO_BNGSIM' in BNGSIM_SBML_ERROR, (
+            'BNGSIM_SBML_ERROR did not surface env-var reason: ' + repr(BNGSIM_SBML_ERROR)
+        )
+        xml_path = __XML_PATH__
+        cfg = object.__new__(config.Configuration)
+        cfg._data_map = {}
+        cfg.config = {
+            'models': {xml_path},
+            xml_path: [],
+            'delete_old_files': 1,
+            'wall_time_sim': 0,
+            'sbml_integrator': 'cvode',
+            'sbml_backend': 'bngsim',
+            'smoothing': 1,
+            'parallelize_models': 1,
+            'fit_type': 'check',
+        }
+        try:
+            cfg._load_models()
+        except printing.PybnfError as exc:
+            msg = str(exc)
+            assert 'sbml_backend = bngsim' in msg, msg
+            assert 'PYBNF_NO_BNGSIM' in msg, msg
+            print('OK')
+            sys.exit(0)
+        sys.exit('expected PybnfError but none was raised')
+    ''').replace('__XML_PATH__', repr(xml_path))
+    env = os.environ.copy()
+    env['PYBNF_NO_BNGSIM'] = '1'
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, (
+        'stdout=%r stderr=%r' % (result.stdout, result.stderr)
+    )
+    assert 'OK' in result.stdout
 
 
 def test_config_rejects_non_cvode_integrator_for_bngsim_backend():
@@ -254,6 +341,35 @@ def test_bngsim_sbml_mutant_matches_existing_expectations(tmp_path):
     assert abs(dat['RIRI'][-1] - 2.94514) < 0.01
     assert abs(dat['R'][-1] - 0.358949) < 0.01
     assert dat.cols['time'] == 0
+
+
+@pytest.mark.skipif(
+    not bngsim_sbml_model.BNGSIM_HAS_SBML,
+    reason='bngsim SBML backend is not available in this environment',
+)
+def test_bngsim_sbml_ode_matches_roadrunner_on_raf(tmp_path):
+    """Numerical parity for SBML ODE (cvode) on the existing raf.xml.
+
+    The SSA parity test (test_bngsim_ssa_replaces_rr.py) already covers
+    stochastic equivalence; this guards the deterministic path so that any
+    future flip of the SBML default surfaces drift before it lands."""
+    xml_path = _raf_xml_path()
+    action = pset.TimeCourse({'time': '1000', 'step': '10', 'method': 'ode'})
+    empty_pset = pset.PSet([])
+    rr_model = pset.SbmlModelNoTimeout(
+        xml_path, xml_path, pset=empty_pset, actions=(action,), integrator='cvode',
+    )
+    bn_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=empty_pset, actions=(action,), integrator='cvode',
+    )
+
+    rr = rr_model.execute(str(tmp_path), 'raf_rr_ode', 1000)['time_course']
+    bn = bn_model.execute(str(tmp_path), 'raf_bn_ode', 1000)['time_course']
+
+    npt.assert_allclose(bn.data[:, 0], rr.data[:, 0], rtol=0, atol=1e-9)
+    for species in ('R', 'RIRI', 'I'):
+        assert species in rr.cols and species in bn.cols, species
+        npt.assert_allclose(bn[species], rr[species], rtol=1e-3, atol=1e-6)
 
 
 @pytest.mark.skipif(
