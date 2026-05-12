@@ -1,0 +1,15 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k_prod  10  # Constant
+    2 k_deg   1  # Constant
+end parameters
+begin species
+    1 S() 0
+end species
+begin reactions
+    1 0 1 k_prod #_R1
+    2 1 0 k_deg #_R2
+end reactions
+begin groups
+    1 Stot                 1
+end groups

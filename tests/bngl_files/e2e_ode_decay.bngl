@@ -1,0 +1,32 @@
+# Phase 1 E2E fixture (issue #379, Gap 1.1)
+# Single-species first-order decay: S() -> 0 at rate k.
+# Analytic mean trajectory: S(t) = S0 * exp(-k*t).
+begin model
+
+begin parameters
+  S0  100
+  k   0.3
+end parameters
+
+begin molecule types
+  S()
+end molecule types
+
+begin seed species
+  S()  S0
+end seed species
+
+begin observables
+  Molecules Stot S()
+end observables
+
+begin reaction rules
+  S() -> 0  k
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>20,suffix=>"tc"})
+end actions

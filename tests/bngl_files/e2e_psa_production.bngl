@@ -1,0 +1,33 @@
+# Phase 1 E2E fixture (issue #379, Gap 1.3)
+# Pure first-order production: 0 -> S at rate k_prod.
+# N(t) is a Poisson process with mean and variance k_prod*t.
+begin model
+
+begin parameters
+  k_prod  5
+end parameters
+
+begin molecule types
+  S()
+end molecule types
+
+begin seed species
+  S()  0
+end seed species
+
+begin observables
+  Molecules Stot S()
+end observables
+
+begin reaction rules
+  0 -> S()  k_prod
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  # Tests drive simulation via psa or ssa+population action strings;
+  # the simulate() here just keeps the .bngl self-contained for BNG2.pl.
+  simulate({method=>"ssa",t_start=>0,t_end=>10,n_steps=>10,population=>1,suffix=>"tc"})
+end actions

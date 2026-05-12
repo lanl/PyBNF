@@ -1,0 +1,14 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 S0    100  # Constant
+    2 k     0.3  # Constant
+end parameters
+begin species
+    1 S() S0
+end species
+begin reactions
+    1 1 0 k #_R1
+end reactions
+begin groups
+    1 Stot                 1
+end groups

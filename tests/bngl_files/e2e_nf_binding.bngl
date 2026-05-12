@@ -1,0 +1,42 @@
+# Phase 1 E2E fixture (issue #379, Gap 1.4)
+# Irreversible bimolecular binding: A(b) + B(a) -> A(b!1).B(a!1).
+# With [A]0 = [B]0 = N0 and rate k_on, well-mixed mean-field gives
+#   A(t) = B(t) = N0 / (1 + N0 * k_on * t),
+# so bound(t) = N0 - N0/(1 + N0*k_on*t). At t=10, k_on=0.001, N0=100,
+# the mean bound count is 50.
+begin model
+
+begin parameters
+  N0    100
+  k_on  0.001
+end parameters
+
+begin molecule types
+  A(b)
+  B(a)
+end molecule types
+
+begin seed species
+  A(b)  N0
+  B(a)  N0
+end seed species
+
+begin observables
+  Molecules Afree    A(b)
+  Molecules Bfree    B(a)
+  Molecules bound    A(b!+)
+end observables
+
+begin reaction rules
+  A(b) + B(a) -> A(b!1).B(a!1)  k_on
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  writeXML()
+  # NF simulate kept here only so the .bngl is self-contained for BNG2.pl;
+  # tests construct their own action strings.
+  simulate({method=>"nf",t_start=>0,t_end=>10,n_steps=>10,gml=>1000,suffix=>"tc"})
+end actions

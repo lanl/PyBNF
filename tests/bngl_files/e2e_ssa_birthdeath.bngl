@@ -1,0 +1,34 @@
+# Phase 1 E2E fixture (issue #379, Gap 1.2)
+# Birth-death process: production k_prod, first-order degradation k_deg.
+# Stationary distribution is Poisson(k_prod / k_deg).
+# At equilibrium: <S> = Var(S) = k_prod / k_deg.
+begin model
+
+begin parameters
+  k_prod  10
+  k_deg    1
+end parameters
+
+begin molecule types
+  S()
+end molecule types
+
+begin seed species
+  S()  0
+end seed species
+
+begin observables
+  Molecules Stot S()
+end observables
+
+begin reaction rules
+  0     -> S()  k_prod
+  S()   -> 0    k_deg
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ssa",t_start=>0,t_end=>50,n_steps=>50,suffix=>"tc"})
+end actions
