@@ -877,10 +877,34 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
     return result
 
 
+def _ext_for_simtype(simtype):
+    """Return the file extension PyBNF uses for a given action type."""
+    return 'scan' if simtype == 'parameter_scan' else 'gdat'
+
+
+def _write_saved_action_outputs(folder, filename, suffixes, ds):
+    """Write each action's Data to a PyBNF-compatible .gdat/.scan file.
+
+    Mirrors the BNG2.pl on-disk layout that BNGLModel/NetModel rely on:
+    one file per (action, mutant) keyed as ``{folder}/{filename}_{suffix}.{ext}``.
+    Each file has a leading ``#``-prefixed header line listing column names
+    in the same order as ``Data.headers``, followed by whitespace-separated
+    numeric rows — re-readable via :class:`pybnf.data.Data`.
+    """
+    for simtype, suffix in suffixes:
+        data = ds.get(suffix)
+        if data is None:
+            continue
+        headers = [data.headers[i] for i in range(data.data.shape[1])]
+        path = '%s/%s_%s.%s' % (folder, filename, suffix, _ext_for_simtype(simtype))
+        np.savetxt(path, data.data, header=' '.join(headers))
+
+
 class BngsimModel(NetModel):
     """In-process simulation model using the optional bngsim engine."""
 
-    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None):
+    def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None,
+                 save_files=False):
         super(BngsimModel, self).__init__(
             name,
             acts,
@@ -893,6 +917,7 @@ class BngsimModel(NetModel):
         if not BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
         self._protocol = protocol or []
+        self.save_files = save_files
 
         self._net_species_initializers = _parse_net_species_initializers(
             self.netfile_lines
@@ -965,6 +990,9 @@ class BngsimModel(NetModel):
                 )
                 raise FailedSimulationError(str(exc)) from exc
             raise
+
+        if self.save_files:
+            _write_saved_action_outputs(folder, filename, self.suffixes, ds)
 
         if with_mutants:
             for mut in self.mutants:
@@ -1928,6 +1956,7 @@ class BngsimNfModel(Model):
         param_names=(),
         source_dir=None,
         protocol=(),
+        save_files=False,
     ):
         if not BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
@@ -1941,6 +1970,7 @@ class BngsimNfModel(Model):
         self._split_line_index = split_line_index
         self._source_dir = source_dir
         self._protocol = list(protocol)
+        self.save_files = save_files
         self.param_names = tuple(param_names)
         self.param_set = None
         self.bng_command = ''
@@ -2292,6 +2322,9 @@ class BngsimNfModel(Model):
             raise
         finally:
             _stop_session(nfsim)
+
+        if self.save_files:
+            _write_saved_action_outputs(folder, filename, self.suffixes, ds)
 
         if with_mutants:
             for mut in self.mutants:

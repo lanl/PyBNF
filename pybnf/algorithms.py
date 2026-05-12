@@ -650,6 +650,12 @@ class Algorithm(object):
         explicit_bngsim = bngl_backend == BNGL_BACKEND_BNGSIM
         allow_bngsim = auto_bngsim or explicit_bngsim
         bngsim_available = _bngsim_runtime_available()
+        # Match the subprocess BNGLModel/NetModel behavior: when
+        # delete_old_files=0 (keep every per-evaluation file), bngsim-backed
+        # models must write .gdat/.scan during execute() so the final-results
+        # copy at delete_old_files==0 finds something to copy. Best-fit reruns
+        # flip this on explicitly below.
+        bngsim_save_files = self.config.config.get('delete_old_files', 1) == 0
 
         for m in init_model_list:
             bridge_backend = None
@@ -821,6 +827,7 @@ class Algorithm(object):
                             param_names=m.param_names,
                             source_dir=os.path.dirname(os.path.abspath(m.file_path)),
                             protocol=m.protocol,
+                            save_files=bngsim_save_files,
                         )
                         model.bng_command = m.bng_command
                         final_model_list.append(model)
@@ -840,7 +847,8 @@ class Algorithm(object):
                 elif use_bngsim:
                     try:
                         logger.info('Using bngsim for in-process simulation of model %s' % m.name)
-                        model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path, protocol=m.protocol)
+                        model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path,
+                                            protocol=m.protocol, save_files=bngsim_save_files)
                     except Exception as exc:
                         if explicit_bngsim:
                             raise PybnfError(
@@ -1001,6 +1009,7 @@ class Algorithm(object):
                         param_names=m.param_names,
                         source_dir=os.path.dirname(os.path.abspath(m.file_path)),
                         protocol=m.protocol,
+                        save_files=bngsim_save_files,
                     )
                     model.bng_command = m.bng_command
                     final_model_list.append(model)
@@ -1425,9 +1434,10 @@ class Algorithm(object):
         if self.config.config['delete_old_files'] > 0 and self.config.config['save_best_data']:
             # Rerun the best fit parameter set so the gdat file(s) are saved in the Results folder.
             logger.info('Rerunning best fit parameter set to save data files.')
-            # Enable saving files for SBML models
+            # Enable saving files for in-process backends (SBML / Antimony / bngsim BNGL+NF).
+            # Subprocess BNGLModels always write via BNG2.pl so they're skipped here.
             for m in self.model_list:
-                if isinstance(m, SbmlModelNoTimeout):
+                if hasattr(m, 'save_files'):
                     m.save_files = True
             finaljob = Job(self.model_list, best_pset, 'bestfit',
                            self.sim_dir, self.config.config['wall_time_sim'], None,
@@ -1443,9 +1453,9 @@ class Algorithm(object):
                 # Copy all gdat and scan to Results
                 for fname in glob(self.sim_dir+'/bestfit/*.gdat') + glob(self.sim_dir+'/bestfit/*.scan'):
                     shutil.copy(fname, self.res_dir)
-            # Disable saving files for SBML models (in case there is future bootstrapping or refinement)
+            # Restore save_files defaults (in case there is future bootstrapping or refinement)
             for m in self.model_list:
-                if isinstance(m, SbmlModelNoTimeout):
+                if hasattr(m, 'save_files'):
                     m.save_files = False
 
         if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:

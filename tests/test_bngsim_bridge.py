@@ -499,7 +499,7 @@ def test_initialize_models_uses_bngsim_when_available(monkeypatch, tmp_path):
     algo = _make_dummy_algorithm(model, output_dir)
 
     class FakeBngsimModel(pset.NetModel):
-        def __init__(self, *args, protocol=None, **kwargs):
+        def __init__(self, *args, protocol=None, save_files=False, **kwargs):
             super().__init__(*args, **kwargs)
 
     monkeypatch.chdir(tmp_path)
@@ -981,6 +981,229 @@ def test_bngsim_nf_model_uses_rulemonkey_for_parameter_scan(monkeypatch):
     assert 'scan' in ds
     assert len([c for c in calls if c[0] == 'create' and c[1] == 'rulemonkey']) == 2
     assert not any(c[0] == 'create' and c[1] == 'nfsim' for c in calls)
+
+
+# ── #375: save_files-driven .gdat/.scan output for BNGsim BNGL & NF paths ─────
+
+
+def test_write_saved_action_outputs_writes_pybnf_compatible_files(tmp_path):
+    """The helper writes header + numeric rows that pybnf.Data can re-read."""
+    arr = np.array([[0.0, 1.0, 0.5], [1.0, 2.0, 0.25]])
+    data = pset.Data(arr=arr)
+    data.cols = {'time': 0, 'X': 1, 'Y': 2}
+    data.headers = {0: 'time', 1: 'X', 2: 'Y'}
+    data.indvar = 'time'
+
+    bngsim_model._write_saved_action_outputs(
+        str(tmp_path),
+        'mname_jobid',
+        [('simulate', 'tc')],
+        {'tc': data},
+    )
+
+    out = tmp_path / 'mname_jobid_tc.gdat'
+    assert out.is_file()
+    roundtrip = pset.Data(file_name=str(out))
+    assert list(roundtrip.cols.keys()) == ['time', 'X', 'Y']
+    np.testing.assert_array_almost_equal(roundtrip.data, arr)
+
+
+def test_write_saved_action_outputs_chooses_scan_extension_for_parameter_scan(tmp_path):
+    arr = np.array([[1.0, 9.0], [2.0, 8.0]])
+    data = pset.Data(arr=arr)
+    data.cols = {'k': 0, 'X_final': 1}
+    data.headers = {0: 'k', 1: 'X_final'}
+    data.indvar = 'k'
+
+    bngsim_model._write_saved_action_outputs(
+        str(tmp_path),
+        'mname_jobid',
+        [('parameter_scan', 'scan')],
+        {'scan': data},
+    )
+
+    assert (tmp_path / 'mname_jobid_scan.scan').is_file()
+    assert not (tmp_path / 'mname_jobid_scan.gdat').exists()
+
+
+def test_bngsim_nf_model_execute_writes_gdat_when_save_files_true(monkeypatch, tmp_path):
+    _install_fake_nfsim(monkeypatch)
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        ['simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})'],
+        [('simulate', 'tc')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=['begin parameters\n', 'end parameters\n'],
+        param_names=(),
+        save_files=True,
+    )
+    model.param_set = pset.PSet([])
+
+    model.execute(str(tmp_path), 'nf_model_run0', 10)
+
+    out = tmp_path / 'nf_model_run0_tc.gdat'
+    assert out.is_file()
+    # Re-readable as a pybnf Data; columns match what the in-memory Data exposes
+    roundtrip = pset.Data(file_name=str(out))
+    assert 'time' in roundtrip.cols
+    assert 'L_total' in roundtrip.cols
+
+
+def test_bngsim_nf_model_execute_omits_files_when_save_files_false(monkeypatch, tmp_path):
+    _install_fake_nfsim(monkeypatch)
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        ['simulate({method=>"nf",t_start=>0,t_end=>1,n_steps=>1,suffix=>"tc"})'],
+        [('simulate', 'tc')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=['begin parameters\n', 'end parameters\n'],
+        param_names=(),
+    )
+    model.param_set = pset.PSet([])
+
+    model.execute(str(tmp_path), 'nf_model_run0', 10)
+
+    # No files should be written when save_files is left at its default (False)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bngsim_nf_model_execute_writes_scan_for_parameter_scan(monkeypatch, tmp_path):
+    _install_fake_nf_sessions(monkeypatch)
+    model = bngsim_model.BngsimNfModel(
+        'rm_model',
+        [
+            'parameter_scan({method=>"nf_exact",parameter=>"k",par_scan_vals=>[1,2],'
+            't_start=>0,t_end=>1,n_steps=>1,suffix=>"scan"})',
+        ],
+        [('parameter_scan', 'scan')],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=['begin parameters\n', 'k k__FREE\n', 'end parameters\n'],
+        param_names=('k__FREE',),
+        save_files=True,
+    )
+    model.param_set = pset.PSet([_make_free_param('k__FREE', 1.0)])
+
+    model.execute(str(tmp_path), 'rm_model_run0', 10)
+
+    out = tmp_path / 'rm_model_run0_scan.scan'
+    assert out.is_file()
+    roundtrip = pset.Data(file_name=str(out))
+    # Scan column ordering: scan parameter first, then observables/expressions
+    assert list(roundtrip.cols.keys())[0] == 'k'
+
+
+def test_initialize_models_propagates_save_files_when_delete_old_files_zero(monkeypatch, tmp_path):
+    """delete_old_files=0 must reach BngsimNfModel(save_files=True) at construction time."""
+    model = _make_tfun_bngl_model(tmp_path, method='nf')
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+    algo.config.config['delete_old_files'] = 0
+
+    captured = {}
+
+    class FakeBngsimNfModel(object):
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.bng_command = ''
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                    algorithms.Algorithm._initialize_models(algo)
+
+    assert captured.get('save_files') is True
+
+
+def test_initialize_models_save_files_defaults_false_when_delete_old_files_positive(monkeypatch, tmp_path):
+    model = _make_tfun_bngl_model(tmp_path, method='nf')
+    output_dir = tmp_path / 'pybnf_output'
+    output_dir.mkdir()
+    algo = _make_dummy_algorithm(model, output_dir)
+    algo.config.config['delete_old_files'] = 1
+
+    captured = {}
+
+    class FakeBngsimNfModel(object):
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.bng_command = ''
+
+    monkeypatch.chdir(tmp_path)
+    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                    algorithms.Algorithm._initialize_models(algo)
+
+    assert captured.get('save_files') is False
+
+
+def test_bngsim_model_execute_writes_gdat_when_save_files_true(monkeypatch, tmp_path):
+    """Cover the BNGL/network path: BngsimModel.execute writes .gdat on save_files=True."""
+    class FakeResult:
+        def __init__(self, times):
+            self.time = np.asarray(times)
+            self.observables = np.zeros((len(times), 1))
+            self.observable_names = ['Xtot']
+            self.expression_names = []
+            self.expressions = np.zeros((len(times), 0))
+            self.n_times = len(times)
+            self.n_observables = 1
+
+    class FakeSimulator:
+        def __init__(self, model, method='ode', **kw):
+            self.method = method
+
+        def run(self, t_span=None, n_points=2, **kw):
+            return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+
+        def add_stop_condition(self, *a, **kw): pass
+        def clear_stop_conditions(self): pass
+
+    class FakeModel:
+        param_names = []
+        def get_param(self, name): return 0.0
+        def set_param(self, name, val): pass
+        def reset(self): pass
+        def clone(self): return FakeModel()
+        def set_concentration(self, name, val): pass
+        def get_concentration(self, name): return 0.0
+        def save_concentrations(self): pass
+
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = FakeSimulator
+    fake_bngsim.Model = FakeModel
+    monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', False)
+
+    obj = object.__new__(bngsim_model.BngsimModel)
+    obj.name = 'mname'
+    obj.actions = ['simulate({method=>"ode",t_end=>1,n_steps=>2,suffix=>"tc"})']
+    obj.suffixes = [('simulate', 'tc')]
+    obj.mutants = []
+    obj._protocol = []
+    obj._net_species_initializers = []
+    obj._codegen_so = ''
+    obj._net_path = '/tmp/fake.net'
+    obj._engine_model = FakeModel()
+    obj.param_set = None
+    obj.save_files = True
+
+    obj.execute(str(tmp_path), 'mname_run0', 10)
+
+    out = tmp_path / 'mname_run0_tc.gdat'
+    assert out.is_file()
+    roundtrip = pset.Data(file_name=str(out))
+    assert 'time' in roundtrip.cols
+    assert 'Xtot' in roundtrip.cols
 
 
 # ── sample_times validation tests ────────────────────────────────────────────
