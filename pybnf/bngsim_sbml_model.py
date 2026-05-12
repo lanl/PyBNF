@@ -28,41 +28,18 @@ _SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
 logger = logging.getLogger(__name__)
 
 
-try:
-    if os.environ.get('PYBNF_NO_BNGSIM'):
-        raise ImportError('PYBNF_NO_BNGSIM set')
-    import bngsim
-    BNGSIM_AVAILABLE = True
-    BNGSIM_HAS_SIM_TIMEOUT = hasattr(bngsim, 'SimulationTimeout')
-except ImportError:
-    bngsim = None
-    BNGSIM_AVAILABLE = False
-    BNGSIM_HAS_SIM_TIMEOUT = False
-
+from ._bngsim_caps import (
+    BNGSIM_AVAILABLE,
+    BNGSIM_HAS_LIBSBML as LIBSBML_AVAILABLE,
+    BNGSIM_HAS_SBML,
+    BNGSIM_SBML_ERROR,
+    bngsim,
+)
 
 try:
     import libsbml
-    LIBSBML_AVAILABLE = True
 except ImportError:
     libsbml = None
-    LIBSBML_AVAILABLE = False
-
-
-def _detect_bngsim_sbml_support():
-    if not BNGSIM_AVAILABLE:
-        return False, 'bngsim is not available'
-
-    model_cls = getattr(bngsim, 'Model', None)
-    if model_cls is None or not hasattr(model_cls, 'from_sbml'):
-        return False, 'installed bngsim does not expose SBML loading'
-
-    if not LIBSBML_AVAILABLE:
-        return False, 'python-libsbml is not installed'
-
-    return True, ''
-
-
-BNGSIM_HAS_SBML, BNGSIM_SBML_ERROR = _detect_bngsim_sbml_support()
 
 
 def _require_bngsim_sbml_support():
@@ -349,17 +326,14 @@ class BngsimSbmlModelNoTimeout(Model):
             kwargs['strict_ssa'] = getattr(self, 'strict_ssa', True)
         try:
             return bngsim.Simulator(engine_model, **kwargs)
-        except Exception as exc:
-            ssa_validation_error = getattr(bngsim, 'SsaValidationError', None)
-            if ssa_validation_error is not None and isinstance(exc, ssa_validation_error):
-                raise ModelError(str(exc)) from exc
-            raise
+        except bngsim.SsaValidationError as exc:
+            raise ModelError(str(exc)) from exc
 
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
                         seed=None, timeout=None):
         sim = self._make_simulator(engine_model, method)
         run_kwargs = {}
-        if BNGSIM_HAS_SIM_TIMEOUT and timeout is not None:
+        if timeout is not None:
             try:
                 timeout_value = float(timeout)
             except (TypeError, ValueError):
@@ -396,8 +370,8 @@ class BngsimSbmlModelNoTimeout(Model):
         return seed_value
 
     def execute(self, folder, filename, timeout):
+        from ._bngsim_caps import BNGSIM_VERSION as _BNGSIM_VERSION
         from ._bngsim_failure import write_failure_report
-        from .bngsim_model import BNGSIM_VERSION as _BNGSIM_VERSION
 
         backend_name = (
             'bngsim-antimony'
@@ -485,7 +459,7 @@ class BngsimSbmlModelNoTimeout(Model):
                             'mutation_suffix': mut.suffix,
                         },
                     )
-                    if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+                    if isinstance(exc, bngsim.SimulationTimeout):
                         logger.warning(
                             'bngsim SBML model %s: wall_time_sim=%s exceeded at %.3fs',
                             self.name,

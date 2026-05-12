@@ -219,7 +219,7 @@ def _install_fake_nfsim(monkeypatch):
         def initialize(self, seed):
             calls.append(('init', seed, dict(self.params), dict(self.molecules)))
 
-        def simulate(self, t_start, t_end, n_points):
+        def simulate(self, t_start, t_end, n_points, *, timeout=None):
             calls.append(('simulate', t_start, t_end, n_points, dict(self.params), dict(self.molecules)))
             return FakeResult(np.linspace(t_start, t_end, n_points), self.molecules.get('L', 0))
 
@@ -235,15 +235,13 @@ def _install_fake_nfsim(monkeypatch):
 
     fake_pkg = types.ModuleType('bngsim')
     fake_pkg.NfsimSession = FakeNfsimSession
+    fake_pkg.SimulationTimeout = _FakeSimulationTimeout
     fake_pkg.normalize_method = _make_fake_normalize_method(has_nfsim=True, has_rulemonkey=False)
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_pkg)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_pkg)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', False)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM_SESSION_TIMEOUT', False)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT', False)
     return calls
 
 
@@ -285,7 +283,7 @@ def _install_fake_nf_sessions(monkeypatch, *, has_nfsim=True, has_rulemonkey=Tru
         def initialize(self, seed):
             calls.append(('init', self.backend, seed, dict(self.params), dict(self.molecules)))
 
-        def simulate(self, t_start, t_end, n_points):
+        def simulate(self, t_start, t_end, n_points, *, timeout=None):
             calls.append(
                 ('simulate', self.backend, t_start, t_end, n_points, dict(self.params), dict(self.molecules))
             )
@@ -312,6 +310,7 @@ def _install_fake_nf_sessions(monkeypatch, *, has_nfsim=True, has_rulemonkey=Tru
         fake_pkg.NfsimSession = FakeNfsimSession
     if has_rulemonkey:
         fake_pkg.RuleMonkeySession = FakeRuleMonkeySession
+    fake_pkg.SimulationTimeout = _FakeSimulationTimeout
     fake_pkg.normalize_method = _make_fake_normalize_method(
         has_nfsim=has_nfsim, has_rulemonkey=has_rulemonkey,
     )
@@ -321,9 +320,6 @@ def _install_fake_nf_sessions(monkeypatch, *, has_nfsim=True, has_rulemonkey=Tru
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', has_nfsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', has_rulemonkey)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', False)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM_SESSION_TIMEOUT', False)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT', False)
     return calls
 
 
@@ -372,10 +368,11 @@ def test_actions_compatible_with_bngsim_rejects_pla():
 
 
 def test_bngsim_version_compatibility_bounds():
-    assert bngsim_model._bngsim_version_compatible('0.5.0')
-    assert bngsim_model._bngsim_version_compatible('0.9.1')
-    assert not bngsim_model._bngsim_version_compatible('0.4.9')
-    assert not bngsim_model._bngsim_version_compatible('1.0.0')
+    from pybnf import _bngsim_caps
+    assert _bngsim_caps._version_compatible('0.5.0')
+    assert _bngsim_caps._version_compatible('0.9.1')
+    assert not _bngsim_caps._version_compatible('0.4.9')
+    assert not _bngsim_caps._version_compatible('1.0.0')
 
 
 _rulemonkey_required = pytest.mark.skipif(
@@ -1242,10 +1239,11 @@ def test_bngsim_model_execute_writes_gdat_when_save_files_true(monkeypatch, tmp_
     fake_bngsim = types.ModuleType('bngsim')
     fake_bngsim.Simulator = FakeSimulator
     fake_bngsim.Model = FakeModel
+    fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.StopConditionMet = type('StopConditionMet', (Exception,), {})
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', False)
 
     obj = object.__new__(bngsim_model.BngsimModel)
     obj.name = 'mname'
@@ -2360,13 +2358,13 @@ def _install_fake_simulator_raising_timeout(monkeypatch, *, timeout, elapsed):
     fake_bngsim = types.ModuleType('bngsim')
     fake_bngsim.Simulator = FakeSimulator
     fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.StopConditionMet = type('StopConditionMet', (Exception,), {})
     fake_bngsim.HAS_NFSIM = False
     fake_bngsim.HAS_RULEMONKEY = False
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
     return fake_bngsim
 
 
@@ -2487,14 +2485,9 @@ def _install_fake_session_raising_timeout(monkeypatch, *, backend, timeout, elap
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM',
                         backend == bngsim_model.BNGSIM_NF_BACKEND_NFSIM)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY',
-                        backend == bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM_SESSION_TIMEOUT',
-                        backend == bngsim_model.BNGSIM_NF_BACKEND_NFSIM)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT',
                         backend == bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY)
     return teardown_log
 
@@ -2584,10 +2577,10 @@ def test_bngsim_sim_timeout_kwarg_passes_through_on_success(monkeypatch):
     fake_bngsim.Simulator = FakeSimulator
     fake_bngsim.Model = FakeModel
     fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.StopConditionMet = type('StopConditionMet', (Exception,), {})
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
 
     obj = object.__new__(bngsim_model.BngsimModel)
     obj.actions = [
@@ -2627,13 +2620,13 @@ def _install_fake_simulator_raising(monkeypatch, exc):
     fake_bngsim = types.ModuleType('bngsim')
     fake_bngsim.Simulator = FakeSimulator
     fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
+    fake_bngsim.StopConditionMet = type('StopConditionMet', (Exception,), {})
     fake_bngsim.HAS_NFSIM = False
     fake_bngsim.HAS_RULEMONKEY = False
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
     monkeypatch.setattr(bngsim_model, 'BNGSIM_VERSION', '9.9.9-test')
     return fake_bngsim
 

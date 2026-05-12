@@ -141,29 +141,6 @@ def test_make_simulator_omits_strict_ssa_for_ode_method(monkeypatch):
     assert captured['kwargs'] == {'method': 'ode'}
 
 
-@pytest.mark.parametrize(
-    'bngsim_available, has_loader, libsbml_available, expected',
-    [
-        (False, False, False, (False, 'bngsim is not available')),
-        (True, False, True, (False, 'installed bngsim does not expose SBML loading')),
-        (True, True, False, (False, 'python-libsbml is not installed')),
-        (True, True, True, (True, '')),
-    ],
-)
-def test_detect_bngsim_sbml_support(monkeypatch, bngsim_available, has_loader, libsbml_available, expected):
-    if has_loader:
-        model_cls = type('FakeSbmlModel', (), {'from_sbml': staticmethod(lambda path: path)})
-    else:
-        model_cls = type('FakeSbmlModel', (), {})
-
-    fake_bngsim = types.SimpleNamespace(Model=model_cls)
-    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_AVAILABLE', bngsim_available)
-    monkeypatch.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_sbml_model, 'LIBSBML_AVAILABLE', libsbml_available)
-
-    assert bngsim_sbml_model._detect_bngsim_sbml_support() == expected
-
-
 def test_config_routes_xml_to_roadrunner_by_default():
     cfg = _model_loader_config()
 
@@ -342,7 +319,6 @@ def test_bngsim_sbml_model_timeout_reraises_failedsimulationerror(tmp_path, monk
             setattr(fake_bngsim, attr, getattr(bngsim_sbml_model.bngsim, attr))
 
     monkeypatch.setattr(bngsim_sbml_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_sbml_model, 'BNGSIM_HAS_SIM_TIMEOUT', True)
 
     xml_path = _raf_xml_path()
     ps = pset.PSet(_raf_params())

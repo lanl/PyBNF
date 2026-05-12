@@ -3,12 +3,15 @@
 
 import logging
 
+from ._bngsim_caps import (
+    BNGSIM_ANTIMONY_ERROR,
+    BNGSIM_HAS_ANTIMONY,
+    BNGSIM_HAS_ANTIMONY_PY as ANTIMONY_AVAILABLE,
+    bngsim,
+)
 from .bngsim_sbml_model import (
-    BNGSIM_AVAILABLE,
-    LIBSBML_AVAILABLE,
     BngsimSbmlModelNoTimeout,
     _sbml_doc_from_text,
-    bngsim,
 )
 from .pset import ModelError, MutationSet
 
@@ -18,30 +21,8 @@ logger = logging.getLogger(__name__)
 
 try:
     import antimony
-    ANTIMONY_AVAILABLE = True
 except ImportError:
     antimony = None
-    ANTIMONY_AVAILABLE = False
-
-
-def _detect_bngsim_antimony_support():
-    if not BNGSIM_AVAILABLE:
-        return False, 'bngsim is not available'
-
-    model_cls = getattr(bngsim, 'Model', None)
-    if model_cls is None or not hasattr(model_cls, 'from_antimony'):
-        return False, 'installed bngsim does not expose Antimony loading'
-
-    if not ANTIMONY_AVAILABLE:
-        return False, 'antimony is not installed. Install with: pip install antimony python-libsbml'
-
-    if not LIBSBML_AVAILABLE:
-        return False, 'python-libsbml is not installed. Install with: pip install antimony python-libsbml'
-
-    return True, ''
-
-
-BNGSIM_HAS_ANTIMONY, BNGSIM_ANTIMONY_ERROR = _detect_bngsim_antimony_support()
 
 
 def _require_bngsim_antimony_support():

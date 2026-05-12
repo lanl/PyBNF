@@ -3,8 +3,6 @@
 
 import copy
 import concurrent.futures
-import inspect
-import importlib.metadata
 import logging
 import math
 import os
@@ -13,80 +11,23 @@ import shutil
 
 import numpy as np
 
+from ._bngsim_caps import (
+    BNGSIM_AVAILABLE,
+    BNGSIM_ERROR,
+    BNGSIM_FEATURES,
+    BNGSIM_HAS_NFSIM,
+    BNGSIM_HAS_RULEMONKEY,
+    BNGSIM_MISSING,
+    BNGSIM_VERSION,
+    bngsim,
+    feature_missing_reason,
+)
 from .data import Data
 from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
 from ._seed import POLICY_AUTO, resolve_seed
 
 
 logger = logging.getLogger(__name__)
-
-_BNGSIM_MIN_VERSION = (0, 5, 0)
-_BNGSIM_MAX_MAJOR = 1
-
-
-def _parse_bngsim_version(version):
-    match = re.match(r'^\s*(\d+)\.(\d+)\.(\d+)', version or '')
-    if not match:
-        return None
-    return tuple(int(part) for part in match.groups())
-
-
-def _bngsim_version_compatible(version):
-    parsed = _parse_bngsim_version(version)
-    if parsed is None:
-        return True
-    return _BNGSIM_MIN_VERSION <= parsed and parsed[0] < _BNGSIM_MAX_MAJOR
-
-
-def _detect_bngsim_version(module):
-    version = getattr(module, '__version__', None)
-    if version:
-        return version
-    try:
-        return importlib.metadata.version('bngsim')
-    except importlib.metadata.PackageNotFoundError:
-        return None
-
-
-BNGSIM_VERSION = None
-BNGSIM_ERROR = ''
-try:
-    if os.environ.get('PYBNF_NO_BNGSIM'):
-        raise ImportError('PYBNF_NO_BNGSIM set')
-    import bngsim
-    BNGSIM_VERSION = _detect_bngsim_version(bngsim)
-    if not _bngsim_version_compatible(BNGSIM_VERSION):
-        raise ImportError(
-            'installed bngsim version %s is incompatible; PyBNF requires bngsim>=0.5.0,<1'
-            % BNGSIM_VERSION
-        )
-    BNGSIM_AVAILABLE = True
-except ImportError as exc:
-    bngsim = None
-    BNGSIM_AVAILABLE = False
-    BNGSIM_ERROR = str(exc) or 'bngsim is not available'
-
-
-BNGSIM_HAS_NFSIM = False
-BNGSIM_HAS_RULEMONKEY = False
-BNGSIM_HAS_SIM_TIMEOUT = False
-BNGSIM_HAS_NFSIM_SESSION_TIMEOUT = False
-BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT = False
-if BNGSIM_AVAILABLE:
-    BNGSIM_HAS_NFSIM = bool(getattr(bngsim, 'HAS_NFSIM', False))
-    BNGSIM_HAS_RULEMONKEY = bool(getattr(bngsim, 'HAS_RULEMONKEY', False))
-    BNGSIM_HAS_SIM_TIMEOUT = hasattr(bngsim, 'SimulationTimeout')
-
-    def _session_class_has_timeout(cls):
-        try:
-            return 'timeout' in inspect.signature(cls.simulate).parameters
-        except (TypeError, ValueError):
-            return False
-
-    if BNGSIM_HAS_NFSIM:
-        BNGSIM_HAS_NFSIM_SESSION_TIMEOUT = _session_class_has_timeout(bngsim.NfsimSession)
-    if BNGSIM_HAS_RULEMONKEY:
-        BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT = _session_class_has_timeout(bngsim.RuleMonkeySession)
 
 
 BNGSIM_BACKEND_NET = 'net'
@@ -110,16 +51,7 @@ _PARAMETER_SCAN_KEY_ALIASES = {
 }
 
 
-def _normalize_sim_timeout(timeout, method=None):
-    """Return a float timeout to pass to bngsim, or None to omit the kwarg.
-
-    bngsim treats None / non-positive as 'no budget'. Method is accepted for
-    backend-specific gating but is unused now that every Simulator backend
-    (ODE, SSA, PSA, NFsim, RuleMonkey) honors the kwarg.
-    """
-    del method
-    if not BNGSIM_HAS_SIM_TIMEOUT:
-        return None
+def _coerce_positive_timeout(timeout):
     if timeout is None:
         return None
     try:
@@ -129,31 +61,27 @@ def _normalize_sim_timeout(timeout, method=None):
     if value <= 0.0:
         return None
     return value
+
+
+def _normalize_sim_timeout(timeout, method=None):
+    """Return a float timeout to pass to bngsim, or None to omit the kwarg.
+
+    bngsim treats None / non-positive as 'no budget'. Every Simulator backend
+    (ODE, SSA, PSA, NFsim, RuleMonkey) honors the kwarg in bngsim>=0.5.0.
+    """
+    del method
+    return _coerce_positive_timeout(timeout)
 
 
 def _normalize_session_timeout(timeout, session_backend):
     """Return a float timeout for an NF session's simulate(), or None to omit.
 
-    Returns None when the installed bngsim's session class for this backend
-    doesn't accept a ``timeout`` kwarg.
+    Both NfsimSession.simulate() and RuleMonkeySession.simulate() accept the
+    ``timeout`` kwarg in bngsim>=0.5.0; non-NF backends get None.
     """
-    if session_backend == BNGSIM_NF_BACKEND_NFSIM:
-        supported = BNGSIM_HAS_NFSIM_SESSION_TIMEOUT
-    elif session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
-        supported = BNGSIM_HAS_RULEMONKEY_SESSION_TIMEOUT
-    else:
-        supported = False
-    if not supported:
+    if session_backend not in (BNGSIM_NF_BACKEND_NFSIM, BNGSIM_NF_BACKEND_RULEMONKEY):
         return None
-    if timeout is None:
-        return None
-    try:
-        value = float(timeout)
-    except (TypeError, ValueError):
-        return None
-    if value <= 0.0:
-        return None
-    return value
+    return _coerce_positive_timeout(timeout)
 
 
 def _collapse_action_line_continuations(action_line):
@@ -483,31 +411,11 @@ def missing_bngsim_nf_action_support(actions):
     return tuple(missing)
 
 
-def _callable_accepts_keyword(callable_obj, keyword):
-    try:
-        signature = inspect.signature(callable_obj)
-    except (TypeError, ValueError):
-        return True
-
-    for param in signature.parameters.values():
-        if param.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return keyword in signature.parameters
-
-
 def _get_nf_session_class(session_backend):
     if session_backend == BNGSIM_NF_BACKEND_NFSIM:
-        names = ('NfsimSession',)
-    elif session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
-        names = ('RuleMonkeySession', 'RulemonkeySession')
-    else:
-        names = ()
-
-    for name in names:
-        session_cls = getattr(bngsim, name, None)
-        if session_cls is not None:
-            return session_cls
-
+        return bngsim.NfsimSession
+    if session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
+        return bngsim.RuleMonkeySession
     raise RuntimeError(
         'bngsim does not provide %s session support'
         % _nf_session_backend_label(session_backend)
@@ -518,17 +426,7 @@ def _create_nf_session(session_backend, xml_path, molecule_limit=None):
     session_cls = _get_nf_session_class(session_backend)
     if molecule_limit is None:
         return session_cls(xml_path)
-    if _callable_accepts_keyword(session_cls, 'molecule_limit'):
-        return session_cls(xml_path, molecule_limit=molecule_limit)
-
-    session = session_cls(xml_path)
-    if hasattr(session, 'set_molecule_limit'):
-        session.set_molecule_limit(molecule_limit)
-    else:
-        logger.warning(
-            "BngsimNfModel: %s session does not expose molecule_limit support",
-            _nf_session_backend_label(session_backend),
-        )
+    return session_cls(xml_path, molecule_limit=molecule_limit)
     return session
 
 
@@ -985,7 +883,7 @@ class BngsimModel(NetModel):
                 input_path=getattr(self, '_net_path', None),
                 action_info=getattr(self, '_pybnf_current_action_info', None),
             )
-            if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+            if isinstance(exc, bngsim.SimulationTimeout):
                 logger.warning(
                     "BngsimModel %s: wall_time_sim=%s exceeded at %.3fs",
                     self.name,
@@ -1021,8 +919,6 @@ class BngsimModel(NetModel):
         current_method = 'ode'
         current_poplevel = None
         model_time = 0.0
-
-        _has_stop_condition = hasattr(bngsim, 'StopConditionMet')
 
         base_params = {}
         for pname in model.param_names:
@@ -1112,7 +1008,7 @@ class BngsimModel(NetModel):
                     current_method = method
                     current_poplevel = None
 
-                if stop_if and _has_stop_condition:
+                if stop_if:
                     sim.add_stop_condition(stop_if, label=stop_if)
 
                 run_timeout = _normalize_sim_timeout(timeout, method=method)
@@ -1143,13 +1039,13 @@ class BngsimModel(NetModel):
                             **run_kwargs,
                         )
                 except Exception as exc:
-                    if _has_stop_condition and isinstance(exc, bngsim.StopConditionMet):
+                    if isinstance(exc, bngsim.StopConditionMet):
                         logger.info("stop_if triggered: %s", stop_if)
                         result = exc.result
                     else:
                         raise
 
-                if stop_if and _has_stop_condition and hasattr(sim, 'clear_stop_conditions'):
+                if stop_if:
                     sim.clear_stop_conditions()
 
                 model_time = t_end
@@ -1259,8 +1155,6 @@ class BngsimModel(NetModel):
             except Exception:
                 pass
 
-        _has_stop_condition = hasattr(bngsim, 'StopConditionMet')
-
         for action_index, action_line in enumerate(self._protocol):
             line = _collapse_action_line_continuations(action_line).strip()
             if not line or line.startswith('#'):
@@ -1324,7 +1218,7 @@ class BngsimModel(NetModel):
                     current_method = method
                     current_poplevel = None
 
-                if stop_if and _has_stop_condition:
+                if stop_if:
                     sim.add_stop_condition(stop_if, label=stop_if)
 
                 run_timeout = _normalize_sim_timeout(timeout, method=method)
@@ -1346,13 +1240,13 @@ class BngsimModel(NetModel):
                             **run_kwargs,
                         )
                 except Exception as exc:
-                    if _has_stop_condition and isinstance(exc, bngsim.StopConditionMet):
+                    if isinstance(exc, bngsim.StopConditionMet):
                         logger.info("protocol stop_if triggered: %s", stop_if)
                         last_result = exc.result
                     else:
                         raise
 
-                if stop_if and _has_stop_condition and hasattr(sim, 'clear_stop_conditions'):
+                if stop_if:
                     sim.clear_stop_conditions()
 
                 current_time = t_end
@@ -1772,12 +1666,11 @@ class BngsimModel(NetModel):
                 rows.append(row)
         else:
             # Use run_batch() when safe: no expression-based species
-            # initializers, no sample_times, enough points, API available.
+            # initializers, no sample_times, enough points.
             use_batch = (
                 not self._net_species_initializers
                 and sample_times is None
                 and len(points) >= 4
-                and hasattr(bngsim.Simulator, 'run_batch')
             )
             if use_batch:
                 params = [{param_name: float(v)} for v in points]
@@ -1793,7 +1686,7 @@ class BngsimModel(NetModel):
                         **_with_timeout({}, scan_timeout),
                     )
                 except Exception as exc:
-                    if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+                    if isinstance(exc, bngsim.SimulationTimeout):
                         raise
                     logger.warning(
                         "BngsimModel: run_batch() failed; falling back to "
@@ -2354,7 +2247,7 @@ class BngsimNfModel(Model):
                 input_path=getattr(self, '_xml_path', None),
                 action_info=getattr(self, '_pybnf_current_action_info', None),
             )
-            if BNGSIM_HAS_SIM_TIMEOUT and isinstance(exc, bngsim.SimulationTimeout):
+            if isinstance(exc, bngsim.SimulationTimeout):
                 logger.warning(
                     "BngsimNfModel %s: wall_time_sim=%s exceeded at %.3fs",
                     self.name,
