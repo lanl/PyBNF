@@ -19,11 +19,7 @@ import pybnf.bngsim_model as bngsim_model
 from pybnf import pset
 
 
-if not bngsim_model.BNGSIM_AVAILABLE:
-    pytest.skip(
-        'bngsim is not available in this environment',
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.bngsim
 
 
 FIXTURES = Path(__file__).resolve().parent / 'bngl_files'

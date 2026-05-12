@@ -325,10 +325,7 @@ class TestBngsimModelSeedPolicy:
 
 # ── SBML wiring: end-to-end reproducibility ────────────────────────────────────
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 class TestBngsimSbmlSeedPolicy:
     @pytest.fixture
     def raf_xml(self):

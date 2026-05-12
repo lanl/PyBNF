@@ -25,11 +25,7 @@ from pybnf import pset
 
 pytest.importorskip('roadrunner')
 
-if not bngsim_sbml_model.BNGSIM_HAS_SBML:
-    pytest.skip(
-        'bngsim SBML backend is not available in this environment',
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.bngsim_sbml
 
 
 N_REPLICATES = 200

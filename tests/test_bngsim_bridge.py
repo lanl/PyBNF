@@ -375,10 +375,7 @@ def test_bngsim_version_compatibility_bounds():
     assert not _bngsim_caps._version_compatible('1.0.0')
 
 
-_rulemonkey_required = pytest.mark.skipif(
-    not bngsim_model.BNGSIM_HAS_RULEMONKEY,
-    reason='bngsim was built without vendored RuleMonkey',
-)
+_rulemonkey_required = pytest.mark.bngsim_rulemonkey
 
 
 def _stub_normalize_method_without_rulemonkey(method):

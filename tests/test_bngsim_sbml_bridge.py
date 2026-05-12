@@ -64,10 +64,7 @@ def test_default_config_sets_sbml_ssa_strict_to_one():
     assert config.Configuration.default_config()['sbml_ssa_strict'] == 1
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_config_propagates_sbml_ssa_strict_default_to_bngsim_model():
     cfg = _model_loader_config(sbml_backend='bngsim')
     cfg.config['sbml_ssa_strict'] = 1
@@ -77,10 +74,7 @@ def test_config_propagates_sbml_ssa_strict_default_to_bngsim_model():
     assert models['raf'].strict_ssa is True
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_config_propagates_sbml_ssa_strict_override_to_bngsim_model():
     cfg = _model_loader_config(sbml_backend='bngsim')
     cfg.config['sbml_ssa_strict'] = 0
@@ -168,10 +162,7 @@ def test_config_routes_xml_to_sbmlmodel_when_wall_time_sim_positive():
     assert type(models['raf']) is pset.SbmlModel
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_config_routes_xml_to_bngsim_notimeout_regardless_of_wall_time_sim():
     """BNGsim SBML path always uses NoTimeout — wall_time_sim is enforced
     in-process via SimulationTimeout (issue #382)."""
@@ -185,10 +176,7 @@ def test_config_routes_xml_to_bngsim_notimeout_regardless_of_wall_time_sim():
     assert not isinstance(models['raf'], pset.SbmlModel)
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_config_routes_xml_to_bngsim_when_requested():
     cfg = _model_loader_config(sbml_backend='bngsim')
 
@@ -271,10 +259,7 @@ def test_config_rejects_non_cvode_integrator_for_bngsim_backend():
         cfg._load_simulators()
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_timecourse_matches_existing_expectations(tmp_path):
     xml_path = _raf_xml_path()
     ps = pset.PSet(_raf_params())
@@ -294,10 +279,7 @@ def test_bngsim_sbml_timecourse_matches_existing_expectations(tmp_path):
     assert dat.cols['time'] == 0
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_param_scan_matches_existing_expectations(tmp_path):
     xml_path = _raf_xml_path()
     ps = pset.PSet(_raf_params())
@@ -317,10 +299,7 @@ def test_bngsim_sbml_param_scan_matches_existing_expectations(tmp_path):
     assert abs(dat['R'][-1] - 0.315964) < 0.01
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_mutant_matches_existing_expectations(tmp_path):
     xml_path = _raf_xml_path()
     mut = pset.Mutation('K3', '*', 4)
@@ -343,10 +322,7 @@ def test_bngsim_sbml_mutant_matches_existing_expectations(tmp_path):
     assert dat.cols['time'] == 0
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_ode_matches_roadrunner_on_raf(tmp_path):
     """Numerical parity for SBML ODE (cvode) on the existing raf.xml.
 
@@ -372,10 +348,7 @@ def test_bngsim_sbml_ode_matches_roadrunner_on_raf(tmp_path):
         npt.assert_allclose(bn[species], rr[species], rtol=1e-3, atol=1e-6)
 
 
-@pytest.mark.skipif(
-    not bngsim_sbml_model.BNGSIM_HAS_SBML,
-    reason='bngsim SBML backend is not available in this environment',
-)
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_species_ic_scan_matches_roadrunner(tmp_path):
     xml_path = _raf_xml_path()
     action = pset.ParamScan({'param': 'I', 'min': '10', 'max': '50', 'step': '10', 'time': '1000'})
@@ -408,11 +381,9 @@ class _FakeSimulationTimeout(RuntimeError):
         self.elapsed = float(elapsed)
 
 
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_model_timeout_reraises_failedsimulationerror(tmp_path, monkeypatch, caplog):
     """sim.run raising SimulationTimeout becomes FailedSimulationError."""
-    if not bngsim_sbml_model.BNGSIM_HAS_SBML:
-        pytest.skip('bngsim SBML backend is not available')
-
     timeout_seen = {}
 
     class FakeSimulator:

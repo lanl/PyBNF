@@ -51,10 +51,7 @@ def test_parse_accepts_antimony_model_extension():
     assert parse.parse('model = thing.ant: data.exp') == ['model', 'thing.ant', 'data.exp']
 
 
-@pytest.mark.skipif(
-    not bngsim_antimony_model.BNGSIM_HAS_ANTIMONY,
-    reason='bngsim Antimony backend is not available in this environment',
-)
+@pytest.mark.bngsim_antimony
 def test_config_routes_antimony_models_to_bngsim(tmp_path):
     model_path = _write_antimony_model(tmp_path)
     cfg = _make_model_loader_config(model_path)
@@ -211,10 +208,7 @@ def test_subprocess_pybnf_no_bngsim_rejects_antimony_models(tmp_path):
     assert 'OK' in result.stdout
 
 
-@pytest.mark.skipif(
-    not bngsim_antimony_model.BNGSIM_HAS_ANTIMONY,
-    reason='bngsim Antimony backend is not available in this environment',
-)
+@pytest.mark.bngsim_antimony
 def test_config_rejects_non_cvode_integrator_for_antimony_models(tmp_path):
     model_path = _write_antimony_model(tmp_path)
     cfg = _make_model_loader_config(model_path, sbml_integrator='rk4')
@@ -223,10 +217,7 @@ def test_config_rejects_non_cvode_integrator_for_antimony_models(tmp_path):
         cfg._load_models()
 
 
-@pytest.mark.skipif(
-    not bngsim_antimony_model.BNGSIM_HAS_ANTIMONY,
-    reason='bngsim Antimony backend is not available in this environment',
-)
+@pytest.mark.bngsim_antimony
 def test_bngsim_antimony_timecourse_uses_pset_value(tmp_path):
     model_path = _write_antimony_model(tmp_path)
     action = pset.TimeCourse({'time': '20', 'step': '1'})
@@ -245,10 +236,7 @@ def test_bngsim_antimony_timecourse_uses_pset_value(tmp_path):
     assert dat.cols['time'] == 0
 
 
-@pytest.mark.skipif(
-    not bngsim_antimony_model.BNGSIM_HAS_ANTIMONY,
-    reason='bngsim Antimony backend is not available in this environment',
-)
+@pytest.mark.bngsim_antimony
 def test_bngsim_antimony_param_scan_matches_analytic_decay(tmp_path):
     model_path = _write_antimony_model(tmp_path)
     action = pset.ParamScan({'param': 'k', 'min': '0.1', 'max': '0.5', 'step': '0.1', 'time': '10'})
@@ -267,10 +255,7 @@ def test_bngsim_antimony_param_scan_matches_analytic_decay(tmp_path):
     assert abs(dat['S'][-1] - 10.0 * math.exp(-0.5 * 10.0)) < 1e-4
 
 
-@pytest.mark.skipif(
-    not bngsim_antimony_model.BNGSIM_HAS_ANTIMONY,
-    reason='bngsim Antimony backend is not available in this environment',
-)
+@pytest.mark.bngsim_antimony
 def test_bngsim_antimony_mutants_modify_parameters(tmp_path):
     model_path = _write_antimony_model(tmp_path)
     action = pset.TimeCourse({'time': '10', 'step': '1'})

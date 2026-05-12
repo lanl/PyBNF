@@ -68,3 +68,12 @@ version = { attr = "pybnf.__version__" }
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+markers = [
+    "bngsim: requires bngsim installed and PYBNF_NO_BNGSIM unset",
+    "bngsim_nfsim: requires bngsim built with NFsim",
+    "bngsim_rulemonkey: requires bngsim built with RuleMonkey",
+    "bngsim_sbml: requires bngsim built with libsbml",
+    "bngsim_antimony: requires bngsim + antimony Python package",
+    "roadrunner: requires libroadrunner",
+    "bionetgen: requires a working BNG2.pl on PATH",
+]

@@ -18,11 +18,7 @@ import pytest
 import pybnf.bngsim_model as bngsim_model
 
 
-if not bngsim_model.BNGSIM_AVAILABLE:
-    pytest.skip(
-        'bngsim is not available in this environment',
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.bngsim
 
 
 FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
@@ -79,10 +75,7 @@ def _collect_nf_replicates(model, tmp_path, prefix):
     return times, np.asarray(finals)
 
 
-@pytest.mark.skipif(
-    not bngsim_model.BNGSIM_HAS_NFSIM,
-    reason='NFsim backend is not built into bngsim',
-)
+@pytest.mark.bngsim_nfsim
 def test_bngsim_nf_bimolecular_binding_matches_mean_field(tmp_path):
     """NFsim path: bound count at t_end matches the mean-field prediction."""
     model = _nf_model('nf')
@@ -101,10 +94,7 @@ def test_bngsim_nf_bimolecular_binding_matches_mean_field(tmp_path):
     )
 
 
-@pytest.mark.skipif(
-    not bngsim_model.BNGSIM_HAS_RULEMONKEY,
-    reason='RuleMonkey backend is not built into bngsim',
-)
+@pytest.mark.bngsim_rulemonkey
 def test_bngsim_rm_bimolecular_binding_matches_mean_field(tmp_path):
     """RuleMonkey path: bound count at t_end matches the mean-field prediction."""
     model = _nf_model('rm')
@@ -121,10 +111,8 @@ def test_bngsim_rm_bimolecular_binding_matches_mean_field(tmp_path):
     )
 
 
-@pytest.mark.skipif(
-    not (bngsim_model.BNGSIM_HAS_NFSIM and bngsim_model.BNGSIM_HAS_RULEMONKEY),
-    reason='need both NFsim and RuleMonkey backends',
-)
+@pytest.mark.bngsim_nfsim
+@pytest.mark.bngsim_rulemonkey
 def test_bngsim_nfsim_and_rm_agree_statistically(tmp_path):
     """NFsim and RuleMonkey should agree on the bound-count distribution
     for this simple irreversible-binding model. Loose two-sample test on
