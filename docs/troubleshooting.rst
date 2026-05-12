@@ -60,9 +60,9 @@ A time limit is also enforced for network generation in BNGL models. The default
 .. note::
 
    For models simulated with the bngsim backend, ``wall_time_sim`` is honored
-   in-process on every supported backend: ODE, SSA, PSA, NFsim/``nf_reject``,
-   and RuleMonkey/``nf_exact``. RuleMonkey polls a cooperative cancellation
-   callback every ~1024 SSA events, so an over-budget ``nf_exact`` run is
+   in-process on every supported backend: ODE, SSA, PSA, NFsim/``nf``,
+   and RuleMonkey/``rm``. RuleMonkey polls a cooperative cancellation
+   callback every ~1024 SSA events, so an over-budget ``rm`` run is
    stopped at the next polling boundary.
 
 
