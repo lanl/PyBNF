@@ -26,5 +26,15 @@ uv tool install pybnf
 
 PyBNF installs its Python dependencies, including BNGsim and libRoadRunner, through the package metadata. BNGL workflows can still require a BioNetGen installation for `BNG2.pl`; see the installation documentation for simulator setup details.
 
+## Development
+
+After cloning, run once:
+
+```bash
+make bootstrap
+```
+
+This installs the `pre-push` git hook (via `pre-commit`) so the bngsim test subset runs locally before any `git push`.
+
 PyBioNetFit is released under the BSD-3 license. For more information, refer to the
 [LICENSE](LICENSE). LANL code designation: C18062
