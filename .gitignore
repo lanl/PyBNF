@@ -16,6 +16,11 @@ build/
 dist/
 *.egg-info/
 
+# Conftest-managed symlink (tests/conftest.py creates this at session
+# start and removes it at session finish; if a run is interrupted, the
+# symlink lingers — ignore it so it doesn't pollute `git status`).
+/bngl_files
+
 # Coverage & test outputs
 .coverage
 tests/.coverage
