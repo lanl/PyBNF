@@ -742,6 +742,12 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
         input_overrides = {}
 
     ns = _build_safe_eval_namespace()
+    # Seed the namespace with the input overrides (the PSet, keyed by free-
+    # parameter name) so free-parameter tokens embedded inside arithmetic
+    # expressions -- e.g. `kaf = kaf__FREE/(NA*Vo)` -- resolve correctly.
+    # The two fast-path branches below still short-circuit the whole-RHS and
+    # name-keyed cases, so behavior for `k_o = k_o__FREE` is unchanged.
+    ns.update({k: float(v) for k, v in input_overrides.items()})
     result = {}
 
     for name, expr in param_exprs:
@@ -752,13 +758,16 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
         else:
             try:
                 value = float(eval(expr, ns))  # noqa: S307
-            except Exception:
-                logger.warning(
-                    "BngsimNfModel: could not evaluate param %s = %r; using 0.0",
-                    name,
-                    expr,
-                )
-                value = 0.0
+            except Exception as exc:
+                # With the namespace seeded above, an unresolved name almost
+                # certainly indicates a real model/config error. Silently
+                # substituting 0.0 turns a missing parameter into a wrong
+                # answer (a zeroed rate constant), so fail loudly instead.
+                raise ValueError(
+                    "BngsimNfModel: could not evaluate param {} = {!r}: {}".format(
+                        name, expr, exc
+                    )
+                ) from exc
 
         # Don't let parameter values shadow builtin math functions
         if name not in _BUILTIN_EVAL_NAMES:

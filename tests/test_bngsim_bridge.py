@@ -932,6 +932,56 @@ def test_bngsim_nf_model_recomputes_derived_params_from_pset(monkeypatch):
     assert overrides['total'] == 5.0
 
 
+def test_bngsim_nf_model_resolves_free_params_embedded_in_arithmetic(monkeypatch):
+    """Regression for #389: free-parameter tokens embedded inside an
+    arithmetic expression must resolve, not be silently zeroed."""
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+
+    model = bngsim_model.BngsimNfModel(
+        'nf_model',
+        [],
+        [],
+        [],
+        '/tmp/fake.xml',
+        bngl_model_lines=[
+            'begin parameters\n',
+            'NA 6.022e23\n',
+            'Vo 1e-12\n',
+            'kaf kaf__FREE/(NA*Vo)\n',   # free param embedded in arithmetic
+            'kar kar__FREE\n',           # free param is the whole RHS
+            'chi_r chi_r__FREE*(NA*Vo)\n',
+            'end parameters\n',
+        ],
+        param_names=('kaf__FREE', 'kar__FREE', 'chi_r__FREE'),
+    )
+    model.param_set = pset.PSet([
+        _make_free_param('kaf__FREE', 1.0),
+        _make_free_param('kar__FREE', 2.0),
+        _make_free_param('chi_r__FREE', 3.0),
+    ])
+
+    overrides = model._build_nf_param_overrides()
+
+    na_vo = 6.022e23 * 1e-12
+    assert overrides['kaf'] == 1.0 / na_vo
+    assert overrides['kar'] == 2.0
+    assert overrides['chi_r'] == 3.0 * na_vo
+    # The bug zeroed embedded-token params; ensure that no longer happens.
+    assert overrides['kaf'] != 0.0
+    assert overrides['chi_r'] != 0.0
+
+
+def test_evaluate_bngl_params_raises_on_unresolved_name():
+    """An expression referencing an unknown name must fail loudly rather
+    than silently substituting 0.0 (regression for #389 hardening)."""
+    with pytest.raises(ValueError, match='could not evaluate param'):
+        bngsim_model._evaluate_bngl_params(
+            [('k', 'mystery_token * 2')],
+            input_overrides={},
+        )
+
+
 def test_bngsim_nf_model_save_preserves_protocol_block(monkeypatch, tmp_path):
     """Regression for #383: protocol blocks must round-trip through the saved
     debug .bngl, positioned between the model body and the actions block."""
