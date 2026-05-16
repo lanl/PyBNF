@@ -1993,6 +1993,7 @@ class BngsimNfModel(Model):
         t_end = float(ps_params.get('t_end', 100))
         n_steps = int(ps_params.get('n_steps', 1))
         suffix = ps_params.get('suffix', 'param_scan')
+        print_funcs = bool(int(float(ps_params.get('print_functions', 0))))
         gml = ps_params.get('gml')
         gml_int = int(gml) if gml is not None else None
 
@@ -2024,7 +2025,8 @@ class BngsimNfModel(Model):
                 if scan_timeout is not None:
                     sim_kwargs['timeout'] = scan_timeout
                 result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
-                row, row_obs, row_expr = BngsimModel._scan_result_to_row(result, value)
+                row, row_obs, row_expr = BngsimModel._scan_result_to_row(
+                    result, value, print_functions=print_funcs)
                 if len(obs_names) == 0:
                     obs_names = row_obs
                     expr_names = row_expr
@@ -2045,9 +2047,9 @@ class BngsimNfModel(Model):
         return {suffix: data}
 
     @staticmethod
-    def _result_to_data(result):
+    def _result_to_data(result, print_functions=False):
         """Convert a bngsim Result to a PyBNF Data object."""
-        return BngsimModel._result_to_data(result)
+        return BngsimModel._result_to_data(result, print_functions=print_functions)
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all NF actions in-process using XML-backed network-free sessions."""
@@ -2117,6 +2119,7 @@ class BngsimNfModel(Model):
                     t_start = float(sim_params.get('t_start', 0))
                     t_end = float(sim_params.get('t_end', 100))
                     n_steps = int(sim_params.get('n_steps', 100))
+                    print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
                     suffix = sim_params.get('suffix', 'time_course')
                     gml = sim_params.get('gml')
                     gml_int = int(gml) if gml is not None else None
@@ -2163,7 +2166,7 @@ class BngsimNfModel(Model):
                         'gml': gml_int,
                     })
                     result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
-                    ds[suffix] = self._result_to_data(result)
+                    ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
                     continue
 
                 sp = _parse_set_parameter(line)
