@@ -2,18 +2,24 @@
 
 Constructs ``BngsimNfModel`` against a committed ``.xml`` (BioNetGen-emitted
 BNGXML) fixture and runs full NF simulations through both the NFsim and the
-RuleMonkey session backends. The fixture is a tiny irreversible bimolecular
-binding model with a closed-form mean-field bound count at the end of the
-simulation.
+RuleMonkey session backends. The fixture is a tiny irreversible heterodimer
+binding model (``A + B -> AB``) whose ``bound`` count has an *exact*,
+computable distribution via the chemical master equation -- see
+``_cme_bound_moments``.
 
 This complements the routing-and-stub coverage in ``test_bngsim_bridge.py``,
 which never actually runs an NF session.
+
+NOTE: the NFsim path currently over-binds by ~10% on this model (300-replicate
+mean ~55.3 vs the exact master-equation mean 50.08); see issue #391. The NFsim
+tests below are therefore ``xfail``. RuleMonkey reproduces the exact oracle.
 """
 
 from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.integrate import solve_ivp
 
 import pybnf.bngsim_model as bngsim_model
 
@@ -25,14 +31,51 @@ FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
 NF_XML = FIXTURES / 'e2e_nf_binding.xml'
 NF_BNGL = FIXTURES / 'e2e_nf_binding.bngl'
 
-# Mean-field prediction for the bound count at t_end:
-#   A(t) = N0 / (1 + N0 * k_on * t)
-# With N0 = 100, k_on = 1e-3, t_end = 10: A(10) = 50, so bound = 50.
 N0 = 100
 K_ON = 1e-3
 T_END = 10.0
-EXPECTED_BOUND = N0 - N0 / (1.0 + N0 * K_ON * T_END)  # = 50.0
 N_REPLICATES = 50
+
+
+def _cme_bound_moments(n0, k_on, t_end):
+    """Exact mean and variance of the ``bound`` count at ``t_end``.
+
+    For the irreversible heterodimer ``A + B -> AB`` with equal initial
+    counts ``[A]0 = [B]0 = n0``, every reaction removes one A and one B
+    together, so ``N_A == N_B`` on every trajectory. The count ``n = N_A``
+    is therefore a pure death process with ``n -> n-1`` at propensity
+    ``k_on * n**2``. Integrating the chemical master equation for the state
+    probabilities ``p_n(t)`` to ``t_end`` gives the exact distribution of
+    ``bound = n0 - n``.
+
+    This is the true oracle a correct stochastic simulator must reproduce.
+    The mean-field solution ``A(t) = n0 / (1 + n0*k_on*t)`` is only its
+    ``n0 -> inf`` limit -- here it gives 50.0 while the exact mean is 50.08,
+    a finite-N correction of just +0.08. An independent Gillespie simulation
+    of the same process agrees with the values below to within its own SE.
+    """
+    states = np.arange(n0 + 1)
+    rates = k_on * states.astype(float) ** 2  # propensity for n -> n-1
+
+    def _master_equation(_t, p):
+        dp = -rates * p
+        dp[:-1] += rates[1:] * p[1:]
+        return dp
+
+    p0 = np.zeros(n0 + 1)
+    p0[n0] = 1.0
+    p_end = solve_ivp(
+        _master_equation, (0.0, t_end), p0, t_eval=[t_end],
+        rtol=1e-12, atol=1e-14, method='LSODA',
+    ).y[:, -1]
+
+    mean_n = float((states * p_end).sum())
+    var_n = float((states ** 2 * p_end).sum()) - mean_n ** 2
+    return n0 - mean_n, var_n  # (E[bound], Var[bound]); Var[bound] == Var[n]
+
+
+# Exact master-equation oracle for bound(t_end): ~ (50.0836, 14.63).
+EXPECTED_BOUND, BOUND_VAR = _cme_bound_moments(N0, K_ON, T_END)
 
 
 def _read_bngl_lines():
@@ -75,48 +118,62 @@ def _collect_nf_replicates(model, tmp_path, prefix):
     return times, np.asarray(finals)
 
 
+def _assert_matches_master_equation(label, finals):
+    """Five-sigma z-test of the replicate mean against the exact CME oracle.
+
+    SE of the mean of ``N_REPLICATES`` draws is ``sqrt(Var[bound]/N)`` with
+    ``Var[bound]`` taken from the master equation (~14.63), giving SE ~0.54.
+    A 5-SE band is a two-sided false-positive rate of ~6e-7.
+    """
+    sample_mean = finals.mean()
+    se = np.sqrt(BOUND_VAR / N_REPLICATES)
+    assert abs(sample_mean - EXPECTED_BOUND) < 5.0 * se, (
+        '%s bound mean %.3f deviates from the master-equation mean %.3f '
+        'by > 5 SE (%.3f)' % (label, sample_mean, EXPECTED_BOUND, se)
+    )
+
+
 @pytest.mark.bngsim_nfsim
-def test_bngsim_nf_bimolecular_binding_matches_mean_field(tmp_path):
-    """NFsim path: bound count at t_end matches the mean-field prediction."""
+@pytest.mark.xfail(
+    reason='NFsim over-binds ~10% on this model (bound mean ~55.3 vs exact '
+           'master-equation 50.08); see issue #391',
+    strict=True,
+)
+def test_bngsim_nf_bimolecular_binding_matches_master_equation(tmp_path):
+    """NFsim path: bound count at t_end should match the exact CME mean."""
     model = _nf_model('nf')
     times, finals = _collect_nf_replicates(model, tmp_path, 'nfsim')
 
     assert times[0] == pytest.approx(0.0)
     assert times[-1] == pytest.approx(T_END)
 
-    # Variance of bound count is bounded above by E[bound] under depletion;
-    # use 5*sqrt(E[bound]/N) as a generous z-score-style tolerance.
-    sample_mean = finals.mean()
-    se_estimate = max(np.sqrt(EXPECTED_BOUND / N_REPLICATES), 1.0)
-    assert abs(sample_mean - EXPECTED_BOUND) < 5.0 * se_estimate, (
-        'NFsim bound mean %.3f deviates from mean-field %.3f by > 5 SE (%.3f)'
-        % (sample_mean, EXPECTED_BOUND, se_estimate)
-    )
+    _assert_matches_master_equation('NFsim', finals)
 
 
 @pytest.mark.bngsim_rulemonkey
-def test_bngsim_rm_bimolecular_binding_matches_mean_field(tmp_path):
-    """RuleMonkey path: bound count at t_end matches the mean-field prediction."""
+def test_bngsim_rm_bimolecular_binding_matches_master_equation(tmp_path):
+    """RuleMonkey path: bound count at t_end should match the exact CME mean."""
     model = _nf_model('rm')
     times, finals = _collect_nf_replicates(model, tmp_path, 'rm')
 
     assert times[0] == pytest.approx(0.0)
     assert times[-1] == pytest.approx(T_END)
 
-    sample_mean = finals.mean()
-    se_estimate = max(np.sqrt(EXPECTED_BOUND / N_REPLICATES), 1.0)
-    assert abs(sample_mean - EXPECTED_BOUND) < 5.0 * se_estimate, (
-        'RuleMonkey bound mean %.3f deviates from mean-field %.3f by > 5 SE (%.3f)'
-        % (sample_mean, EXPECTED_BOUND, se_estimate)
-    )
+    _assert_matches_master_equation('RuleMonkey', finals)
 
 
 @pytest.mark.bngsim_nfsim
 @pytest.mark.bngsim_rulemonkey
+@pytest.mark.xfail(
+    reason='NFsim over-binds ~10% (issue #391), so it disagrees with the '
+           'correct RuleMonkey result. Non-strict: the two-sample test sits '
+           '~6 SE apart, so it occasionally passes by chance.',
+    strict=False,
+)
 def test_bngsim_nfsim_and_rm_agree_statistically(tmp_path):
-    """NFsim and RuleMonkey should agree on the bound-count distribution
-    for this simple irreversible-binding model. Loose two-sample test on
-    the mean across N_REPLICATES draws of each."""
+    """NFsim and RuleMonkey simulate the same master equation and should
+    agree on the bound-count distribution. Two-sample 5-SE test on the
+    means, with the SE taken from the master-equation variance."""
     nf_model = _nf_model('nf')
     rm_model = _nf_model('rm')
     _, nf_finals = _collect_nf_replicates(nf_model, tmp_path, 'nf_vs')
@@ -124,13 +181,10 @@ def test_bngsim_nfsim_and_rm_agree_statistically(tmp_path):
 
     nf_mean = nf_finals.mean()
     rm_mean = rm_finals.mean()
-    # Independent-sample SE for the difference of means.
-    se = max(
-        np.sqrt(nf_finals.var(ddof=1) / N_REPLICATES
-                + rm_finals.var(ddof=1) / N_REPLICATES),
-        1.0,
-    )
+    # SE of the difference of two independent N_REPLICATES-sample means,
+    # under the null that both reproduce the master-equation variance.
+    se = np.sqrt(2.0 * BOUND_VAR / N_REPLICATES)
     assert abs(nf_mean - rm_mean) < 5.0 * se, (
-        'NFsim mean %.3f and RM mean %.3f disagree by > 5 SE (%.3f)'
+        'NFsim mean %.3f and RuleMonkey mean %.3f disagree by > 5 SE (%.3f)'
         % (nf_mean, rm_mean, se)
     )
