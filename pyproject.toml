@@ -47,6 +47,7 @@ antimony = [
 ]
 tests = [
     "pytest>=7,<10",
+    "hypothesis>=6,<7",
     "tomli>=2,<3; python_version < '3.11'",
 ]
 
