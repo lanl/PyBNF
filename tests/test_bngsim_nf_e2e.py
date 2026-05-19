@@ -10,9 +10,10 @@ computable distribution via the chemical master equation -- see
 This complements the routing-and-stub coverage in ``test_bngsim_bridge.py``,
 which never actually runs an NF session.
 
-NOTE: the NFsim path currently over-binds by ~10% on this model (300-replicate
-mean ~55.3 vs the exact master-equation mean 50.08); see issue #391. The NFsim
-tests below are therefore ``xfail``. RuleMonkey reproduces the exact oracle.
+Both NFsim and RuleMonkey reproduce the exact master-equation oracle. (The
+NFsim path previously over-bound by ~10% because ``System::stepTo`` discarded
+the boundary-crossing reaction-time sample and re-sampled on the next output
+step; see issue #391, fixed by carrying the pending sample across calls.)
 """
 
 from pathlib import Path
@@ -134,11 +135,6 @@ def _assert_matches_master_equation(label, finals):
 
 
 @pytest.mark.bngsim_nfsim
-@pytest.mark.xfail(
-    reason='NFsim over-binds ~10% on this model (bound mean ~55.3 vs exact '
-           'master-equation 50.08); see issue #391',
-    strict=True,
-)
 def test_bngsim_nf_bimolecular_binding_matches_master_equation(tmp_path):
     """NFsim path: bound count at t_end should match the exact CME mean."""
     model = _nf_model('nf')
@@ -164,12 +160,6 @@ def test_bngsim_rm_bimolecular_binding_matches_master_equation(tmp_path):
 
 @pytest.mark.bngsim_nfsim
 @pytest.mark.bngsim_rulemonkey
-@pytest.mark.xfail(
-    reason='NFsim over-binds ~10% (issue #391), so it disagrees with the '
-           'correct RuleMonkey result. Non-strict: the two-sample test sits '
-           '~6 SE apart, so it occasionally passes by chance.',
-    strict=False,
-)
 def test_bngsim_nfsim_and_rm_agree_statistically(tmp_path):
     """NFsim and RuleMonkey simulate the same master equation and should
     agree on the bound-count distribution. Two-sample 5-SE test on the
