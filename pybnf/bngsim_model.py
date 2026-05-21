@@ -241,6 +241,44 @@ def _parse_set_concentration(action_line):
     return None
 
 
+def _parse_set_concentration_expr(action_line):
+    """Parse setConcentration("species_name", value_expr) -> (name, expr) or None.
+
+    The expression is returned as text so it can be evaluated against the
+    model parameter namespace at the moment the action runs — important
+    when the value references a parameter that is being swept by a later
+    ``parameter_scan(...)`` action (issue #46).
+    """
+    match = re.match(
+        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.+?)\s*\)\s*;?\s*$',
+        action_line,
+    )
+    if not match:
+        return None
+    species = match.group(1)
+    expr = match.group(2).strip()
+    if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in ('"', "'"):
+        expr = expr[1:-1]
+    return species, expr
+
+
+def _model_param_values(model):
+    """Return current model parameter values keyed by name."""
+    values = {}
+    for pname in model.param_names:
+        try:
+            values[pname] = model.get_param(pname)
+        except Exception:
+            pass
+    return values
+
+
+def _eval_model_expression(expr, model):
+    """Evaluate a BNGL action expression against current model parameters."""
+    ns = _build_safe_eval_namespace(_model_param_values(model))
+    return float(eval(expr, ns))  # noqa: S307
+
+
 def _parse_add_concentration(action_line):
     """Parse addConcentration("species_name", value) -> (name, value) or None."""
     match = re.match(
@@ -498,6 +536,16 @@ def _allowed_bngsim_backends_for_action(action_line):
         return _BNGSIM_ACTION_BACKENDS, False
 
     if _parse_set_concentration(line) is not None:
+        return _BNGSIM_ACTION_BACKENDS, False
+
+    # Expression-form setConcentration (value references model parameters,
+    # e.g. setConcentration("Lig()", "dose*scale")). _parse_set_concentration
+    # evaluates the expression eagerly and returns None when names cannot be
+    # resolved at classifier time; _parse_set_concentration_expr only requires
+    # the regex shape, so an interleaved scan-then-setConc-then-scan block is
+    # accepted and the expression is re-evaluated against current model params
+    # at execution time (issue #46).
+    if _parse_set_concentration_expr(line) is not None:
         return _BNGSIM_ACTION_BACKENDS, False
 
     if _parse_add_concentration(line) is not None:
@@ -935,6 +983,10 @@ class BngsimModel(NetModel):
                 base_params[pname] = model.get_param(pname)
             except Exception:
                 pass
+        # Active setConcentration() expressions waiting to be replayed at the
+        # next parameter_scan(). Cleared on resetConcentrations and
+        # saveConcentrations. See issue #46.
+        concentration_overrides: dict[str, str] = {}
 
         for action_index, action_line in enumerate(self.actions):
             line = _collapse_action_line_continuations(action_line).strip()
@@ -1076,6 +1128,7 @@ class BngsimModel(NetModel):
 
             if _is_reset_concentrations(line):
                 model.reset()
+                concentration_overrides.clear()
                 continue
 
             if _is_reset_parameters(line):
@@ -1088,6 +1141,7 @@ class BngsimModel(NetModel):
 
             if _is_save_concentrations(line):
                 model.save_concentrations()
+                concentration_overrides.clear()
                 continue
 
             if _is_save_parameters(line):
@@ -1098,16 +1152,18 @@ class BngsimModel(NetModel):
                         pass
                 continue
 
-            sc = _parse_set_concentration(line)
-            if sc is not None:
-                species_name, conc_value = sc
+            sc_expr = _parse_set_concentration_expr(line)
+            if sc_expr is not None:
+                species_name, conc_expr = sc_expr
                 try:
+                    conc_value = _eval_model_expression(conc_expr, model)
                     model.set_concentration(species_name, conc_value)
+                    concentration_overrides[species_name] = conc_expr
                 except Exception:
                     logger.warning(
-                        "setConcentration(%s, %s) failed - species not found",
+                        "setConcentration(%s, %s) failed",
                         species_name,
-                        conc_value,
+                        conc_expr,
                     )
                 continue
 
@@ -1127,16 +1183,22 @@ class BngsimModel(NetModel):
 
             ps_params = _parse_parameter_scan_action(line)
             if ps_params is not None:
-                ds.update(self._run_parameter_scan(model, ps_params,
-                                                   action_index=action_index,
-                                                   timeout=timeout))
+                ds.update(self._run_parameter_scan(
+                    model, ps_params,
+                    action_index=action_index,
+                    timeout=timeout,
+                    concentration_overrides=concentration_overrides,
+                ))
                 continue
 
             bf_params = _parse_bifurcate_action(line)
             if bf_params is not None:
-                ds.update(self._run_parameter_scan(model, bf_params, is_bifurcate=True,
-                                                   action_index=action_index,
-                                                   timeout=timeout))
+                ds.update(self._run_parameter_scan(
+                    model, bf_params, is_bifurcate=True,
+                    action_index=action_index,
+                    timeout=timeout,
+                    concentration_overrides=concentration_overrides,
+                ))
                 continue
 
             if line and not re.match(r'\s*(begin|end)\s+actions', line):
@@ -1377,18 +1439,36 @@ class BngsimModel(NetModel):
                 )
         model.save_concentrations()
 
-    def _prepare_scan_point_model(self, model, param_name, value):
-        """Clone the base model, apply the scan parameter, and refresh initials."""
+    def _prepare_scan_point_model(
+        self, model, param_name, value, concentration_overrides=None,
+    ):
+        """Clone the base model, apply the scan parameter, and refresh initials.
+
+        ``concentration_overrides`` is the dict of active setConcentration()
+        expressions seen since the last reset/save; each is re-evaluated
+        against the *cloned* point model's parameter namespace (i.e. after
+        the scan parameter has been set), then applied and baked into the
+        clone's initial concentrations. See issue #46.
+        """
         point_model = model.clone()
         if param_name:
             point_model.set_param(param_name, float(value))
         self._sync_species_initial_concentrations(point_model)
+        active_overrides = concentration_overrides or {}
+        for species_name, expr in active_overrides.items():
+            point_model.set_concentration(
+                species_name,
+                _eval_model_expression(expr, point_model),
+            )
+        if active_overrides:
+            point_model.save_concentrations()
         point_model.reset()
         return point_model
 
     def _run_ss_scan_threaded(
         self, model, param_name, points, method, poplevel,
-        t_start, t_end, print_funcs, max_workers=4, timeout=None,
+        t_start, t_end, print_funcs, concentration_overrides=None,
+        max_workers=4, timeout=None,
     ):
         """Run steady-state parameter scan with threaded parallelism.
 
@@ -1405,7 +1485,10 @@ class BngsimModel(NetModel):
         point_models = []
         point_sims = []
         for value in points:
-            pm = self._prepare_scan_point_model(model, param_name, value)
+            pm = self._prepare_scan_point_model(
+                model, param_name, value,
+                concentration_overrides=concentration_overrides,
+            )
             ps = self._make_scan_simulator(pm, method, poplevel)
             point_models.append(pm)
             point_sims.append(ps)
@@ -1462,6 +1545,7 @@ class BngsimModel(NetModel):
             if not ss_ok:
                 fb_model = self._prepare_scan_point_model(
                     model, param_name, value,
+                    concentration_overrides=concentration_overrides,
                 )
                 fb_sim = self._make_scan_simulator(fb_model, method, poplevel)
                 fb_kwargs = {}
@@ -1481,8 +1565,9 @@ class BngsimModel(NetModel):
         return rows, obs_names, expr_names
 
     def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0,
-                            timeout=None):
+                            timeout=None, concentration_overrides=None):
         """Execute a parameter_scan() or bifurcate() action."""
+        concentration_overrides = concentration_overrides or {}
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
         t_end = float(ps_params.get('t_end', 100))
@@ -1556,7 +1641,9 @@ class BngsimModel(NetModel):
             if use_threaded_ss:
                 rows, obs_names, expr_names = self._run_ss_scan_threaded(
                     model, param_name, points, method, poplevel,
-                    t_start, t_end, print_funcs, timeout=timeout,
+                    t_start, t_end, print_funcs,
+                    concentration_overrides=concentration_overrides,
+                    timeout=timeout,
                 )
             else:
                 for value in points:
@@ -1564,6 +1651,7 @@ class BngsimModel(NetModel):
                         model,
                         param_name,
                         value,
+                        concentration_overrides=concentration_overrides,
                     )
                     point_sim = self._make_scan_simulator(
                         point_model,
@@ -1603,6 +1691,7 @@ class BngsimModel(NetModel):
                         # Fallback: simulate for a long time and take the final state
                         point_model = self._prepare_scan_point_model(
                             model, param_name, value,
+                            concentration_overrides=concentration_overrides,
                         )
                         fallback_sim = self._make_scan_simulator(
                             point_model, method, poplevel,
@@ -1627,6 +1716,7 @@ class BngsimModel(NetModel):
             for value in points:
                 point_model = self._prepare_scan_point_model(
                     model, param_name, value,
+                    concentration_overrides=concentration_overrides,
                 )
                 last_result = self._run_protocol(point_model, timeout=timeout)
                 if last_result is None:
@@ -1675,9 +1765,13 @@ class BngsimModel(NetModel):
                 rows.append(row)
         else:
             # Use run_batch() when safe: no expression-based species
-            # initializers, no sample_times, enough points.
+            # initializers, no active setConcentration() overrides (each
+            # point needs its own concentration setup, which run_batch's
+            # parameter-only API cannot express), no sample_times, enough
+            # points. Issue #46.
             use_batch = (
                 not self._net_species_initializers
+                and not concentration_overrides
                 and sample_times is None
                 and len(points) >= 4
             )
@@ -1719,6 +1813,7 @@ class BngsimModel(NetModel):
                         model,
                         param_name,
                         value,
+                        concentration_overrides=concentration_overrides,
                     )
                     point_sim = self._make_scan_simulator(
                         point_model,

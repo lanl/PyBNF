@@ -505,20 +505,31 @@ def test_bngl_model_marks_rulemonkey_action_stochastic_without_network_generatio
     assert not model.generates_network
 
 
-def test_allowed_bngsim_backends_for_action_marks_nf_setconcentration_expression():
+def test_allowed_bngsim_backends_for_action_accepts_setconcentration_expression():
+    """Expression-form setConcentration values reference model parameters
+    that get evaluated at execution time, so the same action is legal on
+    both the net and NF backends. Issue #46 widened this from NF-only.
+    """
     backends, is_simulation_action = bngsim_model._allowed_bngsim_backends_for_action(
         'setConcentration("L(r)", "EGF_copy_number")'
     )
 
-    assert backends == frozenset((bngsim_model.BNGSIM_BACKEND_NF,))
+    assert backends == frozenset((
+        bngsim_model.BNGSIM_BACKEND_NET,
+        bngsim_model.BNGSIM_BACKEND_NF,
+    ))
     assert not is_simulation_action
 
 
-def test_classify_actions_for_bngsim_rejects_nf_setconcentration_with_net_simulation():
+def test_classify_actions_for_bngsim_accepts_setconcentration_expression_with_net_simulation():
+    """A setConcentration whose value is a parameter expression no longer
+    forces the NF backend, so it can be paired with an ODE simulate
+    without triggering the mixed-backend rejection. Issue #46.
+    """
     assert bngsim_model.classify_actions_for_bngsim([
         'setConcentration("L(r)", "EGF_copy_number")',
         'simulate({method=>"ode",t_end=>4,n_steps=>40,suffix=>"tc"})',
-    ]) is None
+    ]) == bngsim_model.BNGSIM_BACKEND_NET
 
 
 def test_classify_actions_for_bngsim_requires_a_simulation_action():
