@@ -50,6 +50,42 @@ _PARAMETER_SCAN_KEY_ALIASES = {
     'logspace': 'log_scale',
 }
 
+# ss_method values for steady-state parameter_scan/bifurcate actions.
+# 'parity' = BNG2.pl run_network -c integrate-to-||f||2/n early-stop (default);
+# 'newton' = KINSOL Newton accelerator (monostable dose-response only).
+_SS_METHOD_PARITY = 'parity'
+_SS_METHOD_NEWTON = 'newton'
+
+# Output points used for a parity (integrate-to-steady-state) scan point, so
+# the run(steady_state=True) early-stop has intermediate points to check the
+# ||f||2/n criterion at rather than only the final t_end.
+_SS_SCAN_N_POINTS = 101
+
+
+def _normalize_ss_method(raw):
+    """Normalize the parameter_scan/bifurcate ``ss_method`` value.
+
+    Returns ``'parity'`` (BNG2.pl ``run_network -c`` integrate-to-``||f||2/n``
+    early-stop — the default and the only path BNG2.pl itself has) or
+    ``'newton'`` (the KINSOL Newton accelerator). Accepts the input aliases
+    ``'integrate'``/``'integration'`` for parity and ``'kinsol'`` for newton.
+    Unrecognized values warn and fall back to parity.
+    """
+    if raw is None:
+        return _SS_METHOD_PARITY
+    text = str(raw).strip().strip('"').strip("'").lower()
+    if text in ('', 'parity', 'integrate', 'integration', 'ode'):
+        return _SS_METHOD_PARITY
+    if text in ('newton', 'kinsol'):
+        return _SS_METHOD_NEWTON
+    logger.warning(
+        "BngsimModel: unrecognized ss_method=>%r; using BNG2.pl-parity "
+        "integrate-to-steady-state. Valid: \"newton\"/\"kinsol\" (accelerator) "
+        "or omit / \"integrate\" (parity default).",
+        raw,
+    )
+    return _SS_METHOD_PARITY
+
 
 def _coerce_positive_timeout(timeout):
     if timeout is None:
@@ -1573,6 +1609,7 @@ class BngsimModel(NetModel):
         t_end = float(ps_params.get('t_end', 100))
         suffix = ps_params.get('suffix', 'param_scan')
         use_ss = int(ps_params.get('steady_state', 0))
+        ss_method = _normalize_ss_method(ps_params.get('ss_method'))
         print_funcs = bool(int(float(ps_params.get('print_functions', 0))))
         method, poplevel = _normalize_action_method(
             ps_params.get('method', 'ode'),
@@ -1609,6 +1646,20 @@ class BngsimModel(NetModel):
         else:
             reset_conc = bool(int(float(ps_params.get('reset_conc', 1))))
 
+        # bifurcate is a continuation scan: it carries state between points
+        # (reset_conc=False) to trace hysteresis/multistability. Independent
+        # per-point Newton (steady_state_batch) finds *a* root and can jump to
+        # the wrong branch, destroying the hysteresis signal — so ss_method=>
+        # "newton" is rejected here and downgraded to the parity ODE path.
+        if is_bifurcate and ss_method == _SS_METHOD_NEWTON:
+            logger.warning(
+                "BngsimModel: ss_method=>\"newton\" is not supported for "
+                "bifurcate continuation scans (it carries state between points "
+                "to detect hysteresis, which independent-per-point Newton would "
+                "destroy). Downgrading to BNG2.pl-parity integrate-to-steady-state."
+            )
+            ss_method = _SS_METHOD_PARITY
+
         if use_ss and method != 'ode':
             logger.warning(
                 "BngsimModel: steady_state=>1 is only supported for ODE parameter scans. "
@@ -1630,9 +1681,11 @@ class BngsimModel(NetModel):
                 kwargs['timeout'] = normalized
             return kwargs
 
-        if use_ss:
-            # Use threaded path when safe: ODE method, no expression-based
-            # species initializers, and enough points to justify threading.
+        if use_ss and reset_conc and ss_method == _SS_METHOD_NEWTON:
+            # ss_method=>"newton" (opt-in accelerator): KINSOL Newton per
+            # independent dose-response point. Use threaded path when safe:
+            # ODE method, no expression-based species initializers, and enough
+            # points to justify threading.
             use_threaded_ss = (
                 method == 'ode'
                 and not self._net_species_initializers
@@ -1707,6 +1760,35 @@ class BngsimModel(NetModel):
                         obs_names = row_obs
                         expr_names = row_expr
                     rows.append(row)
+        elif use_ss and reset_conc:
+            # BNG2.pl-parity default (ss_method omitted / "integrate"):
+            # integrate each independent point to steady state via
+            # run(steady_state=True) — the run_network -c ||f||2/n early-stop.
+            # The final integrated row IS the equilibrium for this point.
+            for value in points:
+                point_model = self._prepare_scan_point_model(
+                    model, param_name, value,
+                    concentration_overrides=concentration_overrides,
+                )
+                point_sim = self._make_scan_simulator(point_model, 'ode', None)
+                result = point_sim.run(
+                    t_span=(t_start, t_end), n_points=_SS_SCAN_N_POINTS,
+                    steady_state=True,
+                    **_with_timeout({}, scan_eval_timeout),
+                )
+                if not int(result.solver_stats.get('steady_state_reached', 0)):
+                    logger.warning(
+                        "BngsimModel: parity steady-state criterion not reached "
+                        "for %s=%s within t_end=%s; using final integrated state.",
+                        param_name, value, t_end,
+                    )
+                row, row_obs, row_expr = self._scan_result_to_row(
+                    result, value, print_functions=print_funcs,
+                )
+                if len(obs_names) == 0:
+                    obs_names = row_obs
+                    expr_names = row_expr
+                rows.append(row)
         elif method == 'protocol':
             if not self._protocol:
                 raise ValueError(
@@ -1731,7 +1813,11 @@ class BngsimModel(NetModel):
                     expr_names = row_expr
                 rows.append(row)
         elif not reset_conc:
-            # bifurcate / reset_conc=>0: carry model state between points
+            # bifurcate / reset_conc=>0: carry model state between points. When
+            # steady_state=>1, each point integrates to the parity steady state
+            # (run_network -c) carrying the previous point's equilibrium forward
+            # — the continuation that traces hysteresis. ss_method=>"newton" was
+            # already downgraded to parity above for bifurcate.
             running_model = model.clone()
             for value in points:
                 if param_name:
@@ -1742,18 +1828,22 @@ class BngsimModel(NetModel):
                     method,
                     poplevel,
                 )
+                ss_kwargs = {'steady_state': True} if use_ss else {}
                 if sample_times is not None:
                     result = point_sim.run(
                         t_span=(sample_times[0], sample_times[-1]),
                         n_points=len(sample_times),
                         sample_times=sample_times,
                         seed=scan_seed,
+                        **ss_kwargs,
                         **_with_timeout({}, scan_timeout),
                     )
                 else:
                     result = point_sim.run(
-                        t_span=(t_start, t_end), n_points=2,
+                        t_span=(t_start, t_end),
+                        n_points=_SS_SCAN_N_POINTS if use_ss else 2,
                         seed=scan_seed,
+                        **ss_kwargs,
                         **_with_timeout({}, scan_timeout),
                     )
                 row, row_obs, row_expr = self._scan_result_to_row(

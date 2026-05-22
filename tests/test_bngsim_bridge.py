@@ -1974,6 +1974,159 @@ class TestBifurcateExecution(TestContinueFlag):
         assert clone_count[0] == 3
 
 
+# ── ss_method routing for steady-state scans ─────────────────────────────────────
+
+
+class _SsScanFakes:
+    """Shared fakes recording run()/steady_state() calls for ss_method tests."""
+
+    @staticmethod
+    def build(record):
+        class FakeCoreResult:
+            def __init__(self, times):
+                self.expression_names = []
+                self.expression_data = np.zeros((len(times), 0))
+
+        class FakeResult:
+            def __init__(self, times):
+                self._core = FakeCoreResult(times)
+                self.time = np.asarray(times)
+                self.observables = np.zeros((len(times), 1))
+                self.observable_names = ['obs']
+                self.n_times = len(times)
+                self.n_observables = 1
+                self.solver_stats = {'steady_state_reached': 1}
+
+        class FakeSsResult:
+            converged = True
+            species_names = ['A']
+            concentrations = [1.0]
+            residual = 1e-12
+
+        class FakeSimulator:
+            def __init__(self, model, method='ode', **kw):
+                self._model = model
+
+            def run(self, t_span=None, n_points=2, **kw):
+                record['run_calls'].append(
+                    {'n_points': n_points, 'steady_state': kw.get('steady_state', False)}
+                )
+                return FakeResult(np.linspace(t_span[0], t_span[1], n_points))
+
+            def steady_state(self, **kw):
+                record['ss_calls'] += 1
+                return FakeSsResult()
+
+        class FakeModel:
+            param_names = ['k']
+
+            def get_param(self, name):
+                return 1.0
+
+            def set_param(self, name, val):
+                pass
+
+            def reset(self):
+                pass
+
+            def clone(self):
+                record['clone_count'] += 1
+                return FakeModel()
+
+            def set_concentration(self, name, val):
+                pass
+
+            def get_concentration(self, name):
+                return 0.0
+
+            def save_concentrations(self):
+                pass
+
+        return FakeSimulator, FakeModel
+
+    @staticmethod
+    def make_obj(action):
+        obj = object.__new__(bngsim_model.BngsimModel)
+        obj.actions = [action]
+        obj._net_species_initializers = []
+        obj._codegen_so = ''
+        obj._net_path = '/tmp/fake.net'
+        return obj
+
+
+def _install_ss_fakes(monkeypatch, record):
+    FakeSimulator, FakeModel = _SsScanFakes.build(record)
+    fake_bngsim = types.ModuleType('bngsim')
+    fake_bngsim.Simulator = FakeSimulator
+    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    return FakeModel
+
+
+class TestSsMethodRouting:
+    """steady_state=>1 routing: parity default, newton opt-in, bifurcate reject."""
+
+    def test_parameter_scan_default_uses_parity_run(self, monkeypatch):
+        """steady_state=>1 with no ss_method → per-point run(steady_state=True)."""
+        record = {'run_calls': [], 'ss_calls': 0, 'clone_count': 0}
+        FakeModel = _install_ss_fakes(monkeypatch, record)
+        obj = _SsScanFakes.make_obj(
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2,3],'
+            'method=>"ode",steady_state=>1,t_end=>1e6,suffix=>"scan"})'
+        )
+        ds = obj._execute_actions(FakeModel())
+        assert 'scan' in ds
+        # All three points routed through run(steady_state=True); no Newton.
+        assert record['ss_calls'] == 0
+        assert len(record['run_calls']) == 3
+        assert all(c['steady_state'] for c in record['run_calls'])
+
+    def test_parameter_scan_ss_method_newton_uses_newton(self, monkeypatch):
+        """steady_state=>1, ss_method=>"newton" → KINSOL Newton steady_state()."""
+        record = {'run_calls': [], 'ss_calls': 0, 'clone_count': 0}
+        FakeModel = _install_ss_fakes(monkeypatch, record)
+        # 2 points (<4) keeps the non-threaded per-point Newton path.
+        obj = _SsScanFakes.make_obj(
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],'
+            'method=>"ode",steady_state=>1,ss_method=>"newton",suffix=>"scan"})'
+        )
+        ds = obj._execute_actions(FakeModel())
+        assert 'scan' in ds
+        # Newton solver invoked per point.
+        assert record['ss_calls'] == 2
+
+    def test_parameter_scan_ss_method_kinsol_alias(self, monkeypatch):
+        """ss_method=>"kinsol" is an alias for the Newton path."""
+        record = {'run_calls': [], 'ss_calls': 0, 'clone_count': 0}
+        FakeModel = _install_ss_fakes(monkeypatch, record)
+        obj = _SsScanFakes.make_obj(
+            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2],'
+            'method=>"ode",steady_state=>1,ss_method=>"kinsol",suffix=>"scan"})'
+        )
+        obj._execute_actions(FakeModel())
+        assert record['ss_calls'] == 2
+
+    def test_bifurcate_ss_method_newton_downgrades_to_parity(self, monkeypatch, caplog):
+        """bifurcate rejects ss_method=>"newton": warn + downgrade to parity."""
+        record = {'run_calls': [], 'ss_calls': 0, 'clone_count': 0}
+        FakeModel = _install_ss_fakes(monkeypatch, record)
+        obj = _SsScanFakes.make_obj(
+            'bifurcate({parameter=>"k",par_scan_vals=>[1,2,3],'
+            'method=>"ode",steady_state=>1,ss_method=>"newton",t_end=>1e6,suffix=>"bif"})'
+        )
+        with caplog.at_level('WARNING'):
+            ds = obj._execute_actions(FakeModel())
+        assert 'bif' in ds
+        # Downgraded: no Newton, carry-state continuation clones once, every
+        # run() carries steady_state=True.
+        assert record['ss_calls'] == 0
+        assert record['clone_count'] == 1
+        assert len(record['run_calls']) == 3
+        assert all(c['steady_state'] for c in record['run_calls'])
+        assert any('newton' in r.message.lower() and 'bifurcate' in r.message.lower()
+                   for r in caplog.records)
+
+
 # ── Gap 7: codegen tests ─────────────────────────────────────���──────────────────
 
 def test_try_prepare_codegen_returns_empty_when_disabled(monkeypatch):
