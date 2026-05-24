@@ -294,6 +294,97 @@ def test_aborts_when_all_simulations_fail(tmp_path, monkeypatch):
     assert algo.success_count == 0 and algo.fail_count >= 1
 
 
+# --------------------------------------------------------------------------- #
+# Direct unit tests of the extracted per-result decisions.
+#
+# These need NO dask client, NO as_completed, NO filesystem — the whole point of
+# pulling _fold_group_result and _record_result_and_decide out of run(). They
+# exercise the same decisions as the fake-client tests above, but in isolation.
+# --------------------------------------------------------------------------- #
+def _bare_algo(got_result=lambda res: [], *, max_failed=3, min_objective=-np.inf):
+    algo = object.__new__(algorithms.Algorithm)
+    algo.fail_count = 0
+    algo.success_count = 0
+    algo.config = type('Cfg', (), {})()
+    algo.config.config = {'max_failed_simulations': max_failed,
+                          'min_objective': min_objective, 'normalization': None}
+    algo.config.postprocessing = {}
+    algo.config.constraints = []
+    algo.objective = _FakeObjective()
+    algo.exp_data = {}
+    algo.trajectory = Trajectory(100)
+    algo.best_fit_obj = None
+    algo.job_group_dir = {}
+    algo.got_result = got_result
+    return algo
+
+
+def _scored(name, score):
+    res = algorithms.Result(_pset(name, score), {}, name)
+    res.score = score
+    return res
+
+
+class TestRecordResultAndDecide:
+
+    def test_success_records_and_returns_next_psets(self):
+        algo = _bare_algo(got_result=lambda res: ['next_gen'])
+        out = algo._record_result_and_decide(_scored('s1', 5.0))
+        assert out == ['next_gen']
+        assert algo.success_count == 1 and algo.fail_count == 0
+        np.testing.assert_allclose(algo.trajectory.best_score(), 5.0)
+
+    def test_min_objective_stops_before_consulting_algorithm(self):
+        consulted = []
+        algo = _bare_algo(got_result=lambda res: consulted.append(res) or [],
+                          min_objective=10.0)
+        out = algo._record_result_and_decide(_scored('s1', 5.0))  # 5 < 10
+        assert out == 'STOP'
+        assert consulted == []  # got_result not called on the min-objective path
+
+    def test_got_result_stop_sets_best_fit_obj(self):
+        algo = _bare_algo(got_result=lambda res: 'STOP')
+        out = algo._record_result_and_decide(_scored('s1', 5.0))
+        assert out == 'STOP'
+        np.testing.assert_allclose(algo.best_fit_obj, 5.0)
+
+    def test_failed_simulation_aborts_when_none_succeeded(self):
+        algo = _bare_algo(max_failed=1)
+        fs = algorithms.FailedSimulation(_pset('s1', 1.0), 's1', 1)
+        with pytest.raises(printing.PybnfError, match='all jobs are failing'):
+            algo._record_result_and_decide(fs)
+        assert algo.fail_count == 1
+
+    def test_failed_simulation_does_not_abort_after_a_success(self):
+        algo = _bare_algo(max_failed=1)
+        algo.success_count = 1  # something has already worked
+        fs = algorithms.FailedSimulation(_pset('s1', 1.0), 's1', 1)
+        out = algo._record_result_and_decide(fs)  # must not raise
+        assert algo.fail_count == 1
+        assert out == []
+
+    def test_cancelled_error_is_fatal(self):
+        algo = _bare_algo()
+        with pytest.raises(printing.PybnfError):
+            algo._record_result_and_decide(algorithms.CancelledError('sim_1'))
+
+
+class TestFoldGroupResult:
+
+    def test_returns_none_until_every_subjob_finishes(self):
+        algo = object.__new__(algorithms.Algorithm)
+        group = algorithms.JobGroup('g', ['g_rep0', 'g_rep1'])
+        algo.job_group_dir = {'g_rep0': group, 'g_rep1': group}
+
+        first = algorithms.Result(_pset('g_rep0', 1.0), {'m': {'s': _data()}}, 'g_rep0')
+        assert algo._fold_group_result(first) is None  # 1 of 2 in
+
+        second = algorithms.Result(_pset('g_rep1', 1.0), {'m': {'s': _data()}}, 'g_rep1')
+        combined = algo._fold_group_result(second)
+        assert isinstance(combined, algorithms.Result)
+        assert combined.name == 'g'  # carries the group's job_id
+
+
 def test_pending_jobs_cancelled_on_stop(tmp_path, monkeypatch):
     """When the loop stops, any still-pending futures are cancelled (clean dask
     teardown)."""

@@ -1308,6 +1308,66 @@ class Algorithm(object):
         """
         self.max_iterations += n
 
+    def _fold_group_result(self, res):
+        """Accumulate one completed sub-result into its JobGroup (smoothing /
+        model-level parallelism). Returns the combined Result once every sub-job
+        in the group has finished, or None if more are still pending.
+
+        Split out of run() so the folding decision can be unit-tested without a
+        dask client. See tests/test_run_loop.py.
+        """
+        group = self.job_group_dir.pop(res.name)
+        done = group.job_finished(res)
+        if not done:
+            return None
+        return group.average_results()
+
+    def _record_result_and_decide(self, res):
+        """Classify a completed (already group-folded) result, record it in the
+        trajectory, and decide what the run loop should do next.
+
+        Returns ``'STOP'`` to end the run, or the list of PSets the algorithm
+        wants evaluated next. Raises ``PybnfError`` on a fatal condition (all
+        jobs failing with none succeeding, or a cancelled future).
+
+        Split out of run() so these decisions can be unit-tested without a dask
+        client. See tests/test_run_loop.py.
+        """
+        if isinstance(res, FailedSimulation):
+            if res.fail_type >= 1:
+                self.fail_count += 1
+            tb = '\n'+res.traceback if res.fail_type == 1 else ''
+
+            logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
+            if res.fail_type >= 1:
+                print1('Job %s failed' % res.name)
+            else:
+                print1('Job %s timed out' % res.name)
+            if self.success_count == 0 and self.fail_count >= self.config.config['max_failed_simulations']:
+                raise PybnfError('Aborted because all jobs are failing',
+                                 'Your simulations are failing to run. Logs from failed simulations are saved in '
+                                 'the FailedSimLogs directory. For help troubleshooting this error, refer to '
+                                 'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
+        elif isinstance(res, CancelledError):
+            raise PybnfError('PyBNF has encounted a fatel error. If the error has occured on the inital run please varify your model '
+                            'is funcational. To resume run please restart PyBNF using the -r flag')
+        else:
+            self.success_count += 1
+            logger.debug('Job %s complete')
+
+        self.add_to_trajectory(res)
+        if res.score < self.config.config['min_objective']:
+            logger.info('Minimum objective value achieved')
+            print1('Minimum objective value achieved')
+            return 'STOP'
+        response = self.got_result(res)
+        if response == 'STOP':
+            self.best_fit_obj = self.trajectory.best_score()
+            logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
+            print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
+            return 'STOP'
+        return response
+
     def run(self, client, resume=None, debug=False):
         """Main loop for executing the algorithm"""
 
@@ -1360,59 +1420,28 @@ class Algorithm(object):
                 print1('Warning: job pool exhausted (all proposals may have been out of bounds). Ending run.')
                 break
             res = result_from_completed(f, res, pending[f][0], pending[f][1])
-            # Handle if this result is one of multiple instances for smoothing
             del pending[f]
+            # For smoothing / model-parallel runs, accumulate sub-results into
+            # their group and skip ahead until the group is complete.
             if self.config.config['smoothing'] > 1 or self.config.config['parallelize_models'] > 1:
-                group = self.job_group_dir.pop(res.name)
-                done = group.job_finished(res)
-                if not done:
+                res = self._fold_group_result(res)
+                if res is None:
                     continue
-                res = group.average_results()
             sim_count += 1
             backed_up = False
-            if isinstance(res, FailedSimulation):
-                if res.fail_type >= 1:
-                    self.fail_count += 1
-                tb = '\n'+res.traceback if res.fail_type == 1 else ''
-
-                logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
-                if res.fail_type >= 1:
-                    print1('Job %s failed' % res.name)
-                else:
-                    print1('Job %s timed out' % res.name)
-                if self.success_count == 0 and self.fail_count >= self.config.config['max_failed_simulations']:
-                    raise PybnfError('Aborted because all jobs are failing',
-                                     'Your simulations are failing to run. Logs from failed simulations are saved in '
-                                     'the FailedSimLogs directory. For help troubleshooting this error, refer to '
-                                     'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
-            elif isinstance(res, CancelledError):
-                raise PybnfError('PyBNF has encounted a fatel error. If the error has occured on the inital run please varify your model '
-                                'is funcational. To resume run please restart PyBNF using the -r flag')
-            else:
-                self.success_count += 1
-                logger.debug('Job %s complete')
-
-            self.add_to_trajectory(res)
-            if res.score < self.config.config['min_objective']:
-                logger.info('Minimum objective value achieved')
-                print1('Minimum objective value achieved')
+            decision = self._record_result_and_decide(res)
+            if decision == 'STOP':
                 break
-            response = self.got_result(res)
-            if response == 'STOP':
-                self.best_fit_obj = self.trajectory.best_score()
-                logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
-                print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
-                break
-            else:
-                new_futures = []
-                for ps in response:
-                    new_js = self.make_job(ps)
-                    for new_j in new_js:
-                        new_f = client.submit(run_job, new_j, (debug or self.fail_count < 10), self.failed_logs_dir)
-                        pending[new_f] = (ps, new_j.job_id)
-                        new_futures.append(new_f)
-                logger.debug('Submitting %d new Jobs' % len(new_futures))
-                pool.update(new_futures)
+            # Submit the next round of jobs the algorithm asked for.
+            new_futures = []
+            for ps in decision:
+                new_js = self.make_job(ps)
+                for new_j in new_js:
+                    new_f = client.submit(run_job, new_j, (debug or self.fail_count < 10), self.failed_logs_dir)
+                    pending[new_f] = (ps, new_j.job_id)
+                    new_futures.append(new_f)
+            logger.debug('Submitting %d new Jobs' % len(new_futures))
+            pool.update(new_futures)
 
         logger.info("Cancelling %d pending jobs" % len(pending))
         client.cancel(list(pending.keys()))
