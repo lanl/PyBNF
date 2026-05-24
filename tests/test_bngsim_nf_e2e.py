@@ -32,6 +32,11 @@ FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
 NF_XML = FIXTURES / 'e2e_nf_binding.xml'
 NF_BNGL = FIXTURES / 'e2e_nf_binding.bngl'
 
+# Same model plus a `begin functions` block, for the print_functions column
+# regression (issue #388's underlying cause; fixed by c7c099e).
+NF_FUNC_XML = FIXTURES / 'e2e_nf_function.xml'
+NF_FUNC_BNGL = FIXTURES / 'e2e_nf_function.bngl'
+
 N0 = 100
 K_ON = 1e-3
 T_END = 10.0
@@ -178,3 +183,38 @@ def test_bngsim_nfsim_and_rm_agree_statistically(tmp_path):
         'NFsim mean %.3f and RuleMonkey mean %.3f disagree by > 5 SE (%.3f)'
         % (nf_mean, rm_mean, se)
     )
+
+
+def _nf_function_model(print_functions):
+    """BngsimNfModel over the function fixture; print_functions toggled on the action."""
+    action = (
+        'simulate({method=>"nf",t_start=>0,t_end=>%g,n_steps=>10,gml=>1000,'
+        'print_functions=>%d,suffix=>"tc"})' % (T_END, print_functions)
+    )
+    return bngsim_model.BngsimNfModel(
+        'e2e_nf_function',
+        [action],
+        [('simulate', 'tc')],
+        [],
+        str(NF_FUNC_XML),
+        bngl_model_lines=NF_FUNC_BNGL.read_text().splitlines(keepends=True),
+        param_names=(),
+    )
+
+
+@pytest.mark.bngsim_nfsim
+def test_nf_print_functions_emits_function_column(tmp_path):
+    """A network-free simulate with print_functions=>1 must emit functions as
+    output columns. Before c7c099e the NF bridge dropped them, so an .exp file
+    expecting a function column raised a "columns not found" PybnfError during
+    scoring -- the failure that surfaced #388. Without print_functions the
+    column must stay absent (so this also guards against over-emitting)."""
+    cols_on = list(_nf_function_model(1).execute(str(tmp_path), 'func_on', 60)['tc'].cols)
+    cols_off = list(_nf_function_model(0).execute(str(tmp_path), 'func_off', 60)['tc'].cols)
+
+    assert 'frac_bound' in cols_on, (
+        'print_functions=>1 dropped the function column; got %s' % cols_on)
+    assert 'frac_bound' not in cols_off, (
+        'print_functions=>0 should not emit the function column; got %s' % cols_off)
+    # Sanity: observables are present either way.
+    assert {'time', 'bound', 'Afree'} <= set(cols_on)

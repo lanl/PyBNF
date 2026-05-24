@@ -1,0 +1,43 @@
+# Regression fixture for the network-free print_functions column bug
+# (the underlying cause behind issue #388, fixed by c7c099e).
+#
+# Same irreversible heterodimer binding as e2e_nf_binding.bngl, but with a
+# `begin functions` block. A network-free simulate with print_functions=>1 must
+# emit the function (`frac_bound`) as an output column; before the fix the NF
+# bridge dropped it, so an .exp file expecting that column raised a PybnfError
+# ("columns were not found in the simulation output") during scoring.
+begin model
+
+begin parameters
+  N0    100
+  k_on  0.001
+end parameters
+
+begin molecule types
+  A(b)
+  B(a)
+end molecule types
+
+begin seed species
+  A(b)  N0
+  B(a)  N0
+end seed species
+
+begin observables
+  Molecules Afree    A(b)
+  Molecules bound    A(b!+)
+end observables
+
+begin functions
+  frac_bound() = bound/N0
+end functions
+
+begin reaction rules
+  A(b) + B(a) -> A(b!1).B(a!1)  k_on
+end reaction rules
+
+end model
+
+begin actions
+  writeXML()
+end actions
