@@ -1360,43 +1360,32 @@ class FreeParameter(object):
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
 
     def _reflect(self, new):
-        """Takes a value and returns a new value based on reflecting against the boundary conditions"""
-        num_reflections = 0
+        """Reflect a proposed value back inside the parameter's bounds.
+
+        The reflection is the triangle-wave fold of ``new`` into ``[lb, ub]`` --
+        a deterministic, measure-preserving involution. Because it is symmetric
+        and depends only on the proposed value (not the current one), a
+        random-walk proposal followed by this fold stays symmetric, so the plain
+        Metropolis acceptance used by the MCMC samplers still targets the correct
+        bound-restricted posterior. Computing the fold in closed form (rather than
+        iterating one reflection at a time) means it is exact for an arbitrarily
+        large step, with no iteration cap and no balance-breaking random fallback.
+        """
         ub = self.upper_bound
         lb = self.lower_bound
-        cur = self.value
         if lb == ub:
             return lb
-        if self.log_space:  # transform to log space if needed
-            cur = np.log10(cur)
+        if self.log_space:  # reflect in log space for log-distributed parameters
             ub = np.log10(self.upper_bound)
             lb = np.log10(self.lower_bound)
             new = np.log10(new)
-            logger.debug("Transforming values to log space: %s %s %s %s" % (cur, new, lb, ub))
-        add = new - cur
+            logger.debug("Reflecting in log space: new=%s lb=%s ub=%s" % (new, lb, ub))
 
-        while True:
-            if num_reflections >= 1000:
-                logger.error("Error in parameter reflection.  Too many reflections: Init = %s, add = %s, parameter ="
-                             " %s. Set parameter to a random value" % (cur, add, self.name))
-                # Return a random value. Not ideal, but better than crashing the whole run.
-                rand = np.random.uniform(lb, ub)
-                return 10.**rand if self.log_space else rand
+        width = ub - lb
+        q = (new - lb) % (2.0 * width)
+        folded = lb + q if q <= width else ub - (q - width)
 
-            num_reflections += 1
-            if cur + add > ub:
-                add = -((cur+add) - ub)
-                cur = ub
-            elif cur + add < lb:
-                add = lb - (cur + add)
-                cur = lb
-            else:
-                break
-
-        if self.log_space:
-            return 10**(cur + add)
-
-        return cur + add
+        return 10. ** folded if self.log_space else folded
 
     def sample_value(self):
         """

@@ -2923,11 +2923,11 @@ class DreamAlgorithm(BayesianAlgorithm):
             except OutOfBoundsException:
                 return None, 0.0
 
-        # Hastings correction: (||Xp - Zc|| / ||X - Zc||)^(d-1)
+        # Hastings correction: (||Xp - Zc|| / ||X - Zc||)^(d-1).
+        # dist_x0_zc = sqrt(axis_norm_sq) is already guaranteed nonzero by the
+        # axis_norm_sq < 1e-20 check above, so no divide-by-zero guard is needed here.
         dist_xp_zc = np.linalg.norm(xp_vec - zc_vec)
         dist_x0_zc = np.linalg.norm(x0_vec - zc_vec)
-        if dist_x0_zc < 1e-20:
-            return None, 0.0
         log_correction = (self.n_dim - 1) * np.log(dist_xp_zc / dist_x0_zc)
 
         return PSet(new_vars), log_correction
@@ -3611,8 +3611,9 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
     def choose_new_pset(self, oldpset):
         """
-        Helper function to perturb the old PSet, generating a new proposed PSet
-        If the new PSet fails automatically because it violates box constraints, returns None.
+        Helper function to perturb the old PSet, generating a new proposed PSet.
+        The step is a fixed-magnitude (step_size) random-walk move; any component
+        that would leave the box is reflected back inside (see FreeParameter._reflect).
         :param oldpset: The PSet to be changed
         :type oldpset: PSet
         :return: the new PSet
@@ -3623,16 +3624,11 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
         new_vars = []
         for v in oldpset:
-            # For box constraints, need special treatment to keep correct statistics
-            # If we tried to leave the box, the move automatically fails, we should increment the iteration counter
-            # and retry.
-            # The same could happen if normal_var's try to go below 0
-            try:
-                new_var = v.add(delta_vector_normalized[v.name])
-            except OutOfBoundsException:
-                logger.debug('Rejected a move because %s=%.2E moved by %f, outside the box constraint [%.2E, %.2E]' %
-                             (v.name, oldpset[v.name], delta_vector_normalized[v.name], v.lower_bound, v.upper_bound))
-                return None
+            # Box constraints are handled by reflection: FreeParameter.add defaults to
+            # reflect=True, so a step that would leave the box is folded back inside
+            # rather than rejected. The fold is symmetric, so the plain Metropolis
+            # ratio in got_result still targets the correct bound-restricted posterior.
+            new_var = v.add(delta_vector_normalized[v.name])
             new_vars.append(new_var)
 
         return PSet(new_vars)
