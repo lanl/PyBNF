@@ -43,8 +43,6 @@ import traceback
 import pickle
 from scipy import stats
 from glob import glob
-from tornado import gen
-from distributed.client import _wait
 from concurrent.futures._base import CancelledError
 
 
@@ -323,22 +321,31 @@ class Job:
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         else:
             if self.calc_future is not None:
-                res.normalize(self.norm_settings)
                 try:
-                    res.postprocess_data(self.postproc_settings)
+                    res.normalize(self.norm_settings)
+                    try:
+                        res.postprocess_data(self.postproc_settings)
+                    except Exception:
+                        self.jlogger.exception('User-defined post-processing script failed')
+                        traceback.print_exc()
+                        print0('User-defined post-processing script failed')
+                        res.score = np.inf
+                    else:
+                        res.score = self.calc_future.result().evaluate_objective(res.simdata, res.pset, show_warnings=self.show_warnings)
+                        res.out = simdata
+                        if res.score is None:
+                            # res.score = np.inf
+                            res.out = np.inf
+                            logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
+                            logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
                 except Exception:
-                    self.jlogger.exception('User-defined post-processing script failed')
-                    traceback.print_exc()
-                    print0('User-defined post-processing script failed')
-                    res.score = np.inf
-                else:
-                    res.score = self.calc_future.result().evaluate_objective(res.simdata, res.pset, show_warnings=self.show_warnings)
-                    res.out = simdata
-                    if res.score is None:
-                        # res.score = np.inf
-                        res.out = np.inf
-                        logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-                        logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+                    # A failure while normalizing or scoring this one parameter set
+                    # (e.g. a PybnfError from mismatched simulation/exp columns) should
+                    # penalize this evaluation, not crash the whole run. See lanl/PyBNF#388.
+                    if debug:
+                        self._copy_log_files(failed_logs_dir)
+                    self.jlogger.exception('Objective evaluation failed during job %s' % self.job_id)
+                    res = FailedSimulation(self.params, self.job_id, 1, sys.exc_info())
                 res.simdata = None
         if self.delete_folder:
             if os.name == 'nt':  # Windows
@@ -488,30 +495,30 @@ class HybridJobGroup(JobGroup):
 
 class custom_as_completed(as_completed):
     """
-    Subclass created to modify a section of dask.distributed code
-    By using this subclass instead of as_completed, if you get an exception in a job,
-    that exception is returned as the result, instead of the job disappearing.
+    Subclass created to modify a section of dask.distributed code.
+    By using this subclass instead of as_completed, if a job raises an exception,
+    that exception is returned as the result (wrapped in a DaskError) instead of the
+    job disappearing or a raw (type, exc, traceback) tuple leaking into the caller.
+
+    We override _get_and_raise -- the synchronous hook that __next__ uses to pull each
+    completed future off the queue -- rather than the result-collecting coroutine.
+    Older dask exposed that coroutine as ``track_future``; dask renamed and rewrote it
+    (``async def _track_future``), so the previous ``track_future`` override silently
+    stopped running and errored futures leaked through as bare tuples. See lanl/PyBNF#388.
     """
-    @gen.coroutine
-    def track_future(self, future):
-        try:
-            yield _wait(future)
-        except CancelledError:
-            pass
+    def _get_and_raise(self):
+        res = self.queue.get()
         if self.with_results:
-            try:
-                result = yield future._result(raiseit=True)
-            except Exception as e:
-                result = DaskError(e, traceback.format_exc())
-        with self.lock:
-            self.futures[future] -= 1
-            if not self.futures[future]:
-                del self.futures[future]
-            if self.with_results:
-                self.queue.put_nowait((future, result))
-            else:
-                self.queue.put_nowait(future)
-            self._notify()
+            future, result = res
+            if future.status == 'error':
+                # For an errored future, dask stores ``result`` as the worker's
+                # (type, exception, traceback) tuple. Wrap it in a DaskError so the
+                # caller sees a recognizable object instead of a bare tuple.
+                typ, exc, tb = result
+                res = (future, DaskError(exc, ''.join(traceback.format_exception(typ, exc, tb))))
+            elif future.status == 'cancelled':
+                res = (future, CancelledError(future.key))
+        return res
 
 
 class DaskError:
@@ -1061,17 +1068,24 @@ class Algorithm(object):
         """
         # Evaluate objective if it wasn't done on workers.
         if res.score is None:  # Check if the objective wasn't evaluated on the workers
-            res.normalize(self.config.config['normalization'])
-            # Do custom postprocessing, if any
             try:
-                res.postprocess_data(self.config.postprocessing)
+                res.normalize(self.config.config['normalization'])
+                # Do custom postprocessing, if any
+                try:
+                    res.postprocess_data(self.config.postprocessing)
+                except Exception:
+                    logger.exception('User-defined post-processing script failed')
+                    traceback.print_exc()
+                    print0('User-defined post-processing script failed')
+                    res.score = np.inf
+                else:
+                    res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, res.pset, self.config.constraints)
             except Exception:
-                logger.exception('User-defined post-processing script failed')
-                traceback.print_exc()
-                print0('User-defined post-processing script failed')
+                # A failure while normalizing or scoring this one parameter set should
+                # penalize this evaluation, not crash the whole run. See lanl/PyBNF#388.
+                logger.exception('Objective evaluation failed for Result %s' % res.name)
                 res.score = np.inf
-            else:
-                res.score = self.objective.evaluate_multiple(res.simdata, self.exp_data, res.pset, self.config.constraints)
+                print1('Objective evaluation failed for Result %s; discarding this parameter set' % res.name)
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
                 logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
@@ -1349,6 +1363,14 @@ class Algorithm(object):
                     raise res.error  # User-targeted error should be raised instead of skipped
                 logger.error('Job failed with an exception')
                 logger.error(res.traceback)
+                res = FailedSimulation(pending[f][0], pending[f][1], 3)
+            elif not isinstance(res, (Result, CancelledError)):
+                # Defensive: a completed job should yield a Result (or, on failure, a
+                # DaskError / CancelledError handled above). Anything else -- e.g. a raw
+                # (type, exc, traceback) tuple leaking from as_completed -- is treated as a
+                # failed simulation rather than crashing the whole run. See lanl/PyBNF#388.
+                logger.error('Job %s returned an unexpected result of type %s; treating as a failed simulation'
+                             % (pending[f][1], type(res).__name__))
                 res = FailedSimulation(pending[f][0], pending[f][1], 3)
             # Handle if this result is one of multiple instances for smoothing
             del pending[f]
