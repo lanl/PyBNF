@@ -43,7 +43,7 @@ import traceback
 import pickle
 from scipy import stats
 from glob import glob
-from concurrent.futures._base import CancelledError
+from concurrent.futures import CancelledError
 
 
 
@@ -493,41 +493,42 @@ class HybridJobGroup(JobGroup):
         return Result(replica_results[0].pset, avedata, self.job_id)
 
 
-class custom_as_completed(as_completed):
+def result_from_completed(future, result, params, job_id):
     """
-    Subclass created to modify a section of dask.distributed code.
-    By using this subclass instead of as_completed, if a job raises an exception,
-    that exception is returned as the result (wrapped in a DaskError) instead of the
-    job disappearing or a raw (type, exc, traceback) tuple leaking into the caller.
+    Translate one completed item from
+    ``as_completed(futures, with_results=True, raise_errors=False)`` into a Result.
 
-    We override _get_and_raise -- the synchronous hook that __next__ uses to pull each
-    completed future off the queue -- rather than the result-collecting coroutine.
-    Older dask exposed that coroutine as ``track_future``; dask renamed and rewrote it
-    (``async def _track_future``), so the previous ``track_future`` override silently
-    stopped running and errored futures leaked through as bare tuples. See lanl/PyBNF#388.
-    """
-    def _get_and_raise(self):
-        res = self.queue.get()
-        if self.with_results:
-            future, result = res
-            if future.status == 'error':
-                # For an errored future, dask stores ``result`` as the worker's
-                # (type, exception, traceback) tuple. Wrap it in a DaskError so the
-                # caller sees a recognizable object instead of a bare tuple.
-                typ, exc, tb = result
-                res = (future, DaskError(exc, ''.join(traceback.format_exception(typ, exc, tb))))
-            elif future.status == 'cancelled':
-                res = (future, CancelledError(future.key))
-        return res
+    With those flags, dask hands back per future:
+      * the job's return value (a Result / FailedSimulation) for a finished job,
+      * the worker's ``(type, exception, traceback)`` tuple for an errored job, and
+      * a ``CancelledError`` for a cancelled job.
 
+    A failed job becomes a ``FailedSimulation`` so the run continues, except a
+    user-targeted ``PybnfError`` is re-raised (it would fail every job, so failing
+    fast is better than burning the whole fit). A ``CancelledError`` is returned
+    unchanged for the caller to treat as fatal, and anything unrecognized is treated
+    as a failed simulation rather than crashing the run.
 
-class DaskError:
+    ``Future.status`` is part of dask's public Future API, so this relies on no
+    dask internals. See lanl/PyBNF#388 for the history (the previous approach
+    subclassed as_completed and overrode a private method that dask later renamed).
     """
-    Class representing the result of a job that failed due to a raised exception
-    """
-    def __init__(self, error, tb):
-        self.error = error
-        self.traceback = tb
+    if getattr(future, 'status', None) == 'error':
+        typ, exc, tb = result
+        if isinstance(exc, PybnfError):
+            raise exc  # User-targeted error should be raised instead of skipped
+        logger.error('Job %s failed with an exception' % job_id)
+        logger.error(''.join(traceback.format_exception(typ, exc, tb)))
+        return FailedSimulation(params, job_id, 3)
+    if isinstance(result, CancelledError):
+        return result
+    if not isinstance(result, Result):
+        # e.g. a raw tuple leaking from as_completed for an errored future whose
+        # status we somehow didn't catch; never crash the run over it.
+        logger.error('Job %s returned an unexpected result of type %s; treating as a failed simulation'
+                     % (job_id, type(result).__name__))
+        return FailedSimulation(params, job_id, 3)
+    return result
 
 
 class Algorithm(object):
@@ -1344,7 +1345,7 @@ class Algorithm(object):
             f = client.submit(run_job, job, True, self.failed_logs_dir)
             futures.append(f)
             pending[f] = (job.params, job.job_id)
-        pool = custom_as_completed(futures, with_results=True, raise_errors=False)
+        pool = as_completed(futures, with_results=True, raise_errors=False)
         backed_up = True
         while True:
             if sim_count % backup_every == 0 and not backed_up:
@@ -1358,20 +1359,7 @@ class Algorithm(object):
                                'are out of bounds. Ending run.')
                 print1('Warning: job pool exhausted (all proposals may have been out of bounds). Ending run.')
                 break
-            if isinstance(res, DaskError):
-                if isinstance(res.error, PybnfError):
-                    raise res.error  # User-targeted error should be raised instead of skipped
-                logger.error('Job failed with an exception')
-                logger.error(res.traceback)
-                res = FailedSimulation(pending[f][0], pending[f][1], 3)
-            elif not isinstance(res, (Result, CancelledError)):
-                # Defensive: a completed job should yield a Result (or, on failure, a
-                # DaskError / CancelledError handled above). Anything else -- e.g. a raw
-                # (type, exc, traceback) tuple leaking from as_completed -- is treated as a
-                # failed simulation rather than crashing the whole run. See lanl/PyBNF#388.
-                logger.error('Job %s returned an unexpected result of type %s; treating as a failed simulation'
-                             % (pending[f][1], type(res).__name__))
-                res = FailedSimulation(pending[f][0], pending[f][1], 3)
+            res = result_from_completed(f, res, pending[f][0], pending[f][1])
             # Handle if this result is one of multiple instances for smoothing
             del pending[f]
             if self.config.config['smoothing'] > 1 or self.config.config['parallelize_models'] > 1:
