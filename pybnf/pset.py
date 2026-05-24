@@ -452,37 +452,47 @@ class BNGLModel(Model):
         return None
 
     def find_t_length(self):
-        text_list = []
-        fileText = self.bngl_file_text.replace('\\\n', '')
-        fileText = fileText.split('\n')
+        """
+        Builds a dict mapping each simulate action's suffix to the number of output
+        time points minus one, which is used to size the trajectory-output arrays
+        (an array of length ``time + 1`` holds one entry per output row).
+
+        The number of output rows depends on how the simulation length is specified:
+
+        * ``n_steps=>N`` produces ``N + 1`` rows (including ``t_start``), so ``time = N``.
+        * ``sample_times=>[t0,...,tM]`` produces one row per listed time, so
+          ``time = len(sample_times) - 1``.
+
+        :return: dict keyed on suffix string with integer values
+        """
+        # Join line continuations so each action occupies a single line.
+        lines = self.bngl_file_text.replace('\\\n', '').split('\n')
         timeDict = {}
-        
-                # have to clear any possible commented out lines that have n_steps in them
-        text_list = []
-        final_text = {}
-        for i in fileText:
-            if '#' in i:
-                pass
+        for line in lines:
+            # Skip commented-out lines (including any possible commented-out
+            # actions with n_steps/sample_times in them).
+            if '#' in line or 'simulate' not in line:
+                continue
+            suffix_match = re.search(r"suffix\s*=>\s*['\"](.*?)['\"]", line)
+            if suffix_match is None:
+                continue
+            suffix = suffix_match.group(1)
+
+            sample_match = re.search(r"sample_times\s*=>\s*\[(.*?)\]", line)
+            n_steps_match = re.search(r"n_steps\s*=>\s*(\d+)", line)
+            if sample_match is not None:
+                # One output row per listed sample time.
+                n_times = len([t for t in sample_match.group(1).split(',') if t.strip() != ''])
+                timeDict[suffix] = n_times - 1
+            elif n_steps_match is not None:
+                timeDict[suffix] = int(n_steps_match.group(1))
             else:
-                text_list.append(i)
-            for i in text_list:
-                if 'simulate' not in i:
-                    pass
-                else:
-                    stuffStart = i.rfind('suffix=>')
-                    stuff = i[stuffStart:].split(',')
-                    for suf in stuff:
-                        if 'suffix' in suf:
-                            stuff = suf.split('=>')
-                            stuff = stuff[1]
-                            start = i.rfind('n_steps=>')
-                            text = i[start:]
-                            new_text = re.findall(r'[ 0-9]+', text)
-                            time = int(new_text[0])
-                            stuff = stuff.replace('"', '')
-                            timeDict[stuff] = time
-                
-        return timeDict                
+                raise PybnfError(
+                    "Could not determine the simulation length for the simulate action with "
+                    "suffix '%s' in model %s: the action specifies neither n_steps nor "
+                    "sample_times." % (suffix, self.file_path))
+
+        return timeDict
 
     def copy_with_param_set(self, pset):
         """
