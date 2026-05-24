@@ -28,6 +28,7 @@ repos:
           tests/test_bngsim_ssa_replaces_rr.py
           tests/test_stochastic_seed_policy.py
           tests/test_packaging_metadata.py
+          tests/test_failed_sim_handling.py
         language: system
         pass_filenames: false
         always_run: true
