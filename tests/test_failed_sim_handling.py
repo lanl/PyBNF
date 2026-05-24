@@ -6,18 +6,20 @@ objective) so the run continues, rather than crashing the whole fit with
 ``AttributeError: 'tuple' object has no attribute 'score'``.
 
 The crash came from ``custom_as_completed`` silently no longer wrapping errored
-futures (dask renamed the coroutine it used to override), so an errored future
-leaked into the main loop as a raw ``(type, exc, traceback)`` tuple. These tests
-pin down both the wrapping behavior and the eval-failure -> FailedSimulation path.
+futures (dask renamed the private coroutine it used to override), so an errored
+future leaked into the main loop as a raw ``(type, exc, traceback)`` tuple. That
+subclass has been replaced by ``result_from_completed``, which translates the
+output of stock ``as_completed(with_results=True, raise_errors=False)`` using only
+dask's public Future API. These tests pin down that translation and the
+eval-failure -> FailedSimulation path.
 """
 
-import os
-import queue as queuemod
 import shutil
 import tempfile
 import types
 
 import numpy as np
+import pytest
 
 from .context import algorithms, data, pset, printing
 
@@ -38,59 +40,58 @@ def _make_data():
 
 
 class _FakeFuture:
-    def __init__(self, status, key='sim_1'):
+    """Minimal stand-in for a dask Future: result_from_completed only reads .status."""
+    def __init__(self, status):
         self.status = status
-        self.key = key
-
-
-def _bare_completed(with_results=True):
-    """A custom_as_completed instance with just the attributes _get_and_raise needs."""
-    ac = object.__new__(algorithms.custom_as_completed)
-    ac.with_results = with_results
-    ac.queue = queuemod.Queue()
-    return ac
 
 
 # ---------------------------------------------------------------------------
-# custom_as_completed._get_and_raise: the root-cause fix
+# result_from_completed: the root-cause fix
 # ---------------------------------------------------------------------------
 
-def test_errored_future_wrapped_in_daskerror():
-    """An errored future must surface as a DaskError, not a raw (typ, exc, tb) tuple."""
-    ac = _bare_completed()
-    fut = _FakeFuture('error')
-    exc = ValueError('boom')
-    ac.queue.put((fut, (ValueError, exc, exc.__traceback__)))
+def test_errored_future_becomes_failed_simulation():
+    """An errored future (raw (typ, exc, tb) tuple) must become a FailedSimulation."""
+    exc = RuntimeError('boom')
+    res = algorithms.result_from_completed(
+        _FakeFuture('error'), (RuntimeError, exc, exc.__traceback__), _make_pset(), 'sim_1')
 
-    out_fut, result = ac._get_and_raise()
-
-    assert out_fut is fut
-    assert isinstance(result, algorithms.DaskError)
-    assert result.error is exc
-    assert 'boom' in result.traceback
+    assert isinstance(res, algorithms.FailedSimulation)
+    assert res.fail_type == 3
 
 
-def test_cancelled_future_wrapped_in_cancellederror():
-    ac = _bare_completed()
-    fut = _FakeFuture('cancelled', key='sim_42')
-    ac.queue.put((fut, None))
+def test_errored_future_pybnferror_is_reraised():
+    """A user-targeted PybnfError should abort the run, not be silently penalized."""
+    exc = printing.PybnfError('bad config that would fail every job')
+    with pytest.raises(printing.PybnfError):
+        algorithms.result_from_completed(
+            _FakeFuture('error'), (printing.PybnfError, exc, exc.__traceback__),
+            _make_pset(), 'sim_1')
 
-    _out_fut, result = ac._get_and_raise()
 
-    assert isinstance(result, algorithms.CancelledError)
+def test_cancelled_future_returned_unchanged():
+    fut = _FakeFuture('cancelled')
+    ce = algorithms.CancelledError('sim_1')
+    res = algorithms.result_from_completed(fut, ce, _make_pset(), 'sim_1')
+
+    assert res is ce
 
 
-def test_successful_future_passes_through_unchanged():
-    ac = _bare_completed()
+def test_successful_result_passes_through_unchanged():
     fut = _FakeFuture('finished')
-    res = algorithms.Result(_make_pset(), {}, 'sim_1')
-    res.score = 1.23
-    ac.queue.put((fut, res))
+    result = algorithms.Result(_make_pset(), {}, 'sim_1')
+    result.score = 1.23
+    out = algorithms.result_from_completed(fut, result, _make_pset(), 'sim_1')
 
-    out_fut, result = ac._get_and_raise()
+    assert out is result
 
-    assert out_fut is fut
-    assert result is res
+
+def test_unexpected_result_type_becomes_failed_simulation():
+    """A bare tuple leaking through (the original #388 crash) is handled, not fatal."""
+    out = algorithms.result_from_completed(
+        _FakeFuture('finished'), ('a', 'bare', 'tuple'), _make_pset(), 'sim_1')
+
+    assert isinstance(out, algorithms.FailedSimulation)
+    assert out.fail_type == 3
 
 
 # ---------------------------------------------------------------------------
