@@ -69,7 +69,10 @@ version = { attr = "pybnf.__version__" }
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+addopts = "-m 'not slow'"
 markers = [
+    "slow: long-running statistical recovery tests; deselected by default, run with `-m slow`",
+    "integration: end-to-end algorithm runs against analytical targets (no simulation backend)",
     "bngsim: requires bngsim installed and PYBNF_NO_BNGSIM unset",
     "bngsim_nfsim: requires bngsim built with NFsim",
     "bngsim_rulemonkey: requires bngsim built with RuleMonkey",
