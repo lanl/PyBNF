@@ -47,3 +47,9 @@ readme_dev.txt
 dev/
 .venv/
 uv.lock
+
+# Claude Code runtime/local state (the scheduler recreates the lock each session).
+# Note: a shared .claude/settings.json *can* be committed if you ever want one —
+# only these transient/local files are ignored.
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
