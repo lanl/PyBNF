@@ -68,17 +68,18 @@ def _well_conditioned(chains):
 
 
 # --------------------------------------------------------------------------- #
-# _split_chain_rhat: the Brooks-Gelman potential scale reduction factor
+# _split_chain_rhat: the Vehtari (2021) potential scale reduction factor
 # --------------------------------------------------------------------------- #
 class TestSplitChainRhat:
 
     def test_matches_hand_computed_value(self):
-        """Exact analytical oracle. For chains [0,1,2,3] and [1,2,3,4] (N=2, n=4):
-        W = var_within = 5/3, B = n*var(means) = 4*0.5 = 2, sigma2 = (3/4)W + (1/4)B = 1.75,
-        R-hat = sqrt((N+1)/N * sigma2/W - (n-1)/(N*n)) = sqrt(1.5*1.05 - 0.375) = sqrt(1.2)."""
+        """Exact analytical oracle for R = sqrt(var_plus / W) (Vehtari 2021).
+        For chains [0,1,2,3] and [1,2,3,4] (N=2, n=4):
+        W = var_within = 5/3, B = n*var(means) = 4*0.5 = 2,
+        var_plus = (3/4)W + (1/4)B = 1.75, so R-hat = sqrt(1.75 / (5/3)) = sqrt(1.05)."""
         chains = np.array([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=float)[:, :, None]
         rhat = BA._split_chain_rhat(chains)
-        np.testing.assert_allclose(rhat, np.sqrt(1.2), rtol=1e-12)
+        np.testing.assert_allclose(rhat, np.sqrt(1.05), rtol=1e-12)
 
     def test_identical_chains_give_sqrt_ratio(self):
         """When all chains are identical the between-chain variance B=0, so

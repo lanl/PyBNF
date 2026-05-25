@@ -2596,7 +2596,18 @@ class BayesianAlgorithm(Algorithm):
     @staticmethod
     def _split_chain_rhat(chains):
         """
-        Compute the Brooks-Gelman R-hat from an array of chains.
+        Compute the potential scale reduction factor R-hat from an array of chains,
+        using the Vehtari et al. (2021) convention R = sqrt(var_plus / W), where
+        var_plus = ((n-1)/n) W + B/n. This is the form paired with the rank
+        normalization and folding done by compute_rhat (and matches Stan / ArviZ).
+
+        It deliberately omits the older Gelman & Rubin (1992) df-style correction
+        sqrt((N+1)/N * (var_plus/W) - (n-1)/(N n)): that factor only inflates R-hat
+        when the chains have not converged (it cancels to ~1 at convergence), making
+        PyBNF report systematically higher R-hat than reference tools on the same
+        chains -- harmful for cross-tool comparison -- without changing any
+        convergence decision.
+
         chains: (N, n, d) array
         Returns: (d,) array of R-hat values
         """
@@ -2605,9 +2616,9 @@ class BayesianAlgorithm(Algorithm):
         s2_chains = np.var(chains, axis=1, ddof=1)
         B = n * np.var(mu_chains, axis=0, ddof=1)
         W = np.mean(s2_chains, axis=0)
-        sigma2 = ((n - 1) / n) * W + (1.0 / n) * B
+        var_plus = ((n - 1) / n) * W + (1.0 / n) * B
         with np.errstate(divide='ignore', invalid='ignore'):
-            return np.sqrt((N + 1) / N * (sigma2 / W) - (n - 1) / (N * n))
+            return np.sqrt(var_plus / W)
 
     def _get_split_chains(self):
         """
