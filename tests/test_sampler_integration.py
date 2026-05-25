@@ -91,15 +91,24 @@ def test_sampler_moves_to_mode(tmp_path, fit_type):
 def test_sampler_recovers_gaussian_moments(tmp_path, fit_type):
     # 2-D keeps the serial in-process run tractable (no dask parallelism here, so
     # cost is population_size * max_iterations evaluations, run one at a time).
+    # Runtime is dominated by the convergence diagnostics, which fire every 10
+    # iterations and rank-normalize the *full growing chain history* — so wall
+    # time scales ~O(max_iterations^2), not linearly. max_iterations is therefore
+    # the lever; these budgets still leave ample effective samples to recover a
+    # 2-D Gaussian within the tolerances below.
     mean, var = [2.0, -1.0], [1.0, 4.0]
     tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
-    common = dict(burn_in=2000, sample_every=4, rhat_threshold=0,
-                  output_hist_every=10 ** 9, hist_bins=20, max_iterations=6000)
+    common = dict(sample_every=2, rhat_threshold=0,
+                  output_hist_every=10 ** 9, hist_bins=20)
     if fit_type == 'am':
-        kw = dict(common, population_size=4, adaptive=1500, num_bins=20,
+        # am samples only after burn_in + adaptive; leave ~800 post-adaptation
+        # iterations across 3 chains (~1200 thinned samples).
+        kw = dict(common, population_size=3, burn_in=800, adaptive=800,
+                  max_iterations=2400, num_bins=20,
                   credible_intervals=[68, 95], step_size=0.5)
     else:
-        kw = dict(common, population_size=6)
+        # dream/p_dream mix fast; ~1300 post-burn-in iterations across 4 chains.
+        kw = dict(common, population_size=4, burn_in=700, max_iterations=2000)
     conf = H.make_config(tmp_path, fit_type, tgt, exp, len(mean), **kw)
     alg = SAMPLERS[fit_type](conf)
     H.drive(alg)
