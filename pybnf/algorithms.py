@@ -2703,13 +2703,16 @@ class BayesianAlgorithm(Algorithm):
             mean_acov += acov
         mean_acov /= M
 
-        # Combined autocorrelation: rho_t = 1 - (mean_acov[0] - mean_acov[t]) / var_hat
+        # Combined autocorrelation: rho_t = 1 - (W - mean_acov[t]) / var_hat
+        # Use the within-chain variance W (ddof=1) as the lag-0 anchor, per
+        # Vehtari et al. (2021) / Stan. (Using mean_acov[0] == ((n-1)/n)*W instead
+        # introduces an O(1/n) downward bias in ESS; negligible but non-standard.)
         # Geyer's initial positive sequence: sum consecutive pairs, stop at first negative pair
         tau = 0.0
         t = 1
         while t < n - 1:
-            rho_t = 1.0 - (mean_acov[0] - mean_acov[t]) / var_hat
-            rho_t1 = 1.0 - (mean_acov[0] - mean_acov[t + 1]) / var_hat
+            rho_t = 1.0 - (W - mean_acov[t]) / var_hat
+            rho_t1 = 1.0 - (W - mean_acov[t + 1]) / var_hat
             P = rho_t + rho_t1
             if P < 0:
                 break
