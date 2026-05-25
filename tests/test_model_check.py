@@ -21,16 +21,16 @@ constraints, so the numerical pieces are substituted:
 config (the real ``__init__`` is exercised separately); the ``__init__`` tests
 use the real constructor with a stub config + fake models dict.
 
-A note on the objective call (``run_check`` line ~4697):
-``self.objective.evaluate_multiple(result.simdata, self.exp_data,
-self.config.constraints)`` passes constraints **positionally in the ``pset``
-slot** of ``ObjectiveFunction.evaluate_multiple(sim, exp, pset, constraints=())``.
-This is the *legacy 3-arg calling convention*, not a bug: ``config.obj`` is an
-``ObjectiveFunction`` whose ``evaluate_multiple`` has an ``AttributeError``
-fallback (``ConstraintSet`` has no ``.name``) that reassigns the pset slot to
-``constraints`` — so the constraint penalties *are* folded into the score.
-``test_objective_funcs.py`` pins that fallback against the real objective; here
-we pin only the *call shape* ModelCheck emits (``test_objective_call_uses_legacy_three_arg_convention``).
+A note on the objective call (``run_check``):
+``self.objective.evaluate_multiple(result.simdata, self.exp_data, result.pset,
+self.config.constraints)`` uses the **explicit 4-arg convention** matching
+``Algorithm.run`` (``ObjectiveFunction.evaluate_multiple(sim, exp, pset,
+constraints=())``) — the result's empty ``'check'`` PSet in the pset slot,
+constraints in their own slot. (It previously passed constraints positionally in
+the pset slot, relying on an ``AttributeError`` fallback in ``evaluate_multiple``;
+that was correct but brittle and has since been made explicit. The score is
+unchanged: an empty pset means the fallback loop never ran anyway.)
+``test_objective_call_uses_explicit_four_arg_convention`` pins the call shape.
 """
 import logging
 import os
@@ -48,8 +48,11 @@ class _SpyResult:
     isinstance check is False). Records normalize/postprocess calls; can be told
     to raise from postprocess to drive the post-processing-failure branch."""
 
-    def __init__(self, simdata=None, postprocess_raises=None):
+    def __init__(self, simdata=None, postprocess_raises=None, ps=None):
         self.simdata = simdata if simdata is not None else {'m': {'s': object()}}
+        # run_job stamps the job's (empty, 'check'-named) PSet onto the Result;
+        # run_check forwards it as the pset arg of evaluate_multiple.
+        self.pset = ps if ps is not None else pset.PSet([])
         self.score = None  # set by run_check from objective.evaluate_multiple
         self.normalize_calls = []
         self.postprocess_calls = []
@@ -319,12 +322,12 @@ def test_success_normalizes_postprocesses_scores_and_prints(monkeypatch, capsys)
     assert 'Objective value is 7.5' in capsys.readouterr().out
 
 
-def test_objective_call_uses_legacy_three_arg_convention(monkeypatch):
-    """run_check calls objective.evaluate_multiple(simdata, exp_data, constraints)
-    — exactly three positional args, with constraints in the third (pset) slot and
-    no keyword args. This pins the legacy calling convention ModelCheck emits (see
-    module docstring); the AttributeError fallback that makes it correct is pinned
-    in test_objective_funcs.py."""
+def test_objective_call_uses_explicit_four_arg_convention(monkeypatch):
+    """run_check calls objective.evaluate_multiple(simdata, exp_data, result.pset,
+    constraints) — the explicit four-arg convention matching Algorithm.run: the
+    result's (empty 'check') PSet in the pset slot and constraints in their own
+    slot. This is what makes constraint penalties fold into the score without
+    relying on the AttributeError fallback (see module docstring)."""
     _patch_job(monkeypatch)
     result = _SpyResult()
     _patch_run_job(monkeypatch, result)
@@ -338,10 +341,11 @@ def test_objective_call_uses_legacy_three_arg_convention(monkeypatch):
 
     (args, kwargs), = obj.calls
     assert kwargs == {}
-    assert len(args) == 3
+    assert len(args) == 4
     assert args[0] is result.simdata
     assert args[1] is exp
-    assert args[2] is constraints  # constraints land in the pset slot, positionally
+    assert args[2] is result.pset      # pset slot carries the result's own pset
+    assert args[3] is constraints      # constraints in their own (4th) slot
 
 
 # =========================================================================== #

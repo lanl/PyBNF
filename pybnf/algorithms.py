@@ -4694,7 +4694,8 @@ class ModelCheck(object):
             print0('User-defined post-processing script failed. Exiting')
             return
 
-        result.score = self.objective.evaluate_multiple(result.simdata, self.exp_data, self.config.constraints)
+        result.score = self.objective.evaluate_multiple(result.simdata, self.exp_data, result.pset,
+                                                         self.config.constraints)
         if result.score is None:
             print0('Simulation contained NaN or Inf values. Cannot calculate objective value.')
             return
