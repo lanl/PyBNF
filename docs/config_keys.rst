@@ -1148,3 +1148,12 @@ For DREAM
   If set to a positive value, the algorithm stops automatically once all parameters have
   :math:`\hat{R}` below this threshold (checked after burn-in). Set to 0 to disable. A common
   threshold is 1.05. Default: 0 (disabled)
+
+``diagnostics_every = int``
+  How often (in iterations) to compute and report the convergence diagnostics
+  (:math:`\hat{R}`, bulk/tail ESS). Each computation rank-normalizes the last half of the chain
+  history, whose length grows with the run, so computing it on a fixed cadence makes the total
+  diagnostic cost scale with the *square* of ``max_iterations``. Striding it instead caps the
+  number of computations and keeps the cost roughly linear; the diagnostic value reported at any
+  given iteration is unchanged. Set to 0 (the default) to auto-scale as ``max(10, max_iterations //
+  100)`` (~100 reports per run); set a positive value to force a fixed cadence. Default: 0 (auto)

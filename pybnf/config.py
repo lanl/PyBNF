@@ -231,6 +231,7 @@ class Configuration(object):
             'delta': 1,
             'outlier_method': 'iqr',
             'rhat_threshold': 0.0,
+            'diagnostics_every': 0,
             'precondition_adapt': None
         }
         return default
@@ -261,7 +262,7 @@ class Configuration(object):
                                 'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling',
                                 'crossover_number', 'zeta', 'lambda', 'gamma_prob', 'adaptive', 'time_length',
                                 'archive_size', 'archive_thin_rate', 'snooker_prob',
-                                'delta', 'outlier_method', 'rhat_threshold',
+                                'delta', 'outlier_method', 'rhat_threshold', 'diagnostics_every',
                                 'precondition_adapt'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',

@@ -2397,6 +2397,17 @@ class BayesianAlgorithm(Algorithm):
         # Convergence threshold (0 = disabled)
         self.rhat_threshold = config.config['rhat_threshold']
 
+        # How often (in iterations) to compute the R-hat/ESS convergence
+        # diagnostics. Each computation rank-normalizes/autocorrelates the last
+        # 50% of the chain history, whose length grows with the run, so a fixed
+        # cadence makes total diagnostic cost ~O(max_iterations^2). A stride that
+        # grows with the run instead caps the number of computations (~100),
+        # keeping the cost ~O(max_iterations). The *value* reported at any given
+        # iteration is unchanged — only how often it is computed. 0 = auto.
+        self.diagnostics_every = config.config['diagnostics_every']
+        if self.diagnostics_every <= 0:
+            self.diagnostics_every = max(10, self.max_iterations // 100)
+
         # Total model evaluations for ESS/evaluation metric
         self.total_evaluations = 0
 
@@ -3067,11 +3078,13 @@ class DreamAlgorithm(BayesianAlgorithm):
             if self.iteration[index] % 10 == 0:
                 print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                 print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
+            else:
+                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+            # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
+            if self.iteration[index] % self.diagnostics_every == 0:
                 max_rhat = self.report_convergence_diagnostics(self.iteration[index])
                 if self.check_convergence(self.iteration[index], max_rhat):
                     return 'STOP'
-            else:
-                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
             logger.debug('Completed %i iterations' % self.iteration[index])
             print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
 
@@ -3576,14 +3589,14 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                     print2('Current move accept rate: %f' % (self.accepted/self.attempts))
                     if self.exchange_attempts > 0:
                         print2('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
-                    # Convergence diagnostics (R-hat, ESS)
-                    if not self.sa:
-                        max_rhat = self.report_convergence_diagnostics(self.iteration[index])
-                        if self.check_convergence(self.iteration[index], max_rhat):
-                            self.converged = True
-                            return None
                 else:
                     print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+                # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
+                if not self.sa and self.iteration[index] % self.diagnostics_every == 0:
+                    max_rhat = self.report_convergence_diagnostics(self.iteration[index])
+                    if self.check_convergence(self.iteration[index], max_rhat):
+                        self.converged = True
+                        return None
                 logger.debug('Completed %i iterations' % self.iteration[index])
                 logger.debug('Current move accept rate: %f' % (self.accepted/self.attempts))
                 if self.exchange_attempts > 0:
@@ -3998,8 +4011,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         if self.iteration[i] % self.arr_length == 0:
                             self.write_out_trajactorys_noise(i)
 
-            # Convergence diagnostics every 10 iterations
-            if self.iteration[index] % 10 == 0:
+            # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
+            if self.iteration[index] % self.diagnostics_every == 0:
                 max_rhat = self.report_convergence_diagnostics(self.iteration[index])
                 if self.check_convergence(self.iteration[index], max_rhat):
                     self.combine_chains_params()
