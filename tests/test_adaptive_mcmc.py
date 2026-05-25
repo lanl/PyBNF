@@ -211,3 +211,189 @@ class TestProposal:
         am.iteration = [0, 0]
         prop = am.pick_new_pset(0)
         assert set(prop.keys()) == {'v1__FREE', 'v2__FREE', 'v3__FREE'}
+
+
+# --------------------------------------------------------------------------- #
+# Adaptive proposal — the post-burn-in branch of pick_new_pset.
+#
+# Once iteration >= burn_in + adaptive, pick_new_pset switches from the fixed
+# random walk to the Haario (2001) adaptive-Metropolis kernel: it seeds a
+# proposal covariance from the recorded chain, then on every step does a
+# Robbins-Monro update of the running mean, the covariance, and a global scale
+# `diff`, and proposes current + diff * N(0, Sigma). The math under test:
+#
+#   * seeding scale  = 2.38^2 / d           (Gelman-Roberts optimal scaling)
+#   * seeding cov    = X^T X / n - mu mu^T + eps*I   (sample cov + stabilizer)
+#   * scale update   driven by (alpha - 0.234)       (0.234 optimal acceptance)
+#   * proposal       = current + diff * delta, delta ~ N(0, Sigma_adapted)
+#
+# The accept/reject rule and the pre-adaptation random walk are covered above.
+# These tests freeze the Gaussian draw (monkeypatching np.random.multivariate_
+# normal) so each contract is checked against its analytical oracle, not RNG.
+# --------------------------------------------------------------------------- #
+OPTIMAL_ACCEPT = 0.234  # Gelman/Roberts optimal Metropolis acceptance rate
+
+# A 5-sample, 3-parameter chain with strong anti-correlation between the first
+# two coordinates (so a wrong covariance computation is visible off-diagonal).
+CHAIN_X = np.array([
+    [40., 60., 50.],
+    [45., 55., 52.],
+    [50., 50., 48.],
+    [55., 45., 51.],
+    [60., 40., 49.],
+])
+
+
+def _adaptive_am(tmp_path, *, burn_in, adaptive, stablizingCov=0.01, num_parallel=2):
+    cfg = _make_config(tmp_path, num_parallel, UNIFORM_VARS,
+                       burn_in=burn_in, adaptive=adaptive, stablizingCov=stablizingCov)
+    am = algorithms.Adaptive_MCMC(cfg)
+    am.start_run()
+    return am
+
+
+def _write_chain_file(am, idx, X):
+    """Write X as the per-chain history file pick_new_pset's seeding step reads,
+    with a plain (un-commented) header of the parameter names in `variables`
+    order so np.genfromtxt(names=True) recovers the columns."""
+    names = [v.name for v in am.variables]
+    path = am.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt'
+    np.savetxt(path, X, header=' '.join(names), comments='')
+
+
+def _pset_from_values(am, values, vartype='uniform_var', lo=0.0, hi=100.0):
+    """Build a PSet with one parameter per model variable, in `variables` order."""
+    ps = pset.PSet([pset.FreeParameter(v.name, vartype, lo, hi, float(values[i]))
+                    for i, v in enumerate(am.variables)])
+    ps.name = 'iter0run0'
+    return ps
+
+
+def _freeze_draw_to_zero(monkeypatch):
+    """Replace the Gaussian proposal draw with the zero vector so pick_new_pset's
+    state updates (mean/cov/scale) are isolated and the trivial step lands in
+    bounds on the first try."""
+    monkeypatch.setattr(np.random, 'multivariate_normal',
+                        lambda mean, cov: np.zeros(len(mean)))
+
+
+class TestAdaptiveScaling:
+
+    def test_seeded_to_optimal_2_38_sq_over_d(self, tmp_path, monkeypatch):
+        """At the first adaptive iteration (it == burn_in + adaptive) the global
+        proposal scale is seeded to the Gelman-Roberts optimum 2.38^2/d. With the
+        acceptance rate at the 0.234 target the same-step Robbins-Monro nudge
+        vanishes (and its 1/(1+it-adaptive-burn_in) factor is 1 here), so the
+        post-call scale is exactly 2.38^2/d."""
+        burn_in, adaptive = 2, 5
+        am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive)
+        d = len(am.variables)
+        _write_chain_file(am, 0, CHAIN_X)
+        am.current_pset[0] = _pset_from_values(am, CHAIN_X.mean(0))
+        am.iteration[0] = burn_in + adaptive
+        am.alpha[0] = OPTIMAL_ACCEPT
+        _freeze_draw_to_zero(monkeypatch)
+
+        am.pick_new_pset(0)
+
+        np.testing.assert_allclose(am.diff[0], 2.38 ** 2 / d, rtol=1e-12)
+
+    @pytest.mark.parametrize("alpha, expect", [(1.0, 'up'), (0.0, 'down'),
+                                               (OPTIMAL_ACCEPT, 'same')])
+    def test_robbins_monro_adapts_toward_optimal_acceptance(self, tmp_path, monkeypatch,
+                                                            alpha, expect):
+        """Past seeding, the log-scale is nudged by (alpha - 0.234): an acceptance
+        rate above the 0.234 optimum grows the step, below shrinks it, exactly at
+        it leaves the step unchanged. This pins both the sign of the update and
+        the 0.234 fixed point."""
+        burn_in, adaptive = 2, 5
+        am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive)
+        d = len(am.variables)
+        base_vals = np.full(d, 50.0)
+        am.current_pset[0] = _pset_from_values(am, base_vals)
+        am.iteration[0] = burn_in + adaptive + 1     # past the seeding step
+        am.mu[0] = base_vals.reshape(1, d)           # zero innovation -> isolate the scale
+        am.diffMatrix[0] = 0.01 * np.eye(d)
+        D = 0.5
+        am.diff[0] = D
+        am.alpha[0] = alpha
+        _freeze_draw_to_zero(monkeypatch)
+
+        am.pick_new_pset(0)
+
+        if expect == 'up':
+            assert am.diff[0] > D
+        elif expect == 'down':
+            assert am.diff[0] < D
+        else:
+            np.testing.assert_allclose(am.diff[0], D, rtol=1e-12)
+
+
+class TestAdaptiveCovariance:
+
+    def test_seeded_from_chain_sample_covariance(self, tmp_path, monkeypatch):
+        """At the seeding step the proposal covariance is the chain's sample
+        covariance (X^T X / n - mu mu^T, the 1/n estimator) plus the stabilizing
+        eps*I. We pin the post-call matrix including the single Robbins-Monro EMA
+        step: with the current point set to the chain mean the innovation is zero,
+        so that step shrinks only the sample-cov part by it/(1+it), leaving
+        cov_pop * it/(1+it) + eps*I."""
+        burn_in, adaptive, eps = 2, 5, 0.01
+        am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive, stablizingCov=eps)
+        d = len(am.variables)
+        _write_chain_file(am, 0, CHAIN_X)
+        am.current_pset[0] = _pset_from_values(am, CHAIN_X.mean(0))
+        it = burn_in + adaptive
+        am.iteration[0] = it
+        am.alpha[0] = OPTIMAL_ACCEPT
+        _freeze_draw_to_zero(monkeypatch)
+
+        am.pick_new_pset(0)
+
+        mu = CHAIN_X.mean(0)
+        cov_pop = CHAIN_X.T @ CHAIN_X / adaptive - np.outer(mu, mu)  # n == adaptive rows
+        oracle = cov_pop * (it / (1 + it)) + eps * np.eye(d)
+        np.testing.assert_allclose(am.diffMatrix[0], oracle, rtol=1e-10, atol=1e-12)
+
+
+class TestAdaptiveProposalDraw:
+
+    def test_proposal_is_current_plus_scaled_draw_from_adapted_covariance(self, tmp_path,
+                                                                         monkeypatch):
+        """The adaptive proposal is current + diff * delta with delta ~ N(0, Sigma)
+        and Sigma the just-updated covariance. Fixing delta to a known vector and
+        intercepting the sampling covariance: each parameter moves by exactly
+        diff*delta_i, and the matrix handed to the Gaussian draw is the current
+        diffMatrix — so proposals inherit the estimated posterior correlations
+        rather than stepping isotropically."""
+        burn_in, adaptive = 2, 5
+        am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive)
+        d = len(am.variables)
+        base_vals = np.full(d, 5.0)
+        # normal_var is unbounded, so the (possibly large) step never reflects.
+        base = _pset_from_values(am, base_vals, vartype='normal_var', lo=0.0, hi=1.0)
+        am.current_pset[0] = base
+        am.iteration[0] = burn_in + adaptive + 1
+        am.mu[0] = base_vals.reshape(1, d)                       # zero innovation
+        am.diffMatrix[0] = np.full((d, d), 0.5) + 1.5 * np.eye(d)
+        D = 0.3
+        am.diff[0] = D
+        am.alpha[0] = OPTIMAL_ACCEPT                             # keep diff == D
+
+        delta = np.arange(1.0, d + 1.0) * np.array([1.0, -1.0, 1.0][:d] + [1.0] * max(0, d - 3))
+        rec = {}
+
+        def fake_mvn(mean, cov):
+            rec['cov'] = np.array(cov)
+            rec['calls'] = rec.get('calls', 0) + 1
+            return delta
+        monkeypatch.setattr(np.random, 'multivariate_normal', fake_mvn)
+
+        prop = am.pick_new_pset(0)
+
+        names = list(base.keys())
+        for i, n in enumerate(names):
+            np.testing.assert_allclose(prop[n] - base[n], D * delta[i], rtol=1e-12)
+        # The draw sampled from the adapted (post-update) covariance, once.
+        np.testing.assert_allclose(rec['cov'], am.diffMatrix[0], rtol=1e-12)
+        assert rec['calls'] == 1
