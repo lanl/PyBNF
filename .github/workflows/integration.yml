@@ -8,10 +8,14 @@ name: integration
 # wheel. They remain covered by the local pre-push hook (.pre-commit-config.yaml)
 # on a dev machine until bngsim ships Linux wheels.
 #
-# A nightly `schedule:` cron could be added here, but is intentionally omitted
-# pending a maintainer decision.
+# Runs nightly and on manual dispatch.
 on:
   workflow_dispatch:
+  schedule:
+    # 08:00 UTC daily. GitHub cron is fixed UTC (no DST), so this is ~02:00 in
+    # Denver during Mountain Daylight Time and ~01:00 during Mountain Standard
+    # Time -- middle of the night either way.
+    - cron: '0 8 * * *'
 
 jobs:
   slow:
