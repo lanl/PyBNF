@@ -21,12 +21,12 @@ runs:
     # libpython3.10.so.1.0 on the loader path (3.12's does). setup-python's
     # Pythons are built --enable-shared with libpython discoverable, so
     # roadrunner imports on every matrix leg.
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       id: python
       with:
         python-version: ${{ inputs.python-version }}
 
-    - uses: astral-sh/setup-uv@v5
+    - uses: astral-sh/setup-uv@v7
       with:
         enable-cache: true
         # No uv.lock in this repo; key the cache on pyproject.toml so it can
