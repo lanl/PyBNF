@@ -177,22 +177,24 @@ class TestBayes:
             curr_params = next_params
 
         ba.credible_intervals = [100, 110]
-        ba.update_histograms('_ci1')  # must not raise
+        ba.update_histograms('_ci1')  # must not raise (pre-fix: max_index >= n -> IndexError)
 
+        # Read the same sample matrix update_histograms used: columns 2.. are the
+        # variables, one per credible-file line, in self.variables order.
+        nvars = len(ba.variables)
+        samples = np.genfromtxt('noseoutput2/Results/samples.txt',
+                                usecols=range(2, nvars + 2))
         for interval in (100, 110):
-            data_col = np.genfromtxt('noseoutput2/Results/samples.txt', usecols=(2,))
-            full_lo, full_hi = float(np.min(data_col)), float(np.max(data_col))
             with open('noseoutput2/Results/credible%i_ci1.txt' % interval) as f:
-                lines = f.readlines()
-            for line in lines[1:]:
+                lines = f.readlines()[1:]  # skip header
+            assert len(lines) == nvars
+            for col, line in enumerate(lines):
                 _, lo, hi = line.split('\t')
                 lo, hi = float(lo), float(hi)
                 assert lo <= hi
-                # A >=100% interval is the entire sample for that parameter.
-                assert lo >= full_lo - 1e-9  # at least the global min over all params
-            # The first data column's interval should be exactly its full range.
-            name, lo, hi = lines[1].split('\t')
-            assert float(lo) == full_lo and float(hi) == full_hi
+                # A >=100% interval is clamped to that variable's full [min, max].
+                assert lo == float(np.min(samples[:, col]))
+                assert hi == float(np.max(samples[:, col]))
 
     def test_replica_exchange_run(self):
         ba = algorithms.BasicBayesMCMCAlgorithm(self.config_replica)
