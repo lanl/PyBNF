@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Min and max of the supported range (requires-python >= 3.10;
+        # classifiers list through 3.12).
+        python-version: ['3.10', '3.12']
+    name: pytest (py${{ matrix.python-version }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-pybnf
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run unit tests (bngsim-less, parallel)
+        env:
+          # bngsim is a private mac-only wheel; with it absent, conftest.py
+          # auto-skips bngsim/nfsim/sbml/etc.-marked tests. The remaining suite
+          # runs against the bngsim-less code paths (and BNG2.pl from the
+          # composite action). -n auto parallelizes across the runner's cores.
+          PYBNF_NO_BNGSIM: '1'
+        # --no-sync: do NOT let `uv run` re-resolve the project env from
+        # pyproject.toml (that would pull the private bngsim and fail). The
+        # composite action already populated .venv.
+        run: uv run --no-sync pytest -m "not slow" -n auto
