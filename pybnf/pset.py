@@ -9,13 +9,12 @@ import numpy as np
 import re
 import copy
 import signal
-from subprocess import run, Popen, STDOUT, PIPE, DEVNULL, CalledProcessError, TimeoutExpired
+from subprocess import Popen, STDOUT, PIPE, CalledProcessError, TimeoutExpired
 from .data import Data
 import heapq
 import traceback
 import roadrunner as rr
 import pickle
-from os.path import join
 import os
 import shutil
 import tempfile

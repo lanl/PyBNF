@@ -1,10 +1,8 @@
 """Tests for simplex collinearity fix (#207)."""
-from .context import algorithms, config, data, pset
-import numpy as np
+from .context import algorithms, config, pset
 import os
 import shutil
 import tempfile
-from copy import deepcopy
 from unittest.mock import patch
 
 

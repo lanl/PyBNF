@@ -35,7 +35,6 @@ unchanged: an empty pset means the fallback loop never ran anyway.)
 import logging
 import os
 
-import pytest
 
 from .context import algorithms, pset
 

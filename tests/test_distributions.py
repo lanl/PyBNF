@@ -9,7 +9,6 @@ These must survive the migration to scipy.stats (issue #5).
 """
 
 import numpy as np
-import pytest
 from scipy import stats
 
 import os

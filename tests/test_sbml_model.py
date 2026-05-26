@@ -1,6 +1,5 @@
 from .context import pset, printing, raises
 import os
-import numpy as np
 import shutil
 
 

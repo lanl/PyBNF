@@ -26,7 +26,6 @@ the filesystem is **real** under ``tmp_path``.
 import os
 
 import numpy as np
-import pytest
 
 from .context import algorithms, data, pset
 

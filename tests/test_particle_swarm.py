@@ -1,7 +1,7 @@
-from .context import data, algorithms, pset, objective, config, parse
+from .context import data, algorithms, pset, objective, config
 import numpy as np
 import numpy.testing as npt
-from os import mkdir, path
+from os import path
 from shutil import rmtree
 from copy import deepcopy
 

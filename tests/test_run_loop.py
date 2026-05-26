@@ -32,7 +32,7 @@ import os
 import numpy as np
 import pytest
 
-from .context import algorithms, config, pset, printing
+from .context import algorithms, pset, printing
 from pybnf.pset import Trajectory, FailedSimulationError
 
 

@@ -8,7 +8,7 @@ Also identifies which algorithms are order-independent (proposals unchanged
 regardless of the order results are fed to got_result) vs order-dependent.
 """
 
-from .context import data, algorithms, pset, config
+from .context import data, algorithms, config
 from unittest.mock import patch
 import numpy as np
 import os

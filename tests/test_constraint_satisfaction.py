@@ -1,9 +1,8 @@
 """Tests for the constraint satisfaction tracking feature (#324)."""
-from .context import constraint, algorithms, config, data, pset
+from .context import constraint, algorithms, config, data
 import os
 import shutil
 import tempfile
-import numpy as np
 from unittest.mock import patch
 
 

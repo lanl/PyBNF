@@ -14,13 +14,10 @@ import numpy as np
 from ._bngsim_caps import (
     BNGSIM_AVAILABLE,
     BNGSIM_ERROR,
-    BNGSIM_FEATURES,
     BNGSIM_HAS_NFSIM,
     BNGSIM_HAS_RULEMONKEY,
-    BNGSIM_MISSING,
     BNGSIM_VERSION,
     bngsim,
-    feature_missing_reason,
 )
 from .data import Data
 from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
@@ -501,7 +498,6 @@ def _create_nf_session(session_backend, xml_path, molecule_limit=None):
     if molecule_limit is None:
         return session_cls(xml_path)
     return session_cls(xml_path, molecule_limit=molecule_limit)
-    return session
 
 
 def _destroy_nf_session(session):

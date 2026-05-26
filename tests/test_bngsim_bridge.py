@@ -394,6 +394,7 @@ def _stub_normalize_method_without_rulemonkey(method):
     return bngsim_model.bngsim.normalize_method(method)
 
 
+@pytest.mark.bngsim
 def test_classify_actions_for_bngsim_routes_nf_aliases():
     for method in ('nf', 'nf_reject', 'nfsim'):
         assert bngsim_model.classify_actions_for_bngsim([
@@ -409,6 +410,7 @@ def test_classify_actions_for_bngsim_routes_rulemonkey_public_aliases():
         ]) == bngsim_model.BNGSIM_BACKEND_NF
 
 
+@pytest.mark.bngsim
 def test_normalize_nf_action_method_normalizes_nfsim_aliases():
     for method in ('nf', 'nf_reject', 'nfsim'):
         assert bngsim_model._normalize_nf_action_method(method) == 'nf_reject'
@@ -420,6 +422,7 @@ def test_normalize_nf_action_method_normalizes_rulemonkey_public_aliases():
         assert bngsim_model._normalize_nf_action_method(method) == 'nf_exact'
 
 
+@pytest.mark.bngsim
 @pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
 def test_normalize_nf_action_method_rejects_rulemonkey_when_unavailable(monkeypatch, method):
     monkeypatch.setattr(
@@ -439,6 +442,7 @@ def test_normalize_nf_action_method_rejects_unavailable_canonical_aliases(method
         bngsim_model._normalize_nf_action_method(method)
 
 
+@pytest.mark.bngsim
 def test_normalize_nf_action_method_rejects_non_nf_method():
     with pytest.raises(ValueError, match="method=>'ode' is not supported"):
         bngsim_model._normalize_nf_action_method('ode')
@@ -450,9 +454,11 @@ def test_normalize_nf_action_method_rejects_non_nf_method():
         ('ode', bngsim_model.BNGSIM_BACKEND_NET),
         ('ssa', bngsim_model.BNGSIM_BACKEND_NET),
         ('psa', bngsim_model.BNGSIM_BACKEND_NET),
-        ('nf', bngsim_model.BNGSIM_BACKEND_NF),
-        ('nf_reject', bngsim_model.BNGSIM_BACKEND_NF),
-        ('nfsim', bngsim_model.BNGSIM_BACKEND_NF),
+        # The NF tokens route through bngsim.normalize_method, so they need
+        # bngsim present; the net/pla/unknown cases short-circuit before that.
+        pytest.param('nf', bngsim_model.BNGSIM_BACKEND_NF, marks=pytest.mark.bngsim),
+        pytest.param('nf_reject', bngsim_model.BNGSIM_BACKEND_NF, marks=pytest.mark.bngsim),
+        pytest.param('nfsim', bngsim_model.BNGSIM_BACKEND_NF, marks=pytest.mark.bngsim),
         ('pla', None),
         ('unknown_method', None),
     ],
@@ -461,6 +467,7 @@ def test_classify_action_method_backend_maps_methods(method, expected_backend):
     assert bngsim_model._classify_action_method_backend(method) == expected_backend
 
 
+@pytest.mark.bngsim
 @pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
 def test_classify_action_method_backend_returns_none_when_rulemonkey_unavailable(monkeypatch, method):
     monkeypatch.setattr(
@@ -483,6 +490,7 @@ def test_classify_actions_for_bngsim_defaults_methodless_simulate_to_net():
     ]) == bngsim_model.BNGSIM_BACKEND_NET
 
 
+@pytest.mark.bngsim
 def test_classify_actions_for_bngsim_routes_nf_parameter_scan_aliases():
     for method in ('nf', 'nf_reject', 'nfsim'):
         assert bngsim_model.classify_actions_for_bngsim([
@@ -560,6 +568,7 @@ def test_subprocess_env_uses_bng_command_root(monkeypatch):
     assert env['BioNetGenRoot'] == '/Users/wish/Code/bionetgen/bng2'
 
 
+@pytest.mark.bngsim
 def test_initialize_models_uses_bngsim_when_available(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path)
     output_dir = tmp_path / 'pybnf_output'
@@ -675,6 +684,7 @@ def test_initialize_models_no_bngsim_env_disables_hybrid_auto(monkeypatch, tmp_p
     assert not isinstance(models[0], bngsim_model.BngsimNfModel)
 
 
+@pytest.mark.bngsim
 def test_initialize_models_bngsim_backend_rejects_unavailable_bngsim(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path)
     output_dir = tmp_path / 'pybnf_output'
@@ -738,6 +748,7 @@ def test_initialize_models_auto_falls_back_for_unsupported_actions(monkeypatch, 
     assert isinstance(models[0], pset.NetModel)
 
 
+@pytest.mark.bngsim
 def test_initialize_models_bngsim_backend_rejects_missing_nfsim(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='nf')
     output_dir = tmp_path / 'pybnf_output'
@@ -772,6 +783,7 @@ def test_initialize_models_falls_back_to_netmodel_when_bridge_init_fails(monkeyp
     assert isinstance(models[0], pset.NetModel)
 
 
+@pytest.mark.bngsim
 def test_initialize_models_bngsim_backend_errors_when_bridge_init_fails(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path)
     output_dir = tmp_path / 'pybnf_output'
@@ -790,6 +802,7 @@ def test_initialize_models_bngsim_backend_errors_when_bridge_init_fails(monkeypa
                     algorithms.Algorithm._initialize_models(algo)
 
 
+@pytest.mark.bngsim
 def test_initialize_models_uses_bngsim_nf_when_supported(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='nf')
     output_dir = tmp_path / 'pybnf_output'
@@ -821,6 +834,7 @@ def test_initialize_models_uses_bngsim_nf_when_supported(monkeypatch, tmp_path):
     assert tuple(models[0].kwargs['param_names']) == model.param_names
 
 
+@pytest.mark.bngsim
 def test_initialize_models_uses_bngsim_rulemonkey_when_supported(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='rm')
     output_dir = tmp_path / 'pybnf_output'
@@ -851,6 +865,7 @@ def test_initialize_models_uses_bngsim_rulemonkey_when_supported(monkeypatch, tm
     assert any('method=>"rm"' in action for action in models[0].actions)
 
 
+@pytest.mark.bngsim
 def test_initialize_models_nf_xml_generation_stages_relative_tfun_files(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='nf')
     output_dir = tmp_path / 'pybnf_output'
@@ -993,6 +1008,7 @@ def test_evaluate_bngl_params_raises_on_unresolved_name():
         )
 
 
+@pytest.mark.bngsim
 def test_bngsim_nf_model_save_preserves_protocol_block(monkeypatch, tmp_path):
     """Regression for #383: protocol blocks must round-trip through the saved
     debug .bngl, positioned between the model body and the actions block."""
@@ -1044,6 +1060,7 @@ def test_bngsim_nf_model_save_preserves_protocol_block(monkeypatch, tmp_path):
     assert proto_end < actions_start
 
 
+@pytest.mark.bngsim
 def test_bngsim_nf_model_save_omits_protocol_block_when_absent(monkeypatch, tmp_path):
     """Models constructed without a protocol must not emit empty protocol blocks."""
     monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
@@ -1277,6 +1294,7 @@ def test_bngsim_nf_model_execute_writes_scan_for_parameter_scan(monkeypatch, tmp
     assert list(roundtrip.cols.keys())[0] == 'k'
 
 
+@pytest.mark.bngsim
 def test_initialize_models_propagates_save_files_when_delete_old_files_zero(monkeypatch, tmp_path):
     """delete_old_files=0 must reach BngsimNfModel(save_files=True) at construction time."""
     model = _make_tfun_bngl_model(tmp_path, method='nf')
@@ -1302,6 +1320,7 @@ def test_initialize_models_propagates_save_files_when_delete_old_files_zero(monk
     assert captured.get('save_files') is True
 
 
+@pytest.mark.bngsim
 def test_initialize_models_save_files_defaults_false_when_delete_old_files_positive(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='nf')
     output_dir = tmp_path / 'pybnf_output'
@@ -2236,6 +2255,7 @@ class TestAddConcentrationNetBackend(TestContinueFlag):
 # Hybrid backend (generate_network + NF simulate) — classification tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.bngsim
 def test_classify_actions_for_bngsim_returns_hybrid_for_gennet_plus_nf():
     """When classify sees both generate_network and NF simulate, returns hybrid."""
     assert bngsim_model.classify_actions_for_bngsim([
@@ -2244,6 +2264,7 @@ def test_classify_actions_for_bngsim_returns_hybrid_for_gennet_plus_nf():
     ]) == bngsim_model.BNGSIM_BACKEND_HYBRID
 
 
+@pytest.mark.bngsim
 def test_classify_actions_for_bngsim_returns_hybrid_with_nfsim_alias():
     assert bngsim_model.classify_actions_for_bngsim([
         'generate_network({overwrite=>1})',
@@ -2251,6 +2272,7 @@ def test_classify_actions_for_bngsim_returns_hybrid_with_nfsim_alias():
     ]) == bngsim_model.BNGSIM_BACKEND_HYBRID
 
 
+@pytest.mark.bngsim
 def test_classify_actions_for_bngsim_returns_hybrid_with_rulemonkey_alias(monkeypatch):
     monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True)
     assert bngsim_model.classify_actions_for_bngsim([
@@ -2275,6 +2297,7 @@ def test_classify_actions_for_bngsim_returns_none_for_gennet_plus_pla():
     ]) is None
 
 
+@pytest.mark.bngsim
 def test_hybrid_detected_via_generates_network_flag():
     """BNGLModel strips generate_network from actions; hybrid is detected
     by the combination of generates_network=True and bridge_backend=NF
@@ -2289,6 +2312,7 @@ def test_hybrid_detected_via_generates_network_flag():
 # Hybrid backend — _initialize_models tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.bngsim
 def test_initialize_models_hybrid_uses_bngsim_nf(monkeypatch, tmp_path):
     model = _make_tfun_bngl_model(tmp_path, method='nf', force_generate_network=True)
     output_dir = tmp_path / 'pybnf_output'
@@ -2321,6 +2345,7 @@ def test_initialize_models_hybrid_uses_bngsim_nf(monkeypatch, tmp_path):
     assert 'writeXML()' in _fake_hybrid_generation.last_bngl_text
 
 
+@pytest.mark.bngsim
 def test_initialize_models_hybrid_explicit_bngsim_backend_uses_nf_bridge(monkeypatch, tmp_path):
     """Explicit `bngl_backend = bngsim` for hybrid models must take the same
     happy path as the auto case (XML generation + BngsimNfModel)."""
@@ -2352,6 +2377,7 @@ def test_initialize_models_hybrid_explicit_bngsim_backend_uses_nf_bridge(monkeyp
     assert any('simulate' in a for a in models[0].actions)
 
 
+@pytest.mark.bngsim
 def test_initialize_models_hybrid_explicit_bngsim_backend_errors_on_xml_failure(monkeypatch, tmp_path):
     """Explicit `bngl_backend = bngsim` must raise when hybrid XML generation
     fails — silent fallback to BNG2.pl is the auto behavior, not the explicit

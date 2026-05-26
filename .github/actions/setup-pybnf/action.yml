@@ -1,0 +1,75 @@
+name: Set up pybnf (bngsim-less)
+description: >-
+  Install BioNetGen (BNG2.pl) plus pybnf and its public runtime/test
+  dependencies into a uv venv, deliberately omitting the private, macOS-only
+  bngsim wheel. Tests run under PYBNF_NO_BNGSIM=1 so bngsim-marked tests skip
+  (see tests/conftest.py). BNG2.pl is still required: Configuration validation
+  execs `BNG2.pl -v` for any BNGLModel regardless of bngsim, and the analytical
+  tests aside, most of the suite builds such configs.
+
+inputs:
+  python-version:
+    description: Python version for the venv (e.g. "3.10", "3.12").
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Provision the interpreter with setup-python rather than uv's managed
+    # (python-build-standalone) builds: libroadrunner is a C++ extension that
+    # dlopen's libpython, and uv's standalone Python 3.10 does not expose
+    # libpython3.10.so.1.0 on the loader path (3.12's does). setup-python's
+    # Pythons are built --enable-shared with libpython discoverable, so
+    # roadrunner imports on every matrix leg.
+    - uses: actions/setup-python@v5
+      id: python
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+        # No uv.lock in this repo; key the cache on pyproject.toml so it can
+        # invalidate when deps change.
+        cache-dependency-glob: pyproject.toml
+
+    - name: Install BioNetGen 2.9.3
+      shell: bash
+      run: |
+        # BioNetGen is free/open-source and provides BNG2.pl (Perl is
+        # preinstalled on ubuntu runners). It is NOT vendored into the repo or
+        # the pybnf wheel -- it is fetched onto the ephemeral runner each run,
+        # mirroring the developer prerequisite (BNGPATH on a local machine).
+        curl -fsSL \
+          https://github.com/RuleWorld/bionetgen/releases/download/BioNetGen-2.9.3/BioNetGen-2.9.3-linux.tar.gz \
+          -o "$RUNNER_TEMP/bionetgen.tar.gz"
+        tar -xzf "$RUNNER_TEMP/bionetgen.tar.gz" -C "$RUNNER_TEMP"
+        echo "BNGPATH=$RUNNER_TEMP/BioNetGen-2.9.3" >> "$GITHUB_ENV"
+
+    - name: Create venv and install pybnf without bngsim
+      shell: bash
+      run: |
+        # Build the venv from the setup-python interpreter (see note above), not
+        # a uv-managed one.
+        uv venv --python "${{ steps.python.outputs.python-path }}"
+        # Mirror pyproject.toml's runtime deps MINUS bngsim (private, mac-only
+        # wheel, not on PyPI), plus the test stack and pytest-xdist. Keep these
+        # version bounds in sync with pyproject.toml; bngsim is the only
+        # intentional omission.
+        uv pip install \
+          'dask>=2021.5.0,<2023.0' \
+          'distributed>=2021.6.2,<2023.0' \
+          'libroadrunner>=1.6.0,<3' \
+          'msgpack>=0.6.2,<2' \
+          'numpy>=1.24,<3' \
+          'paramiko>=2.7,<5' \
+          'pyparsing>=2.4,<4' \
+          'scipy>=1.10,<2' \
+          'tornado>=6.1,<7' \
+          'pytest>=7,<10' \
+          'hypothesis>=6,<7' \
+          'pytest-xdist' \
+          'tomli>=2,<3; python_version < "3.11"'
+        # Install pybnf itself without re-resolving deps (which would pull
+        # bngsim and fail).
+        uv pip install --no-deps .
