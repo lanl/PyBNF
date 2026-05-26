@@ -34,12 +34,13 @@ class TestJob(object):
 
     @classmethod
     def teardown_class(cls):
-        rmtree('pybnf_output')
-        rmtree('sim_net')
-        rmtree('sim_x')
-        rmtree('sim_1')
-        rmtree('sim_to')
-        rmtree('sim_to_rerun1')
+        # These dirs are created by individual tests in this class, relative to
+        # the cwd. ignore_errors keeps teardown from raising FileNotFoundError
+        # when a dir was never created -- e.g. under pytest-xdist, where the
+        # worker running this class need not have produced every dir, or when
+        # only a subset of the class is run.
+        for d in ('pybnf_output', 'sim_net', 'sim_x', 'sim_1', 'sim_to', 'sim_to_rerun1'):
+            rmtree(d, ignore_errors=True)
 
     def test_job_components(self):
         mkdir('sim_x')
