@@ -1,4 +1,4 @@
-from .context import data, algorithms, pset, objective, config, printing
+from .context import data, algorithms, pset, config, printing
 
 import shutil
 import numpy as np

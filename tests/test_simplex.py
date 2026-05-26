@@ -1,4 +1,4 @@
-from .context import data, algorithms, pset, objective, config
+from .context import data, algorithms, config
 import numpy as np
 from copy import deepcopy
 

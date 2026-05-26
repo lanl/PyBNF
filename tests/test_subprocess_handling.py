@@ -12,7 +12,6 @@ import sys
 import signal
 import tempfile
 import time
-import shutil
 from subprocess import run, Popen, STDOUT, PIPE, CalledProcessError, TimeoutExpired
 
 import pytest

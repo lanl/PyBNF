@@ -159,7 +159,7 @@ def main():
         print(f"{submitted} jobs completed, {failed} failed.")
     else:
         print(f"{submitted} jobs submitted, {failed} failed.")
-        print(f"Monitor with: squeue -u $USER")
+        print("Monitor with: squeue -u $USER")
 
 
 if __name__ == "__main__":

@@ -29,8 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 from ._bngsim_caps import (
-    BNGSIM_AVAILABLE,
-    BNGSIM_HAS_LIBSBML as LIBSBML_AVAILABLE,
     BNGSIM_HAS_SBML,
     BNGSIM_SBML_ERROR,
     bngsim,

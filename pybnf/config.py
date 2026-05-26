@@ -2,7 +2,7 @@
 
 
 from .data import Data, DuplicateColumnError
-from .objective import ChiSquareObjective, ChiSquareObjective_Dynamic, NegBinLikelihood_Dynamic, NegBinLikelihood, SumOfSquaresObjective, NormSumOfSquaresObjective, \
+from .objective import ChiSquareObjective, ChiSquareObjective_Dynamic, NegBinLikelihood_Dynamic, SumOfSquaresObjective, NormSumOfSquaresObjective, \
     AveNormSumOfSquaresObjective, SumOfDiffsObjective, NegBinLikelihood, KLLikelihood, DirectPassObjective
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
@@ -10,13 +10,11 @@ from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreePara
 from .bngsim_sbml_model import (
     BNGSIM_HAS_SBML,
     BNGSIM_SBML_ERROR,
-    BngsimSbmlModel,
     BngsimSbmlModelNoTimeout,
 )
 from .bngsim_antimony_model import (
     BNGSIM_HAS_ANTIMONY,
     BNGSIM_ANTIMONY_ERROR,
-    BngsimAntimonyModel,
     BngsimAntimonyModelNoTimeout,
 )
 from .printing import verbosity, print1, PybnfError

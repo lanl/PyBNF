@@ -8,7 +8,6 @@ from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import STDOUT
 from .pset import run_subprocess
 
-from numpy import mean
 
 from .bngsim_model import (
     BngsimModel,
@@ -24,9 +23,8 @@ from .bngsim_model import (
 from .data import Data
 from .pset import PSet
 from .pset import Trajectory
-from .pset import TimeCourse
 from .pset import BNGLModel
-from .pset import NetModel, BNGLModel, SbmlModelNoTimeout
+from .pset import NetModel
 from .pset import OutOfBoundsException
 from .pset import FailedSimulationError
 from .printing import print0, print1, print2, PybnfError

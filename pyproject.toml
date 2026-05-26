@@ -66,6 +66,35 @@ packages = ["pybnf"]
 [tool.setuptools.dynamic]
 version = { attr = "pybnf.__version__" }
 
+[tool.ruff]
+target-version = "py310"
+# Pins ruff's default rule set (pycodestyle E4/E7/E9 + pyflakes F) so local runs
+# and CI agree. Line length (E501) and the broader style/lint families are
+# intentionally left off for v1; revisit once the codebase is reformatted.
+
+[tool.ruff.lint]
+# Pre-existing legacy style that PyBNF does not enforce. Each is either purely
+# cosmetic or a behavioral change to "fix", so it is out of scope for the lint
+# gate (which must stay mechanical). Items tied to dev/PUNCHLIST.md are tracked
+# and fixed there, not here.
+ignore = [
+    "E402",  # module-import-not-at-top: intentional (lazy backend guards, test bootstrap)
+    "E712",  # ==True/False: legacy; rewriting can change truthiness semantics (e.g. numpy bools)
+    "E721",  # type(x) == T comparisons: legacy, semantically fine in context
+    "E722",  # bare except: tracked as ROB-4 in dev/PUNCHLIST.md (behavioral fix)
+    "E741",  # ambiguous variable names (l/I/O): legacy
+    "F841",  # unused locals: several are CQ-5 dead code (tracked); common bind-then-assert in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "E702",  # multiple-statements-on-one-line (semicolons): established test-file style
+    "F402",  # import shadowed by loop variable
+]
+# context.py is a re-export shim: test modules do `from .context import data`,
+# so its imports are "unused" only within the file itself.
+"tests/context.py" = ["F401"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]

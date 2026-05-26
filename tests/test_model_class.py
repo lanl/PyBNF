@@ -195,7 +195,8 @@ class TestModel:
 
     def test_no_observables(self):
         """Model with empty observables block should have has_observables=False"""
-        import tempfile, os
+        import tempfile
+        import os
         bngl_content = """begin model
   begin parameters
     v1 v1__FREE

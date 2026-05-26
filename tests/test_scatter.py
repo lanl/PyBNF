@@ -1,4 +1,4 @@
-from .context import data, algorithms, pset, objective, config, parse, printing, raises
+from .context import data, algorithms, pset, config, printing, raises
 from os import mkdir
 from shutil import rmtree
 from copy import deepcopy
