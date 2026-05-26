@@ -2579,8 +2579,11 @@ class BayesianAlgorithm(Algorithm):
             for interval, file in zip(self.credible_intervals, cred_files):
                 n = len(sorted_data)
                 want = n * (interval/100)
-                min_index = int(np.round(n/2 - want/2))
-                max_index = int(np.round(n/2 + want/2 - 1))
+                # Clamp to valid indices: an interval >= 100% (or rounding at small n)
+                # would otherwise drive max_index to n (IndexError) or min_index < 0
+                # (silently wraps to the wrong end via negative indexing).
+                min_index = max(0, int(np.round(n/2 - want/2)))
+                max_index = min(n - 1, int(np.round(n/2 + want/2 - 1)))
                 file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
 
         for file in cred_files:
@@ -3778,18 +3781,15 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 new = i.replace(',', '')
                 self.output_columns.append(new)
             self.output_run_current = {}
-            self.output_run_MLE = {}
             self.output_run_all = {}
             for i in self.output_columns:
-                for k in self.time.keys():     
+                for k in self.time.keys():
                     if '_Cum' in i:
                         self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                         self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                    else:     
-                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1)) 
-                        self.output_run_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))      
+                    else:
+                        self.output_run_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                        self.output_run_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                      
         
         if self.config.config['output_noise_trajectory']:
@@ -3798,17 +3798,14 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 new = i.replace(',', '')
                 self.output_noise_columns.append(new)
             self.output_run_noise_current = {}
-            self.output_run_noise_MLE = {}
             self.output_run_noise_all = {}
             for i in self.output_noise_columns:
-                for k in self.time.keys():     
+                for k in self.time.keys():
                     if '_Cum' in i:
                         self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                         self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
-                    else:     
-                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1)) 
-                        self.output_run_noise_MLE[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
+                    else:
+                        self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                         self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
         if self.config.config['continue_run'] == 1:
             adaptive_dir = self.config.config['output_dir'] + '/adaptive_files'
@@ -3938,8 +3935,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                         self.output_run_current[j+l][index]= getFirstValue
                                     else:
                                         self.output_run_current[j+l][index]= self.list_trajactory
-                                    if lnposterior > max(self.ln_current_P):    
-                                        self.output_run_MLE[j+l][index] = self.output_run_current[j+l][index][0]
                                     self.list_trajactory = []
                 if self.config.config['output_noise_trajectory']:
                     for la in self.output_noise_columns:     
@@ -3957,10 +3952,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                         self.output_run_noise_current[js+la][index]= getFirstValue
                                     else:
                                         self.output_run_noise_current[js+la][index]= self.list_trajactory
-                                    
-                                    if lnposterior > max(self.ln_current_P):      
-                                        self.output_run_noise_MLE[js+la][index] = self.output_run_noise_current[js+la][index][0]
-                                    self.list_trajactory = []    
+                                    self.list_trajactory = []
                                               
         # After the burn in period start to record the accepted params for the adaptive feature.
         if self.iteration[index] >= self.burn_in:

@@ -161,6 +161,39 @@ class TestBayes:
                     assert parts[0] in [v.name for v in ba.variables]
                     assert float(parts[1]) < float(parts[2])
 
+    def test_credible_interval_index_clamped(self):
+        # CI-1 regression: a credible interval >= 100% used to drive max_index past
+        # the end of the sorted sample (IndexError) and min_index negative (which
+        # silently wrapped via negative indexing to the wrong end). Both must be
+        # clamped so a >=100% interval reports the full [min, max] range.
+        ba = algorithms.BasicBayesMCMCAlgorithm(self.config_normal)
+        curr_params = ba.start_run()
+        for _ in range(10):
+            next_params = []
+            for p in curr_params:
+                res = algorithms.Result(p, self.data1s, p.name)
+                res.score = 42.
+                next_params += ba.got_result(res)
+            curr_params = next_params
+
+        ba.credible_intervals = [100, 110]
+        ba.update_histograms('_ci1')  # must not raise
+
+        for interval in (100, 110):
+            data_col = np.genfromtxt('noseoutput2/Results/samples.txt', usecols=(2,))
+            full_lo, full_hi = float(np.min(data_col)), float(np.max(data_col))
+            with open('noseoutput2/Results/credible%i_ci1.txt' % interval) as f:
+                lines = f.readlines()
+            for line in lines[1:]:
+                _, lo, hi = line.split('\t')
+                lo, hi = float(lo), float(hi)
+                assert lo <= hi
+                # A >=100% interval is the entire sample for that parameter.
+                assert lo >= full_lo - 1e-9  # at least the global min over all params
+            # The first data column's interval should be exactly its full range.
+            name, lo, hi = lines[1].split('\t')
+            assert float(lo) == full_lo and float(hi) == full_hi
+
     def test_replica_exchange_run(self):
         ba = algorithms.BasicBayesMCMCAlgorithm(self.config_replica)
         start_params = ba.start_run()
