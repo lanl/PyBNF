@@ -15,9 +15,23 @@ inputs:
 runs:
   using: composite
   steps:
+    # Provision the interpreter with setup-python rather than uv's managed
+    # (python-build-standalone) builds: libroadrunner is a C++ extension that
+    # dlopen's libpython, and uv's standalone Python 3.10 does not expose
+    # libpython3.10.so.1.0 on the loader path (3.12's does). setup-python's
+    # Pythons are built --enable-shared with libpython discoverable, so
+    # roadrunner imports on every matrix leg.
+    - uses: actions/setup-python@v5
+      id: python
+      with:
+        python-version: ${{ inputs.python-version }}
+
     - uses: astral-sh/setup-uv@v5
       with:
         enable-cache: true
+        # No uv.lock in this repo; key the cache on pyproject.toml so it can
+        # invalidate when deps change.
+        cache-dependency-glob: pyproject.toml
 
     - name: Install BioNetGen 2.9.3
       shell: bash
@@ -35,7 +49,9 @@ runs:
     - name: Create venv and install pybnf without bngsim
       shell: bash
       run: |
-        uv venv --python "${{ inputs.python-version }}"
+        # Build the venv from the setup-python interpreter (see note above), not
+        # a uv-managed one.
+        uv venv --python "${{ steps.python.outputs.python-path }}"
         # Mirror pyproject.toml's runtime deps MINUS bngsim (private, mac-only
         # wheel, not on PyPI), plus the test stack and pytest-xdist. Keep these
         # version bounds in sync with pyproject.toml; bngsim is the only
