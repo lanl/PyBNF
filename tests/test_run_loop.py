@@ -221,7 +221,7 @@ def test_submits_initial_generation_and_resubmits_then_stops(tmp_path, monkeypat
     the trajectory, resubmits the next generation when the algorithm asks, and
     stops on 'STOP'. Two generations of two psets => four run_job submissions and
     four trajectory entries."""
-    monkeypatch.setattr(algorithms, 'as_completed', _FakeAsCompleted)
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
     gens = [
         [_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)],
         [_pset('iter1run0', 3.0), _pset('iter1run1', 4.0)],
@@ -233,7 +233,7 @@ def test_submits_initial_generation_and_resubmits_then_stops(tmp_path, monkeypat
 
     # All four jobs went through run_job.
     assert len(client.submitted) == 4
-    assert all(fn is algorithms.run_job for fn, _ in client.submitted)
+    assert all(fn is algorithms.core.run_job for fn, _ in client.submitted)
     # All four results scored into the trajectory (score == pset value).
     assert len(algo.seen) == 4
     assert sorted(r.score for r in algo.seen) == [3.0, 4.0, 10.0, 20.0]
@@ -245,16 +245,16 @@ def test_submits_initial_generation_and_resubmits_then_stops(tmp_path, monkeypat
 def test_first_job_shows_warnings_rest_do_not(tmp_path, monkeypatch):
     """Only the first submitted job carries show_warnings=True (so unused-exp-data
     warnings fire once, not once per parameter set)."""
-    monkeypatch.setattr(algorithms, 'as_completed', _FakeAsCompleted)
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
     captured = []
 
-    real_run_job = algorithms.run_job
+    real_run_job = algorithms.core.run_job
 
     def recording_run_job(job, debug=False, failed_logs_dir=''):
         captured.append(job.show_warnings)
         return real_run_job(job, debug, failed_logs_dir)
 
-    monkeypatch.setattr(algorithms, 'run_job', recording_run_job)
+    monkeypatch.setattr(algorithms.core, 'run_job', recording_run_job)
     gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)], [_pset('iter1run0', 1.0), _pset('iter1run1', 2.0)]]
     algo = _make_algorithm(tmp_path, gens)
 
@@ -269,7 +269,7 @@ def test_min_objective_breaks_loop_early(tmp_path, monkeypatch):
     happens after the result is recorded in the trajectory but *before* the
     algorithm's got_result is consulted — so got_result is never called and only
     the first drained result is scored."""
-    monkeypatch.setattr(algorithms, 'as_completed', _FakeAsCompleted)
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
     gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]]
     algo = _make_algorithm(tmp_path, gens)
     algo.config.config['min_objective'] = 15.0  # the value-10 pset beats this
@@ -284,7 +284,7 @@ def test_aborts_when_all_simulations_fail(tmp_path, monkeypatch):
     """When every job fails and none has succeeded, the run raises PybnfError
     once fail_count reaches max_failed_simulations (rather than looping forever
     on doomed work)."""
-    monkeypatch.setattr(algorithms, 'as_completed', _FakeAsCompleted)
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
     gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]]
     algo = _make_algorithm(tmp_path, gens, fail=True, max_failed=1)
 
@@ -388,7 +388,7 @@ class TestFoldGroupResult:
 def test_pending_jobs_cancelled_on_stop(tmp_path, monkeypatch):
     """When the loop stops, any still-pending futures are cancelled (clean dask
     teardown)."""
-    monkeypatch.setattr(algorithms, 'as_completed', _FakeAsCompleted)
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
     # One generation, then STOP. The second result's got_result returns STOP, but
     # both initial jobs were already drained, so pending is empty at stop — assert
     # cancel was called (with whatever remained) rather than skipped.
@@ -401,3 +401,62 @@ def test_pending_jobs_cancelled_on_stop(tmp_path, monkeypatch):
     # cancel() is always called at teardown; with a synchronous fake everything
     # has completed, so the cancelled list is empty but the call happened.
     assert client.cancelled == []
+
+
+# --------------------------------------------------------------------------- #
+# Seam guard (ADR-0001)
+# --------------------------------------------------------------------------- #
+def test_run_resolves_run_job_through_core_seam(tmp_path, monkeypatch):
+    """Production ``run()`` must resolve ``run_job`` through ``algorithms.core``.
+
+    This is the guard for ADR-0001 (extract core.py + repoint patches): the run
+    loop calls ``core.run_job`` / ``core.as_completed``, so patching the seam
+    *where it is defined* — ``algorithms.core`` — actually bites. If a future
+    move rebinds these names to some other namespace, this test goes red rather
+    than silently testing a stale function."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+
+    calls = []
+    real_run_job = algorithms.core.run_job
+
+    def recording_run_job(job, debug=False, failed_logs_dir=''):
+        calls.append(job.job_id)
+        return real_run_job(job, debug, failed_logs_dir)
+
+    monkeypatch.setattr(algorithms.core, 'run_job', recording_run_job)
+
+    gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]]
+    algo = _make_algorithm(tmp_path, gens)
+    algo.run(_FakeClient())
+
+    # The fake patched on algorithms.core ran once per submitted job — i.e. the
+    # production run() path went through the core seam, not a stale facade copy.
+    assert len(calls) == 2
+
+
+def test_patching_package_facade_run_job_does_not_intercept(tmp_path, monkeypatch):
+    """Negative control proving *why* the seam lives in ``core`` (ADR-0001).
+
+    ``algorithms.run_job`` is only a facade re-export; the run loop resolves the
+    real function as ``core.run_job``. So patching the package attribute must NOT
+    intercept the production path — "patch where it's defined" is the honest
+    seam, and patching the facade silently does nothing (the trap the split was
+    designed to avoid)."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+
+    facade_calls = []
+
+    def facade_fake(job, debug=False, failed_logs_dir=''):
+        facade_calls.append(job.job_id)
+        return algorithms.core.run_job(job, debug, failed_logs_dir)
+
+    # Patch the FACADE attribute, not the core seam.
+    monkeypatch.setattr(algorithms, 'run_job', facade_fake)
+
+    gens = [[_pset('iter0run0', 10.0), _pset('iter0run1', 20.0)]]
+    algo = _make_algorithm(tmp_path, gens)
+    algo.run(_FakeClient())
+
+    # The run completed normally, but the facade patch never fired: the loop used
+    # core.run_job directly.
+    assert facade_calls == []

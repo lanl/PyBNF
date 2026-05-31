@@ -97,7 +97,7 @@ class FakeAsCompleted:
 
 
 def slim_run_job(j, debug=False, failed_logs_dir=''):
-    """Folder-free stand-in for ``algorithms.run_job``.
+    """Folder-free stand-in for ``algorithms.core.run_job``.
 
     Mirrors the success path of ``Job.run_simulation`` (run models → normalize →
     score via the scattered objective), but skips the per-evaluation ``mkdir``
@@ -119,8 +119,8 @@ def slim_run_job(j, debug=False, failed_logs_dir=''):
 def install(monkeypatch):
     """Patch the dask layer, the simulation-folder layer, and the analytical
     model's dask-race ``sleep`` for the duration of a test."""
-    monkeypatch.setattr(algorithms, 'as_completed', FakeAsCompleted)
-    monkeypatch.setattr(algorithms, 'run_job', slim_run_job)
+    monkeypatch.setattr(algorithms.core, 'as_completed', FakeAsCompleted)
+    monkeypatch.setattr(algorithms.core, 'run_job', slim_run_job)
     monkeypatch.setattr('pybnf.analytical_model.time.sleep', lambda *a, **k: None)
 
 

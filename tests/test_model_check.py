@@ -9,9 +9,9 @@ result/config* and *which downstream call is made with what args* — not
 simulation values. ModelCheck is glue over ``Job``/``run_job``/objective/
 constraints, so the numerical pieces are substituted:
 
-  * **``algorithms.run_job``** — monkeypatched to return a controlled ``Result``
+  * **``algorithms.core.run_job``** — monkeypatched to return a controlled ``Result``
     or a real ``FailedSimulation``, so the branch under test is driven directly.
-  * **``algorithms.Job``** — replaced by a recorder so we assert the construction
+  * **``algorithms.core.Job``** — replaced by a recorder so we assert the construction
     args without needing a simulation backend.
   * **objective / ``ConstraintCounter``** — spy fakes recording call args and
     returning canned scores / fail counts.
@@ -91,7 +91,7 @@ class _FakeCset:
 
 
 def _patch_job(monkeypatch):
-    """Replace algorithms.Job with a recorder. Returns the list of (args, kwargs)
+    """Replace algorithms.core.Job with a recorder. Returns the list of (args, kwargs)
     each Job(...) was constructed with; the recorder's return value is the 'job'
     handed to run_job."""
     jobs = []
@@ -100,18 +100,18 @@ def _patch_job(monkeypatch):
         rec = {'args': args, 'kwargs': kwargs}
         jobs.append(rec)
         return rec
-    monkeypatch.setattr(algorithms, 'Job', fake_job)
+    monkeypatch.setattr(algorithms.core, 'Job', fake_job)
     return jobs
 
 
 def _patch_run_job(monkeypatch, result):
-    """Replace algorithms.run_job to return ``result`` and record its call args."""
+    """Replace algorithms.core.run_job to return ``result`` and record its call args."""
     calls = []
 
     def fake_run_job(job, debug, failed_logs_dir):
         calls.append((job, debug, failed_logs_dir))
         return result
-    monkeypatch.setattr(algorithms, 'run_job', fake_run_job)
+    monkeypatch.setattr(algorithms.core, 'run_job', fake_run_job)
     return calls
 
 
