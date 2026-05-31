@@ -12,7 +12,7 @@ from ._bngsim_caps import (
 from .bngsim_sbml_model import (
     BngsimSbmlModelNoTimeout,
 )
-from .pset import ModelError, MutationSet
+from .pset import ModelError
 
 
 logger = logging.getLogger(__name__)
