@@ -104,11 +104,8 @@ class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
         self.stochastic = False
         self.mutants = [MutationSet()]
 
-        try:
-            with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
-                self._base_antimony_text = fh.read()
-        except FileNotFoundError:
-            raise
+        with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
+            self._base_antimony_text = fh.read()
 
         self._base_sbml_text = _antimony_text_to_sbml_text(self._base_antimony_text, self.file_path)
         doc = _sbml_doc_from_text(self._base_sbml_text, self.file_path)

@@ -112,11 +112,8 @@ class BngsimSbmlModelNoTimeout(Model):
         )
         self.mutants = [MutationSet()]
 
-        try:
-            with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
-                self._base_sbml_text = fh.read()
-        except FileNotFoundError:
-            raise
+        with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
+            self._base_sbml_text = fh.read()
 
         doc = _sbml_doc_from_text(self._base_sbml_text, self.file_path)
         self._species_names = tuple(

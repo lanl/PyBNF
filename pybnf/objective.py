@@ -367,12 +367,15 @@ class NegBinLikelihood_Dynamic(SummationObjective):
             sim_val = sim_data.data[sim_row, sim_data.cols[col_name]] 
         if exp_val >= 0:
             prob = np.clip(self.r / (self.r + sim_val), 1e-10, 1 - 1e-10)
-            # log(1e-10+stats.nbinom.pmf(incidents[i], n=r, p=prob))
             assert isinstance(self.r, float)
-            val = loggamma(exp_val + self.r) - loggamma(exp_val + 1) - loggamma(self.r) + self.r * np.log(prob) + \
-                   exp_val * np.log(1 - prob)
-        
-            return abs(val)
+            # log of the negative-binomial PMF P(exp_val | r, prob)
+            # == scipy.stats.nbinom.logpmf(exp_val, r, prob).
+            log_pmf = loggamma(exp_val + self.r) - loggamma(exp_val + 1) - loggamma(self.r) \
+                + self.r * np.log(prob) + exp_val * np.log(1 - prob)
+            # A PMF is <= 1, so log_pmf <= 0; PyBNF minimizes the negative
+            # log-likelihood -log_pmf >= 0. (Equals the old abs(log_pmf) for all
+            # valid inputs since log_pmf is non-positive.)
+            return -log_pmf
         else:
             return 0
             
@@ -390,11 +393,15 @@ class NegBinLikelihood(SummationObjective):
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         if exp_val >= 0:
             prob = np.clip(self.r_static / (self.r_static + sim_val), 1e-10, 1 - 1e-10)
-            # log(1e-10+stats.nbinom.pmf(incidents[i], n=r, p=prob))
             assert isinstance(self.r_static, float)
-            val =  loggamma(exp_val + self.r_static) - loggamma(exp_val + 1) - loggamma(self.r_static) + self.r_static * np.log(prob) + \
-                   exp_val * np.log(1 - prob)
-            return abs(val)       
+            # log of the negative-binomial PMF P(exp_val | r, prob)
+            # == scipy.stats.nbinom.logpmf(exp_val, r, prob).
+            log_pmf = loggamma(exp_val + self.r_static) - loggamma(exp_val + 1) - loggamma(self.r_static) \
+                + self.r_static * np.log(prob) + exp_val * np.log(1 - prob)
+            # A PMF is <= 1, so log_pmf <= 0; PyBNF minimizes the negative
+            # log-likelihood -log_pmf >= 0. (Equals the old abs(log_pmf) for all
+            # valid inputs since log_pmf is non-positive.)
+            return -log_pmf
         else:
             return 0
 

@@ -2,7 +2,6 @@
 
 
 import logging
-import math
 import numpy as np
 import re
 from .printing import PybnfError
@@ -129,16 +128,13 @@ class Data(object):
         :param x: str
         :return: float
         """
-        if re.match('\b[nN][aA][nN]\b', x):
-            return math.nan
-        elif re.match('\b[iI][nN][fF]\b', x):
-            return math.inf
-        elif re.match('\b-[iI][nN][fF]\b', x):
-            return -math.inf
-        else:
-            return float(x)
+        # float() natively parses 'nan', 'inf', '-inf' (any case), so no special
+        # handling is needed. (The old '\b...' regex branches were dead: '\b' in
+        # a non-raw string is a backspace char, not a regex word boundary, so they
+        # never matched real data and everything already fell through to float().)
+        return float(x)
 
-    def load_data(self, file_name, sep='\s+'):
+    def load_data(self, file_name, sep=r'\s+'):
         """
         Loads column data from a text file
 
@@ -183,7 +179,7 @@ class Data(object):
 
         data = []
         for i, l in enumerate(lines[1:]):
-            if re.match('^\s*$', l) or re.match('\s*#', l):
+            if re.match(r'^\s*$', l) or re.match(r'\s*#', l):
                 continue
             try:
                 num_list = [self._to_number(x) for x in re.split(sep, l.strip())]
