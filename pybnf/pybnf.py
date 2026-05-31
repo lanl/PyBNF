@@ -41,6 +41,35 @@ def _initialize_random_seed(config):
     return seed
 
 
+def _finalize(success, alg, start_time):
+    """Run best-effort post-fit cleanup, report the total run time, then exit.
+
+    Called from ``main()``'s outer ``finally``. A failure inside
+    ``alg.cleanup()`` is logged and swallowed so it can't hide the real run
+    outcome -- but only if it is an ordinary ``Exception``. A
+    ``KeyboardInterrupt``/``SystemExit`` raised during cleanup is allowed to
+    propagate instead of being masked: ``exit()`` lives here as a plain
+    statement, not inside a ``finally``, so an in-flight exception is no longer
+    swallowed by it.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        if not success:
+            logger.info('Fitting unsuccessful.  Attempting cleanup')
+            if alg:
+                alg.cleanup()
+                logger.info('Completed cleanup after exception')
+    except Exception:
+        logger.exception('During cleanup, another exception occurred')
+
+    secs = time.time() - start_time
+    mins, secs = divmod(secs, 60)
+    hrs, mins = divmod(mins, 60)
+    print2('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
+    logger.info('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
+    exit(0 if success else 1)
+
+
 def main():
     """The main function for running a fitting job"""
     start_time = time.time()
@@ -408,20 +437,5 @@ def main():
             else:
                 run(['rm', '-rf', home_dask_dir])
 
-        # After any error, try to clean up.
-        try:
-            if not success:
-                logger.info('Fitting unsuccessful.  Attempting cleanup')
-                if alg:
-                    alg.cleanup()
-                    logger.info('Completed cleanup after exception')
-        except:
-            logger.exception('During cleanup, another exception occurred')
-        finally:
-            end_time = time.time()
-            secs = end_time - start_time
-            mins, secs = divmod(secs, 60)
-            hrs, mins = divmod(mins, 60)
-            print2('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
-            logger.info('Total fitting time: %d:%02d:%02d' % (hrs, mins, secs))
-            exit(0 if success else 1)
+        # After any error, try to clean up; then report timing and exit.
+        _finalize(success, alg, start_time)

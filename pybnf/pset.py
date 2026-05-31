@@ -210,7 +210,7 @@ class Model(object):
         :type pset: PSet
         :return: Model
         """
-        NotImplementedError("copy_with_param_set is not implemented")
+        raise NotImplementedError("copy_with_param_set is not implemented")
 
     def save(self, file_prefix, **kwargs):
         """
@@ -218,7 +218,7 @@ class Model(object):
 
         :return:
         """
-        NotImplementedError("save is not implemented")
+        raise NotImplementedError("save is not implemented")
 
     def save_all(self, file_prefix):
         logger.warning('Model of type %s does not implement save_all(). Falling back to save()' % type(self))

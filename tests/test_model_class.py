@@ -3,6 +3,7 @@ from os import remove
 from os.path import exists
 from pybnf.printing import PybnfError
 
+import pytest
 import re
 
 
@@ -254,4 +255,14 @@ end actions
             bf_lines = bf.readlines()
 
         assert re.match('readFile', bf_lines[0])
+
+    def test_base_model_abstract_methods_raise(self):
+        """ROB-6: the abstract Model.copy_with_param_set / save build a
+        NotImplementedError but must actually raise it -- otherwise a subclass
+        that forgets to override silently returns None instead of erroring."""
+        m = pset.Model()
+        with pytest.raises(NotImplementedError):
+            m.copy_with_param_set(None)
+        with pytest.raises(NotImplementedError):
+            m.save('some_prefix')
 

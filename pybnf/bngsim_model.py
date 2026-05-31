@@ -956,7 +956,17 @@ class BngsimModel(NetModel):
                 try:
                     model.set_param(pname, self.param_set[pname])
                 except Exception:
-                    pass
+                    # A free parameter that doesn't map to a model parameter is
+                    # dropped here -- the optimizer believes it is varying the
+                    # parameter while the model never sees it (a confidently
+                    # wrong fit). This is legitimate only in multi-model fits,
+                    # where the shared PSet spans parameters from other models,
+                    # so surface it as a warning rather than swallowing it.
+                    logger.warning(
+                        "Model %s: could not set free parameter %s=%s "
+                        "(not found in this model)",
+                        self.name, pname, self.param_set[pname],
+                    )
 
         model.reset()
         self._pybnf_current_action_info = None
@@ -1168,7 +1178,8 @@ class BngsimModel(NetModel):
                     try:
                         model.set_param(pname, pval)
                     except Exception:
-                        pass
+                        logger.debug(
+                            "resetParameters: could not restore %s=%s", pname, pval)
                 continue
 
             if _is_save_concentrations(line):
@@ -1181,7 +1192,8 @@ class BngsimModel(NetModel):
                     try:
                         base_params[pname] = model.get_param(pname)
                     except Exception:
-                        pass
+                        logger.debug(
+                            "saveParameters: could not read %s", pname)
                 continue
 
             sc_expr = _parse_set_concentration_expr(line)
@@ -1406,7 +1418,8 @@ class BngsimModel(NetModel):
                     try:
                         saved_params[pname] = model.get_param(pname)
                     except Exception:
-                        pass
+                        logger.debug(
+                            "protocol: saveParameters could not read %s", pname)
                 continue
 
             # ── resetParameters() ──
@@ -1415,7 +1428,8 @@ class BngsimModel(NetModel):
                     try:
                         model.set_param(pname, pval)
                     except Exception:
-                        pass
+                        logger.debug(
+                            "protocol: resetParameters could not restore %s=%s", pname, pval)
                 sim = bngsim.Simulator(model, method=current_method, **self._codegen_kwargs(current_method))
                 continue
 

@@ -207,3 +207,32 @@ def test_bngsim_bngl_psa_pure_birth_matches_poisson(tmp_path, psa_action):
         'PSA final mean %.3f deviates from Poisson(%.1f) by more than 5 SE (%.3f)'
         % (sample_mean, PSA_EXPECTED_MEAN, mean_se)
     )
+
+
+# ------------------------------------------------------- ROB-2 surfacing ----
+
+def test_unmatched_free_param_warns_instead_of_silent(tmp_path, caplog):
+    """ROB-2: a free parameter that doesn't map to a model parameter used to be
+    silently dropped in ``execute()`` -- the optimizer believes it is varying
+    the parameter while the model never sees it (a confidently-wrong fit). It
+    must now surface as a warning. (Dropping is legitimate only in multi-model
+    fits, where the shared PSet spans other models' parameters, hence a warning
+    rather than a hard error.)"""
+    import logging
+
+    net_path = FIXTURES / 'e2e_ode_decay.net'
+    actions = [
+        'simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>20,suffix=>"tc"})',
+    ]
+    model = _bngsim_bngl_model(net_path, actions)
+    model.param_set = pset.PSet([
+        pset.FreeParameter('bogus__FREE', 'normal_var', 0, 1, value=5.0),
+    ])
+
+    with caplog.at_level(logging.WARNING, logger='pybnf.bngsim_model'):
+        model.execute(str(tmp_path), 'ode_decay_badparam', 60)
+
+    assert any(
+        'bogus__FREE' in r.getMessage() and 'not found in this model' in r.getMessage()
+        for r in caplog.records
+    ), 'expected a warning that the unmatched free parameter was dropped'
