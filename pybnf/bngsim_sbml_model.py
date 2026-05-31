@@ -98,23 +98,44 @@ class BngsimSbmlModelNoTimeout(Model):
 
         _require_bngsim_sbml_support()
 
+        self._init_common_attrs(file, abs_file, pset, actions, save_files, integrator, strict_ssa,
+                                file_ext='.xml')
+        self.stochastic = integrator == 'gillespie' or any(
+            getattr(a, 'method', 'ode') == 'ssa' for a in actions
+        )
+
+        with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
+            self._base_sbml_text = fh.read()
+
+        self._extract_sbml_structure()
+        self._load_engine_model_or_raise(
+            'Failed to load model %s.xml - There were errors in parsing this SBML file. See log for details.'
+            % self.name
+        )
+
+        logger.debug('Loaded model %s with bngsim SBML backend', self.name)
+
+    def _init_common_attrs(self, file, abs_file, pset, actions, save_files, integrator, strict_ssa,
+                           file_ext):
+        """Set the model attributes shared by the SBML and Antimony backends.
+
+        ``file_ext`` is stripped from the file name to form ``self.name`` ('.xml'
+        for SBML, '.ant' for Antimony). ``self.stochastic`` is set by the caller
+        because the two backends compute it differently.
+        """
         self.file_path = file
         self.abs_file_path = abs_file
         self.param_set = pset
-        self.name = file[file.rfind('/') + 1:].rsplit('.xml', 1)[0]
+        self.name = file[file.rfind('/') + 1:].rsplit(file_ext, 1)[0]
         self.save_files = save_files
         self.actions = list(actions)
         self.integrator = integrator
         self.strict_ssa = bool(strict_ssa)
         self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
-        self.stochastic = integrator == 'gillespie' or any(
-            getattr(a, 'method', 'ode') == 'ssa' for a in actions
-        )
         self.mutants = [MutationSet()]
 
-        with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
-            self._base_sbml_text = fh.read()
-
+    def _extract_sbml_structure(self):
+        """Parse ``self._base_sbml_text`` and populate species/parameter names."""
         doc = _sbml_doc_from_text(self._base_sbml_text, self.file_path)
         self._species_names = tuple(
             doc.getModel().getSpecies(i).getId()
@@ -128,17 +149,15 @@ class BngsimSbmlModelNoTimeout(Model):
         self.global_param_names = self._global_param_names
         self.param_names = self._species_name_set.union(set(self._global_param_names))
 
+    def _load_engine_model_or_raise(self, parse_error_message):
+        """Load the bngsim engine model, letting FileNotFoundError propagate
+        unwrapped and converting any other failure into a ModelError."""
         try:
             self._load_bngsim_model_from_path(self.abs_file_path)
         except FileNotFoundError:
             raise
         except Exception as exc:
-            raise ModelError(
-                'Failed to load model %s.xml - There were errors in parsing this SBML file. See log for details.'
-                % self.name
-            ) from exc
-
-        logger.debug('Loaded model %s with bngsim SBML backend', self.name)
+            raise ModelError(parse_error_message) from exc
 
     def copy_with_param_set(self, pset):
         newmodel = copy.deepcopy(self)
@@ -277,11 +296,7 @@ class BngsimSbmlModelNoTimeout(Model):
 
     @staticmethod
     def _data_with_headers(arr, headers):
-        data = Data(arr=arr)
-        data.cols = {h: i for i, h in enumerate(headers)}
-        data.headers = {i: h for i, h in enumerate(headers)}
-        data.indvar = headers[0]
-        return data
+        return Data.from_columns(arr, headers)
 
     @classmethod
     def _result_to_data(cls, result, *, stochastic=False):

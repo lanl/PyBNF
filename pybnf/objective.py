@@ -414,7 +414,21 @@ class KLLikelihood(ColumnSummationObjective):
     def eval_column(self, sim_data, exp_data, col_name):
         sim_column = sim_data[col_name]
         exp_column = exp_data[col_name]
-        return -sum(exp_column * np.log(sim_column / sum(sim_column)))
+        total = np.sum(sim_column)
+        # The KL/cross-entropy term needs sim_column to form a probability
+        # distribution (normalize by its sum, then take a log). A non-positive
+        # total or any negative entry makes that ill-defined; treat such a
+        # degenerate simulated profile as the worst possible fit (inf) instead
+        # of silently emitting nan/-inf into the objective total.
+        if total <= 0 or np.any(sim_column < 0):
+            return np.inf
+        sim_norm = sim_column / total
+        # Floor the normalized profile away from 0 so a zero-mass entry gives a
+        # large-but-finite penalty rather than log(0) == -inf. The floor is a
+        # no-op for the well-behaved case (entries >> 1e-10), so scores there
+        # are bit-identical to -sum(exp * log(sim / sum(sim))).
+        sim_norm = np.clip(sim_norm, 1e-10, None)
+        return -np.sum(exp_column * np.log(sim_norm))
 
 
 class ConstraintCounter(ObjectiveFunction):

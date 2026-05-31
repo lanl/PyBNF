@@ -400,6 +400,37 @@ class TestKLInvariants:
         npt.assert_almost_equal(gap, expected)
         assert gap >= 0.0  # Gibbs' inequality: cross-entropy minimized at sim proportional to exp
 
+    def test_zero_sum_column_is_inf_not_nan(self):
+        """CQ-7: an all-zero sim column can't be normalized -> inf, never nan
+        (a nan would silently corrupt the minimization, since nan compares False)."""
+        sim = _mkdata(['# x  obs1  obs3\n', ' 0  0  6.0\n', ' 1  0  5.0\n', ' 2  0  9.0\n'])
+        val = self.kl.evaluate(sim, self.exp)
+        assert np.isinf(val) and val > 0
+        assert not np.isnan(val)
+
+    def test_negative_sim_column_is_inf_not_nan(self):
+        """CQ-7: a negative sim entry makes log(sim) ill-defined -> inf, not nan."""
+        sim = _mkdata(['# x  obs1  obs3\n', ' 0  3.0  6.0\n', ' 1  -2.0  5.0\n', ' 2  5.0  9.0\n'])
+        val = self.kl.evaluate(sim, self.exp)
+        assert np.isinf(val) and val > 0
+
+    def test_zero_entry_gives_finite_penalty_not_neg_inf(self):
+        """CQ-7: a single zero-mass entry (column sum still positive) yields a
+        large finite penalty via the 1e-10 floor, not log(0) == -inf."""
+        sim = _mkdata(['# x  obs1  obs3\n', ' 0  0.0  6.0\n', ' 1  2.0  5.0\n', ' 2  5.0  9.0\n'])
+        val = self.kl.evaluate(sim, self.exp)
+        assert np.isfinite(val)
+
+    def test_well_behaved_value_unchanged_by_guard(self):
+        """CQ-7: for strictly-positive sim the guard/floor is a no-op -- score is
+        bit-identical to the original -sum(exp * log(sim / sum(sim)))."""
+        sim = _mkdata(['# x  obs1  obs3\n', ' 0  3.0  6.0\n', ' 1  2.0  5.0\n', ' 2  5.0  9.0\n'])
+        expected = 0.0
+        for col in ('obs1', 'obs3'):
+            s = sim[col]
+            expected += -np.sum(self.exp[col] * np.log(s / s.sum()))
+        npt.assert_array_equal(self.kl.evaluate(sim, self.exp), expected)
+
 
 # ---------------------------------------------------------------------------
 # evaluate_multiple: the shared dataflow over models/suffixes/constraints

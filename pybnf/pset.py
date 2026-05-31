@@ -1528,15 +1528,10 @@ class PSet(object):
         self.name = None  # Can be set by Algorithms to give it a meaningful label in output file.
 
     def __iter__(self):
-        self.idx = 0
-        return self
-
-    def __next__(self):
-        if self.idx == self.__len__():
-            raise StopIteration
-        res = self.fps[self.idx]
-        self.idx += 1
-        return res
+        # Return a fresh iterator over the parameter list rather than making the
+        # PSet its own iterator with a cursor stored on self -- the latter is not
+        # reentrant (nested or concurrent iteration over one PSet clobbers idx).
+        return iter(self.fps)
 
     def __getitem__(self, item):
         """

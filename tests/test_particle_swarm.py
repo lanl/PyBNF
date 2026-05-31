@@ -84,6 +84,12 @@ class TestParticleSwarm:
         start_params = ps.start_run()
         assert len(start_params) == 15
 
+    def test_bests_slots_are_independent(self):
+        # CQ-7: each particle's best slot must be a distinct list object, not
+        # aliased copies of one inner list (the old [[None, inf]] * n foot-gun).
+        ps = algorithms.ParticleSwarm(self.config)
+        assert len({id(slot) for slot in ps.bests}) == ps.num_particles
+
     def test_updates(self):
         ps = algorithms.ParticleSwarm(self.config)
         start_params = ps.start_run()

@@ -11,7 +11,6 @@ from ._bngsim_caps import (
 )
 from .bngsim_sbml_model import (
     BngsimSbmlModelNoTimeout,
-    _sbml_doc_from_text,
 )
 from .pset import ModelError, MutationSet
 
@@ -92,44 +91,19 @@ class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
 
         _require_bngsim_antimony_support()
 
-        self.file_path = file
-        self.abs_file_path = abs_file
-        self.param_set = pset
-        self.name = file[file.rfind('/') + 1:].rsplit('.ant', 1)[0]
-        self.save_files = save_files
-        self.actions = list(actions)
-        self.integrator = integrator
-        self.strict_ssa = bool(strict_ssa)
-        self.suffixes = [(a.bng_codeword, a.suffix) for a in actions]
+        self._init_common_attrs(file, abs_file, pset, actions, save_files, integrator, strict_ssa,
+                                file_ext='.ant')
         self.stochastic = False
-        self.mutants = [MutationSet()]
 
         with open(self.abs_file_path, encoding='utf-8', errors='replace') as fh:
             self._base_antimony_text = fh.read()
 
         self._base_sbml_text = _antimony_text_to_sbml_text(self._base_antimony_text, self.file_path)
-        doc = _sbml_doc_from_text(self._base_sbml_text, self.file_path)
-        self._species_names = tuple(
-            doc.getModel().getSpecies(i).getId()
-            for i in range(doc.getModel().getNumSpecies())
+        self._extract_sbml_structure()
+        self._load_engine_model_or_raise(
+            'Failed to load model %s.ant - There were errors in parsing this Antimony file. '
+            'See log for details.' % self.name
         )
-        self._species_name_set = set(self._species_names)
-        self._global_param_names = tuple(
-            doc.getModel().getParameter(i).getId()
-            for i in range(doc.getModel().getNumParameters())
-        )
-        self.global_param_names = self._global_param_names
-        self.param_names = self._species_name_set.union(set(self._global_param_names))
-
-        try:
-            self._load_bngsim_model_from_path(self.abs_file_path)
-        except FileNotFoundError:
-            raise
-        except Exception as exc:
-            raise ModelError(
-                'Failed to load model %s.ant - There were errors in parsing this Antimony file. '
-                'See log for details.' % self.name
-            ) from exc
 
         logger.debug('Loaded model %s with bngsim Antimony backend', self.name)
 

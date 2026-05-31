@@ -69,6 +69,42 @@ def _with_sim_timeout(kwargs, normalized):
 
 
 @dataclass
+class _SimulateActionState:
+    """Mutable simulator state carried across the simulate() actions of one run.
+
+    Both ``BngsimModel._execute_actions`` and ``._run_protocol`` walk a list of
+    action lines, recreating the simulator when the method changes and tracking
+    the running model time for ``continue=>1``. This bundles that shared state so
+    the duplicated simulate() handling can live in one place
+    (``_prepare_simulate_run``).
+    """
+    sim: object
+    method: str = 'ode'
+    poplevel: object = None
+    current_time: float = 0.0
+
+
+@dataclass
+class _SimulateRunPlan:
+    """A parsed-and-prepared simulate() action, ready to hand to a simulator run.
+
+    ``_prepare_simulate_run`` produces this; ``_run_prepared_simulate`` consumes
+    it. The split lets ``_execute_actions`` record per-action info between the
+    two steps (the protocol path skips that), without duplicating the parsing.
+    """
+    sim: object
+    method: str
+    suffix: str
+    print_funcs: bool
+    sample_times: object
+    t_start: float
+    t_end: float
+    n_steps: int
+    run_kwargs: dict
+    stop_if: object
+
+
+@dataclass
 class _ScanSettings:
     """Resolved settings for one parameter_scan()/bifurcate() action.
 
@@ -346,6 +382,30 @@ def _eval_model_expression(expr, model):
     """Evaluate a BNGL action expression against current model parameters."""
     ns = _build_safe_eval_namespace(_model_param_values(model))
     return float(eval(expr, ns))  # noqa: S307
+
+
+def _build_mutant_param_set(param_set, mut):
+    """Apply a MutationSet to a copy of param_set's values and return a new PSet.
+
+    Shared by the net (:class:`BngsimModel`) and network-free
+    (:class:`BngsimNfModel`) mutant builders, which differ only in whether they
+    also clone an engine model.
+    """
+    params = {p.name: p.value for p in param_set}
+    for mi in mut:
+        params[mi.name] = mi.mutate(params[mi.name])
+    mut_param_list = [
+        FreeParameter(
+            pname,
+            'uniform_var',
+            -np.inf,
+            np.inf,
+            value=params[pname],
+            bounded=True,
+        )
+        for pname in params
+    ]
+    return PSet(mut_param_list)
 
 
 def _parse_add_concentration(action_line):
@@ -1054,10 +1114,8 @@ class BngsimModel(NetModel):
     def _execute_actions(self, model, timeout=None):
         """Interpret and execute action lines using bngsim."""
         ds = {}
-        sim = bngsim.Simulator(model, method='ode', **self._codegen_kwargs())
-        current_method = 'ode'
-        current_poplevel = None
-        model_time = 0.0
+        state = _SimulateActionState(
+            sim=bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
 
         base_params = {}
         for pname in model.param_names:
@@ -1082,117 +1140,21 @@ class BngsimModel(NetModel):
 
             sim_params = _parse_simulate_action(line)
             if sim_params is not None:
-                method, poplevel = _normalize_action_method(
-                    sim_params.get('method', 'ode'),
-                    sim_params.get('poplevel'),
+                plan = self._prepare_simulate_run(
+                    state, sim_params, model, action_index, timeout,
+                    seed_suffix_prefix='', null_nf_sample_times=True,
                 )
-
-                # Parse sample_times (list of string values from BNGL)
-                sample_times = _resolve_sample_times(sim_params)
-
-                # Gap 1: continue=>1
-                continue_flag = bool(int(float(sim_params.get('continue', 0))))
-                if continue_flag and 't_start' not in sim_params:
-                    t_start = model_time
-                else:
-                    t_start = float(sim_params.get('t_start', 0))
-
-                t_end = float(sim_params.get('t_end', 100))
-                n_steps = int(sim_params.get('n_steps', 100))
-                suffix = sim_params.get('suffix', 'time_course')
-
-                # Gap 4: print_functions
-                print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
-
-                # Gap 3: atol, rtol, seed
-                run_kwargs = {}
-                if 'atol' in sim_params:
-                    run_kwargs['atol'] = float(sim_params['atol'])
-                if 'rtol' in sim_params:
-                    run_kwargs['rtol'] = float(sim_params['rtol'])
-                explicit_seed = None
-                if 'seed' in sim_params:
-                    explicit_seed = int(float(sim_params['seed']))
-                if method in ('ssa', 'psa'):
-                    seed_value = self._resolve_action_seed(
-                        explicit_seed=explicit_seed,
-                        action_index=action_index,
-                        suffix=suffix,
-                        method=method,
-                    )
-                    if seed_value is not None:
-                        run_kwargs['seed'] = seed_value
-                elif explicit_seed is not None:
-                    run_kwargs['seed'] = explicit_seed
-
-                # Gap 2: stop_if
-                stop_if = sim_params.get('stop_if')
-                if stop_if is not None:
-                    stop_if = stop_if.strip().strip('"').strip("'")
-
-                # sample_times is not supported for NFsim (possible future
-                # BNGsim / NFsim enhancement)
-                if method == 'nf' and sample_times is not None:
-                    logger.warning(
-                        "sample_times is not supported for NFsim — ignoring")
-                    sample_times = None
-
-                if method == 'psa':
-                    if current_method != 'psa' or current_poplevel != poplevel:
-                        sim = bngsim.Simulator(
-                            model,
-                            method='psa',
-                            poplevel=poplevel,
-                        )
-                        current_method = 'psa'
-                        current_poplevel = poplevel
-                elif current_method != method:
-                    sim = bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
-                    current_method = method
-                    current_poplevel = None
-
-                if stop_if:
-                    sim.add_stop_condition(stop_if, label=stop_if)
-
-                run_timeout = _normalize_sim_timeout(timeout, method=method)
-                if run_timeout is not None:
-                    run_kwargs['timeout'] = run_timeout
-
                 self._pybnf_current_action_info.update({
-                    'method': method,
-                    'suffix': suffix,
-                    'seed': run_kwargs.get('seed'),
-                    't_start': t_start,
-                    't_end': t_end,
-                    'n_steps': n_steps,
+                    'method': plan.method,
+                    'suffix': plan.suffix,
+                    'seed': plan.run_kwargs.get('seed'),
+                    't_start': plan.t_start,
+                    't_end': plan.t_end,
+                    'n_steps': plan.n_steps,
                 })
-
-                try:
-                    if sample_times is not None:
-                        result = sim.run(
-                            t_span=(sample_times[0], sample_times[-1]),
-                            n_points=len(sample_times),
-                            sample_times=sample_times,
-                            **run_kwargs,
-                        )
-                    else:
-                        result = sim.run(
-                            t_span=(t_start, t_end),
-                            n_points=n_steps + 1,
-                            **run_kwargs,
-                        )
-                except Exception as exc:
-                    if isinstance(exc, bngsim.StopConditionMet):
-                        logger.info("stop_if triggered: %s", stop_if)
-                        result = exc.result
-                    else:
-                        raise
-
-                if stop_if:
-                    sim.clear_stop_conditions()
-
-                model_time = t_end
-                ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
+                result = self._run_prepared_simulate(plan, stop_log_label='stop_if triggered')
+                state.current_time = plan.t_end
+                ds[plan.suffix] = self._result_to_data(result, print_functions=plan.print_funcs)
                 continue
 
             sp = _parse_set_parameter(line)
@@ -1296,10 +1258,8 @@ class BngsimModel(NetModel):
         Returns the Result from the last simulate action, or None if the
         protocol contains no simulate actions.
         """
-        sim = bngsim.Simulator(model, method='ode', **self._codegen_kwargs())
-        current_method = 'ode'
-        current_poplevel = None
-        current_time = 0.0
+        state = _SimulateActionState(
+            sim=bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
         last_result = None
 
         # Baseline saved parameters (used by saveParameters/resetParameters)
@@ -1318,93 +1278,13 @@ class BngsimModel(NetModel):
             # ── simulate() ──
             sim_params = _parse_simulate_action(line)
             if sim_params is not None:
-                method, poplevel = _normalize_action_method(
-                    sim_params.get('method', 'ode'),
-                    sim_params.get('poplevel'),
+                plan = self._prepare_simulate_run(
+                    state, sim_params, model, action_index, timeout,
+                    seed_suffix_prefix='protocol:', null_nf_sample_times=False,
                 )
-
-                # continue=>1
-                continue_flag = bool(int(float(sim_params.get('continue', 0))))
-                if continue_flag and 't_start' not in sim_params:
-                    t_start = current_time
-                else:
-                    t_start = float(sim_params.get('t_start', 0))
-                t_end = float(sim_params.get('t_end', 100))
-                n_steps = int(sim_params.get('n_steps', 100))
-                suffix = sim_params.get('suffix', 'time_course')
-
-                # sample_times
-                sample_times = _resolve_sample_times(sim_params)
-
-                # atol, rtol, seed
-                run_kwargs = {}
-                if 'atol' in sim_params:
-                    run_kwargs['atol'] = float(sim_params['atol'])
-                if 'rtol' in sim_params:
-                    run_kwargs['rtol'] = float(sim_params['rtol'])
-                explicit_seed = None
-                if 'seed' in sim_params:
-                    explicit_seed = int(float(sim_params['seed']))
-                if method in ('ssa', 'psa'):
-                    seed_value = self._resolve_action_seed(
-                        explicit_seed=explicit_seed,
-                        action_index=action_index,
-                        suffix='protocol:' + suffix,
-                        method=method,
-                    )
-                    if seed_value is not None:
-                        run_kwargs['seed'] = seed_value
-                elif explicit_seed is not None:
-                    run_kwargs['seed'] = explicit_seed
-
-                # stop_if
-                stop_if = sim_params.get('stop_if')
-                if stop_if is not None:
-                    stop_if = stop_if.strip().strip('"').strip("'")
-
-                # Recreate simulator if method changed
-                if method == 'psa':
-                    if current_method != 'psa' or current_poplevel != poplevel:
-                        sim = bngsim.Simulator(model, method='psa', poplevel=poplevel)
-                        current_method = 'psa'
-                        current_poplevel = poplevel
-                elif current_method != method:
-                    sim = bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
-                    current_method = method
-                    current_poplevel = None
-
-                if stop_if:
-                    sim.add_stop_condition(stop_if, label=stop_if)
-
-                run_timeout = _normalize_sim_timeout(timeout, method=method)
-                if run_timeout is not None:
-                    run_kwargs['timeout'] = run_timeout
-
-                try:
-                    if sample_times is not None:
-                        last_result = sim.run(
-                            t_span=(sample_times[0], sample_times[-1]),
-                            n_points=len(sample_times),
-                            sample_times=sample_times,
-                            **run_kwargs,
-                        )
-                    else:
-                        last_result = sim.run(
-                            t_span=(t_start, t_end),
-                            n_points=n_steps + 1,
-                            **run_kwargs,
-                        )
-                except Exception as exc:
-                    if isinstance(exc, bngsim.StopConditionMet):
-                        logger.info("protocol stop_if triggered: %s", stop_if)
-                        last_result = exc.result
-                    else:
-                        raise
-
-                if stop_if:
-                    sim.clear_stop_conditions()
-
-                current_time = t_end
+                last_result = self._run_prepared_simulate(
+                    plan, stop_log_label='protocol stop_if triggered')
+                state.current_time = plan.t_end
                 continue
 
             # ── setConcentration() ──
@@ -1470,12 +1350,144 @@ class BngsimModel(NetModel):
                     except Exception:
                         logger.debug(
                             "protocol: resetParameters could not restore %s=%s", pname, pval)
-                sim = bngsim.Simulator(model, method=current_method, **self._codegen_kwargs(current_method))
+                state.sim = bngsim.Simulator(model, method=state.method, **self._codegen_kwargs(state.method))
                 continue
 
             logger.debug("protocol: skipping unrecognized command: %s", line)
 
         return last_result
+
+    def _prepare_simulate_run(self, state, sim_params, model, action_index, timeout,
+                              seed_suffix_prefix, null_nf_sample_times):
+        """Parse one simulate() action and prepare it to run.
+
+        Shared by :meth:`_execute_actions` and :meth:`_run_protocol`. Reads the
+        ``continue=>1`` start time from ``state.current_time`` and recreates the
+        simulator in ``state`` when the method (or psa poplevel) changes, then
+        returns a :class:`_SimulateRunPlan`. It deliberately does NOT run the
+        simulation: ``_execute_actions`` records per-action diagnostic info
+        between preparing and running (the protocol path doesn't), so running is
+        a separate step (:meth:`_run_prepared_simulate`).
+
+        ``seed_suffix_prefix`` distinguishes the auto-seed namespace of the two
+        callers ('' for actions, 'protocol:' for protocol). ``null_nf_sample_times``
+        reproduces the per-caller handling of the unsupported NFsim+sample_times
+        combination (the actions path warns and drops sample_times; the protocol
+        path never reaches NFsim, so it left it untouched).
+        """
+        method, poplevel = _normalize_action_method(
+            sim_params.get('method', 'ode'),
+            sim_params.get('poplevel'),
+        )
+
+        # Parse sample_times (list of string values from BNGL)
+        sample_times = _resolve_sample_times(sim_params)
+
+        # Gap 1: continue=>1
+        continue_flag = bool(int(float(sim_params.get('continue', 0))))
+        if continue_flag and 't_start' not in sim_params:
+            t_start = state.current_time
+        else:
+            t_start = float(sim_params.get('t_start', 0))
+        t_end = float(sim_params.get('t_end', 100))
+        n_steps = int(sim_params.get('n_steps', 100))
+        suffix = sim_params.get('suffix', 'time_course')
+
+        # Gap 4: print_functions
+        print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
+
+        # Gap 3: atol, rtol, seed
+        run_kwargs = {}
+        if 'atol' in sim_params:
+            run_kwargs['atol'] = float(sim_params['atol'])
+        if 'rtol' in sim_params:
+            run_kwargs['rtol'] = float(sim_params['rtol'])
+        explicit_seed = None
+        if 'seed' in sim_params:
+            explicit_seed = int(float(sim_params['seed']))
+        if method in ('ssa', 'psa'):
+            seed_value = self._resolve_action_seed(
+                explicit_seed=explicit_seed,
+                action_index=action_index,
+                suffix=seed_suffix_prefix + suffix,
+                method=method,
+            )
+            if seed_value is not None:
+                run_kwargs['seed'] = seed_value
+        elif explicit_seed is not None:
+            run_kwargs['seed'] = explicit_seed
+
+        # Gap 2: stop_if
+        stop_if = sim_params.get('stop_if')
+        if stop_if is not None:
+            stop_if = stop_if.strip().strip('"').strip("'")
+
+        # sample_times is not supported for NFsim (possible future
+        # BNGsim / NFsim enhancement)
+        if null_nf_sample_times and method == 'nf' and sample_times is not None:
+            logger.warning(
+                "sample_times is not supported for NFsim — ignoring")
+            sample_times = None
+
+        if method == 'psa':
+            if state.method != 'psa' or state.poplevel != poplevel:
+                state.sim = bngsim.Simulator(
+                    model,
+                    method='psa',
+                    poplevel=poplevel,
+                )
+                state.method = 'psa'
+                state.poplevel = poplevel
+        elif state.method != method:
+            state.sim = bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
+            state.method = method
+            state.poplevel = None
+
+        if stop_if:
+            state.sim.add_stop_condition(stop_if, label=stop_if)
+
+        run_timeout = _normalize_sim_timeout(timeout, method=method)
+        if run_timeout is not None:
+            run_kwargs['timeout'] = run_timeout
+
+        return _SimulateRunPlan(
+            sim=state.sim, method=method, suffix=suffix, print_funcs=print_funcs,
+            sample_times=sample_times, t_start=t_start, t_end=t_end, n_steps=n_steps,
+            run_kwargs=run_kwargs, stop_if=stop_if,
+        )
+
+    @staticmethod
+    def _run_prepared_simulate(plan, stop_log_label):
+        """Run a prepared simulate() plan, handling stop_if/StopConditionMet.
+
+        ``stop_log_label`` labels the info-log emitted when a stop condition
+        fires ('stop_if triggered' vs 'protocol stop_if triggered').
+        """
+        try:
+            if plan.sample_times is not None:
+                result = plan.sim.run(
+                    t_span=(plan.sample_times[0], plan.sample_times[-1]),
+                    n_points=len(plan.sample_times),
+                    sample_times=plan.sample_times,
+                    **plan.run_kwargs,
+                )
+            else:
+                result = plan.sim.run(
+                    t_span=(plan.t_start, plan.t_end),
+                    n_points=plan.n_steps + 1,
+                    **plan.run_kwargs,
+                )
+        except Exception as exc:
+            if isinstance(exc, bngsim.StopConditionMet):
+                logger.info("%s: %s", stop_log_label, plan.stop_if)
+                result = exc.result
+            else:
+                raise
+
+        if plan.stop_if:
+            plan.sim.clear_stop_conditions()
+
+        return result
 
     def _codegen_kwargs(self, method='ode'):
         """Return codegen keyword args for ODE Simulator construction."""
@@ -2119,12 +2131,8 @@ class BngsimModel(NetModel):
         else:
             arr = np.zeros((0, 1))
 
-        data = Data(arr=arr)
         headers = [s.param_name] + obs_names + expr_names
-        data.cols = {h: i for i, h in enumerate(headers)}
-        data.headers = {i: h for i, h in enumerate(headers)}
-        data.indvar = s.param_name
-        return {s.suffix: data}
+        return {s.suffix: Data.from_columns(arr, headers)}
 
     @staticmethod
     def _scan_result_to_row(result, scan_value, print_functions=False):
@@ -2177,34 +2185,14 @@ class BngsimModel(NetModel):
         if n_expr > 0 and expr_array.size > 0:
             arr[:, 1 + n_obs:] = expr_array
 
-        data = Data(arr=arr)
         headers = ['time'] + obs_names + expr_names
-        data.cols = {h: i for i, h in enumerate(headers)}
-        data.headers = {i: h for i, h in enumerate(headers)}
-        data.indvar = 'time'
-        return data
+        return Data.from_columns(arr, headers)
 
     def _get_mutant_model_bngsim(self, mut):
         """Create a mutant copy using a cloned engine model."""
-        params = {p.name: p.value for p in self.param_set}
-        for mi in mut:
-            params[mi.name] = mi.mutate(params[mi.name])
-        mut_param_list = [
-            FreeParameter(
-                pname,
-                'uniform_var',
-                -np.inf,
-                np.inf,
-                value=params[pname],
-                bounded=True,
-            )
-            for pname in params
-        ]
-        mut_pset = PSet(mut_param_list)
-
         mut_model = copy.copy(self)
         mut_model._engine_model = self._engine_model.clone()
-        mut_model.param_set = mut_pset
+        mut_model.param_set = _build_mutant_param_set(self.param_set, mut)
         return mut_model
 
     def __getstate__(self):
@@ -2415,12 +2403,8 @@ class BngsimNfModel(Model):
         else:
             arr = np.zeros((0, 1))
 
-        data = Data(arr=arr)
         headers = [param_name] + obs_names + expr_names
-        data.cols = {h: i for i, h in enumerate(headers)}
-        data.headers = {i: h for i, h in enumerate(headers)}
-        data.indvar = param_name
-        return {suffix: data}
+        return {suffix: Data.from_columns(arr, headers)}
 
     @staticmethod
     def _result_to_data(result, print_functions=False):
@@ -2702,23 +2686,8 @@ class BngsimNfModel(Model):
 
     def _get_mutant_model_nf(self, mut):
         """Create a mutant copy with a mutated parameter set."""
-        params = {p.name: p.value for p in self.param_set}
-        for mi in mut:
-            params[mi.name] = mi.mutate(params[mi.name])
-        mut_param_list = [
-            FreeParameter(
-                pname,
-                'uniform_var',
-                -np.inf,
-                np.inf,
-                value=params[pname],
-                bounded=True,
-            )
-            for pname in params
-        ]
-        mut_pset = PSet(mut_param_list)
         mut_model = copy.copy(self)
-        mut_model.param_set = mut_pset
+        mut_model.param_set = _build_mutant_param_set(self.param_set, mut)
         return mut_model
 
     def _saved_bngl_text(self):

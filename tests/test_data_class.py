@@ -225,6 +225,26 @@ class TestData:
         assert ave.data[1, 0] == 1
         assert ave['obs3'][0] == 5.
         npt.assert_almost_equal(ave['obs1'][2], 4.5)
+        # CQ-7: the averaged Data must carry over headers and indvar (not just
+        # cols), so downstream consumers (constraints read .indvar, save reads
+        # .headers) keep working on averaged/smoothed results.
+        assert ave.headers == self.d1.headers
+        assert ave.indvar == self.d1.indvar == 'x'
+
+    def test_from_columns(self):
+        # CQ-3: shared factory used by the simulator backends to assemble
+        # scan/time-course Data. Sets cols, headers, indvar (defaults to col 0).
+        arr = np.array([[0., 3., 5.], [1., 2., 6.]])
+        d = data.Data.from_columns(arr, ['time', 'obs1', 'obs3'])
+        assert d.cols == {'time': 0, 'obs1': 1, 'obs3': 2}
+        assert d.headers == {0: 'time', 1: 'obs1', 2: 'obs3'}
+        assert d.indvar == 'time'
+        npt.assert_array_equal(d['obs3'], np.array([5., 6.]))
+
+    def test_from_columns_explicit_indvar(self):
+        arr = np.array([[1., 9.]])
+        d = data.Data.from_columns(arr, ['kf', 'A'], indvar='kf')
+        assert d.indvar == 'kf'
 
     def test_whitespace(self):
         d = data.Data()

@@ -37,6 +37,27 @@ class Data(object):
             self.data = np.array(named_arr)
             self.load_rr_header(named_arr.colnames)
 
+    @classmethod
+    def from_columns(cls, arr, headers, indvar=None):
+        """
+        Build a Data object from a 2-D array and an ordered list of column headers.
+
+        Populates the cols (header->index) and headers (index->header) maps and
+        the independent-variable name (defaults to the first header). Used by the
+        simulator backends to assemble time-course and parameter-scan outputs
+        without re-deriving the same cols/headers/indvar wiring at every site.
+
+        :param arr: 2-D numpy array, one column per header
+        :param headers: ordered list of column names; headers[0] is the indvar
+        :param indvar: name of the independent variable (defaults to headers[0])
+        :return: Data
+        """
+        obj = cls(arr=arr)
+        obj.cols = {h: i for i, h in enumerate(headers)}
+        obj.headers = {i: h for i, h in enumerate(headers)}
+        obj.indvar = headers[0] if indvar is None else indvar
+        return obj
+
     @property
     def data(self):
         return self._data
@@ -317,6 +338,11 @@ class Data(object):
         """
         output = Data()
         output.cols = datas[0].cols
+        # Carry over the column-index->header map and the independent-variable
+        # name so the averaged Data stays as usable as its inputs (constraints
+        # read .indvar, save() reads .headers).
+        output.headers = datas[0].headers
+        output.indvar = datas[0].indvar
         output.data = np.mean(np.stack([d.data for d in datas]), axis=0)
         return output
 

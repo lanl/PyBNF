@@ -2677,6 +2677,22 @@ class TestSaveResetParametersInProtocol(TestContinueFlag):
         assert restore['k1'] == 0.1
         assert restore['k2'] == 0.5
 
+    def test_protocol_simulate_continue_uses_current_time(self, monkeypatch):
+        # CQ-2: _run_protocol shares the simulate() handling with _execute_actions
+        # via _prepare_simulate_run / _run_prepared_simulate. Exercise the protocol
+        # simulate path: continue=>1 must chain off the previous t_end, and the
+        # last simulate result is returned.
+        obj, model, run_log = self._make_fake_bngsim_model([], monkeypatch)
+        obj._protocol = [
+            'simulate({method=>"ode",t_end=>50,n_steps=>10,suffix=>"p1"})',
+            'simulate({method=>"ode",t_end=>120,n_steps=>10,continue=>1,suffix=>"p2"})',
+        ]
+        last = obj._run_protocol(model)
+
+        assert run_log[0]['t_span'] == (0, 50)
+        assert run_log[1]['t_span'] == (50, 120)  # continue=>1 chains off prior t_end
+        assert last is not None  # returns the final simulate result
+
 
 # ── wall_time_sim trip-path tests (issue #374) ──────────────────────────────
 

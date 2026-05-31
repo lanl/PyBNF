@@ -35,7 +35,9 @@ class ConstraintSet:
 
     def number_failed(self, sim_data_dict):
         """
-        Return the number of satisfied constraints
+        Return the number of failed (unsatisfied) constraints, i.e. those with a
+        nonzero penalty. (Matches the method name; the body counts 1 per nonzero
+        penalty.)
 
         :param sim_data_dict:
         :return:
@@ -338,15 +340,38 @@ class Constraint:
 
         This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
         possible the input is poorly defined by referring to a suffix that exists in multiple models.
+
+        Subclasses that introduce additional "at"/"between" variables override
+        :meth:`_find_extra_keys` to resolve those; the common quant/alt key
+        resolution lives here so it isn't duplicated per subclass.
         :param sim_data_dict:
         :return:
         """
-        keylist = []
-        for q in (self.quant1, self.quant2, self.alt1, self.alt2):
-            key = self.get_key(q, sim_data_dict)
-            keylist.append(key)
-        logger.debug("Got keys for constraint %s<%s: %s" % (self.quant1, self.quant2, keylist))
-        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2 = keylist
+        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2 = (
+            self.get_key(q, sim_data_dict) for q in (self.quant1, self.quant2, self.alt1, self.alt2))
+        self._find_extra_keys(sim_data_dict)
+        logger.debug("Got keys for constraint %s<%s: %s" %
+                     (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2]))
+
+    def _find_extra_keys(self, sim_data_dict):
+        """
+        Hook for subclasses to resolve the keys of any additional variables they
+        reference (the "at"/"start"/"end" conditions). The base constraint has
+        no such variables, so this does nothing.
+        """
+        pass
+
+    def _atvar_key(self, atvar, sim_data_dict):
+        """
+        Resolve the data key for an "at"-style condition variable, defaulting to
+        the independent variable of the base suffix when the variable name was
+        omitted (atvar is None).
+        """
+        key = self.get_key(atvar, sim_data_dict)
+        if key is None:
+            key = (self.base_model, self.base_suffix,
+                   sim_data_dict[self.base_model][self.base_suffix].indvar)
+        return key
 
     def get_key(self, q, sim_data_dict):
         """
@@ -597,28 +622,9 @@ class AtConstraint(Constraint):
         self.atkeys = None
         logger.debug("Created 'at' constraint %s<%s" % (self.quant1, self.quant2))
 
-    def find_keys(self, sim_data_dict):
-        """
-        Function to be called on the first evaluation of the penalty.
-        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
-
-        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
-        possible the input is poorly defined by referring to a suffix that exists in multiple models.
-        :param sim_data_dict:
-        :return:
-        """
-
-        keylist = []
-        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.atvar):
-            key = self.get_key(q, sim_data_dict)
-            keylist.append(key)
-        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys = keylist
-        if self.atkeys is None:
-            # No name was specified for atvar; we default to the independent variable of the default suffix
-            self.atkeys = (self.base_model, self.base_suffix,
-                           sim_data_dict[self.base_model][self.base_suffix].indvar)
-        logger.debug("Got keys for 'at' constraint %s<%s: %s" %
-                      (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys]))
+    def _find_extra_keys(self, sim_data_dict):
+        """Resolve the 'at' condition variable, defaulting to the indvar."""
+        self.atkeys = self._atvar_key(self.atvar, sim_data_dict)
 
     def penalty(self, sim_data_dict):
         """
@@ -693,33 +699,10 @@ class SplitAtConstraint(Constraint):
         self.atkeys2 = None
         logger.debug("Created split 'at' constraint %s<%s" % (self.quant1, self.quant2))
 
-    def find_keys(self, sim_data_dict):
-        """
-        Function to be called on the first evaluation of the penalty.
-        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
-
-        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
-        possible the input is poorly defined by referring to a suffix that exists in multiple models.
-        :param sim_data_dict:
-        :return:
-        """
-
-        keylist = []
-        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.atvar1, self.atvar2):
-            key = self.get_key(q, sim_data_dict)
-            keylist.append(key)
-        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys1, self.atkeys2 = keylist
-        if self.atkeys1 is None:
-            # No name was specified for atvar; we default to the independent variable of the default suffix
-            self.atkeys1 = (self.base_model, self.base_suffix,
-                           sim_data_dict[self.base_model][self.base_suffix].indvar)
-        if self.atkeys2 is None:
-            # No name was specified for atvar; we default to the independent variable of the default suffix
-            self.atkeys2 = (self.base_model, self.base_suffix,
-                           sim_data_dict[self.base_model][self.base_suffix].indvar)
-        logger.debug("Got keys for split 'at' constraint %s<%s: %s" %
-                      (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys1,
-                                                  self.atkeys2]))
+    def _find_extra_keys(self, sim_data_dict):
+        """Resolve both 'at' condition variables, each defaulting to the indvar."""
+        self.atkeys1 = self._atvar_key(self.atvar1, sim_data_dict)
+        self.atkeys2 = self._atvar_key(self.atvar2, sim_data_dict)
 
     def penalty(self, sim_data_dict):
         """
@@ -795,33 +778,10 @@ class BetweenConstraint(Constraint):
         self.once = once
         logger.debug("Created 'between' constraint %s<%s" % (self.quant1, self.quant2))
 
-    def find_keys(self, sim_data_dict):
-        """
-        Function to be called on the first evaluation of the penalty.
-        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
-
-        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
-        possible the input is poorly defined by referring to a suffix that exists in multiple models.
-        :param sim_data_dict:
-        :return:
-        """
-
-        keylist = []
-        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.startvar, self.endvar):
-            key = self.get_key(q, sim_data_dict)
-            keylist.append(key)
-        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.startkeys, self.endkeys = keylist
-        if self.startkeys is None:
-            # No name was specified for startvar; we default to the independent variable of the default suffix
-            self.startkeys = (self.base_model, self.base_suffix,
-                           sim_data_dict[self.base_model][self.base_suffix].indvar)
-        if self.endkeys is None:
-            # Same for endvar
-            self.endkeys = (self.base_model, self.base_suffix,
-                           sim_data_dict[self.base_model][self.base_suffix].indvar)
-        logger.debug("Got keys for 'between' constraint %s<%s: %s" %
-                      (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.startkeys, self.endkeys]))
-
+    def _find_extra_keys(self, sim_data_dict):
+        """Resolve the start/end interval variables, each defaulting to the indvar."""
+        self.startkeys = self._atvar_key(self.startvar, sim_data_dict)
+        self.endkeys = self._atvar_key(self.endvar, sim_data_dict)
 
     def penalty(self, sim_data_dict):
         """

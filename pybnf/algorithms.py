@@ -1608,8 +1608,11 @@ class ParticleSwarm(Algorithm):
         self.swarm = []  # List of lists of the form [PSet, velocity]. Velocity is stored as a dict with the same keys
         # as PSet
         self.pset_map = dict()  # Maps each PSet to it s particle number, for easy lookup.
-        self.bests = [[None, np.inf]] * self.num_particles  # The best result for each particle: list of the
-        # form [PSet, objective]
+        # One independent [PSet, objective] slot per particle. A list-multiply
+        # ([[None, inf]] * n) would alias one inner list across every particle --
+        # harmless today (got_result reassigns the whole slot) but a foot-gun if
+        # anyone ever mutates a slot in place.
+        self.bests = [[None, np.inf] for _ in range(self.num_particles)]  # The best result for each particle
         self.global_best = [None, np.inf]  # The best result for the whole swarm
         self.last_best = np.inf
 
@@ -1619,7 +1622,7 @@ class ParticleSwarm(Algorithm):
         self.num_evals = 0
         self.swarm = []
         self.pset_map = dict()
-        self.bests = [[None, np.inf]] * self.num_particles
+        self.bests = [[None, np.inf] for _ in range(self.num_particles)]
         self.global_best = [None, np.inf]
         self.last_best = np.inf
 

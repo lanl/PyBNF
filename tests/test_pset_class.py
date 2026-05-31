@@ -28,6 +28,18 @@ class TestPSet:
         for p in ps1:
             assert p in ps1.fps
 
+    def test_iteration_reentrant(self):
+        # CQ-7: __iter__ must return a fresh iterator, not store a cursor on
+        # self -- nested iteration over one PSet must not clobber the outer
+        # loop. The old self.idx implementation produced the wrong cross-product.
+        ps1 = pset.PSet(self.fps0)
+        pairs = [(a, b) for a in ps1 for b in ps1]
+        assert len(pairs) == len(self.fps0) ** 2
+        # First element of the outer loop must still be paired with every inner
+        # element (the buggy shared-cursor version exhausts on the first pass).
+        first_outer = self.fps0[0]
+        assert [b for (a, b) in pairs if a is first_outer] == self.fps0
+
     def test_get_freeparameter(self):
         p1 = pset.PSet(self.fps0)
         assert p1.get_param('var0__FREE') == self.p0
