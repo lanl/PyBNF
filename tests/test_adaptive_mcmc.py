@@ -56,6 +56,12 @@ UNIFORM_VARS = {
     ('uniform_var', 'v2__FREE'): [0.0, 100.0],
     ('uniform_var', 'v3__FREE'): [0.0, 100.0],
 }
+# Three log-space (base-10) parameters, bounds [1, 1e4] -> log10 in [0, 4].
+LOGUNIFORM_VARS = {
+    ('loguniform_var', 'v1__FREE'): [1.0, 1.0e4],
+    ('loguniform_var', 'v2__FREE'): [1.0, 1.0e4],
+    ('loguniform_var', 'v3__FREE'): [1.0, 1.0e4],
+}
 
 
 def _fake_result(ps, score):
@@ -354,6 +360,77 @@ class TestAdaptiveCovariance:
         cov_pop = CHAIN_X.T @ CHAIN_X / adaptive - np.outer(mu, mu)  # n == adaptive rows
         oracle = cov_pop * (it / (1 + it)) + eps * np.eye(d)
         np.testing.assert_allclose(am.diffMatrix[0], oracle, rtol=1e-10, atol=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# AM-1: the adaptive proposal must work in the SAME log base it is applied in.
+#
+# For log-space parameters, pick_new_pset builds its working vector and seeds
+# the covariance from the chain history in base-10 log (np.log10), matching how
+# the proposal is applied (FreeParameter.add -> 10**(log10(value)+summand)) and
+# the rest of the codebase (loguniform_var dist, prior_logpdf, _param_vec R-hat
+# history, FreeParameter.diff). A natural-log implementation (the AM-1 bug)
+# learns a covariance off by (ln 10)^2 ~ 5.3 per log axis and mis-shaped on
+# mixed linear+log targets — hurting mixing while leaving the posterior intact.
+# --------------------------------------------------------------------------- #
+# Regular-space chain values for three log-space params: well-separated decades
+# so the log10-vs-ln distinction is unmistakable, with anti-correlation between
+# the first two coords so a wrong base is visible off-diagonal too.
+CHAIN_LOG = np.array([
+    [10.,    1000.,  100.],
+    [31.62,  316.2,  120.],
+    [100.,   100.,   90.],
+    [316.2,  31.62,  110.],
+    [1000.,  10.,    95.],
+])
+
+
+class TestAdaptiveCovarianceLogSpace:
+
+    def test_seeded_covariance_is_in_base10_log_space(self, tmp_path, monkeypatch):
+        """For loguniform params the seeded proposal covariance is the sample
+        covariance of log10(value) (+ stabilizer), NOT log_e(value).
+
+        Same seeding contract as test_seeded_from_chain_sample_covariance, but
+        the oracle is built from log10 of the chain. The natural-log bug would
+        inflate every entry of cov_pop by (ln 10)^2 ~ 5.3, so this assertion is
+        the direct AM-1 discriminator. The covariance lives in the parameter
+        sampling space, which for log params is base-10 (see _param_vec)."""
+        burn_in, adaptive, eps = 2, 5, 0.01
+        cfg = _make_config(tmp_path, 2, LOGUNIFORM_VARS,
+                           burn_in=burn_in, adaptive=adaptive, stablizingCov=eps)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+        d = len(am.variables)
+
+        # History file stores regular-space values (write_out_params writes the
+        # raw parameter values); pick_new_pset is responsible for the log10.
+        _write_chain_file(am, 0, CHAIN_LOG)
+        # Current point at the chain's log10-space mean -> zero innovation, so the
+        # single Robbins-Monro EMA step only rescales the sample-cov part.
+        log_chain = np.log10(CHAIN_LOG)
+        regular_at_log_mean = 10.0 ** log_chain.mean(0)
+        am.current_pset[0] = _pset_from_values(
+            am, regular_at_log_mean, vartype='loguniform_var', lo=1.0, hi=1.0e4)
+        it = burn_in + adaptive
+        am.iteration[0] = it
+        am.alpha[0] = OPTIMAL_ACCEPT
+        _freeze_draw_to_zero(monkeypatch)
+
+        am.pick_new_pset(0)
+
+        mu = log_chain.mean(0)
+        cov_pop = log_chain.T @ log_chain / adaptive - np.outer(mu, mu)
+        oracle = cov_pop * (it / (1 + it)) + eps * np.eye(d)
+        np.testing.assert_allclose(am.diffMatrix[0], oracle, rtol=1e-10, atol=1e-12)
+        # Guard the discriminator itself: the natural-log oracle is materially
+        # different (factor ~ (ln 10)^2 on cov_pop), so this test actually
+        # distinguishes the two implementations rather than passing vacuously.
+        ln_chain = np.log(CHAIN_LOG)
+        ln_mu = ln_chain.mean(0)
+        ln_cov = ln_chain.T @ ln_chain / adaptive - np.outer(ln_mu, ln_mu)
+        ln_oracle = ln_cov * (it / (1 + it)) + eps * np.eye(d)
+        assert not np.allclose(am.diffMatrix[0], ln_oracle, rtol=1e-3)
 
 
 class TestAdaptiveProposalDraw:

@@ -4152,17 +4152,21 @@ class Adaptive_MCMC(BayesianAlgorithm):
         params = []
         for var in self.variables:
             if 'log' in var.type:
-                params.append(np.log(self.current_pset[idx].get_param(var.name).value))
+                # Work in base-10 log, consistent with how the proposal is applied
+                # (FreeParameter.add -> 10**(log10(value)+summand)) and with the
+                # rest of the codebase (loguniform_var dist, prior_logpdf,
+                # _param_vec R-hat history, FreeParameter.diff all use log10).
+                params.append(np.log10(self.current_pset[idx].get_param(var.name).value))
             else:
-                params.append(self.current_pset[idx].get_param(var.name).value)    
+                params.append(self.current_pset[idx].get_param(var.name).value)
         len_params = len(params) 
         self.stablizingCov = self.config.config['stablizingCov']*np.eye(len_params)
         if self.iteration[idx] >= self.burn_in + self.adaptive:
             if self.iteration[idx] == self.burn_in + self.adaptive:
                 self.parameter_index_file_input = np.genfromtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', names = True)
-                for v in self.variables:    
+                for v in self.variables:
                     if 'log' in v.type:
-                        self.parameter_index_file_input[v.name] = np.log(self.parameter_index_file_input[v.name])
+                        self.parameter_index_file_input[v.name] = np.log10(self.parameter_index_file_input[v.name])
                 self.parameter_index_file = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
                 self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 
                 self.diffMatrix[idx] = np.matmul(self.parameter_index_file.T, self.parameter_index_file)/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu[idx].T, self.mu[idx])+self.stablizingCov
@@ -4198,9 +4202,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 end = int(start_end[1])
                 if self.iteration[idx] == 1:
                     self.parameter_index_file_input = np.genfromtxt(self.config.config['output_dir'] + '/adaptive_files/combined_params.txt', names = True)
-                    for v in self.variables:    
+                    for v in self.variables:
                         if 'log' in v.type:
-                            self.parameter_index_file_input[v.name] = np.log(self.parameter_index_file_input[v.name])
+                            self.parameter_index_file_input[v.name] = np.log10(self.parameter_index_file_input[v.name])
                     self.parameter_index_file_range = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
                     self.parameter_index_file = self.parameter_index_file_range[start:end]
                     self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 
