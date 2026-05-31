@@ -21,6 +21,14 @@ _Avoid_: method, mode, solver, optimizer
 A model quantity PyBNF is allowed to vary during a fit, declared in the configuration with a `*_var` keyword and a prior range or distribution.
 _Avoid_: variable, fitted parameter, bare "parameter"
 
+**Prior**:
+The probability distribution assigned to a free parameter — used both as the Bayesian prior by samplers and as the initial-sampling distribution by optimizers. Defined by an orthogonal distribution family × scale, and evaluated in the parameter's own scale.
+_Avoid_: initial distribution, proposal distribution (that is the sampler's step kernel), parameter range
+
+**Parameter Scale**:
+The space a free parameter is sampled, proposed, and stored in — linear or base-10 logarithmic. Shared by the parameter's prior and its proposal arithmetic; the posterior target is defined directly in this scale, with no change-of-variables.
+_Avoid_: log space (informal), transform, parameterization
+
 **PSet** (Parameter Set):
 One concrete assignment of values to every free parameter — a single point in parameter space that can be simulated and scored.
 _Avoid_: parameter vector, individual, particle, sample, candidate (these are algorithm-specific views of a PSet)
@@ -105,6 +113,14 @@ _Avoid_: repeat, trial, sample
 Refitting on resampled experimental data to estimate the uncertainty in the fitted parameters.
 _Avoid_: resampling run, jackknife
 
+**Noise Model**:
+A probabilistic observation model mapping a deterministic prediction plus noise parameters to a distribution over the observed data; its negative log-likelihood is the objective value. Defined by three orthogonal axes — distribution family, the scale the noise is additive on, and the location interpretation. (Non-probabilistic objectives such as `sos` and `sod` are losses, not noise models.)
+_Avoid_: error model, noise function, likelihood (reserve "likelihood" for the density itself)
+
+**Location Interpretation**:
+Which summary of a noise model's distribution the deterministic prediction is taken to be — conditional mean, median, or mode. PyBNF makes this an explicit, overridable choice (PEtab v2 hardcodes median); it only matters when the noise is asymmetric on the prediction's scale.
+_Avoid_: central tendency, link convention
+
 ## Algorithms
 
 PyBNF's fit types fall into two families; the code and configuration treat them
@@ -137,3 +153,17 @@ _Avoid_: step, epoch
 **Model Check** (`fit_type = check`):
 A utility run that simulates the model once and reports the objective value without fitting.
 _Avoid_: dry run, validation
+
+## Architecture
+
+**Registry**:
+The single source of truth mapping a `fit_type` or `objfunc` code to the class that implements it, together with its family, defaults, and deprecation status. Methods self-register via a decorator, replacing the hand-maintained `if/elif` dispatch.
+_Avoid_: dispatcher, factory map, lookup table
+
+**Sampler Toolkit**:
+The library of reusable, optional sampler building blocks — Metropolis kernel, proposals, chain bookkeeping, tempering, cooling — that a new sampler may compose. Available and encouraged, never mandated; a method owes only the run-loop contract.
+_Avoid_: framework, base class (the toolkit is composed, not subclassed), mixins
+
+**Metropolis Kernel**:
+The shared propose → accept/reject step underlying the `mh`, `pt`, `sa`, and `am` methods; the canonical member of the Sampler Toolkit.
+_Avoid_: MCMC step, sampler core
