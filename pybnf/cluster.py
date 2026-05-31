@@ -104,9 +104,20 @@ class Cluster:
             ctype = config.config['cluster_type']
             if re.match('slurm', ctype, flags=re.IGNORECASE):
                 logger.debug('Detected selection of SLURM cluster')
-                get_hosts_cmd = ['scontrol', 'show', 'hostname', '$SLURM_JOB_NODELIST']
+                # Build the command as an argument list and run it WITHOUT a
+                # shell (ROB-3). The node list comes from $SLURM_JOB_NODELIST,
+                # which we resolve via os.environ rather than shell expansion --
+                # this both closes the shell-injection surface and avoids the
+                # shell glob-expanding a compressed nodelist like "node[01-04]".
+                # An unset/empty variable is omitted (matching the old empty
+                # shell expansion), letting scontrol fall back to its own
+                # default.
+                get_hosts_cmd = ['scontrol', 'show', 'hostname']
+                nodelist = os.environ.get('SLURM_JOB_NODELIST', '')
+                if nodelist:
+                    get_hosts_cmd.append(nodelist)
                 try:
-                    proc = run(' '.join(get_hosts_cmd), shell=True, stdout=PIPE, timeout=10, check=True)
+                    proc = run(get_hosts_cmd, stdout=PIPE, timeout=10, check=True)
                 except TimeoutExpired:
                     logger.error('Could not retrieve host names in 10s')
                     raise PybnfError('Failed to find node names in a reasonable time.  Exiting')
@@ -137,18 +148,24 @@ class Cluster:
         :return: subprocess.Popen
         """
         logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
+        # Build the dask-ssh invocation as an argument list and launch it WITHOUT
+        # a shell (ROB-3): each node name becomes its own literal argv entry, so
+        # node names from config/SLURM can't be interpreted by a shell.
+        nodes = node_string.split()
         if parallel_count is None:
-            dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nthreads 1 --nprocs %i' % (node_string, out_dir, cpu_count())
+            dask_ssh_cmd = ['dask-ssh', *nodes,
+                            '--log-directory', out_dir, '--nthreads', '1', '--nprocs', str(cpu_count())]
         else:
-            n_per_node = int(np.ceil(parallel_count/len(node_string.split())))
+            n_per_node = int(np.ceil(parallel_count/len(nodes)))
             logger.info('Manually setting %i workers per node' % n_per_node)
-            dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nprocs %i --nthreads 1' % (node_string, out_dir, n_per_node)
+            dask_ssh_cmd = ['dask-ssh', *nodes,
+                            '--log-directory', out_dir, '--nprocs', str(n_per_node), '--nthreads', '1']
         # Capture stderr to a temp file rather than a PIPE: dask-ssh stays
         # running for the whole fit, and an undrained PIPE would deadlock once
         # its buffer fills. A regular file lets us surface an early bring-up
         # failure below without that risk.
         dask_ssh_err = TemporaryFile()
-        dask_ssh_proc = Popen(dask_ssh_cmd, shell=True, stdout=DEVNULL, stderr=dask_ssh_err)
+        dask_ssh_proc = Popen(dask_ssh_cmd, stdout=DEVNULL, stderr=dask_ssh_err)
         time.sleep(10)
         # If dask-ssh has already exited, the cluster never came up. Surface the
         # failure here instead of letting it resurface later as an opaque dask

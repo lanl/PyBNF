@@ -74,28 +74,54 @@ class TestReadNodeNames:
         assert called == []
 
     def test_slurm_parse_and_command_string(self, monkeypatch):
-        """SLURM: shells out to ``scontrol show hostname $SLURM_JOB_NODELIST``
-        (shell=True, 10s timeout, check=True, capturing stdout), then parses the
-        newline-separated hostnames. Oracle: scheduler == nodes[0], node_string
-        == ' '.join(nodes). The trailing newline must be stripped, not parsed
-        into an empty fourth node."""
+        """SLURM: runs ``scontrol show hostname <$SLURM_JOB_NODELIST>`` as an
+        argument list with NO shell (ROB-3), 10s timeout, check=True, capturing
+        stdout, then parses the newline-separated hostnames. Oracle: scheduler ==
+        nodes[0], node_string == ' '.join(nodes). The trailing newline must be
+        stripped, not parsed into an empty fourth node. The nodelist comes from
+        os.environ and is passed as a single literal arg (so a compressed nodelist
+        like ``node[17-19]`` reaches scontrol intact, not shell-globbed)."""
         captured = []
 
         def fake_run(cmd, **kwargs):
             captured.append((cmd, kwargs))
             return _FakeProc(b'node17\nnode18\nnode19\n')
 
+        monkeypatch.setenv('SLURM_JOB_NODELIST', 'node[17-19]')
         monkeypatch.setattr(cluster, 'run', fake_run)
         scheduler, node_string = cluster.Cluster.read_node_names(_cfg(cluster_type='slurm'))
 
         assert scheduler == 'node17'                       # nodes[0], not nodes[-1]
         assert node_string == 'node17 node18 node19'       # ' '.join(nodes), all three
         cmd, kwargs = captured[0]
-        assert cmd == 'scontrol show hostname $SLURM_JOB_NODELIST'
-        assert kwargs['shell'] is True
+        assert cmd == ['scontrol', 'show', 'hostname', 'node[17-19]']  # arg list, nodelist intact
+        assert kwargs.get('shell', False) is False         # no shell -> no injection / globbing
         assert kwargs['timeout'] == 10
         assert kwargs['check'] is True
         assert kwargs['stdout'] is cluster.PIPE
+
+    def test_slurm_nodelist_from_env_passed_as_one_literal_arg(self, monkeypatch):
+        """ROB-3: a $SLURM_JOB_NODELIST carrying shell metacharacters is handed to
+        scontrol as a single literal argv entry with shell off -- it is never
+        interpreted by a shell."""
+        captured = []
+        monkeypatch.setenv('SLURM_JOB_NODELIST', 'n1; touch pwned')
+        monkeypatch.setattr(cluster, 'run',
+                            lambda cmd, **k: captured.append((cmd, k)) or _FakeProc(b'n1\n'))
+        cluster.Cluster.read_node_names(_cfg(cluster_type='slurm'))
+        cmd, kwargs = captured[0]
+        assert cmd == ['scontrol', 'show', 'hostname', 'n1; touch pwned']
+        assert kwargs.get('shell', False) is False
+
+    def test_slurm_unset_nodelist_omits_arg(self, monkeypatch):
+        """When $SLURM_JOB_NODELIST is unset, the nodelist arg is omitted (matching
+        the old empty shell expansion), so scontrol falls back to its own default."""
+        captured = []
+        monkeypatch.delenv('SLURM_JOB_NODELIST', raising=False)
+        monkeypatch.setattr(cluster, 'run',
+                            lambda cmd, **k: captured.append((cmd, k)) or _FakeProc(b'n1\n'))
+        cluster.Cluster.read_node_names(_cfg(cluster_type='slurm'))
+        assert captured[0][0] == ['scontrol', 'show', 'hostname']
 
     def test_slurm_single_node(self, monkeypatch):
         """A one-node allocation: scheduler and node_string are the same single
@@ -181,15 +207,16 @@ class TestSetupCluster:
     def test_default_parallel_count_uses_cpu_count(self, monkeypatch):
         """parallel_count=None ⇒ dask-ssh's own default of one process per CPU:
         ``--nthreads 1 --nprocs {cpu_count()}`` (note this branch's flag order is
-        --nthreads then --nprocs). Oracle: the exact command string with the
-        stubbed cpu_count()=7."""
+        --nthreads then --nprocs). Oracle: the exact argument list (ROB-3: an argv
+        list launched with no shell, each node its own entry) with cpu_count()=7."""
         popen_calls = self._patch(monkeypatch, cpu=7)
         proc = cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
 
         assert proc.poll() is None
         (args, kwargs), = popen_calls
-        assert args[0] == 'dask-ssh n1 n2 --log-directory /out --nthreads 1 --nprocs 7'
-        assert kwargs['shell'] is True
+        assert args[0] == ['dask-ssh', 'n1', 'n2',
+                           '--log-directory', '/out', '--nthreads', '1', '--nprocs', '7']
+        assert kwargs.get('shell', False) is False         # no shell -> no injection
         assert kwargs['stdout'] is cluster.DEVNULL
         # stderr is captured to a readable file (not discarded), so an early
         # bring-up failure can be surfaced — see test_failed_bringup_*.
@@ -225,7 +252,8 @@ class TestSetupCluster:
         cluster.Cluster.setup_cluster('a b c', '/log', parallel_count=5)
 
         (args, _), = popen_calls
-        assert args[0] == 'dask-ssh a b c --log-directory /log --nprocs 2 --nthreads 1'
+        assert args[0] == ['dask-ssh', 'a', 'b', 'c',
+                           '--log-directory', '/log', '--nprocs', '2', '--nthreads', '1']
 
     def test_parallel_count_exact_division(self, monkeypatch):
         """4 threads over 2 nodes ⇒ exactly 2 per node (ceil of an integer is
@@ -233,7 +261,8 @@ class TestSetupCluster:
         popen_calls = self._patch(monkeypatch)
         cluster.Cluster.setup_cluster('h1 h2', '/log', parallel_count=4)
         (args, _), = popen_calls
-        assert args[0] == 'dask-ssh h1 h2 --log-directory /log --nprocs 2 --nthreads 1'
+        assert args[0] == ['dask-ssh', 'h1', 'h2',
+                           '--log-directory', '/log', '--nprocs', '2', '--nthreads', '1']
 
     def test_single_node_gets_all_workers(self, monkeypatch):
         """One node ⇒ all parallel_count workers land on it (ceil(6/1) = 6); this
@@ -241,7 +270,18 @@ class TestSetupCluster:
         popen_calls = self._patch(monkeypatch)
         cluster.Cluster.setup_cluster('only', '/log', parallel_count=6)
         (args, _), = popen_calls
-        assert args[0] == 'dask-ssh only --log-directory /log --nprocs 6 --nthreads 1'
+        assert args[0] == ['dask-ssh', 'only',
+                           '--log-directory', '/log', '--nprocs', '6', '--nthreads', '1']
+
+    def test_node_names_passed_as_literal_argv_no_shell(self, monkeypatch):
+        """ROB-3: node names reach dask-ssh as their own literal argv entries with
+        shell off, so a metacharacter-bearing node name can't be interpreted by a
+        shell."""
+        popen_calls = self._patch(monkeypatch)
+        cluster.Cluster.setup_cluster('n1$(whoami) n2', '/log', parallel_count=2)
+        (args, kwargs), = popen_calls
+        assert args[0][:3] == ['dask-ssh', 'n1$(whoami)', 'n2']  # literal, unexpanded
+        assert kwargs.get('shell', False) is False
 
     def test_sleeps_ten_seconds_for_startup(self, monkeypatch):
         """After launching dask-ssh, setup_cluster waits 10s for workers to come
