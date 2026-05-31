@@ -3954,7 +3954,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                               
         # After the burn in period start to record the accepted params for the adaptive feature.
         if self.iteration[index] >= self.burn_in:
-            self.parameter_index[index][self.factor] = self.current_param_set[index]
+            self.parameter_index[index][self.factor[index]] = self.current_param_set[index]
         
         # record the trajactorys for the graphs
         if self.iteration[index] >= self.valid_range and self.iteration[index] % self.config.config['sample_every'] == 0:
@@ -3963,15 +3963,15 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 for l in self.output_noise_columns:     
                     for i in self.output_run_noise_current.keys():
                         if l in i:
-                            self.output_run_noise_all[i][index][self.factor] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index])
+                            self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index])
             if self.config.config['output_trajectory']:
                 for l in self.output_columns:
                     for i in self.output_run_current.keys():
                         if l in i:
-                            self.output_run_all[i][index][self.factor] = self.output_run_current[i][index][0]
+                            self.output_run_all[i][index][self.factor[index]] = self.output_run_current[i][index][0]
 
         # Record that this individual is complete
-        self.scores[index][self.factor] = self.ln_current_P[index]
+        self.scores[index][self.factor[index]] = self.ln_current_P[index]
 
         # Track chain history for convergence diagnostics (R-hat, ESS)
         if self.current_pset[index] is not None:
