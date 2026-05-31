@@ -4171,9 +4171,15 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 
                 self.diffMatrix[idx] = np.matmul(self.parameter_index_file.T, self.parameter_index_file)/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu[idx].T, self.mu[idx])+self.stablizingCov
                 self.diff[idx] = 2.38**2/len_params
-            self.mu[idx] = self.mu[idx] + (1./(1+self.iteration[idx]))*(params - self.mu[idx])     
+            # Weight each new sample by 1/(samples folded so far + 1). The seed
+            # (above) is built from the `adaptive` post-burn-in history rows
+            # (divisor iteration - burn_in == adaptive), so the running count is
+            # (iteration - burn_in), NOT the global iteration. Using the global
+            # counter under-weights new samples by ~(1+iteration)/(1+adaptive)
+            # at the seeding step, freezing the proposal near the seed (AM-2).
+            self.mu[idx] = self.mu[idx] + (1./(1+self.iteration[idx]-self.burn_in))*(params - self.mu[idx])
             self.diffVector = np.reshape(params - self.mu[idx], [1, len_params])
-            self.diffMatrix[idx] = self.diffMatrix[idx] + (1./(1 + self.iteration[idx]))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix[idx])
+            self.diffMatrix[idx] = self.diffMatrix[idx] + (1./(1 + self.iteration[idx]-self.burn_in))*(np.matmul(self.diffVector.T, self.diffVector)+self.stablizingCov-self.diffMatrix[idx])
             self.diff[idx] = np.exp( np.log(self.diff[idx]) + (1./(1 + self.iteration[idx]- self.adaptive - self.burn_in))*(self.alpha[idx]-0.234))
             oldpset = self.current_pset[idx]
             num = 0

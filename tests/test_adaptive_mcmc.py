@@ -342,8 +342,15 @@ class TestAdaptiveCovariance:
         covariance (X^T X / n - mu mu^T, the 1/n estimator) plus the stabilizing
         eps*I. We pin the post-call matrix including the single Robbins-Monro EMA
         step: with the current point set to the chain mean the innovation is zero,
-        so that step shrinks only the sample-cov part by it/(1+it), leaving
-        cov_pop * it/(1+it) + eps*I."""
+        so that step shrinks only the sample-cov part by the EMA weight (1-w),
+        leaving cov_pop * (1-w) + eps*I.
+
+        The EMA weight is w = 1/(1 + iteration - burn_in) (AM-2): the running
+        sample count is samples-since-burn_in, matching the seed (built from the
+        `adaptive` post-burn-in history rows). At the seeding step iteration ==
+        burn_in + adaptive, so w = 1/(1 + adaptive) and 1-w = adaptive/(1+adaptive).
+        The pre-AM-2 code used the global counter w = 1/(1+iteration), i.e.
+        1-w = iteration/(1+iteration) -- a different (stickier) factor."""
         burn_in, adaptive, eps = 2, 5, 0.01
         am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive, stablizingCov=eps)
         d = len(am.variables)
@@ -358,8 +365,75 @@ class TestAdaptiveCovariance:
 
         mu = CHAIN_X.mean(0)
         cov_pop = CHAIN_X.T @ CHAIN_X / adaptive - np.outer(mu, mu)  # n == adaptive rows
-        oracle = cov_pop * (it / (1 + it)) + eps * np.eye(d)
+        one_minus_w = adaptive / (1 + adaptive)                      # w = 1/(1+it-burn_in)
+        oracle = cov_pop * one_minus_w + eps * np.eye(d)
         np.testing.assert_allclose(am.diffMatrix[0], oracle, rtol=1e-10, atol=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# AM-2: the online mean/covariance recurrence must weight each new sample by
+# 1/(samples folded so far + 1), where the count is samples-since-burn_in
+# (iteration - burn_in), NOT the global iteration. The seed holds `adaptive`
+# samples (its divisor is iteration - burn_in == adaptive), so a consistent
+# running estimator continues from that count. Using the global counter
+# under-weights new samples by ~(1+iteration)/(1+adaptive) at the seeding step,
+# freezing the proposal near the seed. The contract is invariant to burn_in for
+# a fixed (iteration - burn_in); the pre-AM-2 global-counter weight was not.
+# --------------------------------------------------------------------------- #
+class TestAdaptiveCovarianceSampleWeight:
+
+    def _run_one_ema_step(self, tmp_path, monkeypatch, burn_in, k, diff_pre, eps):
+        """Drive a single post-seeding EMA update (iteration = burn_in+adaptive+k,
+        k>=1, so the re-seed branch is skipped). Current point is pinned to the
+        running mean (zero innovation), so the covariance update reduces to
+        diff_pre*(1-w) + w*eps*I with w the per-sample weight under test.
+        Returns the post-update diffMatrix[0]."""
+        adaptive = 5
+        am = _adaptive_am(tmp_path, burn_in=burn_in, adaptive=adaptive, stablizingCov=eps)
+        d = len(am.variables)
+        base_vals = np.full(d, 50.0)
+        am.current_pset[0] = _pset_from_values(am, base_vals)
+        am.mu[0] = base_vals.reshape(1, d)            # zero innovation -> isolate weight
+        am.diffMatrix[0] = diff_pre.copy()
+        am.iteration[0] = burn_in + adaptive + k      # k>=1 -> no re-seed
+        am.alpha[0] = OPTIMAL_ACCEPT                  # freeze the scalar `diff`
+        _freeze_draw_to_zero(monkeypatch)
+        am.pick_new_pset(0)
+        return np.array(am.diffMatrix[0]), d
+
+    def test_ema_weight_is_invariant_to_burn_in(self, tmp_path, monkeypatch):
+        """For a fixed number of samples-since-burn_in (here k+adaptive), the
+        covariance EMA weight must be identical regardless of burn_in. Two runs
+        with burn_in 3 vs 500 but the same post-seeding offset k must produce the
+        same updated covariance. The global-counter bug makes the weights differ
+        (1/(1+503+...) vs 1/(1+6+...)), so this assertion is the AM-2
+        discriminator. eps=0 isolates the shrink factor exactly."""
+        d = 3
+        diff_pre = np.full((d, d), 0.4) + 2.0 * np.eye(d)
+        eps = 0.0
+        k = 1
+        m_small, _ = self._run_one_ema_step(tmp_path / 'a', monkeypatch, 3, k, diff_pre, eps)
+        m_large, _ = self._run_one_ema_step(tmp_path / 'b', monkeypatch, 500, k, diff_pre, eps)
+        np.testing.assert_allclose(m_small, m_large, rtol=1e-12, atol=1e-14)
+
+    def test_ema_weight_matches_samples_since_burn_in(self, tmp_path, monkeypatch):
+        """Pin the exact post-update covariance to the analytical EMA with weight
+        w = 1/(1 + iteration - burn_in). With zero innovation and eps=0 the update
+        is diff_pre*(1-w); here iteration-burn_in = adaptive + k so w = 1/(1+5+1).
+        The old global-counter weight 1/(1+iteration) = 1/(1+burn_in+5+1) would
+        give a materially larger 1-w, so this both fixes the value and guards the
+        discriminator."""
+        burn_in, adaptive, k, eps = 50, 5, 1, 0.0
+        d = 3
+        diff_pre = np.full((d, d), 0.4) + 2.0 * np.eye(d)
+        m_post, _ = self._run_one_ema_step(tmp_path, monkeypatch, burn_in, k, diff_pre, eps)
+        w = 1.0 / (1 + adaptive + k)               # 1/(1 + iteration - burn_in)
+        oracle = diff_pre * (1 - w)
+        np.testing.assert_allclose(m_post, oracle, rtol=1e-12, atol=1e-14)
+        # Guard: the old global-counter weight is materially different, so this
+        # test actually distinguishes the two implementations.
+        w_bug = 1.0 / (1 + burn_in + adaptive + k)
+        assert not np.allclose(m_post, diff_pre * (1 - w_bug), rtol=1e-3)
 
 
 # --------------------------------------------------------------------------- #
@@ -419,9 +493,12 @@ class TestAdaptiveCovarianceLogSpace:
 
         am.pick_new_pset(0)
 
+        # EMA shrink factor at the seeding step: 1-w with w = 1/(1+it-burn_in)
+        # = 1/(1+adaptive) per AM-2, so 1-w = adaptive/(1+adaptive).
+        one_minus_w = adaptive / (1 + adaptive)
         mu = log_chain.mean(0)
         cov_pop = log_chain.T @ log_chain / adaptive - np.outer(mu, mu)
-        oracle = cov_pop * (it / (1 + it)) + eps * np.eye(d)
+        oracle = cov_pop * one_minus_w + eps * np.eye(d)
         np.testing.assert_allclose(am.diffMatrix[0], oracle, rtol=1e-10, atol=1e-12)
         # Guard the discriminator itself: the natural-log oracle is materially
         # different (factor ~ (ln 10)^2 on cov_pop), so this test actually
@@ -429,7 +506,7 @@ class TestAdaptiveCovarianceLogSpace:
         ln_chain = np.log(CHAIN_LOG)
         ln_mu = ln_chain.mean(0)
         ln_cov = ln_chain.T @ ln_chain / adaptive - np.outer(ln_mu, ln_mu)
-        ln_oracle = ln_cov * (it / (1 + it)) + eps * np.eye(d)
+        ln_oracle = ln_cov * one_minus_w + eps * np.eye(d)
         assert not np.allclose(am.diffMatrix[0], ln_oracle, rtol=1e-3)
 
 
