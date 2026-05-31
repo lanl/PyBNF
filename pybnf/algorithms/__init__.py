@@ -6,10 +6,10 @@ from distributed import as_completed
 from subprocess import run
 from subprocess import CalledProcessError, TimeoutExpired
 from subprocess import STDOUT
-from .pset import run_subprocess
+from ..pset import run_subprocess
 
 
-from .bngsim_model import (
+from ..bngsim_model import (
     BngsimModel,
     BngsimNfModel,
     BNGSIM_AVAILABLE,
@@ -20,15 +20,15 @@ from .bngsim_model import (
     classify_actions_for_bngsim,
     missing_bngsim_nf_action_support,
 )
-from .data import Data
-from .pset import PSet
-from .pset import Trajectory
-from .pset import BNGLModel
-from .pset import NetModel
-from .pset import OutOfBoundsException
-from .pset import FailedSimulationError
-from .printing import print0, print1, print2, PybnfError
-from .objective import ObjectiveCalculator, ConstraintCounter
+from ..data import Data
+from ..pset import PSet
+from ..pset import Trajectory
+from ..pset import BNGLModel
+from ..pset import NetModel
+from ..pset import OutOfBoundsException
+from ..pset import FailedSimulationError
+from ..printing import print0, print1, print2, PybnfError
+from ..objective import ObjectiveCalculator, ConstraintCounter
 
 import logging
 import numpy as np
