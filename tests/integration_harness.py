@@ -202,7 +202,7 @@ def read_samples(output_dir, n_params):
     """Pooled post-output MCMC samples as an ``(n_samples, n_params)`` array.
 
     Handles both sampler output conventions:
-      * ``Results/samples.txt``                (DREAM / P-DREAM / S-CREAM)
+      * ``Results/samples.txt``                (DREAM / P-DREAM)
       * ``Results/A_MCMC/Runs/params_*.txt``   (Adaptive_MCMC)
     """
     samples_txt = os.path.join(output_dir, 'Results', 'samples.txt')
