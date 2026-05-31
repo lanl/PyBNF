@@ -207,7 +207,7 @@ def ploop(ls):  # parse loop
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "
                                      "suffixes.")
                 if 'postprocess' in d:
-                    d['postprocess'].append([values])
+                    d['postprocess'].append(values)
                 else:
                     d['postprocess'] = [values]
             elif l[0] == 'normalization':

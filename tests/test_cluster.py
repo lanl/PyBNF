@@ -54,6 +54,15 @@ class _FakeProc:
         self.stdout = stdout
 
 
+class _FakeDaskProc:
+    """Stand-in for the dask-ssh Popen object: setup_cluster only calls poll()."""
+    def __init__(self, returncode=None):
+        self._returncode = returncode
+
+    def poll(self):
+        return self._returncode
+
+
 class TestReadNodeNames:
 
     def test_no_cluster_type_is_local(self, monkeypatch):
@@ -149,15 +158,20 @@ class TestReadNodeNames:
 # --------------------------------------------------------------------------- #
 class TestSetupCluster:
 
-    def _patch(self, monkeypatch, cpu=4):
+    def _patch(self, monkeypatch, cpu=4, returncode=None, stderr_bytes=b''):
         """Patch the three externals setup_cluster touches: Popen (capture the
         command), time.sleep (don't actually wait 10s), cpu_count (deterministic).
-        Returns the recorder list of (args, kwargs) Popen was called with."""
+        The fake proc's ``poll()`` returns ``returncode`` (None = still running,
+        the healthy default); if ``stderr_bytes`` is given the fake writes it to
+        the stderr file setup_cluster handed to Popen, so the early-exit error
+        path can read it back. Returns the recorder list of Popen (args, kwargs)."""
         popen_calls = []
 
         def fake_popen(*args, **kwargs):
             popen_calls.append((args, kwargs))
-            return 'PROC'
+            if stderr_bytes:
+                kwargs['stderr'].write(stderr_bytes)
+            return _FakeDaskProc(returncode)
 
         monkeypatch.setattr(cluster, 'Popen', fake_popen)
         monkeypatch.setattr(cluster.time, 'sleep', lambda *_: None)
@@ -172,12 +186,35 @@ class TestSetupCluster:
         popen_calls = self._patch(monkeypatch, cpu=7)
         proc = cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
 
-        assert proc == 'PROC'
+        assert proc.poll() is None
         (args, kwargs), = popen_calls
         assert args[0] == 'dask-ssh n1 n2 --log-directory /out --nthreads 1 --nprocs 7'
         assert kwargs['shell'] is True
         assert kwargs['stdout'] is cluster.DEVNULL
-        assert kwargs['stderr'] is cluster.STDOUT
+        # stderr is captured to a readable file (not discarded), so an early
+        # bring-up failure can be surfaced — see test_failed_bringup_*.
+        assert kwargs['stderr'] is not cluster.DEVNULL
+        assert hasattr(kwargs['stderr'], 'read')
+
+    def test_running_proc_is_returned_without_raising(self, monkeypatch):
+        """The happy path: dask-ssh is still running after the startup wait
+        (poll() is None), so setup_cluster returns the proc rather than raising."""
+        self._patch(monkeypatch)
+        proc = cluster.Cluster.setup_cluster('n1', '/log', parallel_count=1)
+        assert proc.poll() is None
+
+    def test_failed_bringup_raises_with_stderr(self, monkeypatch):
+        """If dask-ssh has already exited after the startup wait, the cluster
+        never came up. setup_cluster must raise PybnfError (not return a dead
+        proc that later surfaces as an opaque Client connection error), and the
+        captured stderr is included for diagnosis."""
+        self._patch(monkeypatch, returncode=1,
+                    stderr_bytes=b'ssh: connect to host node9 port 22: Connection refused')
+        with pytest.raises(printing.PybnfError) as exc:
+            cluster.Cluster.setup_cluster('node9', '/log', parallel_count=1)
+        msg = str(exc.value)
+        assert 'code 1' in msg
+        assert 'Connection refused' in msg
 
     def test_parallel_count_divides_per_node_with_ceil(self, monkeypatch):
         """With an explicit parallel_count, workers are spread over nodes:

@@ -9,6 +9,10 @@ embedded copy; this file pins the lanl/PyBNF behavioral contract.
 
 from __future__ import annotations
 
+import math
+
+import pytest
+
 import pybnf.bngsim_model as bngsim_model
 
 
@@ -140,3 +144,24 @@ def test_prepare_scan_point_without_overrides_keeps_original_initials():
     assert point_model.get_param("dose") == 4.0
     assert point_model.concentrations["Lig()"] == 1.0
     assert point_model.initials["Lig()"] == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# rint in the safe-eval namespace must match BNG, not Python's round()
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize('x', [0.5, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, 0.4, 0.6, 10.5])
+def test_rint_matches_bng_floor_half_up(x):
+    """BNG defines rint as floor(x + 0.5) (round half toward +inf; see
+    BioNetGen Perl2/Expression.pm), so PyBNF's expression evaluation must do the
+    same to stay faithful to the engine."""
+    ns = bngsim_model._build_safe_eval_namespace()
+    assert ns['rint'](x) == math.floor(x + 0.5)
+
+
+def test_rint_diverges_from_python_round_on_ties():
+    """Pin the concrete divergence from Python's round() (round half to even),
+    which is the regression this guards against."""
+    ns = bngsim_model._build_safe_eval_namespace()
+    assert ns['rint'](2.5) == 3   # round(2.5) == 2
+    assert ns['rint'](0.5) == 1   # round(0.5) == 0
+    assert ns['rint'](-1.5) == -1  # round(-1.5) == -2

@@ -1114,6 +1114,8 @@ class TimeCourse(Action):
         if self.method not in ('ode', 'ssa', 'pla', 'nf'):
             raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
 
+        if self.step == 0:
+            raise PybnfError('For key "time_course", the value of "step" must be nonzero.')
         self.stepnumber = int(np.round(self.time/self.step))
         self.bng_codeword = 'simulate'
 
@@ -1183,6 +1185,8 @@ class ParamScan(Action):
         if self.method not in ('ode', 'ssa', 'pla', 'nf'):
             raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
 
+        if self.step == 0:
+            raise PybnfError('For key "param_scan", the value of "step" must be nonzero.')
         self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'
 

@@ -728,7 +728,11 @@ def _build_safe_eval_namespace(seed=None):
         'max': max,
         'pow': pow,
         'if': lambda cond, t, f: t if cond else f,
-        'rint': round,
+        # BNG defines rint as floor(x + 0.5) (round half toward +inf; see
+        # BioNetGen Perl2/Expression.pm), NOT Python's round() which is
+        # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
+        # so match BNG to keep PyBNF's expression evaluation faithful.
+        'rint': lambda x: math.floor(x + 0.5),
         '__builtins__': {},
     })
     return ns

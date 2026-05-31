@@ -101,6 +101,11 @@ class AnalyticalModel(Model):
             return self._nll_banana(params)
         elif self.target_type == 'multimodal':
             return self._nll_multimodal(params)
+        else:
+            # Unreachable in practice (__init__ already rejects unknown types),
+            # but fail loud rather than return an implicit None if a new target
+            # type is ever added to __init__ but not here.
+            raise ValueError('Unknown analytical target type: %s' % self.target_type)
 
     def _nll_gaussian(self, params):
         """NLL of multivariate Gaussian: 0.5 * sum((x - mu)^2 / sigma^2)"""

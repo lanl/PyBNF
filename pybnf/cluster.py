@@ -3,7 +3,8 @@
 
 from .printing import PybnfError
 
-from subprocess import run, TimeoutExpired, Popen, PIPE, STDOUT, CalledProcessError, DEVNULL
+from subprocess import run, TimeoutExpired, Popen, PIPE, CalledProcessError, DEVNULL
+from tempfile import TemporaryFile
 
 import logging
 import re
@@ -142,8 +143,26 @@ class Cluster:
             n_per_node = int(np.ceil(parallel_count/len(node_string.split())))
             logger.info('Manually setting %i workers per node' % n_per_node)
             dask_ssh_cmd = 'dask-ssh %s --log-directory %s --nprocs %i --nthreads 1' % (node_string, out_dir, n_per_node)
-        dask_ssh_proc = Popen(dask_ssh_cmd, shell=True, stdout=DEVNULL, stderr=STDOUT)
+        # Capture stderr to a temp file rather than a PIPE: dask-ssh stays
+        # running for the whole fit, and an undrained PIPE would deadlock once
+        # its buffer fills. A regular file lets us surface an early bring-up
+        # failure below without that risk.
+        dask_ssh_err = TemporaryFile()
+        dask_ssh_proc = Popen(dask_ssh_cmd, shell=True, stdout=DEVNULL, stderr=dask_ssh_err)
         time.sleep(10)
+        # If dask-ssh has already exited, the cluster never came up. Surface the
+        # failure here instead of letting it resurface later as an opaque dask
+        # Client connection error.
+        returncode = dask_ssh_proc.poll()
+        if returncode is not None:
+            dask_ssh_err.seek(0)
+            err_text = dask_ssh_err.read().decode('UTF-8', errors='replace').strip()
+            dask_ssh_err.close()
+            logger.error('dask-ssh exited with code %s during cluster bring-up. stderr:\n%s'
+                         % (returncode, err_text))
+            raise PybnfError('Failed to start the dask-ssh cluster (dask-ssh exited with code %s). %s'
+                             % (returncode, ('Details:\n%s' % err_text) if err_text
+                                else 'Check the cluster log directory for details.'))
         return dask_ssh_proc
 
     def teardown(self):

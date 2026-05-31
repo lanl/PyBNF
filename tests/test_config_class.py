@@ -91,6 +91,33 @@ class TestConfig(object):
         assert c.config['normalization']['p1_5'] == [('init', ['R_free'])]
         assert c.config['normalization']['thing'] == [('peak', ['Ag_total'])]
 
+    def test_normalization_consecutive_sd_columns_all_removed(self):
+        # _SD columns can't be normalized separately, so they're dropped from the
+        # normalization list. With two *consecutive* _SD columns the old loop
+        # iterated and removed from the same list object, skipping (and wrongly
+        # keeping) the second. par1.exp columns: time, x, y, x_SD, y_SD.
+        c = object.__new__(config.Configuration)
+        d = data.Data(file_name='bngl_files/par1.exp')
+        c.exp_data = {'parabola': {'par1': d}}
+        c.config = {'normalization': {'bngl_files/par1.exp': [('init', ['x_SD', 'y_SD'])]},
+                    'exp_data': {'bngl_files/par1.exp'},
+                    'models': {'bngl_files/parabola.bngl'},
+                    'bngl_files/parabola.bngl': ['bngl_files/par1.exp']}
+        c._postprocess_normalization()
+        # Both _SD columns gone -> empty list (pre-fix left ['y_SD']).
+        assert c.config['normalization']['par1'] == [('init', [])]
+
+    def test_crossover_number_warns_when_ignored(self, monkeypatch):
+        # 'crossover_number' is a DREAM-family key; for am/mh/pt/sa it's unused
+        # and should warn. The warn-branch key was misspelled 'crossover_numer',
+        # so the real 'crossover_number' value never matched and the branch was
+        # dead. Drive the staticmethod and assert the warning now names the key.
+        warnings = []
+        monkeypatch.setattr(config, 'print1', lambda msg, *a, **k: warnings.append(msg))
+        conf = {'fit_type': 'am', 'population_size': 10, 'crossover_number': 3}
+        config.Configuration.postprocess_mcmc_keys(conf)
+        assert any('crossover_number' in w for w in warnings)
+
     # --- _check_variable_correspondence (the config-level free-parameter guard) ---
     # Tricky.bngl declares __FREE params: koff__FREE, __koff2__FREE, kase__FREE, pase__FREE.
 

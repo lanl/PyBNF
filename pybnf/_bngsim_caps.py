@@ -35,6 +35,15 @@ def _parse_version(version):
 def _version_compatible(version):
     parsed = _parse_version(version)
     if parsed is None:
+        # Couldn't parse a MAJOR.MINOR.PATCH out of the reported version. Warn
+        # and accept rather than reject: an unparseable string is far more
+        # likely a packaging-format quirk than a genuinely incompatible build,
+        # and fail-closed here would brick an otherwise-working install.
+        logger.warning(
+            'Could not parse bngsim version %r; proceeding without a '
+            'compatibility check (PyBNF expects bngsim>=%s,<%d).',
+            version, _min_version_str(), _BNGSIM_MAX_MAJOR,
+        )
         return True
     return _BNGSIM_MIN_VERSION <= parsed and parsed[0] < _BNGSIM_MAX_MAJOR
 

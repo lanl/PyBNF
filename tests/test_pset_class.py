@@ -56,3 +56,22 @@ class TestPSet:
     def test_immutable(self):
         ps1 = pset.PSet(self.fps0)
         ps1['var0__FREE'] = 1.5
+
+
+class TestActionStepGuard:
+    """step=0 must raise a clean PybnfError, not an unguarded ZeroDivisionError
+    from the `stepnumber` divide (time/step and (max-min)/step)."""
+
+    @raises(printing.PybnfError)
+    def test_time_course_zero_step_raises_pybnf_error(self):
+        pset.TimeCourse({'time': '10', 'step': '0'})
+
+    @raises(printing.PybnfError)
+    def test_param_scan_zero_step_raises_pybnf_error(self):
+        pset.ParamScan({'min': '0', 'max': '10', 'step': '0', 'time': '10', 'param': 'k'})
+
+    def test_nonzero_step_still_works(self):
+        # Guard doesn't disturb the normal path.
+        assert pset.TimeCourse({'time': '10', 'step': '2'}).stepnumber == 5
+        assert pset.ParamScan({'min': '0', 'max': '10', 'step': '2',
+                               'time': '10', 'param': 'k'}).stepnumber == 5

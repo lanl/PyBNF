@@ -334,7 +334,7 @@ class Configuration(object):
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
         if conf_dict['fit_type'] in ['mh', 'sa', 'pt', 'am']:
-            for k in ['crossover_numer', 'zeta', 'lambda', 'gamma_prob']:
+            for k in ['crossover_number', 'zeta', 'lambda', 'gamma_prob']:
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
                            % (k, conf_dict['fit_type']))
@@ -946,7 +946,11 @@ class Configuration(object):
                                                  to_convert[0], ef, self.exp_data[m][suff].data.shape[1]) + seedoc)
                         else:
                             new_cols = cols
-                        new_cols_iter = new_cols
+                        # Iterate over a copy: the _SD branch below removes from
+                        # new_cols, and aliasing the iterator to the same list
+                        # would skip the element after each removal (so a second
+                        # consecutive _SD column was silently kept).
+                        new_cols_iter = list(new_cols)
                         for c in new_cols_iter:
                             if c not in self.exp_data[m][suff].cols:
                                 raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),

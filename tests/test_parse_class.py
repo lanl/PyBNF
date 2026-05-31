@@ -90,6 +90,17 @@ class TestParse:
         d3 = parse.ploop(['normalization=zero'])
         assert d3['normalization'] == 'zero'
 
+    def test_postprocess_multiple_lines_consistent(self):
+        # Each postprocess line should parse to a flat [script, *suffixes] list.
+        # The 2nd+ line used to be double-wrapped (append([values]) instead of
+        # append(values)), so _load_postprocessing saw a list-of-list as the
+        # script path and empty suffixes for every postprocess line after the first.
+        d = parse.ploop(['postprocess = s1.py sufA sufB', 'postprocess = s2.py sufC'])
+        assert d['postprocess'] == [['s1.py', 'sufA', 'sufB'], ['s2.py', 'sufC']]
+        # A single line is unchanged.
+        d1 = parse.ploop(['postprocess = only.py sufA'])
+        assert d1['postprocess'] == [['only.py', 'sufA']]
+
     def test_node_parse(self):
         assert parse.parse('worker_nodes = cn196 192.168.1.1') == ['worker_nodes', 'cn196', '192.168.1.1']
         assert parse.parse('scheduler_node = this_machine') == ['scheduler_node', 'this_machine']

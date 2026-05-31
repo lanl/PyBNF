@@ -6,6 +6,7 @@ too-old BNGsim, PYBNF_NO_BNGSIM-disabled, and missing-capability cases.
 """
 
 import importlib
+import logging
 import os
 import subprocess
 import sys
@@ -238,3 +239,28 @@ def test_subprocess_pybnf_no_bngsim_disables(tmp_path):
         'stdout=%r stderr=%r' % (result.stdout, result.stderr)
     )
     assert 'OK' in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# _version_compatible — the pure compatibility gate (incl. the unparseable case)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize('version, expected', [
+    ('0.5.0', True),    # exactly the floor
+    ('0.9.7', True),    # in range
+    ('0.5.0.dev3+gabc', True),   # leading semver parses; suffix ignored
+    ('0.4.9', False),   # below floor
+    ('1.0.0', False),   # major >= max major
+    ('2.3.1', False),   # well above
+])
+def test_version_compatible_parseable(version, expected):
+    assert _bngsim_caps._version_compatible(version) is expected
+
+
+@pytest.mark.parametrize('version', [None, '', 'unknown', '1.0', '2024.03'])
+def test_unparseable_version_warns_and_accepts(version, caplog):
+    """An unparseable version string is a packaging quirk, not proof of
+    incompatibility: warn-and-continue (return True) rather than fail-closed,
+    so a working install isn't bricked over a format the regex can't read."""
+    with caplog.at_level(logging.WARNING, logger='pybnf._bngsim_caps'):
+        assert _bngsim_caps._version_compatible(version) is True
+    assert any('Could not parse bngsim version' in r.message for r in caplog.records)
