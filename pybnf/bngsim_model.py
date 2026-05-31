@@ -8,6 +8,8 @@ import math
 import os
 import re
 import shutil
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -57,6 +59,40 @@ _SS_METHOD_NEWTON = 'newton'
 # the run(steady_state=True) early-stop has intermediate points to check the
 # ||f||2/n criterion at rather than only the final t_end.
 _SS_SCAN_N_POINTS = 101
+
+
+def _with_sim_timeout(kwargs, normalized):
+    """Add a ``timeout`` kwarg for a scan-point simulation when one is set."""
+    if normalized is not None:
+        kwargs['timeout'] = normalized
+    return kwargs
+
+
+@dataclass
+class _ScanSettings:
+    """Resolved settings for one parameter_scan()/bifurcate() action.
+
+    Produced by ``BngsimModel._resolve_scan_settings`` and consumed by the
+    per-strategy ``_scan_*`` helpers, so the simulation branches read named
+    fields instead of a dozen loose locals.
+    """
+    param_name: str
+    t_start: float
+    t_end: float
+    suffix: str
+    use_ss: int
+    ss_method: str
+    print_funcs: bool
+    method: str
+    poplevel: object
+    scan_seed: object
+    sample_times: object
+    reset_conc: bool
+    points: object
+    concentration_overrides: dict
+    timeout: object
+    scan_timeout: object
+    scan_eval_timeout: object
 
 
 def _normalize_ss_method(raw):
@@ -1616,7 +1652,36 @@ class BngsimModel(NetModel):
 
     def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0,
                             timeout=None, concentration_overrides=None):
-        """Execute a parameter_scan() or bifurcate() action."""
+        """Execute a parameter_scan() or bifurcate() action.
+
+        Resolves the action's settings once, dispatches to the matching scan
+        strategy, and assembles the per-point rows into a Data object. See the
+        ``_scan_*`` helpers for each strategy.
+        """
+        s = self._resolve_scan_settings(
+            ps_params, is_bifurcate, action_index, timeout, concentration_overrides,
+        )
+        if s.use_ss and s.reset_conc and s.ss_method == _SS_METHOD_NEWTON:
+            rows, obs_names, expr_names = self._scan_newton_steady_state(model, s)
+        elif s.use_ss and s.reset_conc:
+            rows, obs_names, expr_names = self._scan_parity_steady_state(model, s)
+        elif s.method == 'protocol':
+            rows, obs_names, expr_names = self._scan_protocol(model, s)
+        elif not s.reset_conc:
+            rows, obs_names, expr_names = self._scan_continuation(model, s)
+        else:
+            rows, obs_names, expr_names = self._scan_independent(model, s)
+        return self._assemble_scan_data(rows, obs_names, expr_names, s)
+
+    def _resolve_scan_settings(self, ps_params, is_bifurcate, action_index, timeout,
+                               concentration_overrides):
+        """Parse a parameter_scan()/bifurcate() action into a `_ScanSettings` bundle.
+
+        Resolves the seed, sample times, steady-state mode, method/poplevel, and
+        per-point timeouts once, applying the bifurcate-specific overrides
+        (reset_conc=False, ss_method=>"newton" downgrade) and the
+        steady_state/method-compatibility fallback warnings.
+        """
         concentration_overrides = concentration_overrides or {}
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
@@ -1683,118 +1748,122 @@ class BngsimModel(NetModel):
             use_ss = 0
 
         points = _resolve_scan_points(ps_params)
-        obs_names = []
-        expr_names = []
-        rows = []
 
         scan_timeout = _normalize_sim_timeout(timeout, method=method)
         scan_eval_timeout = _normalize_sim_timeout(timeout, method='ode')
 
-        def _with_timeout(kwargs, normalized):
-            if normalized is not None:
-                kwargs['timeout'] = normalized
-            return kwargs
+        return _ScanSettings(
+            param_name=param_name,
+            t_start=t_start,
+            t_end=t_end,
+            suffix=suffix,
+            use_ss=use_ss,
+            ss_method=ss_method,
+            print_funcs=print_funcs,
+            method=method,
+            poplevel=poplevel,
+            scan_seed=scan_seed,
+            sample_times=sample_times,
+            reset_conc=reset_conc,
+            points=points,
+            concentration_overrides=concentration_overrides,
+            timeout=timeout,
+            scan_timeout=scan_timeout,
+            scan_eval_timeout=scan_eval_timeout,
+        )
 
-        if use_ss and reset_conc and ss_method == _SS_METHOD_NEWTON:
-            # ss_method=>"newton" (opt-in accelerator): KINSOL Newton per
-            # independent dose-response point. Use threaded path when safe:
-            # ODE method, no expression-based species initializers, and enough
-            # points to justify threading.
-            use_threaded_ss = (
-                method == 'ode'
-                and not self._net_species_initializers
-                and len(points) >= 4
+    def _scan_newton_steady_state(self, model, s):
+        """steady_state=>1 + ss_method=>"newton"/"kinsol": KINSOL Newton per point.
+
+        Uses the threaded batch path when safe (ODE, no expression-based species
+        initializers, >=4 points); otherwise solves each dose-response point
+        independently, falling back to a long time-course when the solver fails
+        or does not converge.
+        """
+        param_name = s.param_name
+        points = s.points
+        method = s.method
+        poplevel = s.poplevel
+        t_start = s.t_start
+        t_end = s.t_end
+        print_funcs = s.print_funcs
+        concentration_overrides = s.concentration_overrides
+        timeout = s.timeout
+        scan_timeout = s.scan_timeout
+        scan_eval_timeout = s.scan_eval_timeout
+        obs_names = []
+        expr_names = []
+        rows = []
+        # ss_method=>"newton" (opt-in accelerator): KINSOL Newton per
+        # independent dose-response point. Use threaded path when safe:
+        # ODE method, no expression-based species initializers, and enough
+        # points to justify threading.
+        use_threaded_ss = (
+            method == 'ode'
+            and not self._net_species_initializers
+            and len(points) >= 4
+        )
+        if use_threaded_ss:
+            rows, obs_names, expr_names = self._run_ss_scan_threaded(
+                model, param_name, points, method, poplevel,
+                t_start, t_end, print_funcs,
+                concentration_overrides=concentration_overrides,
+                timeout=timeout,
             )
-            if use_threaded_ss:
-                rows, obs_names, expr_names = self._run_ss_scan_threaded(
-                    model, param_name, points, method, poplevel,
-                    t_start, t_end, print_funcs,
-                    concentration_overrides=concentration_overrides,
-                    timeout=timeout,
-                )
-            else:
-                for value in points:
-                    point_model = self._prepare_scan_point_model(
-                        model,
-                        param_name,
-                        value,
-                        concentration_overrides=concentration_overrides,
-                    )
-                    point_sim = self._make_scan_simulator(
-                        point_model,
-                        method,
-                        poplevel,
-                    )
-                    ss_ok = False
-                    try:
-                        ss_result = point_sim.steady_state()
-                        if ss_result.converged:
-                            for i, name in enumerate(ss_result.species_names):
-                                point_model.set_concentration(
-                                    name,
-                                    ss_result.concentrations[i],
-                                )
-                            point_model.save_concentrations()
-                            point_model.reset()
-                            eval_sim = self._make_scan_simulator(point_model, 'ode', None)
-                            result = eval_sim.run(
-                                t_span=(0, 1e-10), n_points=2,
-                                **_with_timeout({}, scan_eval_timeout),
-                            )
-                            ss_ok = True
-                        else:
-                            logger.warning(
-                                "BngsimModel: steady-state solver did not converge for "
-                                "%s=%s (residual=%.2e). Falling back to long time-course.",
-                                param_name, value, getattr(ss_result, 'residual', None),
-                            )
-                    except Exception as exc:
-                        logger.warning(
-                            "BngsimModel: steady-state solver failed for %s=%s: %s. "
-                            "Falling back to long time-course.",
-                            param_name, value, exc,
-                        )
-                    if not ss_ok:
-                        # Fallback: simulate for a long time and take the final state
-                        point_model = self._prepare_scan_point_model(
-                            model, param_name, value,
-                            concentration_overrides=concentration_overrides,
-                        )
-                        fallback_sim = self._make_scan_simulator(
-                            point_model, method, poplevel,
-                        )
-                        result = fallback_sim.run(
-                            t_span=(t_start, t_end), n_points=2,
-                            **_with_timeout({}, scan_timeout),
-                        )
-                    row, row_obs, row_expr = self._scan_result_to_row(
-                        result, value, print_functions=print_funcs,
-                    )
-                    if len(obs_names) == 0:
-                        obs_names = row_obs
-                        expr_names = row_expr
-                    rows.append(row)
-        elif use_ss and reset_conc:
-            # BNG2.pl-parity default (ss_method omitted / "integrate"):
-            # integrate each independent point to steady state via
-            # run(steady_state=True) — the run_network -c ||f||2/n early-stop.
-            # The final integrated row IS the equilibrium for this point.
+        else:
             for value in points:
                 point_model = self._prepare_scan_point_model(
-                    model, param_name, value,
+                    model,
+                    param_name,
+                    value,
                     concentration_overrides=concentration_overrides,
                 )
-                point_sim = self._make_scan_simulator(point_model, 'ode', None)
-                result = point_sim.run(
-                    t_span=(t_start, t_end), n_points=_SS_SCAN_N_POINTS,
-                    steady_state=True,
-                    **_with_timeout({}, scan_eval_timeout),
+                point_sim = self._make_scan_simulator(
+                    point_model,
+                    method,
+                    poplevel,
                 )
-                if not int(result.solver_stats.get('steady_state_reached', 0)):
+                ss_ok = False
+                try:
+                    ss_result = point_sim.steady_state()
+                    if ss_result.converged:
+                        for i, name in enumerate(ss_result.species_names):
+                            point_model.set_concentration(
+                                name,
+                                ss_result.concentrations[i],
+                            )
+                        point_model.save_concentrations()
+                        point_model.reset()
+                        eval_sim = self._make_scan_simulator(point_model, 'ode', None)
+                        result = eval_sim.run(
+                            t_span=(0, 1e-10), n_points=2,
+                            **_with_sim_timeout({}, scan_eval_timeout),
+                        )
+                        ss_ok = True
+                    else:
+                        logger.warning(
+                            "BngsimModel: steady-state solver did not converge for "
+                            "%s=%s (residual=%.2e). Falling back to long time-course.",
+                            param_name, value, getattr(ss_result, 'residual', None),
+                        )
+                except Exception as exc:
                     logger.warning(
-                        "BngsimModel: parity steady-state criterion not reached "
-                        "for %s=%s within t_end=%s; using final integrated state.",
-                        param_name, value, t_end,
+                        "BngsimModel: steady-state solver failed for %s=%s: %s. "
+                        "Falling back to long time-course.",
+                        param_name, value, exc,
+                    )
+                if not ss_ok:
+                    # Fallback: simulate for a long time and take the final state
+                    point_model = self._prepare_scan_point_model(
+                        model, param_name, value,
+                        concentration_overrides=concentration_overrides,
+                    )
+                    fallback_sim = self._make_scan_simulator(
+                        point_model, method, poplevel,
+                    )
+                    result = fallback_sim.run(
+                        t_span=(t_start, t_end), n_points=2,
+                        **_with_sim_timeout({}, scan_timeout),
                     )
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
@@ -1803,62 +1872,236 @@ class BngsimModel(NetModel):
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
-        elif method == 'protocol':
-            if not self._protocol:
+        return rows, obs_names, expr_names
+
+    def _scan_parity_steady_state(self, model, s):
+        """steady_state=>1, ss_method omitted/"integrate": BNG2.pl-parity per point.
+
+        Integrates each independent point to steady state via
+        run(steady_state=True) — the run_network -c ||f||2/n early-stop. The
+        final integrated row IS the equilibrium for this point.
+        """
+        param_name = s.param_name
+        points = s.points
+        t_start = s.t_start
+        t_end = s.t_end
+        print_funcs = s.print_funcs
+        concentration_overrides = s.concentration_overrides
+        scan_eval_timeout = s.scan_eval_timeout
+        obs_names = []
+        expr_names = []
+        rows = []
+        for value in points:
+            point_model = self._prepare_scan_point_model(
+                model, param_name, value,
+                concentration_overrides=concentration_overrides,
+            )
+            point_sim = self._make_scan_simulator(point_model, 'ode', None)
+            result = point_sim.run(
+                t_span=(t_start, t_end), n_points=_SS_SCAN_N_POINTS,
+                steady_state=True,
+                **_with_sim_timeout({}, scan_eval_timeout),
+            )
+            if not int(result.solver_stats.get('steady_state_reached', 0)):
+                logger.warning(
+                    "BngsimModel: parity steady-state criterion not reached "
+                    "for %s=%s within t_end=%s; using final integrated state.",
+                    param_name, value, t_end,
+                )
+            row, row_obs, row_expr = self._scan_result_to_row(
+                result, value, print_functions=print_funcs,
+            )
+            if len(obs_names) == 0:
+                obs_names = row_obs
+                expr_names = row_expr
+            rows.append(row)
+        return rows, obs_names, expr_names
+
+    def _scan_protocol(self, model, s):
+        """method=>"protocol": run the begin protocol...end protocol block per point."""
+        param_name = s.param_name
+        points = s.points
+        print_funcs = s.print_funcs
+        concentration_overrides = s.concentration_overrides
+        timeout = s.timeout
+        obs_names = []
+        expr_names = []
+        rows = []
+        if not self._protocol:
+            raise ValueError(
+                'parameter_scan method=>"protocol" but no '
+                'begin protocol...end protocol block found'
+            )
+        for value in points:
+            point_model = self._prepare_scan_point_model(
+                model, param_name, value,
+                concentration_overrides=concentration_overrides,
+            )
+            last_result = self._run_protocol(point_model, timeout=timeout)
+            if last_result is None:
                 raise ValueError(
-                    'parameter_scan method=>"protocol" but no '
-                    'begin protocol...end protocol block found'
+                    'protocol contains no simulate actions'
                 )
-            for value in points:
-                point_model = self._prepare_scan_point_model(
-                    model, param_name, value,
-                    concentration_overrides=concentration_overrides,
+            row, row_obs, row_expr = self._scan_result_to_row(
+                last_result, value, print_functions=print_funcs,
+            )
+            if len(obs_names) == 0:
+                obs_names = row_obs
+                expr_names = row_expr
+            rows.append(row)
+        return rows, obs_names, expr_names
+
+    def _scan_continuation(self, model, s):
+        """bifurcate / reset_conc=>0: carry model state between points.
+
+        When steady_state=>1, each point integrates to the parity steady state
+        (run_network -c) carrying the previous point's equilibrium forward — the
+        continuation that traces hysteresis. ss_method=>"newton" was already
+        downgraded to parity in _resolve_scan_settings for bifurcate.
+        """
+        param_name = s.param_name
+        points = s.points
+        method = s.method
+        poplevel = s.poplevel
+        use_ss = s.use_ss
+        sample_times = s.sample_times
+        scan_seed = s.scan_seed
+        t_start = s.t_start
+        t_end = s.t_end
+        print_funcs = s.print_funcs
+        scan_timeout = s.scan_timeout
+        obs_names = []
+        expr_names = []
+        rows = []
+        running_model = model.clone()
+        for value in points:
+            if param_name:
+                running_model.set_param(param_name, float(value))
+            self._sync_species_initial_concentrations(running_model)
+            point_sim = self._make_scan_simulator(
+                running_model,
+                method,
+                poplevel,
+            )
+            ss_kwargs = {'steady_state': True} if use_ss else {}
+            if sample_times is not None:
+                result = point_sim.run(
+                    t_span=(sample_times[0], sample_times[-1]),
+                    n_points=len(sample_times),
+                    sample_times=sample_times,
+                    seed=scan_seed,
+                    **ss_kwargs,
+                    **_with_sim_timeout({}, scan_timeout),
                 )
-                last_result = self._run_protocol(point_model, timeout=timeout)
-                if last_result is None:
-                    raise ValueError(
-                        'protocol contains no simulate actions'
-                    )
+            else:
+                result = point_sim.run(
+                    t_span=(t_start, t_end),
+                    n_points=_SS_SCAN_N_POINTS if use_ss else 2,
+                    seed=scan_seed,
+                    **ss_kwargs,
+                    **_with_sim_timeout({}, scan_timeout),
+                )
+            row, row_obs, row_expr = self._scan_result_to_row(
+                result, value, print_functions=print_funcs,
+            )
+            if len(obs_names) == 0:
+                obs_names = row_obs
+                expr_names = row_expr
+            rows.append(row)
+        return rows, obs_names, expr_names
+
+    def _scan_independent(self, model, s):
+        """Default independent per-point scan: run_batch() when safe, else sequential.
+
+        Uses bngsim run_batch() (parallel, parameter-only) when there are no
+        expression-based species initializers, no active setConcentration()
+        overrides, no sample_times, and >=4 points (issue #46); otherwise
+        simulates each point independently. Falls back to the sequential path if
+        run_batch() raises (re-raising SimulationTimeout).
+        """
+        param_name = s.param_name
+        points = s.points
+        method = s.method
+        poplevel = s.poplevel
+        t_start = s.t_start
+        t_end = s.t_end
+        print_funcs = s.print_funcs
+        concentration_overrides = s.concentration_overrides
+        sample_times = s.sample_times
+        scan_seed = s.scan_seed
+        scan_timeout = s.scan_timeout
+        obs_names = []
+        expr_names = []
+        rows = []
+        # Use run_batch() when safe: no expression-based species
+        # initializers, no active setConcentration() overrides (each
+        # point needs its own concentration setup, which run_batch's
+        # parameter-only API cannot express), no sample_times, enough
+        # points. Issue #46.
+        use_batch = (
+            not self._net_species_initializers
+            and not concentration_overrides
+            and sample_times is None
+            and len(points) >= 4
+        )
+        if use_batch:
+            params = [{param_name: float(v)} for v in points]
+            n_workers = min(len(points), 4)
+            batch_sim = self._make_scan_simulator(model, method, poplevel)
+            try:
+                batch_results = batch_sim.run_batch(
+                    t_span=(t_start, t_end),
+                    n_points=2,
+                    params=params,
+                    num_processors=n_workers,
+                    seed=scan_seed,
+                    **_with_sim_timeout({}, scan_timeout),
+                )
+            except Exception as exc:
+                if isinstance(exc, bngsim.SimulationTimeout):
+                    raise
+                logger.warning(
+                    "BngsimModel: run_batch() failed; falling back to "
+                    "sequential scan.",
+                    exc_info=True,
+                )
+                use_batch = False
+
+        if use_batch:
+            for i, value in enumerate(points):
                 row, row_obs, row_expr = self._scan_result_to_row(
-                    last_result, value, print_functions=print_funcs,
+                    batch_results[i], value, print_functions=print_funcs,
                 )
                 if len(obs_names) == 0:
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
-        elif not reset_conc:
-            # bifurcate / reset_conc=>0: carry model state between points. When
-            # steady_state=>1, each point integrates to the parity steady state
-            # (run_network -c) carrying the previous point's equilibrium forward
-            # — the continuation that traces hysteresis. ss_method=>"newton" was
-            # already downgraded to parity above for bifurcate.
-            running_model = model.clone()
+        else:
             for value in points:
-                if param_name:
-                    running_model.set_param(param_name, float(value))
-                self._sync_species_initial_concentrations(running_model)
+                point_model = self._prepare_scan_point_model(
+                    model,
+                    param_name,
+                    value,
+                    concentration_overrides=concentration_overrides,
+                )
                 point_sim = self._make_scan_simulator(
-                    running_model,
+                    point_model,
                     method,
                     poplevel,
                 )
-                ss_kwargs = {'steady_state': True} if use_ss else {}
                 if sample_times is not None:
                     result = point_sim.run(
                         t_span=(sample_times[0], sample_times[-1]),
                         n_points=len(sample_times),
                         sample_times=sample_times,
                         seed=scan_seed,
-                        **ss_kwargs,
-                        **_with_timeout({}, scan_timeout),
+                        **_with_sim_timeout({}, scan_timeout),
                     )
                 else:
                     result = point_sim.run(
-                        t_span=(t_start, t_end),
-                        n_points=_SS_SCAN_N_POINTS if use_ss else 2,
+                        t_span=(t_start, t_end), n_points=2,
                         seed=scan_seed,
-                        **ss_kwargs,
-                        **_with_timeout({}, scan_timeout),
+                        **_with_sim_timeout({}, scan_timeout),
                     )
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
@@ -1867,96 +2110,21 @@ class BngsimModel(NetModel):
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
-        else:
-            # Use run_batch() when safe: no expression-based species
-            # initializers, no active setConcentration() overrides (each
-            # point needs its own concentration setup, which run_batch's
-            # parameter-only API cannot express), no sample_times, enough
-            # points. Issue #46.
-            use_batch = (
-                not self._net_species_initializers
-                and not concentration_overrides
-                and sample_times is None
-                and len(points) >= 4
-            )
-            if use_batch:
-                params = [{param_name: float(v)} for v in points]
-                n_workers = min(len(points), 4)
-                batch_sim = self._make_scan_simulator(model, method, poplevel)
-                try:
-                    batch_results = batch_sim.run_batch(
-                        t_span=(t_start, t_end),
-                        n_points=2,
-                        params=params,
-                        num_processors=n_workers,
-                        seed=scan_seed,
-                        **_with_timeout({}, scan_timeout),
-                    )
-                except Exception as exc:
-                    if isinstance(exc, bngsim.SimulationTimeout):
-                        raise
-                    logger.warning(
-                        "BngsimModel: run_batch() failed; falling back to "
-                        "sequential scan.",
-                        exc_info=True,
-                    )
-                    use_batch = False
+        return rows, obs_names, expr_names
 
-            if use_batch:
-                for i, value in enumerate(points):
-                    row, row_obs, row_expr = self._scan_result_to_row(
-                        batch_results[i], value, print_functions=print_funcs,
-                    )
-                    if len(obs_names) == 0:
-                        obs_names = row_obs
-                        expr_names = row_expr
-                    rows.append(row)
-            else:
-                for value in points:
-                    point_model = self._prepare_scan_point_model(
-                        model,
-                        param_name,
-                        value,
-                        concentration_overrides=concentration_overrides,
-                    )
-                    point_sim = self._make_scan_simulator(
-                        point_model,
-                        method,
-                        poplevel,
-                    )
-                    if sample_times is not None:
-                        result = point_sim.run(
-                            t_span=(sample_times[0], sample_times[-1]),
-                            n_points=len(sample_times),
-                            sample_times=sample_times,
-                            seed=scan_seed,
-                            **_with_timeout({}, scan_timeout),
-                        )
-                    else:
-                        result = point_sim.run(
-                            t_span=(t_start, t_end), n_points=2,
-                            seed=scan_seed,
-                            **_with_timeout({}, scan_timeout),
-                        )
-                    row, row_obs, row_expr = self._scan_result_to_row(
-                        result, value, print_functions=print_funcs,
-                    )
-                    if len(obs_names) == 0:
-                        obs_names = row_obs
-                        expr_names = row_expr
-                    rows.append(row)
-
+    def _assemble_scan_data(self, rows, obs_names, expr_names, s):
+        """Stack the per-point scan rows into a Data object keyed by the scan suffix."""
         if rows:
             arr = np.vstack(rows)
         else:
             arr = np.zeros((0, 1))
 
         data = Data(arr=arr)
-        headers = [param_name] + obs_names + expr_names
+        headers = [s.param_name] + obs_names + expr_names
         data.cols = {h: i for i, h in enumerate(headers)}
         data.headers = {i: h for i, h in enumerate(headers)}
-        data.indvar = param_name
-        return {suffix: data}
+        data.indvar = s.param_name
+        return {s.suffix: data}
 
     @staticmethod
     def _scan_result_to_row(result, scan_value, print_functions=False):
@@ -2260,17 +2428,20 @@ class BngsimNfModel(Model):
         return BngsimModel._result_to_data(result, print_functions=print_functions)
 
     def execute(self, folder, filename, timeout, with_mutants=True):
-        """Execute all NF actions in-process using XML-backed network-free sessions."""
-        from .pset import FailedSimulationError
-        from ._bngsim_failure import write_failure_report
+        """Execute all NF actions in-process using XML-backed network-free sessions.
 
+        Iterates the model's actions, dispatching each to the matching handler
+        (parameter_scan / simulate / set_parameter / setConcentration /
+        addConcentration / save_/reset_parameters). The live network-free session
+        is carried across actions in ``sess`` and torn down in the ``finally``;
+        the per-action handlers mutate ``sess`` in place so cleanup always sees
+        the current session, even if a simulation raises mid-action.
+        """
         ds = {}
         current_param_inputs = self._initial_param_inputs()
         current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
         saved_param_inputs = dict(current_param_inputs)
-        nfsim = None
-        current_gml = None
-        current_method = None
+        sess = SimpleNamespace(nfsim=None, method=None, gml=None)
         self._pybnf_current_action_info = None
 
         # Bootstrap seed for sessions that need to be lazily started by a
@@ -2282,16 +2453,6 @@ class BngsimNfModel(Model):
             suffix='_bootstrap',
             method='nf',
         )
-
-        def _start_session(seed_value, gml_value, method):
-            session_backend = _nf_session_backend_for_method(method)
-            sim = _create_nf_session(session_backend, self._xml_path, molecule_limit=gml_value)
-            self._apply_param_overrides(sim, current_param_overrides)
-            sim.initialize(seed_value)
-            return sim
-
-        def _stop_session(sim):
-            _destroy_nf_session(sim)
 
         try:
             for action_index, action_line in enumerate(self.actions):
@@ -2316,65 +2477,8 @@ class BngsimNfModel(Model):
 
                 sim_params = _parse_simulate_action(line)
                 if sim_params is not None:
-                    method = _normalize_nf_action_method(sim_params.get('method', 'nf'))
-
-                    # sample_times is not supported for network-free bngsim
-                    # sessions (possible future BNGsim enhancement).
-                    if sim_params.get('sample_times') is not None:
-                        logger.warning(
-                            "sample_times is not supported for bngsim network-free simulation; ignoring")
-
-                    t_start = float(sim_params.get('t_start', 0))
-                    t_end = float(sim_params.get('t_end', 100))
-                    n_steps = int(sim_params.get('n_steps', 100))
-                    print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
-                    suffix = sim_params.get('suffix', 'time_course')
-                    gml = sim_params.get('gml')
-                    gml_int = int(gml) if gml is not None else None
-                    explicit_seed = int(float(sim_params['seed'])) if 'seed' in sim_params else None
-                    action_seed = self._resolve_action_seed(
-                        explicit_seed=explicit_seed,
-                        action_index=action_index,
-                        suffix=suffix,
-                        method=method,
-                    )
-
-                    if nfsim is None:
-                        nfsim = _start_session(action_seed, gml_int, method)
-                        current_method = method
-                        current_gml = gml_int
-                    elif method != current_method:
-                        logger.warning(
-                            "BngsimNfModel: switching network-free backends from %s to %s; "
-                            "simulator state cannot be transferred",
-                            current_method,
-                            method,
-                        )
-                        _stop_session(nfsim)
-                        nfsim = _start_session(action_seed, gml_int, method)
-                        current_method = method
-                        current_gml = gml_int
-                    elif gml_int is not None and gml_int != current_gml:
-                        nfsim.set_molecule_limit(gml_int)
-                        current_gml = gml_int
-
-                    sim_kwargs = {}
-                    nf_timeout = _normalize_session_timeout(
-                        timeout, _nf_session_backend_for_method(method),
-                    )
-                    if nf_timeout is not None:
-                        sim_kwargs['timeout'] = nf_timeout
-                    self._pybnf_current_action_info.update({
-                        'method': method,
-                        'suffix': suffix,
-                        'seed': action_seed,
-                        't_start': t_start,
-                        't_end': t_end,
-                        'n_steps': n_steps,
-                        'gml': gml_int,
-                    })
-                    result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
-                    ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
+                    self._nf_simulate_action(
+                        sim_params, sess, current_param_overrides, ds, action_index, timeout)
                     continue
 
                 sp = _parse_set_parameter(line)
@@ -2382,57 +2486,20 @@ class BngsimNfModel(Model):
                     param_name, param_value = sp
                     current_param_inputs[param_name] = float(param_value)
                     current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
-                    if nfsim is not None:
-                        self._apply_param_overrides(nfsim, current_param_overrides)
+                    if sess.nfsim is not None:
+                        self._apply_param_overrides(sess.nfsim, current_param_overrides)
                     continue
 
                 sc = _parse_set_concentration_nf(line)
                 if sc is not None:
-                    species_pattern, expr_text = sc
-                    if nfsim is None:
-                        current_method = current_method or self._default_nf_method
-                        nfsim = _start_session(bootstrap_seed, current_gml, current_method)
-
-                    if expr_text in current_param_overrides:
-                        count = int(round(current_param_overrides[expr_text]))
-                    else:
-                        try:
-                            count = int(round(float(expr_text)))
-                        except ValueError:
-                            try:
-                                count = int(round(nfsim.get_parameter(expr_text)))
-                            except Exception:
-                                logger.warning(
-                                    "BngsimNfModel: cannot evaluate '%s' for setConcentration",
-                                    expr_text,
-                                )
-                                continue
-
-                    mol_type = species_pattern.split('(')[0]
-                    current = nfsim.get_molecule_count(mol_type)
-                    to_add = count - current
-                    if to_add < 0:
-                        logger.warning(
-                            "BngsimNfModel: cannot decrease %s from %d to %d with the current bridge; leaving state unchanged",
-                            mol_type,
-                            current,
-                            count,
-                        )
-                        continue
-                    if to_add > 0:
-                        nfsim.add_molecules(mol_type, to_add)
+                    self._nf_set_concentration_action(
+                        sc, sess, current_param_overrides, bootstrap_seed)
                     continue
 
                 ac = _parse_add_concentration(line)
                 if ac is not None:
-                    species_pattern, delta = ac
-                    if nfsim is None:
-                        current_method = current_method or self._default_nf_method
-                        nfsim = _start_session(bootstrap_seed, current_gml, current_method)
-                    mol_type = species_pattern.split('(')[0]
-                    to_add = int(round(delta))
-                    if to_add > 0:
-                        nfsim.add_molecules(mol_type, to_add)
+                    self._nf_add_concentration_action(
+                        ac, sess, current_param_overrides, bootstrap_seed)
                     continue
 
                 if _is_save_parameters(line):
@@ -2442,52 +2509,196 @@ class BngsimNfModel(Model):
                 if _is_reset_parameters(line):
                     current_param_inputs = dict(saved_param_inputs)
                     current_param_overrides = self._build_nf_param_overrides(current_param_inputs)
-                    if nfsim is not None:
-                        self._apply_param_overrides(nfsim, current_param_overrides)
+                    if sess.nfsim is not None:
+                        self._apply_param_overrides(sess.nfsim, current_param_overrides)
                     continue
 
                 if line and not re.match(r'\s*(begin|end)\s+actions', line):
                     logger.debug("BngsimNfModel: skipping unsupported action: %s", line)
         except Exception as exc:
-            write_failure_report(
-                folder, filename,
-                backend='bngsim-nf',
-                bngsim_version=BNGSIM_VERSION,
-                model=self,
-                exception=exc,
-                input_path=getattr(self, '_xml_path', None),
-                action_info=getattr(self, '_pybnf_current_action_info', None),
-            )
-            if isinstance(exc, bngsim.SimulationTimeout):
-                logger.warning(
-                    "BngsimNfModel %s: wall_time_sim=%s exceeded at %.3fs",
-                    self.name,
-                    getattr(exc, 'timeout', timeout),
-                    float(getattr(exc, 'elapsed', 0.0) or 0.0),
-                )
-                raise FailedSimulationError(str(exc)) from exc
-            raise
+            self._report_nf_failure(exc, folder, filename, timeout)
         finally:
-            _stop_session(nfsim)
+            _destroy_nf_session(sess.nfsim)
 
         if self.save_files:
             _write_saved_action_outputs(folder, filename, self.suffixes, ds)
 
         if with_mutants:
-            for mut in self.mutants:
-                logger.debug('Working on mutant %s', mut.suffix)
-                mut_model = self._get_mutant_model_nf(mut)
-                mut_data = mut_model.execute(
-                    folder,
-                    filename + mut.suffix,
-                    timeout,
-                    with_mutants=False,
-                )
-                for suff in mut_data:
-                    ds[suff + mut.suffix] = mut_data[suff]
-                logger.debug('Finished mutant %s', mut.suffix)
+            self._run_nf_mutants(folder, filename, timeout, ds)
 
         return ds
+
+    def _start_nf_session(self, seed_value, gml_value, method, param_overrides):
+        """Create, parameter-override, and initialize a network-free session."""
+        session_backend = _nf_session_backend_for_method(method)
+        sim = _create_nf_session(session_backend, self._xml_path, molecule_limit=gml_value)
+        self._apply_param_overrides(sim, param_overrides)
+        sim.initialize(seed_value)
+        return sim
+
+    def _nf_simulate_action(self, sim_params, sess, current_param_overrides, ds,
+                            action_index, timeout):
+        """Run one simulate() action, starting or switching the NF session as needed.
+
+        Mutates ``sess`` (nfsim/method/gml) in place so the caller's ``finally``
+        tears down the live session even if ``simulate()`` raises, and stores the
+        result in ``ds`` under the action's suffix.
+        """
+        method = _normalize_nf_action_method(sim_params.get('method', 'nf'))
+
+        # sample_times is not supported for network-free bngsim
+        # sessions (possible future BNGsim enhancement).
+        if sim_params.get('sample_times') is not None:
+            logger.warning(
+                "sample_times is not supported for bngsim network-free simulation; ignoring")
+
+        t_start = float(sim_params.get('t_start', 0))
+        t_end = float(sim_params.get('t_end', 100))
+        n_steps = int(sim_params.get('n_steps', 100))
+        print_funcs = bool(int(float(sim_params.get('print_functions', 0))))
+        suffix = sim_params.get('suffix', 'time_course')
+        gml = sim_params.get('gml')
+        gml_int = int(gml) if gml is not None else None
+        explicit_seed = int(float(sim_params['seed'])) if 'seed' in sim_params else None
+        action_seed = self._resolve_action_seed(
+            explicit_seed=explicit_seed,
+            action_index=action_index,
+            suffix=suffix,
+            method=method,
+        )
+
+        if sess.nfsim is None:
+            sess.nfsim = self._start_nf_session(action_seed, gml_int, method, current_param_overrides)
+            sess.method = method
+            sess.gml = gml_int
+        elif method != sess.method:
+            logger.warning(
+                "BngsimNfModel: switching network-free backends from %s to %s; "
+                "simulator state cannot be transferred",
+                sess.method,
+                method,
+            )
+            _destroy_nf_session(sess.nfsim)
+            sess.nfsim = self._start_nf_session(action_seed, gml_int, method, current_param_overrides)
+            sess.method = method
+            sess.gml = gml_int
+        elif gml_int is not None and gml_int != sess.gml:
+            sess.nfsim.set_molecule_limit(gml_int)
+            sess.gml = gml_int
+
+        sim_kwargs = {}
+        nf_timeout = _normalize_session_timeout(
+            timeout, _nf_session_backend_for_method(method),
+        )
+        if nf_timeout is not None:
+            sim_kwargs['timeout'] = nf_timeout
+        self._pybnf_current_action_info.update({
+            'method': method,
+            'suffix': suffix,
+            'seed': action_seed,
+            't_start': t_start,
+            't_end': t_end,
+            'n_steps': n_steps,
+            'gml': gml_int,
+        })
+        result = sess.nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
+        ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
+
+    def _nf_set_concentration_action(self, sc, sess, current_param_overrides, bootstrap_seed):
+        """Apply one setConcentration() action, lazily starting a session if needed.
+
+        Resolves the target count (literal, current parameter override, or a
+        session parameter), then adds molecules to reach it. Decreases are not
+        supported by the bridge and are warned-and-skipped.
+        """
+        species_pattern, expr_text = sc
+        if sess.nfsim is None:
+            sess.method = sess.method or self._default_nf_method
+            sess.nfsim = self._start_nf_session(bootstrap_seed, sess.gml, sess.method,
+                                                current_param_overrides)
+
+        if expr_text in current_param_overrides:
+            count = int(round(current_param_overrides[expr_text]))
+        else:
+            try:
+                count = int(round(float(expr_text)))
+            except ValueError:
+                try:
+                    count = int(round(sess.nfsim.get_parameter(expr_text)))
+                except Exception:
+                    logger.warning(
+                        "BngsimNfModel: cannot evaluate '%s' for setConcentration",
+                        expr_text,
+                    )
+                    return
+
+        mol_type = species_pattern.split('(')[0]
+        current = sess.nfsim.get_molecule_count(mol_type)
+        to_add = count - current
+        if to_add < 0:
+            logger.warning(
+                "BngsimNfModel: cannot decrease %s from %d to %d with the current bridge; leaving state unchanged",
+                mol_type,
+                current,
+                count,
+            )
+            return
+        if to_add > 0:
+            sess.nfsim.add_molecules(mol_type, to_add)
+
+    def _nf_add_concentration_action(self, ac, sess, current_param_overrides, bootstrap_seed):
+        """Apply one addConcentration() action, lazily starting a session if needed."""
+        species_pattern, delta = ac
+        if sess.nfsim is None:
+            sess.method = sess.method or self._default_nf_method
+            sess.nfsim = self._start_nf_session(bootstrap_seed, sess.gml, sess.method,
+                                                current_param_overrides)
+        mol_type = species_pattern.split('(')[0]
+        to_add = int(round(delta))
+        if to_add > 0:
+            sess.nfsim.add_molecules(mol_type, to_add)
+
+    def _report_nf_failure(self, exc, folder, filename, timeout):
+        """Write a failure report for an exception raised during NF execution, then
+        re-raise. A bngsim ``SimulationTimeout`` is surfaced as
+        ``FailedSimulationError``; any other exception propagates unchanged. This
+        method never returns normally.
+        """
+        from .pset import FailedSimulationError
+        from ._bngsim_failure import write_failure_report
+        write_failure_report(
+            folder, filename,
+            backend='bngsim-nf',
+            bngsim_version=BNGSIM_VERSION,
+            model=self,
+            exception=exc,
+            input_path=getattr(self, '_xml_path', None),
+            action_info=getattr(self, '_pybnf_current_action_info', None),
+        )
+        if isinstance(exc, bngsim.SimulationTimeout):
+            logger.warning(
+                "BngsimNfModel %s: wall_time_sim=%s exceeded at %.3fs",
+                self.name,
+                getattr(exc, 'timeout', timeout),
+                float(getattr(exc, 'elapsed', 0.0) or 0.0),
+            )
+            raise FailedSimulationError(str(exc)) from exc
+        raise exc
+
+    def _run_nf_mutants(self, folder, filename, timeout, ds):
+        """Execute each mutant model and merge its outputs into ``ds`` (suffixed)."""
+        for mut in self.mutants:
+            logger.debug('Working on mutant %s', mut.suffix)
+            mut_model = self._get_mutant_model_nf(mut)
+            mut_data = mut_model.execute(
+                folder,
+                filename + mut.suffix,
+                timeout,
+                with_mutants=False,
+            )
+            for suff in mut_data:
+                ds[suff + mut.suffix] = mut_data[suff]
+            logger.debug('Finished mutant %s', mut.suffix)
 
     def _get_mutant_model_nf(self, mut):
         """Create a mutant copy with a mutated parameter set."""

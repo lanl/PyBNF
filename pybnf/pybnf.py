@@ -70,14 +70,8 @@ def _finalize(success, alg, start_time):
     exit(0 if success else 1)
 
 
-def main():
-    """The main function for running a fitting job"""
-    start_time = time.time()
-
-    success = False
-    alg = None
-    cluster = None
-
+def _build_arg_parser():
+    """Construct the command-line argument parser for the fitting application."""
     parser = argparse.ArgumentParser(description='Performs parameter fitting on systems biology models defined in '
                                                  'BNGL or SBML. For documentation, examples, and source code, go to '
                                                  'https://github.com/lanl/PyBNF')
@@ -102,8 +96,14 @@ def main():
                         choices=['debug', 'info', 'warning', 'error', 'critical', 'none', 'd', 'i', 'w', 'e', 'c', 'n'],
                         help='set the level of output to the log file. Options in decreasing order of verbosity are: '
                              'debug, info, warning, error, critical, none.')
-    cmdline_args = parser.parse_args()
+    return parser
 
+
+def _setup_logging(cmdline_args):
+    """Resolve the log prefix, clear any stale log files, and initialize logging.
+
+    Returns the resolved ``(log_prefix, debug)`` pair.
+    """
     if cmdline_args.log_prefix:
         log_prefix = cmdline_args.log_prefix
     else:
@@ -117,6 +117,315 @@ def main():
         os.remove('%s.log' % log_prefix)
 
     init_logging(log_prefix, debug, cmdline_args.log_level)
+    return log_prefix, debug
+
+
+def _resolve_continue_file(config, cmdline_args):
+    """Determine which saved-algorithm file (if any) to resume from.
+
+    Returns the path to the backup/finished file to reload, or ``None`` for a
+    fresh run. When the user opts (at the prompt) to continue an in-progress run
+    found in ``output_dir``, ``cmdline_args.resume`` is set to 0 as a side effect.
+    """
+    logger = logging.getLogger(__name__)
+    continue_file = None
+    if cmdline_args.resume is not None:
+        if os.path.exists(config.config['output_dir'] + '/alg_backup.bp'):
+            continue_file = config.config['output_dir'] + '/alg_backup.bp'
+        elif os.path.exists(config.config['output_dir'] + '/alg_finished.bp'):
+            if cmdline_args.resume <= 0:
+                raise PybnfError('The fitting run saved in %s already finished. If you want to continue the '
+                                 'fitting with more iterations, pass a number of iterations with the '
+                                 '--resume flag.' % config.config['output_dir'])
+            continue_file = config.config['output_dir'] + '/alg_finished.bp'
+        else:
+            raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir']))
+    elif os.path.exists(config.config['output_dir'] + '/alg_backup.bp') and not cmdline_args.overwrite:
+        ans = 'x'
+        while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+            ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
+        if ans.lower() in ('y', 'yes', ''):
+            logger.info('Resuming a previous run')
+            continue_file = config.config['output_dir'] + '/alg_backup.bp'
+            cmdline_args.resume = 0
+    return continue_file
+
+
+def _load_resumed_algorithm(continue_file, cmdline_args):
+    """Reload a pickled algorithm (and its pending jobs) to resume a run.
+
+    Returns ``(alg, pending, config)``; ``config`` is taken from the reloaded
+    algorithm.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info('Reloading algorithm')
+    f = open(continue_file, 'rb')
+    alg, pending = pickle.load(f)
+    logger.debug('Loaded algorithm is the %s algorithm' % ('refinement' if alg.refine else 'configured'))
+    config = alg.config
+
+    logger.debug('Checking for Simulations directory')
+    if not os.path.exists(alg.sim_dir):
+        os.makedirs(alg.sim_dir)
+
+    if alg.bootstrap_number is not None:
+        print0('Resuming a bootstrapping run')
+        logger.info('Resuming a bootstrapping run')
+        if cmdline_args.resume > 0 and cmdline_args.resume is not None:
+            raise PybnfError("Cannot increase the number of iterations in a boostrapping run")
+    else:
+        print0('Resuming a fitting run')
+
+    alg.add_iterations(cmdline_args.resume)
+    f.close()
+    if isinstance(alg, algs.SimplexAlgorithm):
+        # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
+        alg.config.config['refine'] = 0
+    return alg, pending, config
+
+
+def _prepare_run_directories(config, cmdline_args):
+    """Create the output/results/simulation directories for a fresh run.
+
+    Prompts for (or auto-applies, with ``--overwrite``) deletion of any leftover
+    files from a previous run, then creates the fresh directory tree and copies
+    the config file into Results. May ``exit(0)`` if the user declines to overwrite.
+    """
+    logger = logging.getLogger(__name__)
+    # Create output folders, checking for overwrites.
+    subdirs = ('Simulations', 'Results', 'Initialize', 'FailedSimLogs')
+    subfiles = ('alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp')
+    will_overwrite = [subdir for subdir in subdirs + subfiles
+                      if os.path.exists(config.config['output_dir'] + '/' + subdir)]
+    if config.config['simulation_dir']:
+        simdir = config.config['simulation_dir'] + '/Simulations'
+        if os.path.exists(simdir):
+            will_overwrite.append(simdir)
+    if len(will_overwrite) > 0:
+        if not cmdline_args.overwrite:
+            logger.info("Output directory already exists... querying user for overwrite permission")
+            ans = 'x'
+            while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
+                print0('Your output directory contains files from a previous run: %s.' % ', '.join(will_overwrite))
+                ans = input(
+                    'Overwrite them with the current run? [y/n] (n) ')
+            if not(ans.lower() == 'y' or ans.lower() == 'yes'):
+                logger.info("Overwrite rejected... exiting")
+                print0('Quitting')
+                exit(0)
+        # If we get here, safe to overwrite files
+        for subdir in subdirs:
+            try:
+                shutil.rmtree(config.config['output_dir'] + '/' + subdir)
+                logger.info('Deleted old directory %s' % config.config['output_dir'] + '/' + subdir)
+            except OSError:
+                logger.debug('Directory %s does not already exist' % config.config['output_dir'] + '/' + subdir)
+        for subfile in subfiles:
+            try:
+                os.remove(config.config['output_dir'] + '/' + subfile)
+                logger.info('Deleted old file %s' % config.config['output_dir'] + '/' + subfile)
+            except OSError:
+                logger.debug('File %s does not already exist' % config.config['output_dir'] + '/' + subfile)
+        if config.config['simulation_dir']:
+            try:
+                shutil.rmtree(config.config['simulation_dir']+'/Simulations')
+                logger.info('Deleted old simulation directory %s' %
+                            config.config['simulation_dir']+'/Simulations')
+            except OSError:
+                logger.debug('Simulation directory %s does not already exist' %
+                             config.config['simulation_dir']+'/Simulations')
+
+    # Create new directories for the current run.
+    os.makedirs(config.config['output_dir'] + '/Results')
+    if config.config['simulation_dir']:
+        os.makedirs(config.config['simulation_dir'] + '/Simulations')
+    else:
+        os.mkdir(config.config['output_dir'] + '/Simulations')
+    shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
+
+
+def _create_algorithm(config):
+    """Instantiate the fitting algorithm selected by ``config['fit_type']``."""
+    fit_type = config.config['fit_type']
+    if fit_type == 'pso':
+        return algs.ParticleSwarm(config)
+    elif fit_type == 'de':
+        return algs.DifferentialEvolution(config)
+    elif fit_type == 'ss':
+        return algs.ScatterSearch(config)
+    elif fit_type == 'mh' or fit_type == 'pt':
+        # Note: mh vs pt difference is handled in Config by setting or not setting the exchange_every key.
+        return algs.BasicBayesMCMCAlgorithm(config)
+    elif fit_type == 'am':
+        return algs.Adaptive_MCMC(config)
+    elif fit_type == 'sa':
+        return algs.BasicBayesMCMCAlgorithm(config, sa=True)
+    elif fit_type == 'sim':
+        return algs.SimplexAlgorithm(config)
+    elif fit_type == 'ade':
+        return algs.AsynchronousDifferentialEvolution(config)
+    elif fit_type == 'dream':
+        return algs.DreamAlgorithm(config)
+    elif fit_type == 'p_dream':
+        return algs.PDreamAlgorithm(config)
+    elif fit_type == 'check':
+        return algs.ModelCheck(config)
+    else:
+        raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, dream, p_dream, check' % fit_type)
+
+
+def _refine_best_fit(config, alg, cluster, debug):
+    """Refine the best-fit parameter set with the Simplex algorithm, if requested.
+
+    A no-op unless ``refine == 1``; skipped (with a message) when the original
+    fit already used Simplex. Reuses the algorithm's generated networks and
+    trajectory so refinement continues from the existing best fit.
+    """
+    logger = logging.getLogger(__name__)
+    if config.config['refine'] != 1:
+        return
+    logger.debug('Refinement requested for best fit parameter set')
+    if config.config['fit_type'] == 'sim':
+        logger.debug('Cannot refine further if Simplex algorithm was used for original fit')
+        print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
+               "\nSkipping refine.")
+    else:
+        logger.debug('Refining further using the Simplex algorithm')
+        print1("Refining the best fit by the Simplex algorithm")
+        config.config['simplex_start_point'] = alg.trajectory.best_fit()
+        simplex = algs.SimplexAlgorithm(config, refine=True)
+        simplex.model_list = alg.model_list  # Reuse already-generated networks
+        simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+        simplex.run(cluster.client, debug=debug)
+
+
+def _run_bootstrapping(config, alg, cluster, debug):
+    """Run the configured number of bootstrap replicate fits.
+
+    Resamples the experimental-data weights for each replicate, re-runs the fit
+    (optionally refining), and records accepted best-fit parameter sets. Replicates
+    whose objective exceeds ``bootstrap_max_obj`` are retried.
+    """
+    logger = logging.getLogger(__name__)
+    # Bootstrapping setup
+    if config.config['bootstrap_max_obj']:
+        bootstrap_max_obj = config.config['bootstrap_max_obj']
+    else:
+        bootstrap_max_obj = inf
+        logger.info('No bootstrap_max_obj specified; set to infinity')
+        print1('No bootstrap_max_obj specified. All bootstrap replicates will be accepted regardless of '
+               'objective value.')
+
+    num_to_bootstrap = config.config['bootstrap']
+    completed_bootstrap_runs = 0
+    if alg.bootstrap_number is None:
+        bootstrapped_psets = Trajectory(num_to_bootstrap)
+    else:  # Check if finished a resumed bootstrap fitting run
+        completed_bootstrap_runs += alg.bootstrap_number
+        if completed_bootstrap_runs == 0:
+            bootstrapped_psets = Trajectory(num_to_bootstrap)
+        else:
+            if completed_bootstrap_runs > 0:
+                bootstrapped_psets = Trajectory.load_trajectory(config.config['output_dir'] +
+                                                                '/Results/bootstrapped_parameter_sets.txt',
+                                                                config.variables,
+                                                                config.config['num_to_output'])
+
+        if alg.best_fit_obj <= bootstrap_max_obj:
+            logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
+            bootstrapped_psets.add(alg.trajectory.best_fit(), alg.best_fit_obj,
+                                   'bootstrap_run_%s' % completed_bootstrap_runs,
+                                   config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
+                                   completed_bootstrap_runs == 0)
+            logger.info('Succesfully completed resumed bootstrapping run %s' % completed_bootstrap_runs)
+            completed_bootstrap_runs += 1
+        else:
+            shutil.rmtree(alg.res_dir)
+            if os.path.exists(alg.sim_dir):
+                shutil.rmtree(alg.sim_dir)
+            print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
+            logger.info('Resumed bootstrapping run %s did not achieve maximum allowable objective function '
+                        'value.  Retrying' % completed_bootstrap_runs)
+
+    # Run bootstrapping
+    consec_failed_bootstrap_runs = 0
+    while completed_bootstrap_runs < num_to_bootstrap:
+        alg.reset(bootstrap=completed_bootstrap_runs)
+
+        for model in alg.exp_data:
+            for name, data in alg.exp_data[model].items():
+                data.gen_bootstrap_weights()
+                data.weights_to_file('%s/%s_weights_%s.txt' % (alg.res_dir, name, completed_bootstrap_runs))
+
+        logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
+        print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
+        alg.run(cluster.client, debug=debug)
+
+        _refine_best_fit(config, alg, cluster, debug)
+
+        best_fit_pset = alg.trajectory.best_fit()
+
+        if alg.best_fit_obj <= bootstrap_max_obj:
+            logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
+            bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs,
+                                   config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
+                                   completed_bootstrap_runs == 0)
+            completed_bootstrap_runs += 1
+            consec_failed_bootstrap_runs = 0
+        else:
+            consec_failed_bootstrap_runs += 1
+            print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
+            logger.warning("Bootstrap run did not achieve maximum allowable objective function value.")
+            if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
+                raise PybnfError("20 consecutive bootstrap runs failed to achieve maximum allowable objective "
+                                 "function values.  Check 'bootstrap_max_obj' configuration key")
+
+    # bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
+    print0('Bootstrapping complete')
+
+
+def _teardown_cluster(cluster):
+    """Tear down the dask cluster after a run, logging (not raising on) any failure."""
+    # Stop dask-ssh regardless of success
+    if cluster:
+        try:
+            cluster.teardown()
+            if not cluster.local:
+                time.sleep(10)  # wait for teardown before continuing
+        except Exception:
+            logging.exception('Failed to tear down cluster')
+    else:
+        logging.info('No cluster to tear down')
+
+
+def _cleanup_dask_workspace():
+    """Remove any leftover ``dask-worker-space`` directories (cwd and home)."""
+    # Attempt to remove dask-worker-space directory if necessary
+    # (exists in directory where workers were instantiated)
+    # Tries current and home directories
+    if os.path.isdir('dask-worker-space'):
+        if os.name == 'nt':  # Windows
+            shutil.rmtree('dask-worker-space', ignore_errors=True)
+        else:
+            run(['rm', '-rf', 'dask-worker-space'])  # More likely to succeed than rmtree()
+    home_dask_dir = os.path.expanduser(os.path.join('~', 'dask-worker-space'))
+    if os.path.isdir(home_dask_dir):
+        if os.name == 'nt':  # Windows
+            shutil.rmtree(home_dask_dir, ignore_errors=True)
+        else:
+            run(['rm', '-rf', home_dask_dir])
+
+
+def main():
+    """The main function for running a fitting job"""
+    start_time = time.time()
+
+    success = False
+    alg = None
+    cluster = None
+
+    cmdline_args = _build_arg_parser().parse_args()
+    log_prefix, debug = _setup_logging(cmdline_args)
     logger = logging.getLogger(__name__)
 
     print0("PyBNF v%s" % __version__)
@@ -138,131 +447,15 @@ def main():
             raise PybnfError("Options --overwrite and --resume are contradictory. Use --resume to continue a previous "
                              "run, or --overwrite to overwrite the previous run with a new one.")
 
-        continue_file = None
-        if cmdline_args.resume is not None:
-            if os.path.exists(config.config['output_dir'] + '/alg_backup.bp'):
-                continue_file = config.config['output_dir'] + '/alg_backup.bp'
-            elif os.path.exists(config.config['output_dir'] + '/alg_finished.bp'):
-                if cmdline_args.resume <= 0:
-                    raise PybnfError('The fitting run saved in %s already finished. If you want to continue the '
-                                     'fitting with more iterations, pass a number of iterations with the '
-                                     '--resume flag.' % config.config['output_dir'])
-                continue_file = config.config['output_dir'] + '/alg_finished.bp'
-            else:
-                raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir']))
-        elif os.path.exists(config.config['output_dir'] + '/alg_backup.bp') and not cmdline_args.overwrite:
-            ans = 'x'
-            while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
-            if ans.lower() in ('y', 'yes', ''):
-                logger.info('Resuming a previous run')
-                continue_file = config.config['output_dir'] + '/alg_backup.bp'
-                cmdline_args.resume = 0
-
+        continue_file = _resolve_continue_file(config, cmdline_args)
         if continue_file:
             # Restart the loaded algorithm
-            logger.info('Reloading algorithm')
-            f = open(continue_file, 'rb')
-            alg, pending = pickle.load(f)
-            logger.debug('Loaded algorithm is the %s algorithm' % ('refinement' if alg.refine else 'configured'))
-            config = alg.config
-
-            logger.debug('Checking for Simulations directory')
-            if not os.path.exists(alg.sim_dir):
-                os.makedirs(alg.sim_dir)
-
-            if alg.bootstrap_number is not None:
-                print0('Resuming a bootstrapping run')
-                logger.info('Resuming a bootstrapping run')
-                if cmdline_args.resume > 0 and cmdline_args.resume is not None:
-                    raise PybnfError("Cannot increase the number of iterations in a boostrapping run")
-            else:
-                print0('Resuming a fitting run')
-
-            alg.add_iterations(cmdline_args.resume)
-            f.close()
-            if isinstance(alg, algs.SimplexAlgorithm):
-                # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
-                alg.config.config['refine'] = 0
+            alg, pending, config = _load_resumed_algorithm(continue_file, cmdline_args)
         else:
-            # Create output folders, checking for overwrites.
-            subdirs = ('Simulations', 'Results', 'Initialize', 'FailedSimLogs')
-            subfiles = ('alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp')
-            will_overwrite = [subdir for subdir in subdirs + subfiles
-                              if os.path.exists(config.config['output_dir'] + '/' + subdir)]
-            if config.config['simulation_dir']:
-                simdir = config.config['simulation_dir'] + '/Simulations'
-                if os.path.exists(simdir):
-                    will_overwrite.append(simdir)
-            if len(will_overwrite) > 0:
-                if not cmdline_args.overwrite:
-                    logger.info("Output directory already exists... querying user for overwrite permission")
-                    ans = 'x'
-                    while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                        print0('Your output directory contains files from a previous run: %s.' % ', '.join(will_overwrite))
-                        ans = input(
-                            'Overwrite them with the current run? [y/n] (n) ')
-                    if not(ans.lower() == 'y' or ans.lower() == 'yes'):
-                        logger.info("Overwrite rejected... exiting")
-                        print0('Quitting')
-                        exit(0)
-                # If we get here, safe to overwrite files
-                for subdir in subdirs:
-                    try:
-                        shutil.rmtree(config.config['output_dir'] + '/' + subdir)
-                        logger.info('Deleted old directory %s' % config.config['output_dir'] + '/' + subdir)
-                    except OSError:
-                        logger.debug('Directory %s does not already exist' % config.config['output_dir'] + '/' + subdir)
-                for subfile in subfiles:
-                    try:
-                        os.remove(config.config['output_dir'] + '/' + subfile)
-                        logger.info('Deleted old file %s' % config.config['output_dir'] + '/' + subfile)
-                    except OSError:
-                        logger.debug('File %s does not already exist' % config.config['output_dir'] + '/' + subfile)
-                if config.config['simulation_dir']:
-                    try:
-                        shutil.rmtree(config.config['simulation_dir']+'/Simulations')
-                        logger.info('Deleted old simulation directory %s' %
-                                    config.config['simulation_dir']+'/Simulations')
-                    except OSError:
-                        logger.debug('Simulation directory %s does not already exist' %
-                                     config.config['simulation_dir']+'/Simulations')
-
-
-            # Create new directories for the current run.
-            os.makedirs(config.config['output_dir'] + '/Results')
-            if config.config['simulation_dir']:
-                os.makedirs(config.config['simulation_dir'] + '/Simulations')
-            else:
-                os.mkdir(config.config['output_dir'] + '/Simulations')
-            shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
+            # Fresh run: prepare the output directory tree and build the algorithm.
+            _prepare_run_directories(config, cmdline_args)
             pending = None
-    
-            if config.config['fit_type'] == 'pso':
-                alg = algs.ParticleSwarm(config)
-            elif config.config['fit_type'] == 'de':
-                alg = algs.DifferentialEvolution(config)
-            elif config.config['fit_type'] == 'ss':
-                alg = algs.ScatterSearch(config)
-            elif config.config['fit_type'] == 'mh' or config.config['fit_type'] == 'pt':
-                # Note: mh vs pt difference is handled in Config by setting or not setting the exchange_every key.
-                alg = algs.BasicBayesMCMCAlgorithm(config)
-            elif config.config['fit_type'] == 'am':
-                alg = algs.Adaptive_MCMC(config)
-            elif config.config['fit_type'] == 'sa':
-                alg = algs.BasicBayesMCMCAlgorithm(config, sa=True)    
-            elif config.config['fit_type'] == 'sim':
-                alg = algs.SimplexAlgorithm(config)
-            elif config.config['fit_type'] == 'ade':
-                alg = algs.AsynchronousDifferentialEvolution(config)
-            elif config.config['fit_type'] == 'dream':
-                alg = algs.DreamAlgorithm(config)
-            elif config.config['fit_type'] == 'p_dream':
-                alg = algs.PDreamAlgorithm(config)
-            elif config.config['fit_type'] == 'check':
-                alg = algs.ModelCheck(config)
-            else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, dream, p_dream, check' % config.config['fit_type'])
+            alg = _create_algorithm(config)
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
@@ -281,115 +474,14 @@ def main():
             logger.debug('Model checking initialization')
             alg.run_check(debug=debug)
 
-        if config.config['refine'] == 1:
-            logger.debug('Refinement requested for best fit parameter set')
-            if config.config['fit_type'] == 'sim':
-                logger.debug('Cannot refine further if Simplex algorithm was used for original fit')
-                print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
-                      "\nSkipping refine.")
-            else:
-                logger.debug('Refining further using the Simplex algorithm')
-                print1("Refining the best fit by the Simplex algorithm")
-                config.config['simplex_start_point'] = alg.trajectory.best_fit()
-                simplex = algs.SimplexAlgorithm(config, refine=True)
-                simplex.model_list = alg.model_list  # Reuse already-generated networks
-                simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                simplex.run(cluster.client, debug=debug)
+        _refine_best_fit(config, alg, cluster, debug)
 
         if alg.bootstrap_number is None:
             print0('Fitting complete')
 
         # Bootstrapping (optional)
         if config.config['bootstrap'] > 0:
-
-            # Bootstrapping setup
-            if config.config['bootstrap_max_obj']:
-                bootstrap_max_obj = config.config['bootstrap_max_obj']
-            else:
-                bootstrap_max_obj = inf
-                logger.info('No bootstrap_max_obj specified; set to infinity')
-                print1('No bootstrap_max_obj specified. All bootstrap replicates will be accepted regardless of '
-                       'objective value.')
-
-            num_to_bootstrap = config.config['bootstrap']
-            completed_bootstrap_runs = 0
-            if alg.bootstrap_number is None:
-                bootstrapped_psets = Trajectory(num_to_bootstrap)
-            else:  # Check if finished a resumed bootstrap fitting run
-                completed_bootstrap_runs += alg.bootstrap_number
-                if completed_bootstrap_runs == 0:
-                    bootstrapped_psets = Trajectory(num_to_bootstrap)
-                else:
-                    if completed_bootstrap_runs > 0:
-                        bootstrapped_psets = Trajectory.load_trajectory(config.config['output_dir'] +
-                                                                        '/Results/bootstrapped_parameter_sets.txt',
-                                                                        config.variables,
-                                                                        config.config['num_to_output'])
-
-                if alg.best_fit_obj <= bootstrap_max_obj:
-                    logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
-                    bootstrapped_psets.add(alg.trajectory.best_fit(), alg.best_fit_obj,
-                                           'bootstrap_run_%s' % completed_bootstrap_runs,
-                                           config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
-                                           completed_bootstrap_runs == 0)
-                    logger.info('Succesfully completed resumed bootstrapping run %s' % completed_bootstrap_runs)
-                    completed_bootstrap_runs += 1
-                else:
-                    shutil.rmtree(alg.res_dir)
-                    if os.path.exists(alg.sim_dir):
-                        shutil.rmtree(alg.sim_dir)
-                    print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
-                    logger.info('Resumed bootstrapping run %s did not achieve maximum allowable objective function '
-                                'value.  Retrying' % completed_bootstrap_runs)
-
-            # Run bootstrapping
-            consec_failed_bootstrap_runs = 0
-            while completed_bootstrap_runs < num_to_bootstrap:
-                alg.reset(bootstrap=completed_bootstrap_runs)
-
-                for model in alg.exp_data:
-                    for name, data in alg.exp_data[model].items():
-                        data.gen_bootstrap_weights()
-                        data.weights_to_file('%s/%s_weights_%s.txt' % (alg.res_dir, name, completed_bootstrap_runs))
-
-                logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
-                print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
-                alg.run(cluster.client, debug=debug)
-
-                if config.config['refine'] == 1:
-                    logger.debug('Refinement requested for best fit parameter set')
-                    if config.config['fit_type'] == 'sim':
-                        logger.debug('Cannot refine further if Simplex algorithm was used for original fit')
-                        print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
-                              "\nSkipping refine.")
-                    else:
-                        logger.debug('Refining further using the Simplex algorithm')
-                        print1("Refining the best fit by the Simplex algorithm")
-                        config.config['simplex_start_point'] = alg.trajectory.best_fit()
-                        simplex = algs.SimplexAlgorithm(config, refine=True)
-                        simplex.model_list = alg.model_list  # Reuse already-generated networks
-                        simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-                        simplex.run(cluster.client, debug=debug)
-
-                best_fit_pset = alg.trajectory.best_fit()
-
-                if alg.best_fit_obj <= bootstrap_max_obj:
-                    logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
-                    bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs,
-                                           config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
-                                           completed_bootstrap_runs == 0)
-                    completed_bootstrap_runs += 1
-                    consec_failed_bootstrap_runs = 0
-                else:
-                    consec_failed_bootstrap_runs += 1
-                    print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
-                    logger.warning("Bootstrap run did not achieve maximum allowable objective function value.")
-                    if consec_failed_bootstrap_runs > 20:  # Arbitrary...  should we make this configurable or smaller?
-                        raise PybnfError("20 consecutive bootstrap runs failed to achieve maximum allowable objective "
-                                         "function values.  Check 'bootstrap_max_obj' configuration key")
-
-            # bootstrapped_psets.write_to_file(config.config['output_dir'] + "/Results/bootstrapped_parameter_sets.txt")
-            print0('Bootstrapping complete')
+            _run_bootstrapping(config, alg, cluster, debug)
 
         success = True
 
@@ -411,31 +503,7 @@ def main():
                'Logs have been saved to %s.log.\n'
                'Please report this bug to help us improve PyBNF.' % (exceptiondata[-1], log_prefix))
     finally:
-        # Stop dask-ssh regardless of success
-        if cluster:
-            try:
-                cluster.teardown()
-                if not cluster.local:
-                    time.sleep(10)  # wait for teardown before continuing
-            except Exception:
-                logging.exception('Failed to tear down cluster')
-        else:
-            logging.info('No cluster to tear down')
-
-        # Attempt to remove dask-worker-space directory if necessary
-        # (exists in directory where workers were instantiated)
-        # Tries current and home directories
-        if os.path.isdir('dask-worker-space'):
-            if os.name == 'nt':  # Windows
-                shutil.rmtree('dask-worker-space', ignore_errors=True)
-            else:
-                run(['rm', '-rf', 'dask-worker-space'])  # More likely to succeed than rmtree()
-        home_dask_dir = os.path.expanduser(os.path.join('~', 'dask-worker-space'))
-        if os.path.isdir(home_dask_dir):
-            if os.name == 'nt':  # Windows
-                shutil.rmtree(home_dask_dir, ignore_errors=True)
-            else:
-                run(['rm', '-rf', home_dask_dir])
-
+        _teardown_cluster(cluster)
+        _cleanup_dask_workspace()
         # After any error, try to clean up; then report timing and exit.
         _finalize(success, alg, start_time)
