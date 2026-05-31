@@ -1,0 +1,139 @@
+# PyBNF
+
+PyBNF fits the free parameters of rule-based and SBML models to experimental
+data by minimizing an objective function with a chosen optimization or
+Bayesian-sampling algorithm. This glossary fixes the vocabulary used across the
+configuration file, the source, and the docs. When several words exist for one
+concept, the preferred term is the heading and the rejected ones are listed
+under _Avoid_.
+
+## Fitting core
+
+**Fit**:
+One complete run of PyBNF: load a configuration, repeatedly simulate the model under candidate parameter values, and search for those that best match the experimental data.
+_Avoid_: optimization run, job, session
+
+**Fit Type** (`fit_type`):
+The search algorithm a fit uses, selected by a short code in the configuration (`de`, `pso`, `am`, `dream`, …).
+_Avoid_: method, mode, solver, optimizer
+
+**Free Parameter**:
+A model quantity PyBNF is allowed to vary during a fit, declared in the configuration with a `*_var` keyword and a prior range or distribution.
+_Avoid_: variable, fitted parameter, bare "parameter"
+
+**PSet** (Parameter Set):
+One concrete assignment of values to every free parameter — a single point in parameter space that can be simulated and scored.
+_Avoid_: parameter vector, individual, particle, sample, candidate (these are algorithm-specific views of a PSet)
+
+**Objective Function** (`objfunc`):
+The scalar measure of disagreement between a PSet's simulated output and the experimental data; PyBNF searches for the PSet that minimizes it (e.g. `chi_sq`, `sos`, `neg_bin`).
+_Avoid_: cost function, loss, fitness, error function
+
+**Objective Value**:
+The number the objective function returns for a given PSet; lower is a better fit.
+_Avoid_: score, cost, loss, error (the code uses "score"; prefer "objective value" in prose)
+
+**Trajectory**:
+The running record of the best PSet and its objective value as a fit progresses.
+_Avoid_: history, log, progress curve
+
+**Configuration** (`.conf`):
+The keyword file that defines a fit — models, data, free parameters, fit type, and algorithm settings.
+_Avoid_: config (informal), settings file, input file
+
+## Models & simulation
+
+**Model**:
+The mechanistic model whose free parameters are being fit; supplied as BNGL, SBML, or Antimony.
+_Avoid_: system, network (a network is one *product* of a model — see Network generation)
+
+**BNGL**:
+The BioNetGen Language — PyBNF's native rule-based model format (`.bngl`).
+_Avoid_: BioNetGen file, rules file
+
+**Rule-based model**:
+A model defined by reaction rules that BioNetGen expands into an explicit reaction network, rather than by enumerating every reaction by hand.
+_Avoid_: agent-based model, rule model
+
+**Network generation**:
+BioNetGen's step of expanding a rule-based model into its full set of species and reactions, performed once before network-based simulation.
+_Avoid_: compilation, build
+
+**Observable**:
+A model output (e.g. a molecule count or concentration) recorded during simulation and matched by name to a column of experimental data.
+_Avoid_: output, readout, variable
+
+**Action**:
+A simulation directive attached to a model telling PyBNF what to simulate; the two kinds are a Time Course and a Parameter Scan.
+_Avoid_: command, task, run
+
+**Time Course**:
+An action that simulates the model over time, producing a time series to compare against data.
+_Avoid_: simulation (too general), trajectory (that is the fit's best-fit record)
+
+**Parameter Scan**:
+An action that sweeps one model parameter across a range, producing output as a function of that parameter.
+_Avoid_: sweep, bare "scan"
+
+**Suffix**:
+The label that pairs a model action's simulated output with the experimental data file it is compared to.
+_Avoid_: tag, key
+
+**Simulation Method** (`method`):
+How an action is simulated: `ode` (deterministic, CVODE), `ssa` (stochastic Gillespie), `pla` (partitioned leaping), or `nf` (network-free, via NFsim).
+_Avoid_: solver, integrator (the integrator is one detail of the `ode` method), engine
+
+**Backend** (`bngl_backend`, `sbml_backend`):
+The software PyBNF drives to actually run a simulation (e.g. a BioNetGen subprocess or bngsim for BNGL; libRoadRunner for SBML).
+_Avoid_: engine, driver
+
+## Data, objectives & uncertainty
+
+**Experimental Data** (`.exp`):
+The measured, whitespace-delimited time series (an independent-variable column plus observable columns, with optional `_SD` columns) that a fit is scored against.
+_Avoid_: dataset, observations file, ground truth
+
+**Constraint** (`.prop`):
+A qualitative or quantitative condition on the simulation that contributes a penalty to the objective, rather than a point-by-point data comparison.
+_Avoid_: rule, assertion, restraint
+
+**Replicate**:
+One repeat stochastic simulation of a single PSet; the `smoothing` setting is the number of replicates averaged to reduce noise.
+_Avoid_: repeat, trial, sample
+
+**Bootstrap**:
+Refitting on resampled experimental data to estimate the uncertainty in the fitted parameters.
+_Avoid_: resampling run, jackknife
+
+## Algorithms
+
+PyBNF's fit types fall into two families; the code and configuration treat them
+distinctly (`mh`, `pt`, `sa`, `am`, `dream`, `p_dream` form the Bayesian group).
+
+**Optimization Algorithm**:
+A fit type that searches for the single best-fitting PSet. Codes: `de` (Differential Evolution, the default), `ade` (Asynchronous DE), `pso` (Particle Swarm), `ss` (Scatter Search), `sim` (Nelder–Mead Simplex).
+_Avoid_: optimizer, minimizer, solver
+
+**Bayesian Sampler**:
+A fit type that samples the posterior distribution of the free parameters instead of returning one best PSet. Codes: `am` (Adaptive MCMC), `dream` (DREAM(ZS)), `p_dream` (P-DREAM), `pt` (Parallel Tempering); `mh` (Metropolis–Hastings) and `sa` (Simulated Annealing) are deprecated.
+_Avoid_: MCMC run, posterior fit
+
+**DREAM(ZS)** (`dream`):
+PyBNF's DiffeRential Evolution Adaptive Metropolis sampler (Vrugt 2016), drawing proposal donors from a growing ZS archive of past chain states.
+_Avoid_: bare "DREAM", DE-MC
+
+**P-DREAM** (`p_dream`):
+Preconditioned DREAM — DREAM(ZS) with proposals computed in a covariance-whitened parameter space, for better sampling of correlated posteriors.
+_Avoid_: parallel DREAM (the "P" is *preconditioned*, not parallel)
+
+**Snooker Update**:
+One of DREAM's two proposal mechanisms (ter Braak & Vrugt 2008), projecting archive points onto the line through the current chain state; `snooker_prob` sets how often it is used versus the parallel-direction proposal.
+_Avoid_: snooker move, snooker step
+
+**Iteration**:
+One round of an algorithm's main loop and the unit in which a fit's budget is counted (`max_iterations`). Population-based algorithms also call a round a "generation".
+_Avoid_: step, epoch
+
+**Model Check** (`fit_type = check`):
+A utility run that simulates the model once and reports the objective value without fitting.
+_Avoid_: dry run, validation
