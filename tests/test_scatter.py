@@ -252,6 +252,24 @@ class TestScatterSearchUpdate:
         assert ss.stuckcounter[winner] == 0
         assert ss.stuckcounter[refs[0][0]] == 1         # non-improving slot incremented
 
+    def test_reference_with_no_children_treated_as_stuck(self, tmp_path):
+        """Oracle (ROB-8, reference-set collapse): a reference that received no
+        children this generation — its candidate offspring all collided with
+        pending psets, as happens once the reference set converges on a smooth
+        target — must be handled as non-improving (its stuck counter increments)
+        rather than crashing on min() of an empty child list. Here the completing
+        child belongs to the last reference, so refs[0] genuinely ends the
+        generation with an empty received list."""
+        refvals = [(10., 20., 30.), (40., 50., 60.), (12., 24., 33.)]
+        ss, refs, last_child = self._primed(tmp_path, refvals, [1., 2., 3.],
+                                            child_score=100., population_size=3,
+                                            local_min_limit=5)
+        ss.received[refs[0][0]] = []                     # this reference produced no children
+        res = algorithms.Result(last_child, self.d1s, last_child.name); res.score = 100.
+        ss.got_result(res)                               # pre-fix: ValueError: min() arg is empty
+        assert ss.stuckcounter[refs[0][0]] == 1          # childless ref counted as stuck
+        assert refs[0] in ss.refs                        # and otherwise left in place
+
     def test_stuck_reference_is_archived_and_replaced_from_reserve(self, tmp_path):
         """Oracle (local-minimum archival): a reference that fails to improve for
         local_min_limit generations is moved to local_mins (kept sorted, capped at

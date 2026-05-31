@@ -11,8 +11,8 @@ needed:
   * a successful evaluation moves the simulation output into ``res.out`` and
     clears ``res.simdata`` (a deliberate memory contract), and the scored value
     is exactly what the scattered calculator returned;
-  * a ``None`` score (NaN/Inf simulation) is flagged with ``res.out = inf`` and a
-    warning, rather than silently kept;
+  * a ``None`` score (NaN/Inf simulation) is flagged with ``res.score = inf`` and
+    a warning, rather than silently kept;
   * the per-evaluation model copy is stamped with the smoothing replicate index
     and stochastic-seed policy (the determinism plumbing);
   * a pre-existing output folder triggers a ``_rerun`` folder instead of
@@ -110,17 +110,19 @@ def test_success_scores_and_moves_simdata_to_out(tmp_path):
     assert res.simdata is None
 
 
-def test_none_score_flags_inf_and_warns(tmp_path, caplog):
-    """A None score (simulation produced NaNs/Infs) must be flagged: res.out is
-    set to inf and a warning is logged, rather than the result being kept as if
-    valid."""
+def test_none_score_flagged_as_inf_and_warns(tmp_path, caplog):
+    """A None score (simulation produced NaNs/Infs) must be flagged by setting
+    res.score to inf and logging a warning, so the parameter set is discarded as
+    infinitely-bad. (Regression, ROB-1: res.score was previously left None while
+    inf was written to res.out instead, which is read only by Adaptive_MCMC and
+    overwritten there — so the score never got penalized at this stage and relied
+    on a downstream re-score to mask it.)"""
     model = _FakeModel()
     calc = _FakeCalc(score=None)
     with caplog.at_level('WARNING', logger='pybnf.algorithms'):
         res = _make_job(tmp_path, model, calc).run_simulation()
 
-    assert res.score is None
-    assert res.out == np.inf
+    assert res.score == np.inf
     assert any('NaNs or Infs' in r.message for r in caplog.records)
 
 

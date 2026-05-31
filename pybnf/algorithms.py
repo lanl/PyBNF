@@ -332,8 +332,7 @@ class Job:
                         res.score = self.calc_future.result().evaluate_objective(res.simdata, res.pset, show_warnings=self.show_warnings)
                         res.out = simdata
                         if res.score is None:
-                            # res.score = np.inf
-                            res.out = np.inf
+                            res.score = np.inf
                             logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
                             logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
                 except Exception:
@@ -1454,7 +1453,14 @@ class Algorithm(object):
             to_save = this_model.copy_with_param_set(best_pset)
             to_save.save_all('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
             if self.config.config['delete_old_files'] == 0:
-                for simtype, suf in this_model.suffixes:
+                for suffix_entry in this_model.suffixes:
+                    # Most model types carry (sim_type, suffix) 2-tuples, but
+                    # AnalyticalModel and SbmlModelNoTimeout use plain-string
+                    # suffixes. Accept both rather than crashing on the unpack.
+                    if isinstance(suffix_entry, (tuple, list)):
+                        simtype, suf = suffix_entry
+                    else:
+                        simtype, suf = 'simulate', suffix_entry
                     if simtype == 'simulate':
                         ext = 'gdat'
                     else:  # parameter_scan
@@ -2279,8 +2285,16 @@ class ScatterSearch(Algorithm):
             else:
                 # 1) Replace parent with highest scoring child
                 for i in range(len(self.refs)):
-                    best_child = min(self.received[self.refs[i][0]], key=lambda x: x[1])
-                    if best_child[1] < self.refs[i][1]:
+                    children = self.received[self.refs[i][0]]
+                    # A reference whose candidate children all collided with existing
+                    # pending psets receives no children — this happens once the
+                    # reference set collapses on a smooth target (the combination
+                    # step reproduces the parent point, which is skipped as a
+                    # duplicate). Treat the childless reference as non-improving so
+                    # the stuck-counter machinery eventually perturbs or retires it,
+                    # rather than crashing on min() of an empty list.
+                    best_child = min(children, key=lambda x: x[1]) if children else None
+                    if best_child is not None and best_child[1] < self.refs[i][1]:
                         del self.stuckcounter[self.refs[i][0]]
                         self.stuckcounter[best_child[0]] = 0
                         self.refs[i] = best_child

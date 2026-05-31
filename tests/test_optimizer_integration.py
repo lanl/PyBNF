@@ -50,14 +50,32 @@ def test_optimizer_finds_gaussian_mode(tmp_path, fit_type):
     assert alg.trajectory.best_score() < 0.05
 
 
+def test_run_completes_with_delete_old_files_off(tmp_path):
+    """ROB-9: run()'s end-of-run best-fit copy tail (reached only when
+    delete_old_files == 0) iterated ``for simtype, suf in model.suffixes``,
+    assuming (sim_type, suffix) 2-tuples. AnalyticalModel and SbmlModelNoTimeout
+    use plain-string suffixes (``['target']``), so the tail raised
+    ``ValueError: too many values to unpack``. The harness defaults
+    delete_old_files=1 to dodge this; with it off the whole run — including the
+    copy tail — must complete and still recover the mode."""
+    mean, var = [2.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'de', tgt, exp, n_params=2,
+        population_size=24, max_iterations=60, stop_tolerance=1e-7,
+        delete_old_files=0)
+    alg = algorithms.DifferentialEvolution(conf)
+    H.drive(alg)                                  # pre-fix: ValueError in run()'s copy tail
+    assert np.allclose(H.best_params(alg, 2), mean, atol=0.25)
+
+
 def test_scattersearch_finds_gaussian_mode(tmp_path):
     """Scatter search recovers the Gaussian mode.
 
-    NOTE: kept to a short budget on purpose. With a longer budget the reference
-    set collapses after convergence and a reference produces no children,
-    tripping ``min() arg is empty`` at algorithms.py:2284 — a real robustness
-    edge case (see dev/PUNCHLIST.md). Converges to the exact mode well before
-    then.
+    NOTE: kept to a short budget on purpose for speed. A longer budget would
+    collapse the reference set after convergence (a reference then produces no
+    children) — now handled gracefully (ROB-8, treated as stuck); it formerly
+    tripped ``min() arg is empty``. Converges to the exact mode well before then.
     """
     mean, var = [2.0, -1.0], [1.0, 1.0]
     tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
