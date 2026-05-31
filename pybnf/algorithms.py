@@ -3259,13 +3259,16 @@ class PDreamAlgorithm(DreamAlgorithm):
     def _update_covariance(self):
         """
         Estimate the covariance from pooled chain history and compute Cholesky factors.
-        Uses all chain history available so far.
+        Discards the first 50% of each chain as warmup (matching the convention used by
+        _get_split_chains for R-hat/ESS) so the early burn-in transient does not inflate
+        the preconditioner. Pooling across chains is intentional: P-DREAM's global
+        preconditioner wants a proposal scale large enough for archive-based mode hopping.
         """
-        # Pool all chain histories into one matrix
+        # Pool the post-warmup half of each chain history into one matrix
         all_samples = []
         for chain in self.chain_history:
             if len(chain) > 1:
-                all_samples.extend(chain)
+                all_samples.extend(chain[len(chain) // 2:])
         if len(all_samples) < 2 * self.n_dim:
             return  # Not enough samples yet
 

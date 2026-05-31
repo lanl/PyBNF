@@ -144,12 +144,12 @@ def _pd_for_cov(chain_history, n_dim):
 
 
 def _pool(chain_history, n_dim):
-    """Replicate the pooling the method does (chains of length > 1 only) so the
-    test can build the oracle sample covariance independently."""
+    """Replicate the pooling the method does (the post-warmup last 50% of each
+    chain of length > 1) so the test can build the oracle covariance independently."""
     samples = []
     for chain in chain_history:
         if len(chain) > 1:
-            samples.extend(chain)
+            samples.extend(chain[len(chain) // 2:])
     return np.array(samples)
 
 
@@ -168,11 +168,11 @@ class TestUpdateCovariance:
         Haario regularization). This pins both the regularization and that L is
         the Cholesky factor of the *regularized* matrix."""
         d = 3
-        hist, X = self._make_history(d=d)
+        hist, _ = self._make_history(d=d)
         pd = _pd_for_cov(hist, d)
         pd._update_covariance()
 
-        cov = np.cov(X, rowvar=False)
+        cov = np.cov(_pool(hist, d), rowvar=False)   # oracle over the post-warmup pool
         eps = 1e-6 * np.trace(cov) / d
         np.testing.assert_allclose(pd._cov_L @ pd._cov_L.T, cov + eps * np.eye(d),
                                    rtol=1e-10, atol=1e-12)
@@ -183,11 +183,11 @@ class TestUpdateCovariance:
         diagonal is the single scalar eps. (A constant 1e-6, or trace without
         the /d, would fail.)"""
         d = 3
-        hist, X = self._make_history(d=d, seed=2)
+        hist, _ = self._make_history(d=d, seed=2)
         pd = _pd_for_cov(hist, d)
         pd._update_covariance()
 
-        cov = np.cov(X, rowvar=False)
+        cov = np.cov(_pool(hist, d), rowvar=False)
         added = pd._cov_L @ pd._cov_L.T - cov
         eps = 1e-6 * np.trace(cov) / d
         np.testing.assert_allclose(added, eps * np.eye(d), atol=1e-12)
@@ -218,17 +218,18 @@ class TestUpdateCovariance:
         -eps * (L⁻¹ L⁻¹ᵀ) (eps ~ 1e-6), so 1e-3 tolerances are far tighter than
         the O(1) off-diagonals of the un-whitened data."""
         d = 3
-        hist, X = self._make_history(d=d, seed=5)
+        hist, _ = self._make_history(d=d, seed=5)
         pd = _pd_for_cov(hist, d)
         pd._update_covariance()
 
-        Z = X @ pd._cov_L_inv.T          # z_i = L⁻¹ x_i, stacked
+        Xp = _pool(hist, d)              # the post-warmup pool the method whitened
+        Z = Xp @ pd._cov_L_inv.T         # z_i = L⁻¹ x_i, stacked
         cov_Z = np.cov(Z, rowvar=False)
         np.testing.assert_allclose(np.diag(cov_Z), np.ones(d), atol=1e-3)
         off = cov_Z[~np.eye(d, dtype=bool)]
         assert np.max(np.abs(off)) < 1e-3
         # Sanity: the un-whitened data really was correlated (else the test is vacuous).
-        raw_off = np.cov(X, rowvar=False)[~np.eye(d, dtype=bool)]
+        raw_off = np.cov(Xp, rowvar=False)[~np.eye(d, dtype=bool)]
         assert np.max(np.abs(raw_off)) > 0.1
 
     def test_regularization_enables_rank_deficient_cov(self):
@@ -243,24 +244,70 @@ class TestUpdateCovariance:
         with pytest.raises(np.linalg.LinAlgError):
             np.linalg.cholesky(np.cov(X, rowvar=False))   # bare factorization fails
 
-        pd = _pd_for_cov([list(X)], d)
+        hist = [list(X)]
+        pd = _pd_for_cov(hist, d)
         pd._update_covariance()
         assert pd._cov_L is not None
-        cov = np.cov(X, rowvar=False)
+        cov = np.cov(_pool(hist, d), rowvar=False)   # post-warmup half (still collinear -> rank-1)
         eps = 1e-6 * np.trace(cov) / d
         np.testing.assert_allclose(pd._cov_L @ pd._cov_L.T, cov + eps * np.eye(d),
                                    rtol=1e-8, atol=1e-12)
 
     def test_no_update_below_sample_threshold(self):
         """Gate: with fewer than 2*n_dim pooled samples there is no covariance
-        update — _cov_L stays None and _preconditioned stays False."""
-        d = 3                                  # threshold = 6 pooled samples
+        update — _cov_L stays None and _preconditioned stays False. (The pool is
+        the post-warmup half: 10 raw -> 5 trimmed, still < the threshold of 6.)"""
+        d = 3                                  # threshold = 2*d = 6 pooled samples
         rng = np.random.default_rng(7)
-        hist = [list(rng.standard_normal((5, d)))]   # only 5 < 6
+        hist = [list(rng.standard_normal((10, d)))]  # last-50% -> 5 < 6
         pd = _pd_for_cov(hist, d)
         assert pd._update_covariance() is None
         assert pd._cov_L is None and pd._cov_L_inv is None
         assert pd._preconditioned is False
+
+    def test_covariance_uses_post_warmup_half_only(self):
+        """PDREAM-1: _update_covariance discards the first 50% of each chain
+        (warmup) so the burn-in transient does not inflate the preconditioner.
+        Build a chain whose first half is a wide transient and second half a tight
+        stationary block; the recovered covariance must match the second half, not
+        the pooled full history (which the pre-fix code used). Mutation guard: the
+        full-history trace is many times larger, so the pre-fix code fails this."""
+        d = 3
+        rng = np.random.default_rng(11)
+        n = 400
+        first = rng.standard_normal((n, d)) * 10.0 + 50.0   # wide transient
+        second = rng.standard_normal((n, d)) * 1.0          # tight stationary
+        X = np.vstack([first, second])                      # len 800 -> trim to X[400:] == second
+        hist = [list(X)]
+        pd = _pd_for_cov(hist, d)
+        pd._update_covariance()
+
+        cov_second = np.cov(second, rowvar=False)
+        eps = 1e-6 * np.trace(cov_second) / d
+        np.testing.assert_allclose(pd._cov_L @ pd._cov_L.T, cov_second + eps * np.eye(d),
+                                   rtol=1e-10, atol=1e-12)
+        # Mutation guard: pre-fix full-history covariance is wildly inflated by the transient.
+        assert np.trace(np.cov(X, rowvar=False)) > 10 * np.trace(cov_second)
+
+    def test_pools_post_warmup_across_chains(self):
+        """Claim B (retained behavior, not a defect): the preconditioner pools the
+        post-warmup half across ALL chains — P-DREAM's global proposal scale for
+        archive-based mode hopping — rather than a single chain. Two chains each
+        contribute their last 50%."""
+        d = 2
+        rng = np.random.default_rng(12)
+        c0 = list(rng.standard_normal((200, d)) * 2.0)
+        c1 = list(rng.standard_normal((200, d)) * 2.0 + 5.0)
+        hist = [c0, c1]
+        pd = _pd_for_cov(hist, d)
+        pd._update_covariance()
+
+        Xp = _pool(hist, d)              # 100 + 100 pooled across both chains
+        assert Xp.shape[0] == 200
+        cov = np.cov(Xp, rowvar=False)
+        eps = 1e-6 * np.trace(cov) / d
+        np.testing.assert_allclose(pd._cov_L @ pd._cov_L.T, cov + eps * np.eye(d),
+                                   rtol=1e-10, atol=1e-12)
 
     def test_length_one_chains_excluded_from_pool(self):
         """Only chains with length > 1 are pooled. Appending extra length-1
