@@ -24,7 +24,10 @@ import traceback
 import numpy as np
 from concurrent.futures import CancelledError
 from subprocess import run, CalledProcessError, TimeoutExpired
-from distributed import as_completed
+# Re-exported (not used inside this module): the run loop calls
+# core.as_completed and the tests/integration_harness patch it here -- this is
+# the dask seam (ADR-0001). `as as_completed` marks the intentional re-export.
+from distributed import as_completed as as_completed
 
 from ..data import Data
 from ..pset import FailedSimulationError

@@ -3,16 +3,20 @@
 
 
 from . import core
+# Re-export the core execution primitives so the package facade
+# (algorithms.Result, algorithms.run_job, ...) keeps resolving for external
+# callers and tests. The run loop itself resolves the patched names as
+# core.run_job / core.as_completed / core.Job (ADR-0001), so it does not rely
+# on these bare names. `X as X` marks them as intentional re-exports for ruff.
 from .core import (
-    Result,
-    FailedSimulation,
-    Job,
-    JobGroup,
-    MultimodelJobGroup,
-    HybridJobGroup,
-    run_job,
-    as_completed,
-    result_from_completed,
+    Result as Result,
+    FailedSimulation as FailedSimulation,
+    Job as Job,
+    JobGroup as JobGroup,
+    MultimodelJobGroup as MultimodelJobGroup,
+    HybridJobGroup as HybridJobGroup,
+    run_job as run_job,
+    result_from_completed as result_from_completed,
 )
 from subprocess import run
 from subprocess import CalledProcessError, TimeoutExpired
@@ -31,13 +35,11 @@ from ..bngsim_model import (
     classify_actions_for_bngsim,
     missing_bngsim_nf_action_support,
 )
-from ..data import Data
 from ..pset import PSet
 from ..pset import Trajectory
 from ..pset import BNGLModel
 from ..pset import NetModel
 from ..pset import OutOfBoundsException
-from ..pset import FailedSimulationError
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import ObjectiveCalculator, ConstraintCounter
 
@@ -47,7 +49,6 @@ import os
 import re
 import shutil
 import copy
-import sys
 import traceback
 import pickle
 from scipy import stats
