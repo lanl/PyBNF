@@ -3206,7 +3206,7 @@ class DreamAlgorithm(BayesianAlgorithm):
                 gamma = self.step_size
 
         new_vars = []
-        for i, d in enumerate(np.random.permutation(ds)):
+        for i, d in enumerate(ds):
             k = self.variables[i]
             if d:
                 # Sum of delta difference vectors: sum_{j=1}^{delta} (Z_a_j - Z_b_j)
