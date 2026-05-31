@@ -826,24 +826,57 @@ class Configuration(object):
         return variables
 
     def _check_variable_correspondence(self):
+        """Verify the config's free parameters and the models' parameters line up.
+
+        PyBNF's load-time guard against a mistyped or orphaned free parameter. It
+        runs once at config load (every fit_type except 'check') and raises rather
+        than letting a fit proceed with a silently-wrong parameterization. Two
+        directions:
+
+        * config -> model: every .conf variable must appear in *at least one*
+          model; a variable in no model is almost always a typo. This is what makes
+          the per-model appliers' silent skip safe -- BngsimModel.execute and
+          SbmlModelNoTimeout._modify_params deliberately skip a parameter not in
+          *that* model (it may belong to another model in a multi-model fit), and
+          this check catches a genuine typo here, before any simulation runs.
+        * model -> config: every ``__FREE`` declared in a model file must be in the
+          .conf, so you can't forget to fit one.
+
+        Parameter names are unioned across all models, so multi-model and
+        mixed-type fits work (a variable valid in any one model passes). The models
+        spell parameters differently -- BNGL uses ``k__FREE``, SBML/bngsim use the
+        bare ``kcat`` -- and the union accommodates both in one PSet.
+
+        Param-agnostic models are skipped: a model exposing no enumerable parameter
+        set takes its parameters from the .conf, so nothing can be proven a typo
+        against it. AnalyticalModel is the current example (empty ``param_names`` by
+        design); the ``hasattr`` guard also covers any future model type that never
+        sets ``param_names``. This is the single config-level correspondence guard;
+        do not add a duplicate elsewhere, and keep its regression tests
+        (test_config_class) in sync.
         """
-        Verifies that each variable specified in the configuration appears in at least one model file, and each
-        FREE parameter specified in a model file appears in the config file
-        :return:
-        """
-        # Analytical models accept any variables from the config — skip correspondence check
         from .analytical_model import AnalyticalModel
-        if any(isinstance(m, AnalyticalModel) for m in self.models.values()):
-            return
+
+        # Skip if any model is param-agnostic (no enumerable parameter set): its
+        # parameters come from the .conf, so nothing here is provably a typo. The
+        # hasattr clause future-proofs against a model type that never sets
+        # param_names (which would otherwise AttributeError in the union below).
+        for m in self.models.values():
+            if isinstance(m, AnalyticalModel) or not hasattr(m, 'param_names'):
+                return
 
         model_vars = set()
         for m in self.models.values():
-            model_vars.update(m.param_names)
+            model_vars.update(getattr(m, 'param_names', set()))
 
         variables_names = {v.name for v in self.variables}
         extra_in_conf = variables_names.difference(model_vars)
         extra_in_model = set(model_vars).difference(variables_names)
-        extra_in_model = {p for p in extra_in_model if p[-8:] == '__FREE'}
+        # Only __FREE-suffixed names are "must-fit" model parameters; ignore other
+        # model params (e.g. SBML species/globals) that legitimately aren't fit.
+        # (Was `p[-8:] == '__FREE'`, comparing an 8-char slice to a 6-char string --
+        # always False, so this whole direction silently never fired.)
+        extra_in_model = {p for p in extra_in_model if p.endswith('__FREE')}
 
         if len(extra_in_conf) > 0:
             raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '

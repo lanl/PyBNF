@@ -46,9 +46,9 @@ _no_init = patch.object(algorithms.Algorithm, '_initialize_models', return_value
 _BASE_CONFIG = {
     ('uniform_var', 'v1__FREE'): [0, 10],
     ('uniform_var', 'v2__FREE'): [0, 10],
-    'models': {'tests/bngl_files/parabola.bngl'},
+    'models': {'tests/bngl_files/parabola_2d.bngl'},
     'exp_data': {'tests/bngl_files/par1.exp'},
-    'tests/bngl_files/parabola.bngl': ['tests/bngl_files/par1.exp'],
+    'tests/bngl_files/parabola_2d.bngl': ['tests/bngl_files/par1.exp'],
 }
 
 

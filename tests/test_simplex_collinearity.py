@@ -19,9 +19,9 @@ class TestParallelCountCap:
             cfg = config.Configuration({
                 'population_size': 5, 'max_iterations': 10, 'fit_type': 'sim',
                 ('var', 'v1__FREE'): [2.], ('var', 'v2__FREE'): [3.],
-                'models': {'tests/bngl_files/parabola.bngl'},
+                'models': {'tests/bngl_files/parabola_2d.bngl'},
                 'exp_data': {'tests/bngl_files/par1.exp'},
-                'tests/bngl_files/parabola.bngl': ['tests/bngl_files/par1.exp'],
+                'tests/bngl_files/parabola_2d.bngl': ['tests/bngl_files/par1.exp'],
             })
             sim = algorithms.SimplexAlgorithm(cfg)
         # 2 variables, so parallel_count = min(5, 2-1) = 1
@@ -47,9 +47,9 @@ class TestParallelCountCap:
             cfg = config.Configuration({
                 'population_size': 5, 'max_iterations': 10, 'fit_type': 'sim',
                 ('var', 'v1__FREE'): [2.],
-                'models': {'tests/bngl_files/parabola.bngl'},
+                'models': {'tests/bngl_files/parabola_1d.bngl'},
                 'exp_data': {'tests/bngl_files/par1.exp'},
-                'tests/bngl_files/parabola.bngl': ['tests/bngl_files/par1.exp'],
+                'tests/bngl_files/parabola_1d.bngl': ['tests/bngl_files/par1.exp'],
             })
             sim = algorithms.SimplexAlgorithm(cfg)
         # 1 variable, so parallel_count = min(5, max(0, 1)) = 1
@@ -89,9 +89,9 @@ class TestDegeneracyDetection:
                 'output_dir': self.tmpdir,
                 ('var', 'v1__FREE'): [50.],
                 ('var', 'v2__FREE'): [50.],
-                'models': {'tests/bngl_files/parabola.bngl'},
+                'models': {'tests/bngl_files/parabola_2d.bngl'},
                 'exp_data': {'tests/bngl_files/par1.exp'},
-                'tests/bngl_files/parabola.bngl': ['tests/bngl_files/par1.exp'],
+                'tests/bngl_files/parabola_2d.bngl': ['tests/bngl_files/par1.exp'],
             })
             sim = algorithms.SimplexAlgorithm(cfg)
         return sim

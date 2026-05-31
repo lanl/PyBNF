@@ -91,6 +91,52 @@ class TestConfig(object):
         assert c.config['normalization']['p1_5'] == [('init', ['R_free'])]
         assert c.config['normalization']['thing'] == [('peak', ['Ag_total'])]
 
+    # --- _check_variable_correspondence (the config-level free-parameter guard) ---
+    # Tricky.bngl declares __FREE params: koff__FREE, __koff2__FREE, kase__FREE, pase__FREE.
+
+    @staticmethod
+    def _corr_conf(free_params):
+        """A minimal loadable config over Tricky.bngl with the given free params."""
+        conf = {'models': {'bngl_files/Tricky.bngl'},
+                'bngl_files/Tricky.bngl': ['bngl_files/p1_5.exp', 'bngl_files/thing.exp'],
+                'exp_data': {'bngl_files/p1_5.exp', 'bngl_files/thing.exp'},
+                'fit_type': 'de', 'population_size': 10, 'max_iterations': 10}
+        conf.update(free_params)
+        return conf
+
+    def test_all_free_params_valid_loads(self):
+        """Negative control: all four model __FREE params declared -> loads, no raise."""
+        c = config.Configuration(self._corr_conf({
+            ('uniform_var', 'koff__FREE'): [4., 5.],
+            ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+            ('normal_var', 'kase__FREE'): [28., 5.],
+            ('uniform_var', 'pase__FREE'): [6., 7.],
+        }))
+        assert {v.name for v in c.variables} == {
+            'koff__FREE', '__koff2__FREE', 'kase__FREE', 'pase__FREE'}
+
+    @raises(printing.PybnfError)
+    def test_free_param_not_in_any_model_raises(self):
+        """config -> model: a free parameter present in no model is rejected at load
+        (catches a typo before any simulation runs; makes the per-model silent skip safe)."""
+        config.Configuration(self._corr_conf({
+            ('uniform_var', 'koff__FREE'): [4., 5.],
+            ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+            ('normal_var', 'kase__FREE'): [28., 5.],
+            ('uniform_var', 'pase__FREE'): [6., 7.],
+            ('uniform_var', 'bogus_typo__FREE'): [1., 2.],  # not in Tricky.bngl
+        }))
+
+    @raises(printing.PybnfError)
+    def test_model_free_param_missing_from_config_raises(self):
+        """model -> config: a __FREE declared in the model but not in the .conf is rejected
+        (pase__FREE omitted below)."""
+        config.Configuration(self._corr_conf({
+            ('uniform_var', 'koff__FREE'): [4., 5.],
+            ('loguniform_var', '__koff2__FREE'): [0.01, 1e5],
+            ('normal_var', 'kase__FREE'): [28., 5.],
+        }))
+
     @raises(printing.PybnfError)
     def test_normalization_err(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},

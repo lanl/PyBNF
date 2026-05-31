@@ -1,0 +1,42 @@
+begin model
+
+  begin parameters
+
+# Two-free-parameter parabola, used by tests that need exactly 2 fit variables
+# (e.g. simplex 2D parallel-count / degeneracy, job-group grouping). The 3-free
+# variant lives in parabola.bngl. Keeps the same x observable and y() function so
+# it maps to par1.exp.
+
+    v1 v1__FREE
+    v2 v2__FREE
+
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>-10,t_end=>10,n_steps=>20,suffix=>"par1",print_functions=>1})
+
+end actions
