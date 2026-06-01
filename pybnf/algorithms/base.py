@@ -990,16 +990,7 @@ class Algorithm(object):
         self._copy_best_fit_sims(best_pset, best_name)
         self._rerun_best_fit_to_save_data(best_pset)
         self._finalize_backup_pickle()
-        if (self._is_simplex or self.config.config['refine'] != 1) and self.bootstrap_number is None:
-            # End of fitting; delete unneeded files
-            if self.config.config['delete_old_files'] >= 1:
-                if os.name == 'nt':  # Windows
-                    try:
-                        shutil.rmtree(self.sim_dir)
-                    except OSError:
-                        logger.error('Failed to remove simulations directory '+self.sim_dir)
-                else:
-                    run(['rm', '-rf', self.sim_dir])  # More likely to succeed than rmtree()
+        self._teardown_sim_dir()
 
         logger.info("Fitting complete")
 
@@ -1103,6 +1094,29 @@ class Algorithm(object):
                             ('finished' if not self.refine else 'refine_finished'))
             except OSError:
                 logger.warning('Tried to move pickled algorithm, but it was not found')
+
+    def _teardown_sim_dir(self):
+        """Delete the Simulations/ working directory at the end of a fit.
+
+        Skipped for an intermediate bootstrap replicate (bootstrap_number set) and
+        for a non-final pass of a refinement chain (refine==1 on a non-Simplex
+        algorithm), and only when delete_old_files>=1. Uses ``rm -rf`` on POSIX
+        (more robust than rmtree against partially-written sim trees) and
+        shutil.rmtree on Windows.
+
+        Split out of run()'s tail so the teardown decision can be unit-tested
+        without a dask client. See tests/test_run_loop.py.
+        """
+        if (self._is_simplex or self.config.config['refine'] != 1) and self.bootstrap_number is None:
+            # End of fitting; delete unneeded files
+            if self.config.config['delete_old_files'] >= 1:
+                if os.name == 'nt':  # Windows
+                    try:
+                        shutil.rmtree(self.sim_dir)
+                    except OSError:
+                        logger.error('Failed to remove simulations directory '+self.sim_dir)
+                else:
+                    run(['rm', '-rf', self.sim_dir])  # More likely to succeed than rmtree()
 
     def cleanup(self):
         """

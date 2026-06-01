@@ -804,3 +804,54 @@ class TestFinalizeBackupPickle:
 
         assert 'Tried to move pickled algorithm, but it was not found' in caplog.text
         assert not os.path.exists(str(tmp_path) + '/alg_finished.bp')
+
+
+def _bare_teardown_algo(tmp_path, *, is_simplex=False, refine=0, bootstrap_number=None,
+                        delete_old_files=1):
+    """Minimal Algorithm carrying only what _teardown_sim_dir reads, with a
+    populated Simulations/ dir on disk to delete."""
+    sim_dir = str(tmp_path) + '/Simulations'
+    os.makedirs(sim_dir, exist_ok=True)
+    with open(sim_dir + '/sentinel.txt', 'w') as fh:
+        fh.write('work')
+
+    algo = object.__new__(algorithms.Algorithm)
+    algo.config = type('Cfg', (), {})()
+    algo.config.config = {'refine': refine, 'delete_old_files': delete_old_files}
+    algo._is_simplex = is_simplex
+    algo.bootstrap_number = bootstrap_number
+    algo.sim_dir = sim_dir
+    return algo
+
+
+class TestTeardownSimDir:
+
+    @pytest.mark.parametrize('is_simplex, refine, bootstrap_number, delete_old_files, removed', [
+        (False, 0, None, 1, True),    # ordinary final pass -> tear Simulations/ down
+        (False, 0, None, 0, False),   # delete_old_files off -> keep everything
+        (False, 0, 1,    1, False),   # intermediate bootstrap replicate -> keep
+        (False, 1, None, 1, False),   # non-final refinement pass (non-Simplex) -> keep
+        (True,  1, None, 1, True),    # Simplex always tears down, even with refine==1
+    ])
+    def test_teardown_respects_guards(self, tmp_path, is_simplex, refine, bootstrap_number,
+                                      delete_old_files, removed):
+        """Simulations/ is deleted only on a terminal pass with cleanup enabled.
+        The _is_simplex flag (decoupled from the leaf class in M1 step 2a) forces
+        teardown even mid-refinement; an intermediate bootstrap or refinement pass,
+        or delete_old_files==0, keeps the directory."""
+        algo = _bare_teardown_algo(tmp_path, is_simplex=is_simplex, refine=refine,
+                                   bootstrap_number=bootstrap_number, delete_old_files=delete_old_files)
+
+        algo._teardown_sim_dir()
+
+        assert (not os.path.exists(algo.sim_dir)) == removed
+
+    def test_windows_uses_rmtree(self, tmp_path, monkeypatch):
+        """On Windows there is no `rm`, so teardown goes through shutil.rmtree; the
+        end state (Simulations/ gone) is the same."""
+        algo = _bare_teardown_algo(tmp_path)  # guard satisfied, delete_old_files=1
+        monkeypatch.setattr(algorithms.base.os, 'name', 'nt')
+
+        algo._teardown_sim_dir()
+
+        assert not os.path.exists(algo.sim_dir)
