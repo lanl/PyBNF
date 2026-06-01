@@ -2,8 +2,8 @@
 
 
 from .data import Data, DuplicateColumnError
-from .objective import ChiSquareObjective, ChiSquareObjective_Dynamic, NegBinLikelihood_Dynamic, SumOfSquaresObjective, NormSumOfSquaresObjective, \
-    AveNormSumOfSquaresObjective, SumOfDiffsObjective, NegBinLikelihood, KLLikelihood, DirectPassObjective
+from . import objective  # noqa: F401 -- imported for its side effect: running the module fires the @register_objfunc decorators, populating OBJFUNC_REGISTRY before _load_obj_func dispatches.
+from .registry import OBJFUNC_REGISTRY
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
     Mutation, MutationSet
@@ -737,33 +737,19 @@ class Configuration(object):
         return mapping
 
     def _load_obj_func(self):
-        if self.config['objfunc'] == 'chi_sq':
-            return ChiSquareObjective(self.config['ind_var_rounding'])
-        elif self.config['objfunc'] == 'chi_sq_dynamic':
-            return ChiSquareObjective_Dynamic(self.config['ind_var_rounding'])    
-        elif self.config['objfunc'] == 'sos':
-            return SumOfSquaresObjective(self.config['ind_var_rounding'])
-        elif self.config['objfunc'] == 'norm_sos':
-            return NormSumOfSquaresObjective(self.config['ind_var_rounding'])
-        elif self.config['objfunc'] == 'ave_norm_sos':
-            return AveNormSumOfSquaresObjective(self.config['ind_var_rounding'])
-        elif self.config['objfunc'] == 'sod':
-            return SumOfDiffsObjective(self.config['ind_var_rounding'])
-        elif self.config['objfunc'] == 'neg_bin_dynamic':
-            return NegBinLikelihood_Dynamic(self.config['ind_var_rounding'])    
-        elif self.config['objfunc'] == 'neg_bin':
-            if 'neg_bin_r' in self.config:
-                return NegBinLikelihood(self.config['neg_bin_r'], self.config['ind_var_rounding'])
-            else:
-                raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined without "
-                                                    "configuration neg_bin_r defined")
-        elif self.config['objfunc'] == 'kl':
-            return KLLikelihood(self.config['ind_var_rounding'])
-        elif self.config['objfunc'] == 'direct_pass':
-            return DirectPassObjective()
-        raise UnknownObjectiveFunctionError("Objective function %s not defined" % self.config['objfunc'],
-              "Objective function %s is not defined. Valid objective function choices are: "
-              "chi_sq, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass" % self.config['objfunc'])
+        objfunc = self.config['objfunc']
+        # Cross-config requirement check stays in config (not in the registry,
+        # which holds only the construction recipe): neg_bin cannot be built
+        # without its r parameter, so guard before pulling config['neg_bin_r'].
+        if objfunc == 'neg_bin' and 'neg_bin_r' not in self.config:
+            raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined without "
+                                                "configuration neg_bin_r defined")
+        entry = OBJFUNC_REGISTRY.get(objfunc)
+        if entry is None:
+            raise UnknownObjectiveFunctionError("Objective function %s not defined" % objfunc,
+                  "Objective function %s is not defined. Valid objective function choices are: "
+                  "chi_sq, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass" % objfunc)
+        return entry.cls(*(self.config[key] for key in entry.config_args))
 
     def _load_variables(self):
         """

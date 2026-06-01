@@ -3,6 +3,7 @@
 from scipy.special import loggamma
 
 from .printing import PybnfError, print1
+from .registry import register_objfunc
 
 import numpy as np
 
@@ -268,6 +269,7 @@ class ColumnSummationObjective(ObjectiveFunction):
                              + str(missed))
 
 
+@register_objfunc('chi_sq', config_args=('ind_var_rounding',))
 class ChiSquareObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -296,6 +298,7 @@ class ChiSquareObjective(SummationObjective):
             raise PybnfError('The following experimental data columns were not found in the simulation output: '
                              + str(missed))
 
+@register_objfunc('chi_sq_dynamic', config_args=('ind_var_rounding',))
 class ChiSquareObjective_Dynamic(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -306,6 +309,7 @@ class ChiSquareObjective_Dynamic(SummationObjective):
         val = 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2. + np.log(exp_sigma)
         return val
 
+@register_objfunc('sos', config_args=('ind_var_rounding',))
 class SumOfSquaresObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -314,6 +318,7 @@ class SumOfSquaresObjective(SummationObjective):
         return (sim_val - exp_val) ** 2.
 
 
+@register_objfunc('sod', config_args=('ind_var_rounding',))
 class SumOfDiffsObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -322,6 +327,7 @@ class SumOfDiffsObjective(SummationObjective):
         return abs(sim_val - exp_val)
 
 
+@register_objfunc('norm_sos', config_args=('ind_var_rounding',))
 class NormSumOfSquaresObjective(SummationObjective):
     """
     Sum of squares where each point is normalized by the y value at that point, ((y-y')/y)^2
@@ -333,6 +339,7 @@ class NormSumOfSquaresObjective(SummationObjective):
         return ((sim_val - exp_val) / exp_val) ** 2.
 
 
+@register_objfunc('ave_norm_sos', config_args=('ind_var_rounding',))
 class AveNormSumOfSquaresObjective(SummationObjective):
     """
     Sum of squares where each point is normalized by the average value of that variable,
@@ -350,6 +357,7 @@ class AveNormSumOfSquaresObjective(SummationObjective):
         return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
 
 
+@register_objfunc('neg_bin_dynamic', config_args=('ind_var_rounding',))
 class NegBinLikelihood_Dynamic(SummationObjective):
     """
     Negative binomial likelihood with r as a free param
@@ -379,6 +387,7 @@ class NegBinLikelihood_Dynamic(SummationObjective):
         else:
             return 0
             
+@register_objfunc('neg_bin', config_args=('neg_bin_r', 'ind_var_rounding'))
 class NegBinLikelihood(SummationObjective):
     """
     Negative binomial likelihood
@@ -405,6 +414,7 @@ class NegBinLikelihood(SummationObjective):
         else:
             return 0
 
+@register_objfunc('kl', config_args=('ind_var_rounding',))
 class KLLikelihood(ColumnSummationObjective):
     """
     The Kullback-Leibler likelihood.
@@ -451,6 +461,7 @@ class ConstraintCounter(ObjectiveFunction):
         raise NotImplementedError("ConstraintCounter does not implement evaluate()")
 
 
+@register_objfunc('direct_pass')
 class DirectPassObjective(ObjectiveFunction):
     """
     Passes through the score value directly from the simulated data.

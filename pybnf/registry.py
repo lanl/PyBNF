@@ -55,3 +55,36 @@ def register_fit_type(*codes, family, display_name, kwargs=None, deprecated=Fals
             FIT_TYPE_REGISTRY[code] = entry
         return cls
     return deco
+
+
+# --- objfunc registry (consumed by config.Configuration._load_obj_func) ------
+
+@dataclass(frozen=True)
+class ObjFuncEntry:
+    """One row of the ``objfunc`` table.
+
+    ``config_args`` lists the config keys pulled positionally into ``cls(*args)``
+    -- the per-objective construction recipe, needed because objective
+    constructors are non-uniform: most take ``ind_var_rounding``, ``neg_bin``
+    also takes ``neg_bin_r``, ``direct_pass`` takes nothing. This recipe
+    disappears in M2.4, when NoiseModels take ``config`` uniformly. Cross-config
+    validation (``neg_bin`` requires ``neg_bin_r``) stays in ``config.py``, not
+    here.
+    """
+
+    cls: type
+    config_args: tuple = ()
+
+
+OBJFUNC_REGISTRY: dict = {}
+
+
+def register_objfunc(*codes, config_args=()):
+    """Class decorator registering ``codes`` -> the decorated objective class,
+    recording the config keys its constructor consumes (pulled positionally)."""
+    def deco(cls):
+        entry = ObjFuncEntry(cls=cls, config_args=tuple(config_args))
+        for code in codes:
+            OBJFUNC_REGISTRY[code] = entry
+        return cls
+    return deco
