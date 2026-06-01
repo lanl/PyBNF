@@ -81,6 +81,11 @@ class Algorithm(object):
     defined in this software suite
     """
 
+    # Overridable flag, set True by SimplexAlgorithm. Replaces an
+    # ``isinstance(self, SimplexAlgorithm)`` check in run()'s teardown so the
+    # base class does not reference a leaf subclass.
+    _is_simplex = False
+
     def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
@@ -1058,7 +1063,7 @@ class Algorithm(object):
             except OSError:
                 logger.warning('Tried to move pickled algorithm, but it was not found')
 
-        if (isinstance(self, SimplexAlgorithm) or self.config.config['refine'] != 1) and self.bootstrap_number is None:
+        if (self._is_simplex or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
                 if os.name == 'nt':  # Windows
@@ -3838,6 +3843,8 @@ class SimplexAlgorithm(Algorithm):
     Computational Economics
 
     """
+
+    _is_simplex = True
 
     def __init__(self, config, refine=False):
         super(SimplexAlgorithm, self).__init__(config)
