@@ -580,9 +580,9 @@ def test_initialize_models_uses_bngsim_when_available(monkeypatch, tmp_path):
             super().__init__(*args, **kwargs)
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BngsimModel', FakeBngsimModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BngsimModel', FakeBngsimModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -600,9 +600,9 @@ def test_initialize_models_bionetgen_backend_skips_bngsim(monkeypatch, tmp_path)
             raise AssertionError('bngsim should not be used')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BngsimModel', UnexpectedBngsimModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BngsimModel', UnexpectedBngsimModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -616,8 +616,8 @@ def test_initialize_models_nf_bionetgen_backend_skips_bngsim(monkeypatch, tmp_pa
     algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bionetgen')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
@@ -633,8 +633,8 @@ def test_initialize_models_no_bngsim_env_disables_auto_selection(monkeypatch, tm
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -651,8 +651,8 @@ def test_initialize_models_no_bngsim_env_disables_nf_auto(monkeypatch, tmp_path)
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
@@ -673,8 +673,8 @@ def test_initialize_models_no_bngsim_env_disables_hybrid_auto(monkeypatch, tmp_p
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
@@ -692,9 +692,9 @@ def test_initialize_models_bngsim_backend_rejects_unavailable_bngsim(monkeypatch
     algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bngsim')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', False):
-            with patch.object(algorithms, 'BNGSIM_ERROR', 'bngsim is not available'):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', False):
+            with patch.object(algorithms.base, 'BNGSIM_ERROR', 'bngsim is not available'):
                 with pytest.raises(printing.PybnfError, match='bngsim is not available'):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -714,8 +714,8 @@ def test_initialize_models_bngsim_backend_rejects_when_pybnf_no_bngsim(monkeypat
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with pytest.raises(printing.PybnfError, match='PYBNF_NO_BNGSIM is set'):
                 algorithms.Algorithm._initialize_models(algo)
 
@@ -727,8 +727,8 @@ def test_initialize_models_bngsim_backend_rejects_unsupported_actions(monkeypatc
     algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bngsim')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should fail before BNG2.pl')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with pytest.raises(printing.PybnfError, match='not supported by the bngsim bridge'):
                 algorithms.Algorithm._initialize_models(algo)
 
@@ -740,8 +740,8 @@ def test_initialize_models_auto_falls_back_for_unsupported_actions(monkeypatch, 
     algo = _make_dummy_algorithm(model, output_dir)
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -756,8 +756,8 @@ def test_initialize_models_bngsim_backend_rejects_missing_nfsim(monkeypatch, tmp
     algo = _make_dummy_algorithm(model, output_dir, bngl_backend='bngsim')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should fail before XML')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should fail before XML')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
                 with pytest.raises(printing.PybnfError, match='does not provide NFsim support'):
                     algorithms.Algorithm._initialize_models(algo)
@@ -774,9 +774,9 @@ def test_initialize_models_falls_back_to_netmodel_when_bridge_init_fails(monkeyp
             raise RuntimeError('bridge init failed')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BngsimModel', BrokenBngsimModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BngsimModel', BrokenBngsimModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -795,9 +795,9 @@ def test_initialize_models_bngsim_backend_errors_when_bridge_init_fails(monkeypa
             raise RuntimeError('bridge init failed')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BngsimModel', BrokenBngsimModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BngsimModel', BrokenBngsimModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with pytest.raises(printing.PybnfError, match='bridge init failed'):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -820,9 +820,9 @@ def test_initialize_models_uses_bngsim_nf_when_supported(monkeypatch, tmp_path):
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
@@ -852,9 +852,9 @@ def test_initialize_models_uses_bngsim_rulemonkey_when_supported(monkeypatch, tm
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
                     with patch.object(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True):
                         models = algorithms.Algorithm._initialize_models(algo)
@@ -877,9 +877,9 @@ def test_initialize_models_nf_xml_generation_stages_relative_tfun_files(monkeypa
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -895,8 +895,8 @@ def test_initialize_models_nf_falls_back_when_nfsim_support_missing(monkeypatch,
     algo = _make_dummy_algorithm(model, output_dir)
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
                 models = algorithms.Algorithm._initialize_models(algo)
 
@@ -915,9 +915,9 @@ def test_initialize_models_nf_falls_back_when_bridge_init_fails(monkeypatch, tmp
             raise RuntimeError('bridge init failed')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
-        with patch.object(algorithms, 'BngsimNfModel', BrokenBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', BrokenBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
@@ -1311,9 +1311,9 @@ def test_initialize_models_propagates_save_files_when_delete_old_files_zero(monk
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -1336,9 +1336,9 @@ def test_initialize_models_save_files_defaults_false_when_delete_old_files_posit
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_xml_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -2330,9 +2330,9 @@ def test_initialize_models_hybrid_uses_bngsim_nf(monkeypatch, tmp_path):
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_hybrid_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_hybrid_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
@@ -2365,9 +2365,9 @@ def test_initialize_models_hybrid_explicit_bngsim_backend_uses_nf_bridge(monkeyp
             self.bng_command = ''
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_hybrid_generation):
-        with patch.object(algorithms, 'BngsimNfModel', FakeBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_hybrid_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
@@ -2396,8 +2396,8 @@ def test_initialize_models_hybrid_explicit_bngsim_backend_errors_on_xml_failure(
         _write_dummy_net(bngl_path.with_suffix('.net'))
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_net_ok_then_xml_fail):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_net_ok_then_xml_fail):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                 with pytest.raises(printing.PybnfError, match='hybrid XML generation failed'):
                     algorithms.Algorithm._initialize_models(algo)
@@ -2412,8 +2412,8 @@ def test_initialize_models_hybrid_falls_back_to_netmodel_when_bngsim_unavailable
     algo = _make_dummy_algorithm(model, output_dir)
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', False):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', False):
             models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -2428,8 +2428,8 @@ def test_initialize_models_hybrid_falls_back_to_netmodel_when_nfsim_missing(monk
     algo = _make_dummy_algorithm(model, output_dir)
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_network_generation):
-        with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
+        with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
             with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
                 models = algorithms.Algorithm._initialize_models(algo)
 
@@ -2448,9 +2448,9 @@ def test_initialize_models_hybrid_falls_back_when_bridge_init_fails(monkeypatch,
             raise RuntimeError('bridge init failed')
 
     monkeypatch.chdir(tmp_path)
-    with patch.object(algorithms, 'run_subprocess', side_effect=_fake_hybrid_generation):
-        with patch.object(algorithms, 'BngsimNfModel', BrokenBngsimNfModel):
-            with patch.object(algorithms, 'BNGSIM_AVAILABLE', True):
+    with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_hybrid_generation):
+        with patch.object(algorithms.base, 'BngsimNfModel', BrokenBngsimNfModel):
+            with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
                 with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
