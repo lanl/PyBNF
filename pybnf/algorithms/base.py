@@ -988,33 +988,7 @@ class Algorithm(object):
         best_name = self.trajectory.best_fit_name()
         best_pset = self.trajectory.best_fit()
         self._copy_best_fit_sims(best_pset, best_name)
-        if self.config.config['delete_old_files'] > 0 and self.config.config['save_best_data']:
-            # Rerun the best fit parameter set so the gdat file(s) are saved in the Results folder.
-            logger.info('Rerunning best fit parameter set to save data files.')
-            # Enable saving files for in-process backends (SBML / Antimony / bngsim BNGL+NF).
-            # Subprocess BNGLModels always write via BNG2.pl so they're skipped here.
-            for m in self.model_list:
-                if hasattr(m, 'save_files'):
-                    m.save_files = True
-            finaljob = core.Job(self.model_list, best_pset, 'bestfit',
-                           self.sim_dir, self.config.config['wall_time_sim'], None,
-                           self.config.config['normalization'], self.config.postprocessing,
-                           False,
-                           stochastic_seed_policy=self.config.config['stochastic_seed'])
-            try:
-                core.run_job(finaljob)
-            except Exception:
-                logger.exception('Failed to rerun best fit parameter set')
-                print1('Failed to rerun best fit parameter set. See log for details')
-            else:
-                # Copy all gdat and scan to Results
-                for fname in glob(self.sim_dir+'/bestfit/*.gdat') + glob(self.sim_dir+'/bestfit/*.scan'):
-                    shutil.copy(fname, self.res_dir)
-            # Restore save_files defaults (in case there is future bootstrapping or refinement)
-            for m in self.model_list:
-                if hasattr(m, 'save_files'):
-                    m.save_files = False
-
+        self._rerun_best_fit_to_save_data(best_pset)
         if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:
             try:
                 os.replace('%s/alg_backup.bp' % self.config.config['output_dir'],
@@ -1076,6 +1050,47 @@ class Algorithm(object):
                         logger.error('Cannot find files corresponding to best fit parameter set')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
                                ' in your run failed, or if that gdat file was somehow deleted during the run.')
+
+    def _rerun_best_fit_to_save_data(self, best_pset):
+        """Rerun the best-fit pset so its gdat/scan files land in Results/.
+
+        Only when delete_old_files>0 (the per-suffix copy in _copy_best_fit_sims
+        was skipped) and save_best_data is set. Toggles save_files on the in-process
+        backends (SBML / Antimony / bngsim BNGL+NF; subprocess BNGLModels write via
+        BNG2.pl regardless), submits a single bestfit Job through the core seam, and
+        on success copies every gdat/scan into Results/. save_files is restored even
+        if the rerun raises, so later bootstrapping/refinement is unaffected.
+
+        Split out of run()'s tail so the rerun orchestration — and the core.Job /
+        core.run_job seam (ADR-0001) — can be unit-tested without a dask client.
+        See tests/test_run_loop.py.
+        """
+        if self.config.config['delete_old_files'] > 0 and self.config.config['save_best_data']:
+            # Rerun the best fit parameter set so the gdat file(s) are saved in the Results folder.
+            logger.info('Rerunning best fit parameter set to save data files.')
+            # Enable saving files for in-process backends (SBML / Antimony / bngsim BNGL+NF).
+            # Subprocess BNGLModels always write via BNG2.pl so they're skipped here.
+            for m in self.model_list:
+                if hasattr(m, 'save_files'):
+                    m.save_files = True
+            finaljob = core.Job(self.model_list, best_pset, 'bestfit',
+                           self.sim_dir, self.config.config['wall_time_sim'], None,
+                           self.config.config['normalization'], self.config.postprocessing,
+                           False,
+                           stochastic_seed_policy=self.config.config['stochastic_seed'])
+            try:
+                core.run_job(finaljob)
+            except Exception:
+                logger.exception('Failed to rerun best fit parameter set')
+                print1('Failed to rerun best fit parameter set. See log for details')
+            else:
+                # Copy all gdat and scan to Results
+                for fname in glob(self.sim_dir+'/bestfit/*.gdat') + glob(self.sim_dir+'/bestfit/*.scan'):
+                    shutil.copy(fname, self.res_dir)
+            # Restore save_files defaults (in case there is future bootstrapping or refinement)
+            for m in self.model_list:
+                if hasattr(m, 'save_files'):
+                    m.save_files = False
 
     def cleanup(self):
         """

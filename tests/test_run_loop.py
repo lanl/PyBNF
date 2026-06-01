@@ -599,3 +599,135 @@ class TestCopyBestFitSims:
         algo._copy_best_fit_sims(object(), best_name)
 
         assert os.path.isfile('%s/m_%s_obs.gdat' % (algo.res_dir, rep))
+
+
+class _SaveFilesModel:
+    """In-process backend stand-in: carries a save_files flag the rerun toggles."""
+
+    def __init__(self, name='m'):
+        self.name = name
+        self.save_files = False
+
+
+def _bare_rerun_algo(tmp_path, model_list, *, delete_old_files, save_best_data):
+    """Minimal Algorithm carrying only what _rerun_best_fit_to_save_data reads."""
+    out = str(tmp_path)
+    sim_dir = out + '/Simulations'
+    res_dir = out + '/Results'
+    os.makedirs(sim_dir, exist_ok=True)
+    os.makedirs(res_dir, exist_ok=True)
+
+    algo = object.__new__(algorithms.Algorithm)
+    algo.config = type('Cfg', (), {})()
+    algo.config.config = {
+        'delete_old_files': delete_old_files, 'save_best_data': save_best_data,
+        'wall_time_sim': 60, 'normalization': None, 'stochastic_seed': 'auto',
+    }
+    algo.config.postprocessing = {}
+    algo.model_list = model_list
+    algo.sim_dir = sim_dir
+    algo.res_dir = res_dir
+    return algo
+
+
+class TestRerunBestFitToSaveData:
+
+    @pytest.mark.parametrize('delete_old_files, save_best_data', [(0, 1), (1, 0), (0, 0)])
+    def test_no_rerun_when_guard_off(self, tmp_path, monkeypatch, delete_old_files, save_best_data):
+        """The rerun fires only when delete_old_files>0 AND save_best_data is set;
+        any other combination touches neither the seam nor save_files."""
+        model = _SaveFilesModel('m')
+        algo = _bare_rerun_algo(tmp_path, [model],
+                                delete_old_files=delete_old_files, save_best_data=save_best_data)
+        touched = []
+        monkeypatch.setattr(algorithms.core, 'Job', lambda *a, **k: touched.append('Job'))
+        monkeypatch.setattr(algorithms.core, 'run_job', lambda job: touched.append('run_job'))
+
+        algo._rerun_best_fit_to_save_data(object())
+
+        assert touched == []              # core seam never touched
+        assert model.save_files is False  # save_files left untouched
+
+    def test_submits_bestfit_job_through_core_seam_and_copies_outputs(self, tmp_path, monkeypatch):
+        """Guard on: a single 'bestfit' Job is built (with save_files already
+        enabled) and run through the core seam; its gdat/scan outputs are copied to
+        Results/; save_files is restored afterward.
+
+        ADR-0001 seam guard for this path: the method resolves core.Job /
+        core.run_job through the ``core`` module object, so patching
+        ``algorithms.core.*`` actually intercepts the production rerun."""
+        model = _SaveFilesModel('m')
+        algo = _bare_rerun_algo(tmp_path, [model], delete_old_files=1, save_best_data=1)
+        best_pset = object()
+        sentinel_job = object()
+        built = {}
+        ran = []
+
+        def fake_job(*args, **kwargs):
+            built['args'] = args
+            built['kwargs'] = kwargs
+            # save_files must already be enabled when the Job is constructed
+            built['save_files_at_build'] = [m.save_files for m in args[0]]
+            return sentinel_job
+
+        def fake_run_job(job):
+            ran.append(job)
+            # mimic the in-process backend writing its outputs under bestfit/
+            bf = algo.sim_dir + '/bestfit'
+            os.makedirs(bf, exist_ok=True)
+            for fn in ('m_bestfit.gdat', 'm_bestfit.scan'):
+                with open(bf + '/' + fn, 'w') as fh:
+                    fh.write('out')
+
+        monkeypatch.setattr(algorithms.core, 'Job', fake_job)
+        monkeypatch.setattr(algorithms.core, 'run_job', fake_run_job)
+
+        algo._rerun_best_fit_to_save_data(best_pset)
+
+        # The seam fired: our fake Job was run exactly once.
+        assert ran == [sentinel_job]
+        # Built with the best pset, the 'bestfit' name, this algo's model_list and sim_dir.
+        assert built['args'][0] is algo.model_list
+        assert built['args'][1] is best_pset
+        assert built['args'][2] == 'bestfit'
+        assert built['args'][3] == algo.sim_dir
+        assert built['kwargs']['stochastic_seed_policy'] == 'auto'
+        # save_files was True at build time, restored to False after.
+        assert built['save_files_at_build'] == [True]
+        assert model.save_files is False
+        # Both outputs copied into Results/.
+        assert os.path.isfile(algo.res_dir + '/m_bestfit.gdat')
+        assert os.path.isfile(algo.res_dir + '/m_bestfit.scan')
+
+    def test_save_files_restored_even_if_rerun_raises(self, tmp_path, monkeypatch, caplog):
+        """If the rerun itself raises, the failure is logged (not propagated) and
+        save_files is still restored — a doomed rerun must not leave the models in
+        a save_files=True state that would corrupt later bootstrapping/refinement."""
+        model = _SaveFilesModel('m')
+        algo = _bare_rerun_algo(tmp_path, [model], delete_old_files=1, save_best_data=1)
+        monkeypatch.setattr(algorithms.core, 'Job', lambda *a, **k: object())
+
+        def boom(job):
+            raise RuntimeError('sim blew up')
+
+        monkeypatch.setattr(algorithms.core, 'run_job', boom)
+
+        with caplog.at_level(logging.ERROR, logger='pybnf.algorithms'):
+            algo._rerun_best_fit_to_save_data(object())  # must not raise
+
+        assert model.save_files is False
+        assert 'Failed to rerun best fit parameter set' in caplog.text
+        assert not any(f.endswith('.gdat') for f in os.listdir(algo.res_dir))  # nothing copied
+
+    def test_models_without_save_files_attr_are_left_alone(self, tmp_path, monkeypatch):
+        """Subprocess BNGLModels lack a save_files attribute (they write via
+        BNG2.pl regardless); the toggle must skip them rather than crash."""
+        toggleable = _SaveFilesModel('m')
+        plain = object()  # no save_files attribute
+        algo = _bare_rerun_algo(tmp_path, [toggleable, plain], delete_old_files=1, save_best_data=1)
+        monkeypatch.setattr(algorithms.core, 'Job', lambda *a, **k: object())
+        monkeypatch.setattr(algorithms.core, 'run_job', lambda job: None)
+
+        algo._rerun_best_fit_to_save_data(object())  # must not raise on the plain model
+
+        assert toggleable.save_files is False
