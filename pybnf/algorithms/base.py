@@ -987,33 +987,7 @@ class Algorithm(object):
         # Copy the best simulations into the results folder
         best_name = self.trajectory.best_fit_name()
         best_pset = self.trajectory.best_fit()
-        logger.info('Copying simulation results from best fit parameter set to Results/ folder')
-        for m in self.config.models:
-            this_model = self.config.models[m]
-            to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save_all('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
-            if self.config.config['delete_old_files'] == 0:
-                for suffix_entry in this_model.suffixes:
-                    # Most model types carry (sim_type, suffix) 2-tuples, but
-                    # AnalyticalModel and SbmlModelNoTimeout use plain-string
-                    # suffixes. Accept both rather than crashing on the unpack.
-                    if isinstance(suffix_entry, (tuple, list)):
-                        simtype, suf = suffix_entry
-                    else:
-                        simtype, suf = 'simulate', suffix_entry
-                    if simtype == 'simulate':
-                        ext = 'gdat'
-                    else:  # parameter_scan
-                        ext = 'scan'
-                    if self.config.config['smoothing'] > 1:
-                        best_name = best_name + '_rep0'  # Look for one specific replicate of the data
-                    try:
-                        shutil.copy('%s/%s/%s_%s_%s.%s' % (self.sim_dir, best_name, m, best_name, suf, ext),
-                                    '%s' % self.res_dir)
-                    except FileNotFoundError:
-                        logger.error('Cannot find files corresponding to best fit parameter set')
-                        print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
-                               ' in your run failed, or if that gdat file was somehow deleted during the run.')
+        self._copy_best_fit_sims(best_pset, best_name)
         if self.config.config['delete_old_files'] > 0 and self.config.config['save_best_data']:
             # Rerun the best fit parameter set so the gdat file(s) are saved in the Results folder.
             logger.info('Rerunning best fit parameter set to save data files.')
@@ -1063,6 +1037,45 @@ class Algorithm(object):
                     run(['rm', '-rf', self.sim_dir])  # More likely to succeed than rmtree()
 
         logger.info("Fitting complete")
+
+    def _copy_best_fit_sims(self, best_pset, best_name):
+        """Copy the best-fit parameter set's simulation outputs into Results/.
+
+        For each model, save a fresh copy parameterized by ``best_pset``; and when
+        ``delete_old_files == 0`` (nothing was cleaned mid-run), also copy each
+        suffix's already-written gdat/scan from ``Simulations/<best_name>/`` into
+        Results/. A missing best-fit file is logged, not fatal.
+
+        Split out of run()'s tail so the copy orchestration can be unit-tested
+        without a dask client. See tests/test_run_loop.py.
+        """
+        logger.info('Copying simulation results from best fit parameter set to Results/ folder')
+        for m in self.config.models:
+            this_model = self.config.models[m]
+            to_save = this_model.copy_with_param_set(best_pset)
+            to_save.save_all('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
+            if self.config.config['delete_old_files'] == 0:
+                for suffix_entry in this_model.suffixes:
+                    # Most model types carry (sim_type, suffix) 2-tuples, but
+                    # AnalyticalModel and SbmlModelNoTimeout use plain-string
+                    # suffixes. Accept both rather than crashing on the unpack.
+                    if isinstance(suffix_entry, (tuple, list)):
+                        simtype, suf = suffix_entry
+                    else:
+                        simtype, suf = 'simulate', suffix_entry
+                    if simtype == 'simulate':
+                        ext = 'gdat'
+                    else:  # parameter_scan
+                        ext = 'scan'
+                    if self.config.config['smoothing'] > 1:
+                        best_name = best_name + '_rep0'  # Look for one specific replicate of the data
+                    try:
+                        shutil.copy('%s/%s/%s_%s_%s.%s' % (self.sim_dir, best_name, m, best_name, suf, ext),
+                                    '%s' % self.res_dir)
+                    except FileNotFoundError:
+                        logger.error('Cannot find files corresponding to best fit parameter set')
+                        print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
+                               ' in your run failed, or if that gdat file was somehow deleted during the run.')
 
     def cleanup(self):
         """

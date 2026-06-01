@@ -27,6 +27,7 @@ the per-result body out of ``run`` into its own method would let these decisions
 be unit-tested without the fake-client harness — recommended before the
 algorithms.py split.
 """
+import logging
 import os
 
 import numpy as np
@@ -460,3 +461,141 @@ def test_patching_package_facade_run_job_does_not_intercept(tmp_path, monkeypatc
     # The run completed normally, but the facade patch never fired: the loop used
     # core.run_job directly.
     assert facade_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Run-loop tail: end-of-run file orchestration
+#
+# After the main loop, run() shuffles the best-fit simulation outputs into
+# Results/. That tail was extracted into named Algorithm methods so each decision
+# can be unit-tested directly — NO dask client, NO as_completed, NO full run().
+# These methods are pure orchestration (model copy, shutil.copy, glob), so the
+# oracle is REAL filesystem behavior under tmp_path: which files land in res_dir.
+# --------------------------------------------------------------------------- #
+class _TailModel:
+    """Backend-free model for the best-fit-copy tail. ``copy_with_param_set``
+    records the pset it was handed and returns a stand-in whose ``save_all``
+    writes a sentinel file — so 'the model saved its outputs' becomes a real file
+    landing in res_dir. ``suffixes`` drives the per-suffix gdat/scan copy."""
+
+    def __init__(self, name='m', suffixes=()):
+        self.name = name
+        self.suffixes = list(suffixes)
+        self.saved_with = '__unset__'
+
+    def copy_with_param_set(self, best_pset):
+        self.saved_with = best_pset
+        return self
+
+    def save_all(self, prefix):
+        with open(prefix + '.sentinel', 'w') as fh:
+            fh.write(self.name)
+
+
+def _bare_tail_algo(tmp_path, models, *, delete_old_files=0, smoothing=1):
+    """Minimal Algorithm carrying only the attrs the best-fit-copy tail reads:
+    config.models, res_dir, sim_dir, and the delete_old_files / smoothing knobs."""
+    out = str(tmp_path)
+    sim_dir = out + '/Simulations'
+    res_dir = out + '/Results'
+    os.makedirs(sim_dir, exist_ok=True)
+    os.makedirs(res_dir, exist_ok=True)
+
+    algo = object.__new__(algorithms.Algorithm)
+    algo.config = type('Cfg', (), {})()
+    algo.config.config = {'delete_old_files': delete_old_files, 'smoothing': smoothing}
+    algo.config.models = models
+    algo.res_dir = res_dir
+    algo.sim_dir = sim_dir
+    return algo
+
+
+class TestCopyBestFitSims:
+
+    def test_saves_each_model_into_results(self, tmp_path):
+        """Every model in config.models gets re-parameterized by the best pset and
+        saved into Results/ as <model_name>_<best_name>."""
+        m1, m2 = _TailModel('m1'), _TailModel('m2')
+        algo = _bare_tail_algo(tmp_path, {'m1': m1, 'm2': m2})
+        best_pset = object()
+
+        algo._copy_best_fit_sims(best_pset, 'iter5run0')
+
+        assert os.path.isfile(algo.res_dir + '/m1_iter5run0.sentinel')
+        assert os.path.isfile(algo.res_dir + '/m2_iter5run0.sentinel')
+        # Each model was copied with the best-fit pset, not some other point.
+        assert m1.saved_with is best_pset and m2.saved_with is best_pset
+
+    @pytest.mark.parametrize('suffix_entry, ext', [
+        (('simulate', 'obs'), 'gdat'),    # time course -> gdat
+        (('param_scan', 'sc'), 'scan'),   # parameter scan -> scan
+        ('obs', 'gdat'),                  # plain-string suffix (AnalyticalModel / SbmlNoTimeout)
+    ])
+    def test_copies_simulation_output_for_each_suffix(self, tmp_path, suffix_entry, ext):
+        """With delete_old_files==0, each suffix's already-written sim file is
+        copied from Simulations/<best_name>/ into Results/. Both 2-tuple and
+        plain-string suffix forms are accepted; sim type picks gdat vs scan."""
+        suf = suffix_entry[1] if isinstance(suffix_entry, tuple) else suffix_entry
+        model = _TailModel('m', suffixes=[suffix_entry])
+        algo = _bare_tail_algo(tmp_path, {'m': model}, delete_old_files=0)
+        best_name = 'iter3run1'
+        src_dir = algo.sim_dir + '/' + best_name
+        os.makedirs(src_dir)
+        src = '%s/m_%s_%s.%s' % (src_dir, best_name, suf, ext)
+        with open(src, 'w') as fh:
+            fh.write('payload')
+
+        algo._copy_best_fit_sims(object(), best_name)
+
+        dst = '%s/m_%s_%s.%s' % (algo.res_dir, best_name, suf, ext)
+        assert os.path.isfile(dst)
+        with open(dst) as fh:
+            assert fh.read() == 'payload'  # real copy, not a touch
+
+    def test_missing_simulation_file_is_logged_not_fatal(self, tmp_path, caplog):
+        """A best-fit gdat that was never written (e.g. all sims failed) logs an
+        error and is skipped — the tail must not crash the end of a run."""
+        model = _TailModel('m', suffixes=[('simulate', 'obs')])
+        algo = _bare_tail_algo(tmp_path, {'m': model}, delete_old_files=0)
+
+        with caplog.at_level(logging.ERROR, logger='pybnf.algorithms'):
+            algo._copy_best_fit_sims(object(), 'iter0run0')  # no source file exists
+
+        assert 'Cannot find files corresponding to best fit parameter set' in caplog.text
+        # save_all still ran; the missing gdat simply isn't there.
+        assert os.path.isfile(algo.res_dir + '/m_iter0run0.sentinel')
+        assert not os.path.isfile(algo.res_dir + '/m_iter0run0_obs.gdat')
+
+    def test_skips_suffix_copy_when_delete_old_files_positive(self, tmp_path):
+        """When delete_old_files>0, the per-suffix gdat/scan copy is skipped
+        entirely (those files are reproduced later by the save_best_data rerun);
+        only the model-level save_all runs."""
+        model = _TailModel('m', suffixes=[('simulate', 'obs')])
+        algo = _bare_tail_algo(tmp_path, {'m': model}, delete_old_files=1)
+        best_name = 'iter0run0'
+        src_dir = algo.sim_dir + '/' + best_name
+        os.makedirs(src_dir)
+        with open('%s/m_%s_obs.gdat' % (src_dir, best_name), 'w') as fh:
+            fh.write('x')
+
+        algo._copy_best_fit_sims(object(), best_name)
+
+        assert os.path.isfile(algo.res_dir + '/m_%s.sentinel' % best_name)  # save_all ran
+        assert not os.path.isfile('%s/m_%s_obs.gdat' % (algo.res_dir, best_name))  # copy skipped
+
+    def test_smoothing_looks_for_rep0_replicate(self, tmp_path):
+        """With smoothing>1 there is no single best-fit gdat — one specific
+        replicate (_rep0) is copied, so the source path carries the _rep0 tag in
+        both the directory and the file stem."""
+        model = _TailModel('m', suffixes=[('simulate', 'obs')])
+        algo = _bare_tail_algo(tmp_path, {'m': model}, delete_old_files=0, smoothing=3)
+        best_name = 'iter0run0'
+        rep = best_name + '_rep0'
+        src_dir = algo.sim_dir + '/' + rep
+        os.makedirs(src_dir)
+        with open('%s/m_%s_obs.gdat' % (src_dir, rep), 'w') as fh:
+            fh.write('rep')
+
+        algo._copy_best_fit_sims(object(), best_name)
+
+        assert os.path.isfile('%s/m_%s_obs.gdat' % (algo.res_dir, rep))
