@@ -61,7 +61,7 @@ Source = "https://github.com/lanl/PyBNF"
 Issues = "https://github.com/lanl/PyBNF/issues"
 
 [tool.setuptools]
-packages = ["pybnf", "pybnf.algorithms"]
+packages = ["pybnf", "pybnf.algorithms", "pybnf.algorithms.samplers"]
 
 [tool.setuptools.dynamic]
 version = { attr = "pybnf.__version__" }
