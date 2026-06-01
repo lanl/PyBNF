@@ -10,6 +10,7 @@ from ..core import FailedSimulation
 from .base import BayesianAlgorithm
 from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2, PybnfError
+from ...registry import register_fit_type
 
 import numpy as np
 import os
@@ -18,6 +19,7 @@ import shutil
 from scipy import stats
 
 
+@register_fit_type('am', family='sampler', display_name='Adaptive MCMC')
 class Adaptive_MCMC(BayesianAlgorithm):
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super(Adaptive_MCMC, self).__init__(config)

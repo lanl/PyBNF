@@ -10,6 +10,7 @@ Imports the module-level ``exp10`` helper from the package base (leaf -> base).
 from ..base import Algorithm, exp10
 from ...pset import PSet
 from ...printing import print1, print2
+from ...registry import register_fit_type
 
 import logging
 import numpy as np
@@ -20,6 +21,7 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
+@register_fit_type('sim', family='optimizer', display_name='Simplex')
 class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,

@@ -1,12 +1,15 @@
-"""ModelCheck -- the ``check`` fit type (a utility run, not a search algorithm).
+"""ModelCheck -- the ``check`` fit type, a first-class checking method.
 
-Simulates the model once and reports the objective value (and constraint
-satisfaction) without fitting. It is neither an optimizer nor a sampler, so it
-lives at the algorithms package top level rather than under optimizers/ or
-samplers/. Extracted byte-identical (M1 Step 4). It does not subclass Algorithm,
-but it does use the execution machinery: the patched names are resolved as
-core.Job / core.run_job through the core module object (ADR-0001 seam), and
-ConstraintCounter is read from this module's namespace (tests patch it here).
+A checking run (statistical model checking): evaluates the objective value and
+constraint satisfaction for the given parameters without searching parameter
+space. It registers in the ``checker`` family -- a peer of ``optimizer`` and
+``sampler``, not a utility afterthought -- but, being neither an optimizer nor a
+sampler, it lives at the algorithms package top level rather than under
+optimizers/ or samplers/. Extracted byte-identical (M1 Step 4). It does not
+subclass Algorithm, but it does use the execution machinery: the patched names
+are resolved as core.Job / core.run_job through the core module object (ADR-0001
+seam), and ConstraintCounter is read from this module's namespace (tests patch
+it here).
 """
 
 
@@ -15,6 +18,7 @@ from .core import FailedSimulation
 from ..pset import PSet
 from ..printing import print0, print1
 from ..objective import ConstraintCounter
+from ..registry import register_fit_type
 
 import logging
 import os
@@ -27,6 +31,7 @@ import traceback
 logger = logging.getLogger('pybnf.algorithms')
 
 
+@register_fit_type('check', family='checker', display_name='Model Check')
 class ModelCheck(object):
     """
     An algorithm that just checks the fit quality for a job with no free parameters.

@@ -10,6 +10,7 @@ execution seam are inherited from Algorithm.
 from ..base import Algorithm
 from ...pset import PSet
 from ...printing import print1, print2, PybnfError
+from ...registry import register_fit_type
 
 import logging
 import numpy as np
@@ -90,6 +91,7 @@ class DifferentialEvolutionBase(Algorithm):
         return NotImplementedError("got_result() not implemented in DifferentialEvolutionBase class")
 
 
+@register_fit_type('de', family='optimizer', display_name='Differential Evolution')
 class DifferentialEvolution(DifferentialEvolutionBase):
     """
     Implements the parallelized, island-based differential evolution algorithm
@@ -346,6 +348,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
             return []
 
 
+@register_fit_type('ade', family='optimizer', display_name='Asynchronous Differential Evolution')
 class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
     """
     Implements a simple asynchronous differential evolution algorithm.

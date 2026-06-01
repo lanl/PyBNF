@@ -8,6 +8,7 @@ Subclasses DreamAlgorithm (a sibling leaf in this sub-package).
 
 from .dream import DreamAlgorithm
 from ...pset import PSet, OutOfBoundsException
+from ...registry import register_fit_type
 
 import logging
 import numpy as np
@@ -18,6 +19,7 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
+@register_fit_type('p_dream', family='sampler', display_name='Preconditioned DREAM')
 class PDreamAlgorithm(DreamAlgorithm):
     """
     P-DREAM: Preconditioned DREAM.

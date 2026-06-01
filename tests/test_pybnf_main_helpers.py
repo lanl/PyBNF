@@ -1,20 +1,31 @@
-"""CQ-1c: guard rails for the helpers extracted out of ``pybnf.main()``.
+"""CQ-1c / Step 6a: guard rails for the helpers extracted out of ``pybnf.main()``.
 
 ``main()`` itself is a CLI entry point with no direct test. When its body was
 decomposed into named helpers, the two pieces carrying real branching logic --
 the ``fit_type``->algorithm-class dispatch (``_create_algorithm``) and the
 argument parser (``_build_arg_parser``) -- got these focused tests so a typo in a
 fit_type string or class name can't slip through silently.
+
+Step 6 replaced ``_create_algorithm``'s if/elif with the self-registering
+``FIT_TYPE_REGISTRY``. Per ADR-0005 the dispatch is now tested as **data**
+(assert the table maps each code to the right class / kwargs / family /
+deprecated flag) plus a **thin construct seam** (a fake registry entry proves
+``_create_algorithm`` builds ``cls(config, **kwargs)`` generically), rather than
+by patching the package facade -- which a registry of direct class refs would no
+longer resolve through.
 """
 
+import logging
 import types
 from unittest import mock
 
 import pytest
 
+import pybnf.algorithms as algs
 import pybnf.pybnf as pybnf_mod
 from pybnf.pybnf import _create_algorithm, _build_arg_parser
 from pybnf.printing import PybnfError
+from pybnf.registry import FIT_TYPE_REGISTRY, FitTypeEntry
 
 
 def _config_with_fit_type(fit_type):
@@ -22,7 +33,7 @@ def _config_with_fit_type(fit_type):
     return types.SimpleNamespace(config={'fit_type': fit_type})
 
 
-# (fit_type, attribute on the algorithms module that should be instantiated)
+# (fit_type, attribute on the algorithms facade that should be instantiated)
 _DISPATCH = [
     ('pso', 'ParticleSwarm'),
     ('de', 'DifferentialEvolution'),
@@ -39,35 +50,96 @@ _DISPATCH = [
 ]
 
 
+# --- the registry table as data ----------------------------------------------
+
+def test_registry_covers_exactly_the_documented_codes():
+    """No fit_type silently dropped or added by the move to self-registration."""
+    assert set(FIT_TYPE_REGISTRY) == {code for code, _ in _DISPATCH}
+
+
 @pytest.mark.parametrize('fit_type,cls_name', _DISPATCH)
-def test_create_algorithm_dispatches_to_correct_class(fit_type, cls_name):
-    """Each fit_type instantiates exactly its mapped algorithm class, passing the
-    config through. Mocking the algorithms module keeps this a pure dispatch test
-    (no heavyweight algorithm construction)."""
-    config = _config_with_fit_type(fit_type)
-    with mock.patch.object(pybnf_mod, 'algs') as algs:
-        result = _create_algorithm(config)
-    target = getattr(algs, cls_name)
-    # The mapped class was constructed with the config and its instance returned.
-    assert target.called, f'{cls_name} was not instantiated for fit_type={fit_type!r}'
-    assert result is target.return_value
-    assert config in target.call_args.args
+def test_fit_type_registry_maps_each_code_to_its_class(fit_type, cls_name):
+    """Each code resolves to exactly its algorithm class (the same identity the
+    facade exposes) -- the original 'typo can't slip through' guarantee, now on
+    the table itself."""
+    assert FIT_TYPE_REGISTRY[fit_type].cls is getattr(algs, cls_name)
 
 
-def test_create_algorithm_passes_sa_flag():
-    """fit_type 'sa' is the same class as 'mh'/'pt' but must pass sa=True."""
-    config = _config_with_fit_type('sa')
-    with mock.patch.object(pybnf_mod, 'algs') as algs:
-        _create_algorithm(config)
-    assert algs.BasicBayesMCMCAlgorithm.call_args.kwargs == {'sa': True}
+def test_sa_binds_sa_kwarg_all_others_empty():
+    """'sa' is the same class as 'mh'/'pt' but carries the sa=True variant flag;
+    every other entry constructs with no extra kwargs."""
+    assert FIT_TYPE_REGISTRY['sa'].kwargs == {'sa': True}
+    for code, entry in FIT_TYPE_REGISTRY.items():
+        if code != 'sa':
+            assert entry.kwargs == {}, code
+
+
+def test_only_mh_and_sa_are_deprecated():
+    assert {code for code, e in FIT_TYPE_REGISTRY.items() if e.deprecated} == {'mh', 'sa'}
+
+
+def test_families_partition_the_codes():
+    fam = {code: e.family for code, e in FIT_TYPE_REGISTRY.items()}
+    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa'}
+    assert {c for c, f in fam.items() if f == 'sampler'} == {'mh', 'pt', 'am', 'dream', 'p_dream'}
+    assert {c for c, f in fam.items() if f == 'checker'} == {'check'}
+
+
+# --- _create_algorithm reads the table (thin construct seam) ------------------
+
+def test_create_algorithm_constructs_via_registry(monkeypatch):
+    """_create_algorithm looks the entry up, constructs cls(config, **kwargs),
+    and returns the instance. Proven with a fake entry (a Mock class) so no real,
+    heavyweight algorithm is built -- this is the generic dispatch contract."""
+    sentinel = mock.Mock(name='FakeAlgorithm')
+    entry = FitTypeEntry(cls=sentinel, kwargs={'flag': True}, family='optimizer',
+                         display_name='Fake')
+    monkeypatch.setitem(FIT_TYPE_REGISTRY, '_fake', entry)
+    config = _config_with_fit_type('_fake')
+
+    result = _create_algorithm(config)
+
+    assert sentinel.call_args.args == (config,)
+    assert sentinel.call_args.kwargs == {'flag': True}
+    assert result is sentinel.return_value
+
+
+def test_create_algorithm_warns_on_deprecated(monkeypatch, caplog):
+    """A deprecated entry warns (logger + user-facing print1) but still constructs."""
+    sentinel = mock.Mock(name='FakeAlgorithm')
+    entry = FitTypeEntry(cls=sentinel, family='sampler', display_name='Fake', deprecated=True)
+    monkeypatch.setitem(FIT_TYPE_REGISTRY, '_fake_dep', entry)
+    printed = mock.Mock()
+    monkeypatch.setattr(pybnf_mod, 'print1', printed)
+
+    with caplog.at_level(logging.WARNING):
+        result = _create_algorithm(_config_with_fit_type('_fake_dep'))
+
+    assert any('deprecated' in r.getMessage() for r in caplog.records)
+    assert printed.called and 'deprecated' in printed.call_args.args[0]
+    assert result is sentinel.return_value  # still runs
+
+
+def test_create_algorithm_does_not_warn_for_active_fit_type(monkeypatch, caplog):
+    """Negative control: a non-deprecated entry emits no warning on either channel."""
+    entry = FitTypeEntry(cls=mock.Mock(), family='sampler', display_name='Fake')
+    monkeypatch.setitem(FIT_TYPE_REGISTRY, '_fake_active', entry)
+    printed = mock.Mock()
+    monkeypatch.setattr(pybnf_mod, 'print1', printed)
+
+    with caplog.at_level(logging.WARNING):
+        _create_algorithm(_config_with_fit_type('_fake_active'))
+
+    assert not printed.called
+    assert not any('deprecated' in r.getMessage() for r in caplog.records)
 
 
 def test_create_algorithm_rejects_unknown_fit_type():
-    config = _config_with_fit_type('not_a_real_type')
-    with mock.patch.object(pybnf_mod, 'algs'):
-        with pytest.raises(PybnfError, match='Invalid fit_type'):
-            _create_algorithm(config)
+    with pytest.raises(PybnfError, match='Invalid fit_type'):
+        _create_algorithm(_config_with_fit_type('not_a_real_type'))
 
+
+# --- argument parser ----------------------------------------------------------
 
 def test_build_arg_parser_defaults():
     args = _build_arg_parser().parse_args([])

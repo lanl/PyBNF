@@ -7,6 +7,7 @@ from .config import init_logging
 from .printing import print0, print1, print2, PybnfError
 from .cluster import Cluster
 from .pset import Trajectory
+from .registry import FIT_TYPE_REGISTRY
 import pybnf.algorithms as algs
 import pybnf.printing as printing
 
@@ -245,33 +246,24 @@ def _prepare_run_directories(config, cmdline_args):
 
 
 def _create_algorithm(config):
-    """Instantiate the fitting algorithm selected by ``config['fit_type']``."""
+    """Instantiate the fitting algorithm selected by ``config['fit_type']``.
+
+    Dispatch goes through the self-registering FIT_TYPE_REGISTRY, populated when
+    ``pybnf.algorithms`` is imported above (each leaf's ``@register_fit_type``
+    fires on import); see ADR-0005. Deprecated fit types warn but still run.
+    The mh-vs-pt difference is handled in Config by setting or not setting the
+    exchange_every key; sa runs the same class in simulated-annealing mode.
+    """
+    logger = logging.getLogger(__name__)
     fit_type = config.config['fit_type']
-    if fit_type == 'pso':
-        return algs.ParticleSwarm(config)
-    elif fit_type == 'de':
-        return algs.DifferentialEvolution(config)
-    elif fit_type == 'ss':
-        return algs.ScatterSearch(config)
-    elif fit_type == 'mh' or fit_type == 'pt':
-        # Note: mh vs pt difference is handled in Config by setting or not setting the exchange_every key.
-        return algs.BasicBayesMCMCAlgorithm(config)
-    elif fit_type == 'am':
-        return algs.Adaptive_MCMC(config)
-    elif fit_type == 'sa':
-        return algs.BasicBayesMCMCAlgorithm(config, sa=True)
-    elif fit_type == 'sim':
-        return algs.SimplexAlgorithm(config)
-    elif fit_type == 'ade':
-        return algs.AsynchronousDifferentialEvolution(config)
-    elif fit_type == 'dream':
-        return algs.DreamAlgorithm(config)
-    elif fit_type == 'p_dream':
-        return algs.PDreamAlgorithm(config)
-    elif fit_type == 'check':
-        return algs.ModelCheck(config)
-    else:
+    entry = FIT_TYPE_REGISTRY.get(fit_type)
+    if entry is None:
         raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, dream, p_dream, check' % fit_type)
+    if entry.deprecated:
+        msg = 'fit_type %s is deprecated and may be removed in a future release.' % fit_type
+        logger.warning(msg)
+        print1('Warning: %s' % msg)
+    return entry.cls(config, **entry.kwargs)
 
 
 def _refine_best_fit(config, alg, cluster, debug):

@@ -8,6 +8,7 @@ loop + execution seam; it makes no core.* call of its own.
 from ..base import Algorithm
 from ...pset import PSet
 from ...printing import print1, print2
+from ...registry import register_fit_type
 
 import logging
 import numpy as np
@@ -18,6 +19,7 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
+@register_fit_type('ss', family='optimizer', display_name='Scatter Search')
 class ScatterSearch(Algorithm):
     """
     Implements ScatterSearch as described in the introduction of Penas et al 2017 (but not the fancy parallelized

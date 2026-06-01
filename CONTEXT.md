@@ -123,15 +123,17 @@ _Avoid_: central tendency, link convention
 
 ## Algorithms
 
-PyBNF's fit types fall into two families; the code and configuration treat them
-distinctly (`mh`, `pt`, `sa`, `am`, `dream`, `p_dream` form the Bayesian group).
+PyBNF's fit types fall into three families — optimization algorithms, Bayesian
+samplers, and checkers (the `checker` family, currently just `check`); the code,
+configuration, and the registry `family` field treat them distinctly (`mh`,
+`pt`, `am`, `dream`, `p_dream` form the Bayesian group).
 
 **Optimization Algorithm**:
 A fit type that searches for the single best-fitting PSet. Codes: `de` (Differential Evolution, the default), `ade` (Asynchronous DE), `pso` (Particle Swarm), `ss` (Scatter Search), `sim` (Nelder–Mead Simplex).
 _Avoid_: optimizer, minimizer, solver
 
 **Bayesian Sampler**:
-A fit type that samples the posterior distribution of the free parameters instead of returning one best PSet. Codes: `am` (Adaptive MCMC), `dream` (DREAM(ZS)), `p_dream` (P-DREAM), `pt` (Parallel Tempering); `mh` (Metropolis–Hastings) and `sa` (Simulated Annealing) are deprecated.
+A fit type that samples the posterior distribution of the free parameters instead of returning one best PSet. Codes: `am` (Adaptive MCMC), `dream` (DREAM(ZS)), `p_dream` (P-DREAM), `pt` (Parallel Tempering); `mh` (Metropolis–Hastings) is deprecated. `sa` (Simulated Annealing) currently reuses this class but is a deprecated *optimizer*, not a sampler (registry family `optimizer`; M2.2 extracts it to `optimizers/`).
 _Avoid_: MCMC run, posterior fit
 
 **DREAM(ZS)** (`dream`):
@@ -151,8 +153,8 @@ One round of an algorithm's main loop and the unit in which a fit's budget is co
 _Avoid_: step, epoch
 
 **Model Check** (`fit_type = check`):
-A utility run that simulates the model once and reports the objective value without fitting.
-_Avoid_: dry run, validation
+A first-class checking method — statistical model checking: evaluates the objective value and constraint satisfaction for given parameters without searching parameter space. Registers in the `checker` family, a peer of optimization algorithms and Bayesian samplers (not a utility afterthought).
+_Avoid_: dry run, validation, utility run
 
 ## Architecture
 

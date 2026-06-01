@@ -8,6 +8,7 @@ inherits its run loop + execution seam; it makes no core.* call of its own.
 from ..base import Algorithm
 from ...pset import PSet
 from ...printing import print1, print2
+from ...registry import register_fit_type
 
 import logging
 import numpy as np
@@ -19,6 +20,7 @@ import re
 logger = logging.getLogger('pybnf.algorithms')
 
 
+@register_fit_type('pso', family='optimizer', display_name='Particle Swarm Optimization')
 class ParticleSwarm(Algorithm):
     """
     Implements particle swarm optimization.
