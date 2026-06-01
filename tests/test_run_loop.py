@@ -731,3 +731,76 @@ class TestRerunBestFitToSaveData:
         algo._rerun_best_fit_to_save_data(object())  # must not raise on the plain model
 
         assert toggleable.save_files is False
+
+
+def _bare_finalize_algo(tmp_path, *, bootstrap_number=None, bootstrap=None, refine=False):
+    """Minimal Algorithm carrying only what _finalize_backup_pickle reads."""
+    algo = object.__new__(algorithms.Algorithm)
+    algo.config = type('Cfg', (), {})()
+    algo.config.config = {'output_dir': str(tmp_path), 'bootstrap': bootstrap}
+    algo.bootstrap_number = bootstrap_number
+    algo.refine = refine
+    return algo
+
+
+class TestFinalizeBackupPickle:
+
+    def test_renames_backup_to_finished(self, tmp_path):
+        """On a completed fit, alg_backup.bp is renamed (content-preserving) to
+        alg_finished.bp — the marker a resume uses to recognize a done run."""
+        algo = _bare_finalize_algo(tmp_path)
+        bp = str(tmp_path) + '/alg_backup.bp'
+        with open(bp, 'wb') as fh:
+            fh.write(b'pickle-bytes')
+
+        algo._finalize_backup_pickle()
+
+        finished = str(tmp_path) + '/alg_finished.bp'
+        assert not os.path.exists(bp)        # moved, not copied
+        assert os.path.isfile(finished)
+        with open(finished, 'rb') as fh:
+            assert fh.read() == b'pickle-bytes'
+
+    def test_refine_uses_refine_finished_name(self, tmp_path):
+        """A Simplex refinement finishes to alg_refine_finished.bp, kept distinct
+        from a primary fit's alg_finished.bp."""
+        algo = _bare_finalize_algo(tmp_path, refine=True)
+        with open(str(tmp_path) + '/alg_backup.bp', 'wb') as fh:
+            fh.write(b'x')
+
+        algo._finalize_backup_pickle()
+
+        assert os.path.isfile(str(tmp_path) + '/alg_refine_finished.bp')
+        assert not os.path.exists(str(tmp_path) + '/alg_finished.bp')
+
+    @pytest.mark.parametrize('bootstrap_number, bootstrap, renamed', [
+        (None, None, True),   # not a bootstrap run -> this is the final pass
+        (3, 3, True),         # the last bootstrap replicate
+        (1, 3, False),        # mid-bootstrap: keep alg_backup.bp for the next replicate
+    ])
+    def test_bootstrap_guard_controls_rename(self, tmp_path, bootstrap_number, bootstrap, renamed):
+        """Only the terminal pass renames the backup; an intermediate bootstrap
+        replicate leaves alg_backup.bp in place for the replicate that follows."""
+        algo = _bare_finalize_algo(tmp_path, bootstrap_number=bootstrap_number, bootstrap=bootstrap)
+        bp = str(tmp_path) + '/alg_backup.bp'
+        with open(bp, 'wb') as fh:
+            fh.write(b'x')
+
+        algo._finalize_backup_pickle()
+
+        finished = str(tmp_path) + '/alg_finished.bp'
+        if renamed:
+            assert os.path.isfile(finished) and not os.path.exists(bp)
+        else:
+            assert os.path.isfile(bp) and not os.path.exists(finished)
+
+    def test_missing_backup_is_warned_not_fatal(self, tmp_path, caplog):
+        """If no backup was ever written, the rename's OSError is swallowed with a
+        warning — finishing a run must not depend on a backup existing."""
+        algo = _bare_finalize_algo(tmp_path)  # no alg_backup.bp on disk
+
+        with caplog.at_level(logging.WARNING, logger='pybnf.algorithms'):
+            algo._finalize_backup_pickle()  # must not raise
+
+        assert 'Tried to move pickled algorithm, but it was not found' in caplog.text
+        assert not os.path.exists(str(tmp_path) + '/alg_finished.bp')

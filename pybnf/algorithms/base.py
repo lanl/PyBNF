@@ -989,16 +989,7 @@ class Algorithm(object):
         best_pset = self.trajectory.best_fit()
         self._copy_best_fit_sims(best_pset, best_name)
         self._rerun_best_fit_to_save_data(best_pset)
-        if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:
-            try:
-                os.replace('%s/alg_backup.bp' % self.config.config['output_dir'],
-                          '%s/alg_%s.bp' % (self.config.config['output_dir'],
-                                            ('finished' if not self.refine else 'refine_finished')))
-                logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
-                            ('finished' if not self.refine else 'refine_finished'))
-            except OSError:
-                logger.warning('Tried to move pickled algorithm, but it was not found')
-
+        self._finalize_backup_pickle()
         if (self._is_simplex or self.config.config['refine'] != 1) and self.bootstrap_number is None:
             # End of fitting; delete unneeded files
             if self.config.config['delete_old_files'] >= 1:
@@ -1091,6 +1082,27 @@ class Algorithm(object):
             for m in self.model_list:
                 if hasattr(m, 'save_files'):
                     m.save_files = False
+
+    def _finalize_backup_pickle(self):
+        """Rename the periodic backup pickle to its 'finished' name on completion.
+
+        On the final (non-intermediate-bootstrap) pass, alg_backup.bp becomes
+        alg_finished.bp — or alg_refine_finished.bp for a Simplex refinement — so a
+        resumed run can tell a completed fit from one interrupted mid-flight. A
+        missing backup (it was never written) is a warning, not a failure.
+
+        Split out of run()'s tail so the rename can be unit-tested without a dask
+        client. See tests/test_run_loop.py.
+        """
+        if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:
+            try:
+                os.replace('%s/alg_backup.bp' % self.config.config['output_dir'],
+                          '%s/alg_%s.bp' % (self.config.config['output_dir'],
+                                            ('finished' if not self.refine else 'refine_finished')))
+                logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
+                            ('finished' if not self.refine else 'refine_finished'))
+            except OSError:
+                logger.warning('Tried to move pickled algorithm, but it was not found')
 
     def cleanup(self):
         """
