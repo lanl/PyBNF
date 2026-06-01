@@ -129,7 +129,7 @@ def _patch_counter(monkeypatch, fail_count):
         def evaluate_multiple(self, *args, **kwargs):
             self.calls.append((args, kwargs))
             return fail_count
-    monkeypatch.setattr(algorithms, 'ConstraintCounter', _Counter)
+    monkeypatch.setattr(algorithms.model_check, 'ConstraintCounter', _Counter)
     return holder
 
 
