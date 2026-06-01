@@ -20,15 +20,18 @@ cancelled), not simulation values. The substitution strategy:
     generations, built via ``object.__new__`` so we set only the attributes
     ``run`` reads (the real constructor parses models and builds directories).
 
-NOTE: ``Algorithm.run`` is a ~180-line monolith that mixes the core loop with
-end-of-run file shuffling (best-fit copying, sim-dir teardown). We keep that tail
-cheap (delete_old_files=0, empty model suffixes) rather than exercise it. Pulling
-the per-result body out of ``run`` into its own method would let these decisions
-be unit-tested without the fake-client harness — recommended before the
-algorithms.py split.
+NOTE: ``Algorithm.run``'s end-of-run tail (best-fit copying, the save_best_data
+rerun, the backup-pickle finalize, and sim-dir teardown) has been extracted into
+named methods — ``_copy_best_fit_sims`` / ``_rerun_best_fit_to_save_data`` /
+``_finalize_backup_pickle`` / ``_teardown_sim_dir`` — each unit-tested directly in
+the "Run-loop tail" section below, without the fake-client harness (the same play
+as the per-result helpers ``_record_result_and_decide`` / ``_fold_group_result``).
+The fake-client tests up here still drive that tail end-to-end, kept cheap
+(delete_old_files=0, empty model suffixes), so the wiring stays covered too.
 """
 import logging
 import os
+import pickle
 
 import numpy as np
 import pytest
@@ -855,3 +858,103 @@ class TestTeardownSimDir:
         algo._teardown_sim_dir()
 
         assert not os.path.exists(algo.sim_dir)
+
+
+# --------------------------------------------------------------------------- #
+# Backup round-trip and the resume entry point
+#
+# backup() is already a method; these cover the two halves of the
+# crash-resume contract it anchors: that a backup pickles to a loadable
+# (algorithm, pending_psets) pair, and that run(resume=...) re-enters from a
+# supplied pset list instead of start_run().
+# --------------------------------------------------------------------------- #
+class _PicklableCfg:
+    """Module-level config stand-in. The other helpers build config via
+    ``type('Cfg', (), {})()``, whose instances are NOT picklable (no importable
+    qualified name); backup() pickles ``self``, so its algo needs a real class.
+    ``variables`` mirrors the free-parameter definitions Algorithm.__setstate__
+    feeds to Trajectory.load_trajectory when it reconstitutes the trajectory."""
+
+    def __init__(self, config, variables):
+        self.config = config
+        self.variables = variables
+
+
+def _bare_backup_algo(tmp_path, *, refine=False, delete_old_files=0):
+    """Minimal *picklable* Algorithm carrying what backup()/output_results read.
+
+    The trajectory is deliberately excluded from the pickle (Algorithm.should_pickle)
+    and reloaded from sorted_params_backup.txt on unpickle, so config.variables must
+    match the single 'v1__FREE' column those rows carry."""
+    out = str(tmp_path)
+    res_dir = out + '/Results'
+    os.makedirs(res_dir, exist_ok=True)
+
+    variables = [pset.FreeParameter('v1__FREE', 'uniform_var', 0, 100)]
+    algo = object.__new__(algorithms.Algorithm)
+    algo.config = _PicklableCfg(
+        {'output_dir': out, 'delete_old_files': delete_old_files, 'num_to_output': 100},
+        variables)
+    algo.res_dir = res_dir
+    algo.refine = refine
+    algo.output_counter = 0
+    algo.trajectory = Trajectory(100)
+    algo.trajectory.add(_pset('iter0run0', 5.0), 5.0, 'iter0run0')
+    return algo
+
+
+class TestBackup:
+
+    def test_backup_writes_loadable_pickle_atomically(self, tmp_path):
+        """backup() saves (self, pending_psets) to alg_backup.bp via a temp file +
+        atomic replace, and dumps the trajectory to sorted_params_backup.txt. The
+        pickle must round-trip to a real Algorithm whose trajectory and the pending
+        psets survive — that is the state a -r resume reloads."""
+        algo = _bare_backup_algo(tmp_path)
+        pending = (_pset('pending0', 11.0), _pset('pending1', 12.0))
+
+        algo.backup(pending_psets=pending)
+
+        bp = str(tmp_path) + '/alg_backup.bp'
+        assert os.path.isfile(bp)
+        assert not os.path.exists(str(tmp_path) + '/alg_backup_temp.bp')  # temp consumed by replace
+        assert os.path.isfile(algo.res_dir + '/sorted_params_backup.txt')  # output_results ran
+
+        with open(bp, 'rb') as fh:
+            loaded_algo, loaded_pending = pickle.load(fh)
+        assert isinstance(loaded_algo, algorithms.Algorithm)
+        np.testing.assert_allclose(loaded_algo.trajectory.best_score(), 5.0)
+        assert [p.name for p in loaded_pending] == ['pending0', 'pending1']
+
+
+class _ResumeProbe(algorithms.Algorithm):
+    """start_run records that it ran (it must NOT, on a resume) and would return a
+    sentinel pset; got_result stops after the first result so the test stays tiny."""
+
+    def start_run(self):
+        self.start_run_called = True
+        return [_pset('should_not_be_used', 99.0)]
+
+    def got_result(self, res):
+        self.seen.append(res)
+        return 'STOP'
+
+
+def test_resume_uses_provided_psets_and_skips_start_run(tmp_path, monkeypatch):
+    """run(resume=[...]) seeds the first generation from the supplied psets and
+    never calls start_run — the entry point a -r restart takes after unpickling a
+    backup's pending psets."""
+    monkeypatch.setattr(algorithms.core, 'as_completed', _FakeAsCompleted)
+    algo = _make_algorithm(tmp_path, [[_pset('dummy', 1.0)]], cls=_ResumeProbe)
+    algo.start_run_called = False
+    resume = [_pset('resume0', 7.0), _pset('resume1', 8.0)]
+    client = _FakeClient()
+
+    algo.run(client, resume=resume)
+
+    assert algo.start_run_called is False              # start_run bypassed
+    assert len(client.submitted) == 2                  # both resume psets submitted
+    assert all(fn is algorithms.core.run_job for fn, _ in client.submitted)
+    # FIFO drain hits resume0 first, whose value 7.0 is its score, then STOP.
+    assert len(algo.seen) == 1
+    np.testing.assert_allclose(algo.seen[0].score, 7.0)
