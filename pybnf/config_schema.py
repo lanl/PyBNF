@@ -136,13 +136,9 @@ class GlobalConfig(PyBNFConfigModel):
     random_seed: Optional[int] = None
 
     # --- differential evolution ---
-    mutation_rate: float = 0.5
-    mutation_factor: float = 0.5
-    islands: int = 1
-    migrate_every: int = 20
-    num_to_migrate: int = 3
-    stop_tolerance: float = 0.002
-    de_strategy: str = 'rand1'
+    # Migrated to DEFamilyConfig / DifferentialEvolutionConfig in
+    # algorithms/optimizers/differential_evolution.py (Stage b); still present in
+    # the effective config for every fit_type via default_union().
 
     # --- particle swarm ---
     # Migrated to PSOConfig in algorithms/optimizers/particle_swarm.py (Stage b);

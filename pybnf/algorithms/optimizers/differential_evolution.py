@@ -8,6 +8,7 @@ execution seam are inherited from Algorithm.
 
 
 from ..base import Algorithm
+from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
@@ -21,6 +22,30 @@ import copy
 # Preserve the original module logger name so log records keep the
 # 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
+
+
+class DEFamilyConfig(PyBNFConfigModel):
+    """Config fields shared by the whole DE family, co-located with
+    ``DifferentialEvolutionBase`` (ADR-0002, ADR-0006) -- exactly the keys that
+    base ``__init__`` reads. ``ade`` registers against this base directly (it adds
+    no config keys); ``de`` extends it (:class:`DifferentialEvolutionConfig`).
+    Values are byte-identical to the old ``GlobalConfig`` defaults.
+    """
+
+    mutation_rate: float = 0.5
+    mutation_factor: float = 0.5
+    stop_tolerance: float = 0.002
+    de_strategy: str = 'rand1'
+
+
+class DifferentialEvolutionConfig(DEFamilyConfig):
+    """``de``-specific config: the island/migration fields only synchronous DE
+    reads (``ade`` is async and ignores them). Demonstrates the shared-base
+    pattern the MCMC family reuses (ADR-0006)."""
+
+    islands: int = 1
+    migrate_every: int = 20
+    num_to_migrate: int = 3
 
 
 class DifferentialEvolutionBase(Algorithm):
@@ -91,7 +116,8 @@ class DifferentialEvolutionBase(Algorithm):
         return NotImplementedError("got_result() not implemented in DifferentialEvolutionBase class")
 
 
-@register_fit_type('de', family='optimizer', display_name='Differential Evolution')
+@register_fit_type('de', family='optimizer', display_name='Differential Evolution',
+                   schema=DifferentialEvolutionConfig)
 class DifferentialEvolution(DifferentialEvolutionBase):
     """
     Implements the parallelized, island-based differential evolution algorithm
@@ -348,7 +374,8 @@ class DifferentialEvolution(DifferentialEvolutionBase):
             return []
 
 
-@register_fit_type('ade', family='optimizer', display_name='Asynchronous Differential Evolution')
+@register_fit_type('ade', family='optimizer', display_name='Asynchronous Differential Evolution',
+                   schema=DEFamilyConfig)
 class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
     """
     Implements a simple asynchronous differential evolution algorithm.

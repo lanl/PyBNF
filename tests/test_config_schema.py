@@ -132,12 +132,22 @@ class TestConfigurationBuildConfig:
         # and the full PSO default block is still present (union baseline)
         assert eff['social'] == 1.5
 
-    def test_unmigrated_method_keys_pass_through_as_extras(self):
-        # PSO keys on a non-pso fit are not owned by GlobalConfig (migrated out)
-        # nor by the de schema (de not migrated) -> they ride through as extras,
-        # unchanged, exactly as before Stage (b).
+    def test_other_methods_keys_pass_through_as_extras(self):
+        # A *different* method's keys are owned neither by GlobalConfig (migrated
+        # out) nor by the selected fit's schema -> they ride through as extras,
+        # unchanged, exactly as before Stage (b). Here: PSO's 'cognitive' on a de
+        # fit.
         eff = config.Configuration._build_config({'fit_type': 'de', 'cognitive': 2.0})
         assert eff['cognitive'] == 2.0
+
+    def test_de_island_keys_validated_for_de_pass_through_for_ade(self):
+        # The DE shared-base split: de owns the island/migration fields (validated
+        # by DifferentialEvolutionConfig); ade uses only the family base, so for
+        # an ade fit those keys ride through as extras (still present via union).
+        de_eff = config.Configuration._build_config({'fit_type': 'de', 'islands': '4'})
+        assert de_eff['islands'] == 4 and type(de_eff['islands']) is int  # schema-coerced
+        ade_eff = config.Configuration._build_config({'fit_type': 'ade', 'islands': 4})
+        assert ade_eff['islands'] == 4  # union default (1) overridden by the extra
 
 
 class TestRegistrySchemaSeam:
@@ -150,10 +160,25 @@ class TestRegistrySchemaSeam:
         from pybnf.registry import FIT_TYPE_REGISTRY
         assert FIT_TYPE_REGISTRY['pso'].schema is PSOConfig
 
-    def test_only_pso_migrated_so_far(self):
-        # Stage (b) Step 1 migrates exactly pso; de/check (and the rest) still
-        # pass their keys through. Each later step flips one more of these.
+    def test_de_family_shares_a_base_schema(self):
+        # Shared-base pattern (ADR-0006): ade registers against the family base
+        # directly (adds no keys); de extends it with the island/migration fields.
+        from pybnf.algorithms.optimizers.differential_evolution import (
+            DEFamilyConfig, DifferentialEvolutionConfig)
         from pybnf.registry import FIT_TYPE_REGISTRY
-        assert FIT_TYPE_REGISTRY['pso'].schema is not None
-        assert FIT_TYPE_REGISTRY['de'].schema is None
+        assert FIT_TYPE_REGISTRY['ade'].schema is DEFamilyConfig
+        assert FIT_TYPE_REGISTRY['de'].schema is DifferentialEvolutionConfig
+        assert issubclass(DifferentialEvolutionConfig, DEFamilyConfig)
+        assert 'mutation_rate' in DEFamilyConfig.owned_keys()
+        assert 'islands' in DifferentialEvolutionConfig.owned_keys()
+        assert 'islands' not in DEFamilyConfig.owned_keys()
+
+    def test_migrated_methods_so_far(self):
+        # Stage (b) migrates one method/family per step: pso (Step 1), de+ade
+        # (Step 2). The rest still pass their keys through. Each later step adds
+        # to this set -- a deliberate per-step ratchet.
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
+        assert migrated == {'pso', 'de', 'ade'}
+        assert FIT_TYPE_REGISTRY['ss'].schema is None
         assert FIT_TYPE_REGISTRY['check'].schema is None
