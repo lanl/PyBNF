@@ -4,6 +4,9 @@
 from .data import Data, DuplicateColumnError
 from . import objective  # noqa: F401 -- imported for its side effect: running the module fires the @register_objfunc decorators, populating OBJFUNC_REGISTRY before _load_obj_func dispatches.
 from .registry import OBJFUNC_REGISTRY
+from . import config_schema
+
+from pydantic import ValidationError
 
 from .pset import BNGLModel, ModelError, SbmlModel, SbmlModelNoTimeout, FreeParameter, TimeCourse, ParamScan, \
     Mutation, MutationSet
@@ -140,9 +143,7 @@ class Configuration(object):
             self.check_unused_keys(d)
         if d['fit_type'] in ('mh', 'pt', 'sa', 'dream', 'p_dream', 'am'):
             self.postprocess_mcmc_keys(d)
-        self.config = self.default_config()
-        for k, v in d.items():
-            self.config[k] = v
+        self.config = self._build_config(d)
         if 'step_size' in d:
             self.config['adaptive_step_size'] = False
         self._check_random_seed()
@@ -173,66 +174,44 @@ class Configuration(object):
 
     @staticmethod
     def default_config():
-        """Default configuration values"""
+        """Default configuration values.
+
+        The defaults now live in the typed Pydantic schema (``config_schema``,
+        ADR-0002); this is a thin compat shim over it so existing callers keep
+        working. Returns a fresh plain dict each call.
+        """
+        return config_schema.default_config_dict()
+
+    @staticmethod
+    def _build_config(d):
+        """Build the effective config dict from a raw parsed config ``d``.
+
+        The flow is ``raw dict -> Pydantic (validate / coerce / default) ->
+        effective dict`` (ADR-0002). The raw dict is split into *schema keys*
+        (the global defaults, owned by ``GlobalConfig``) and *extras* -- the
+        required user keys (``population_size`` / ``max_iterations``), method-only
+        keys (``beta_range`` / ``init_size`` / ...), and the structural
+        model-path / free-parameter (tuple) / ``models`` / ``exp_data`` keys.
+        The schema portion is validated and defaulted by the model; the extras
+        carry through unchanged. A Pydantic ``ValidationError`` becomes a
+        ``PybnfError``.
+
+        The result is a plain dict so the existing ``config.config['x']`` reaches
+        and writes stay untouched (dict-compat per ADR-0002); typed access
+        migrates opportunistically in Stage (c).
+        """
+        schema_input = {k: v for k, v in d.items()
+                        if isinstance(k, str) and k in config_schema.SCHEMA_KEYS}
+        extras = {k: v for k, v in d.items()
+                  if not (isinstance(k, str) and k in config_schema.SCHEMA_KEYS)}
         try:
-            bng_command = os.environ['BNGPATH'] + '/BNG2.pl'
-        except KeyError:
-            bng_command = ''
-
-
-        default = {
-            'objfunc': 'chi_sq', 'output_dir': 'pybnf_output', 'delete_old_files': 1, 'num_to_output': 5000,
-            'output_every': 20, 'initialization': 'lh', 'refine': 0, 'bng_command': bng_command, 'smoothing': 1,
-            'backup_every': 1, 'time_course': (), 'param_scan': (), 'min_objective': -np.inf, 'bootstrap': 0,
-            'bootstrap_max_obj': None, 'ind_var_rounding': 0, 'local_objective_eval': 0, 'constraint_scale': 1.0,
-            'sbml_integrator': 'cvode', 'sbml_backend': 'roadrunner', 'bngl_backend': 'auto',
-            'sbml_ssa_strict': 1, 'stochastic_seed': 'auto',
-            'parallel_count': None, 'save_best_data': 0,
-            'simulation_dir': None,
-            'parallelize_models': 1, 'starting_params': None, 'random_seed': None,
-
-            'mutation_rate': 0.5, 'mutation_factor': 0.5, 'islands': 1, 'migrate_every': 20, 'num_to_migrate': 3,
-            'stop_tolerance': 0.002, 'de_strategy': 'rand1',
-
-            'particle_weight': 0.7, 'adaptive_n_max': 30, 'adaptive_n_stop': np.inf, 'adaptive_abs_tol': 0.0,
-            'adaptive_rel_tol': 0.0, 'cognitive': 1.5, 'social': 1.5, 'v_stop': 0.,
-
-            'local_min_limit': 5,
-
-            'step_size': 0.2, 'burn_in': 10000, 'sample_every': 100, 'output_hist_every': 100, 'hist_bins': 10, 'adaptive': 10000,
-            'credible_intervals': [68., 95.], 'beta': [1.0], 'exchange_every': 20, 'beta_max': np.inf, 'cooling': 0.01, 'continue_run': 0, 
-            'neg_bin_r': 24.0, 'stablizingCov': 0.001,'calculate_covari':None,  
-
-            'simplex_step': 1.0, 'simplex_reflection': 1.0, 'simplex_expansion':1.0, 'simplex_contraction': 0.5,
-            'simplex_shrink': 0.5, 'simplex_stop_tol': 0.,
-
-            'max_failed_simulations': 100,
-            'wall_time_gen': 3600,
-            'wall_time_sim': None,  # Chosen when loading models
-            'normalization': None,
-
-            'cluster_type': None,
-            'scheduler_node': None,
-            'scheduler_file': None,
-            'worker_nodes': None,
-            'output_trajectory': None,
-            'output_noise_trajectory': None,
-
-            'gamma_prob': 0.1,
-            'zeta': 1e-6,
-            'lambda': 0.1,
-            'crossover_number': 3,
-            'adaptive_step_size': True,
-            'archive_size': None,
-            'archive_thin_rate': 10,
-            'snooker_prob': 0.1,
-            'delta': 1,
-            'outlier_method': 'iqr',
-            'rhat_threshold': 0.0,
-            'diagnostics_every': 0,
-            'precondition_adapt': None
-        }
-        return default
+            effective = config_schema.build_effective_global(schema_input)
+        except ValidationError as e:
+            raise PybnfError('Invalid configuration', 'Invalid configuration:\n%s' % e)
+        # schema_input and extras are disjoint by construction, so no key in the
+        # validated defaults is clobbered by an unvalidated extra.
+        effective.update(extras)
+        return effective
 
     def _check_random_seed(self):
         """Validate the optional random seed before NumPy consumes it."""

@@ -19,6 +19,7 @@ import pybnf.objective as objective
 import pybnf.algorithms as algorithms
 import pybnf.cluster as cluster
 import pybnf.config as config
+import pybnf.config_schema as config_schema
 import pybnf.printing as printing
 import pybnf.constraint as constraint
 
