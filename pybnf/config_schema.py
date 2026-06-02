@@ -3,9 +3,17 @@
 M2.1 turns PyBNF's configuration knowledge from scattered, untyped sources (the
 ``parse.py`` key-type lists, the hand-rolled ``default_config()`` dict, the
 per-fit_type preprocessing) into a typed Pydantic model that owns the defaults,
-types, and coercion in one place. This module holds the **global** schema; the
-per-method (family) schemas co-locate with their algorithm classes in M2.1
-Stage (b).
+types, and coercion in one place. This module holds the **global** schema and the
+shared :class:`PyBNFConfigModel` base; the per-method (family) schemas subclass
+that base and co-locate with their algorithm classes (M2.1 Stage b, ADR-0006),
+reached by ``Configuration._build_config`` through the registry
+(``FitTypeEntry.schema``).
+
+The effective config stays the **full union** of every method's defaults for
+every fit_type (ADR-0006): :func:`default_union` collects the global defaults
+plus every registered method schema's defaults, so a ``de`` fit still carries
+``cognitive`` / ``particle_weight`` / ... exactly as before. Per-method narrowing
+is deferred to Stage (c).
 
 The flow is ``pyparsing (structural) -> raw dict -> Pydantic (validate / coerce /
 default) -> effective dict``. ``Configuration`` keeps exposing a plain dict
@@ -44,6 +52,8 @@ import os
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .registry import FIT_TYPE_REGISTRY
+
 
 def _default_bng_command():
     """Reproduce ``default_config()``'s BNGPATH-derived default exactly."""
@@ -53,19 +63,46 @@ def _default_bng_command():
         return ''
 
 
-class GlobalConfig(BaseModel):
-    """The global configuration defaults, typed.
+class PyBNFConfigModel(BaseModel):
+    """Shared base for every PyBNF config model -- the global schema and each
+    per-method (family) schema (M2.1 Stage b, ADR-0006).
 
-    Field order and grouping mirror the old ``Configuration.default_config()``
-    so the two stay easy to diff and so the method-specific groups lift cleanly
-    into per-method schemas in Stage (b).
+    Carries the common pydantic settings, the :meth:`owned_keys` helper
+    ``Configuration._build_config`` uses to partition a raw config dict into
+    global / method / pass-through keys, and a no-op :meth:`postprocess` hook the
+    MCMC family overrides with the beta-ladder logic (all other models inherit
+    the no-op).
     """
 
     model_config = ConfigDict(
         populate_by_name=True,     # accept either 'lambda' (alias) or 'lambda_'
-        extra='forbid',            # only the schema keys are passed in; catch leaks
+        extra='forbid',            # only this model's keys are passed in; catch leaks
         arbitrary_types_allowed=True,
     )
+
+    @classmethod
+    def owned_keys(cls):
+        """The config-key names (aliases where defined) this model owns."""
+        return frozenset(
+            (f.alias or name) for name, f in cls.model_fields.items()
+        )
+
+    @classmethod
+    def postprocess(cls, conf_dict, fit_type):
+        """No-op preprocessing hook (ADR-0006). The MCMC-family schema overrides
+        this with ``postprocess_mcmc_keys`` (the beta ladder); every other model
+        inherits this no-op. Mutates and returns the raw config dict."""
+        return conf_dict
+
+
+class GlobalConfig(PyBNFConfigModel):
+    """The global (run-level) configuration defaults, typed.
+
+    Field order and grouping mirror the old ``Configuration.default_config()``
+    so the two stay easy to diff. The per-method groups (PSO, DE, ... ) lift out
+    into per-method schemas as Stage (b) migrates each method; what remains here
+    is the truly run-level surface plus not-yet-migrated method blocks.
+    """
 
     # --- global / run-level ---
     objfunc: str = 'chi_sq'
@@ -108,14 +145,8 @@ class GlobalConfig(BaseModel):
     de_strategy: str = 'rand1'
 
     # --- particle swarm ---
-    particle_weight: float = 0.7
-    adaptive_n_max: float = 30
-    adaptive_n_stop: float = float('inf')
-    adaptive_abs_tol: float = 0.0
-    adaptive_rel_tol: float = 0.0
-    cognitive: float = 1.5
-    social: float = 1.5
-    v_stop: float = 0.0
+    # Migrated to PSOConfig in algorithms/optimizers/particle_swarm.py (Stage b);
+    # still present in the effective config for every fit_type via default_union().
 
     # --- scatter search ---
     local_min_limit: int = 5
@@ -175,29 +206,63 @@ class GlobalConfig(BaseModel):
     precondition_adapt: Any = None
 
 
-def _schema_keys():
-    """Config-key names (aliases where defined) owned by the global schema."""
-    return frozenset(
-        (f.alias or name) for name, f in GlobalConfig.model_fields.items()
-    )
+# The config keys the global schema is the source of truth for. Used by
+# Configuration to split a raw config dict into global keys vs the selected
+# method's keys vs pass-through extras (tuple free-parameter keys, model-path
+# keys, required user keys, not-yet-migrated method keys, ...). Method-owned keys
+# (e.g. PSO's) are NOT in this set; they live on the per-method schema.
+SCHEMA_KEYS = GlobalConfig.owned_keys()
 
 
-# The set of config keys the global schema is the source of truth for. Used by
-# Configuration to split a raw config dict into schema keys vs pass-through
-# extras (tuple free-parameter keys, model-path keys, required user keys, ...).
-SCHEMA_KEYS = _schema_keys()
+def _registered_schemas():
+    """The distinct, non-None per-method schemas in the fit_type registry,
+    deduplicated by identity (several codes may share one schema)."""
+    seen = []
+    for entry in FIT_TYPE_REGISTRY.values():
+        schema = entry.schema
+        if schema is not None and schema not in seen:
+            seen.append(schema)
+    return seen
+
+
+def default_union():
+    """The fully-defaulted config as a plain dict: the global defaults unioned
+    with every registered method schema's defaults (ADR-0006).
+
+    This preserves the historical full-union effective config -- every fit_type
+    sees every method's defaults -- even though each method now owns its own
+    fields. Requires the algorithm leaves to be imported so the registry is
+    populated (``config.py`` does a side-effect ``from . import algorithms``);
+    with an empty registry it degrades to the global defaults alone.
+    """
+    eff = GlobalConfig().model_dump(by_alias=True)
+    for schema in _registered_schemas():
+        eff.update(schema().model_dump(by_alias=True))
+    return eff
 
 
 def default_config_dict():
-    """The fully-defaulted global config as a plain dict (replaces the old
-    hand-rolled ``default_config()`` literal; single source of truth)."""
-    return GlobalConfig().model_dump(by_alias=True)
+    """The fully-defaulted config as a plain dict (replaces the old hand-rolled
+    ``default_config()`` literal; single source of truth). Returns the full union
+    of global + per-method defaults so callers reading method keys off it keep
+    working."""
+    return default_union()
 
 
 def build_effective_global(schema_subset):
-    """Validate/coerce/default the schema portion of a raw config and return it
+    """Validate/coerce/default the global portion of a raw config and return it
     as a plain dict (keys by alias). ``schema_subset`` must contain only keys in
     :data:`SCHEMA_KEYS`. Raises ``pydantic.ValidationError`` on invalid input;
     the caller (``config.py``) translates that to ``PybnfError``.
     """
-    return GlobalConfig(**schema_subset).model_dump(by_alias=True)
+    return build_effective_method(GlobalConfig, schema_subset)
+
+
+def build_effective_method(schema, schema_subset):
+    """Validate/coerce/default the portion of a raw config owned by a per-method
+    ``schema`` (a :class:`PyBNFConfigModel` subclass) and return it as a plain
+    dict (keys by alias). ``schema_subset`` must contain only keys in
+    ``schema.owned_keys()``. Raises ``pydantic.ValidationError`` on invalid
+    input; the caller translates it to ``PybnfError``.
+    """
+    return schema(**schema_subset).model_dump(by_alias=True)

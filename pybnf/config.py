@@ -3,7 +3,8 @@
 
 from .data import Data, DuplicateColumnError
 from . import objective  # noqa: F401 -- imported for its side effect: running the module fires the @register_objfunc decorators, populating OBJFUNC_REGISTRY before _load_obj_func dispatches.
-from .registry import OBJFUNC_REGISTRY
+from . import algorithms  # noqa: F401 -- imported for its side effect: running the leaves fires the @register_fit_type decorators, populating FIT_TYPE_REGISTRY (incl. each method's config schema) before _build_config dispatches. No cycle: nothing in algorithms/ imports config.
+from .registry import OBJFUNC_REGISTRY, FIT_TYPE_REGISTRY
 from . import config_schema
 
 from pydantic import ValidationError
@@ -187,29 +188,51 @@ class Configuration(object):
         """Build the effective config dict from a raw parsed config ``d``.
 
         The flow is ``raw dict -> Pydantic (validate / coerce / default) ->
-        effective dict`` (ADR-0002). The raw dict is split into *schema keys*
-        (the global defaults, owned by ``GlobalConfig``) and *extras* -- the
-        required user keys (``population_size`` / ``max_iterations``), method-only
-        keys (``beta_range`` / ``init_size`` / ...), and the structural
-        model-path / free-parameter (tuple) / ``models`` / ``exp_data`` keys.
-        The schema portion is validated and defaulted by the model; the extras
-        carry through unchanged. A Pydantic ``ValidationError`` becomes a
+        effective dict`` (ADR-0002). The effective dict is the **full union** of
+        every method's defaults for every fit_type (ADR-0006), assembled in four
+        overlays:
+
+        1. a default-union baseline (the global defaults unioned with every
+           registered method schema's defaults), so a ``de`` fit still carries
+           ``cognitive`` / ``particle_weight`` / ... ;
+        2. the validated *global* keys the user set (``GlobalConfig``);
+        3. the selected fit_type's *method* schema -- its validated keys plus its
+           own defaults -- for methods migrated to a co-located schema (Stage b);
+        4. the *extras* -- required user keys (``population_size`` /
+           ``max_iterations``), keys of not-yet-migrated methods, and the
+           structural model-path / free-parameter (tuple) / ``models`` /
+           ``exp_data`` keys -- carried through unchanged (already parse-coerced).
+
+        The raw dict is partitioned by key ownership: a string key owned by
+        ``GlobalConfig`` is a global key, one owned by the selected method's
+        schema is a method key, everything else (including the keys of *other*
+        methods) is an extra. The three buckets are disjoint, so an extra never
+        clobbers a validated default. A Pydantic ``ValidationError`` becomes a
         ``PybnfError``.
 
         The result is a plain dict so the existing ``config.config['x']`` reaches
         and writes stay untouched (dict-compat per ADR-0002); typed access
         migrates opportunistically in Stage (c).
         """
-        schema_input = {k: v for k, v in d.items()
-                        if isinstance(k, str) and k in config_schema.SCHEMA_KEYS}
+        entry = FIT_TYPE_REGISTRY.get(d.get('fit_type'))
+        method_schema = entry.schema if entry is not None else None
+        global_keys = config_schema.SCHEMA_KEYS
+        method_keys = method_schema.owned_keys() if method_schema is not None else frozenset()
+
+        global_input = {k: v for k, v in d.items()
+                        if isinstance(k, str) and k in global_keys}
+        method_input = {k: v for k, v in d.items()
+                        if isinstance(k, str) and k in method_keys}
         extras = {k: v for k, v in d.items()
-                  if not (isinstance(k, str) and k in config_schema.SCHEMA_KEYS)}
+                  if not (isinstance(k, str) and (k in global_keys or k in method_keys))}
         try:
-            effective = config_schema.build_effective_global(schema_input)
+            effective = config_schema.default_union()
+            effective.update(config_schema.build_effective_global(global_input))
+            if method_schema is not None:
+                effective.update(
+                    config_schema.build_effective_method(method_schema, method_input))
         except ValidationError as e:
             raise PybnfError('Invalid configuration', 'Invalid configuration:\n%s' % e)
-        # schema_input and extras are disjoint by construction, so no key in the
-        # validated defaults is clobbered by an unvalidated extra.
         effective.update(extras)
         return effective
 

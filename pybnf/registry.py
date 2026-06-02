@@ -28,7 +28,10 @@ class FitTypeEntry:
     variant flags (e.g. ``sa`` -> ``{'sa': True}``). ``family`` is one of
     ``optimizer`` | ``sampler`` | ``checker`` (the benchmark harness filters on
     it). ``deprecated`` drives a user-facing warning at dispatch -- the method
-    still runs.
+    still runs. ``schema`` is the method's co-located Pydantic config model
+    (``PyBNFConfigModel`` subclass) that ``config._build_config`` validates this
+    fit_type's keys against (M2.1 Stage b, ADR-0006); ``None`` until that method
+    has been migrated, in which case its keys stay pass-through extras.
     """
 
     cls: type
@@ -36,21 +39,25 @@ class FitTypeEntry:
     family: str = ''
     display_name: str = ''
     deprecated: bool = False
+    schema: type = None
 
 
 FIT_TYPE_REGISTRY: dict = {}
 
 
-def register_fit_type(*codes, family, display_name, kwargs=None, deprecated=False):
+def register_fit_type(*codes, family, display_name, kwargs=None, deprecated=False,
+                      schema=None):
     """Class decorator registering ``codes`` -> the decorated Algorithm class.
 
     May be stacked to bind several codes with differing metadata to one class
     (e.g. ``pt`` / ``mh`` / ``sa`` all map to ``BasicBayesMCMCAlgorithm`` but
-    differ in ``deprecated`` / ``kwargs``).
+    differ in ``deprecated`` / ``kwargs``). ``schema`` is the method's
+    co-located Pydantic config model (M2.1 Stage b, ADR-0006).
     """
     def deco(cls):
         entry = FitTypeEntry(cls=cls, kwargs=dict(kwargs or {}), family=family,
-                             display_name=display_name, deprecated=deprecated)
+                             display_name=display_name, deprecated=deprecated,
+                             schema=schema)
         for code in codes:
             FIT_TYPE_REGISTRY[code] = entry
         return cls

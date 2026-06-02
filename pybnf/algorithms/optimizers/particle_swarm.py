@@ -6,6 +6,7 @@ inherits its run loop + execution seam; it makes no core.* call of its own.
 
 
 from ..base import Algorithm
+from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -20,7 +21,31 @@ import re
 logger = logging.getLogger('pybnf.algorithms')
 
 
-@register_fit_type('pso', family='optimizer', display_name='Particle Swarm Optimization')
+class PSOConfig(PyBNFConfigModel):
+    """Particle-swarm config fields, co-located with the method (ADR-0002,
+    ADR-0006). These defaults previously lived in ``config_schema.GlobalConfig``;
+    moving them here makes ``pso``'s config knowledge travel with its algorithm
+    class. The values are byte-identical to the old global defaults -- the
+    int-literal ``adaptive_n_max = 30`` stays an int (pydantic does not validate
+    defaults), matching the golden-config net.
+
+    ``particle_weight_final`` is intentionally NOT here: it is not a default but a
+    runtime fallback (set to ``particle_weight`` when absent, in ``__init__``
+    below), so it stays a pass-through extra.
+    """
+
+    particle_weight: float = 0.7
+    adaptive_n_max: float = 30
+    adaptive_n_stop: float = float('inf')
+    adaptive_abs_tol: float = 0.0
+    adaptive_rel_tol: float = 0.0
+    cognitive: float = 1.5
+    social: float = 1.5
+    v_stop: float = 0.0
+
+
+@register_fit_type('pso', family='optimizer', display_name='Particle Swarm Optimization',
+                   schema=PSOConfig)
 class ParticleSwarm(Algorithm):
     """
     Implements particle swarm optimization.

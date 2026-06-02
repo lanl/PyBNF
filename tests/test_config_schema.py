@@ -25,8 +25,17 @@ class TestGlobalSchemaDefaults:
         a['credible_intervals'].append(99.0)
         assert b['credible_intervals'] == [68.0, 95.0]
 
-    def test_schema_keys_match_default_dict_keys(self):
-        assert config_schema.SCHEMA_KEYS == set(config_schema.default_config_dict())
+    def test_schema_keys_are_global_only_union_adds_method_keys(self):
+        # Stage (b): SCHEMA_KEYS is the GlobalConfig-owned set only; the full
+        # effective union (default_config_dict) additionally carries every
+        # registered method schema's keys (ADR-0006). PSO's keys left
+        # GlobalConfig for PSOConfig but remain in the union for every fit_type.
+        union = set(config_schema.default_config_dict())
+        assert config_schema.SCHEMA_KEYS == config_schema.GlobalConfig.owned_keys()
+        assert config_schema.SCHEMA_KEYS < union
+        assert 'cognitive' not in config_schema.SCHEMA_KEYS  # PSO key, migrated out
+        assert 'cognitive' in union                          # still in the union
+        assert 'objfunc' in config_schema.SCHEMA_KEYS        # truly global, stays
 
     def test_representative_defaults_and_types(self):
         d = config_schema.default_config_dict()
@@ -113,3 +122,38 @@ class TestConfigurationBuildConfig:
         # overwritten by an unvalidated extra of the same name.
         eff = config.Configuration._build_config({'cooling': 0.7})
         assert eff['cooling'] == 0.7
+
+    def test_method_schema_validates_its_own_keys(self):
+        # A migrated method's keys leave the extras bucket and are validated by
+        # its co-located schema: a pso fit's PSO keys round-trip through PSOConfig
+        # (here, string coercion proves it is the schema, not a raw passthrough).
+        eff = config.Configuration._build_config({'fit_type': 'pso', 'cognitive': '2.5'})
+        assert eff['cognitive'] == 2.5 and type(eff['cognitive']) is float
+        # and the full PSO default block is still present (union baseline)
+        assert eff['social'] == 1.5
+
+    def test_unmigrated_method_keys_pass_through_as_extras(self):
+        # PSO keys on a non-pso fit are not owned by GlobalConfig (migrated out)
+        # nor by the de schema (de not migrated) -> they ride through as extras,
+        # unchanged, exactly as before Stage (b).
+        eff = config.Configuration._build_config({'fit_type': 'de', 'cognitive': 2.0})
+        assert eff['cognitive'] == 2.0
+
+
+class TestRegistrySchemaSeam:
+    """``_build_config`` reaches each method's schema through
+    ``FitTypeEntry.schema`` (ADR-0006). Migrated methods carry a schema; the rest
+    are still ``None`` and have their keys pass through as extras."""
+
+    def test_pso_entry_carries_its_schema(self):
+        from pybnf.algorithms.optimizers.particle_swarm import PSOConfig
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        assert FIT_TYPE_REGISTRY['pso'].schema is PSOConfig
+
+    def test_only_pso_migrated_so_far(self):
+        # Stage (b) Step 1 migrates exactly pso; de/check (and the rest) still
+        # pass their keys through. Each later step flips one more of these.
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        assert FIT_TYPE_REGISTRY['pso'].schema is not None
+        assert FIT_TYPE_REGISTRY['de'].schema is None
+        assert FIT_TYPE_REGISTRY['check'].schema is None
