@@ -12,6 +12,8 @@ from ...pset import PSet
 from ...printing import print0, print1, print2, PybnfError
 from ...registry import register_fit_type
 
+from typing import Any
+
 import logging
 import numpy as np
 import re
@@ -22,16 +24,29 @@ import re
 logger = logging.getLogger('pybnf.algorithms')
 
 
+class BasicMCMCConfig(MCMCFamilyConfig):
+    """Config for the basic-MCMC codes mh/pt/sa, co-located with the method
+    (ADR-0006). Adds the keys ``BasicBayesMCMCAlgorithm`` reads on top of the
+    shared family fields; the β-ladder ``postprocess`` hook is inherited.
+    ``exchange_every`` is typed ``Any`` because the hook overwrites it with
+    ``np.inf`` for the non-PT methods (it holds both an int and an infinity).
+    """
+
+    exchange_every: Any = 20
+    beta_max: float = float('inf')
+    cooling: float = 0.01
+
+
 # Three codes share this class. pt is a working sampler; mh and sa are
 # deprecated (they warn at dispatch but still run). sa runs in simulated-
 # annealing mode (kwargs sa=True) and is an optimizer, not a sampler -- M2.2
 # extracts it into optimizers/ as SimulatedAnnealing, retiring this binding.
 @register_fit_type('pt', family='sampler', display_name='Parallel Tempering MCMC',
-                   schema=MCMCFamilyConfig)
+                   schema=BasicMCMCConfig)
 @register_fit_type('mh', family='sampler', display_name='Metropolis-Hastings MCMC',
-                   deprecated=True, schema=MCMCFamilyConfig)
+                   deprecated=True, schema=BasicMCMCConfig)
 @register_fit_type('sa', family='optimizer', display_name='Simulated Annealing',
-                   kwargs={'sa': True}, deprecated=True, schema=MCMCFamilyConfig)
+                   kwargs={'sa': True}, deprecated=True, schema=BasicMCMCConfig)
 class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
     """

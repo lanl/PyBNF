@@ -12,10 +12,13 @@ from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2
 from ...registry import register_fit_type
 
+from typing import Any, Optional
+
 import logging
 import numpy as np
 import re
 import copy
+from pydantic import Field
 from scipy import stats
 
 
@@ -24,8 +27,29 @@ from scipy import stats
 logger = logging.getLogger('pybnf.algorithms')
 
 
+class DreamConfig(MCMCFamilyConfig):
+    """Config for DREAM(ZS) (dream), co-located with the method (ADR-0006). Adds the
+    DREAM-specific keys on top of the shared family fields; the β-ladder
+    ``postprocess`` hook is inherited. ``PDreamConfig`` (p_dream) subclasses this and
+    adds ``precondition_adapt``. ``adaptive_step_size`` is typed ``Any`` so a user
+    int 0/1 stays an int (matching the old behavior). Values byte-identical to the
+    old global defaults.
+    """
+
+    gamma_prob: float = 0.1
+    zeta: float = 1e-6
+    lambda_: float = Field(0.1, alias='lambda')
+    crossover_number: int = 3
+    adaptive_step_size: Any = True    # bool default; user may pass int 0/1
+    archive_size: Optional[int] = None
+    archive_thin_rate: int = 10
+    snooker_prob: float = 0.1
+    delta: int = 1
+    outlier_method: str = 'iqr'
+
+
 @register_fit_type('dream', family='sampler', display_name='DREAM(ZS)',
-                   schema=MCMCFamilyConfig)
+                   schema=DreamConfig)
 class DreamAlgorithm(BayesianAlgorithm):
     """
     Implements a variant of the DREAM algorithm as described in Vrugt (2016) Environmental Modelling

@@ -12,8 +12,6 @@ from ..base import Algorithm
 from ...config_schema import PyBNFConfigModel
 from ...printing import print1, print2, PybnfError
 
-from typing import Any, Optional
-
 import logging
 import numpy as np
 import os
@@ -27,24 +25,23 @@ logger = logging.getLogger('pybnf.algorithms')
 
 
 class MCMCFamilyConfig(PyBNFConfigModel):
-    """Config for the whole Bayesian/MCMC family (mh, pt, sa, am, dream, p_dream),
-    co-located with the family base (ADR-0002, ADR-0006).
+    """Config shared by the whole Bayesian/MCMC family (mh, pt, sa, am, dream,
+    p_dream), co-located with the family base (ADR-0002, ADR-0006).
 
-    Holds every defaulted MCMC + DREAM key (those the old ``GlobalConfig`` MCMC and
-    DREAM blocks carried, minus ``neg_bin_r`` -- that is an objfunc/noise param read
-    whenever ``objfunc=neg_bin`` regardless of fit_type, so it stays global). Values
-    byte-identical to the old global defaults. ``exchange_every`` /
-    ``calculate_covari`` / ``adaptive_step_size`` / ``precondition_adapt`` are typed
-    ``Any`` for the same reasons as before (``exchange_every`` becomes ``np.inf``
-    below; ``adaptive_step_size`` keeps a user int 0/1).
-
-    The Step-6 per-leaf split (BasicMCMCConfig mh/pt/sa, AdaptiveMCMCConfig am,
-    DreamConfig dream, PDreamConfig p_dream) subclasses this; for now all six codes
-    register against the family directly. The per-fit_type validity of individual
-    keys is still reported by ``check_unused_keys`` in ``config.py``.
+    Holds the defaulted keys the shared ``BayesianAlgorithm`` base reads (so they
+    are common to every MCMC method) plus the β-ladder ``postprocess`` hook. The
+    per-method keys live on the leaf models that subclass this and co-locate with
+    their algorithm class: :class:`BasicMCMCConfig` (mh/pt/sa, in basic_mcmc.py),
+    :class:`AdaptiveMCMCConfig` (am, in adaptive_mcmc.py),
+    :class:`DreamConfig` (dream, in dream.py) and
+    :class:`PDreamConfig` (p_dream, in pdream.py). ``neg_bin_r`` stays in
+    ``GlobalConfig`` -- an objfunc param read regardless of fit_type. Values are
+    byte-identical to the old global defaults; every leaf is registered, so
+    ``default_union`` still carries every MCMC key for every fit_type. The
+    per-fit_type validity of individual keys is reported by ``check_unused_keys``
+    in ``config.py``.
     """
 
-    # --- MCMC-shared ---
     step_size: float = 0.2
     burn_in: int = 10000
     sample_every: int = 100
@@ -53,27 +50,9 @@ class MCMCFamilyConfig(PyBNFConfigModel):
     adaptive: int = 10000
     credible_intervals: list = Field(default_factory=lambda: [68.0, 95.0])
     beta: list = Field(default_factory=lambda: [1.0])
-    exchange_every: Any = 20          # int from parse, but np.inf after postprocess
-    beta_max: float = float('inf')
-    cooling: float = 0.01
     continue_run: int = 0
-    stablizingCov: float = 0.001
-    calculate_covari: Any = None
-
-    # --- DREAM family ---
-    gamma_prob: float = 0.1
-    zeta: float = 1e-6
-    lambda_: float = Field(0.1, alias='lambda')
-    crossover_number: int = 3
-    adaptive_step_size: Any = True    # bool default; user may pass int 0/1
-    archive_size: Optional[int] = None
-    archive_thin_rate: int = 10
-    snooker_prob: float = 0.1
-    delta: int = 1
-    outlier_method: str = 'iqr'
-    rhat_threshold: float = 0.0
+    rhat_threshold: float = 0.0       # R-hat / ESS diagnostics live on the base
     diagnostics_every: int = 0
-    precondition_adapt: Any = None
 
     @classmethod
     def postprocess(cls, conf_dict, fit_type):

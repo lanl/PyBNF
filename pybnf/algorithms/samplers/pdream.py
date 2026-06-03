@@ -6,10 +6,11 @@ Subclasses DreamAlgorithm (a sibling leaf in this sub-package).
 """
 
 
-from .dream import DreamAlgorithm
-from .base import MCMCFamilyConfig
+from .dream import DreamAlgorithm, DreamConfig
 from ...pset import PSet, OutOfBoundsException
 from ...registry import register_fit_type
+
+from typing import Any
 
 import logging
 import numpy as np
@@ -20,8 +21,17 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
+class PDreamConfig(DreamConfig):
+    """Config for preconditioned DREAM (p_dream), co-located with the method
+    (ADR-0006). Extends :class:`DreamConfig` with the one preconditioning key
+    ``PDreamAlgorithm`` adds; everything else (incl. the β-ladder hook) is
+    inherited."""
+
+    precondition_adapt: Any = None
+
+
 @register_fit_type('p_dream', family='sampler', display_name='Preconditioned DREAM',
-                   schema=MCMCFamilyConfig)
+                   schema=PDreamConfig)
 class PDreamAlgorithm(DreamAlgorithm):
     """
     P-DREAM: Preconditioned DREAM.

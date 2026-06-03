@@ -75,38 +75,43 @@ class TestBuildEffectiveGlobal:
 
 
 class TestBuildEffectiveMethod:
-    """The faithfulness tricks live on whichever schema owns the field. After
-    Stage (b) the MCMC-family fields (the lambda alias, exchange_every-holds-inf,
-    adaptive_step_size-int, string coercion) belong to MCMCFamilyConfig;
-    build_effective_method validates a raw subset against a given per-method schema."""
+    """The faithfulness tricks live on whichever schema owns the field. After the
+    Step-6 split they sit on the MCMC leaf models: the lambda alias and
+    adaptive_step_size-int on DreamConfig, exchange_every-holds-inf on
+    BasicMCMCConfig, and string coercion on any of them (here MCMCFamilyConfig's
+    own burn_in). build_effective_method validates a raw subset against a schema."""
 
-    def _mcmc(self, subset):
-        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
-        return config_schema.build_effective_method(MCMCFamilyConfig, subset)
+    def _eff(self, schema, subset):
+        return config_schema.build_effective_method(schema, subset)
 
     def test_lambda_alias_roundtrips(self):
-        eff = self._mcmc({'lambda': 0.25})
+        from pybnf.algorithms.samplers.dream import DreamConfig
+        eff = self._eff(DreamConfig, {'lambda': 0.25})
         assert eff['lambda'] == 0.25 and 'lambda_' not in eff
 
     def test_exchange_every_holds_infinity(self):
         # the MCMC family's postprocess assigns np.inf to exchange_every for non-PT
         # methods; the Any-typed field must accept it without re-coercion.
-        eff = self._mcmc({'exchange_every': float('inf')})
+        from pybnf.algorithms.samplers.basic_mcmc import BasicMCMCConfig
+        eff = self._eff(BasicMCMCConfig, {'exchange_every': float('inf')})
         assert math.isinf(eff['exchange_every'])
 
     def test_exchange_every_keeps_int_for_pt(self):
-        eff = self._mcmc({'exchange_every': 5})
+        from pybnf.algorithms.samplers.basic_mcmc import BasicMCMCConfig
+        eff = self._eff(BasicMCMCConfig, {'exchange_every': 5})
         assert eff['exchange_every'] == 5 and type(eff['exchange_every']) is int
 
     def test_adaptive_step_size_preserves_int(self):
         # Any-typed so a user 0/1 stays an int (truthy), matching old behavior --
         # typing it bool would silently turn int 0/1 into False/True.
-        eff = self._mcmc({'adaptive_step_size': 0})
+        from pybnf.algorithms.samplers.dream import DreamConfig
+        eff = self._eff(DreamConfig, {'adaptive_step_size': 0})
         assert eff['adaptive_step_size'] == 0 and type(eff['adaptive_step_size']) is int
 
     def test_schema_coerces_string_numbers(self):
         # Forward-looking: once parse.py stops coercing, the schema owns it.
-        eff = self._mcmc({'burn_in': '250'})
+        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
+        eff = self._eff(MCMCFamilyConfig, {'burn_in': '250'})
         assert eff['burn_in'] == 250 and type(eff['burn_in']) is int
 
 
@@ -218,20 +223,40 @@ class TestRegistrySchemaSeam:
         eff = config.Configuration._build_config({'fit_type': 'de'})
         assert eff['simplex_step'] == 1.0 and eff['simplex_stop_tol'] == 0.0
 
-    def test_mcmc_family_shares_one_schema_with_the_beta_ladder(self):
-        # All six MCMC codes register against the family schema (Step 5); 'check'
-        # is the lone remaining unmigrated code (Step 7).
+    def test_mcmc_leaves_subclass_the_family_and_inherit_the_beta_ladder(self):
+        # Step 6: each MCMC code maps to its own leaf model, all subclassing
+        # MCMCFamilyConfig and inheriting the β-ladder postprocess hook.
         from pybnf.algorithms.samplers.base import MCMCFamilyConfig
+        from pybnf.algorithms.samplers.basic_mcmc import BasicMCMCConfig
+        from pybnf.algorithms.samplers.adaptive_mcmc import AdaptiveMCMCConfig
+        from pybnf.algorithms.samplers.dream import DreamConfig
+        from pybnf.algorithms.samplers.pdream import PDreamConfig
         from pybnf.registry import FIT_TYPE_REGISTRY
-        for code in ('mh', 'pt', 'sa', 'am', 'dream', 'p_dream'):
-            assert FIT_TYPE_REGISTRY[code].schema is MCMCFamilyConfig, code
-        # the family carries the beta-ladder; the base hook is a no-op
-        assert MCMCFamilyConfig.postprocess is not config_schema.PyBNFConfigModel.postprocess
-        # owns the shared MCMC + DREAM keys (e.g. step_size, beta, gamma_prob),
-        # but NOT neg_bin_r (an objfunc param that stays global)
-        owned = MCMCFamilyConfig.owned_keys()
-        assert {'step_size', 'beta', 'exchange_every', 'gamma_prob', 'lambda'} <= owned
-        assert 'neg_bin_r' not in owned and 'neg_bin_r' in config_schema.SCHEMA_KEYS
+        expected = {'mh': BasicMCMCConfig, 'pt': BasicMCMCConfig, 'sa': BasicMCMCConfig,
+                    'am': AdaptiveMCMCConfig, 'dream': DreamConfig, 'p_dream': PDreamConfig}
+        for code, leaf in expected.items():
+            assert FIT_TYPE_REGISTRY[code].schema is leaf, code
+            assert issubclass(leaf, MCMCFamilyConfig)
+            # the β-ladder is inherited from the family, not the no-op base
+            assert leaf.postprocess.__func__ is MCMCFamilyConfig.postprocess.__func__
+        assert PDreamConfig.__mro__[1] is DreamConfig  # p_dream extends dream
+        # the family base carries the hook; PyBNFConfigModel's is the no-op
+        assert MCMCFamilyConfig.postprocess.__func__ is not \
+            config_schema.PyBNFConfigModel.postprocess.__func__
+
+    def test_mcmc_key_ownership_partition(self):
+        # Each MCMC key is owned by exactly the leaf whose algorithm reads it;
+        # neg_bin_r stays global (an objfunc param), never on the family.
+        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
+        from pybnf.algorithms.samplers.basic_mcmc import BasicMCMCConfig
+        from pybnf.algorithms.samplers.dream import DreamConfig
+        assert {'step_size', 'beta', 'burn_in'} <= MCMCFamilyConfig.owned_keys()
+        assert 'exchange_every' in BasicMCMCConfig.owned_keys()
+        assert 'exchange_every' not in MCMCFamilyConfig.owned_keys()
+        assert {'gamma_prob', 'lambda'} <= DreamConfig.owned_keys()
+        assert 'gamma_prob' not in MCMCFamilyConfig.owned_keys()
+        assert 'neg_bin_r' not in DreamConfig.owned_keys()
+        assert 'neg_bin_r' in config_schema.SCHEMA_KEYS  # stays global
 
     def test_beta_ladder_runs_through_build_config(self):
         # The beta-ladder hook fires inside _build_config on the raw dict: a non-pt

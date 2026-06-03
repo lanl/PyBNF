@@ -12,6 +12,8 @@ from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
 
+from typing import Any
+
 import numpy as np
 import os
 import re
@@ -19,8 +21,17 @@ import shutil
 from scipy import stats
 
 
+class AdaptiveMCMCConfig(MCMCFamilyConfig):
+    """Config for adaptive MCMC (am), co-located with the method (ADR-0006). Adds
+    the covariance-adaptation keys ``Adaptive_MCMC`` reads on top of the shared
+    family fields; the β-ladder ``postprocess`` hook is inherited."""
+
+    stablizingCov: float = 0.001
+    calculate_covari: Any = None
+
+
 @register_fit_type('am', family='sampler', display_name='Adaptive MCMC',
-                   schema=MCMCFamilyConfig)
+                   schema=AdaptiveMCMCConfig)
 class Adaptive_MCMC(BayesianAlgorithm):
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super(Adaptive_MCMC, self).__init__(config)
