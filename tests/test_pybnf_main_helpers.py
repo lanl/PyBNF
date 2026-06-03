@@ -41,7 +41,7 @@ _DISPATCH = [
     ('mh', 'BasicBayesMCMCAlgorithm'),
     ('pt', 'BasicBayesMCMCAlgorithm'),
     ('am', 'Adaptive_MCMC'),
-    ('sa', 'BasicBayesMCMCAlgorithm'),
+    ('sa', 'SimulatedAnnealing'),
     ('sim', 'SimplexAlgorithm'),
     ('ade', 'AsynchronousDifferentialEvolution'),
     ('dream', 'DreamAlgorithm'),
@@ -65,13 +65,13 @@ def test_fit_type_registry_maps_each_code_to_its_class(fit_type, cls_name):
     assert FIT_TYPE_REGISTRY[fit_type].cls is getattr(algs, cls_name)
 
 
-def test_sa_binds_sa_kwarg_all_others_empty():
-    """'sa' is the same class as 'mh'/'pt' but carries the sa=True variant flag;
-    every other entry constructs with no extra kwargs."""
-    assert FIT_TYPE_REGISTRY['sa'].kwargs == {'sa': True}
+def test_no_entry_binds_extra_kwargs():
+    """Every fit_type constructs as ``cls(config)`` with no variant kwargs. 'sa'
+    formerly carried ``sa=True`` on ``BasicBayesMCMCAlgorithm``; M2.2 (ADR-0008)
+    made it a standalone ``SimulatedAnnealing`` optimizer, retiring the last
+    kwargs binding."""
     for code, entry in FIT_TYPE_REGISTRY.items():
-        if code != 'sa':
-            assert entry.kwargs == {}, code
+        assert entry.kwargs == {}, code
 
 
 def test_only_mh_and_sa_are_deprecated():

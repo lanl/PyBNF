@@ -232,7 +232,9 @@ class TestRegistrySchemaSeam:
         from pybnf.algorithms.samplers.dream import DreamConfig
         from pybnf.algorithms.samplers.pdream import PDreamConfig
         from pybnf.registry import FIT_TYPE_REGISTRY
-        expected = {'mh': BasicMCMCConfig, 'pt': BasicMCMCConfig, 'sa': BasicMCMCConfig,
+        # sa is NOT here: M2.2 (ADR-0008) moved it out of the MCMC family into a
+        # standalone SimulatedAnnealing optimizer (see test_sa_schema_is_standalone).
+        expected = {'mh': BasicMCMCConfig, 'pt': BasicMCMCConfig,
                     'am': AdaptiveMCMCConfig, 'dream': DreamConfig, 'p_dream': PDreamConfig}
         for code, leaf in expected.items():
             assert FIT_TYPE_REGISTRY[code].schema is leaf, code
@@ -243,6 +245,21 @@ class TestRegistrySchemaSeam:
         # the family base carries the hook; PyBNFConfigModel's is the no-op
         assert MCMCFamilyConfig.postprocess.__func__ is not \
             config_schema.PyBNFConfigModel.postprocess.__func__
+
+    def test_sa_schema_is_standalone_not_mcmc_family(self):
+        # M2.2 (ADR-0008): sa is a true optimizer, so its config is a standalone
+        # PyBNFConfigModel (NOT MCMCFamilyConfig) and it inherits the no-op
+        # postprocess -- the β-ladder no longer runs for sa.
+        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
+        from pybnf.algorithms.optimizers.simulated_annealing import SimulatedAnnealingConfig
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        assert FIT_TYPE_REGISTRY['sa'].schema is SimulatedAnnealingConfig
+        assert FIT_TYPE_REGISTRY['sa'].family == 'optimizer'
+        assert issubclass(SimulatedAnnealingConfig, config_schema.PyBNFConfigModel)
+        assert not issubclass(SimulatedAnnealingConfig, MCMCFamilyConfig)
+        assert SimulatedAnnealingConfig.postprocess.__func__ is \
+            config_schema.PyBNFConfigModel.postprocess.__func__
+        assert SimulatedAnnealingConfig.owned_keys() == {'step_size', 'beta', 'cooling', 'beta_max'}
 
     def test_mcmc_key_ownership_partition(self):
         # Each MCMC key is owned by exactly the leaf whose algorithm reads it;

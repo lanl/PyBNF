@@ -119,10 +119,11 @@ def test_sa_finds_gaussian_mode(tmp_path):
     ``-inf`` outside it (which proposal reflection already prevents). So the
     rewritten optimizer must converge to the same mode it does today.
 
-    The assertion is locked here against the CURRENT, posterior-based ``sa``
-    (``BasicBayesMCMCAlgorithm(conf, sa=True)``); the move-3 rewrite changes only
-    the construction line to ``SimulatedAnnealing(conf)`` and this test must stay
-    green. Seeded (random_seed=1234) and run to a budget where every replicate
+    The assertion was locked (M2.2 move 2) against the then-current,
+    posterior-based ``sa``; the move-3 rewrite (ADR-0008) made ``sa`` a true
+    optimizer (``SimulatedAnnealing``) minimizing the raw objective, and this test
+    stays green — confirming the prior-drop is a no-op on an all-uniform-prior
+    fit. Seeded (random_seed=1234) and run to a budget where every replicate
     reaches ``beta_max``; recovery is ~0.01 of the mode, so the 0.2 tolerance is a
     wide margin.
     """
@@ -132,7 +133,7 @@ def test_sa_finds_gaussian_mode(tmp_path):
         tmp_path, 'sa', tgt, exp, n_params=2,
         population_size=4, step_size=0.2, beta=[1.0], cooling=0.1, beta_max=10.0,
         max_iterations=5000, output_every=10 ** 9, random_seed=1234)
-    alg = algorithms.BasicBayesMCMCAlgorithm(conf, sa=True)
+    alg = algorithms.SimulatedAnnealing(conf)
     H.drive(alg)
 
     recovered = H.best_params(alg, 2)

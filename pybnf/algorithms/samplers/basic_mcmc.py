@@ -37,16 +37,15 @@ class BasicMCMCConfig(MCMCFamilyConfig):
     cooling: float = 0.01
 
 
-# Three codes share this class. pt is a working sampler; mh and sa are
-# deprecated (they warn at dispatch but still run). sa runs in simulated-
-# annealing mode (kwargs sa=True) and is an optimizer, not a sampler -- M2.2
-# extracts it into optimizers/ as SimulatedAnnealing, retiring this binding.
+# Two codes share this class: pt is a working sampler; mh (= pt with
+# exchange_every=inf) is deprecated but still runs. sa was historically a third
+# code on this class (kwargs sa=True); M2.2 (ADR-0008) rewrote it as a true
+# optimizer in optimizers/simulated_annealing.py, so it no longer registers here.
+# The sa= branches below are now dead and are removed in M2.2 move 4.
 @register_fit_type('pt', family='sampler', display_name='Parallel Tempering MCMC',
                    schema=BasicMCMCConfig)
 @register_fit_type('mh', family='sampler', display_name='Metropolis-Hastings MCMC',
                    deprecated=True, schema=BasicMCMCConfig)
-@register_fit_type('sa', family='optimizer', display_name='Simulated Annealing',
-                   kwargs={'sa': True}, deprecated=True, schema=BasicMCMCConfig)
 class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
     """

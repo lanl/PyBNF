@@ -1,7 +1,8 @@
 """
 Oracle-anchored tests for ``BasicBayesMCMCAlgorithm`` (pybnf/algorithms.py),
-which implements plain Metropolis MCMC (``mh``), parallel tempering (``pt``),
-and simulated annealing (``sa``).
+which implements plain Metropolis MCMC (``mh``) and parallel tempering (``pt``).
+(Simulated annealing, formerly a third mode of this class, is now a standalone
+optimizer — see ``test_simulated_annealing.py``.)
 
 The Metropolis acceptance rule and the convergence diagnostics are inherited /
 already covered (test_adaptive_mcmc, test_bayesian_diagnostics).  What is
@@ -16,8 +17,6 @@ specific to this class and tested here:
     ln_p = min(0, −(β_lo − β_hi)(P_lo − P_hi)) and the state swap it performs.
     Oracle: moving the better posterior to the colder chain is always accepted
     (and swaps current_pset / ln_current_P), the reverse is (essentially) never.
-  * the simulated-annealing cooling schedule in ``got_result`` — an accepted
-    *unfavorable* move raises β by ``cooling``; reaching ``beta_max`` stops.
   * ``should_sample`` — only max-β replicas are sampled under pt; all under mcmc.
   * ``start_run`` — refuses a run with max_iterations ≤ burn_in (no samples).
 
@@ -214,66 +213,6 @@ class TestReplicaExchange:
         algo.replica_exchange()
         assert algo.current_pset[0] is hot and algo.current_pset[1] is cold
         assert algo.ln_current_P[0] == 0.0 and algo.ln_current_P[1] == 1000.0
-
-
-# --------------------------------------------------------------------------- #
-# Simulated-annealing cooling schedule (in got_result)
-# --------------------------------------------------------------------------- #
-class TestSimulatedAnnealing:
-
-    def _sa_algo(self, tmp_path, beta0=0.5, cooling=0.5, beta_max=2.0):
-        cfg = _make_config(tmp_path, NORMAL_VARS, fit_type='sa',
-                           population_size=1, beta=[beta0], cooling=cooling,
-                           beta_max=beta_max, max_iterations=10000)
-        algo = algorithms.BasicBayesMCMCAlgorithm(cfg, sa=True)
-        algo.start_run()
-        algo.current_pset = [_normal_pset((5.0, 5.0, 5.0))]
-        algo.ln_current_P = [10.0]               # a good current posterior
-        algo.iteration = [0]
-        return algo
-
-    def _worse_result(self, algo):
-        """An accepted but unfavorable proposal (lower posterior than current)."""
-        cand = _normal_pset((5.0, 5.0, 5.0))
-        cand.name = 'iter1run0'
-        res = algorithms.Result(cand, {}, cand.name)
-        res.score = 50.0                          # high score -> low posterior
-        return res
-
-    def test_unfavorable_accepted_move_increases_beta(self, tmp_path, monkeypatch):
-        """In SA an accepted move that is *unfavorable* (ln_p_accept < 0) cools
-        the system: beta += cooling. Forcing acceptance (rand=0) of a worse
-        proposal must raise beta from 0.5 to exactly 1.0 (cooling=0.5)."""
-        algo = self._sa_algo(tmp_path, beta0=0.5, cooling=0.5)
-        monkeypatch.setattr(np.random, 'rand', lambda *a: 0.0)   # force accept
-        algo.got_result(self._worse_result(algo))
-        np.testing.assert_allclose(algo.betas[0], 1.0, rtol=1e-12)
-
-    def test_reaching_beta_max_stops(self, tmp_path, monkeypatch):
-        """Once cooling drives the (only) replica's beta to beta_max, the run is
-        finished: got_result returns 'STOP'. Starting at 1.8 with cooling 0.5
-        the next unfavorable accept reaches 2.3 >= beta_max=2.0."""
-        algo = self._sa_algo(tmp_path, beta0=1.8, cooling=0.5, beta_max=2.0)
-        monkeypatch.setattr(np.random, 'rand', lambda *a: 0.0)
-        assert algo.got_result(self._worse_result(algo)) == 'STOP'
-
-    def test_one_replica_finishing_returns_empty_not_stop(self, tmp_path, monkeypatch):
-        """With several SA replicas, the run only stops once *all* have reached
-        beta_max. When one replica finishes but another is still cooling,
-        got_result returns [] (that chain idles) rather than 'STOP'. Replica 0 is
-        set just below beta_max; cooling it once finishes it while replica 1
-        (beta 0.5) is far from done."""
-        cfg = _make_config(tmp_path, NORMAL_VARS, fit_type='sa', population_size=2,
-                           beta=[1.0], cooling=0.5, beta_max=2.0, max_iterations=10000)
-        algo = algorithms.BasicBayesMCMCAlgorithm(cfg, sa=True)
-        algo.start_run()
-        algo.current_pset = [_normal_pset((5., 5., 5.)), _normal_pset((5., 5., 5.))]
-        algo.ln_current_P = [10.0, 10.0]
-        algo.iteration = [0, 0]
-        algo.betas = [1.8, 0.5]                  # replica 0 about to finish
-        monkeypatch.setattr(np.random, 'rand', lambda *a: 0.0)
-        assert algo.got_result(self._worse_result(algo)) == []
-        assert algo.betas[0] >= 2.0 and algo.betas[1] == 0.5
 
 
 # --------------------------------------------------------------------------- #
