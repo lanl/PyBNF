@@ -1,9 +1,11 @@
-"""BasicBayesMCMCAlgorithm — Metropolis-Hastings, Parallel Tempering, and
-Simulated Annealing (the ``mh``, ``pt``, and ``sa`` fit types).
+"""BasicBayesMCMCAlgorithm — Metropolis-Hastings and Parallel Tempering (the
+``mh`` and ``pt`` fit types).
 
-mh and sa are deprecated but still run; pt is a working method sharing this
-class. Extracted byte-identical (M1 Step 4). Subclasses the sampler base
-(BayesianAlgorithm) and inherits the run loop + execution seam from Algorithm.
+mh is deprecated but still runs; pt is a working method sharing this class.
+(Simulated annealing, formerly ``sa`` on this class, is now a standalone
+optimizer — see optimizers/simulated_annealing.py, M2.2/ADR-0008.) Subclasses the
+sampler base (BayesianAlgorithm) and inherits the run loop + execution seam from
+Algorithm.
 """
 
 
@@ -25,23 +27,23 @@ logger = logging.getLogger('pybnf.algorithms')
 
 
 class BasicMCMCConfig(MCMCFamilyConfig):
-    """Config for the basic-MCMC codes mh/pt/sa, co-located with the method
-    (ADR-0006). Adds the keys ``BasicBayesMCMCAlgorithm`` reads on top of the
-    shared family fields; the β-ladder ``postprocess`` hook is inherited.
+    """Config for the basic-MCMC codes mh/pt, co-located with the method
+    (ADR-0006). Adds the one key those samplers read (``exchange_every``) on top
+    of the shared family fields; the β-ladder ``postprocess`` hook is inherited.
     ``exchange_every`` is typed ``Any`` because the hook overwrites it with
-    ``np.inf`` for the non-PT methods (it holds both an int and an infinity).
+    ``np.inf`` for the non-PT (mh) method (it holds both an int and an infinity).
+
+    (``cooling``/``beta_max`` were sa-only; M2.2/ADR-0008 moved them to
+    :class:`SimulatedAnnealingConfig` when sa became a standalone optimizer.)
     """
 
     exchange_every: Any = 20
-    beta_max: float = float('inf')
-    cooling: float = 0.01
 
 
 # Two codes share this class: pt is a working sampler; mh (= pt with
 # exchange_every=inf) is deprecated but still runs. sa was historically a third
 # code on this class (kwargs sa=True); M2.2 (ADR-0008) rewrote it as a true
 # optimizer in optimizers/simulated_annealing.py, so it no longer registers here.
-# The sa= branches below are now dead and are removed in M2.2 move 4.
 @register_fit_type('pt', family='sampler', display_name='Parallel Tempering MCMC',
                    schema=BasicMCMCConfig)
 @register_fit_type('mh', family='sampler', display_name='Metropolis-Hastings MCMC',
@@ -54,16 +56,10 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
     This will give you a best fit (which is maybe not great), but more importantly, generates an extra result file
     that gives the probability distribution of each variable.
     This distribution depends on the prior, which is specified according to the variable initialization rules.
-    With sa=True, this instead acts as a simulated annealing algorithm with n indepdendent chains.
     """
 
-    def __init__(self, config, sa=False):  # expdata, objective, priorfile, gamma=0.1):
+    def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super(BasicBayesMCMCAlgorithm, self).__init__(config)
-        self.sa = sa
-
-        if sa:
-            self.cooling = config.config['cooling']
-            self.beta_max = config.config['beta_max']
 
         self.exchange_every = config.config['exchange_every']
         self.pt = self.exchange_every != np.inf
@@ -72,7 +68,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
         # The temperature of each replicate
         # For MCMC, probably n copies of the same number, unless the user set it up strangely
-        # For SA, starts all the same (unless set up strangely), and independently decrease during the run
         # For PT, contains reps_per_beta copies of the same ascending sequence of betas, e.g.
         # [0.6, 0.8, 1., 0.6, 0.8, 1.]. Indices congruent to -1 mod (population_size/reps_per_beta) have the max beta
         # (probably 1), and only these replicas are sampled.
@@ -107,27 +102,22 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         Must return a list of PSets that the scheduler should run.
         :return: list of PSets
         """
-        if self.sa:
-            print2('Running simulated annealing on %i independent replicates in parallel, for %i iterations each or '
-                   'until 1/T reaches %s' % (self.num_parallel, self.max_iterations, self.beta_max))
+        if not self.pt:
+            print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
+                   % (self.num_parallel, self.max_iterations))
         else:
-            if not self.pt:
-                print2('Running Markov Chain Monte Carlo on %i independent replicates in parallel, for %i iterations each.'
-                       % (self.num_parallel, self.max_iterations))
-            else:
-                print2('Running parallel tempering on %i replicates for %i iterations, with replica exchanges performed '
-                       'every %i iterations' % (self.num_parallel, self.max_iterations, self.exchange_every))
+            print2('Running parallel tempering on %i replicates for %i iterations, with replica exchanges performed '
+                   'every %i iterations' % (self.num_parallel, self.max_iterations, self.exchange_every))
 
-            print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
-                   % (self.sample_every, self.burn_in))
-            if self.max_iterations <= self.burn_in:
-                raise PybnfError(
-                    'max_iterations (%i) must be greater than burn_in (%i), '
-                    'otherwise no samples will be collected.'
-                    % (self.max_iterations, self.burn_in))
+        print2('Statistical samples will be recorded every %i iterations, after an initial %i-iteration burn-in period'
+               % (self.sample_every, self.burn_in))
+        if self.max_iterations <= self.burn_in:
+            raise PybnfError(
+                'max_iterations (%i) must be greater than burn_in (%i), '
+                'otherwise no samples will be collected.'
+                % (self.max_iterations, self.burn_in))
 
-        setup_samples = not self.sa
-        return super(BasicBayesMCMCAlgorithm, self).start_run(setup_samples=setup_samples)
+        return super(BasicBayesMCMCAlgorithm, self).start_run(setup_samples=True)
 
     def got_result(self, res):
         """
@@ -163,17 +153,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
             self.evaluate_constraints(res.simdata, index)
-            # For simulated annealing, reduce the temperature if this was an unfavorable move.
-            if self.sa and ln_p_accept < 0.:
-                self.betas[index] += self.cooling
-                if self.betas[index] >= self.beta_max:
-                    print2('Finished replicate %i because beta_max was reached.' % index)
-                    logger.info('Finished replicate %i because beta_max was reached.' % index)
-                    if min(self.betas) >= self.beta_max:
-                        logger.info('All annealing replicates have reached the maximum beta value')
-                        return 'STOP'
-                    else:
-                        return []
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         if self.current_pset[index] is not None:
@@ -194,9 +173,8 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 return self.replica_exchange()
             elif min(self.iteration) >= self.max_iterations:
                 print0('Overall move accept rate: %f' % (self.accepted/self.attempts))
-                if not self.sa:
-                    self.update_histograms('_final')
-                    self.report_constraint_satisfaction('_final')
+                self.update_histograms('_final')
+                self.report_constraint_satisfaction('_final')
                 return 'STOP'
             else:
                 return []
@@ -238,14 +216,13 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
             self.iteration[index] += 1
             # Check if it's time to do various things
-            if not self.sa:
-                if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0 \
-                        and self.should_sample(index):
-                    self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
-                if (self.iteration[index] > self.burn_in
-                   and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
-                   and self.iteration[index] == min(self.iteration)):
-                    self.update_histograms('_%i' % self.iteration[index])
+            if self.iteration[index] > self.burn_in and self.iteration[index] % self.sample_every == 0 \
+                    and self.should_sample(index):
+                self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
+            if (self.iteration[index] > self.burn_in
+               and self.iteration[index] % (self.output_hist_every * self.sample_every) == 0
+               and self.iteration[index] == min(self.iteration)):
+                self.update_histograms('_%i' % self.iteration[index])
 
             if self.iteration[index] == min(self.iteration):
                 if self.iteration[index] % self.config.config['output_every'] == 0:
@@ -258,7 +235,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 else:
                     print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
                 # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
-                if not self.sa and self.iteration[index] % self.diagnostics_every == 0:
+                if self.iteration[index] % self.diagnostics_every == 0:
                     max_rhat = self.report_convergence_diagnostics(self.iteration[index])
                     if self.check_convergence(self.iteration[index], max_rhat):
                         self.converged = True
@@ -267,8 +244,6 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 logger.debug('Current move accept rate: %f' % (self.accepted/self.attempts))
                 if self.exchange_attempts > 0:
                     logger.debug('Current replica exchange rate: %f' % (self.exchange_accepted / self.exchange_attempts))
-                if self.sa:
-                    logger.debug('Current betas: ' + str(self.betas))
                 print2('Current -Ln Likelihoods: ' + str(self.ln_current_P))
             if self.iteration[index] >= self.max_iterations:
                 logger.info('Finished replicate number %i' % index)

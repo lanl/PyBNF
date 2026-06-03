@@ -25,8 +25,9 @@ logger = logging.getLogger('pybnf.algorithms')
 
 
 class MCMCFamilyConfig(PyBNFConfigModel):
-    """Config shared by the whole Bayesian/MCMC family (mh, pt, sa, am, dream,
-    p_dream), co-located with the family base (ADR-0002, ADR-0006).
+    """Config shared by the whole Bayesian/MCMC family (mh, pt, am, dream,
+    p_dream), co-located with the family base (ADR-0002, ADR-0006). (sa was once
+    in this family; M2.2/ADR-0008 made it a standalone optimizer.)
 
     Holds the defaulted keys the shared ``BayesianAlgorithm`` base reads (so they
     are common to every MCMC method) plus the β-ladder ``postprocess`` hook. The
@@ -58,7 +59,7 @@ class MCMCFamilyConfig(PyBNFConfigModel):
     def postprocess(cls, conf_dict, fit_type):
         """The β-ladder (ported verbatim from ``Configuration.postprocess_mcmc_keys``).
 
-        Algorithms 'mh', 'pt', 'sa', 'am', 'dream', 'p_dream' have similar but
+        Algorithms 'mh', 'pt', 'am', 'dream', 'p_dream' have similar but
         non-identical valid config keys; this builds ``beta_list`` / ``reps_per_beta``
         and reconciles ``exchange_every`` / ``population_size``. Mutates ``conf_dict``
         in place (operating on the RAW config dict, before defaults merge, so
@@ -76,17 +77,13 @@ class MCMCFamilyConfig(PyBNFConfigModel):
             conf_dict['reps_per_beta'] = 1
         elif 'reps_per_beta' not in conf_dict:
             conf_dict['reps_per_beta'] = 1  # Default value if using pt but didn't specify
-        if conf_dict['fit_type'] != 'sa':
-            for k in ['cooling', 'beta_max']:
-                if k in conf_dict:
-                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                           % (k, conf_dict['fit_type']))
-        if conf_dict['fit_type'] == 'sa':
-            for k in ['burn_in', 'sample_every', 'output_hist_every', 'hist_bins', 'credible_intervals']:
-                if k in conf_dict:
-                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                           % (k, conf_dict['fit_type']))
-        if conf_dict['fit_type'] in ['mh', 'sa', 'pt', 'am']:
+        # cooling/beta_max are sa-only (sa is no longer in this family, ADR-0008),
+        # so they are never valid for the methods that reach this hook.
+        for k in ['cooling', 'beta_max']:
+            if k in conf_dict:
+                print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                       % (k, conf_dict['fit_type']))
+        if conf_dict['fit_type'] in ['mh', 'pt', 'am']:
             for k in ['crossover_number', 'zeta', 'lambda', 'gamma_prob']:
                 if k in conf_dict:
                     print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
