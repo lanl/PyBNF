@@ -173,12 +173,20 @@ class TestRegistrySchemaSeam:
         assert 'islands' in DifferentialEvolutionConfig.owned_keys()
         assert 'islands' not in DEFamilyConfig.owned_keys()
 
+    def test_ss_owns_only_local_min_limit(self):
+        # ss's only defaulted key is local_min_limit; init_size/reserve_size are
+        # runtime-defaulted, so they are NOT owned by the schema (stay extras).
+        from pybnf.algorithms.optimizers.scatter_search import ScatterSearchConfig
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        assert FIT_TYPE_REGISTRY['ss'].schema is ScatterSearchConfig
+        assert ScatterSearchConfig.owned_keys() == {'local_min_limit'}
+
     def test_migrated_methods_so_far(self):
         # Stage (b) migrates one method/family per step: pso (Step 1), de+ade
-        # (Step 2). The rest still pass their keys through. Each later step adds
-        # to this set -- a deliberate per-step ratchet.
+        # (Step 2), ss (Step 3). The rest still pass their keys through. Each later
+        # step adds to this set -- a deliberate per-step ratchet.
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
-        assert migrated == {'pso', 'de', 'ade'}
-        assert FIT_TYPE_REGISTRY['ss'].schema is None
+        assert migrated == {'pso', 'de', 'ade', 'ss'}
+        assert FIT_TYPE_REGISTRY['sim'].schema is None
         assert FIT_TYPE_REGISTRY['check'].schema is None

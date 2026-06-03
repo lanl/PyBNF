@@ -6,6 +6,7 @@ loop + execution seam; it makes no core.* call of its own.
 
 
 from ..base import Algorithm
+from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -19,7 +20,21 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
-@register_fit_type('ss', family='optimizer', display_name='Scatter Search')
+class ScatterSearchConfig(PyBNFConfigModel):
+    """Scatter-search config fields, co-located with the method (ADR-0002,
+    ADR-0006). ``local_min_limit`` is the only defaulted scatter key (it was the
+    lone ``# --- scatter search ---`` entry in ``GlobalConfig``); ``init_size``
+    and ``reserve_size`` are NOT here -- like PSO's ``particle_weight_final`` they
+    are runtime-defaulted in ``__init__`` (``init_size`` → ``10*len(variables)``,
+    ``reserve_size`` → ``max_iterations`` when absent), so they stay pass-through
+    extras. Value byte-identical to the old global default.
+    """
+
+    local_min_limit: int = 5
+
+
+@register_fit_type('ss', family='optimizer', display_name='Scatter Search',
+                   schema=ScatterSearchConfig)
 class ScatterSearch(Algorithm):
     """
     Implements ScatterSearch as described in the introduction of Penas et al 2017 (but not the fancy parallelized

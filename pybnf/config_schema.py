@@ -145,7 +145,8 @@ class GlobalConfig(PyBNFConfigModel):
     # still present in the effective config for every fit_type via default_union().
 
     # --- scatter search ---
-    local_min_limit: int = 5
+    # Migrated to ScatterSearchConfig in algorithms/optimizers/scatter_search.py
+    # (Stage b); still present in the effective config via default_union().
 
     # --- MCMC samplers ---
     step_size: float = 0.2
