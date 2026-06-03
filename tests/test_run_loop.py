@@ -150,6 +150,23 @@ def _pset(name, value):
 # --------------------------------------------------------------------------- #
 # A controllable Algorithm
 # --------------------------------------------------------------------------- #
+class _ConcreteAlgorithm(algorithms.Algorithm):
+    """Minimal concrete Algorithm for unit-testing inherited base methods.
+
+    ``start_run``/``got_result`` are ``@abstractmethod`` on the base (M2.2 move 1,
+    ADR-0007), so the bare base can no longer be instantiated. These trivial
+    overrides make the class concrete without affecting the run-loop-arc methods
+    under test, which all live on (and are inherited from) the base unchanged.
+    Tests that need a specific ``got_result`` still override it per-instance.
+    """
+
+    def start_run(self):
+        return []
+
+    def got_result(self, res):
+        return []
+
+
 class _ScriptedAlgorithm(algorithms.Algorithm):
     """Drives a fixed sequence of generations. start_run submits the initial
     psets; got_result collects them and, once a generation completes, either
@@ -306,7 +323,7 @@ def test_aborts_when_all_simulations_fail(tmp_path, monkeypatch):
 # exercise the same decisions as the fake-client tests above, but in isolation.
 # --------------------------------------------------------------------------- #
 def _bare_algo(got_result=lambda res: [], *, max_failed=3, min_objective=-np.inf):
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.fail_count = 0
     algo.success_count = 0
     algo.config = type('Cfg', (), {})()
@@ -376,7 +393,7 @@ class TestRecordResultAndDecide:
 class TestFoldGroupResult:
 
     def test_returns_none_until_every_subjob_finishes(self):
-        algo = object.__new__(algorithms.Algorithm)
+        algo = object.__new__(_ConcreteAlgorithm)
         group = algorithms.JobGroup('g', ['g_rep0', 'g_rep1'])
         algo.job_group_dir = {'g_rep0': group, 'g_rep1': group}
 
@@ -504,7 +521,7 @@ def _bare_tail_algo(tmp_path, models, *, delete_old_files=0, smoothing=1):
     os.makedirs(sim_dir, exist_ok=True)
     os.makedirs(res_dir, exist_ok=True)
 
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = type('Cfg', (), {})()
     algo.config.config = {'delete_old_files': delete_old_files, 'smoothing': smoothing}
     algo.config.models = models
@@ -620,7 +637,7 @@ def _bare_rerun_algo(tmp_path, model_list, *, delete_old_files, save_best_data):
     os.makedirs(sim_dir, exist_ok=True)
     os.makedirs(res_dir, exist_ok=True)
 
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = type('Cfg', (), {})()
     algo.config.config = {
         'delete_old_files': delete_old_files, 'save_best_data': save_best_data,
@@ -738,7 +755,7 @@ class TestRerunBestFitToSaveData:
 
 def _bare_finalize_algo(tmp_path, *, bootstrap_number=None, bootstrap=None, refine=False):
     """Minimal Algorithm carrying only what _finalize_backup_pickle reads."""
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = type('Cfg', (), {})()
     algo.config.config = {'output_dir': str(tmp_path), 'bootstrap': bootstrap}
     algo.bootstrap_number = bootstrap_number
@@ -818,7 +835,7 @@ def _bare_teardown_algo(tmp_path, *, is_simplex=False, refine=0, bootstrap_numbe
     with open(sim_dir + '/sentinel.txt', 'w') as fh:
         fh.write('work')
 
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = type('Cfg', (), {})()
     algo.config.config = {'refine': refine, 'delete_old_files': delete_old_files}
     algo._is_simplex = is_simplex
@@ -891,7 +908,7 @@ def _bare_backup_algo(tmp_path, *, refine=False, delete_old_files=0):
     os.makedirs(res_dir, exist_ok=True)
 
     variables = [pset.FreeParameter('v1__FREE', 'uniform_var', 0, 100)]
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = _PicklableCfg(
         {'output_dir': out, 'delete_old_files': delete_old_files, 'num_to_output': 100},
         variables)

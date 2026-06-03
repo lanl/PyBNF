@@ -97,6 +97,16 @@ def _make_dummy_algorithm(model, output_dir, bngl_backend='auto'):
     class DummyConfig(object):
         pass
 
+    # Concrete subclass: Algorithm's start_run/got_result are @abstractmethod
+    # (ADR-0007), so the bare base can't be instantiated. _initialize_models (the
+    # method under test here) is inherited unchanged.
+    class _ConcreteAlgorithm(algorithms.Algorithm):
+        def start_run(self):
+            return []
+
+        def got_result(self, res):
+            return []
+
     cfg = DummyConfig()
     cfg.models = {model.name: model}
     cfg.config = {
@@ -106,7 +116,7 @@ def _make_dummy_algorithm(model, output_dir, bngl_backend='auto'):
         'bngl_backend': bngl_backend,
     }
 
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = cfg
     algo.variables = []
     return algo

@@ -151,6 +151,18 @@ def test_objective_eval_generic_error_becomes_failed_simulation():
 # add_to_trajectory: local-eval failure penalizes instead of crashing
 # ---------------------------------------------------------------------------
 
+class _ConcreteAlgorithm(algorithms.Algorithm):
+    """Concrete Algorithm: the base's start_run/got_result are @abstractmethod
+    (ADR-0007), so the bare base can't be instantiated. add_to_trajectory (the
+    method under test) is inherited unchanged."""
+
+    def start_run(self):
+        return []
+
+    def got_result(self, res):
+        return []
+
+
 def test_add_to_trajectory_eval_failure_penalizes():
     """When the objective is scored locally and raises, the result is penalized, not fatal."""
     recorded = []
@@ -158,7 +170,7 @@ def test_add_to_trajectory_eval_failure_penalizes():
     def raising_eval(simdata, exp_data, ps, constraints):
         raise printing.PybnfError('missing column')
 
-    algo = object.__new__(algorithms.Algorithm)
+    algo = object.__new__(_ConcreteAlgorithm)
     algo.config = types.SimpleNamespace(
         config={'normalization': None}, postprocessing={}, constraints=[])
     algo.objective = types.SimpleNamespace(evaluate_multiple=raising_eval)

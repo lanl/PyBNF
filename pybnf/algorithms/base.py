@@ -31,6 +31,7 @@ from ..bngsim_model import (
 from ..printing import print0, print1, print2, PybnfError
 from ..objective import ObjectiveCalculator
 
+from abc import ABC, abstractmethod
 import logging
 import numpy as np
 import os
@@ -63,10 +64,28 @@ def _bngsim_unavailable_reason():
     return BNGSIM_ERROR or 'bngsim is not available'
 
 
-class Algorithm(object):
-    """
-    A superclass containing the structures common to all metaheuristic and MCMC-based algorithms
-    defined in this software suite
+class Algorithm(ABC):
+    """Base class for every PyBNF fit type ("method"); defines the run-loop contract.
+
+    **The contract (ADR-0007).** A method plugs into the framework by subclassing
+    ``Algorithm`` and implementing exactly two abstract methods:
+
+    * :meth:`start_run` ``() -> list[PSet]`` — the initial parameter sets to evaluate.
+    * :meth:`got_result` ``(Result) -> list[PSet] | 'STOP'`` — given one completed
+      result, the next parameter sets to evaluate, or the string ``'STOP'`` to end
+      the run.
+
+    plus registering itself with a config schema via
+    ``@register_fit_type(..., schema=...)`` (ADR-0002, ADR-0005). The ``.name`` of any
+    returned PSet, if set, MUST be unique across the run (it determines the
+    simulation folder name; uniqueness is not checked elsewhere).
+
+    Everything else the framework needs has an overridable default (``reset``,
+    ``add_iterations``, ``cleanup``, ``get_backup_every``, ``should_pickle``). The
+    **run loop** itself — job submission, ``as_completed`` draining, backup cadence,
+    best-fit save, sim-dir teardown — lives in :meth:`run` and is shared by every
+    method, not replaceable: a method customizes *what to propose*, never the outer
+    loop.
     """
 
     # Overridable flag, set True by SimplexAlgorithm. Replaces an
@@ -576,6 +595,7 @@ class Algorithm(object):
         os.chdir(home_dir)
         return final_model_list
 
+    @abstractmethod
     def start_run(self):
         """
         Called by the scheduler at the start of a fitting run.
@@ -587,8 +607,8 @@ class Algorithm(object):
 
         :return: list of PSets
         """
-        raise NotImplementedError("Subclasses must implement start_run()")
 
+    @abstractmethod
     def got_result(self, res):
         """
         Called by the scheduler when a simulation is completed, with the pset that was run, and the resulting simulation
@@ -598,7 +618,6 @@ class Algorithm(object):
         :type res: Result
         :return: List of PSet(s) to be run next or 'STOP' string.
         """
-        raise NotImplementedError("Subclasses must implement got_result()")
 
     def add_to_trajectory(self, res):
         """

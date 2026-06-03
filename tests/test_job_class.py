@@ -14,6 +14,18 @@ import copy
 import numpy as np
 
 
+class _ConcreteAlgorithm(algorithms.Algorithm):
+    """Concrete Algorithm: the base's start_run/got_result are @abstractmethod
+    (ADR-0007), so the bare base can't be instantiated. add_to_trajectory (the
+    method under test) is inherited unchanged."""
+
+    def start_run(self):
+        return []
+
+    def got_result(self, res):
+        return []
+
+
 class TestJob(object):
     @classmethod
     def setup_class(cls):
@@ -84,7 +96,7 @@ class TestJob(object):
         assert isinstance(res, algorithms.FailedSimulation)
 
     def test_add_failedsimulation(self):
-        a = algorithms.Algorithm(
+        a = _ConcreteAlgorithm(
             config.Configuration({"models": {"bngl_files/parabola.bngl"}, 'exp_data': {'bngl_files/par1.exp'},
                                   'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'max_iterations': 10,
                                   'population_size': 10,
