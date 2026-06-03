@@ -162,10 +162,10 @@ _Avoid_: dry run, validation, utility run
 The single source of truth mapping a `fit_type` or `objfunc` code to the class that implements it, together with its family, defaults, and deprecation status. Methods self-register via a decorator, replacing the hand-maintained `if/elif` dispatch.
 _Avoid_: dispatcher, factory map, lookup table
 
-**Sampler Toolkit**:
-The library of reusable, optional sampler building blocks — Metropolis kernel, proposals, chain bookkeeping, tempering, cooling — that a new sampler may compose. Available and encouraged, never mandated; a method owes only the run-loop contract.
-_Avoid_: framework, base class (the toolkit is composed, not subclassed), mixins
+**Sampler Toolkit** (prospective — not yet built):
+A possible future library of optional, composable sampler building blocks (a Metropolis kernel, proposals, tempering, cooling). **It does not exist today.** On inspection the only shared candidates were ~15 lines of textbook stepping used by `mh`/`pt` and the deprecated `sa`, with no growth path — `am` and `dream` carry their own proposals and kernels — so the ≥2-user bar was not met (ADR-0009). Stepping logic lives inside each sampler; harvest a toolkit only when a future sampler genuinely wants shared stepping, to its real shape then. (Chain *diagnostics*, which **are** shared, live in `pybnf/diagnostics.py` — see Convergence Diagnostics — not here.)
+_Avoid_: framework, base class, mixins
 
 **Metropolis Kernel**:
-The shared propose → accept/reject step underlying the `mh`, `pt`, `sa`, and `am` methods; the canonical member of the Sampler Toolkit.
+The propose → accept/reject step at the heart of a Metropolis sampler. PyBNF does **not** factor this into one shared implementation: `mh`/`pt` use a fixed-magnitude Gaussian random walk with a β-tempered accept; `am` uses an adaptive multivariate-normal proposal; `dream` uses DE-archive donors with a snooker Hastings correction. Each sampler owns its kernel by design (ADR-0009). The deprecated optimizer `sa` reuses the `mh` Gaussian-step + Metropolis-accept shape over the *objective*, not a posterior.
 _Avoid_: MCMC step, sampler core
