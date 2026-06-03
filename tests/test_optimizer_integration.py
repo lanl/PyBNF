@@ -109,6 +109,38 @@ def test_simplex_finds_gaussian_mode(tmp_path):
     assert alg.trajectory.best_score() < 0.01
 
 
+def test_sa_finds_gaussian_mode(tmp_path):
+    """Simulated annealing recovers the Gaussian mode on an all-uniform-prior fit.
+
+    This is the functional guard for the M2.2 ``sa`` rewrite (ADR-0008). ``sa`` is
+    being re-specified to minimize the *raw* objective instead of the posterior.
+    With ``uniform_var`` priors that change is a numerical no-op: the prior term is
+    a constant inside the box (cancels in the Metropolis acceptance ratio) plus
+    ``-inf`` outside it (which proposal reflection already prevents). So the
+    rewritten optimizer must converge to the same mode it does today.
+
+    The assertion is locked here against the CURRENT, posterior-based ``sa``
+    (``BasicBayesMCMCAlgorithm(conf, sa=True)``); the move-3 rewrite changes only
+    the construction line to ``SimulatedAnnealing(conf)`` and this test must stay
+    green. Seeded (random_seed=1234) and run to a budget where every replicate
+    reaches ``beta_max``; recovery is ~0.01 of the mode, so the 0.2 tolerance is a
+    wide margin.
+    """
+    mean, var = [2.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'sa', tgt, exp, n_params=2,
+        population_size=4, step_size=0.2, beta=[1.0], cooling=0.1, beta_max=10.0,
+        max_iterations=5000, output_every=10 ** 9, random_seed=1234)
+    alg = algorithms.BasicBayesMCMCAlgorithm(conf, sa=True)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, mean, atol=0.2), \
+        'sa recovered %s, expected ~%s' % (recovered, mean)
+    assert alg.trajectory.best_score() < 0.05
+
+
 @pytest.mark.slow
 def test_de_finds_banana_valley(tmp_path):
     """Differential evolution finds the Rosenbrock/banana minimum at (a, a^2,...).
