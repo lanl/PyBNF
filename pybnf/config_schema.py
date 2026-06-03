@@ -33,9 +33,10 @@ oracle):
   ``numkeys_int`` / ``numkeys_float`` / ``mult*`` lists), so per-field coercion
   here is effectively a no-op today; it becomes the sole owner once the
   ``parse.py`` token lists migrate into the schema.
-* ``exchange_every`` is typed ``Any``: ``parse`` coerces it to ``int``, but
-  ``postprocess_mcmc_keys`` overwrites it with ``np.inf`` for the non-PT methods,
-  so the field must hold both an int and an infinity without re-coercion.
+* ``exchange_every`` is typed ``Any`` (now on ``MCMCFamilyConfig``): ``parse``
+  coerces it to ``int``, but the MCMC family's ``postprocess`` hook overwrites it
+  with ``np.inf`` for the non-PT methods, so the field must hold both an int and an
+  infinity without re-coercion.
 * ``lambda`` is a Python keyword, so its field is ``lambda_`` with
   ``alias='lambda'``; the model is dumped ``by_alias=True`` to emit ``'lambda'``.
 
@@ -89,8 +90,8 @@ class PyBNFConfigModel(BaseModel):
 
     @classmethod
     def postprocess(cls, conf_dict, fit_type):
-        """No-op preprocessing hook (ADR-0006). The MCMC-family schema overrides
-        this with ``postprocess_mcmc_keys`` (the beta ladder); every other model
+        """No-op preprocessing hook (ADR-0006). ``MCMCFamilyConfig`` overrides this
+        with the beta ladder (``algorithms/samplers/base.py``); every other model
         inherits this no-op. Mutates and returns the raw config dict."""
         return conf_dict
 
@@ -149,21 +150,11 @@ class GlobalConfig(PyBNFConfigModel):
     # (Stage b); still present in the effective config via default_union().
 
     # --- MCMC samplers ---
-    step_size: float = 0.2
-    burn_in: int = 10000
-    sample_every: int = 100
-    output_hist_every: int = 100
-    hist_bins: int = 10
-    adaptive: int = 10000
-    credible_intervals: list = Field(default_factory=lambda: [68.0, 95.0])
-    beta: list = Field(default_factory=lambda: [1.0])
-    exchange_every: Any = 20         # int from parse, but np.inf after postprocess
-    beta_max: float = float('inf')
-    cooling: float = 0.01
-    continue_run: int = 0
+    # Migrated to MCMCFamilyConfig in algorithms/samplers/base.py (Stage b); still
+    # present in the effective config for every fit_type via default_union().
+    # neg_bin_r stays here: it is an objfunc/noise param (read when objfunc=neg_bin
+    # regardless of fit_type), NOT MCMC-family knowledge.
     neg_bin_r: float = 24.0
-    stablizingCov: float = 0.001
-    calculate_covari: Any = None
 
     # --- simplex ---
     # Migrated to SimplexConfig in algorithms/optimizers/simplex.py (Stage b);
@@ -185,19 +176,8 @@ class GlobalConfig(PyBNFConfigModel):
     output_noise_trajectory: Any = None
 
     # --- DREAM family ---
-    gamma_prob: float = 0.1
-    zeta: float = 1e-6
-    lambda_: float = Field(0.1, alias='lambda')
-    crossover_number: int = 3
-    adaptive_step_size: Any = True   # bool default; user may pass int 0/1
-    archive_size: Optional[int] = None
-    archive_thin_rate: int = 10
-    snooker_prob: float = 0.1
-    delta: int = 1
-    outlier_method: str = 'iqr'
-    rhat_threshold: float = 0.0
-    diagnostics_every: int = 0
-    precondition_adapt: Any = None
+    # Migrated to MCMCFamilyConfig in algorithms/samplers/base.py (Stage b); still
+    # present in the effective config for every fit_type via default_union().
 
 
 # The config keys the global schema is the source of truth for. Used by

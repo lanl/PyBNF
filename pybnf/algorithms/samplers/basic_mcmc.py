@@ -7,7 +7,7 @@ class. Extracted byte-identical (M1 Step 4). Subclasses the sampler base
 """
 
 
-from .base import BayesianAlgorithm
+from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet
 from ...printing import print0, print1, print2, PybnfError
 from ...registry import register_fit_type
@@ -26,10 +26,12 @@ logger = logging.getLogger('pybnf.algorithms')
 # deprecated (they warn at dispatch but still run). sa runs in simulated-
 # annealing mode (kwargs sa=True) and is an optimizer, not a sampler -- M2.2
 # extracts it into optimizers/ as SimulatedAnnealing, retiring this binding.
-@register_fit_type('pt', family='sampler', display_name='Parallel Tempering MCMC')
-@register_fit_type('mh', family='sampler', display_name='Metropolis-Hastings MCMC', deprecated=True)
+@register_fit_type('pt', family='sampler', display_name='Parallel Tempering MCMC',
+                   schema=MCMCFamilyConfig)
+@register_fit_type('mh', family='sampler', display_name='Metropolis-Hastings MCMC',
+                   deprecated=True, schema=MCMCFamilyConfig)
 @register_fit_type('sa', family='optimizer', display_name='Simulated Annealing',
-                   kwargs={'sa': True}, deprecated=True)
+                   kwargs={'sa': True}, deprecated=True, schema=MCMCFamilyConfig)
 class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
     """

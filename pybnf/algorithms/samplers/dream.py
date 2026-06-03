@@ -7,7 +7,7 @@ execution seam from Algorithm; it makes no core.* call of its own.
 """
 
 
-from .base import BayesianAlgorithm
+from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -24,7 +24,8 @@ from scipy import stats
 logger = logging.getLogger('pybnf.algorithms')
 
 
-@register_fit_type('dream', family='sampler', display_name='DREAM(ZS)')
+@register_fit_type('dream', family='sampler', display_name='DREAM(ZS)',
+                   schema=MCMCFamilyConfig)
 class DreamAlgorithm(BayesianAlgorithm):
     """
     Implements a variant of the DREAM algorithm as described in Vrugt (2016) Environmental Modelling

@@ -9,17 +9,158 @@ its own, so this module does not import the ``core`` seam.
 
 
 from ..base import Algorithm
-from ...printing import print1, print2
+from ...config_schema import PyBNFConfigModel
+from ...printing import print1, print2, PybnfError
+
+from typing import Any, Optional
 
 import logging
 import numpy as np
 import os
+from pydantic import Field
 from scipy import stats
 
 
 # Preserve the original module logger name (was getLogger(__name__) in
 # algorithms.py) so log records keep the 'pybnf.algorithms' channel.
 logger = logging.getLogger('pybnf.algorithms')
+
+
+class MCMCFamilyConfig(PyBNFConfigModel):
+    """Config for the whole Bayesian/MCMC family (mh, pt, sa, am, dream, p_dream),
+    co-located with the family base (ADR-0002, ADR-0006).
+
+    Holds every defaulted MCMC + DREAM key (those the old ``GlobalConfig`` MCMC and
+    DREAM blocks carried, minus ``neg_bin_r`` -- that is an objfunc/noise param read
+    whenever ``objfunc=neg_bin`` regardless of fit_type, so it stays global). Values
+    byte-identical to the old global defaults. ``exchange_every`` /
+    ``calculate_covari`` / ``adaptive_step_size`` / ``precondition_adapt`` are typed
+    ``Any`` for the same reasons as before (``exchange_every`` becomes ``np.inf``
+    below; ``adaptive_step_size`` keeps a user int 0/1).
+
+    The Step-6 per-leaf split (BasicMCMCConfig mh/pt/sa, AdaptiveMCMCConfig am,
+    DreamConfig dream, PDreamConfig p_dream) subclasses this; for now all six codes
+    register against the family directly. The per-fit_type validity of individual
+    keys is still reported by ``check_unused_keys`` in ``config.py``.
+    """
+
+    # --- MCMC-shared ---
+    step_size: float = 0.2
+    burn_in: int = 10000
+    sample_every: int = 100
+    output_hist_every: int = 100
+    hist_bins: int = 10
+    adaptive: int = 10000
+    credible_intervals: list = Field(default_factory=lambda: [68.0, 95.0])
+    beta: list = Field(default_factory=lambda: [1.0])
+    exchange_every: Any = 20          # int from parse, but np.inf after postprocess
+    beta_max: float = float('inf')
+    cooling: float = 0.01
+    continue_run: int = 0
+    stablizingCov: float = 0.001
+    calculate_covari: Any = None
+
+    # --- DREAM family ---
+    gamma_prob: float = 0.1
+    zeta: float = 1e-6
+    lambda_: float = Field(0.1, alias='lambda')
+    crossover_number: int = 3
+    adaptive_step_size: Any = True    # bool default; user may pass int 0/1
+    archive_size: Optional[int] = None
+    archive_thin_rate: int = 10
+    snooker_prob: float = 0.1
+    delta: int = 1
+    outlier_method: str = 'iqr'
+    rhat_threshold: float = 0.0
+    diagnostics_every: int = 0
+    precondition_adapt: Any = None
+
+    @classmethod
+    def postprocess(cls, conf_dict, fit_type):
+        """The β-ladder (ported verbatim from ``Configuration.postprocess_mcmc_keys``).
+
+        Algorithms 'mh', 'pt', 'sa', 'am', 'dream', 'p_dream' have similar but
+        non-identical valid config keys; this builds ``beta_list`` / ``reps_per_beta``
+        and reconciles ``exchange_every`` / ``population_size``. Mutates ``conf_dict``
+        in place (operating on the RAW config dict, before defaults merge, so
+        raw-presence checks like ``'beta' not in conf_dict`` mean "user did not set
+        it"). ``config._build_config`` dispatches this uniformly; non-MCMC models
+        inherit the no-op ``postprocess`` from ``PyBNFConfigModel`` (ADR-0006 #3).
+        """
+        # Check keys that only work for a subset of the 4 algorithms
+        if conf_dict['fit_type'] != 'pt':
+            for k in ['exchange_every', 'reps_per_beta']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+            conf_dict['exchange_every'] = np.inf
+            conf_dict['reps_per_beta'] = 1
+        elif 'reps_per_beta' not in conf_dict:
+            conf_dict['reps_per_beta'] = 1  # Default value if using pt but didn't specify
+        if conf_dict['fit_type'] != 'sa':
+            for k in ['cooling', 'beta_max']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+        if conf_dict['fit_type'] == 'sa':
+            for k in ['burn_in', 'sample_every', 'output_hist_every', 'hist_bins', 'credible_intervals']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+        if conf_dict['fit_type'] in ['mh', 'sa', 'pt', 'am']:
+            for k in ['crossover_number', 'zeta', 'lambda', 'gamma_prob']:
+                if k in conf_dict:
+                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                           % (k, conf_dict['fit_type']))
+
+        # Create the starting list of betas based on the various available options. Warn if tried to do something weird
+        if 'beta' not in conf_dict and 'beta_range' not in conf_dict:
+            conf_dict['beta'] = [1.]
+
+        # Handle the Parallel Tempering case where reps_per_beta is specified.
+        # First, check it's divisible by the population size
+        if conf_dict['population_size'] % conf_dict['reps_per_beta'] != 0:
+            conf_dict['population_size'] -= conf_dict['population_size'] % conf_dict['reps_per_beta']
+            print1('Warning: Lowered your population_size to %i so that it is divisible by your setting for '
+                   'reps_per_beta' % conf_dict['population_size'])
+        # Then, we want the beta_list generated below to contain only one copy of the spread of betas to use
+        # At the end, we make reps_per_beta copies of that list to arrive at the final beta list.
+        subpop_size = conf_dict['population_size'] // conf_dict['reps_per_beta']
+
+        if 'beta_range' in conf_dict:
+            if len(conf_dict['beta_range']) != 2:
+                raise PybnfError("Wrong number of entries in beta_range",
+                                 "Config key 'beta_range' must have exactly 2 numbers: the min and the max.")
+            if 'beta' in conf_dict:
+                print1("Warning: Ignoring config key 'beta' because it is overridden by config key 'beta_range'")
+            if conf_dict['fit_type'] != 'pt':
+                print1("Warning: You used 'beta_range' with the method %s. This is an odd thing to do. Usually, you "
+                       "would want all your replicates starting at the same beta value." % conf_dict['fit_type'])
+            betalist = list(np.geomspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], subpop_size))
+        elif len(conf_dict['beta']) > 1:
+            betalist = conf_dict['beta']
+            if conf_dict['fit_type'] != 'pt':
+                print1("Warning: You specified multiple beta values with the method %s. This is an odd thing to do. "
+                       "Usually, you would specify one beta value to use with all your replicates. " % conf_dict['fit_type'])
+            if len(betalist) != subpop_size:
+                print1("Warning: You specified %i beta values, so I will run %i replicates instead of using your "
+                       "population_size setting" % (len(betalist), len(betalist)*conf_dict['reps_per_beta']))
+                conf_dict['population_size'] = len(betalist)*conf_dict['reps_per_beta']
+        else:
+            betalist = conf_dict['beta'] * subpop_size  # n copies of the single beta value
+            if conf_dict['fit_type'] == 'pt':
+                print1("Warning: You specified a single beta value with the method pt. This makes the algorithm's "
+                       "replica exchanges accomplish nothing. To make good use of this algorithm, set the key "
+                       "'beta_range' or specify multiple values with the 'beta' key.")
+        betalist.sort()
+        betalist = betalist * conf_dict['reps_per_beta']
+        conf_dict['beta_list'] = betalist
+
+        if conf_dict['fit_type'] == 'pt' and betalist[-1] != 1:
+            print1('Warning: You are about to calculate a distribution with beta=%i instead of 1. That means your '
+                   'calculated distribution will be %s than the true probability distribution' %
+                   (betalist[-1], 'narrower' if betalist[-1] > 1 else 'broader'))
+        return conf_dict
 
 
 class BayesianAlgorithm(Algorithm):

@@ -61,33 +61,52 @@ class TestGlobalSchemaDefaults:
 
 class TestBuildEffectiveGlobal:
     def test_user_value_overrides_default(self):
-        eff = config_schema.build_effective_global({'cooling': 0.5})
-        assert eff['cooling'] == 0.5
+        eff = config_schema.build_effective_global({'backup_every': 5})
+        assert eff['backup_every'] == 5
         assert eff['delete_old_files'] == 1   # untouched default still present
 
+    def test_rejects_keys_owned_by_a_method_schema(self):
+        # extra='forbid': a key that migrated out of GlobalConfig to a method schema
+        # (e.g. MCMC's 'cooling') is not accepted here -- _build_config routes such
+        # keys to build_effective_method instead.
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            config_schema.build_effective_global({'cooling': 0.5})
+
+
+class TestBuildEffectiveMethod:
+    """The faithfulness tricks live on whichever schema owns the field. After
+    Stage (b) the MCMC-family fields (the lambda alias, exchange_every-holds-inf,
+    adaptive_step_size-int, string coercion) belong to MCMCFamilyConfig;
+    build_effective_method validates a raw subset against a given per-method schema."""
+
+    def _mcmc(self, subset):
+        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
+        return config_schema.build_effective_method(MCMCFamilyConfig, subset)
+
     def test_lambda_alias_roundtrips(self):
-        eff = config_schema.build_effective_global({'lambda': 0.25})
+        eff = self._mcmc({'lambda': 0.25})
         assert eff['lambda'] == 0.25 and 'lambda_' not in eff
 
     def test_exchange_every_holds_infinity(self):
-        # postprocess_mcmc_keys assigns np.inf to exchange_every for non-PT
-        # methods; the field must accept it without re-coercion.
-        eff = config_schema.build_effective_global({'exchange_every': float('inf')})
+        # the MCMC family's postprocess assigns np.inf to exchange_every for non-PT
+        # methods; the Any-typed field must accept it without re-coercion.
+        eff = self._mcmc({'exchange_every': float('inf')})
         assert math.isinf(eff['exchange_every'])
 
     def test_exchange_every_keeps_int_for_pt(self):
-        eff = config_schema.build_effective_global({'exchange_every': 5})
+        eff = self._mcmc({'exchange_every': 5})
         assert eff['exchange_every'] == 5 and type(eff['exchange_every']) is int
 
     def test_adaptive_step_size_preserves_int(self):
         # Any-typed so a user 0/1 stays an int (truthy), matching old behavior --
         # typing it bool would silently turn int 0/1 into False/True.
-        eff = config_schema.build_effective_global({'adaptive_step_size': 0})
+        eff = self._mcmc({'adaptive_step_size': 0})
         assert eff['adaptive_step_size'] == 0 and type(eff['adaptive_step_size']) is int
 
     def test_schema_coerces_string_numbers(self):
         # Forward-looking: once parse.py stops coercing, the schema owns it.
-        eff = config_schema.build_effective_global({'burn_in': '250'})
+        eff = self._mcmc({'burn_in': '250'})
         assert eff['burn_in'] == 250 and type(eff['burn_in']) is int
 
 
@@ -199,12 +218,39 @@ class TestRegistrySchemaSeam:
         eff = config.Configuration._build_config({'fit_type': 'de'})
         assert eff['simplex_step'] == 1.0 and eff['simplex_stop_tol'] == 0.0
 
+    def test_mcmc_family_shares_one_schema_with_the_beta_ladder(self):
+        # All six MCMC codes register against the family schema (Step 5); 'check'
+        # is the lone remaining unmigrated code (Step 7).
+        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        for code in ('mh', 'pt', 'sa', 'am', 'dream', 'p_dream'):
+            assert FIT_TYPE_REGISTRY[code].schema is MCMCFamilyConfig, code
+        # the family carries the beta-ladder; the base hook is a no-op
+        assert MCMCFamilyConfig.postprocess is not config_schema.PyBNFConfigModel.postprocess
+        # owns the shared MCMC + DREAM keys (e.g. step_size, beta, gamma_prob),
+        # but NOT neg_bin_r (an objfunc param that stays global)
+        owned = MCMCFamilyConfig.owned_keys()
+        assert {'step_size', 'beta', 'exchange_every', 'gamma_prob', 'lambda'} <= owned
+        assert 'neg_bin_r' not in owned and 'neg_bin_r' in config_schema.SCHEMA_KEYS
+
+    def test_beta_ladder_runs_through_build_config(self):
+        # The beta-ladder hook fires inside _build_config on the raw dict: a non-pt
+        # MCMC fit gets exchange_every -> inf and a beta_list built from beta.
+        eff = config.Configuration._build_config(
+            {'fit_type': 'am', 'population_size': 4, 'beta': [1.0]})
+        assert math.isinf(eff['exchange_every'])      # postprocess set inf (non-pt)
+        assert eff['reps_per_beta'] == 1
+        assert eff['beta_list'] == [1.0, 1.0, 1.0, 1.0]  # one beta x subpop_size 4
+        # a non-MCMC fit's no-op postprocess leaves no beta_list
+        de_eff = config.Configuration._build_config({'fit_type': 'de'})
+        assert 'beta_list' not in de_eff
+
     def test_migrated_methods_so_far(self):
         # Stage (b) migrates one method/family per step: pso (Step 1), de+ade
-        # (Step 2), ss (Step 3), sim (Step 4). The rest still pass their keys
-        # through. Each later step adds to this set -- a deliberate per-step ratchet.
+        # (Step 2), ss (Step 3), sim (Step 4), the whole MCMC family (Step 5).
+        # Only 'check' remains (Step 7). Each step extends this set -- a ratchet.
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
-        assert migrated == {'pso', 'de', 'ade', 'ss', 'sim'}
-        assert FIT_TYPE_REGISTRY['mh'].schema is None
+        assert migrated == {'pso', 'de', 'ade', 'ss', 'sim',
+                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream'}
         assert FIT_TYPE_REGISTRY['check'].schema is None

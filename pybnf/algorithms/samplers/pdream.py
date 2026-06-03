@@ -7,6 +7,7 @@ Subclasses DreamAlgorithm (a sibling leaf in this sub-package).
 
 
 from .dream import DreamAlgorithm
+from .base import MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException
 from ...registry import register_fit_type
 
@@ -19,7 +20,8 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
-@register_fit_type('p_dream', family='sampler', display_name='Preconditioned DREAM')
+@register_fit_type('p_dream', family='sampler', display_name='Preconditioned DREAM',
+                   schema=MCMCFamilyConfig)
 class PDreamAlgorithm(DreamAlgorithm):
     """
     P-DREAM: Preconditioned DREAM.

@@ -7,7 +7,7 @@ execution seam from Algorithm.
 
 
 from ..core import FailedSimulation
-from .base import BayesianAlgorithm
+from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException
 from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
@@ -19,7 +19,8 @@ import shutil
 from scipy import stats
 
 
-@register_fit_type('am', family='sampler', display_name='Adaptive MCMC')
+@register_fit_type('am', family='sampler', display_name='Adaptive MCMC',
+                   schema=MCMCFamilyConfig)
 class Adaptive_MCMC(BayesianAlgorithm):
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
         super(Adaptive_MCMC, self).__init__(config)

@@ -109,13 +109,15 @@ class TestConfig(object):
 
     def test_crossover_number_warns_when_ignored(self, monkeypatch):
         # 'crossover_number' is a DREAM-family key; for am/mh/pt/sa it's unused
-        # and should warn. The warn-branch key was misspelled 'crossover_numer',
-        # so the real 'crossover_number' value never matched and the branch was
-        # dead. Drive the staticmethod and assert the warning now names the key.
+        # and should warn. The beta-ladder preprocessing moved to
+        # MCMCFamilyConfig.postprocess (ADR-0006); drive it and assert the warning
+        # names the key (print1 now resolves in algorithms.samplers.base).
+        from pybnf.algorithms.samplers import base as samplers_base
+        from pybnf.algorithms.samplers.base import MCMCFamilyConfig
         warnings = []
-        monkeypatch.setattr(config, 'print1', lambda msg, *a, **k: warnings.append(msg))
+        monkeypatch.setattr(samplers_base, 'print1', lambda msg, *a, **k: warnings.append(msg))
         conf = {'fit_type': 'am', 'population_size': 10, 'crossover_number': 3}
-        config.Configuration.postprocess_mcmc_keys(conf)
+        MCMCFamilyConfig.postprocess(conf, 'am')
         assert any('crossover_number' in w for w in warnings)
 
     # --- _check_variable_correspondence (the config-level free-parameter guard) ---
