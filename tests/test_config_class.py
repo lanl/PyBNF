@@ -120,6 +120,19 @@ class TestConfig(object):
         MCMCFamilyConfig.postprocess(conf, 'am')
         assert any('crossover_number' in w for w in warnings)
 
+    def test_check_model_checking_tolerates_tuple_keys(self):
+        # CFG-CHECK-1: a free-parameter tuple key (e.g. ('uniform_var','p1')) used
+        # to crash check_unused_keys_model_checking -- first on re.search(regex,
+        # tuple), then on '...%s...' % tuple. With the isinstance(k, str) guard and
+        # % (k,) it must pass through without raising; refine/bootstrap are still
+        # stripped and string model-path keys are untouched.
+        conf = {'fit_type': 'check', 'model.bngl': ['a.exp'],
+                ('uniform_var', 'p1'): [-10.0, 10.0], 'refine': 1, 'bootstrap': 1}
+        out = config.Configuration.check_unused_keys_model_checking(conf)
+        assert ('uniform_var', 'p1') in out                    # tuple key survives
+        assert 'refine' not in out and 'bootstrap' not in out  # would_crash stripped
+        assert 'model.bngl' in out                             # model path untouched
+
     # --- _check_variable_correspondence (the config-level free-parameter guard) ---
     # Tricky.bngl declares __FREE params: koff__FREE, __koff2__FREE, kase__FREE, pase__FREE.
 

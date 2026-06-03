@@ -306,9 +306,17 @@ class Configuration(object):
         would_crash = {'refine', 'bootstrap'}
 
         for k in conf_dict:
-            if k not in used and not re.search(r'\.(bngl|xml|ant)', k):
+            # Guard the model-path regex with isinstance(k, str): free-parameter
+            # keys are tuples (e.g. ('uniform_var', 'p1')), and re.search on a tuple
+            # raises TypeError -- so fit_type=check + any *_var key used to crash
+            # (CFG-CHECK-1). A non-string key is never a model path, so it falls
+            # through to the unused-key warning, which is correct for check.
+            if k not in used and not (isinstance(k, str) and re.search(r'\.(bngl|xml|ant)', k)):
                 print1('Warning: Configuration key '+str(k)+' is not used in fit_type "check", so I am ignoring it')
-                logger.warning('Ignoring unused key %s for fitting algorithm "check"' % k)
+                # % (k,) not % k: a tuple free-param key would otherwise be spread
+                # across the format string as multiple args (TypeError) -- the same
+                # CFG-CHECK-1 tuple-key hazard, one line down.
+                logger.warning('Ignoring unused key %s for fitting algorithm "check"' % (k,))
         for k in would_crash:
             if k in conf_dict:
                 del conf_dict[k]

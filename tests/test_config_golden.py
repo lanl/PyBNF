@@ -281,6 +281,17 @@ bootstrap = 1
 initialization = lh
 wall_time_sim = 0
 """,
+    # CFG-CHECK-1 regression: fit_type=check + a free-parameter (*_var) tuple key
+    # used to crash check_unused_keys_model_checking (re.search / % on a tuple key).
+    # The isinstance(k, str) guard + % (k,) fix lets it build; this case pins the
+    # now-buildable effective config (the one intended golden regen of Stage b).
+    'matrix/check_with_var': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = check
+uniform_var = p1 -10 10
+wall_time_sim = 0
+""",
     # --- objfunc variety (objective-construction + required-param guards) ---
     'matrix/obj_sos': """
 model = gaussian.target : target.exp
