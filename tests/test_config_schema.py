@@ -181,12 +181,30 @@ class TestRegistrySchemaSeam:
         assert FIT_TYPE_REGISTRY['ss'].schema is ScatterSearchConfig
         assert ScatterSearchConfig.owned_keys() == {'local_min_limit'}
 
+    def test_sim_owns_only_defaulted_simplex_keys(self):
+        # Simplex owns the six unconditionally-read simplex_* knobs;
+        # simplex_log_step / simplex_max_iterations are runtime-guarded and
+        # simplex_start_point is internal, so none of those are schema-owned.
+        from pybnf.algorithms.optimizers.simplex import SimplexConfig
+        from pybnf.registry import FIT_TYPE_REGISTRY
+        assert FIT_TYPE_REGISTRY['sim'].schema is SimplexConfig
+        assert SimplexConfig.owned_keys() == {
+            'simplex_step', 'simplex_reflection', 'simplex_expansion',
+            'simplex_contraction', 'simplex_shrink', 'simplex_stop_tol'}
+
+    def test_simplex_keys_present_for_every_fit_type(self):
+        # The refine->simplex cross-method reach (ADR-0006): a non-simplex fit's
+        # effective config must still carry simplex_* (via default_union), so
+        # _refine_best_fit can run Simplex on it.
+        eff = config.Configuration._build_config({'fit_type': 'de'})
+        assert eff['simplex_step'] == 1.0 and eff['simplex_stop_tol'] == 0.0
+
     def test_migrated_methods_so_far(self):
         # Stage (b) migrates one method/family per step: pso (Step 1), de+ade
-        # (Step 2), ss (Step 3). The rest still pass their keys through. Each later
-        # step adds to this set -- a deliberate per-step ratchet.
+        # (Step 2), ss (Step 3), sim (Step 4). The rest still pass their keys
+        # through. Each later step adds to this set -- a deliberate per-step ratchet.
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
-        assert migrated == {'pso', 'de', 'ade', 'ss'}
-        assert FIT_TYPE_REGISTRY['sim'].schema is None
+        assert migrated == {'pso', 'de', 'ade', 'ss', 'sim'}
+        assert FIT_TYPE_REGISTRY['mh'].schema is None
         assert FIT_TYPE_REGISTRY['check'].schema is None

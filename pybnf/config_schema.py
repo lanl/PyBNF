@@ -166,12 +166,9 @@ class GlobalConfig(PyBNFConfigModel):
     calculate_covari: Any = None
 
     # --- simplex ---
-    simplex_step: float = 1.0
-    simplex_reflection: float = 1.0
-    simplex_expansion: float = 1.0
-    simplex_contraction: float = 0.5
-    simplex_shrink: float = 0.5
-    simplex_stop_tol: float = 0.0
+    # Migrated to SimplexConfig in algorithms/optimizers/simplex.py (Stage b);
+    # still present in the effective config for every fit_type via default_union()
+    # (the refine->simplex cross-method reach relies on it).
 
     # --- failure / wall-time / normalization ---
     max_failed_simulations: int = 100

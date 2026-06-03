@@ -8,6 +8,7 @@ Imports the module-level ``exp10`` helper from the package base (leaf -> base).
 
 
 from ..base import Algorithm, exp10
+from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2
 from ...registry import register_fit_type
@@ -21,7 +22,31 @@ import numpy as np
 logger = logging.getLogger('pybnf.algorithms')
 
 
-@register_fit_type('sim', family='optimizer', display_name='Simplex')
+class SimplexConfig(PyBNFConfigModel):
+    """Simplex (Nelder-Mead) config fields, co-located with the method (ADR-0002,
+    ADR-0006) -- the six defaulted ``simplex_*`` knobs ``__init__`` reads
+    unconditionally. NOT here (stay pass-through extras): ``simplex_max_iterations``
+    and ``simplex_log_step`` are runtime-guarded (``if 'X' in config.config``) so
+    they default at runtime, and ``simplex_start_point`` is an internal key the
+    algorithm sets itself. The Simplex ``var``/``logvar``-only free-parameter rule
+    stays in ``config.py`` (cross-config knowledge, ADR-0006 #5). Values are
+    byte-identical to the old ``GlobalConfig`` defaults.
+
+    These keys stay in the effective config for *every* fit_type (via
+    ``default_union``): ``_refine_best_fit`` runs Simplex on a non-simplex config
+    and reads ``simplex_*`` -- a live cross-method reach (ADR-0006).
+    """
+
+    simplex_step: float = 1.0
+    simplex_reflection: float = 1.0
+    simplex_expansion: float = 1.0
+    simplex_contraction: float = 0.5
+    simplex_shrink: float = 0.5
+    simplex_stop_tol: float = 0.0
+
+
+@register_fit_type('sim', family='optimizer', display_name='Simplex',
+                   schema=SimplexConfig)
 class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
