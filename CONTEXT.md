@@ -133,7 +133,7 @@ A fit type that searches for the single best-fitting PSet. Codes: `de` (Differen
 _Avoid_: optimizer, minimizer, solver
 
 **Bayesian Sampler**:
-A fit type that samples the posterior distribution of the free parameters instead of returning one best PSet. Codes: `am` (Adaptive MCMC), `dream` (DREAM(ZS)), `p_dream` (P-DREAM), `pt` (Parallel Tempering); `mh` (Metropolis–Hastings) is deprecated. `sa` (Simulated Annealing) currently reuses this class but is a deprecated *optimizer*, not a sampler (registry family `optimizer`; M2.2 extracts it to `optimizers/`).
+A fit type that samples the posterior distribution of the free parameters instead of returning one best PSet. Codes: `am` (Adaptive MCMC), `dream` (DREAM(ZS)), `p_dream` (P-DREAM), `pt` (Parallel Tempering); `mh` (Metropolis–Hastings) is deprecated. `sa` (Simulated Annealing) is a deprecated *optimizer*, not a sampler (registry family `optimizer`); M2.2 extracted it to its own class in `optimizers/simulated_annealing.py`, where it minimizes the raw objective (ADR-0008).
 _Avoid_: MCMC run, posterior fit
 
 **DREAM(ZS)** (`dream`):
@@ -167,5 +167,9 @@ A possible future library of optional, composable sampler building blocks (a Met
 _Avoid_: framework, base class, mixins
 
 **Metropolis Kernel**:
-The propose → accept/reject step at the heart of a Metropolis sampler. PyBNF does **not** factor this into one shared implementation: `mh`/`pt` use a fixed-magnitude Gaussian random walk with a β-tempered accept; `am` uses an adaptive multivariate-normal proposal; `dream` uses DE-archive donors with a snooker Hastings correction. Each sampler owns its kernel by design (ADR-0009). The deprecated optimizer `sa` reuses the `mh` Gaussian-step + Metropolis-accept shape over the *objective*, not a posterior.
+The propose → accept/reject step at the heart of a Metropolis sampler. PyBNF does **not** factor this into one shared implementation: `mh`/`pt` use a fixed-magnitude Gaussian random walk with a β-tempered accept; `am` uses an adaptive multivariate-normal proposal; `dream` uses DE-archive donors with a snooker Hastings correction. Each sampler owns its kernel by design (ADR-0009). The deprecated optimizer `sa` uses the same fixed-magnitude Gaussian-step + Metropolis-accept shape over the *raw objective* (not a posterior), in its own `optimizers/simulated_annealing.py` (ADR-0008).
 _Avoid_: MCMC step, sampler core
+
+**Convergence Diagnostics**:
+The R-hat (rank-normalized split potential scale reduction factor) and bulk/tail effective sample size (ESS) statistics that quantify MCMC convergence and sampling efficiency, in the Vehtari et al. (2021) / Stan / ArviZ conventions. The pure math lives in the top-level `pybnf/diagnostics.py` — a peer of `objective.py`, importable by the benchmark harness without reaching into `samplers/` — while the instance-coupled reporting/stopping glue (`report_convergence_diagnostics`, `check_convergence`, `_write_diagnostics`) and the PSet→array bridge (`_param_vec`) stay on `BayesianAlgorithm`, which delegates the math (ADR-0009, M2.2).
+_Avoid_: convergence test, R-hat (as a synonym for the whole pair)

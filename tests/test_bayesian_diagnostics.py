@@ -1,30 +1,34 @@
 """
-Oracle-anchored tests for the convergence-diagnostic machinery in
-``BayesianAlgorithm`` (pybnf/algorithms.py): Brooks-Gelman split-R-hat,
-rank-normalized split-R-hat (Vehtari et al. 2021), bulk/tail effective
-sample size, the chain-splitting helper, and the sampling-space parameter
-extractor.
+Oracle-anchored tests for the convergence-diagnostic math in ``pybnf.diagnostics``
+(extracted from ``BayesianAlgorithm`` in M2.2 move 5, ADR-0009): Brooks-Gelman
+split-R-hat, rank-normalized split-R-hat (Vehtari et al. 2021), bulk/tail
+effective sample size, the chain-splitting helper, plus ``BayesianAlgorithm``'s
+thin ``compute_rhat``/``compute_ess`` glue and the sampling-space parameter
+extractor (``_param_vec``, which stays on the sampler base).
 
-These methods are pure numerical routines with strong oracles:
+These are pure numerical routines with strong oracles:
 
   * R-hat has an exact closed form (verifiable by hand on a tiny array) and is
     invariant under affine rescaling of the chains; the *rank-normalized*
     version is additionally invariant under any strictly monotonic transform.
+    ``test_rhat_matches_independent_reference`` additionally cross-checks the full
+    rank-normalized pipeline against an independent scipy reimplementation.
   * ESS equals M*n for uncorrelated draws and collapses toward M*n*(1-rho)/(1+rho)
     for an AR(1) chain, monotonically decreasing in the autocorrelation rho.
 
-The diagnostic methods only read ``self.chain_history``, ``self.num_parallel``
-and ``self.variables``, so we exercise them on bare instances built with
-``object.__new__`` rather than paying for the full (model-parsing,
-directory-creating) constructor. ``_split_chain_rhat`` and ``_ess_from_chains``
-are staticmethods and are called directly on the class.
+The ``pybnf.diagnostics`` functions are pure (they take ``chain_history`` /
+``num_parallel`` / arrays); ``compute_rhat``/``compute_ess`` read
+``self.chain_history`` and ``self.num_parallel`` and delegate, so we exercise them
+on bare instances built with ``object.__new__`` rather than paying for the full
+(model-parsing, directory-creating) constructor.
 """
 import numpy as np
 import pytest
 from hypothesis import given, assume, settings, strategies as st
 from hypothesis.extra import numpy as hnp
+from scipy import stats
 
-from .context import algorithms, pset
+from .context import algorithms, diagnostics, pset
 
 BA = algorithms.BayesianAlgorithm
 
@@ -68,7 +72,7 @@ def _well_conditioned(chains):
 
 
 # --------------------------------------------------------------------------- #
-# _split_chain_rhat: the Vehtari (2021) potential scale reduction factor
+# diagnostics.split_chain_rhat: the Vehtari (2021) potential scale reduction factor
 # --------------------------------------------------------------------------- #
 class TestSplitChainRhat:
 
@@ -78,7 +82,7 @@ class TestSplitChainRhat:
         W = var_within = 5/3, B = n*var(means) = 4*0.5 = 2,
         var_plus = (3/4)W + (1/4)B = 1.75, so R-hat = sqrt(1.75 / (5/3)) = sqrt(1.05)."""
         chains = np.array([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=float)[:, :, None]
-        rhat = BA._split_chain_rhat(chains)
+        rhat = diagnostics.split_chain_rhat(chains)
         np.testing.assert_allclose(rhat, np.sqrt(1.05), rtol=1e-12)
 
     def test_identical_chains_give_sqrt_ratio(self):
@@ -87,7 +91,7 @@ class TestSplitChainRhat:
         finite-n underestimate). Here n=4 -> sqrt(3/4)."""
         one = np.array([0.0, 1.0, 2.0, 3.0])
         chains = np.stack([one, one, one])[:, :, None]  # N=3, n=4, d=1
-        rhat = BA._split_chain_rhat(chains)
+        rhat = diagnostics.split_chain_rhat(chains)
         np.testing.assert_allclose(rhat, np.sqrt(3 / 4), rtol=1e-12)
 
     def test_well_separated_chains_exceed_one(self):
@@ -100,7 +104,7 @@ class TestSplitChainRhat:
             rng.normal(loc=20.0, scale=1.0, size=n),
             rng.normal(loc=40.0, scale=1.0, size=n),
         ])[:, :, None]
-        rhat = BA._split_chain_rhat(chains).item()
+        rhat = diagnostics.split_chain_rhat(chains).item()
         assert rhat > 2.0
 
     def test_separation_increases_rhat(self):
@@ -112,7 +116,7 @@ class TestSplitChainRhat:
         rhats = []
         for sep in (1.0, 5.0, 25.0):
             chains = np.stack([base[0], base[1] + sep])[:, :, None]
-            rhats.append(BA._split_chain_rhat(chains).item())
+            rhats.append(diagnostics.split_chain_rhat(chains).item())
         assert rhats[0] < rhats[1] < rhats[2]
 
     @settings(max_examples=150)
@@ -121,8 +125,8 @@ class TestSplitChainRhat:
         """R-hat is invariant under multiplying every chain value by a constant:
         B and W both scale by c^2, so their ratio (and thus R-hat) is unchanged."""
         assume(_well_conditioned(chains))
-        base = BA._split_chain_rhat(chains)
-        scaled = BA._split_chain_rhat(c * chains)
+        base = diagnostics.split_chain_rhat(chains)
+        scaled = diagnostics.split_chain_rhat(c * chains)
         np.testing.assert_allclose(scaled, base, rtol=1e-9)
 
     @settings(max_examples=150)
@@ -131,8 +135,8 @@ class TestSplitChainRhat:
         """R-hat is invariant under adding a constant to every chain value:
         variances (within and between) are unchanged by translation."""
         assume(_well_conditioned(chains))
-        base = BA._split_chain_rhat(chains)
-        shifted = BA._split_chain_rhat(chains + b)
+        base = diagnostics.split_chain_rhat(chains)
+        shifted = diagnostics.split_chain_rhat(chains + b)
         np.testing.assert_allclose(shifted, base, rtol=1e-6, atol=1e-9)
 
     def test_independent_per_dimension(self):
@@ -142,9 +146,9 @@ class TestSplitChainRhat:
         a = rng.normal(0, 1, (3, 30))
         b = rng.normal(5, 2, (3, 30))
         stacked = np.stack([a, b], axis=-1)  # (3, 30, 2)
-        rhat = BA._split_chain_rhat(stacked)
-        np.testing.assert_allclose(rhat[0], BA._split_chain_rhat(a[:, :, None]).item(), rtol=1e-12)
-        np.testing.assert_allclose(rhat[1], BA._split_chain_rhat(b[:, :, None]).item(), rtol=1e-12)
+        rhat = diagnostics.split_chain_rhat(stacked)
+        np.testing.assert_allclose(rhat[0], diagnostics.split_chain_rhat(a[:, :, None]).item(), rtol=1e-12)
+        np.testing.assert_allclose(rhat[1], diagnostics.split_chain_rhat(b[:, :, None]).item(), rtol=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -156,6 +160,35 @@ def _make_chain_history(rng, num_parallel, length, n_dim, loc=0.0, scale=1.0):
         [rng.normal(loc, scale, n_dim) for _ in range(length)]
         for _ in range(num_parallel)
     ]
+
+
+def _ref_split_rhat(chains2d):
+    """Vehtari R = sqrt(var_plus / W) on an (M, n) array, recomputed from scratch."""
+    M, n = chains2d.shape
+    W = chains2d.var(axis=1, ddof=1).mean()
+    B = n * chains2d.mean(axis=1).var(ddof=1)
+    var_plus = (n - 1) / n * W + B / n
+    return float(np.sqrt(var_plus / W))
+
+
+def _reference_rhat_on_split(chains):
+    """Independent reimplementation of Vehtari (2021) rank-normalized split-R-hat
+    on an already-split (M, n, d) array — the oracle for ``diagnostics.rhat``'s
+    assembly. Uses ``scipy.stats.rankdata`` (average-tie ranks) rather than the
+    argsort ranks in ``diagnostics``, and recomputes var_plus/W independently, so
+    it is a genuine second implementation. The Blom offset (r-3/8)/(S+1/4) is part
+    of the algorithm spec, so it is shared; with continuous data (no ties) the two
+    rank conventions agree, isolating the rank-normalize → fold → R-hat →
+    element-wise-max assembly for comparison."""
+    M, n, d = chains.shape
+    S = M * n
+    out = np.empty(d)
+    for p in range(d):
+        ranks = stats.rankdata(chains[:, :, p]).reshape(M, n)  # flat C-order ranks
+        z = stats.norm.ppf((ranks - 0.375) / (S + 0.25))
+        folded = np.abs(z - np.median(z))
+        out[p] = max(_ref_split_rhat(z), _ref_split_rhat(folded))
+    return out
 
 
 class TestComputeRhat:
@@ -207,23 +240,37 @@ class TestComputeRhat:
         ba_t = _bare_ba(transformed, num_parallel=4)
         np.testing.assert_allclose(ba_t.compute_rhat(), base, rtol=1e-9)
 
+    def test_rhat_matches_independent_reference(self):
+        """Direct-oracle cross-check: the full rank-normalized split-R-hat pipeline
+        must match an independent scipy reimplementation, evaluated on
+        ``diagnostics.split_chains``' own output (so the last-50%-then-halve
+        windowing is shared and only the rank-normalize → fold → R-hat →
+        element-wise-max assembly is compared). Catches assembly/typo bugs (wrong
+        fold axis, mean-vs-median, ddof, fmax-vs-maximum) that the component tests
+        above would each individually miss."""
+        rng = np.random.default_rng(20)
+        history = _make_chain_history(rng, 4, 200, 3)
+        got = diagnostics.rhat(history, 4)
+        want = _reference_rhat_on_split(diagnostics.split_chains(history, 4))
+        np.testing.assert_allclose(got, want, rtol=1e-9)
+
 
 # --------------------------------------------------------------------------- #
-# _get_split_chains: last-50%-then-halve splitting
+# diagnostics.split_chains: last-50%-then-halve splitting
 # --------------------------------------------------------------------------- #
 class TestGetSplitChains:
 
     def test_none_below_minimum_length(self):
         rng = np.random.default_rng(8)
         ba = _bare_ba(_make_chain_history(rng, 3, 19, 2), num_parallel=3)
-        assert ba._get_split_chains() is None
+        assert diagnostics.split_chains(ba.chain_history, ba.num_parallel) is None
 
     def test_doubles_chain_count_and_shapes(self):
         """With num_parallel chains of length L, the splitter keeps the last
         ~L/2 steps and halves them, yielding 2*num_parallel sub-chains."""
         rng = np.random.default_rng(9)
         ba = _bare_ba(_make_chain_history(rng, 3, 40, 2), num_parallel=3)
-        split = ba._get_split_chains()
+        split = diagnostics.split_chains(ba.chain_history, ba.num_parallel)
         # min_len=40 -> start=20, usable=20, half=10
         assert split.shape == (6, 10, 2)
 
@@ -233,7 +280,7 @@ class TestGetSplitChains:
         sub-chains are [20..29] and [30..39]."""
         history = [[np.array([float(i)]) for i in range(40)]]
         ba = _bare_ba(history, num_parallel=1)
-        split = ba._get_split_chains()
+        split = diagnostics.split_chains(ba.chain_history, ba.num_parallel)
         assert split.shape == (2, 10, 1)
         np.testing.assert_array_equal(split[0, :, 0], np.arange(20, 30))
         np.testing.assert_array_equal(split[1, :, 0], np.arange(30, 40))
@@ -247,28 +294,28 @@ class TestGetSplitChains:
             [rng.normal(0, 1, 1) for _ in range(100)],
         ]
         ba = _bare_ba(history, num_parallel=2)
-        split = ba._get_split_chains()
+        split = diagnostics.split_chains(ba.chain_history, ba.num_parallel)
         # min_len=40 -> half=10, 2 chains -> 4 sub-chains
         assert split.shape == (4, 10, 1)
 
 
 # --------------------------------------------------------------------------- #
-# _ess_from_chains: FFT autocovariance + Geyer initial positive sequence
+# diagnostics.ess_from_chains: FFT autocovariance + Geyer initial positive sequence
 # --------------------------------------------------------------------------- #
 class TestEssFromChains:
 
     def test_nan_below_four_samples(self):
-        assert np.isnan(BA._ess_from_chains(np.ones((2, 3))))
+        assert np.isnan(diagnostics.ess_from_chains(np.ones((2, 3))))
 
     def test_constant_chain_returns_full_count(self):
         """Zero variance short-circuits to the total sample count M*n."""
-        assert BA._ess_from_chains(np.ones((4, 500))) == 4 * 500
+        assert diagnostics.ess_from_chains(np.ones((4, 500))) == 4 * 500
 
     def test_white_noise_near_full_count(self):
         """Uncorrelated draws have autocorrelation ~0, so ESS ~ M*n."""
         rng = np.random.default_rng(11)
         M, n = 4, 500
-        ess = BA._ess_from_chains(rng.standard_normal((M, n)))
+        ess = diagnostics.ess_from_chains(rng.standard_normal((M, n)))
         assert 0.7 * M * n < ess <= 1.05 * M * n
 
     @pytest.mark.parametrize("rho,frac", [(0.5, 0.6), (0.9, 0.2)])
@@ -281,7 +328,7 @@ class TestEssFromChains:
         for m in range(M):
             for t in range(1, n):
                 x[m, t] = rho * x[m, t - 1] + rng.standard_normal()
-        ess = BA._ess_from_chains(x)
+        ess = diagnostics.ess_from_chains(x)
         assert ess < frac * M * n
 
     def test_ess_matches_ar1_theory(self):
@@ -296,7 +343,7 @@ class TestEssFromChains:
         for m in range(M):
             for t in range(1, n):
                 x[m, t] = rho * x[m, t - 1] + rng.standard_normal()
-        ess = BA._ess_from_chains(x)
+        ess = diagnostics.ess_from_chains(x)
         theory = M * n * (1 - rho) / (1 + rho)
         assert 0.7 * theory < ess < 1.25 * theory
 
@@ -311,14 +358,14 @@ class TestEssFromChains:
             for m in range(M):
                 for t in range(1, n):
                     x[m, t] = rho * x[m, t - 1] + r.standard_normal()
-            return BA._ess_from_chains(x)
+            return diagnostics.ess_from_chains(x)
 
         assert ar1(0.3) > ar1(0.7) > ar1(0.95)
 
     def test_ess_at_least_one(self):
         """ESS is floored at 1 even for a pathologically anti-correlated chain."""
         x = np.tile([1.0, -1.0], (3, 50))  # period-2 oscillation
-        assert BA._ess_from_chains(x) >= 1.0
+        assert diagnostics.ess_from_chains(x) >= 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +390,7 @@ class TestComputeEss:
         the number of post-split samples, not collapsed."""
         rng = np.random.default_rng(16)
         ba = _bare_ba(_make_chain_history(rng, 6, 300, 1), num_parallel=6)
-        split = ba._get_split_chains()
+        split = diagnostics.split_chains(ba.chain_history, ba.num_parallel)
         n_samples = split.shape[0] * split.shape[1]
         bulk, _ = ba.compute_ess()
         assert bulk[0] > 0.3 * n_samples

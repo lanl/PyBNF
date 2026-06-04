@@ -17,6 +17,7 @@ import pybnf.data as data
 import pybnf.parse as parse
 import pybnf.objective as objective
 import pybnf.algorithms as algorithms
+import pybnf.diagnostics as diagnostics
 import pybnf.cluster as cluster
 import pybnf.config as config
 import pybnf.config_schema as config_schema

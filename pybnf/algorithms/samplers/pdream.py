@@ -61,8 +61,8 @@ class PDreamAlgorithm(DreamAlgorithm):
         """
         Estimate the covariance from pooled chain history and compute Cholesky factors.
         Discards the first 50% of each chain as warmup (matching the convention used by
-        _get_split_chains for R-hat/ESS) so the early burn-in transient does not inflate
-        the preconditioner. Pooling across chains is intentional: P-DREAM's global
+        diagnostics.split_chains for R-hat/ESS) so the early burn-in transient does not
+        inflate the preconditioner. Pooling across chains is intentional: P-DREAM's global
         preconditioner wants a proposal scale large enough for archive-based mode hopping.
         """
         # Pool the post-warmup half of each chain history into one matrix
