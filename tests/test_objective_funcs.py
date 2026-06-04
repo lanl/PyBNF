@@ -1,4 +1,4 @@
-from .context import data, objective, printing, raises
+from .context import data, noise, objective, printing, raises
 import numpy as np
 import numpy.testing as npt
 import pytest
@@ -373,6 +373,75 @@ class TestChiSquareInvariants:
         chi = objective.ChiSquareObjective().evaluate(sim, exp_sd)
         sos = objective.SumOfSquaresObjective().evaluate(sim, exp_plain)
         npt.assert_almost_equal(chi, sos)
+
+
+# ---------------------------------------------------------------------------
+# Lognormal noise and the location/scale axes (ADR-0011 seam proof)
+# ---------------------------------------------------------------------------
+
+class TestLogNormalNoise:
+    """Lognormal observation noise = the Gaussian family reconfigured onto the log
+    scale with the prediction as the median. Oracle: scipy.stats.lognorm."""
+
+    def setup_method(self):
+        # All-positive sim/exp (the lognormal support); shared x grid.
+        self.sim = _mkdata(['# x  obs1\n', ' 0  2.0\n', ' 1  5.0\n', ' 2  9.0\n'])
+        self.exp_sd = _mkdata(['# x  obs1  obs1_SD\n',
+                               ' 0  3  0.5\n', ' 1  5  0.5\n', ' 2  8  0.5\n'])
+
+    def test_objfunc_is_log_space_chi_square(self):
+        """The lognormal objfunc sums (ln sim - ln exp)^2 / (2 sigma^2) -- chi_sq in
+        log space (sigma fixed from _SD, so the normalizer and Jacobian drop)."""
+        obj = objective.LogNormalObjective()
+        expected = sum((np.log(s) - np.log(e)) ** 2 / (2 * sd ** 2)
+                       for s, e, sd in [(2.0, 3, 0.5), (5.0, 5, 0.5), (9.0, 8, 0.5)])
+        npt.assert_almost_equal(obj.evaluate(self.sim, self.exp_sd), expected)
+
+    def test_family_nll_matches_scipy_lognorm(self):
+        """Gaussian(LOG, MEDIAN).nll plus the dropped Jacobian + constant equals the
+        full lognormal -logpdf (scipy oracle); median -> scipy scale = prediction."""
+        g = noise.Gaussian(additive_on=noise.LOG, location=noise.MEDIAN)
+        pred, obs, sigma = 9.0, 8.0, 0.5
+        full_nll = g.nll(pred, obs, sigma) + np.log(obs) + 0.5 * np.log(2 * np.pi)
+        npt.assert_almost_equal(full_nll, -stats.lognorm.logpdf(obs, s=sigma, scale=pred))
+
+    def test_perfect_prediction_is_zero(self):
+        """sim == exp -> zero log-residual at every point."""
+        obj = objective.LogNormalObjective()
+        exp_only = _mkdata(['# x  obs1  obs1_SD\n', ' 0  3  0.5\n', ' 1  5  0.5\n', ' 2  8  0.5\n'])
+        sim_match = _mkdata(['# x  obs1\n', ' 0  3\n', ' 1  5\n', ' 2  8\n'])
+        assert obj.evaluate(sim_match, exp_only) == 0.0
+
+
+class TestNoiseAxes:
+    """The location and additive-noise-scale axes are real and orthogonal
+    (ADR-0011): location only bites for asymmetric (log-scale) noise."""
+
+    def test_location_is_a_no_op_on_the_linear_scale(self):
+        """On the linear scale the Gaussian is symmetric, so mean and median give an
+        identical data fit -- the location axis is trivial (why chi_sq is mean=median)."""
+        mean = noise.Gaussian(additive_on=noise.LINEAR, location=noise.MEAN)
+        median = noise.Gaussian(additive_on=noise.LINEAR, location=noise.MEDIAN)
+        npt.assert_almost_equal(mean.data_fit(3.1, 3.0, 0.5), median.data_fit(3.1, 3.0, 0.5))
+
+    def test_location_diverges_on_the_log_scale(self):
+        """On the log scale the lognormal is asymmetric: prediction-as-mean shifts the
+        location parameter by sigma^2/2 from prediction-as-median, so the data fits
+        differ -- the axis is live."""
+        sigma = 0.5
+        mean = noise.Gaussian(additive_on=noise.LOG, location=noise.MEAN)
+        median = noise.Gaussian(additive_on=noise.LOG, location=noise.MEDIAN)
+        mean_fit = mean.data_fit(9.0, 8.0, sigma)
+        assert mean_fit != median.data_fit(9.0, 8.0, sigma)
+        # median: mu = ln(pred); mean: mu = ln(pred) - sigma^2/2
+        expected_mean = (np.log(9.0) - sigma ** 2 / 2 - np.log(8.0)) ** 2 / (2 * sigma ** 2)
+        npt.assert_almost_equal(mean_fit, expected_mean)
+
+    def test_gaussian_default_is_linear_mean(self):
+        """Gaussian() defaults to additive-on-linear, location-mean -- so chi_sq's
+        delegation is byte-identical to the pre-refactor squared residual."""
+        g = noise.Gaussian()
+        npt.assert_almost_equal(g.data_fit(3.1, 3.0, 0.5), (3.1 - 3.0) ** 2 / (2 * 0.5 ** 2))
 
 
 class TestKLInvariants:

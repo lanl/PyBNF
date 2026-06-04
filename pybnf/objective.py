@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import Gaussian, NegBinomial
+from .noise import LOG, MEDIAN, Gaussian, NegBinomial
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -335,6 +335,21 @@ class ChiSquareObjective_Dynamic(SummationObjective):
         # sigma is a free parameter (set on self by evaluate_multiple), so the
         # Gaussian normalizer is retained: the full nll (ADR-0011).
         return self.noise.nll(sim_val, exp_val, self.sigma)
+
+@register_objfunc('lognormal')
+class LogNormalObjective(ChiSquareObjective):
+    """Lognormal observation noise: chi_sq with the Gaussian noise additive on the
+    log scale and the prediction interpreted as the median (ADR-0011). sigma (the
+    log-scale standard deviation) comes from the data's ``_SD`` column exactly as
+    in chi_sq -- being fixed, the Gaussian normalizer and the lognormal Jacobian
+    are parameter-independent and dropped, leaving the log-space squared residual
+    ``(log sim - log exp)^2 / (2 sigma^2)``. Reuses ChiSquareObjective's per-point
+    loop, ``_SD`` lookup, and ``_check_columns``; only the noise family differs --
+    the seam proof that the scale and location axes compose. Observations and
+    predictions must be positive (the lognormal support)."""
+
+    noise = Gaussian(additive_on=LOG, location=MEDIAN)
+
 
 @register_objfunc('sos')
 class SumOfSquaresObjective(SummationObjective):

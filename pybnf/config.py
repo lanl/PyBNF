@@ -683,7 +683,7 @@ class Configuration(object):
         if entry is None:
             raise UnknownObjectiveFunctionError("Objective function %s not defined" % objfunc,
                   "Objective function %s is not defined. Valid objective function choices are: "
-                  "chi_sq, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass" % objfunc)
+                  "chi_sq, lognormal, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass" % objfunc)
         # Uniform construction (ADR-0011): every objective builds itself from the
         # config via its from_config classmethod -- no per-objfunc recipe.
         return entry.cls.from_config(self.config)
