@@ -95,3 +95,40 @@ def register_objfunc(*codes, config_args=()):
             OBJFUNC_REGISTRY[code] = entry
         return cls
     return deco
+
+
+# --- prior-family registry (consumed by pybnf.priors + parse.py + config) -----
+
+@dataclass(frozen=True)
+class PriorFamilyEntry:
+    """One row of the prior-family table (ADR-0010, M2.3).
+
+    ``cls`` is a ``pybnf.priors.Prior`` subclass (a distribution family in the
+    sampling space ``u``); ``base_name`` is the family's config stem, from which
+    the regular keyword pair ``{base}_var`` (linear) and ``log{base}_var``
+    (log10) is generated; ``has_bounded_support`` (mirrored off the class) says
+    whether the family has finite support -- which both drives the ``parse.py``
+    grammar partition (bounded keywords take the optional ``b``/``u`` flag) and
+    decides reflecting-bounds eligibility on ``FreeParameter``.
+    """
+
+    cls: type
+    base_name: str
+    has_bounded_support: bool
+
+
+PRIOR_FAMILY_REGISTRY: dict = {}
+
+
+def register_prior_family(base_name):
+    """Class decorator registering a ``Prior`` family under ``base_name``.
+
+    ``has_bounded_support`` is read off the decorated class so it is declared in
+    exactly one place. Population is the importer's job: importing
+    ``pybnf.priors`` runs every family leaf and fires these decorators before
+    ``PRIOR_KEYWORD_MAP`` / the grammar are built. See ADR-0010, ADR-0005."""
+    def deco(cls):
+        PRIOR_FAMILY_REGISTRY[base_name] = PriorFamilyEntry(
+            cls=cls, base_name=base_name, has_bounded_support=cls.has_bounded_support)
+        return cls
+    return deco

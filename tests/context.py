@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 #     from .context import data
 
 import pybnf.pset as pset
+import pybnf.priors as priors
 import pybnf.data as data
 import pybnf.parse as parse
 import pybnf.objective as objective

@@ -26,8 +26,24 @@ The probability distribution assigned to a free parameter — used both as the B
 _Avoid_: initial distribution, proposal distribution (that is the sampler's step kernel), parameter range
 
 **Parameter Scale**:
-The space a free parameter is sampled, proposed, and stored in — linear or base-10 logarithmic. Shared by the parameter's prior and its proposal arithmetic; the posterior target is defined directly in this scale, with no change-of-variables.
+The space a free parameter is sampled, proposed, and stored in — linear or base-10 logarithmic. Shared by the parameter's prior and its proposal arithmetic; the posterior target is defined directly in this scale, with no change-of-variables. The two scales are **Linear** and **Log10**; the scale owns the `θ↔u` transform (`u = log10(θ)` for Log10) that maps a stored value to the space the family and proposals operate in.
 _Avoid_: log space (informal), transform, parameterization
+
+**Distribution Family**:
+The shape of a prior independent of scale — Normal, Uniform, Laplace, … A free parameter's prior is one family combined with one scale, the family evaluated in that scale; adding a family yields its linear and log10 forms for free.
+_Avoid_: distribution type, prior type, `*_var` keyword (a `*_var` keyword names one family×scale *pair*, not the family)
+
+**Support**:
+The region of nonzero prior density a parameter's initial sampling draws from — intrinsic to the distribution family (Uniform is finite, Normal and Laplace are unbounded), evaluated in the parameter's scale.
+_Avoid_: range, domain, bounds (reserve "bounds" for the reflecting box)
+
+**Reflecting Bounds**:
+The box a proposal is folded back into during proposal arithmetic (the triangle-wave reflection). A property of the free parameter, **not** the prior: it exists only when the family has finite support *and* the parameter is declared bounded (the `b`/`u` flag), so an unbounded `uniform_var` has a finite support yet no reflecting bounds.
+_Avoid_: box constraint, bounds (unqualified), limits
+
+**No Prior** (`var`, `logvar`):
+A free parameter given a single start value and no prior distribution — a Simplex start point. It still carries a scale (`logvar` is Log10), contributes nothing to the log prior, and cannot be prior-sampled.
+_Avoid_: null parameter, fixed parameter (it is varied during the fit, just not prior-sampled)
 
 **PSet** (Parameter Set):
 One concrete assignment of values to every free parameter — a single point in parameter space that can be simulated and scored.
