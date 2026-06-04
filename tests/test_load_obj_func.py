@@ -1,12 +1,14 @@
-"""Step 6b: guard rails for the ``objfunc`` -> objective-class dispatch.
+"""Guard rails for the ``objfunc`` -> objective-class dispatch.
 
-``Configuration._load_obj_func`` selects the objective function from
-``config['objfunc']``. Step 6 replaced its if/elif with the self-registering
-``OBJFUNC_REGISTRY``; per ADR-0005 it is tested as data (each code maps to the
-right class + construction recipe) plus thin construct tests that exercise the
-recipe through the real method. ``_load_obj_func`` only reads ``self.config``,
-so a ``SimpleNamespace`` stand-in suffices for ``self`` (mirroring the
-test_pybnf_main_helpers idiom). No test for this dispatch existed before 6b.
+``Configuration._load_obj_func`` selects the objective from ``config['objfunc']``
+via the self-registering ``OBJFUNC_REGISTRY`` and constructs it **uniformly**:
+``entry.cls.from_config(config)`` for every code (ADR-0011, M2.4). The old
+per-objfunc positional ``config_args`` recipe is gone -- each class reads what it
+needs from config in its own ``from_config`` classmethod. Per ADR-0005 the
+registry is tested as data (each code maps to the right class), plus thin
+construct tests that exercise ``from_config`` through the real method.
+``_load_obj_func`` only reads ``self.config``, so a ``SimpleNamespace`` stand-in
+suffices for ``self`` (mirroring the test_pybnf_main_helpers idiom).
 
 The cross-config requirement check (``neg_bin`` needs ``neg_bin_r``) stays in
 config, not the registry, and is covered here too.
@@ -25,22 +27,23 @@ from pybnf.objective import (
 from pybnf.registry import OBJFUNC_REGISTRY
 
 
-# (objfunc code, objective class, config keys pulled positionally into __init__)
+# (objfunc code, objective class)
 _OBJFUNCS = [
-    ('chi_sq', ChiSquareObjective, ('ind_var_rounding',)),
-    ('chi_sq_dynamic', ChiSquareObjective_Dynamic, ('ind_var_rounding',)),
-    ('sos', SumOfSquaresObjective, ('ind_var_rounding',)),
-    ('norm_sos', NormSumOfSquaresObjective, ('ind_var_rounding',)),
-    ('ave_norm_sos', AveNormSumOfSquaresObjective, ('ind_var_rounding',)),
-    ('sod', SumOfDiffsObjective, ('ind_var_rounding',)),
-    ('neg_bin_dynamic', NegBinLikelihood_Dynamic, ('ind_var_rounding',)),
-    ('neg_bin', NegBinLikelihood, ('neg_bin_r', 'ind_var_rounding')),
-    ('kl', KLLikelihood, ('ind_var_rounding',)),
-    ('direct_pass', DirectPassObjective, ()),
+    ('chi_sq', ChiSquareObjective),
+    ('chi_sq_dynamic', ChiSquareObjective_Dynamic),
+    ('sos', SumOfSquaresObjective),
+    ('norm_sos', NormSumOfSquaresObjective),
+    ('ave_norm_sos', AveNormSumOfSquaresObjective),
+    ('sod', SumOfDiffsObjective),
+    ('neg_bin_dynamic', NegBinLikelihood_Dynamic),
+    ('neg_bin', NegBinLikelihood),
+    ('kl', KLLikelihood),
+    ('direct_pass', DirectPassObjective),
 ]
 
-# the eight codes whose only constructor arg is ind_var_rounding
-_ROUNDING_ONLY = [(code, cls) for code, cls, args in _OBJFUNCS if args == ('ind_var_rounding',)]
+# the codes whose from_config reads only ind_var_rounding -- everything except the
+# static-r neg_bin (also reads neg_bin_r) and the arg-free direct_pass.
+_ROUNDING_ONLY = [(code, cls) for code, cls in _OBJFUNCS if code not in ('neg_bin', 'direct_pass')]
 
 
 def _load(config_dict):
@@ -51,17 +54,21 @@ def _load(config_dict):
 # --- the registry table as data ----------------------------------------------
 
 def test_objfunc_registry_covers_exactly_the_documented_codes():
-    assert set(OBJFUNC_REGISTRY) == {code for code, _, _ in _OBJFUNCS}
+    assert set(OBJFUNC_REGISTRY) == {code for code, _ in _OBJFUNCS}
 
 
-@pytest.mark.parametrize('code,cls,config_args', _OBJFUNCS)
-def test_objfunc_registry_maps_code_to_class_and_recipe(code, cls, config_args):
-    entry = OBJFUNC_REGISTRY[code]
-    assert entry.cls is cls
-    assert entry.config_args == config_args
+@pytest.mark.parametrize('code,cls', _OBJFUNCS)
+def test_objfunc_registry_maps_code_to_class(code, cls):
+    assert OBJFUNC_REGISTRY[code].cls is cls
 
 
-# --- _load_obj_func constructs via the recipe --------------------------------
+def test_objfunc_registry_carries_no_construction_recipe():
+    # M2.4 (ADR-0011): construction is uniform via from_config, so the registry no
+    # longer holds a per-objfunc positional config_args recipe.
+    assert not hasattr(OBJFUNC_REGISTRY['neg_bin'], 'config_args')
+
+
+# --- _load_obj_func constructs via from_config -------------------------------
 
 @pytest.mark.parametrize('code,cls', _ROUNDING_ONLY)
 def test_load_obj_func_passes_rounding(code, cls):
@@ -73,8 +80,8 @@ def test_load_obj_func_passes_rounding(code, cls):
 def test_load_obj_func_neg_bin_passes_r_and_rounding():
     obj = _load({'objfunc': 'neg_bin', 'neg_bin_r': 5.0, 'ind_var_rounding': 2})
     assert isinstance(obj, NegBinLikelihood)
-    assert obj.r_static == 5.0   # first positional arg
-    assert obj.rounding == 2     # second positional arg
+    assert obj.r_static == 5.0   # from config['neg_bin_r']
+    assert obj.rounding == 2     # from config['ind_var_rounding']
 
 
 def test_load_obj_func_neg_bin_missing_r_raises():

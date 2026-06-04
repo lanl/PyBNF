@@ -103,6 +103,14 @@ class ObjectiveFunction(object):
         """
         raise NotImplementedError("Subclasses must override evaluate()")
 
+    @classmethod
+    def from_config(cls, config):
+        """Build this objective from the config dict (ADR-0011). The base takes no
+        constructor args (e.g. ``direct_pass``); subclasses that read config keys
+        override -- the uniform construction entry point replacing the registry's
+        per-objfunc ``config_args`` recipe."""
+        return cls()
+
 
 class SummationObjective(ObjectiveFunction):
     """
@@ -115,6 +123,10 @@ class SummationObjective(ObjectiveFunction):
         self.warned = set()
         self.rounding = ind_var_rounding
 
+    @classmethod
+    def from_config(cls, config):
+        return cls(config['ind_var_rounding'])
+
     def evaluate(self, sim_data, exp_data, show_warnings=True):
         """
         :param sim_data: A Data object containing simulated data
@@ -125,7 +137,7 @@ class SummationObjective(ObjectiveFunction):
         :type show_warnings: bool
         :return: float, value of the objective function, with a lower value indicating a better fit.
         """
-        
+
         indvar = min(exp_data.cols, key=exp_data.cols.get)  # Get the name of column 0, the independent variable
 
         compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
@@ -214,6 +226,10 @@ class ColumnSummationObjective(ObjectiveFunction):
         self.warned = set()
         self.rounding = ind_var_rounding
 
+    @classmethod
+    def from_config(cls, config):
+        return cls(config['ind_var_rounding'])
+
     def evaluate(self, sim_data, exp_data, show_warnings=True):
         """
         :param sim_data: A Data object containing simulated data
@@ -268,7 +284,7 @@ class ColumnSummationObjective(ObjectiveFunction):
                              + str(missed))
 
 
-@register_objfunc('chi_sq', config_args=('ind_var_rounding',))
+@register_objfunc('chi_sq')
 class ChiSquareObjective(SummationObjective):
 
     noise = Gaussian()
@@ -301,7 +317,7 @@ class ChiSquareObjective(SummationObjective):
             raise PybnfError('The following experimental data columns were not found in the simulation output: '
                              + str(missed))
 
-@register_objfunc('chi_sq_dynamic', config_args=('ind_var_rounding',))
+@register_objfunc('chi_sq_dynamic')
 class ChiSquareObjective_Dynamic(SummationObjective):
 
     noise = Gaussian()
@@ -313,7 +329,7 @@ class ChiSquareObjective_Dynamic(SummationObjective):
         # Gaussian normalizer is retained: the full nll (ADR-0011).
         return self.noise.nll(sim_val, exp_val, self.sigma)
 
-@register_objfunc('sos', config_args=('ind_var_rounding',))
+@register_objfunc('sos')
 class SumOfSquaresObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -322,7 +338,7 @@ class SumOfSquaresObjective(SummationObjective):
         return (sim_val - exp_val) ** 2.
 
 
-@register_objfunc('sod', config_args=('ind_var_rounding',))
+@register_objfunc('sod')
 class SumOfDiffsObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
@@ -331,7 +347,7 @@ class SumOfDiffsObjective(SummationObjective):
         return abs(sim_val - exp_val)
 
 
-@register_objfunc('norm_sos', config_args=('ind_var_rounding',))
+@register_objfunc('norm_sos')
 class NormSumOfSquaresObjective(SummationObjective):
     """
     Sum of squares where each point is normalized by the y value at that point, ((y-y')/y)^2
@@ -343,7 +359,7 @@ class NormSumOfSquaresObjective(SummationObjective):
         return ((sim_val - exp_val) / exp_val) ** 2.
 
 
-@register_objfunc('ave_norm_sos', config_args=('ind_var_rounding',))
+@register_objfunc('ave_norm_sos')
 class AveNormSumOfSquaresObjective(SummationObjective):
     """
     Sum of squares where each point is normalized by the average value of that variable,
@@ -361,7 +377,7 @@ class AveNormSumOfSquaresObjective(SummationObjective):
         return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
 
 
-@register_objfunc('neg_bin_dynamic', config_args=('ind_var_rounding',))
+@register_objfunc('neg_bin_dynamic')
 class NegBinLikelihood_Dynamic(SummationObjective):
     """
     Negative binomial likelihood with r as a free param
@@ -383,7 +399,7 @@ class NegBinLikelihood_Dynamic(SummationObjective):
         # use the row-to-row increment as the effective prediction (ADR-0011).
         return self.noise.nll(sim_val, exp_val, self.r)
 
-@register_objfunc('neg_bin', config_args=('neg_bin_r', 'ind_var_rounding'))
+@register_objfunc('neg_bin')
 class NegBinLikelihood(SummationObjective):
     """
     Negative binomial likelihood
@@ -395,6 +411,10 @@ class NegBinLikelihood(SummationObjective):
         super().__init__(ind_var_rounding)
         self.r_static = r
 
+    @classmethod
+    def from_config(cls, config):
+        return cls(config['neg_bin_r'], config['ind_var_rounding'])
+
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
@@ -402,7 +422,7 @@ class NegBinLikelihood(SummationObjective):
         # equals its data-fit term (ADR-0011).
         return self.noise.data_fit(sim_val, exp_val, self.r_static)
 
-@register_objfunc('kl', config_args=('ind_var_rounding',))
+@register_objfunc('kl')
 class KLLikelihood(ColumnSummationObjective):
     """
     The Kullback-Leibler likelihood.

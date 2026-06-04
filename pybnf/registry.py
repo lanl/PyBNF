@@ -68,29 +68,27 @@ def register_fit_type(*codes, family, display_name, kwargs=None, deprecated=Fals
 
 @dataclass(frozen=True)
 class ObjFuncEntry:
-    """One row of the ``objfunc`` table.
+    """One row of the ``objfunc`` table: a code -> its objective class.
 
-    ``config_args`` lists the config keys pulled positionally into ``cls(*args)``
-    -- the per-objective construction recipe, needed because objective
-    constructors are non-uniform: most take ``ind_var_rounding``, ``neg_bin``
-    also takes ``neg_bin_r``, ``direct_pass`` takes nothing. This recipe
-    disappears in M2.4, when NoiseModels take ``config`` uniformly. Cross-config
+    Construction is uniform: ``config.Configuration._load_obj_func`` calls
+    ``entry.cls.from_config(config)`` for every code (ADR-0011, M2.4). The old
+    per-objfunc positional ``config_args`` recipe is gone -- each class reads what
+    it needs from config in its own ``from_config`` classmethod. Cross-config
     validation (``neg_bin`` requires ``neg_bin_r``) stays in ``config.py``, not
     here.
     """
 
     cls: type
-    config_args: tuple = ()
 
 
 OBJFUNC_REGISTRY: dict = {}
 
 
-def register_objfunc(*codes, config_args=()):
-    """Class decorator registering ``codes`` -> the decorated objective class,
-    recording the config keys its constructor consumes (pulled positionally)."""
+def register_objfunc(*codes):
+    """Class decorator registering ``codes`` -> the decorated objective class.
+    The class builds itself from the config via its ``from_config`` classmethod."""
     def deco(cls):
-        entry = ObjFuncEntry(cls=cls, config_args=tuple(config_args))
+        entry = ObjFuncEntry(cls=cls)
         for code in codes:
             OBJFUNC_REGISTRY[code] = entry
         return cls
