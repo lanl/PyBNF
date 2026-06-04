@@ -1,7 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from scipy.special import loggamma
-
+from .noise import Gaussian, NegBinomial
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -272,6 +271,8 @@ class ColumnSummationObjective(ObjectiveFunction):
 @register_objfunc('chi_sq', config_args=('ind_var_rounding',))
 class ChiSquareObjective(SummationObjective):
 
+    noise = Gaussian()
+
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
@@ -284,7 +285,9 @@ class ChiSquareObjective(SummationObjective):
                  "data file must include a _SD column corresponding to each experimental variable, giving the standard "
                  "deviations of that variable. " % col_name)
         exp_sigma = exp_data.data[exp_row, sd_col]
-        return 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2.
+        # sigma comes fixed from the data, so the Gaussian normalizer is constant
+        # and dropped: the data-fit term alone (ADR-0011).
+        return self.noise.data_fit(sim_val, exp_val, exp_sigma)
 
     def _check_columns(self, exp_cols, compare_cols):
         """
@@ -301,13 +304,14 @@ class ChiSquareObjective(SummationObjective):
 @register_objfunc('chi_sq_dynamic', config_args=('ind_var_rounding',))
 class ChiSquareObjective_Dynamic(SummationObjective):
 
+    noise = Gaussian()
+
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        
-        exp_sigma = self.sigma
-        val = 1. / (2. * exp_sigma ** 2.) * (sim_val - exp_val) ** 2. + np.log(exp_sigma)
-        return val
+        # sigma is a free parameter (set on self by evaluate_multiple), so the
+        # Gaussian normalizer is retained: the full nll (ADR-0011).
+        return self.noise.nll(sim_val, exp_val, self.sigma)
 
 @register_objfunc('sos', config_args=('ind_var_rounding',))
 class SumOfSquaresObjective(SummationObjective):
@@ -363,35 +367,29 @@ class NegBinLikelihood_Dynamic(SummationObjective):
     Negative binomial likelihood with r as a free param
     """
 
+    noise = NegBinomial()
+
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val_1 = sim_data.data[sim_row -1, sim_data.cols[col_name]]
         sim_val_2 = sim_data.data[sim_row, sim_data.cols[col_name]]
-        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]   
+        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         if '_Cum' in col_name:
             sim_val = sim_val_2 - sim_val_1
         else:
-            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]] 
+            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         if sim_row == 0:
-            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]] 
-        if exp_val >= 0:
-            prob = np.clip(self.r / (self.r + sim_val), 1e-10, 1 - 1e-10)
-            assert isinstance(self.r, float)
-            # log of the negative-binomial PMF P(exp_val | r, prob)
-            # == scipy.stats.nbinom.logpmf(exp_val, r, prob).
-            log_pmf = loggamma(exp_val + self.r) - loggamma(exp_val + 1) - loggamma(self.r) \
-                + self.r * np.log(prob) + exp_val * np.log(1 - prob)
-            # A PMF is <= 1, so log_pmf <= 0; PyBNF minimizes the negative
-            # log-likelihood -log_pmf >= 0. (Equals the old abs(log_pmf) for all
-            # valid inputs since log_pmf is non-positive.)
-            return -log_pmf
-        else:
-            return 0
-            
+            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        # r is a free parameter (set on self by evaluate_multiple); _Cum columns
+        # use the row-to-row increment as the effective prediction (ADR-0011).
+        return self.noise.nll(sim_val, exp_val, self.r)
+
 @register_objfunc('neg_bin', config_args=('neg_bin_r', 'ind_var_rounding'))
 class NegBinLikelihood(SummationObjective):
     """
     Negative binomial likelihood
     """
+
+    noise = NegBinomial()
 
     def __init__(self, r, ind_var_rounding):
         super().__init__(ind_var_rounding)
@@ -400,19 +398,9 @@ class NegBinLikelihood(SummationObjective):
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        if exp_val >= 0:
-            prob = np.clip(self.r_static / (self.r_static + sim_val), 1e-10, 1 - 1e-10)
-            assert isinstance(self.r_static, float)
-            # log of the negative-binomial PMF P(exp_val | r, prob)
-            # == scipy.stats.nbinom.logpmf(exp_val, r, prob).
-            log_pmf = loggamma(exp_val + self.r_static) - loggamma(exp_val + 1) - loggamma(self.r_static) \
-                + self.r_static * np.log(prob) + exp_val * np.log(1 - prob)
-            # A PMF is <= 1, so log_pmf <= 0; PyBNF minimizes the negative
-            # log-likelihood -log_pmf >= 0. (Equals the old abs(log_pmf) for all
-            # valid inputs since log_pmf is non-positive.)
-            return -log_pmf
-        else:
-            return 0
+        # r is a fixed config constant, so the (self-normalizing) NegBinomial nll
+        # equals its data-fit term (ADR-0011).
+        return self.noise.data_fit(sim_val, exp_val, self.r_static)
 
 @register_objfunc('kl', config_args=('ind_var_rounding',))
 class KLLikelihood(ColumnSummationObjective):
