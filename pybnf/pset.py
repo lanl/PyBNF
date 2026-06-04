@@ -1411,6 +1411,28 @@ class FreeParameter(object):
             return -np.inf
         return float(self._prior.logpdf(self._scale.forward(value)))
 
+    @property
+    def has_prior(self):
+        """Whether this parameter has a proper prior distribution (False for the
+        no-prior var/logvar Simplex start points). Used by samplers to decide
+        which parameters contribute to the log prior."""
+        return self._prior.has_prior
+
+    @property
+    def has_bounded_support(self):
+        """Whether the prior family has finite support (the Uniform families).
+        Drives latin-hypercube participation and the box-escape warning -- the
+        property the algorithms ask instead of matching the *_var type string."""
+        return self._prior.has_bounded_support
+
+    def value_from_quantile(self, q):
+        """Map a [0, 1] quantile to a value via the prior's inverse CDF, in scale.
+
+        For the bounded (Uniform) families this is the latin-hypercube rescale:
+        scale.inverse(lo + q*(hi - lo)) -- equal bit-for-bit to the historical
+        p1 + q*(p2 - p1) (linear) / exp10(log10(p1) + q*...) (log10)."""
+        return self.set_value(self._scale.inverse(self._prior.ppf(q)))
+
     def add(self, summand, reflect=True):
         """
         Adds a value to the existing value and returns a new FreeParameter instance.  Since free parameters

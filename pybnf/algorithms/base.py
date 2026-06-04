@@ -666,17 +666,16 @@ class Algorithm(ABC):
     def random_latin_hypercube_psets(self, n):
         """
         Generates n random PSets with a latin hypercube distribution
-        More specifically, the uniform_var and loguniform_var variables follow the latin hypercube distribution,
-        while lognorm are randomized normally.
+        More specifically, the bounded-support (uniform/loguniform) variables follow the latin hypercube
+        distribution, while the others are randomized from their prior.
 
         :param n: Number of psets to generate
         :return:
         """
         logger.debug("Generating PSets using Latin hypercube sampling")
-        num_uniform_vars = 0
-        for var in self.variables:
-            if var.type == 'uniform_var' or var.type == 'loguniform_var':
-                num_uniform_vars += 1
+        # Only the bounded-support families (Uniform) are stratified; the prior's
+        # inverse CDF (value_from_quantile) handles the per-scale rescale.
+        num_uniform_vars = sum(1 for var in self.variables if var.has_bounded_support)
 
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         rands = latin_hypercube(n, num_uniform_vars)
@@ -688,13 +687,8 @@ class Algorithm(ABC):
             pset_vars = []
             rowindex = 0
             for var in self.variables:
-                if var.type == 'uniform_var':
-                    rescaled_val = var.p1 + row[rowindex]*(var.p2-var.p1)
-                    pset_vars.append(var.set_value(rescaled_val))
-                    rowindex += 1
-                elif var.type == 'loguniform_var':
-                    rescaled_val = exp10(np.log10(var.p1) + row[rowindex]*(np.log10(var.p2)-np.log10(var.p1)))
-                    pset_vars.append(var.set_value(rescaled_val))
+                if var.has_bounded_support:
+                    pset_vars.append(var.value_from_quantile(row[rowindex]))
                     rowindex += 1
                 else:
                     pset_vars.append(var.sample_value())

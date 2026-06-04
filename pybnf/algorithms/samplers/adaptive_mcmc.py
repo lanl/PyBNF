@@ -446,10 +446,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
                    
         params = []
         for var in self.variables:
-            if 'log' in var.type:
+            if var.log_space:
                 # Work in base-10 log, consistent with how the proposal is applied
                 # (FreeParameter.add -> 10**(log10(value)+summand)) and with the
-                # rest of the codebase (loguniform_var dist, prior_logpdf,
+                # rest of the codebase (loguniform prior, prior_logpdf,
                 # _param_vec R-hat history, FreeParameter.diff all use log10).
                 params.append(np.log10(self.current_pset[idx].get_param(var.name).value))
             else:
@@ -460,10 +460,10 @@ class Adaptive_MCMC(BayesianAlgorithm):
             if self.iteration[idx] == self.burn_in + self.adaptive:
                 self.parameter_index_file_input = np.genfromtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', names = True)
                 for v in self.variables:
-                    if 'log' in v.type:
+                    if v.log_space:
                         self.parameter_index_file_input[v.name] = np.log10(self.parameter_index_file_input[v.name])
                 self.parameter_index_file = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
-                self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain 
+                self.mu[idx] = np.reshape(np.mean(self.parameter_index_file,axis=0), [1, len_params])  # compute the mean parameters along the past chain
                 self.diffMatrix[idx] = np.matmul(self.parameter_index_file.T, self.parameter_index_file)/(self.iteration[idx] - self.burn_in)-np.matmul(self.mu[idx].T, self.mu[idx])+self.stablizingCov
                 self.diff[idx] = 2.38**2/len_params
             # Weight each new sample by 1/(samples folded so far + 1). The seed
@@ -503,7 +503,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 if self.iteration[idx] == 1:
                     self.parameter_index_file_input = np.genfromtxt(self.config.config['output_dir'] + '/adaptive_files/combined_params.txt', names = True)
                     for v in self.variables:
-                        if 'log' in v.type:
+                        if v.log_space:
                             self.parameter_index_file_input[v.name] = np.log10(self.parameter_index_file_input[v.name])
                     self.parameter_index_file_range = self.parameter_index_file_input.view((np.float64, len(self.parameter_index_file_input.dtype.names)))
                     self.parameter_index_file = self.parameter_index_file_range[start:end]
@@ -541,16 +541,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 try:
                     for i, p in enumerate(oldpset):
                         k = self.variables[i]
-                        if num < 10000:
-                            if 'log' in k.type:
-                                new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], False)
-                            else:
-                                new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], False)
-                        else:
-                            if 'log' in k.type:
-                                new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], True) 
-                            else:
-                                new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], True)
+                        # reflect=False during the first 10000 attempts, then True;
+                        # FreeParameter.add already applies the proposal in the
+                        # parameter's own scale, so there is no log/linear branch.
+                        reflect = num >= 10000
+                        new_var = oldpset.get_param(k.name).add(delta_vector_add[k.name], reflect)
                         new_vars.append(new_var)
                         if len(new_vars) == len_params:
                             return PSet(new_vars)

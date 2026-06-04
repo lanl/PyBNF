@@ -118,10 +118,9 @@ class SimplexAlgorithm(Algorithm):
         """
         start_vars = []
         for v in self.variables:
-            if v.type == 'var':
-                start_vars.append(v.set_value(v.p1))
-            elif v.type == 'logvar':
-                start_vars.append(v.set_value(exp10(v.p1)))
+            # var/logvar carry a single start value p1 in the parameter's scale;
+            # map it back to a stored value (logvar's p1 is log10, so exp10).
+            start_vars.append(v.set_value(exp10(v.p1) if v.log_space else v.p1))
         start_pset = PSet(start_vars)
         self.config.config['simplex_start_point'] = start_pset
 

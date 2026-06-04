@@ -208,3 +208,38 @@ def test_lhc_quantile_matches_current_rescale(keyword, p1, p2, q):
     else:
         expected = 10.0 ** (np.log10(p1) + q * (np.log10(p2) - np.log10(p1)))
     assert got == expected
+
+
+# ---------------------------------------------------------------------------
+# FreeParameter's prior-delegation surface (Move 3 -- the properties the
+# algorithms ask instead of matching the *_var type string)
+# ---------------------------------------------------------------------------
+
+class TestFreeParameterPriorSurface:
+    @pytest.mark.parametrize("keyword,bounded,has_prior", [
+        ('normal_var', False, True),
+        ('lognormal_var', False, True),
+        ('uniform_var', True, True),
+        ('loguniform_var', True, True),
+        ('var', False, False),
+        ('logvar', False, False),
+    ])
+    def test_flags_delegate_to_prior(self, keyword, bounded, has_prior):
+        fp = pset.FreeParameter('x__FREE', keyword, 1.0, 2.0)
+        assert fp.has_bounded_support is bounded
+        assert fp.has_prior is has_prior
+
+    @pytest.mark.parametrize("keyword,p1,p2", [
+        ('uniform_var', 2.0, 8.0),
+        ('loguniform_var', 0.01, 100.0),
+    ])
+    @pytest.mark.parametrize("q", [0.0, 0.25, 0.5, 0.75, 1.0])
+    def test_value_from_quantile_matches_lh_rescale(self, keyword, p1, p2, q):
+        """FreeParameter.value_from_quantile(q) bit-matches the old LH rescale +
+        set_value, the operation random_latin_hypercube_psets now calls."""
+        fp = pset.FreeParameter('x__FREE', keyword, p1, p2)
+        if keyword == 'uniform_var':
+            expected = p1 + q * (p2 - p1)
+        else:
+            expected = 10.0 ** (np.log10(p1) + q * (np.log10(p2) - np.log10(p1)))
+        assert fp.value_from_quantile(q).value == fp.set_value(expected).value

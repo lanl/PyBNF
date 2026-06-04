@@ -204,7 +204,7 @@ class BayesianAlgorithm(Algorithm):
         """Builds the data structures for the priors, based on the variables specified in the config."""
         self.prior = dict()  # Maps each variable name to the FreeParameter containing its scipy.stats distribution.
         for var in self.variables:
-            if var._distribution is not None:
+            if var.has_prior:
                 self.prior[var.name] = var
 
     def start_run(self, setup_samples=True):
@@ -259,7 +259,7 @@ class BayesianAlgorithm(Algorithm):
         total = 0.
         for v, prior_var in self.prior.items():
             contribution = prior_var.prior_logpdf(pset[v])
-            if not np.isfinite(contribution) and 'uniform' in prior_var.type:
+            if not np.isfinite(contribution) and prior_var.has_bounded_support:
                 logger.warning('Box-constrained parameter %s reached a value outside the box.' % v)
             total += contribution
         return total
