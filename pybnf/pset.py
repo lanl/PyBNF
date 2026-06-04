@@ -11,6 +11,7 @@ import copy
 import signal
 from subprocess import Popen, STDOUT, PIPE, CalledProcessError, TimeoutExpired
 from .data import Data
+from .priors import build_prior
 import heapq
 import traceback
 import roadrunner as rr
@@ -19,7 +20,6 @@ import os
 import shutil
 import tempfile
 from sys import executable
-from scipy import stats
 
 rr.Logger.disableLogging()
 
@@ -1294,7 +1294,15 @@ class FreeParameter(object):
         self.type = type
         self.p1 = p1
         self.p2 = p2
-        self.bounded = bounded if re.search('uniform', self.type) else False
+
+        # The prior (distribution family in sampling space u) and the scale
+        # (theta<->u transform) are resolved from the legacy *_var keyword via the
+        # registry-derived map -- a behavior-preserving split (ADR-0010, M2.3).
+        self._prior, self._scale = build_prior(type, p1, p2)
+
+        # Reflecting bounds: only a bounded-support family can be box-bounded, and
+        # only if the b/u flag is set (replaces re.search('uniform', type)).
+        self.bounded = bounded if self._prior.has_bounded_support else False
 
         self.lower_bound = -np.inf if not self.bounded else self.p1
         self.upper_bound = np.inf if not self.bounded else self.p2
@@ -1316,28 +1324,14 @@ class FreeParameter(object):
                 raise OutOfBoundsException("Free parameter %s cannot be assigned the value %s" % (self.name, value))
         self.value = value
 
-        self.log_space = re.search('log', self.type) is not None
+        self.log_space = self._scale.is_log
 
-        self._distribution = self._make_distribution()
-
-    def _make_distribution(self):
-        """
-        Build the frozen scipy.stats distribution used for both sampling and priors.
-
-        Log-space parameter types store the distribution in base-10 logarithmic
-        space. Conversion back to regular parameter values is handled by
-        sample_value(), and prior_logpdf() transforms regular values into the
-        same sampling space before evaluating the density.
-        """
-        if self.type == 'normal_var':
-            return stats.norm(loc=self.p1, scale=self.p2)
-        elif self.type == 'lognormal_var':
-            return stats.norm(loc=self.p1, scale=self.p2)
-        elif self.type == 'uniform_var':
-            return stats.uniform(loc=self.p1, scale=self.p2 - self.p1)
-        elif self.type == 'loguniform_var':
-            return stats.uniform(loc=np.log10(self.p1), scale=np.log10(self.p2) - np.log10(self.p1))
-        return None
+    @property
+    def _distribution(self):
+        """The prior's underlying frozen scipy.stats distribution, or None for a
+        no-prior var/logvar. A back-compat passthrough: the family/scale split now
+        owns the math (ADR-0010), but load_priors and the tests still read this."""
+        return self._prior.frozen
 
     def set_value(self, new_value, reflect=True):
         """
@@ -1378,17 +1372,19 @@ class FreeParameter(object):
         lb = self.lower_bound
         if lb == ub:
             return lb
-        if self.log_space:  # reflect in log space for log-distributed parameters
-            ub = np.log10(self.upper_bound)
-            lb = np.log10(self.lower_bound)
-            new = np.log10(new)
+        # Fold in sampling space u; the scale owns the theta<->u transform, so log
+        # parameters reflect in log10 space (Linear's transform is the identity).
+        ub = self._scale.forward(ub)
+        lb = self._scale.forward(lb)
+        new = self._scale.forward(new)
+        if self._scale.is_log:
             logger.debug("Reflecting in log space: new=%s lb=%s ub=%s" % (new, lb, ub))
 
         width = ub - lb
         q = (new - lb) % (2.0 * width)
         folded = lb + q if q <= width else ub - (q - width)
 
-        return 10. ** folded if self.log_space else folded
+        return self._scale.inverse(folded)
 
     def sample_value(self):
         """
@@ -1396,13 +1392,10 @@ class FreeParameter(object):
 
         :return: new FreeParameter instance or None
         """
-        if self._distribution is None:
+        if not self._prior.has_prior:
             raise PybnfError("Parameter %s does not have a sampling distribution" % self.name)
 
-        val = self._distribution.rvs()
-        if self.log_space:
-            val = 10**val
-        return self.set_value(val)
+        return self.set_value(self._scale.inverse(self._prior.rvs()))
 
     def prior_logpdf(self, value):
         """
@@ -1412,13 +1405,11 @@ class FreeParameter(object):
         space to match the historical parameterization of lognormal_var and
         loguniform_var.
         """
-        if self._distribution is None:
+        if not self._prior.has_prior:
             return 0.
-        if self.log_space:
-            if value <= 0.:
-                return -np.inf
-            value = np.log10(value)
-        return float(self._distribution.logpdf(value))
+        if self.log_space and value <= 0.:
+            return -np.inf
+        return float(self._prior.logpdf(self._scale.forward(value)))
 
     def add(self, summand, reflect=True):
         """
@@ -1431,10 +1422,9 @@ class FreeParameter(object):
         """
         if self.value is None:
             logger.error('Cannot add to FreeParameter with "None" value')
-        if self.log_space:
-            return self.set_value(10**(np.log10(self.value) + summand), reflect)
-        else:
-            return self.set_value(self.value + summand, reflect)
+        # Add the summand in sampling space u, then map back (Linear is identity;
+        # Log10 gives 10**(log10(value) + summand)).
+        return self.set_value(self._scale.inverse(self._scale.forward(self.value) + summand), reflect)
 
     def multiply(self, summand, reflect=True):
         """

@@ -149,6 +149,14 @@ class TestKeywordMap:
         assert scale is LOG10
         np.testing.assert_allclose(prior.support(), (-2.0, 2.0), rtol=1e-12)
 
+    def test_build_prior_unknown_keyword_is_noprior_linear(self):
+        # Legacy back-compat: an unrecognised type (e.g. the test-only
+        # 'random_var') is a linear, unbounded, no-prior value carrier --
+        # matching _make_distribution's old None-for-unknown behavior.
+        prior, scale = build_prior('random_var', 0.0, 1.0)
+        assert isinstance(prior, NoPrior)
+        assert scale is LINEAR
+
 
 # ---------------------------------------------------------------------------
 # Bit-exact equivalence to the current FreeParameter (oracles Move 1b)

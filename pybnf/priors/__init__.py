@@ -36,8 +36,16 @@ def build_prior(keyword, p1, p2):
 
     Returns ``(prior, scale)``. The single entry point used by
     ``FreeParameter`` so the keyword->(family, scale) mapping lives in exactly
-    one place (ADR-0010, M2.3)."""
-    family_cls, scale = PRIOR_KEYWORD_MAP[keyword]
+    one place (ADR-0010, M2.3).
+
+    An unrecognised keyword falls back to ``(NoPrior, LINEAR)`` -- a linear,
+    unbounded, no-prior value carrier -- preserving the legacy
+    ``_make_distribution`` behavior, which returned ``None`` (no usable
+    distribution) for any type outside the four ``*_var`` families. Real config
+    keywords are validated upstream by ``parse.py``'s grammar; a registry that
+    failed to generate the known keywords would be caught by the keyword-map
+    unit tests, not silently swallowed here."""
+    family_cls, scale = PRIOR_KEYWORD_MAP.get(keyword, (NoPrior, LINEAR))
     return family_cls.build(p1, p2, scale), scale
 
 
