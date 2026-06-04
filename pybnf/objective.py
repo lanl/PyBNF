@@ -39,6 +39,12 @@ class ObjectiveFunction(object):
     The base class includes all the support we need for constraints.
     """
 
+    #: {free-parameter name: the instance attribute its value sets at eval time}.
+    #: Lets an objfunc declaratively own a noise free parameter (ADR-0011) -- e.g.
+    #: chi_sq_dynamic owns ``sigma__FREE`` -> ``self.sigma`` -- instead of the base
+    #: hard-coding the parameter names. Empty unless a subclass overrides it.
+    free_noise_params = {}
+
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -56,16 +62,16 @@ class ObjectiveFunction(object):
         """
         try:
             self.pset = pset
+            # Resolve any free-parameter noise values the objfunc declares (e.g.
+            # chi_sq_dynamic's sigma, neg_bin_dynamic's r) by name from the pset
+            # (ADR-0011). Reading p.name here also disambiguates the legacy calling
+            # convention below: constraint sets lack .name -> AttributeError.
             for p in self.pset:
-                if p.name == 'r__FREE':
-                    self.r = p.value
-                elif p.name == 'sigma__FREE':
-                    self.sigma = p.value
-                else:
-                    pass    
+                if p.name in self.free_noise_params:
+                    setattr(self, self.free_noise_params[p.name], p.value)
         except AttributeError:
+            # Legacy calling convention: constraints passed in the pset position.
             constraints = pset
-            pass
 
         with np.errstate(all='ignore'):  # Suppress numpy warnings printed to terminal
             total = 0.
@@ -321,6 +327,7 @@ class ChiSquareObjective(SummationObjective):
 class ChiSquareObjective_Dynamic(SummationObjective):
 
     noise = Gaussian()
+    free_noise_params = {'sigma__FREE': 'sigma'}
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
@@ -384,6 +391,7 @@ class NegBinLikelihood_Dynamic(SummationObjective):
     """
 
     noise = NegBinomial()
+    free_noise_params = {'r__FREE': 'r'}
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val_1 = sim_data.data[sim_row -1, sim_data.cols[col_name]]
