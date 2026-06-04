@@ -130,12 +130,24 @@ Refitting on resampled experimental data to estimate the uncertainty in the fitt
 _Avoid_: resampling run, jackknife
 
 **Noise Model**:
-A probabilistic observation model mapping a deterministic prediction plus noise parameters to a distribution over the observed data; its negative log-likelihood is the objective value. Defined by three orthogonal axes — distribution family, the scale the noise is additive on, and the location interpretation. (Non-probabilistic objectives such as `sos` and `sod` are losses, not noise models.)
+A probabilistic observation model mapping a deterministic prediction plus noise parameters to a distribution over the observed data; its negative log-likelihood is the objective value. PyBNF recognizes two **shapes**. A **Per-point Noise Model** has a log-likelihood that factors into a sum of independent per-observation terms (`chi_sq` = Gaussian, `neg_bin` = NegBinomial); it is defined by the three orthogonal axes distribution family × scale-the-noise-is-additive-on × location interpretation. A **Column-joint Noise Model** has per-observation contributions coupled across a whole data column, so the likelihood does not factor point-by-point (today only `kl`, the multinomial cross-entropy). Non-probabilistic objectives (`sos`, `sod`, `norm_sos`, `ave_norm_sos`) are losses, not noise models.
 _Avoid_: error model, noise function, likelihood (reserve "likelihood" for the density itself)
+
+**Column-joint Noise Model**:
+A noise model whose likelihood does not factor into independent per-point terms because the points are coupled across a data column — e.g. by a compositional/closure constraint (`kl`'s multinomial; a future Dirichlet-multinomial) or by correlated residuals (a future correlated-error / Gaussian-process likelihood). Only `kl` exists today, kept as a plain `ColumnSummationObjective`; the column-joint abstraction is harvested when a second member justifies it (per ADR-0009's ≥2-user bar), not built speculatively.
+_Avoid_: joint likelihood (too general), correlated noise (only one of its coupling mechanisms)
 
 **Location Interpretation**:
 Which summary of a noise model's distribution the deterministic prediction is taken to be — conditional mean, median, or mode. PyBNF makes this an explicit, overridable choice (PEtab v2 hardcodes median); it only matters when the noise is asymmetric on the prediction's scale.
 _Avoid_: central tendency, link convention
+
+**Noise Parameter**:
+The dispersion or scale parameter of a noise model (a Gaussian's σ, a NegBinomial's r). It reaches the model from one of three sources: per observation from the data (`chi_sq`'s `_SD` column), as a free parameter estimated during the fit (the `_dynamic` objfuncs, via `sigma__FREE` / `r__FREE`), or as a fixed configuration constant (`neg_bin_r`). Whether the noise parameter is itself estimated — rather than fixed — is what decides if the likelihood normalizer is retained or dropped as a parameter-independent constant.
+_Avoid_: error bar, sigma (when meaning the general concept), hyperparameter
+
+**Additive-Noise Scale**:
+The scale on which a noise model's noise is additive — linear (Gaussian: `obs ≈ pred + ε`) or logarithmic (lognormal: `log(obs) ≈ log(pred) + ε`). One of the three orthogonal axes defining a per-point noise model. Distinct from a free parameter's **Parameter Scale**: that names the space a parameter is *sampled* in (and owns a `θ↔u` transform for the prior and proposals); this names the space a *measurement's noise* lives on. The two are deliberately separate concepts and separate code, despite both being Linear/Log.
+_Avoid_: noise scale (ambiguous with the Noise Parameter), error scale, link function
 
 ## Algorithms
 
