@@ -20,6 +20,7 @@ from .context import priors, pset
 from pybnf.priors import LINEAR, LOG10, build_prior
 from pybnf.priors.normal import Normal
 from pybnf.priors.uniform import Uniform
+from pybnf.priors.laplace import Laplace
 from pybnf.priors.base import NoPrior
 from pybnf.printing import PybnfError
 
@@ -243,3 +244,54 @@ class TestFreeParameterPriorSurface:
         else:
             expected = 10.0 ** (np.log10(p1) + q * (np.log10(p2) - np.log10(p1)))
         assert fp.value_from_quantile(q).value == fp.set_value(expected).value
+
+
+# ---------------------------------------------------------------------------
+# Move 4 seam proof: one Laplace family file yields laplace_var (linear) and
+# loglaplace_var (log10) end-to-end -- grammar, keyword map, prior, sampling --
+# with no other code change.
+# ---------------------------------------------------------------------------
+
+class TestLaplaceSeam:
+    def test_keyword_map_has_both_scales_for_free(self):
+        assert priors.PRIOR_KEYWORD_MAP['laplace_var'] == (Laplace, LINEAR)
+        assert priors.PRIOR_KEYWORD_MAP['loglaplace_var'] == (Laplace, LOG10)
+
+    def test_grammar_recognizes_keywords(self):
+        # Derived grammar (Move 2): an unbounded family lands in var_def_keys
+        # (no b/u flag), so parse.py accepts laplace_var / loglaplace_var.
+        import pybnf.parse as parse
+        assert 'laplace_var' in parse.var_def_keys
+        assert 'loglaplace_var' in parse.var_def_keys
+        assert 'laplace_var' not in parse.b_var_def_keys
+
+    def test_ploop_parses_a_laplace_var_line(self):
+        import pybnf.parse as parse
+        d = parse.ploop(['laplace_var = k__FREE 5 2'])
+        assert d[('laplace_var', 'k__FREE')] == [5.0, 2.0]
+        d2 = parse.ploop(['loglaplace_var = k__FREE 2 0.5'])
+        assert d2[('loglaplace_var', 'k__FREE')] == [2.0, 0.5]
+
+    @pytest.mark.parametrize("keyword,p1,p2,values", [
+        ('laplace_var', 5.0, 2.0, [5.0, 8.0, 1.0, -3.0]),
+        ('loglaplace_var', 2.0, 0.5, [100.0, 10.0, 1.0]),
+    ])
+    def test_prior_logpdf_matches_scipy_laplace(self, keyword, p1, p2, values):
+        fp = pset.FreeParameter('x__FREE', keyword, p1, p2)
+        ref = stats.laplace(loc=p1, scale=p2)
+        for v in values:
+            expected = ref.logpdf(np.log10(v) if keyword == 'loglaplace_var' else v)
+            assert fp.prior_logpdf(v) == pytest.approx(expected, rel=1e-12, abs=1e-12)
+
+    def test_loglaplace_sampling_centered_in_log(self):
+        np.random.seed(0)
+        fp = pset.FreeParameter('x__FREE', 'loglaplace_var', 2.0, 0.5)
+        logs = np.array([np.log10(fp.sample_value().value) for _ in range(40000)])
+        assert logs.mean() == pytest.approx(2.0, abs=0.05)
+
+    def test_laplace_is_unbounded_no_reflecting_box(self):
+        # Unbounded family -> not box-bounded even with the default bounded flag.
+        fp = pset.FreeParameter('x__FREE', 'laplace_var', 0.0, 1.0)
+        assert not fp.has_bounded_support
+        assert not fp.bounded
+        assert fp.lower_bound == -np.inf and fp.upper_bound == np.inf

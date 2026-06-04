@@ -20,6 +20,7 @@ from .scale import LINEAR, LOG10, Linear, Log10, Scale
 # Import the family leaves for their @register_prior_family side effects.
 from . import normal  # noqa: F401, E402
 from . import uniform  # noqa: F401, E402
+from . import laplace  # noqa: F401, E402
 
 # {keyword: (family_cls, scale)}. NoPrior carries a scale but no distribution.
 PRIOR_KEYWORD_MAP = {
