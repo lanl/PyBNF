@@ -49,7 +49,22 @@ def build_prior(keyword, p1, p2):
     return family_cls.build(p1, p2, scale), scale
 
 
+def var_keyword_grammar():
+    """Partition the prior families' ``*_var`` keywords for ``parse.py``'s
+    grammar (ADR-0010). Returns ``(bounded_keywords, unbounded_keywords)``:
+    each family ``b`` contributes ``{b}_var`` (linear) and ``log{b}_var``
+    (log10), routed by ``has_bounded_support`` -- bounded-support families take
+    the optional ``b``/``u`` flag, unbounded ones don't. The no-prior
+    ``var``/``logvar`` keywords are handled separately by ``parse.py``."""
+    bounded, unbounded = [], []
+    for base, entry in PRIOR_FAMILY_REGISTRY.items():
+        target = bounded if entry.has_bounded_support else unbounded
+        target.append('%s_var' % base)
+        target.append('log%s_var' % base)
+    return bounded, unbounded
+
+
 __all__ = [
     'Prior', 'NoPrior', 'Scale', 'Linear', 'Log10', 'LINEAR', 'LOG10',
-    'PRIOR_KEYWORD_MAP', 'build_prior',
+    'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
 ]

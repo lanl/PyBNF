@@ -2,6 +2,7 @@
 
 
 from .printing import PybnfError, print1
+from .priors import var_keyword_grammar
 from .config import Configuration
 
 from string import punctuation
@@ -41,8 +42,12 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
                  'rhat_threshold', 'snooker_prob']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
-b_var_def_keys = ['uniform_var', 'loguniform_var']
-var_def_keys = ['lognormal_var', 'normal_var']
+# The prior-family var keywords are derived from the registry (ADR-0010): each
+# family yields {base}_var (linear) + log{base}_var (log10). Bounded-support
+# families (b_var_def_keys) take the optional b/u flag in the grammar and have
+# their bound read in ploop; unbounded ones (var_def_keys) don't. var/logvar are
+# the no-prior Simplex start-point keywords (one or two numbers, no family).
+b_var_def_keys, var_def_keys = var_keyword_grammar()
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
