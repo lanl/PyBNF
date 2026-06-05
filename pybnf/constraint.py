@@ -204,37 +204,37 @@ class ConstraintSet:
         number = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
                          pp.Optional(point + pp.Optional(pp.Word(pp.nums))) +
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
-        iop = pp.oneOf("< <= > >=")
+        iop = pp.one_of("< <= > >=")
         ineq0 = obs + iop + (obs ^ number)
         ineq1 = number + iop + obs
         ineq = ineq0 ^ ineq1
         equals = pp.Suppress('=')
         obs_crit = obs - equals - number
         enforce_crit = number | obs_crit
-        enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True)) -\
+        enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.one_of('everytime first', caseless=True)) -\
             pp.Optional(pp.CaselessLiteral('before'))
         enforce_between = pp.Or([pp.CaselessLiteral('once between'), pp.CaselessLiteral('between')]) - \
                           pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
-        enforce_other = pp.oneOf('once always', caseless=True)
+        enforce_other = pp.one_of('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
-        split = obs.setResultsName('obs1') - enforce_at.setResultsName('at1') - iop.setResultsName('sign') - \
-                obs.setResultsName('obs2') - enforce_at.setResultsName('at2')
-        min = pp.CaselessLiteral('min') - number.setResultsName('min')
-        penalty = pp.CaselessLiteral('altpenalty') - pp.Group(ineq).setResultsName('altpenalty')
-        wt_expr = number.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
+        split = obs.set_results_name('obs1') - enforce_at.set_results_name('at1') - iop.set_results_name('sign') - \
+                obs.set_results_name('obs2') - enforce_at.set_results_name('at2')
+        min = pp.CaselessLiteral('min') - number.set_results_name('min')
+        penalty = pp.CaselessLiteral('altpenalty') - pp.Group(ineq).set_results_name('altpenalty')
+        wt_expr = number.set_results_name('weight') - pp.Optional(penalty) - pp.Optional(min)
         weight = pp.CaselessLiteral('weight') - wt_expr
-        confidence = pp.CaselessLiteral('confidence') - number.setResultsName('confidence')
-        pmin_pmax = pp.CaselessLiteral('pmin') - number.setResultsName('pmin') - \
-                    pp.CaselessLiteral('pmax') - number.setResultsName('pmax')
+        confidence = pp.CaselessLiteral('confidence') - number.set_results_name('confidence')
+        pmin_pmax = pp.CaselessLiteral('pmin') - number.set_results_name('pmin') - \
+                    pp.CaselessLiteral('pmax') - number.set_results_name('pmax')
         likelihood = (confidence ^ pmin_pmax) - \
-                     pp.Optional(pp.CaselessLiteral('tolerance') - number.setResultsName('tolerance'))
+                     pp.Optional(pp.CaselessLiteral('tolerance') - number.set_results_name('tolerance'))
         comment = pp.Suppress(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables)))
-        constraint = ((pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce')) ^
-                      pp.Group(split).setResultsName('split')) + \
-                     pp.Optional(pp.Group(weight).setResultsName('weight_expr') ^
-                                 pp.Group(likelihood).setResultsName('likelihood_expr')) + pp.Optional(comment)
+        constraint = ((pp.Group(ineq).set_results_name('ineq') + pp.Group(enforce).set_results_name('enforce')) ^
+                      pp.Group(split).set_results_name('split')) + \
+                     pp.Optional(pp.Group(weight).set_results_name('weight_expr') ^
+                                 pp.Group(likelihood).set_results_name('likelihood_expr')) + pp.Optional(comment)
 
-        return constraint.parseString(line, parseAll=True)
+        return constraint.parse_string(line, parse_all=True)
 
 
 class Constraint:
