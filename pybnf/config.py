@@ -350,8 +350,11 @@ class Configuration(object):
             return False
         if k in valid_keys:
             return False
-        # A model-path key (e.g. 'parabola.bngl') is structural, not a config knob.
-        return re.search(r'\.(bngl|xml|ant)', k) is None
+        # A model-path key (e.g. 'parabola.bngl', 'gaussian.target') is structural,
+        # not a config knob. The extensions MUST match the model_file grammar in
+        # parse.py (``.*?\.(bngl|xml|ant|target)``) -- a missing ``target`` here
+        # spuriously warned on every .target model under the broad policy (#401).
+        return re.search(r'\.(bngl|xml|ant|target)', k) is None
 
     @staticmethod
     def check_unused_keys(conf_dict):

@@ -167,6 +167,36 @@ def test_structural_keys_never_warn(monkeypatch):
     assert warned == set()
 
 
+@pytest.mark.parametrize('model_key', [
+    'parabola.bngl', 'model.xml', 'model.ant', 'gaussian.target',
+    'sub/dir/banana.target',
+])
+def test_model_path_keys_never_warn(model_key, monkeypatch):
+    # Regression (#401): a model-path key is structural, never unused. The broad
+    # policy first shipped with the model regex missing 'target', so every .target
+    # model warned spuriously -- this pins all four extensions parse.py accepts.
+    d = {'fit_type': 'am', 'population_size': 10, 'max_iterations': 10,
+         model_key: ['d.exp'], ('uniform_var', 'p1'): [0, 1]}
+    assert model_key not in warned_keys(d, monkeypatch)
+
+
+def test_model_path_extensions_match_parse_grammar():
+    # Drift guard: _is_unused_key's model-path regex MUST exempt every extension
+    # parse.py's model_file grammar accepts as a model path. Read parse.py's actual
+    # alternation dynamically, so a future model extension added to the grammar but
+    # not here fails this test instead of silently warning that model type (#401).
+    import re
+    import inspect
+    from .context import parse
+    src = inspect.getsource(parse.parse)
+    m = re.search(r'model_file\s*=\s*pp\.Regex\(r"[^"]*\\\.\(([a-z|]+)\)', src)
+    assert m, 'could not locate the model_file extension group in parse.py'
+    exts = m.group(1).split('|')
+    assert 'target' in exts and 'bngl' in exts            # sanity on the extraction
+    for ext in exts:
+        assert not config.Configuration._is_unused_key('m.' + ext, set()), ext
+
+
 # --- the broad-policy risk: no real config warns about a key it actually uses ---
 
 # Allowlist of warnings that SHOULD fire on real fixtures (intentional garbage keys).

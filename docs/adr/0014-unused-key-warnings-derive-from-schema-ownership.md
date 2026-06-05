@@ -35,10 +35,24 @@ follow-ups"). We settled the shape (Bill chose the broad policy, 2026-06-05):
   keys: `fit_type`, `models`/`exp_data`/`mutant`, `population_size`/`max_iterations`,
   `verbosity`, `postprocess`) plus the positional model-path/tuple recognition, and
   is **fenced by a corpus test** asserting no real `.conf` fixture warns about a key
-  its algorithm consumes (`test_config_unused_keys.py::test_real_configs_no_spurious_warnings`).
-  The conservative "warnable-universe" alternative (warn only keys owned by *some*
-  other method) was rejected: it leaves `check` on a different rule and never catches
-  typos.
+  its algorithm consumes (`test_config_unused_keys.py::test_real_configs_no_spurious_warnings`),
+  and was **audited across all 490 repo configs** (examples/ + benchmarks/): every one
+  of the 388 standalone configs (and every synthesized `bench × sampler` config) warns
+  nothing. The conservative "warnable-universe" alternative (warn only keys owned by
+  *some* other method) was rejected: it leaves `check` on a different rule and never
+  catches typos.
+
+  The one regression that audit caught: `_is_unused_key`'s model-path regex shipped
+  as `\.(bngl|xml|ant)`, missing the `target` extension `parse.py`'s `model_file`
+  grammar also accepts, so every `.target` model path warned spuriously under the
+  broad policy (the old non-`check` path never warned model paths at all, so the gap
+  was newly exposed). Fixed to `\.(bngl|xml|ant|target)`, with a drift-guard test
+  that reads `parse.py`'s alternation dynamically — a model extension added to the
+  grammar but not here now fails a test instead of warning that model type. The
+  lesson: the broad policy's safety rests on the *structural*-key recognizers
+  (`STRUCTURAL_PASSTHROUGH` + the model-path/tuple predicates) being complete; a gap
+  there surfaces as a spurious warning, not a crash, but it is a real regression, so
+  these recognizers are the part to audit hardest.
 
 - **Runtime-defaulted keys ride on the schema via `RUNTIME_KEYS`, not a residual
   dict.** Some keys an algorithm reads are deliberately **not** schema fields because
