@@ -33,10 +33,17 @@ oracle):
   a float-typed field (e.g. ``adaptive_n_max = 30``) is stored and dumped as the
   int ``30`` -- byte-identical to the old ``default_config()``. A *user-supplied*
   value still coerces through the field type.
-* Values reaching the model have already been coerced by ``parse.ploop`` (the
-  ``numkeys_int`` / ``numkeys_float`` / ``mult*`` lists), so per-field coercion
-  here is effectively a no-op today; it becomes the sole owner once the
-  ``parse.py`` token lists migrate into the schema.
+* For a key with a typed scalar field, ``parse.ploop`` has already coerced the
+  value (the ``numkeys_int`` / ``numkeys_float`` / ``mult*`` lists), so per-field
+  coercion here is redundant -- both produce the same type. It is **not** a no-op
+  for every token-list key, though: ~15 have no typed field that coerces, so for
+  those ``parse.py`` is the *sole* coercion source -- ``credible_intervals`` is a
+  bare ``list``; ``exchange_every`` / ``adaptive_step_size`` / ``starting_params``
+  / ``calculate_covari`` are ``Any``; the required keys ``population_size`` /
+  ``max_iterations`` / ``verbosity`` and the ``RUNTIME_KEYS`` ride through as
+  extras. Making the schema own *all* coercion would mean modeling those 15 --
+  decided not worth it (lanl/PyBNF#402, closed): the redundancy is benign and it
+  would fight the deliberate extras / ``RUNTIME_KEYS`` / ``Any`` escape hatches.
 * ``exchange_every`` is typed ``Any`` (now on ``MCMCFamilyConfig``): ``parse``
   coerces it to ``int``, but the MCMC family's ``postprocess`` hook overwrites it
   with ``np.inf`` for the non-PT methods, so the field must hold both an int and an
