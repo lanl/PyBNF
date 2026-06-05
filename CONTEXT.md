@@ -129,6 +129,10 @@ _Avoid_: repeat, trial, sample
 Refitting on resampled experimental data to estimate the uncertainty in the fitted parameters.
 _Avoid_: resampling run, jackknife
 
+**Refine** (`refine`):
+An optional Nelder–Mead Simplex polish run after the main fit completes, locally improving its best-fit PSet; enabled by `refine = 1`. It runs the Simplex algorithm on the *original* (non-Simplex) fit's configuration, so a refined fit of any fit_type needs the full set of Simplex settings available — the one cross-fit_type configuration reach in PyBNF. Skipped when the fit_type is already `sim`.
+_Avoid_: polish, local search, post-optimization
+
 **Noise Model**:
 A probabilistic observation model mapping a deterministic prediction plus noise parameters to a distribution over the observed data; its negative log-likelihood is the objective value. PyBNF recognizes two **shapes**. A **Per-point Noise Model** has a log-likelihood that factors into a sum of independent per-observation terms (`chi_sq` = Gaussian, `neg_bin` = NegBinomial); it is defined by the three orthogonal axes distribution family × scale-the-noise-is-additive-on × location interpretation. A **Column-joint Noise Model** has per-observation contributions coupled across a whole data column, so the likelihood does not factor point-by-point (today only `kl`, the multinomial cross-entropy). Non-probabilistic objectives (`sos`, `sod`, `norm_sos`, `ave_norm_sos`) are losses, not noise models.
 _Avoid_: error model, noise function, likelihood (reserve "likelihood" for the density itself)
