@@ -143,6 +143,42 @@ def test_sa_finds_gaussian_mode(tmp_path):
 
 
 @pytest.mark.slow
+def test_refine_on_nonsim_fit_runs_end_to_end(tmp_path):
+    """ADR-0013 runtime net: refine==1 on a NON-sim fit runs Simplex over that
+    fit's effective config. Narrowing must still pull the whole Simplex schema in
+    via the refine->simplex overlay; a half-populated config would KeyError the
+    instant SimplexAlgorithm.__init__ reads simplex_step / _reflection / ... . The
+    build-only golden (matrix/de_refine) snapshots that the keys are present; only
+    actually running refine proves the keys are the ones the refiner reads.
+    """
+    import types
+    from pybnf import pybnf as pybnf_main
+
+    mean, var = [2.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'de', tgt, exp, n_params=2,
+        population_size=20, max_iterations=40, stop_tolerance=1e-7, refine=1)
+    # the narrowed effective config carries the coherent Simplex group ONLY because
+    # refine==1 pulled it in (a plain de fit no longer has it)
+    assert conf.config['refine'] == 1
+    assert {'simplex_step', 'simplex_reflection', 'simplex_stop_tol'} <= set(conf.config)
+
+    alg = algorithms.DifferentialEvolution(conf)
+    H.drive(alg)
+    pre_refine_best = alg.trajectory.best_score()
+
+    # drive _refine_best_fit exactly as main() does, with the harness's fake cluster
+    cluster = types.SimpleNamespace(client=H.FakeClient())
+    pybnf_main._refine_best_fit(conf, alg, cluster, debug=False)  # must NOT raise
+
+    refined_best = alg.trajectory.best_score()
+    assert np.isfinite(refined_best)
+    assert refined_best <= pre_refine_best + 1e-9          # refine never worsens the best
+    assert np.allclose(H.best_params(alg, 2), mean, atol=0.25)
+
+
+@pytest.mark.slow
 def test_de_finds_banana_valley(tmp_path):
     """Differential evolution finds the Rosenbrock/banana minimum at (a, a^2,...).
 
