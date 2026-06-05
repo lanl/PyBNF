@@ -6,6 +6,7 @@ from . import objective  # noqa: F401 -- imported for its side effect: running t
 from . import algorithms  # noqa: F401 -- imported for its side effect: running the leaves fires the @register_fit_type decorators, populating FIT_TYPE_REGISTRY (incl. each method's config schema) before _build_config dispatches. No cycle: nothing in algorithms/ imports config.
 from .registry import OBJFUNC_REGISTRY, FIT_TYPE_REGISTRY
 from . import config_schema
+from .algorithms.optimizers.simplex import SimplexConfig
 
 from pydantic import ValidationError
 
@@ -109,6 +110,18 @@ def reinit_logging(file_prefix, debug=False, log_level_name='info'):
         del logging.root.handlers[:]
     init_logging(file_prefix, debug, log_level_name)
 
+
+# The one cross-fit_type config reach (ADR-0013): refine == 1 runs the Simplex
+# refiner over a *non*-simplex fit's best fit, so that fit's effective config must
+# carry the whole Simplex schema as a coherent group. ``_REFINER_SCHEMA`` plus
+# ``Configuration._refine_pulls_in`` are the single source of this fact, shared by
+# ``_build_config`` (which overlays the schema) and ``check_unused_keys`` (which
+# exempts simplex_* from the unused-key warning) -- so narrowing does not duplicate
+# the refine fact. A second refiner (Powell, issue #403) turns the constant into a
+# refiner-keyed lookup without touching either call site.
+_REFINER_SCHEMA = SimplexConfig
+
+
 class Configuration(object):
     def __init__(self, d=None):
         """
@@ -146,8 +159,6 @@ class Configuration(object):
         # as the method schema's postprocess() hook (ADR-0006 #3), dispatched
         # uniformly there; non-MCMC methods inherit a no-op.
         self.config = self._build_config(d)
-        if 'step_size' in d:
-            self.config['adaptive_step_size'] = False
         self._check_random_seed()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
@@ -189,18 +200,21 @@ class Configuration(object):
         """Build the effective config dict from a raw parsed config ``d``.
 
         The flow is ``raw dict -> Pydantic (validate / coerce / default) ->
-        effective dict`` (ADR-0002). The effective dict is the **full union** of
-        every method's defaults for every fit_type (ADR-0006), assembled in four
-        overlays:
+        effective dict`` (ADR-0002). The effective dict is **narrowed** to the keys
+        the selected fit_type actually reads (ADR-0013, M2.1 Stage c) -- so a ``de``
+        fit no longer carries ``cognitive`` / ``simplex_*`` / the MCMC defaults --
+        assembled in (up to) four overlays:
 
-        1. a default-union baseline (the global defaults unioned with every
-           registered method schema's defaults), so a ``de`` fit still carries
-           ``cognitive`` / ``particle_weight`` / ... ;
-        2. the validated *global* keys the user set (``GlobalConfig``);
-        3. the selected fit_type's *method* schema -- its validated keys plus its
-           own defaults -- for methods migrated to a co-located schema (Stage b);
+        1. the validated *global* keys (``GlobalConfig``) -- its full defaults
+           overlaid by the global keys the user set;
+        2. the selected fit_type's *method* schema -- its validated keys plus its
+           own defaults (absent for ``check``, which has no co-located schema);
+        3. the **refine->simplex overlay** -- the one cross-fit_type reach: when
+           ``refine == 1`` on a non-``sim`` fit, the whole Simplex schema as a
+           coherent group (``_REFINER_SCHEMA`` / :meth:`_refine_pulls_in`), so
+           ``_refine_best_fit`` never meets a half-populated state;
         4. the *extras* -- required user keys (``population_size`` /
-           ``max_iterations``), keys of not-yet-migrated methods, and the
+           ``max_iterations``), keys of *other* methods the user set, and the
            structural model-path / free-parameter (tuple) / ``models`` /
            ``exp_data`` keys -- carried through unchanged (already parse-coerced).
 
@@ -208,8 +222,10 @@ class Configuration(object):
         ``GlobalConfig`` is a global key, one owned by the selected method's
         schema is a method key, everything else (including the keys of *other*
         methods) is an extra. The three buckets are disjoint, so an extra never
-        clobbers a validated default. A Pydantic ``ValidationError`` becomes a
-        ``PybnfError``.
+        clobbers a validated default. Narrowing drops only the *unset defaults* of
+        other methods: a user-set foreign key (e.g. ``cognitive`` on a ``de`` fit)
+        rides through as an extra unchanged, reported by ``check_unused_keys``
+        exactly as before. A Pydantic ``ValidationError`` becomes a ``PybnfError``.
 
         The result is a plain dict so the existing ``config.config['x']`` reaches
         and writes stay untouched (dict-compat per ADR-0002); typed access
@@ -220,8 +236,9 @@ class Configuration(object):
         if method_schema is not None:
             # Method-owned preprocessing on the RAW dict, before defaults merge
             # (raw-presence semantics like ``'beta' not in d`` mean "user did not
-            # set it"): the MCMC family's beta-ladder mutates d in place; every
-            # other model inherits the no-op postprocess (ADR-0006 #3).
+            # set it"): the MCMC family's beta-ladder mutates d in place, DREAM's
+            # postprocess also pins adaptive_step_size off when step_size is set;
+            # every other model inherits the no-op postprocess (ADR-0006 #3).
             method_schema.postprocess(d, d.get('fit_type'))
         global_keys = config_schema.SCHEMA_KEYS
         method_keys = method_schema.owned_keys() if method_schema is not None else frozenset()
@@ -233,15 +250,31 @@ class Configuration(object):
         extras = {k: v for k, v in d.items()
                   if not (isinstance(k, str) and (k in global_keys or k in method_keys))}
         try:
-            effective = config_schema.default_union()
-            effective.update(config_schema.build_effective_global(global_input))
+            effective = config_schema.build_effective_global(global_input)
             if method_schema is not None:
                 effective.update(
                     config_schema.build_effective_method(method_schema, method_input))
+            # The one cross-fit_type reach (ADR-0013): when refine pulls in the
+            # Simplex refiner on a non-sim fit, overlay the whole Simplex schema as
+            # a coherent group (its six defaults overlaid by any simplex_* the user
+            # set). A sim fit already carries the group via its method schema above.
+            if Configuration._refine_pulls_in(d) and d.get('fit_type') != 'sim':
+                refiner_input = {k: v for k, v in d.items()
+                                 if isinstance(k, str) and k in _REFINER_SCHEMA.owned_keys()}
+                effective.update(
+                    config_schema.build_effective_method(_REFINER_SCHEMA, refiner_input))
         except ValidationError as e:
             raise PybnfError('Invalid configuration', 'Invalid configuration:\n%s' % e)
         effective.update(extras)
         return effective
+
+    @staticmethod
+    def _refine_pulls_in(conf_dict):
+        """True when ``refine`` will run the Simplex refiner over this fit's config,
+        so the whole Simplex schema must be present (ADR-0013). The single predicate
+        behind both the :meth:`_build_config` overlay and ``check_unused_keys``'s
+        ``alg == 'sim'`` exemption -- contains the refine fact in one place."""
+        return conf_dict.get('refine') == 1
 
     def _check_random_seed(self):
         """Validate the optional random seed before NumPy consumes it."""
@@ -281,7 +314,7 @@ class Configuration(object):
             thisalg = 'mh'
         for alg in alg_specific:
             if (thisalg != alg
-               and not(alg == 'sim' and 'refine' in conf_dict and conf_dict['refine'] == 1)
+               and not(alg == 'sim' and Configuration._refine_pulls_in(conf_dict))
                and not (thisalg == 'de' and alg == 'ade')):
                 ignored_params = ignored_params.union(alg_specific[alg])
         for k in ignored_params.intersection(set(conf_dict.keys())):

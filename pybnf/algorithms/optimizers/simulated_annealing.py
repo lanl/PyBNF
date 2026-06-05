@@ -39,9 +39,8 @@ class SimulatedAnnealingConfig(PyBNFConfigModel):
     """Simulated-annealing config fields, co-located with the method (ADR-0002,
     ADR-0008). Standalone -- ``sa`` is an optimizer, no longer part of the MCMC
     family -- carrying only the four knobs the algorithm reads. The defaults are
-    byte-identical to the values these keys held under the old MCMC-family schema,
-    so ``default_union`` (and thus every other fit_type's effective config) is
-    unchanged.
+    byte-identical to the values these keys held under the old MCMC-family schema;
+    under narrowing (ADR-0013) they appear only in an ``sa`` fit's effective config.
     """
 
     step_size: float = 0.2

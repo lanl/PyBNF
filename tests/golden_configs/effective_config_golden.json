@@ -7,37 +7,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    false
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -79,13 +48,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -110,20 +72,12 @@
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
    ],
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -133,19 +87,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -173,10 +115,6 @@
     "am"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "hist_bins",
     50
    ],
@@ -189,18 +127,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -211,10 +137,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -233,14 +155,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -249,20 +163,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -300,16 +206,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     20
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -356,44 +254,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
    ],
    [
     "stablizingCov",
@@ -412,10 +278,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -428,10 +290,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -448,10 +306,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -489,25 +343,6 @@
    [
     "adaptive",
     10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
    ],
    [
     "adaptive_step_size",
@@ -563,13 +398,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -586,16 +414,8 @@
     25000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -604,10 +424,6 @@
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -619,10 +435,6 @@
    [
     "crossover_number",
     3
-   ],
-   [
-    "de_strategy",
-    "rand1"
    ],
    [
     "delete_old_files",
@@ -673,16 +485,8 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
     "lambda",
     0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -695,10 +499,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -717,24 +517,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -784,16 +572,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     20
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -840,30 +620,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -874,14 +630,6 @@
    [
     "snooker_prob",
     0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -896,10 +644,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -912,10 +656,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -975,25 +715,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
     "adaptive_step_size",
     true
    ],
@@ -1047,13 +768,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -1070,16 +784,8 @@
     25000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -1088,10 +794,6 @@
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -1103,10 +805,6 @@
    [
     "crossover_number",
     3
-   ],
-   [
-    "de_strategy",
-    "rand1"
    ],
    [
     "delete_old_files",
@@ -1157,16 +855,8 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
     "lambda",
     0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -1179,10 +869,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -1201,24 +887,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -1266,10 +940,6 @@
      "$tuple",
      []
     ]
-   ],
-   [
-    "particle_weight",
-    0.7
    ],
    [
     "population_size",
@@ -1324,30 +994,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -1358,14 +1004,6 @@
    [
     "snooker_prob",
     0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -1380,10 +1018,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -1396,10 +1030,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -1459,37 +1089,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    false
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -1525,13 +1124,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -1556,20 +1148,12 @@
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
    ],
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -1579,19 +1163,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -1619,10 +1191,6 @@
     "am"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian_d10.target",
     [
      "target.exp"
@@ -1641,18 +1209,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -1663,10 +1219,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -1685,14 +1237,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -1701,20 +1245,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -1752,16 +1288,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     20
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -1808,44 +1336,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
    ],
    [
     "stablizingCov",
@@ -1864,10 +1360,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -1880,10 +1372,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -1900,10 +1388,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -2055,25 +1539,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
     "adaptive_step_size",
     true
    ],
@@ -2121,13 +1586,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -2144,16 +1602,8 @@
     25000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -2162,10 +1612,6 @@
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -2177,10 +1623,6 @@
    [
     "crossover_number",
     3
-   ],
-   [
-    "de_strategy",
-    "rand1"
    ],
    [
     "delete_old_files",
@@ -2237,16 +1679,8 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
     "lambda",
     0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -2259,10 +1693,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -2281,24 +1711,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -2348,16 +1766,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     20
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -2404,30 +1814,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -2438,14 +1824,6 @@
    [
     "snooker_prob",
     0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -2460,10 +1838,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -2476,10 +1850,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -2651,25 +2021,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
     "adaptive_step_size",
     true
    ],
@@ -2717,13 +2068,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -2740,16 +2084,8 @@
     25000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -2758,10 +2094,6 @@
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -2773,10 +2105,6 @@
    [
     "crossover_number",
     3
-   ],
-   [
-    "de_strategy",
-    "rand1"
    ],
    [
     "delete_old_files",
@@ -2833,16 +2161,8 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
     "lambda",
     0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -2855,10 +2175,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -2877,24 +2193,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -2942,10 +2246,6 @@
      "$tuple",
      []
     ]
-   ],
-   [
-    "particle_weight",
-    0.7
    ],
    [
     "population_size",
@@ -3000,30 +2300,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -3034,14 +2310,6 @@
    [
     "snooker_prob",
     0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -3056,10 +2324,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -3072,10 +2336,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -3247,37 +2507,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    false
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -3313,13 +2542,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -3344,20 +2566,12 @@
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
    ],
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -3367,19 +2581,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -3407,10 +2609,6 @@
     "am"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "hist_bins",
     50
    ],
@@ -3423,18 +2621,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -3445,10 +2631,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -3473,14 +2655,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -3489,20 +2663,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -3540,16 +2706,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     20
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -3596,44 +2754,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
    ],
    [
     "stablizingCov",
@@ -3652,10 +2778,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -3668,10 +2790,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -3688,10 +2806,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -3729,25 +2843,6 @@
    [
     "adaptive",
     10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
    ],
    [
     "adaptive_step_size",
@@ -3797,13 +2892,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -3820,16 +2908,8 @@
     25000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -3838,10 +2918,6 @@
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -3853,10 +2929,6 @@
    [
     "crossover_number",
     3
-   ],
-   [
-    "de_strategy",
-    "rand1"
    ],
    [
     "delete_old_files",
@@ -3907,16 +2979,8 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
     "lambda",
     0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -3929,10 +2993,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -3957,24 +3017,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -4024,16 +3072,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     20
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -4080,30 +3120,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -4114,14 +3130,6 @@
    [
     "snooker_prob",
     0.2
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -4136,10 +3144,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -4152,10 +3156,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -4215,25 +3215,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
     "adaptive_step_size",
     true
    ],
@@ -4281,13 +3262,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -4304,16 +3278,8 @@
     25000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -4322,10 +3288,6 @@
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -4337,10 +3299,6 @@
    [
     "crossover_number",
     3
-   ],
-   [
-    "de_strategy",
-    "rand1"
    ],
    [
     "delete_old_files",
@@ -4391,16 +3349,8 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
     "lambda",
     0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -4413,10 +3363,6 @@
    [
     "max_iterations",
     50000
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -4441,24 +3387,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -4506,10 +3440,6 @@
      "$tuple",
      []
     ]
-   ],
-   [
-    "particle_weight",
-    0.7
    ],
    [
     "population_size",
@@ -4564,30 +3494,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -4598,14 +3504,6 @@
    [
     "snooker_prob",
     0.2
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -4620,10 +3518,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -4636,10 +3530,6 @@
      "$map",
      []
     ]
-   ],
-   [
-    "v_stop",
-    0.0
    ],
    [
     "verbosity",
@@ -4695,56 +3585,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -4759,43 +3601,12 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
-   ],
-   [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
    ],
    [
     "de_strategy",
@@ -4804,18 +3615,6 @@
    [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -4831,18 +3630,10 @@
     "ade"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -4851,18 +3642,6 @@
    [
     "initialization",
     "lh"
-   ],
-   [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -4875,10 +3654,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -4913,10 +3688,6 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
@@ -4925,20 +3696,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -4964,16 +3727,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -4982,14 +3737,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -5016,30 +3763,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -5048,24 +3771,8 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
-   ],
-   [
-    "step_size",
-    0.2
    ],
    [
     "stochastic_seed",
@@ -5090,10 +3797,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -5104,10 +3807,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -5147,37 +3846,6 @@
     1000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    false
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -5200,13 +3868,6 @@
      1.0,
      1.0,
      1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
     ]
    ],
    [
@@ -5234,20 +3895,12 @@
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
    ],
    [
     "continue_run",
     0
-   ],
-   [
-    "cooling",
-    0.01
    ],
    [
     "credible_intervals",
@@ -5257,19 +3910,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -5297,10 +3938,6 @@
     "am"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
@@ -5319,18 +3956,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -5341,10 +3966,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -5363,14 +3984,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -5379,20 +3992,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -5430,16 +4035,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -5486,44 +4083,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
    ],
    [
     "stablizingCov",
@@ -5542,10 +4107,6 @@
     "auto"
    ],
    [
-    "stop_tolerance",
-    0.002
-   ],
-   [
     "time_course",
     [
      "$tuple",
@@ -5560,10 +4121,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -5574,10 +4131,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -5613,56 +4166,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -5677,63 +4182,16 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
     1.0
    ],
    [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -5749,18 +4207,10 @@
     "check"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -5771,28 +4221,12 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
    [
     "max_failed_simulations",
     100
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -5811,24 +4245,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -5839,20 +4261,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -5878,28 +4292,12 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
-    "precondition_adapt",
-    null
-   ],
-   [
     "random_seed",
     null
    ],
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -5926,30 +4324,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -5958,32 +4332,12 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
    ],
    [
-    "step_size",
-    0.2
-   ],
-   [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -6000,10 +4354,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -6014,10 +4364,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ]
   ]
  ],
@@ -6025,56 +4371,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -6089,63 +4387,16 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
     1.0
    ],
    [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -6161,18 +4412,10 @@
     "check"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -6183,28 +4426,12 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
    [
     "max_failed_simulations",
     100
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -6223,24 +4450,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -6251,20 +4466,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -6290,28 +4497,12 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
-    "precondition_adapt",
-    null
-   ],
-   [
     "random_seed",
     null
    ],
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -6338,30 +4529,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -6370,32 +4537,12 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
    ],
    [
-    "step_size",
-    0.2
-   ],
-   [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -6412,10 +4559,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -6426,10 +4569,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -6451,56 +4590,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -6515,43 +4606,12 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
-   ],
-   [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
    ],
    [
     "de_strategy",
@@ -6560,18 +4620,6 @@
    [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -6587,18 +4635,10 @@
     "de"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -6611,14 +4651,6 @@
    [
     "islands",
     1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -6681,20 +4713,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -6720,16 +4744,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -6740,12 +4756,273 @@
     0
    ],
    [
-    "rhat_threshold",
-    0.0
+    "save_best_data",
+    0
    ],
    [
-    "sample_every",
+    "sbml_backend",
+    "roadrunner"
+   ],
+   [
+    "sbml_integrator",
+    "cvode"
+   ],
+   [
+    "sbml_ssa_strict",
+    1
+   ],
+   [
+    "scheduler_file",
+    null
+   ],
+   [
+    "scheduler_node",
+    null
+   ],
+   [
+    "simulation_dir",
+    null
+   ],
+   [
+    "smoothing",
+    1
+   ],
+   [
+    "starting_params",
+    null
+   ],
+   [
+    "stochastic_seed",
+    "auto"
+   ],
+   [
+    "stop_tolerance",
+    0.002
+   ],
+   [
+    "time_course",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "time_length",
+    [
+     "$map",
+     []
+    ]
+   ],
+   [
+    "wall_time_gen",
+    3600
+   ],
+   [
+    "wall_time_sim",
+    0
+   ],
+   [
+    "worker_nodes",
+    null
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "uniform_var",
+      "p1"
+     ]
+    ],
+    [
+     -10.0,
+     10.0,
+     true
+    ]
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "uniform_var",
+      "p2"
+     ]
+    ],
+    [
+     -10.0,
+     10.0,
+     true
+    ]
+   ]
+  ]
+ ],
+ "matrix/de_refine": [
+  "$map",
+  [
+   [
+    "backup_every",
+    1
+   ],
+   [
+    "bngl_backend",
+    "auto"
+   ],
+   [
+    "bootstrap",
+    0
+   ],
+   [
+    "bootstrap_max_obj",
+    null
+   ],
+   [
+    "cluster_type",
+    null
+   ],
+   [
+    "constraint_scale",
+    1.0
+   ],
+   [
+    "de_strategy",
+    "rand1"
+   ],
+   [
+    "delete_old_files",
+    1
+   ],
+   [
+    "exp_data",
+    [
+     "$set",
+     [
+      "target.exp"
+     ]
+    ]
+   ],
+   [
+    "fit_type",
+    "de"
+   ],
+   [
+    "gaussian.target",
+    [
+     "target.exp"
+    ]
+   ],
+   [
+    "ind_var_rounding",
+    0
+   ],
+   [
+    "initialization",
+    "lh"
+   ],
+   [
+    "islands",
+    1
+   ],
+   [
+    "local_objective_eval",
+    0
+   ],
+   [
+    "max_failed_simulations",
     100
+   ],
+   [
+    "max_iterations",
+    10
+   ],
+   [
+    "migrate_every",
+    20
+   ],
+   [
+    "min_objective",
+    [
+     "$float",
+     "-inf"
+    ]
+   ],
+   [
+    "models",
+    [
+     "$set",
+     [
+      "gaussian.target"
+     ]
+    ]
+   ],
+   [
+    "mutation_factor",
+    0.5
+   ],
+   [
+    "mutation_rate",
+    0.5
+   ],
+   [
+    "neg_bin_r",
+    24.0
+   ],
+   [
+    "normalization",
+    null
+   ],
+   [
+    "num_to_migrate",
+    3
+   ],
+   [
+    "num_to_output",
+    5000
+   ],
+   [
+    "objfunc",
+    "direct_pass"
+   ],
+   [
+    "output_dir",
+    "pybnf_output"
+   ],
+   [
+    "output_every",
+    20
+   ],
+   [
+    "output_noise_trajectory",
+    null
+   ],
+   [
+    "output_trajectory",
+    null
+   ],
+   [
+    "parallel_count",
+    null
+   ],
+   [
+    "parallelize_models",
+    1
+   ],
+   [
+    "param_scan",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "population_size",
+    10
+   ],
+   [
+    "random_seed",
+    null
+   ],
+   [
+    "refine",
+    1
    ],
    [
     "save_best_data",
@@ -6804,24 +5081,8 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
-   ],
-   [
-    "step_size",
-    0.2
    ],
    [
     "stochastic_seed",
@@ -6846,10 +5107,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -6860,10 +5117,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -6903,37 +5156,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    false
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -6959,13 +5181,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -6982,16 +5197,8 @@
     100
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -7002,10 +5209,6 @@
     0
    ],
    [
-    "cooling",
-    0.01
-   ],
-   [
     "credible_intervals",
     [
      68.0,
@@ -7013,19 +5216,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -7053,10 +5244,6 @@
     "mh"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
@@ -7075,18 +5262,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -7097,10 +5272,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -7119,14 +5290,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -7135,20 +5298,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -7186,16 +5341,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -7242,48 +5389,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -7296,10 +5407,6 @@
    [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -7316,10 +5423,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -7330,10 +5433,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -7369,56 +5468,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -7433,43 +5484,12 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
-   ],
-   [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
    ],
    [
     "de_strategy",
@@ -7478,18 +5498,6 @@
    [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -7505,18 +5513,10 @@
     "de"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -7529,14 +5529,6 @@
    [
     "islands",
     1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -7599,20 +5591,12 @@
     "kl"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -7638,16 +5622,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -7656,14 +5632,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -7690,30 +5658,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -7722,24 +5666,8 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
-   ],
-   [
-    "step_size",
-    0.2
    ],
    [
     "stochastic_seed",
@@ -7764,10 +5692,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -7778,10 +5702,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -7817,56 +5737,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -7881,43 +5753,12 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
-   ],
-   [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
    ],
    [
     "de_strategy",
@@ -7926,18 +5767,6 @@
    [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -7953,18 +5782,10 @@
     "de"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -7977,14 +5798,6 @@
    [
     "islands",
     1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -8047,20 +5860,12 @@
     "neg_bin"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -8086,16 +5891,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -8104,14 +5901,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -8138,30 +5927,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -8170,24 +5935,8 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
-   ],
-   [
-    "step_size",
-    0.2
    ],
    [
     "stochastic_seed",
@@ -8212,10 +5961,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -8226,10 +5971,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -8265,56 +6006,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -8329,43 +6022,12 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
-   ],
-   [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
    ],
    [
     "de_strategy",
@@ -8374,18 +6036,6 @@
    [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -8401,18 +6051,10 @@
     "de"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -8425,14 +6067,6 @@
    [
     "islands",
     1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -8495,20 +6129,12 @@
     "norm_sos"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -8534,16 +6160,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -8552,14 +6170,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -8586,30 +6196,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -8618,24 +6204,8 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
-   ],
-   [
-    "step_size",
-    0.2
    ],
    [
     "stochastic_seed",
@@ -8660,10 +6230,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -8674,10 +6240,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -8713,56 +6275,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -8777,43 +6291,12 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
    ],
    [
-    "cognitive",
-    1.5
-   ],
-   [
     "constraint_scale",
     1.0
-   ],
-   [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
    ],
    [
     "de_strategy",
@@ -8822,18 +6305,6 @@
    [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -8849,18 +6320,10 @@
     "de"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -8873,14 +6336,6 @@
    [
     "islands",
     1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -8943,20 +6398,12 @@
     "sos"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -8982,16 +6429,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -9000,14 +6439,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -9034,30 +6465,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -9066,24 +6473,8 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
-   ],
-   [
-    "step_size",
-    0.2
    ],
    [
     "stochastic_seed",
@@ -9108,10 +6499,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -9122,10 +6509,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -9161,10 +6544,6 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
     "adaptive_abs_tol",
     0.0
    ],
@@ -9184,33 +6563,8 @@
     0.0
    ],
    [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -9222,14 +6576,6 @@
    ],
    [
     "bootstrap_max_obj",
-    null
-   ],
-   [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
     null
    ],
    [
@@ -9245,43 +6591,8 @@
     1.0
    ],
    [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -9297,18 +6608,10 @@
     "pso"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -9317,18 +6620,6 @@
    [
     "initialization",
     "lh"
-   ],
-   [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -9341,10 +6632,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -9363,24 +6650,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -9391,20 +6666,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -9438,24 +6705,12 @@
     10
    ],
    [
-    "precondition_adapt",
-    null
-   ],
-   [
     "random_seed",
     null
    ],
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -9482,30 +6737,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -9514,32 +6745,16 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
     "social",
     1.3
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
     null
    ],
    [
-    "step_size",
-    0.2
-   ],
-   [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -9570,10 +6785,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -9613,37 +6824,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -9660,13 +6840,6 @@
      1.0,
      0.1,
      1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
     ]
    ],
    [
@@ -9693,16 +6866,8 @@
     10000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -9713,10 +6878,6 @@
     0
    ],
    [
-    "cooling",
-    0.01
-   ],
-   [
     "credible_intervals",
     [
      68.0,
@@ -9724,19 +6885,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -9761,10 +6910,6 @@
     "pt"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
@@ -9783,18 +6928,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -9805,10 +6938,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -9827,14 +6956,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -9843,20 +6964,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -9894,16 +7007,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     4
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -9950,48 +7055,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -10004,10 +7073,6 @@
    [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -10024,10 +7089,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -10038,10 +7099,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -10081,37 +7138,6 @@
     10000
    ],
    [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -10132,13 +7158,6 @@
     ]
    ],
    [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
     "bngl_backend",
     "auto"
    ],
@@ -10155,16 +7174,8 @@
     10000
    ],
    [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
@@ -10175,10 +7186,6 @@
     0
    ],
    [
-    "cooling",
-    0.01
-   ],
-   [
     "credible_intervals",
     [
      68.0,
@@ -10186,19 +7193,7 @@
     ]
    ],
    [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
-    1
-   ],
-   [
-    "delta",
     1
    ],
    [
@@ -10223,10 +7218,6 @@
     "pt"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
@@ -10245,18 +7236,6 @@
     "lh"
    ],
    [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
-   ],
-   [
     "local_objective_eval",
     0
    ],
@@ -10267,10 +7246,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -10289,14 +7264,6 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
@@ -10305,20 +7272,12 @@
     null
    ],
    [
-    "num_to_migrate",
-    3
-   ],
-   [
     "num_to_output",
     5000
    ],
    [
     "objfunc",
     "direct_pass"
-   ],
-   [
-    "outlier_method",
-    "iqr"
    ],
    [
     "output_dir",
@@ -10356,16 +7315,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     3
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -10412,48 +7363,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -10466,10 +7381,6 @@
    [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -10486,10 +7397,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -10500,10 +7407,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -10539,41 +7442,6 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
    ],
@@ -10600,63 +7468,20 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
     1.0
    ],
    [
-    "continue_run",
-    0
-   ],
-   [
     "cooling",
     0.02
    ],
    [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -10672,18 +7497,10 @@
     "sa"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -10692,18 +7509,6 @@
    [
     "initialization",
     "lh"
-   ],
-   [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -10716,10 +7521,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -10738,24 +7539,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -10766,20 +7555,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -10805,16 +7586,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -10823,14 +7596,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -10857,48 +7622,12 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
    [
     "smoothing",
     1
-   ],
-   [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
    ],
    [
     "starting_params",
@@ -10911,10 +7640,6 @@
    [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -10931,10 +7656,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -10945,10 +7666,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -10984,56 +7701,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -11048,63 +7717,16 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
     1.0
    ],
    [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -11120,18 +7742,10 @@
     "sim"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -11140,18 +7754,6 @@
    [
     "initialization",
     "lh"
-   ],
-   [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
-   ],
-   [
-    "local_min_limit",
-    5
    ],
    [
     "local_objective_eval",
@@ -11164,10 +7766,6 @@
    [
     "max_iterations",
     10
-   ],
-   [
-    "migrate_every",
-    20
    ],
    [
     "min_objective",
@@ -11186,24 +7784,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -11214,20 +7800,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -11253,16 +7831,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -11271,14 +7841,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -11337,32 +7899,12 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
    ],
    [
-    "step_size",
-    0.2
-   ],
-   [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -11379,10 +7921,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -11393,10 +7931,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [
@@ -11429,56 +7963,8 @@
   "$map",
   [
    [
-    "adaptive",
-    10000
-   ],
-   [
-    "adaptive_abs_tol",
-    0.0
-   ],
-   [
-    "adaptive_n_max",
-    30
-   ],
-   [
-    "adaptive_n_stop",
-    [
-     "$float",
-     "inf"
-    ]
-   ],
-   [
-    "adaptive_rel_tol",
-    0.0
-   ],
-   [
-    "adaptive_step_size",
-    true
-   ],
-   [
-    "archive_size",
-    null
-   ],
-   [
-    "archive_thin_rate",
-    10
-   ],
-   [
     "backup_every",
     1
-   ],
-   [
-    "beta",
-    [
-     1.0
-    ]
-   ],
-   [
-    "beta_max",
-    [
-     "$float",
-     "inf"
-    ]
    ],
    [
     "bngl_backend",
@@ -11493,63 +7979,16 @@
     null
    ],
    [
-    "burn_in",
-    10000
-   ],
-   [
-    "calculate_covari",
-    null
-   ],
-   [
     "cluster_type",
     null
-   ],
-   [
-    "cognitive",
-    1.5
    ],
    [
     "constraint_scale",
     1.0
    ],
    [
-    "continue_run",
-    0
-   ],
-   [
-    "cooling",
-    0.01
-   ],
-   [
-    "credible_intervals",
-    [
-     68.0,
-     95.0
-    ]
-   ],
-   [
-    "crossover_number",
-    3
-   ],
-   [
-    "de_strategy",
-    "rand1"
-   ],
-   [
     "delete_old_files",
     1
-   ],
-   [
-    "delta",
-    1
-   ],
-   [
-    "diagnostics_every",
-    0
-   ],
-   [
-    "exchange_every",
-    20
    ],
    [
     "exp_data",
@@ -11565,18 +8004,10 @@
     "ss"
    ],
    [
-    "gamma_prob",
-    0.1
-   ],
-   [
     "gaussian.target",
     [
      "target.exp"
     ]
-   ],
-   [
-    "hist_bins",
-    10
    ],
    [
     "ind_var_rounding",
@@ -11585,14 +8016,6 @@
    [
     "initialization",
     "lh"
-   ],
-   [
-    "islands",
-    1
-   ],
-   [
-    "lambda",
-    0.1
    ],
    [
     "local_min_limit",
@@ -11611,10 +8034,6 @@
     10
    ],
    [
-    "migrate_every",
-    20
-   ],
-   [
     "min_objective",
     [
      "$float",
@@ -11631,24 +8050,12 @@
     ]
    ],
    [
-    "mutation_factor",
-    0.5
-   ],
-   [
-    "mutation_rate",
-    0.5
-   ],
-   [
     "neg_bin_r",
     24.0
    ],
    [
     "normalization",
     null
-   ],
-   [
-    "num_to_migrate",
-    3
    ],
    [
     "num_to_output",
@@ -11659,20 +8066,12 @@
     "direct_pass"
    ],
    [
-    "outlier_method",
-    "iqr"
-   ],
-   [
     "output_dir",
     "pybnf_output"
    ],
    [
     "output_every",
     20
-   ],
-   [
-    "output_hist_every",
-    100
    ],
    [
     "output_noise_trajectory",
@@ -11698,16 +8097,8 @@
     ]
    ],
    [
-    "particle_weight",
-    0.7
-   ],
-   [
     "population_size",
     10
-   ],
-   [
-    "precondition_adapt",
-    null
    ],
    [
     "random_seed",
@@ -11716,14 +8107,6 @@
    [
     "refine",
     0
-   ],
-   [
-    "rhat_threshold",
-    0.0
-   ],
-   [
-    "sample_every",
-    100
    ],
    [
     "save_best_data",
@@ -11750,30 +8133,6 @@
     null
    ],
    [
-    "simplex_contraction",
-    0.5
-   ],
-   [
-    "simplex_expansion",
-    1.0
-   ],
-   [
-    "simplex_reflection",
-    1.0
-   ],
-   [
-    "simplex_shrink",
-    0.5
-   ],
-   [
-    "simplex_step",
-    1.0
-   ],
-   [
-    "simplex_stop_tol",
-    0.0
-   ],
-   [
     "simulation_dir",
     null
    ],
@@ -11782,32 +8141,12 @@
     1
    ],
    [
-    "snooker_prob",
-    0.1
-   ],
-   [
-    "social",
-    1.5
-   ],
-   [
-    "stablizingCov",
-    0.001
-   ],
-   [
     "starting_params",
     null
    ],
    [
-    "step_size",
-    0.2
-   ],
-   [
     "stochastic_seed",
     "auto"
-   ],
-   [
-    "stop_tolerance",
-    0.002
    ],
    [
     "time_course",
@@ -11824,10 +8163,6 @@
     ]
    ],
    [
-    "v_stop",
-    0.0
-   ],
-   [
     "wall_time_gen",
     3600
    ],
@@ -11838,10 +8173,6 @@
    [
     "worker_nodes",
     null
-   ],
-   [
-    "zeta",
-    1e-06
    ],
    [
     [

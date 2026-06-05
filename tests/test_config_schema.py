@@ -121,21 +121,25 @@ class TestConfigurationBuildConfig:
 
     def test_split_defaults_overrides_and_extras(self):
         raw = {
-            'cooling': 0.3,                       # schema key -> validated override
+            'fit_type': 'sa',                     # sa owns cooling/beta_max
+            'cooling': 0.3,                       # method key -> validated override
             'population_size': 10,                # required user key -> extra
-            'beta_range': [0.1, 1.0],             # method-only key -> extra
+            'beta_range': [0.1, 1.0],             # other method's key -> extra
             ('uniform_var', 'p1'): [-10.0, 10.0],  # free-param tuple key -> extra
             'model.bngl': ['a.exp'],              # model-path key -> extra
         }
         eff = config.Configuration._build_config(raw)
-        # validated schema override + an untouched default
+        # validated method override + an untouched same-schema default
         assert eff['cooling'] == 0.3
-        assert eff['burn_in'] == 10000
+        assert eff['beta_max'] == float('inf')
         # every extra carried through unchanged
         assert eff['population_size'] == 10
         assert eff['beta_range'] == [0.1, 1.0]
         assert eff[('uniform_var', 'p1')] == [-10.0, 10.0]
         assert eff['model.bngl'] == ['a.exp']
+        # narrowing dropped the foreign defaults: an unset MCMC default like burn_in
+        # is no longer present on an sa fit (only sa's own keys + global + extras)
+        assert 'burn_in' not in eff
 
     def test_validation_error_becomes_pybnferror(self):
         with pytest.raises(printing.PybnfError):
@@ -153,7 +157,8 @@ class TestConfigurationBuildConfig:
         # (here, string coercion proves it is the schema, not a raw passthrough).
         eff = config.Configuration._build_config({'fit_type': 'pso', 'cognitive': '2.5'})
         assert eff['cognitive'] == 2.5 and type(eff['cognitive']) is float
-        # and the full PSO default block is still present (union baseline)
+        # and the rest of the PSO default block comes from PSOConfig (its own
+        # schema), not the dropped union baseline
         assert eff['social'] == 1.5
 
     def test_other_methods_keys_pass_through_as_extras(self):
@@ -166,12 +171,15 @@ class TestConfigurationBuildConfig:
 
     def test_de_island_keys_validated_for_de_pass_through_for_ade(self):
         # The DE shared-base split: de owns the island/migration fields (validated
-        # by DifferentialEvolutionConfig); ade uses only the family base, so for
-        # an ade fit those keys ride through as extras (still present via union).
+        # by DifferentialEvolutionConfig); ade uses only the family base, which does
+        # not own them. Under narrowing (ADR-0013) an ade fit carries islands only
+        # when the user sets it (then as an unchanged extra), not as a union default.
         de_eff = config.Configuration._build_config({'fit_type': 'de', 'islands': '4'})
         assert de_eff['islands'] == 4 and type(de_eff['islands']) is int  # schema-coerced
-        ade_eff = config.Configuration._build_config({'fit_type': 'ade', 'islands': 4})
-        assert ade_eff['islands'] == 4  # union default (1) overridden by the extra
+        assert config.Configuration._build_config({'fit_type': 'de'})['islands'] == 1  # de default
+        ade_set = config.Configuration._build_config({'fit_type': 'ade', 'islands': 4})
+        assert ade_set['islands'] == 4  # user-set extra rides through unchanged
+        assert 'islands' not in config.Configuration._build_config({'fit_type': 'ade'})  # narrowed away
 
 
 class TestRegistrySchemaSeam:
@@ -216,16 +224,31 @@ class TestRegistrySchemaSeam:
             'simplex_step', 'simplex_reflection', 'simplex_expansion',
             'simplex_contraction', 'simplex_shrink', 'simplex_stop_tol'}
 
-    def test_simplex_keys_present_for_every_fit_type(self):
-        # The refine->simplex cross-method reach (ADR-0006): a non-simplex fit's
-        # effective config must still carry simplex_* (via default_union), so
-        # _refine_best_fit can run Simplex on it.
-        eff = config.Configuration._build_config({'fit_type': 'de'})
-        assert eff['simplex_step'] == 1.0 and eff['simplex_stop_tol'] == 0.0
+    def test_simplex_group_present_only_when_refine_pulls_it_in(self):
+        # ADR-0013 narrowing: a non-sim fit no longer carries simplex_* by default
+        # (foreign defaults are dropped). refine == 1 pulls in the WHOLE Simplex
+        # schema as a coherent all-or-nothing group, so _refine_best_fit never meets
+        # a half-populated state -- the one cross-fit_type reach, the _REFINER_SCHEMA
+        # seam in config.py.
+        plain = config.Configuration._build_config({'fit_type': 'de'})
+        assert 'simplex_step' not in plain and 'simplex_stop_tol' not in plain
+        refined = config.Configuration._build_config({'fit_type': 'de', 'refine': 1})
+        # all six knobs appear together at their defaults (coherent group)
+        assert refined['simplex_step'] == 1.0 and refined['simplex_stop_tol'] == 0.0
+        assert refined['simplex_reflection'] == 1.0 and refined['simplex_shrink'] == 0.5
+        # a user-set simplex key overrides within the group; the siblings still default
+        over = config.Configuration._build_config(
+            {'fit_type': 'de', 'refine': 1, 'simplex_step': 0.3})
+        assert over['simplex_step'] == 0.3 and over['simplex_contraction'] == 0.5
+        # sim carries the group via its own schema -- no refine needed
+        sim = config.Configuration._build_config({'fit_type': 'sim'})
+        assert sim['simplex_step'] == 1.0
 
     def test_mcmc_leaves_subclass_the_family_and_inherit_the_beta_ladder(self):
         # Step 6: each MCMC code maps to its own leaf model, all subclassing
-        # MCMCFamilyConfig and inheriting the β-ladder postprocess hook.
+        # MCMCFamilyConfig. mh/pt/am inherit the β-ladder postprocess verbatim;
+        # dream/p_dream OVERRIDE it to add the step_size->adaptive_step_size coupling
+        # (ADR-0013), but still run the β-ladder via super().postprocess().
         from pybnf.algorithms.samplers.base import MCMCFamilyConfig
         from pybnf.algorithms.samplers.basic_mcmc import BasicMCMCConfig
         from pybnf.algorithms.samplers.adaptive_mcmc import AdaptiveMCMCConfig
@@ -234,13 +257,19 @@ class TestRegistrySchemaSeam:
         from pybnf.registry import FIT_TYPE_REGISTRY
         # sa is NOT here: M2.2 (ADR-0008) moved it out of the MCMC family into a
         # standalone SimulatedAnnealing optimizer (see test_sa_schema_is_standalone).
-        expected = {'mh': BasicMCMCConfig, 'pt': BasicMCMCConfig,
-                    'am': AdaptiveMCMCConfig, 'dream': DreamConfig, 'p_dream': PDreamConfig}
-        for code, leaf in expected.items():
+        inherit = {'mh': BasicMCMCConfig, 'pt': BasicMCMCConfig, 'am': AdaptiveMCMCConfig}
+        override = {'dream': DreamConfig, 'p_dream': PDreamConfig}
+        for code, leaf in {**inherit, **override}.items():
             assert FIT_TYPE_REGISTRY[code].schema is leaf, code
             assert issubclass(leaf, MCMCFamilyConfig)
-            # the β-ladder is inherited from the family, not the no-op base
+        for leaf in inherit.values():  # β-ladder inherited verbatim
             assert leaf.postprocess.__func__ is MCMCFamilyConfig.postprocess.__func__
+        for leaf in override.values():  # DREAM overrides, but not with the no-op base
+            assert leaf.postprocess.__func__ is not MCMCFamilyConfig.postprocess.__func__
+            assert leaf.postprocess.__func__ is not \
+                config_schema.PyBNFConfigModel.postprocess.__func__
+        # p_dream inherits dream's override (does not re-override)
+        assert PDreamConfig.postprocess.__func__ is DreamConfig.postprocess.__func__
         assert PDreamConfig.__mro__[1] is DreamConfig  # p_dream extends dream
         # the family base carries the hook; PyBNFConfigModel's is the no-op
         assert MCMCFamilyConfig.postprocess.__func__ is not \

@@ -159,6 +159,20 @@ population_size = 10
 max_iterations = 10
 wall_time_sim = 0
 """,
+    # de + refine=1: the refine->simplex overlay (ADR-0013) pulls the whole Simplex
+    # schema into a NON-sim fit as a coherent six-key group. Snapshots the one new
+    # build path narrowing introduces (no simplex_* leak on the plain matrix/de).
+    'matrix/de_refine': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = de
+refine = 1
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+""",
     'matrix/ade': """
 model = gaussian.target : target.exp
 objfunc = direct_pass

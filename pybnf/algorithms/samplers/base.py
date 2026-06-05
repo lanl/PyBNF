@@ -37,10 +37,10 @@ class MCMCFamilyConfig(PyBNFConfigModel):
     :class:`DreamConfig` (dream, in dream.py) and
     :class:`PDreamConfig` (p_dream, in pdream.py). ``neg_bin_r`` stays in
     ``GlobalConfig`` -- an objfunc param read regardless of fit_type. Values are
-    byte-identical to the old global defaults; every leaf is registered, so
-    ``default_union`` still carries every MCMC key for every fit_type. The
-    per-fit_type validity of individual keys is reported by ``check_unused_keys``
-    in ``config.py``.
+    byte-identical to the old global defaults; under narrowing (ADR-0013) these
+    keys appear only in each MCMC fit_type's own effective config. The per-fit_type
+    validity of individual keys is reported by ``check_unused_keys`` in
+    ``config.py``.
     """
 
     step_size: float = 0.2

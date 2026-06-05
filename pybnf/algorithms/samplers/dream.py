@@ -47,6 +47,20 @@ class DreamConfig(MCMCFamilyConfig):
     delta: int = 1
     outlier_method: str = 'iqr'
 
+    @classmethod
+    def postprocess(cls, conf_dict, fit_type):
+        """The MCMC β-ladder (inherited from ``MCMCFamilyConfig``) plus the
+        DREAM-family ``step_size`` coupling (ADR-0013): a user-set ``step_size``
+        pins ``adaptive_step_size`` off. Both keys are owned only by DREAM/P-DREAM,
+        so the coupling is intra-family -- it formerly lived as a global write in
+        ``config.py`` that, post-narrowing, would have stamped an orphan
+        ``adaptive_step_size`` onto any ``mh``/``am``/``sa`` fit that set
+        ``step_size``. ``PDreamConfig`` inherits this (it owns both keys too)."""
+        super().postprocess(conf_dict, fit_type)
+        if 'step_size' in conf_dict:
+            conf_dict['adaptive_step_size'] = False
+        return conf_dict
+
 
 @register_fit_type('dream', family='sampler', display_name='DREAM(ZS)',
                    schema=DreamConfig)

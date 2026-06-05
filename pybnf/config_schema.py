@@ -9,11 +9,15 @@ that base and co-locate with their algorithm classes (M2.1 Stage b, ADR-0006),
 reached by ``Configuration._build_config`` through the registry
 (``FitTypeEntry.schema``).
 
-The effective config stays the **full union** of every method's defaults for
-every fit_type (ADR-0006): :func:`default_union` collects the global defaults
-plus every registered method schema's defaults, so a ``de`` fit still carries
-``cognitive`` / ``particle_weight`` / ... exactly as before. Per-method narrowing
-is deferred to Stage (c).
+Each fit_type's effective config is **narrowed** to the keys that method reads
+(ADR-0013, M2.1 Stage c): ``global defaults + its own method schema (defaults +
+overrides) + extras``, so a ``de`` fit no longer carries ``cognitive`` /
+``particle_weight`` / the MCMC defaults. :func:`default_union` (global defaults
+unioned with every method schema's defaults) is **no longer** the
+``_build_config`` baseline; it survives only behind the ``default_config()``
+compat shim as the "every possible default" view. The one cross-fit_type reach --
+``refine`` pulling in the whole Simplex schema -- is an explicit overlay in
+``Configuration._build_config`` (the ``_REFINER_SCHEMA`` seam).
 
 The flow is ``pyparsing (structural) -> raw dict -> Pydantic (validate / coerce /
 default) -> effective dict``. ``Configuration`` keeps exposing a plain dict
@@ -138,28 +142,28 @@ class GlobalConfig(PyBNFConfigModel):
 
     # --- differential evolution ---
     # Migrated to DEFamilyConfig / DifferentialEvolutionConfig in
-    # algorithms/optimizers/differential_evolution.py (Stage b); still present in
-    # the effective config for every fit_type via default_union().
+    # algorithms/optimizers/differential_evolution.py (Stage b); under narrowing
+    # (ADR-0013) present only in a de/ade fit's effective config.
 
     # --- particle swarm ---
     # Migrated to PSOConfig in algorithms/optimizers/particle_swarm.py (Stage b);
-    # still present in the effective config for every fit_type via default_union().
+    # under narrowing (ADR-0013) present only in a pso fit's effective config.
 
     # --- scatter search ---
     # Migrated to ScatterSearchConfig in algorithms/optimizers/scatter_search.py
-    # (Stage b); still present in the effective config via default_union().
+    # (Stage b); under narrowing (ADR-0013) present only in an ss fit's config.
 
     # --- MCMC samplers ---
-    # Migrated to MCMCFamilyConfig in algorithms/samplers/base.py (Stage b); still
-    # present in the effective config for every fit_type via default_union().
+    # Migrated to MCMCFamilyConfig in algorithms/samplers/base.py (Stage b); under
+    # narrowing (ADR-0013) present only in each MCMC fit_type's own config.
     # neg_bin_r stays here: it is an objfunc/noise param (read when objfunc=neg_bin
     # regardless of fit_type), NOT MCMC-family knowledge.
     neg_bin_r: float = 24.0
 
     # --- simplex ---
     # Migrated to SimplexConfig in algorithms/optimizers/simplex.py (Stage b);
-    # still present in the effective config for every fit_type via default_union()
-    # (the refine->simplex cross-method reach relies on it).
+    # under narrowing (ADR-0013) present in a sim fit's config, or in any fit with
+    # refine == 1 via the refine->simplex overlay (the _REFINER_SCHEMA seam).
 
     # --- failure / wall-time / normalization ---
     max_failed_simulations: int = 100
@@ -176,8 +180,8 @@ class GlobalConfig(PyBNFConfigModel):
     output_noise_trajectory: Any = None
 
     # --- DREAM family ---
-    # Migrated to MCMCFamilyConfig in algorithms/samplers/base.py (Stage b); still
-    # present in the effective config for every fit_type via default_union().
+    # Migrated to MCMCFamilyConfig in algorithms/samplers/base.py (Stage b); under
+    # narrowing (ADR-0013) present only in a dream/p_dream fit's own config.
 
 
 # The config keys the global schema is the source of truth for. Used by
@@ -203,11 +207,12 @@ def default_union():
     """The fully-defaulted config as a plain dict: the global defaults unioned
     with every registered method schema's defaults (ADR-0006).
 
-    This preserves the historical full-union effective config -- every fit_type
-    sees every method's defaults -- even though each method now owns its own
-    fields. Requires the algorithm leaves to be imported so the registry is
-    populated (``config.py`` does a side-effect ``from . import algorithms``);
-    with an empty registry it degrades to the global defaults alone.
+    Historically the ``_build_config`` baseline (every fit_type saw every method's
+    defaults); ADR-0013 narrowing removed it from that role, so this is now only
+    the "every possible default" view behind the ``default_config()`` compat shim,
+    not any fit's effective config. Requires the algorithm leaves to be imported
+    so the registry is populated (``config.py`` does a side-effect ``from . import
+    algorithms``); with an empty registry it degrades to the global defaults alone.
     """
     eff = GlobalConfig().model_dump(by_alias=True)
     for schema in _registered_schemas():

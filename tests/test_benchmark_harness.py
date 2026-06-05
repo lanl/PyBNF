@@ -9,6 +9,13 @@ directly. The equivalence oracle (``benchmark_golden/benchmark_effective_golden
 M2.1 config loader as the oracle (no sampling, so it is fast and simulator-free).
 This is the milestone's whole automated net (real benchmark runs are far too slow
 to gate on); a tiny smoke run covers the subprocess/parse wiring separately.
+
+After a *deliberate* config-loader change (e.g. the ADR-0013 per-fit_type
+narrowing, which drops the foreign defaults these sampler confs used to carry),
+regenerate the oracle from those same pre-migration confs -- recoverable from git
+at ``f618bf9^`` -- run through the *current* loader. Sourcing from the original
+confs (not ``synthesize_conf``) keeps the oracle an independent witness, so the
+equivalence test below cannot pass tautologically.
 """
 
 import json

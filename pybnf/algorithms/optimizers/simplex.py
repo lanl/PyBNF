@@ -32,9 +32,11 @@ class SimplexConfig(PyBNFConfigModel):
     stays in ``config.py`` (cross-config knowledge, ADR-0006 #5). Values are
     byte-identical to the old ``GlobalConfig`` defaults.
 
-    These keys stay in the effective config for *every* fit_type (via
-    ``default_union``): ``_refine_best_fit`` runs Simplex on a non-simplex config
-    and reads ``simplex_*`` -- a live cross-method reach (ADR-0006).
+    The refine->simplex cross-fit_type reach (ADR-0006/0013): ``_refine_best_fit``
+    runs Simplex on a *non*-simplex config and reads ``simplex_*``. Under narrowing
+    these keys are in a ``sim`` fit's config via this schema, and in any other fit
+    with ``refine == 1`` via the whole-schema overlay ``_build_config`` applies (the
+    ``_REFINER_SCHEMA`` seam in ``config.py``).
     """
 
     simplex_step: float = 1.0
