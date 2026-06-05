@@ -32,6 +32,10 @@ class ScatterSearchConfig(PyBNFConfigModel):
 
     local_min_limit: int = 5
 
+    # init_size (-> 10*len(variables)) and reserve_size (-> max_iterations) default at
+    # runtime in __init__, so they are not schema fields but ARE valid ss keys (#401).
+    RUNTIME_KEYS = frozenset({'init_size', 'reserve_size'})
+
 
 @register_fit_type('ss', family='optimizer', display_name='Scatter Search',
                    schema=ScatterSearchConfig)

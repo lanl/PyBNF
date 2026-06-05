@@ -5,6 +5,7 @@ from .context import pset
 from .context import printing
 from .context import raises
 
+import numpy as np
 import operator
 
 
@@ -108,30 +109,45 @@ class TestConfig(object):
         assert c.config['normalization']['par1'] == [('init', [])]
 
     def test_crossover_number_warns_when_ignored(self, monkeypatch):
-        # 'crossover_number' is a DREAM-family key; for am/mh/pt/sa it's unused
-        # and should warn. The beta-ladder preprocessing moved to
-        # MCMCFamilyConfig.postprocess (ADR-0006); drive it and assert the warning
-        # names the key (print1 now resolves in algorithms.samplers.base).
+        # 'crossover_number' is a DREAM-family key; for am it's unused and should
+        # warn. The warning moved out of MCMCFamilyConfig.postprocess into the
+        # unified, schema-derived Configuration.check_unused_keys (#401, ADR-0014);
+        # postprocess now only transforms config. Assert the warning still names the
+        # key, from its new home.
+        import pybnf.config as cfgmod
+        warnings = []
+        monkeypatch.setattr(cfgmod, 'print1', lambda msg, *a, **k: warnings.append(msg))
+        conf = {'fit_type': 'am', 'population_size': 10, 'crossover_number': 3}
+        config.Configuration.check_unused_keys(conf)
+        assert any('crossover_number' in w for w in warnings)
+
+    def test_postprocess_no_longer_warns(self, monkeypatch):
+        # The warn-only branches are gone from postprocess (#401); driving it must
+        # emit no print1 warning, only the beta-ladder transformation.
         from pybnf.algorithms.samplers import base as samplers_base
         from pybnf.algorithms.samplers.base import MCMCFamilyConfig
         warnings = []
         monkeypatch.setattr(samplers_base, 'print1', lambda msg, *a, **k: warnings.append(msg))
-        conf = {'fit_type': 'am', 'population_size': 10, 'crossover_number': 3}
+        conf = {'fit_type': 'am', 'population_size': 10, 'crossover_number': 3,
+                'exchange_every': 5, 'cooling': 0.1}
         MCMCFamilyConfig.postprocess(conf, 'am')
-        assert any('crossover_number' in w for w in warnings)
+        assert warnings == []
+        assert conf['exchange_every'] == np.inf  # transformation still happens
 
-    def test_check_model_checking_tolerates_tuple_keys(self):
-        # CFG-CHECK-1: a free-parameter tuple key (e.g. ('uniform_var','p1')) used
-        # to crash check_unused_keys_model_checking -- first on re.search(regex,
-        # tuple), then on '...%s...' % tuple. With the isinstance(k, str) guard and
-        # % (k,) it must pass through without raising; refine/bootstrap are still
-        # stripped and string model-path keys are untouched.
+    def test_check_tolerates_tuple_keys(self):
+        # CFG-CHECK-1: a free-parameter tuple key (e.g. ('uniform_var','p1')) used to
+        # crash the model-checking unused-key scan -- first on re.search(regex, tuple),
+        # then on '...%s...' % tuple. The isinstance(k, str) guard in _is_unused_key
+        # keeps re.search/% off tuples, so check_unused_keys must not raise; and
+        # _strip_uncheckable_keys removes refine/bootstrap while leaving model-path
+        # and tuple keys untouched.
         conf = {'fit_type': 'check', 'model.bngl': ['a.exp'],
                 ('uniform_var', 'p1'): [-10.0, 10.0], 'refine': 1, 'bootstrap': 1}
-        out = config.Configuration.check_unused_keys_model_checking(conf)
+        out = config.Configuration._strip_uncheckable_keys(conf)
         assert ('uniform_var', 'p1') in out                    # tuple key survives
-        assert 'refine' not in out and 'bootstrap' not in out  # would_crash stripped
+        assert 'refine' not in out and 'bootstrap' not in out  # uncheckable stripped
         assert 'model.bngl' in out                             # model path untouched
+        config.Configuration.check_unused_keys(conf)           # must not raise on the tuple key
 
     # --- _check_variable_correspondence (the config-level free-parameter guard) ---
     # Tricky.bngl declares __FREE params: koff__FREE, __koff2__FREE, kase__FREE, pase__FREE.

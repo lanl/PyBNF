@@ -39,6 +39,11 @@ class BasicMCMCConfig(MCMCFamilyConfig):
 
     exchange_every: Any = 20
 
+    # reps_per_beta is a pt input the beta-ladder postprocess reads (and BasicMCMC's
+    # __init__ reads after it defaults to 1); shared by mh/pt, who share this class and
+    # so share its valid-key surface. Unioned onto the family's beta_range (#401).
+    RUNTIME_KEYS = frozenset({'reps_per_beta'})
+
 
 # Two codes share this class: pt is a working sampler; mh (= pt with
 # exchange_every=inf) is deprecated but still runs. sa was historically a third

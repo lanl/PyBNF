@@ -55,9 +55,13 @@ class MCMCFamilyConfig(PyBNFConfigModel):
     rhat_threshold: float = 0.0       # R-hat / ESS diagnostics live on the base
     diagnostics_every: int = 0
 
+    # beta_range is a user input the beta-ladder postprocess consumes (geomspaces it
+    # into beta_list) rather than a stored field; valid for every MCMC fit (#401).
+    RUNTIME_KEYS = frozenset({'beta_range'})
+
     @classmethod
     def postprocess(cls, conf_dict, fit_type):
-        """The β-ladder (ported verbatim from ``Configuration.postprocess_mcmc_keys``).
+        """The β-ladder (ported from ``Configuration.postprocess_mcmc_keys``).
 
         Algorithms 'mh', 'pt', 'am', 'dream', 'p_dream' have similar but
         non-identical valid config keys; this builds ``beta_list`` / ``reps_per_beta``
@@ -66,28 +70,23 @@ class MCMCFamilyConfig(PyBNFConfigModel):
         raw-presence checks like ``'beta' not in conf_dict`` mean "user did not set
         it"). ``config._build_config`` dispatches this uniformly; non-MCMC models
         inherit the no-op ``postprocess`` from ``PyBNFConfigModel`` (ADR-0006 #3).
+
+        Only the config *transformations* live here now. The per-method unused-key
+        *warnings* this hook used to also emit (``exchange_every``/``reps_per_beta``
+        on non-pt, the sa-only ``cooling``/``beta_max``, the DREAM-only
+        ``crossover_number``/``zeta``/``lambda``/``gamma_prob`` on mh/pt/am) moved to
+        the unified, schema-derived ``Configuration.check_unused_keys`` (#401,
+        ADR-0014), which now warns about every foreign key each MCMC fit does not own
+        -- more precisely than this hook's hand-listed branches did.
         """
-        # Check keys that only work for a subset of the 4 algorithms
+        # exchange_every/reps_per_beta are pt-only; pin them for the non-pt methods
+        # (the warning for a user who set them on a non-pt fit comes from
+        # check_unused_keys now).
         if conf_dict['fit_type'] != 'pt':
-            for k in ['exchange_every', 'reps_per_beta']:
-                if k in conf_dict:
-                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                           % (k, conf_dict['fit_type']))
             conf_dict['exchange_every'] = np.inf
             conf_dict['reps_per_beta'] = 1
         elif 'reps_per_beta' not in conf_dict:
             conf_dict['reps_per_beta'] = 1  # Default value if using pt but didn't specify
-        # cooling/beta_max are sa-only (sa is no longer in this family, ADR-0008),
-        # so they are never valid for the methods that reach this hook.
-        for k in ['cooling', 'beta_max']:
-            if k in conf_dict:
-                print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                       % (k, conf_dict['fit_type']))
-        if conf_dict['fit_type'] in ['mh', 'pt', 'am']:
-            for k in ['crossover_number', 'zeta', 'lambda', 'gamma_prob']:
-                if k in conf_dict:
-                    print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                           % (k, conf_dict['fit_type']))
 
         # Create the starting list of betas based on the various available options. Warn if tried to do something weird
         if 'beta' not in conf_dict and 'beta_range' not in conf_dict:

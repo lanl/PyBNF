@@ -43,6 +43,10 @@ class PSOConfig(PyBNFConfigModel):
     social: float = 1.5
     v_stop: float = 0.0
 
+    # particle_weight_final is a runtime fallback (-> particle_weight when absent, set
+    # in __init__), not a schema default, but it IS a valid pso key (#401).
+    RUNTIME_KEYS = frozenset({'particle_weight_final'})
+
 
 @register_fit_type('pso', family='optimizer', display_name='Particle Swarm Optimization',
                    schema=PSOConfig)

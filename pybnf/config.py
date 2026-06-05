@@ -122,6 +122,24 @@ def reinit_logging(file_prefix, debug=False, log_level_name='info'):
 _REFINER_SCHEMA = SimplexConfig
 
 
+# Non-schema config keys that are valid for *every* fit_type, so they never count as
+# unused (#401, ADR-0014). They are the keys not modeled by any Pydantic schema yet
+# still legitimate: the run selector ``fit_type``; the structural keys ``parse.py``
+# synthesizes (``models``/``exp_data``) or the user supplies (``mutant``); the two
+# required user keys (``population_size``/``max_iterations``); and the two run-level
+# keys consumed outside the typed schema -- ``verbosity`` (read before config is
+# built) and ``postprocess`` (loaded by ``_load_postprocessing``). Model-path keys
+# (matched by the ``*.bngl/xml/ant`` regex) and tuple free-parameter keys are
+# structural too, recognized positionally in ``_is_unused_key`` rather than listed.
+# This set is the schema-free remainder of what the old model-checking ``used``
+# whitelist hand-listed (which mis-spelled ``postprocess`` as ``postprocessing`` and
+# omitted the global-schema keys -- both fixed by deriving from the schema instead).
+STRUCTURAL_PASSTHROUGH = frozenset({
+    'fit_type', 'models', 'exp_data', 'mutant',
+    'population_size', 'max_iterations', 'verbosity', 'postprocess',
+})
+
+
 class Configuration(object):
     def __init__(self, d=None):
         """
@@ -152,8 +170,13 @@ class Configuration(object):
                 "The following configuration keys must be specified:\n\t"+",".join(unspecified_keys))
 
         if d['fit_type'] == 'check':
-            d = self.check_unused_keys_model_checking(d)
-        elif verbosity >= 1:
+            # Model checking cannot run refine or bootstrap; strip them so they do
+            # not crash downstream (always, regardless of verbosity). The unused-key
+            # warning below is the same schema-derived derivation every fit_type uses
+            # -- check just has no method schema, so its valid set is global +
+            # structural (#401, ADR-0014).
+            self._strip_uncheckable_keys(d)
+        if verbosity >= 1:
             self.check_unused_keys(d)
         # The MCMC-family beta-ladder preprocessing now runs inside _build_config
         # as the method schema's postprocess() hook (ADR-0006 #3), dispatched
@@ -287,72 +310,86 @@ class Configuration(object):
         self.config['random_seed'] = int(seed)
 
     @staticmethod
-    def check_unused_keys(conf_dict):
+    def _valid_config_keys(conf_dict):
+        """The config keys the chosen fit_type legitimately reads (#401, ADR-0014).
+
+        Derived entirely from the registry's schemas -- the single source of truth
+        that replaced the hand-maintained ``alg_specific`` dict and the model-checking
+        ``used`` whitelist. It is the union of:
+
+        * the global schema (``GlobalConfig``, run-level keys read for any fit_type);
+        * the selected fit_type's own method schema -- its owned fields *plus* the
+          runtime-defaulted keys it reads but does not model (``schema.valid_keys()``);
+          absent for ``check``, which has no co-located schema, so its valid set is
+          just global + structural;
+        * the refine->simplex group, when ``refine`` pulls in the Simplex refiner on a
+          non-``sim`` fit (the one cross-fit_type reach, ``_REFINER_SCHEMA``);
+        * :data:`STRUCTURAL_PASSTHROUGH` -- the schema-free always-valid keys.
+
+        This is exactly the ownership ``_build_config`` partitions a raw dict by, so
+        "what narrowing keeps" and "what the warning accepts" cannot drift.
         """
-        Gives warnings if the user has specified parameters that will be ignored by the chosen algorithm.
-        :param conf_dict: The config dictionary
-        :return:
-        """
-        alg_specific = {'ade': {'mutation_rate', 'mutation_factor', 'stop_tolerance', 'de_strategy'},
-                        'de': {'islands', 'migrate_every', 'num_to_migrate'},
-                        'pso': {'cognitive', 'social', 'particle_weight', 'particle_weight_final', 'adaptive_n_max',
-                                'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol', 'v_stop'},
-                        'ss': {'init_size', 'local_min_limit', 'reserve_size'},
-                        'mh': {'step_size', 'burn_in', 'sample_every', 'output_hist_every', 'hist_bins',
-                                'credible_intervals', 'beta', 'beta_range', 'exchange_every', 'beta_max', 'cooling',
-                                'crossover_number', 'zeta', 'lambda', 'gamma_prob', 'adaptive', 'time_length',
-                                'archive_size', 'archive_thin_rate', 'snooker_prob',
-                                'delta', 'outlier_method', 'rhat_threshold', 'diagnostics_every',
-                                'precondition_adapt'},
-                        'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
-                                'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',
-                                'simplex_stop_tol'}
-                        }
-        ignored_params = set()
-        thisalg = conf_dict['fit_type']
-        if thisalg in ('pt', 'sa', 'dream', 'p_dream', 'am'):
-            thisalg = 'mh'
-        for alg in alg_specific:
-            if (thisalg != alg
-               and not(alg == 'sim' and Configuration._refine_pulls_in(conf_dict))
-               and not (thisalg == 'de' and alg == 'ade')):
-                ignored_params = ignored_params.union(alg_specific[alg])
-        for k in ignored_params.intersection(set(conf_dict.keys())):
-            print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                            % (k, conf_dict['fit_type']))
-            logger.warning('Ignoring unused key %s for fitting algorithm %s' % (k, conf_dict['fit_type']))
+        keys = set(config_schema.SCHEMA_KEYS) | set(STRUCTURAL_PASSTHROUGH)
+        entry = FIT_TYPE_REGISTRY.get(conf_dict.get('fit_type'))
+        if entry is not None and entry.schema is not None:
+            keys |= entry.schema.valid_keys()
+        if (Configuration._refine_pulls_in(conf_dict)
+                and conf_dict.get('fit_type') != 'sim'):
+            keys |= _REFINER_SCHEMA.valid_keys()
+        return keys
 
     @staticmethod
-    def check_unused_keys_model_checking(conf_dict):
+    def _is_unused_key(k, valid_keys):
+        """True when raw config key ``k`` is unused (ignored) for the fit_type whose
+        ``valid_keys`` were passed: a string key the method does not read and that is
+        not a structural model-path key. A non-string key is a free-parameter tuple
+        (e.g. ``('uniform_var', 'p1')``), which is structural and never unused -- the
+        ``isinstance(k, str)`` guard also keeps ``re.search`` off a tuple (CFG-CHECK-1).
         """
-        Gives warnings if the user has specified parameters that will be ignored by model checking. Uses different
-        logic than the rest of the algorithms because so few keys are used for model checking
-        :param conf_dict: The config dictionary
-        :return: A modified config dictionary, after removing any extraneous keys that would crash PyBNF
-        """
-        used = {'model', 'output_dir', 'simulation_dir', 'fit_type', 'objfunc', 'normalization', 'postprocessing',
-                'verbosity', 'wall_time_sim', 'bng_command', 'sbml_integrator', 'sbml_backend', 'bngl_backend',
-                'sbml_ssa_strict', 'stochastic_seed',
-                'time_course',
-                'param_scan', 'mutant',
-                'models', 'exp_data', 'random_seed'}
-        would_crash = {'refine', 'bootstrap'}
+        if not isinstance(k, str):
+            return False
+        if k in valid_keys:
+            return False
+        # A model-path key (e.g. 'parabola.bngl') is structural, not a config knob.
+        return re.search(r'\.(bngl|xml|ant)', k) is None
 
+    @staticmethod
+    def check_unused_keys(conf_dict):
+        """Warn for each config key the chosen fit_type will ignore.
+
+        A key is unused precisely when it is a non-structural *extra* -- owned by
+        neither the global schema, the fit_type's own method schema (including its
+        runtime keys), nor the refine->simplex group, and not a structural
+        model-path / free-parameter / ``models`` / ``exp_data`` / required key
+        (#401, ADR-0014). This one derivation, off :meth:`_valid_config_keys`,
+        replaced three hand-maintained per-fit_type ownership encodings -- the
+        ``alg_specific`` dict, the model-checking ``used`` whitelist, and the
+        warn-only branches of ``MCMCFamilyConfig.postprocess`` -- so they can no
+        longer drift from what ``_build_config`` narrows to. Runs on the raw config
+        dict before ``_build_config`` (the same dict narrowing partitions), and so
+        covers every fit_type uniformly, ``check`` included.
+        """
+        valid = Configuration._valid_config_keys(conf_dict)
         for k in conf_dict:
-            # Guard the model-path regex with isinstance(k, str): free-parameter
-            # keys are tuples (e.g. ('uniform_var', 'p1')), and re.search on a tuple
-            # raises TypeError -- so fit_type=check + any *_var key used to crash
-            # (CFG-CHECK-1). A non-string key is never a model path, so it falls
-            # through to the unused-key warning, which is correct for check.
-            if k not in used and not (isinstance(k, str) and re.search(r'\.(bngl|xml|ant)', k)):
-                print1('Warning: Configuration key '+str(k)+' is not used in fit_type "check", so I am ignoring it')
-                # % (k,) not % k: a tuple free-param key would otherwise be spread
-                # across the format string as multiple args (TypeError) -- the same
-                # CFG-CHECK-1 tuple-key hazard, one line down.
-                logger.warning('Ignoring unused key %s for fitting algorithm "check"' % (k,))
-        for k in would_crash:
-            if k in conf_dict:
-                del conf_dict[k]
+            if Configuration._is_unused_key(k, valid):
+                # % (k,) (not % k): only string keys reach here, but keep the
+                # single-arg tuple form so the message can never spread a value.
+                print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
+                       % (k, conf_dict['fit_type']))
+                logger.warning('Ignoring unused key %s for fitting algorithm %s'
+                               % (k, conf_dict['fit_type']))
+
+    @staticmethod
+    def _strip_uncheckable_keys(conf_dict):
+        """Remove the keys ``fit_type = check`` cannot honor so they do not crash
+        downstream: ``refine`` and ``bootstrap`` (model checking runs neither). The
+        unused-key *warnings* for check now come from the unified
+        :meth:`check_unused_keys`; this keeps only the crash-prevention deletion the
+        old ``check_unused_keys_model_checking`` also did. Mutates and returns
+        ``conf_dict``.
+        """
+        for k in ('refine', 'bootstrap'):
+            conf_dict.pop(k, None)
         return conf_dict
 
     @staticmethod

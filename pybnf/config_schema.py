@@ -51,7 +51,7 @@ here: ``Configuration`` carries them through as "extras" alongside the dumped
 schema. They gain typed validation as method schemas land in Stage (b).
 """
 
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import os
 
@@ -85,12 +85,43 @@ class PyBNFConfigModel(BaseModel):
         arbitrary_types_allowed=True,
     )
 
+    # Config keys this method's algorithm reads at runtime but does NOT model as a
+    # schema field, because they default at runtime from other state (e.g. scatter
+    # search's ``init_size`` -> ``10*len(variables)``, simplex's
+    # ``simplex_max_iterations`` -> ``max_iterations``) rather than from a fixed
+    # literal -- the schema docstrings explain each exclusion. They are nonetheless
+    # *valid* keys for their fit_type, so ``owned_keys()`` alone would wrongly flag
+    # them as unused; :meth:`valid_keys` unions them in. Each method schema overrides
+    # this with its own set; they merge across the class hierarchy in
+    # :meth:`runtime_keys` (#401, ADR-0014). Declared ``ClassVar`` so pydantic treats
+    # it as a plain class attribute, not a model field (subclasses may override with a
+    # bare assignment -- pydantic keeps the ``ClassVar`` semantics).
+    RUNTIME_KEYS: ClassVar[frozenset] = frozenset()
+
     @classmethod
     def owned_keys(cls):
         """The config-key names (aliases where defined) this model owns."""
         return frozenset(
             (f.alias or name) for name, f in cls.model_fields.items()
         )
+
+    @classmethod
+    def runtime_keys(cls):
+        """The runtime-defaulted config keys this method reads (:data:`RUNTIME_KEYS`),
+        merged across the class hierarchy so a leaf schema's set unions its bases'
+        (e.g. ``BasicMCMCConfig`` adds ``reps_per_beta`` to the MCMC family's
+        ``beta_range``). Reads each class's *own* ``__dict__`` entry so inheritance
+        does not double-count."""
+        return frozenset().union(
+            *(klass.__dict__.get('RUNTIME_KEYS', frozenset()) for klass in cls.__mro__))
+
+    @classmethod
+    def valid_keys(cls):
+        """Every config key this method legitimately reads: its owned schema fields
+        plus its runtime-defaulted keys. The per-fit_type validity unit that
+        ``Configuration.check_unused_keys`` checks a raw key against, replacing the
+        hand-maintained ``alg_specific`` dict (#401, ADR-0014)."""
+        return cls.owned_keys() | cls.runtime_keys()
 
     @classmethod
     def postprocess(cls, conf_dict, fit_type):

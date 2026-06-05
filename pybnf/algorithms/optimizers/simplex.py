@@ -46,6 +46,12 @@ class SimplexConfig(PyBNFConfigModel):
     simplex_shrink: float = 0.5
     simplex_stop_tol: float = 0.0
 
+    # simplex_max_iterations (-> max_iterations) and simplex_log_step are runtime-guarded
+    # (if 'X' in config.config) so they default at runtime, but ARE valid sim keys -- and
+    # valid on any refine == 1 fit via the refine->simplex overlay (#401). simplex_start_point
+    # is omitted: the algorithm sets it itself, so it never appears in a raw config dict.
+    RUNTIME_KEYS = frozenset({'simplex_max_iterations', 'simplex_log_step'})
+
 
 @register_fit_type('sim', family='optimizer', display_name='Simplex',
                    schema=SimplexConfig)
