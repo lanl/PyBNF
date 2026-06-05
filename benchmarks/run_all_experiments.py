@@ -87,7 +87,8 @@ def _print_experiment(title, results):
     if not results:
         print('  (not yet run)')
         return
-    for sampler in ['am', 'dream', 'p_dream']:
+    # Whichever samplers actually produced results, in first-seen order.
+    for sampler in dict.fromkeys(r['sampler'] for r in results):
         runs = [r for r in results if r['sampler'] == sampler and r.get('success')]
         if not runs:
             continue

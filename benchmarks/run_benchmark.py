@@ -22,7 +22,74 @@ import time
 
 import numpy as np
 
-SAMPLERS = ['am', 'dream', 'p_dream']
+# Make pybnf importable when the script is run directly from the repo (so we can
+# enumerate the sampler registry); harmless if pybnf is already installed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+# ---------------------------------------------------------------------------
+# Registry-driven sampler enumeration + config synthesis (ADR-0012)
+# ---------------------------------------------------------------------------
+
+def available_samplers(include_deprecated=True):
+    """Sampler fit_type codes from the registry (``family == 'sampler'``), so a
+    new sampler is benchmarkable with no edit here. Non-deprecated first, then
+    deprecated (still available + correct -- ``mh`` -- just not recommended)."""
+    import pybnf.algorithms  # noqa: F401 -- import side effect populates the registry
+    from pybnf.registry import FIT_TYPE_REGISTRY
+    rows = [(c, e) for c, e in FIT_TYPE_REGISTRY.items() if e.family == 'sampler']
+    active = [c for c, e in rows if not e.deprecated]
+    deprecated = [c for c, e in rows if e.deprecated]
+    return active + (deprecated if include_deprecated else [])
+
+
+def is_deprecated(sampler):
+    """Whether a sampler fit_type is flagged deprecated in the registry."""
+    import pybnf.algorithms  # noqa: F401
+    from pybnf.registry import FIT_TYPE_REGISTRY
+    entry = FIT_TYPE_REGISTRY.get(sampler)
+    return bool(entry and entry.deprecated)
+
+
+def synthesize_conf(bench_dir, sampler, output_dir, cli_overrides=None):
+    """Build the effective ``.conf`` text for a sampler run (ADR-0012): the shared
+    ``target.conf`` with ``fit_type``, ``output_dir``, the optional per-sampler
+    override conf (``<sampler>.conf``), and any CLI overrides applied as key
+    replacements (appended if the key is absent). PyBNF's loader fills the
+    method's remaining defaults from its schema, so most samplers need no override
+    conf at all.
+    """
+    with open(os.path.join(bench_dir, 'target.conf')) as f:
+        lines = f.readlines()
+
+    overrides = {}
+    override_path = os.path.join(bench_dir, '%s.conf' % sampler)
+    if os.path.isfile(override_path):
+        with open(override_path) as f:
+            for ln in f:
+                s = ln.strip()
+                if s and not s.startswith('#') and '=' in s:
+                    overrides[s.split('=')[0].strip()] = s.split('=', 1)[1].strip()
+    overrides['fit_type'] = sampler
+    overrides['output_dir'] = output_dir
+    for k, v in (cli_overrides or {}).items():
+        overrides[k] = str(v)
+
+    # Replace each scalar key in place (free-parameter lines repeat their keyword
+    # and are never in overrides, so they pass through untouched); append the rest.
+    out, applied = [], set()
+    for ln in lines:
+        s = ln.strip()
+        key = s.split('=')[0].strip() if (s and not s.startswith('#') and '=' in s) else None
+        if key in overrides and key not in applied:
+            out.append('%s = %s\n' % (key, overrides[key]))
+            applied.add(key)
+        else:
+            out.append(ln)
+    for k, v in overrides.items():
+        if k not in applied:
+            out.append('%s = %s\n' % (k, v))
+    return ''.join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -59,34 +126,22 @@ def run_single(conf_path, cwd=None, parallel=None, timeout=14400):
 def run_sampler(bench_dir, sampler, replicate, parallel=None, overrides=None,
                 timeout=14400):
     """
-    Run one replicate of a sampler. Adjusts the output_dir in a temporary
-    copy of the .conf so each replicate writes to its own directory.
+    Run one replicate of a sampler. Synthesizes the run config from the shared
+    target.conf + the sampler's optional override conf + a per-replicate
+    output_dir (ADR-0012), so no full per-sampler .conf is needed.
     overrides: dict of config key -> value to override (e.g. {'max_iterations': 200})
     """
-    conf_src = os.path.join(bench_dir, '%s.conf' % sampler)
-    if not os.path.isfile(conf_src):
-        print('  Skipping %s (no .conf file)' % sampler)
+    if not os.path.isfile(os.path.join(bench_dir, 'target.conf')):
+        print('  Skipping %s (no target.conf in %s)' % (sampler, bench_dir))
         return None
 
-    overrides = overrides or {}
     run_output_dir = os.path.join(bench_dir, 'runs', '%s_rep%d' % (sampler, replicate))
-
-    # Create a patched .conf with the per-replicate output_dir
-    conf_patched = os.path.join(run_output_dir, '%s.conf' % sampler)
     os.makedirs(run_output_dir, exist_ok=True)
 
-    override_keys = set(overrides.keys()) | {'output_dir'}
-    with open(conf_src) as f:
-        lines = f.readlines()
+    conf_text = synthesize_conf(bench_dir, sampler, '%s/output/' % run_output_dir, overrides)
+    conf_patched = os.path.join(run_output_dir, '%s.conf' % sampler)
     with open(conf_patched, 'w') as f:
-        for line in lines:
-            key = line.strip().split('=')[0].strip() if '=' in line else ''
-            if key == 'output_dir':
-                f.write('output_dir = %s/output/\n' % run_output_dir)
-            elif key in overrides:
-                f.write('%s = %s\n' % (key, overrides[key]))
-            else:
-                f.write(line)
+        f.write(conf_text)
 
     print('  %s rep %d ...' % (sampler, replicate), end=' ', flush=True)
     elapsed, success = run_single(conf_patched, cwd=bench_dir, parallel=parallel,
@@ -257,11 +312,17 @@ def print_comparison_table(all_metrics):
     print(header)
     print('-' * 90)
 
-    for sampler in SAMPLERS:
+    # Iterate the samplers actually present, in first-seen order; deprecated
+    # samplers (e.g. mh -- available but not recommended) get a '*' marker.
+    samplers_present = list(dict.fromkeys(m['sampler'] for m in all_metrics))
+    any_deprecated = False
+    for sampler in samplers_present:
+        label = sampler + ('*' if is_deprecated(sampler) else '')
+        any_deprecated = any_deprecated or is_deprecated(sampler)
         runs = by_sampler.get(sampler, [])
         successful = [r for r in runs if r.get('success')]
         if not successful:
-            print('%-8s  no successful runs' % sampler)
+            print('%-8s  no successful runs' % label)
             continue
 
         n = len(successful)
@@ -294,8 +355,10 @@ def print_comparison_table(all_metrics):
         samp_str = fmt_mean_std_int('n_samples')
 
         print('%-8s %5d %10s %10s %10s %10s %10s %10s' % (
-            sampler, n, wall_str, rhat_str, ess_str, ess_eval_str, d_str, samp_str))
+            label, n, wall_str, rhat_str, ess_str, ess_eval_str, d_str, samp_str))
 
+    if any_deprecated:
+        print('* deprecated (available and correct, but a more efficient method exists)')
     print('=' * 90)
 
 
@@ -338,7 +401,9 @@ def plot_convergence(all_metrics, output_path):
         print('No trajectory data available for plotting')
         return
 
-    colors = {'am': '#1f77b4', 'dream': '#ff7f0e', 'p_dream': '#d62728'}
+    # Assign a stable color per sampler present (registry-agnostic).
+    cmap = plt.get_cmap('tab10')
+    colors = {s: cmap(i % 10) for i, s in enumerate(by_sampler)}
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
@@ -415,8 +480,9 @@ def main():
                         help='Number of replicates per sampler (default: 5)')
     parser.add_argument('--parallel', '-p', type=int, default=None,
                         help='Number of parallel workers for PyBNF')
-    parser.add_argument('--samplers', '-s', nargs='+', default=SAMPLERS,
-                        help='Which samplers to run (default: am dream p_dream)')
+    parser.add_argument('--samplers', '-s', nargs='+', default=available_samplers(),
+                        help='Which samplers to run (default: all registered samplers, '
+                             'enumerated from the registry)')
     parser.add_argument('--max-iterations', type=int, default=None,
                         help='Override max_iterations in all configs')
     parser.add_argument('--burn-in', type=int, default=None,
