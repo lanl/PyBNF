@@ -83,6 +83,42 @@ def test_sampler_moves_to_mode(tmp_path, fit_type):
     assert rate > 0.3, '%s looks frozen (move rate %.3f)' % (fit_type, rate)
 
 
+@pytest.mark.parametrize('fit_type', list(SAMPLERS))
+def test_same_seed_reproduces_saved_samples(tmp_path, fit_type):
+    """End-to-end reproducibility: a full fit re-run with the same ``random_seed``
+    writes byte-identical samples and best fit. This is the workflow guarantee the
+    default_rng migration must preserve -- same seed -> same saved data -- exercised
+    through the real run loop and output files, not just the proposal math.
+    Per-chain ``SeedSequence.spawn`` keeps it true regardless of the order results
+    come back. (The transitive stochastic-sim case -- reproducible params ->
+    reproducible derived sim seeds -> reproducible trajectories -- is locked by
+    ``test_bngsim_bngl_e2e.test_bngsim_ssa_same_seed_reproduces_trajectory``.)"""
+    mean, var = [1.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+
+    def run(sub):
+        common = dict(burn_in=80, sample_every=2, rhat_threshold=0,
+                      output_hist_every=10 ** 9, hist_bins=10,
+                      output_dir=str(tmp_path / sub), random_seed=4321)
+        if fit_type == 'am':
+            kw = dict(common, population_size=3, max_iterations=240, adaptive=60,
+                      num_bins=10, credible_intervals=[68, 95], step_size=0.6)
+        else:  # dream / p_dream
+            kw = dict(common, population_size=5, max_iterations=240)
+        conf = H.make_config(tmp_path, fit_type, tgt, exp, len(mean), **kw)
+        alg = SAMPLERS[fit_type](conf)
+        H.drive(alg)
+        return (H.read_samples(conf.config['output_dir'], len(mean)),
+                H.best_params(alg, len(mean)))
+
+    samples1, best1 = run('repro_a')
+    samples2, best2 = run('repro_b')
+    assert samples1.size > 0, 'no samples written'
+    assert samples1.shape == samples2.shape
+    np.testing.assert_array_equal(samples1, samples2)
+    np.testing.assert_array_equal(best1, best2)
+
+
 # --------------------------------------------------------------------------- #
 # SLOW: full posterior-moment recovery against the analytical truth
 # --------------------------------------------------------------------------- #

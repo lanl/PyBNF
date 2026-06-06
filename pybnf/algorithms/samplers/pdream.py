@@ -136,7 +136,7 @@ class PDreamAlgorithm(DreamAlgorithm):
         x0_vec = self._param_vec(x0)
 
         # Draw 2*delta donor states from the ZS archive (without replacement)
-        sel = np.random.choice(len(self.archive), 2 * self.delta, replace=False)
+        sel = self.chain_rngs[idx].choice(len(self.archive), 2 * self.delta, replace=False)
 
         # Whiten the donor states
         z_donors = []
@@ -144,15 +144,15 @@ class PDreamAlgorithm(DreamAlgorithm):
             z_donors.append(self._whiten(self._param_vec(self.archive[s])))
 
         # Sample crossover value and mask (in whitened space where dims are independent)
-        cr_idx = np.random.choice(self.ncr_count, p=self.cr_probs)
+        cr_idx = self.chain_rngs[idx].choice(self.ncr_count, p=self.cr_probs)
         cr = self.ncr[cr_idx]
         while True:
-            ds = np.random.uniform(size=self.n_dim) <= cr
+            ds = self.chain_rngs[idx].uniform(size=self.n_dim) <= cr
             if np.any(ds):
                 break
 
         # Gamma selection
-        if np.random.uniform() < self.g_prob:
+        if self.chain_rngs[idx].uniform() < self.g_prob:
             gamma = 1
             ds[:] = True  # mode jump: update all dimensions
         else:
@@ -171,8 +171,8 @@ class PDreamAlgorithm(DreamAlgorithm):
         dz_masked = np.where(ds, dz_total, 0.0)
 
         # Small perturbations in whitened space
-        zeta_z = np.random.normal(0, self.config.config['zeta'], size=self.n_dim)
-        lamb = np.random.uniform(-self.config.config['lambda'], self.config.config['lambda'])
+        zeta_z = self.chain_rngs[idx].normal(0, self.config.config['zeta'], size=self.n_dim)
+        lamb = self.chain_rngs[idx].uniform(-self.config.config['lambda'], self.config.config['lambda'])
 
         # Total jump in whitened space, then transform back to original space
         dz_jump = zeta_z + (1.0 + lamb) * gamma * dz_masked

@@ -1,5 +1,6 @@
 from .context import data, algorithms, pset, config, printing
 
+from types import SimpleNamespace
 import shutil
 import numpy as np
 import numpy.testing as npt
@@ -159,8 +160,8 @@ class TestNewIndividual:
         base + F*(donor_a - donor_b) = ind[0] + F*(ind[1] - ind[2]) per dimension.
         Pins the donor difference (a-b, not b-a) and the F scaling."""
         alg = self._alg(tmp_path, de_strategy='rand1', mutation_factor=0.5)
-        monkeypatch.setattr(np.random, 'choice', lambda n, k, replace=False: np.array([0, 1, 2]))
-        monkeypatch.setattr(np.random, 'random', lambda: 0.0)
+        monkeypatch.setattr(alg, 'rng', SimpleNamespace(
+            choice=lambda n, k, replace=False: np.array([0, 1, 2]), random=lambda: 0.0))
         inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
         mut = alg.new_individual(inds)
         for name in NAMES:
@@ -172,8 +173,8 @@ class TestNewIndividual:
         mutant is base + F*(a-b) + F*(c-d) = ind[0] + F*(ind1-ind2) + F*(ind3-ind4).
         Pins pickn=5 and the two-difference accumulation."""
         alg = self._alg(tmp_path, de_strategy='rand2', mutation_factor=0.5)
-        monkeypatch.setattr(np.random, 'choice', lambda n, k, replace=False: np.array([0, 1, 2, 3, 4]))
-        monkeypatch.setattr(np.random, 'random', lambda: 0.0)
+        monkeypatch.setattr(alg, 'rng', SimpleNamespace(
+            choice=lambda n, k, replace=False: np.array([0, 1, 2, 3, 4]), random=lambda: 0.0))
         inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.)),
                 _wide_pset((0., -1., -2.)), _wide_pset((7., 8., 9.))]
         mut = alg.new_individual(inds)
@@ -187,7 +188,8 @@ class TestNewIndividual:
         every dimension keeps the base value and the mutant is identical to the
         base individual ind[picks[0]] = ind[0]."""
         alg = self._alg(tmp_path, mutation_rate=0.0)
-        monkeypatch.setattr(np.random, 'choice', lambda n, k, replace=False: np.array([0, 1, 2]))
+        monkeypatch.setattr(alg, 'rng', SimpleNamespace(
+            choice=lambda n, k, replace=False: np.array([0, 1, 2]), random=lambda: 0.0))
         inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
         assert alg.new_individual(inds) == inds[0]
 
@@ -198,8 +200,8 @@ class TestNewIndividual:
         leaving distinct donors. Result: base=ind[2], donors ind[1] & ind[0], so
         mutant = ind[2] + F*(ind[1] - ind[0])."""
         alg = self._alg(tmp_path, de_strategy='rand1', mutation_factor=0.5)
-        monkeypatch.setattr(np.random, 'choice', lambda n, k, replace=False: np.array([0, 1, 2]))
-        monkeypatch.setattr(np.random, 'random', lambda: 0.0)
+        monkeypatch.setattr(alg, 'rng', SimpleNamespace(
+            choice=lambda n, k, replace=False: np.array([0, 1, 2]), random=lambda: 0.0))
         inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)), _wide_pset((4., 5., 6.))]
         mut = alg.new_individual(inds, base_index=2)
         for name in NAMES:
@@ -212,8 +214,8 @@ class TestNewIndividual:
         base_index, giving base=ind[2], donors ind[1] & ind[3], so
         mutant = ind[2] + F*(ind[1] - ind[3])."""
         alg = self._alg(tmp_path, de_strategy='rand1', mutation_factor=0.5)
-        monkeypatch.setattr(np.random, 'choice', lambda n, k, replace=False: np.array([0, 1, 3]))
-        monkeypatch.setattr(np.random, 'random', lambda: 0.0)
+        monkeypatch.setattr(alg, 'rng', SimpleNamespace(
+            choice=lambda n, k, replace=False: np.array([0, 1, 3]), random=lambda: 0.0))
         inds = [_wide_pset((1., 2., 3.)), _wide_pset((10., 20., 30.)),
                 _wide_pset((4., 5., 6.)), _wide_pset((-2., -4., -6.))]
         mut = alg.new_individual(inds, base_index=2)

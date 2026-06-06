@@ -66,9 +66,9 @@ class TestNormalFamily:
             assert p.ppf(q) == pytest.approx(stats.norm(5.0, 2.0).ppf(q))
 
     def test_rvs_moments(self):
-        np.random.seed(0)
+        rng = np.random.default_rng(0)
         p = Normal(loc=5.0, sigma=2.0)
-        xs = np.array([p.rvs() for _ in range(50000)])
+        xs = np.array([p.rvs(rng) for _ in range(50000)])
         assert xs.mean() == pytest.approx(5.0, abs=0.05)
         assert xs.std() == pytest.approx(2.0, abs=0.05)
 
@@ -112,7 +112,7 @@ class TestNoPrior:
 
     def test_rvs_and_ppf_raise(self):
         with pytest.raises(PybnfError):
-            NoPrior().rvs()
+            NoPrior().rvs(np.random.default_rng(0))
         with pytest.raises(PybnfError):
             NoPrior().ppf(0.5)
 
@@ -284,9 +284,9 @@ class TestLaplaceSeam:
             assert fp.prior_logpdf(v) == pytest.approx(expected, rel=1e-12, abs=1e-12)
 
     def test_loglaplace_sampling_centered_in_log(self):
-        np.random.seed(0)
+        rng = np.random.default_rng(0)
         fp = pset.FreeParameter('x__FREE', 'loglaplace_var', 2.0, 0.5)
-        logs = np.array([np.log10(fp.sample_value().value) for _ in range(40000)])
+        logs = np.array([np.log10(fp.sample_value(rng).value) for _ in range(40000)])
         assert logs.mean() == pytest.approx(2.0, abs=0.05)
 
     def test_laplace_is_unbounded_no_reflecting_box(self):

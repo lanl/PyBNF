@@ -2,6 +2,9 @@ from .context import pset, raises
 
 import numpy as np
 import pytest
+
+# Shared Generator for the statistical sampling tests (reused across draws).
+_RNG = np.random.default_rng(0)
 from hypothesis import given, strategies as st
 
 
@@ -46,18 +49,18 @@ class TestFreeParameter:
         pset.FreeParameter('var2__FREE', 'loguniform_var', 0.01, 100, value=1000)
 
     def test_distribution(self):
-        xs = [self.p3.sample_value().value for x in range(100000)]
+        xs = [self.p3.sample_value(_RNG).value for x in range(100000)]
         for x in xs:
             assert self.p3.lower_bound <= x < self.p3.upper_bound
-        ys = [self.p0.sample_value().value for x in range(100000)]
+        ys = [self.p0.sample_value(_RNG).value for x in range(100000)]
         assert np.any(np.array(ys) < 0.0)  # normal_var centered at 0 should produce negative values
 
     def test_sample_value(self):
-        p0s = self.p0.sample_value()
+        p0s = self.p0.sample_value(_RNG)
         assert p0s.value is not None
 
     def test_freeparameter_equality(self):
-        p6 = self.p0.sample_value()
+        p6 = self.p0.sample_value(_RNG)
         p0s = self.p0.set_value(p6.value)
         print(p0s, p6)
         assert p6 == p0s

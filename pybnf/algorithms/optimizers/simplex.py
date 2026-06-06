@@ -397,9 +397,9 @@ class SimplexAlgorithm(Algorithm):
                 for v in self.variables:
                     if v.log_space:
                         log_val = np.log10(old_pset[v.name])
-                        perturbed = 10 ** (log_val + np.random.normal(0, 0.01 * scale))
+                        perturbed = 10 ** (log_val + self.rng.normal(0, 0.01 * scale))
                     else:
-                        perturbed = old_pset[v.name] + np.random.normal(0, 0.01 * scale)
+                        perturbed = old_pset[v.name] + self.rng.normal(0, 0.01 * scale)
                     perturbed = max(v.lower_bound, min(v.upper_bound, perturbed))
                     new_vars.append(v.set_value(perturbed))
                 new_pset = PSet(new_vars)

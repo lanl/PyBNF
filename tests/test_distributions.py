@@ -18,6 +18,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from pybnf.pset import FreeParameter, PSet
 from pybnf.algorithms import BayesianAlgorithm
 
+# Shared Generator for the statistical sampling tests (reused across draws so a
+# comprehension still gets distinct samples; the migration routes prior sampling
+# through an explicit rng instead of NumPy's legacy global RNG).
+_RNG = np.random.default_rng(0)
+
 
 # ---------------------------------------------------------------------------
 # Sampling distribution tests
@@ -30,24 +35,24 @@ class TestNormalVarSampling:
         self.p = FreeParameter('x__FREE', 'normal_var', 5.0, 2.0)
 
     def test_sample_returns_freeparameter(self):
-        s = self.p.sample_value()
+        s = self.p.sample_value(_RNG)
         assert isinstance(s, FreeParameter)
         assert s.value is not None
 
     def test_sample_mean(self):
         """Samples should have mean close to p1."""
-        vals = [self.p.sample_value().value for _ in range(50000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(50000)]
         assert abs(np.mean(vals) - 5.0) < 0.1
 
     def test_sample_std(self):
         """Samples should have std close to p2."""
-        vals = [self.p.sample_value().value for _ in range(50000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(50000)]
         assert abs(np.std(vals) - 2.0) < 0.1
 
     def test_sample_can_be_negative(self):
         """Normal distribution centered at 0 should produce negative values."""
         p = FreeParameter('x__FREE', 'normal_var', 0, 1)
-        vals = [p.sample_value().value for _ in range(1000)]
+        vals = [p.sample_value(_RNG).value for _ in range(1000)]
         assert any(v < 0 for v in vals)
 
 
@@ -63,17 +68,17 @@ class TestLognormalVarSampling:
 
     def test_sample_positive(self):
         """All lognormal samples should be positive (10^x > 0)."""
-        vals = [self.p.sample_value().value for _ in range(1000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(1000)]
         assert all(v > 0 for v in vals)
 
     def test_log_sample_mean(self):
         """log10 of samples should have mean close to p1."""
-        vals = [np.log10(self.p.sample_value().value) for _ in range(50000)]
+        vals = [np.log10(self.p.sample_value(_RNG).value) for _ in range(50000)]
         assert abs(np.mean(vals) - 2.0) < 0.1
 
     def test_log_sample_std(self):
         """log10 of samples should have std close to p2."""
-        vals = [np.log10(self.p.sample_value().value) for _ in range(50000)]
+        vals = [np.log10(self.p.sample_value(_RNG).value) for _ in range(50000)]
         assert abs(np.std(vals) - 0.5) < 0.05
 
 
@@ -85,17 +90,17 @@ class TestUniformVarSampling:
 
     def test_sample_within_bounds(self):
         """All uniform samples should be within [p1, p2]."""
-        vals = [self.p.sample_value().value for _ in range(10000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(10000)]
         assert all(2.0 <= v <= 8.0 for v in vals)
 
     def test_sample_mean(self):
         """Uniform samples should have mean close to (p1+p2)/2."""
-        vals = [self.p.sample_value().value for _ in range(50000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(50000)]
         assert abs(np.mean(vals) - 5.0) < 0.1
 
     def test_sample_covers_range(self):
         """Samples should cover the full range."""
-        vals = [self.p.sample_value().value for _ in range(10000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(10000)]
         assert min(vals) < 3.0
         assert max(vals) > 7.0
 
@@ -112,18 +117,18 @@ class TestLoguniformVarSampling:
 
     def test_sample_within_bounds(self):
         """All loguniform samples should be within [p1, p2]."""
-        vals = [self.p.sample_value().value for _ in range(10000)]
+        vals = [self.p.sample_value(_RNG).value for _ in range(10000)]
         assert all(0.01 <= v <= 100.0 for v in vals)
 
     def test_log_sample_mean(self):
         """log10 of samples should have mean close to (log10(p1)+log10(p2))/2."""
-        vals = [np.log10(self.p.sample_value().value) for _ in range(50000)]
+        vals = [np.log10(self.p.sample_value(_RNG).value) for _ in range(50000)]
         expected_mean = (np.log10(0.01) + np.log10(100.0)) / 2.0  # = 0.0
         assert abs(np.mean(vals) - expected_mean) < 0.05
 
     def test_log_sample_uniform(self):
         """log10 of samples should be approximately uniform."""
-        vals = [np.log10(self.p.sample_value().value) for _ in range(50000)]
+        vals = [np.log10(self.p.sample_value(_RNG).value) for _ in range(50000)]
         # Check that the distribution is roughly flat by comparing quartiles
         q25, q75 = np.percentile(vals, [25, 75])
         expected_q25 = np.log10(0.01) + 0.25 * (np.log10(100.0) - np.log10(0.01))  # = -1.0

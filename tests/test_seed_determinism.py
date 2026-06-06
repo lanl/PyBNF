@@ -10,7 +10,6 @@ regardless of the order results are fed to got_result) vs order-dependent.
 
 from .context import data, algorithms, config
 from unittest.mock import patch
-import numpy as np
 import os
 import shutil
 
@@ -48,6 +47,13 @@ def _proposal_fingerprint(psets):
     return [_pset_values(p) for p in psets]
 
 
+def _unordered_fingerprint(psets):
+    """Order-insensitive fingerprint: the *set* of per-chain proposals, ignoring the
+    order they were emitted in. Used to check that two result-feed orders produce the
+    same per-chain proposals (the proposals still come out in feed order)."""
+    return sorted(_pset_values(p) for p in psets)
+
+
 def _feed_results(algo, start_psets, scores, order):
     """
     Feed results to the algorithm in the given order.
@@ -83,12 +89,17 @@ _BASE_MODEL = {
 
 
 def _make_algo(seed, algo_class, extra_config):
-    """Seed RNG, create config + algorithm, return (algo, start_psets)."""
-    np.random.seed(seed)
+    """Create seeded config + algorithm, return (algo, start_psets).
+
+    The seed is passed via ``config['random_seed']`` so each algorithm builds its
+    own ``np.random.Generator`` (default_rng) in ``Algorithm.__init__``; NumPy's
+    legacy global RNG is no longer used.
+    """
     cfg_dict = {}
     cfg_dict.update(_BASE_VARS)
     cfg_dict.update(_BASE_MODEL)
     cfg_dict.update(extra_config)
+    cfg_dict['random_seed'] = seed
     out_dir = cfg_dict.get('output_dir', '')
     if out_dir:
         os.makedirs(os.path.join(out_dir, 'Results'), exist_ok=True)
@@ -160,7 +171,6 @@ def _make_p_dream(seed):
 
 
 def _make_am(seed):
-    np.random.seed(seed)
     cfg_dict = {}
     cfg_dict.update(_BASE_VARS)
     cfg_dict.update(_BASE_MODEL)
@@ -169,6 +179,7 @@ def _make_am(seed):
         'output_hist_every': 100, 'sample_every': 2, 'burn_in': 3,
         'adaptive': 5,
         'credible_intervals': [68, 95], 'num_bins': 10,
+        'random_seed': seed,
         'fit_type': 'am', 'output_dir': 'test_seed_am'})
     out_dir = 'test_seed_am'
     os.makedirs(os.path.join(out_dir, 'Results'), exist_ok=True)
@@ -184,7 +195,6 @@ def _make_am(seed):
 
 def _make_simplex(seed):
     """Simplex uses var/logvar types, not uniform_var."""
-    np.random.seed(seed)
     cfg_dict = {
         ('var', 'v1__FREE'): [5., 1.0],
         ('var', 'v2__FREE'): [5., 1.0],
@@ -193,6 +203,7 @@ def _make_simplex(seed):
     cfg_dict.update(_BASE_MODEL)
     cfg_dict.update({
         'population_size': 3, 'max_iterations': 20,
+        'random_seed': seed,
         'fit_type': 'sim', 'output_dir': 'test_seed_simplex'})
     os.makedirs(os.path.join('test_seed_simplex', 'Results'), exist_ok=True)
     with _no_bng, _no_init:
@@ -432,6 +443,87 @@ class TestResultOrderIndependence:
         assert len(proposals_fwd) == len(proposals_rev)
         assert _proposal_fingerprint(proposals_fwd) == _proposal_fingerprint(proposals_rev)
 
+    def test_mh_order_independent(self):
+        """Per-chain RNG (SeedSequence.spawn) makes MH order-independent.
+
+        Each chain's accept/proposal draws now come from its own spawned Generator
+        (``chain_rngs[index]``), so chain ``i``'s proposal depends only on chain
+        ``i`` -- not on when, relative to the other chains, its result was processed.
+        The proposals are still *emitted* in feed order, so we compare the unordered
+        set. (Before the default_rng migration the chains shared one global stream
+        and this was order-DEPENDENT.)"""
+        scores = [42.] * 4
+        forward = list(range(4))
+        reverse = list(reversed(range(4)))
+
+        algo1, psets1 = _make_mh(seed=99)
+        proposals_fwd = _feed_results(algo1, psets1, scores, forward)
+
+        algo2, psets2 = _make_mh(seed=99)
+        proposals_rev = _feed_results(algo2, psets2, scores, reverse)
+
+        assert len(proposals_fwd) == len(proposals_rev) > 0
+        assert _unordered_fingerprint(proposals_fwd) == _unordered_fingerprint(proposals_rev)
+
+    def test_pt_order_independent(self):
+        """Parallel tempering: per-chain RNG makes the per-result accept/proposal
+        draws order-independent too (replica exchange, a cross-chain step, draws from
+        the root rng only at the sync barrier where all results are already in)."""
+        scores = [42.] * 4
+        forward = list(range(4))
+        reverse = list(reversed(range(4)))
+
+        algo1, psets1 = _make_pt(seed=99)
+        proposals_fwd = _feed_results(algo1, psets1, scores, forward)
+
+        algo2, psets2 = _make_pt(seed=99)
+        proposals_rev = _feed_results(algo2, psets2, scores, reverse)
+
+        assert len(proposals_fwd) == len(proposals_rev) > 0
+        assert _unordered_fingerprint(proposals_fwd) == _unordered_fingerprint(proposals_rev)
+
+
+class TestChainRngSpawn:
+    """The per-chain spawn design: each parallel chain gets its own independent,
+    deterministic Generator, indexed by a stable chain index."""
+
+    @classmethod
+    def setup_class(cls):
+        _cleanup()
+
+    @classmethod
+    def teardown_class(cls):
+        _cleanup()
+
+    def test_chain_rngs_deterministic_and_distinct(self):
+        """Same seed -> identical per-chain streams; different chains -> distinct
+        streams. This is what makes the parallel samplers reproducible regardless of
+        dask completion order."""
+        algo1, _ = _make_dream(seed=99)
+        algo2, _ = _make_dream(seed=99)
+
+        assert len(algo1.chain_rngs) == algo1.num_parallel
+        # Same seed reproduces each chain's stream exactly...
+        first1 = [r.random() for r in algo1.chain_rngs]
+        first2 = [r.random() for r in algo2.chain_rngs]
+        assert first1 == first2
+        # ...and the chains are independent of one another (no two share a stream).
+        assert len(set(first1)) == len(first1)
+
+    def test_chain_rngs_reseed_on_bootstrap(self):
+        """A bootstrap reset re-spawns the chain Generators to an independent,
+        deterministic sub-stream (distinct from the main fit)."""
+        algo, _ = _make_dream(seed=99)
+        main_first = [r.random() for r in algo.chain_rngs]
+        algo.reset(bootstrap=0)
+        boot_first = [r.random() for r in algo.chain_rngs]
+        # Reproducible: a fresh algo reset to the same replicate matches.
+        algo_b, _ = _make_dream(seed=99)
+        algo_b.reset(bootstrap=0)
+        assert boot_first == [r.random() for r in algo_b.chain_rngs]
+        # Distinct from the main fit's chains.
+        assert boot_first != main_first
+
 
 class TestResultOrderDependence:
     """
@@ -501,38 +593,6 @@ class TestResultOrderDependence:
         # MH acceptance consumes random numbers per-result before the generation
         # boundary. With identical scores the acceptance draws may not change the
         # outcome, so we do not assert inequality here — just that both run.
-
-    def test_mh_order_dependent(self):
-        """BasicBayesMCMC draws random numbers for acceptance AND proposal on every got_result."""
-        scores = [42.] * 4
-        forward = list(range(4))
-        reverse = list(reversed(range(4)))
-
-        algo1, psets1 = _make_mh(seed=99)
-        proposals_fwd = _feed_results(algo1, psets1, scores, forward)
-
-        algo2, psets2 = _make_mh(seed=99)
-        proposals_rev = _feed_results(algo2, psets2, scores, reverse)
-
-        assert len(proposals_fwd) > 0
-        assert len(proposals_rev) > 0
-        assert _proposal_fingerprint(proposals_fwd) != _proposal_fingerprint(proposals_rev)
-
-    def test_pt_order_dependent(self):
-        """Parallel tempering: same as MH, acceptance draws per-result."""
-        scores = [42.] * 4
-        forward = list(range(4))
-        reverse = list(reversed(range(4)))
-
-        algo1, psets1 = _make_pt(seed=99)
-        proposals_fwd = _feed_results(algo1, psets1, scores, forward)
-
-        algo2, psets2 = _make_pt(seed=99)
-        proposals_rev = _feed_results(algo2, psets2, scores, reverse)
-
-        assert len(proposals_fwd) > 0
-        assert len(proposals_rev) > 0
-        assert _proposal_fingerprint(proposals_fwd) != _proposal_fingerprint(proposals_rev)
 
     def test_p_dream_order_dependent(self):
         """DREAM(ZSP) inherits DREAM's per-result MH acceptance draw."""

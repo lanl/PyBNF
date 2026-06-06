@@ -1,4 +1,5 @@
 from .context import data, algorithms, pset, config, printing, raises
+from types import SimpleNamespace
 from os import mkdir
 from shutil import rmtree
 from copy import deepcopy
@@ -220,7 +221,8 @@ class TestScatterSearchUpdate:
         refvals = [(10., 20., 30.), (40., 50., 60.), (12., 24., 33.)]
         ss, refs, last_child = self._primed(tmp_path, refvals, [1., 2., 3.], child_score=100.,
                                             population_size=3)
-        monkeypatch.setattr(np.random, 'uniform', lambda lb, ub: (lb + ub) / 2.)
+        # add_rand now computes lb + (ub-lb)*rng.random(); random()=0.5 -> midpoint.
+        monkeypatch.setattr(ss, 'rng', SimpleNamespace(random=lambda *a, **k: 0.5))
         res = algorithms.Result(last_child, self.d1s, last_child.name); res.score = 100.
         query = ss.got_result(res)
 

@@ -151,6 +151,36 @@ def test_bngsim_bngl_ssa_steady_state_distribution(tmp_path):
     )
 
 
+def test_bngsim_ssa_same_seed_reproduces_trajectory(tmp_path):
+    """End-to-end stochastic reproducibility under ``stochastic_seed=auto``.
+
+    The per-run simulator seed is derived as a SHA-256 content hash of the
+    parameter set + replicate index (pybnf/_seed.py), NOT drawn from NumPy's RNG.
+    So the SAME params at the SAME replicate index reproduce the SAME stochastic
+    trajectory, while a different replicate index derives a different seed and a
+    different trajectory. The default_rng migration leaves ``_seed.py`` untouched
+    and makes the algorithm RNG deterministic (test_seed_determinism), so a full
+    stochastic fit re-run with the same ``random_seed`` reproduces its saved data
+    end to end: deterministic proposals -> deterministic derived sim seeds ->
+    deterministic trajectories."""
+    net_path = FIXTURES / 'e2e_ssa_birthdeath.net'
+
+    def run(prefix, replicate):
+        model = _bngsim_bngl_model(net_path, _ssa_birthdeath_actions())
+        model.param_set = pset.PSet([])
+        model._pybnf_replicate_index = replicate   # absent policy attr defaults to 'auto'
+        return model.execute(str(tmp_path), prefix, 60)['tc'].data
+
+    rep0_a = run('rep0_a', 0)
+    rep0_b = run('rep0_b', 0)
+    rep1 = run('rep1', 1)
+
+    # Same params + same replicate index -> identical derived seed -> identical run.
+    np.testing.assert_array_equal(rep0_a, rep0_b)
+    # A different replicate index derives a different seed -> a different trajectory.
+    assert not np.array_equal(rep0_a, rep1)
+
+
 # ---------------------------------------------------------------- PSA -----
 
 # Pure first-order production: N(t) is a Poisson process with mean and

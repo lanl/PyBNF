@@ -29,8 +29,8 @@ class Normal(Prior):
     def logpdf(self, u):
         return float(self.frozen.logpdf(u))
 
-    def rvs(self):
-        return self.frozen.rvs()
+    def rvs(self, rng):
+        return self.frozen.rvs(random_state=rng)
 
     def ppf(self, q):
         return float(self.frozen.ppf(q))

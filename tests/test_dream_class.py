@@ -8,6 +8,23 @@ import shutil
 from scipy import stats
 
 
+class _PinnedChoiceRng:
+    """Real Generator with choice() pinned to a fixed donor-index array, delegating
+    all other draws. Stands in for a chain's Generator (whose methods are read-only)
+    when a test needs to freeze archive donor selection."""
+
+    def __init__(self, indices, seed=0):
+        self._idx = np.array(indices)
+        self._g = np.random.default_rng(seed)
+
+    def choice(self, *a, **k):
+        return self._idx
+
+    def __getattr__(self, name):
+        return getattr(self._g, name)
+
+
+
 class TestDream:
     @classmethod
     def setup_class(cls):
@@ -260,7 +277,7 @@ class TestResetOutliers:
             + [_normal_pset((1., 1., 1.)) for _ in range(5)]
         da.ln_current_P = [-1000.0] + healthy_means
 
-        np.random.seed(0)
+        da.rng = np.random.default_rng(0)
         da.detect_and_reset_outliers()
 
         # Chain 0 was reset to one of the healthy chains (its ln-posterior and
@@ -305,16 +322,15 @@ class TestSnookerProposal:
         so (xp - x0) is parallel to (x0 - zc) for any gamma_s. Oracle: the cross
         product of the two vectors is zero. Donor selection is pinned so zc is
         archive[0]."""
-        monkeypatch.setattr(np.random, 'choice', lambda *a, **k: np.array([0, 1, 2]))
         x0 = _normal_pset((0.30, 0.10, -0.20))
         A = _normal_pset((1.00, 0.50, -0.40))     # zc (reference)
         B = _normal_pset((0.40, -0.30, 0.60))     # za
         C = _normal_pset((-0.50, 0.20, 0.10))     # zb
         da = self._dream_with_archive(tmp_path, x0, [A, B, C])
+        da.chain_rngs[0] = _PinnedChoiceRng([0, 1, 2])   # pin donor selection
 
         x0_vec = da._param_vec(x0)
         zc_vec = da._param_vec(A)
-        np.random.seed(1)
         prop, _ = da.calculate_snooker_pset(0)
         jump = da._param_vec(prop) - x0_vec
         np.testing.assert_allclose(np.cross(jump, x0_vec - zc_vec),
@@ -325,15 +341,14 @@ class TestSnookerProposal:
         ||x0 - zc||) — the snooker Jacobian term (ter Braak & Vrugt 2008).
         Verified against the actually-proposed point. A dropped (d-1) factor or
         an inverted ratio fails."""
-        monkeypatch.setattr(np.random, 'choice', lambda *a, **k: np.array([0, 1, 2]))
         x0 = _normal_pset((0.30, 0.10, -0.20))
         A = _normal_pset((1.00, 0.50, -0.40))
         B = _normal_pset((0.40, -0.30, 0.60))
         C = _normal_pset((-0.50, 0.20, 0.10))
         da = self._dream_with_archive(tmp_path, x0, [A, B, C])
+        da.chain_rngs[0] = _PinnedChoiceRng([0, 1, 2])   # pin donor selection
 
         x0_vec, zc_vec = da._param_vec(x0), da._param_vec(A)
-        np.random.seed(2)
         prop, log_corr = da.calculate_snooker_pset(0)
         xp_vec = da._param_vec(prop)
         expected = (da.n_dim - 1) * np.log(np.linalg.norm(xp_vec - zc_vec)
@@ -344,11 +359,11 @@ class TestSnookerProposal:
         """When the reference donor coincides with the current point the snooker
         axis has zero length (axis_norm_sq < 1e-20); the method must bail out
         with (None, 0.0) rather than dividing by zero."""
-        monkeypatch.setattr(np.random, 'choice', lambda *a, **k: np.array([0, 1, 2]))
         x0 = _normal_pset((0.30, 0.10, -0.20))
         zc = _normal_pset((0.30, 0.10, -0.20))     # identical to x0 -> zero axis
         B = _normal_pset((0.40, -0.30, 0.60))
         da = self._dream_with_archive(tmp_path, x0, [zc, B, B])
+        da.chain_rngs[0] = _PinnedChoiceRng([0, 1, 2])   # pin donor selection
         prop, log_corr = da.calculate_snooker_pset(0)
         assert prop is None and log_corr == 0.0
 
@@ -381,7 +396,7 @@ class TestDreamProposal:
 
         seen_plus = seen_minus = False
         for s in range(40):
-            np.random.seed(s)
+            da.chain_rngs[0] = np.random.default_rng(s)
             prop, _ = da.calculate_new_pset(0)
             jump = da._param_vec(prop) - x0_vec
             cp, cm = np.allclose(jump, D, atol=1e-9), np.allclose(jump, -D, atol=1e-9)
@@ -405,7 +420,7 @@ class TestDreamProposal:
         D = step * (da._param_vec(A) - da._param_vec(B))
         x0_vec = da._param_vec(x0)
         for s in range(20):
-            np.random.seed(s)
+            da.chain_rngs[0] = np.random.default_rng(s)
             prop, _ = da.calculate_new_pset(0)
             jump = da._param_vec(prop) - x0_vec
             assert np.allclose(jump, D, atol=1e-9) or np.allclose(jump, -D, atol=1e-9)
@@ -419,7 +434,7 @@ class TestDreamProposal:
         da = algorithms.DreamAlgorithm(cfg)
         da.current_pset = [_uniform_pset((5.0, 5.0, 5.0))]
         da.archive = [_uniform_pset((9.9, 9.9, 9.9)), _uniform_pset((0.1, 0.1, 0.1))]
-        np.random.seed(0)
+        da.chain_rngs[0] = np.random.default_rng(0)
         prop, cr_idx = da.calculate_new_pset(0)
         assert prop is None
         assert isinstance(cr_idx, (int, np.integer))
@@ -450,7 +465,7 @@ class TestDreamDrivenRun:
         d1s.data = d1s._read_file_lines(
             ['# time v1_result v2_result v3_result\n', ' 1 2.1 3.1 6.1\n'], r'\s+')
 
-        np.random.seed(12345)
+        score_rng = np.random.default_rng(12345)
         current = psets
         # Run until every chain has passed iteration 20 (two thin events at 10, 20).
         guard = 0
@@ -459,7 +474,7 @@ class TestDreamDrivenRun:
             nxt = None
             for ps in current:
                 res = algorithms.Result(ps, d1s, ps.name)
-                res.score = float(np.random.uniform(5, 15))
+                res.score = float(score_rng.uniform(5, 15))
                 out = da.got_result(res)
                 if isinstance(out, list) and out:
                     nxt = out

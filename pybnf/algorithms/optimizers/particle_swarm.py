@@ -219,8 +219,8 @@ class ParticleSwarm(Algorithm):
         self.swarm[p][1] = \
             {v.name:
                 w * self.swarm[p][1][v.name] +
-                self.c1 * np.random.random() * self.bests[p][0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name)) +
-                self.c2 * np.random.random() * self.global_best[0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name))
+                self.c1 * self.rng.random() * self.bests[p][0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name)) +
+                self.c2 * self.rng.random() * self.global_best[0].get_param(v.name).diff(self.swarm[p][0].get_param(v.name))
             for v in self.variables}
 
         # Manually check to determine if reflection occurred (i.e. attempted assigning of variable outside its bounds)
@@ -242,7 +242,7 @@ class ParticleSwarm(Algorithm):
         # This could come up in practice if all parameters have hit a box constraint.
         # As a simple workaround, perturb the parameters slightly
         while new_pset in self.pset_map:
-            new_pset = PSet([v.add_rand(-1e-6, 1e-6) for v in self.swarm[p][0]])
+            new_pset = PSet([v.add_rand(-1e-6, 1e-6, self.rng) for v in self.swarm[p][0]])
 
         self.pset_map[new_pset] = p
 

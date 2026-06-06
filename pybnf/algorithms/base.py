@@ -137,6 +137,51 @@ class Algorithm(ABC):
         self.calc_future = None  # Created during Algorithm.run()
         self.refine = False
 
+        # Random number generation. Every algorithm owns its own
+        # np.random.Generator (PCG64) seeded from the run's resolved seed; the
+        # legacy global np.random (MT19937) is no longer used. The seed was
+        # resolved + logged by pybnf._initialize_random_seed before construction.
+        self._init_rng()
+
+    def _init_rng(self):
+        """Build this algorithm's random streams from the resolved config seed.
+
+        ``self.rng`` is the root Generator used for algorithm-level draws and for
+        cross-chain coordination (replica exchange, outlier reset) that happens at
+        deterministic synchronization barriers. ``self._seed_sequence`` spawns
+        independent per-chain Generators on demand (:meth:`spawn_chain_rngs`).
+        """
+        self._base_seed = self.config.config['random_seed']
+        self._reseed(np.random.SeedSequence(self._base_seed))
+
+    def _reseed(self, seed_sequence):
+        """Point this algorithm's RNG at a (possibly fresh) SeedSequence.
+
+        Used both at construction and per bootstrap replicate, where each replicate
+        gets an independent, deterministic sub-stream so its fit is reproducible
+        from the run seed yet distinct across replicates.
+        """
+        self._seed_sequence = seed_sequence
+        self.rng = np.random.default_rng(seed_sequence)
+
+    def spawn_chain_rngs(self, n):
+        """Return ``n`` independent Generators, one per parallel chain/replica.
+
+        Spawning is deterministic in ``(seed, n)``, so chain ``i`` always draws
+        from the same stream regardless of the order in which dask returns its
+        results. This is what makes the parallel samplers reproducible under
+        nondeterministic scheduling -- a single shared stream would interleave by
+        completion order and so would not reproduce run to run.
+        """
+        return [np.random.default_rng(s) for s in self._seed_sequence.spawn(n)]
+
+    def _rebuild_chain_rngs(self):
+        """Hook: rebuild any per-chain Generators after a :meth:`_reseed`.
+
+        A no-op for the single-root-Generator optimizers; :class:`BayesianAlgorithm`
+        overrides it to re-spawn its ``chain_rngs`` list.
+        """
+
     def reset(self, bootstrap):
         """
         Resets the Algorithm, keeping loaded variables and models
@@ -166,6 +211,13 @@ class Algorithm(ABC):
                     except OSError:
                         logger.error('Failed to remove bootstrap directory '+boot_dir)
                 os.mkdir(boot_dir)
+
+            # Give this bootstrap replicate an independent, deterministic RNG
+            # sub-stream (keyed by the replicate number) so the replicate's fit --
+            # and its resampled data weights -- are reproducible from the run seed
+            # yet distinct from the main fit and from every other replicate.
+            self._reseed(np.random.SeedSequence(self._base_seed, spawn_key=(bootstrap + 1,)))
+            self._rebuild_chain_rngs()
 
         self.best_fit_obj = None
 
@@ -679,7 +731,7 @@ class Algorithm(ABC):
         logger.debug("Generating a randomly distributed PSet")
         pset_vars = []
         for var in self.variables:
-            pset_vars.append(var.sample_value())
+            pset_vars.append(var.sample_value(self.rng))
         return PSet(pset_vars)
 
     def random_latin_hypercube_psets(self, n):
@@ -697,7 +749,7 @@ class Algorithm(ABC):
         num_uniform_vars = sum(1 for var in self.variables if var.has_bounded_support)
 
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
-        rands = latin_hypercube(n, num_uniform_vars)
+        rands = latin_hypercube(n, num_uniform_vars, self.rng)
         psets = []
 
         for row in rands:
@@ -710,7 +762,7 @@ class Algorithm(ABC):
                     pset_vars.append(var.value_from_quantile(row[rowindex]))
                     rowindex += 1
                 else:
-                    pset_vars.append(var.sample_value())
+                    pset_vars.append(var.sample_value(self.rng))
             psets.append(PSet(pset_vars))
         return psets
 
@@ -1157,20 +1209,22 @@ class Algorithm(ABC):
         self.output_results('end')
 
 
-def latin_hypercube(nsamples, ndims):
+def latin_hypercube(nsamples, ndims, rng):
     """
     Latin hypercube sampling.
 
     Returns a nsamples by ndims array, with entries in the range [0,1]
     You'll have to rescale them to your actual param ranges.
+
+    ``rng`` is the caller's np.random.Generator (the algorithm's root rng).
     """
     if ndims == 0:
         # Weird edge case - needed for other code counting on result having a number of rows
         return np.zeros((nsamples, 0))
-    value_table = np.transpose(np.array([[i/nsamples + 1/nsamples * np.random.random() for i in range(nsamples)]
+    value_table = np.transpose(np.array([[i/nsamples + 1/nsamples * rng.random() for i in range(nsamples)]
                                          for dim in range(ndims)]))
     for dim in range(ndims):
-        np.random.shuffle(value_table[:, dim])
+        rng.shuffle(value_table[:, dim])
     return value_table
 
 

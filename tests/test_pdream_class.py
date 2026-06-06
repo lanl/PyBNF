@@ -382,9 +382,9 @@ class TestCalculateNewPset:
         assert pd._preconditioned is False
         assert pd._cov_L is None and pd._cov_L_inv is None   # nothing to dot with
 
-        np.random.seed(2024)
+        pd.chain_rngs[0] = np.random.default_rng(2024)
         prop_pd, cr_pd = pd.calculate_new_pset(0)
-        np.random.seed(2024)
+        pd.chain_rngs[0] = np.random.default_rng(2024)
         prop_base, cr_base = algorithms.DreamAlgorithm.calculate_new_pset(pd, 0)
 
         assert cr_pd == cr_base
@@ -423,7 +423,7 @@ class TestCalculateNewPset:
 
         seen_plus = seen_minus = False
         for s in range(40):
-            np.random.seed(s)
+            pd.chain_rngs[0] = np.random.default_rng(s)
             prop, _ = pd.calculate_new_pset(0)
             jump = pd._param_vec(prop) - x0_vec
             # The jump equals +D or -D regardless of the (non-identity) L.
@@ -454,7 +454,7 @@ class TestCalculateNewPset:
         pd.current_pset = [x0]
         pd.archive = [A, B]
 
-        np.random.seed(3)
+        pd.chain_rngs[0] = np.random.default_rng(3)
         prop, cr_idx = pd.calculate_new_pset(0)
         assert prop is None
         assert isinstance(cr_idx, (int, np.integer))

@@ -53,6 +53,22 @@ UNIFORM_VARS = {
 _KEYS = ('v1__FREE', 'v2__FREE', 'v3__FREE')
 
 
+class _ForceAcceptRng:
+    """A stand-in for the algorithm's Generator whose ``random()`` always returns
+    0.0 (forcing MH acceptance), delegating every other draw (e.g. the proposal's
+    ``normal``) to a real seeded Generator. Used because ``np.random.Generator``
+    methods are read-only and cannot be monkeypatched in place."""
+
+    def __init__(self, seed=0):
+        self._g = np.random.default_rng(seed)
+
+    def random(self, *a, **k):
+        return 0.0
+
+    def __getattr__(self, name):
+        return getattr(self._g, name)
+
+
 def _normal_pset(values):
     return pset.PSet([
         pset.FreeParameter('v1__FREE', 'normal_var', 0.0, 1.0, values[0]),
@@ -101,7 +117,7 @@ class TestCoolingSchedule:
         beta += cooling. Forcing acceptance (rand=0) of a worse proposal must
         raise beta from 0.5 to exactly 1.0 (cooling=0.5)."""
         algo = self._sa_algo(tmp_path, beta0=0.5, cooling=0.5)
-        monkeypatch.setattr(np.random, 'rand', lambda *a: 0.0)   # force accept
+        monkeypatch.setattr(algo, 'rng', _ForceAcceptRng())   # force accept
         algo.got_result(self._worse_result())
         np.testing.assert_allclose(algo.betas[0], 1.0, rtol=1e-12)
 
@@ -110,7 +126,7 @@ class TestCoolingSchedule:
         finished: got_result returns 'STOP'. Starting at 1.8 with cooling 0.5 the
         next unfavorable accept reaches 2.3 >= beta_max=2.0."""
         algo = self._sa_algo(tmp_path, beta0=1.8, cooling=0.5, beta_max=2.0)
-        monkeypatch.setattr(np.random, 'rand', lambda *a: 0.0)
+        monkeypatch.setattr(algo, 'rng', _ForceAcceptRng())
         assert algo.got_result(self._worse_result()) == 'STOP'
 
     def test_one_replica_finishing_returns_empty_not_stop(self, tmp_path, monkeypatch):
@@ -121,7 +137,7 @@ class TestCoolingSchedule:
         far from done."""
         algo = self._sa_algo(tmp_path, beta0=1.0, cooling=0.5, beta_max=2.0, pop=2)
         algo.betas = [1.8, 0.5]                  # chain 0 about to finish
-        monkeypatch.setattr(np.random, 'rand', lambda *a: 0.0)
+        monkeypatch.setattr(algo, 'rng', _ForceAcceptRng())
         assert algo.got_result(self._worse_result(index=0)) == []
         assert algo.betas[0] >= 2.0 and algo.betas[1] == 0.5
 
@@ -154,7 +170,6 @@ class TestProposal:
         algo = algorithms.SimulatedAnnealing(cfg)
         old = _normal_pset((5.0, -2.0, 1.0))
         old_vec = _vec(old)
-        np.random.seed(7)
         for _ in range(100):
             new = algo.choose_new_pset(old)
             np.testing.assert_allclose(np.linalg.norm(_vec(new) - old_vec), 0.37, rtol=1e-12)
@@ -165,7 +180,6 @@ class TestProposal:
         cfg = _make_config(tmp_path, UNIFORM_VARS, step_size=100.0)
         algo = algorithms.SimulatedAnnealing(cfg)
         old = _uniform_pset((5.0, 5.0, 5.0))     # step 100 >> box width 10
-        np.random.seed(3)
         for _ in range(50):
             new = algo.choose_new_pset(old)
             for k in _KEYS:

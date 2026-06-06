@@ -148,6 +148,11 @@ class BayesianAlgorithm(Algorithm):
         self.step_size = config.config['step_size']
         self.n_dim = len(self.variables)
 
+        # One independent Generator per parallel chain, indexed by chain index, so
+        # each chain's proposal/accept draws come from its own stream regardless of
+        # dask completion order (cross-chain barriers still use the root self.rng).
+        self._rebuild_chain_rngs()
+
         self.iteration = [0] * self.num_parallel  # Iteration number that each PSet is on
 
         self.current_pset = None  # List of n PSets corresponding to the n independent runs
@@ -198,6 +203,12 @@ class BayesianAlgorithm(Algorithm):
 
         # Check that the iteration range is valid with respect to the burnin and or adaptive iterations
         
+
+    def _rebuild_chain_rngs(self):
+        """Spawn one independent Generator per parallel chain (overrides the base
+        no-op). Called at construction and after each bootstrap-replicate reseed so
+        every replicate's chains are reproducible from the run seed yet distinct."""
+        self.chain_rngs = self.spawn_chain_rngs(self.num_parallel)
 
     def load_priors(self):
         """Builds the data structures for the priors, based on the variables specified in the config."""

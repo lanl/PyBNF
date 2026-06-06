@@ -173,7 +173,7 @@ class CMAESAlgorithm(StartPointOptimizer):
         self.waiting = self.lam
         psets = []
         for i in range(self.lam):
-            z = np.random.standard_normal(self.n)
+            z = self.rng.standard_normal(self.n)
             y = self.B @ (self.d * z)            # ~ N(0, C)
             x = self.mean + self.sigma * y       # ~ N(mean, sigma^2 C)
             name = 'cmaes_gen%i_ind%i' % (self.generation, i)

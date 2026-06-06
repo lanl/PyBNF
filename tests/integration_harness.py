@@ -213,12 +213,11 @@ def make_config(tmp_path, fit_type, target_path, exp_path, n_params,
 # Driving + reading results
 # --------------------------------------------------------------------------- #
 def drive(alg):
-    """Create the output scaffolding ``main()`` normally makes, seed the RNG
-    (``main`` does this; we bypass it), then run the algorithm inline to
-    completion with the fake client."""
-    seed = alg.config.config.get('random_seed')
-    if seed is not None:
-        np.random.seed(seed)
+    """Create the output scaffolding ``main()`` normally makes, then run the
+    algorithm inline to completion with the fake client.
+
+    No RNG seeding here: the algorithm built its own np.random.Generator from
+    ``config['random_seed']`` in its constructor (the legacy global RNG is unused)."""
     os.makedirs(alg.sim_dir, exist_ok=True)
     os.makedirs(alg.res_dir, exist_ok=True)
     alg.run(FakeClient())

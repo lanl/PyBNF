@@ -119,7 +119,7 @@ class SimulatedAnnealing(Algorithm):
         # ln_p_accept = min(0, current_score - score) is 0 (a downhill move, always
         # accepted) or negative (an uphill move, accepted w.p. exp(beta*ln_p_accept)).
         ln_p_accept = 0.0 if first else min(0.0, self.current_score[index] - score)
-        if first or np.random.rand() < np.exp(ln_p_accept * self.betas[index]):
+        if first or self.rng.random() < np.exp(ln_p_accept * self.betas[index]):
             self.accepted += 1
             self.current_pset[index] = res.pset
             self.current_score[index] = score
@@ -175,7 +175,7 @@ class SimulatedAnnealing(Algorithm):
         move. The direction is isotropic; any component that would leave the box
         is reflected back inside (``FreeParameter.add`` defaults to reflect=True),
         so the symmetric proposal keeps the plain Metropolis ratio valid."""
-        delta = {k: np.random.normal() for k in oldpset.keys()}
+        delta = {k: self.rng.normal() for k in oldpset.keys()}
         magnitude = np.sqrt(sum(x ** 2 for x in delta.values()))
         normalized = {k: self.step_size * delta[k] / magnitude for k in oldpset.keys()}
         return PSet([v.add(normalized[v.name]) for v in oldpset])

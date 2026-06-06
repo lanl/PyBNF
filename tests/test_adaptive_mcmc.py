@@ -25,6 +25,25 @@ import pytest
 
 from .context import algorithms, config, pset
 
+
+class _FixedMvnRng:
+    """Chain Generator stand-in returning a fixed multivariate_normal draw,
+    delegating all other draws to a real Generator. Used because Generator methods
+    are read-only and cannot be monkeypatched in place."""
+
+    def __init__(self, mvn, seed=0):
+        self._mvn = mvn
+        self._g = np.random.default_rng(seed)
+
+    def multivariate_normal(self, mean, cov, *a, **k):
+        return self._mvn(mean, cov)
+
+    def __getattr__(self, name):
+        if name in ('_mvn', '_g'):
+            raise AttributeError(name)
+        return getattr(self._g, name)
+
+
 # All three FREE parameters declared by tests/bngl_files/parabola.bngl must be
 # present or model setup fails.
 PARABOLA = 'bngl_files/parabola.bngl'
@@ -147,7 +166,7 @@ class TestAcceptance:
         ln_cur = ln_post_new - np.log(target_alpha)  # exp(new - cur) = target_alpha
 
         N = 2000
-        np.random.seed(20240517)
+        am.chain_rngs[0] = np.random.default_rng(20240517)
         accepts = 0
         for _ in range(N):
             am.iteration[0] = 5
@@ -187,7 +206,7 @@ class TestProposal:
         am.iteration = [0, 0]  # well before burn_in + adaptive -> random-walk branch
 
         names = [v.name for v in am.variables]
-        np.random.seed(7)
+        am.chain_rngs[0] = np.random.default_rng(7)
         N = 4000
         deltas = np.empty((N, 3))
         for i in range(N):
@@ -234,8 +253,9 @@ class TestProposal:
 #   * proposal       = current + diff * delta, delta ~ N(0, Sigma_adapted)
 #
 # The accept/reject rule and the pre-adaptation random walk are covered above.
-# These tests freeze the Gaussian draw (monkeypatching np.random.multivariate_
-# normal) so each contract is checked against its analytical oracle, not RNG.
+# These tests freeze the Gaussian draw (swapping in a chain Generator stand-in
+# whose multivariate_normal is fixed) so each contract is checked against its
+# analytical oracle, not RNG.
 # --------------------------------------------------------------------------- #
 OPTIMAL_ACCEPT = 0.234  # Gelman/Roberts optimal Metropolis acceptance rate
 
@@ -275,12 +295,13 @@ def _pset_from_values(am, values, vartype='uniform_var', lo=0.0, hi=100.0):
     return ps
 
 
-def _freeze_draw_to_zero(monkeypatch):
+def _freeze_draw_to_zero(monkeypatch, am):
     """Replace the Gaussian proposal draw with the zero vector so pick_new_pset's
     state updates (mean/cov/scale) are isolated and the trivial step lands in
-    bounds on the first try."""
-    monkeypatch.setattr(np.random, 'multivariate_normal',
-                        lambda mean, cov: np.zeros(len(mean)))
+    bounds on the first try. Swaps in a stand-in for each chain's Generator (whose
+    methods are read-only)."""
+    monkeypatch.setattr(am, 'chain_rngs',
+                        [_FixedMvnRng(lambda mean, cov: np.zeros(len(mean)))] * am.num_parallel)
 
 
 class TestAdaptiveScaling:
@@ -298,7 +319,7 @@ class TestAdaptiveScaling:
         am.current_pset[0] = _pset_from_values(am, CHAIN_X.mean(0))
         am.iteration[0] = burn_in + adaptive
         am.alpha[0] = OPTIMAL_ACCEPT
-        _freeze_draw_to_zero(monkeypatch)
+        _freeze_draw_to_zero(monkeypatch, am)
 
         am.pick_new_pset(0)
 
@@ -323,7 +344,7 @@ class TestAdaptiveScaling:
         D = 0.5
         am.diff[0] = D
         am.alpha[0] = alpha
-        _freeze_draw_to_zero(monkeypatch)
+        _freeze_draw_to_zero(monkeypatch, am)
 
         am.pick_new_pset(0)
 
@@ -359,7 +380,7 @@ class TestAdaptiveCovariance:
         it = burn_in + adaptive
         am.iteration[0] = it
         am.alpha[0] = OPTIMAL_ACCEPT
-        _freeze_draw_to_zero(monkeypatch)
+        _freeze_draw_to_zero(monkeypatch, am)
 
         am.pick_new_pset(0)
 
@@ -397,7 +418,7 @@ class TestAdaptiveCovarianceSampleWeight:
         am.diffMatrix[0] = diff_pre.copy()
         am.iteration[0] = burn_in + adaptive + k      # k>=1 -> no re-seed
         am.alpha[0] = OPTIMAL_ACCEPT                  # freeze the scalar `diff`
-        _freeze_draw_to_zero(monkeypatch)
+        _freeze_draw_to_zero(monkeypatch, am)
         am.pick_new_pset(0)
         return np.array(am.diffMatrix[0]), d
 
@@ -489,7 +510,7 @@ class TestAdaptiveCovarianceLogSpace:
         it = burn_in + adaptive
         am.iteration[0] = it
         am.alpha[0] = OPTIMAL_ACCEPT
-        _freeze_draw_to_zero(monkeypatch)
+        _freeze_draw_to_zero(monkeypatch, am)
 
         am.pick_new_pset(0)
 
@@ -541,7 +562,7 @@ class TestAdaptiveProposalDraw:
             rec['cov'] = np.array(cov)
             rec['calls'] = rec.get('calls', 0) + 1
             return delta
-        monkeypatch.setattr(np.random, 'multivariate_normal', fake_mvn)
+        monkeypatch.setattr(am, 'chain_rngs', [_FixedMvnRng(fake_mvn)] * am.num_parallel)
 
         prop = am.pick_new_pset(0)
 

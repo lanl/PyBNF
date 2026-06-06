@@ -1545,16 +1545,17 @@ class FreeParameter:
 
         return self._scale.inverse(folded)
 
-    def sample_value(self):
+    def sample_value(self, rng):
         """
         Samples a value for this parameter based on its defined initial distribution
 
+        :param rng: the caller's np.random.Generator, passed through to the prior
         :return: new FreeParameter instance or None
         """
         if not self._prior.has_prior:
             raise PybnfError(f"Parameter {self.name} does not have a sampling distribution")
 
-        return self.set_value(self._scale.inverse(self._prior.rvs()))
+        return self.set_value(self._scale.inverse(self._prior.rvs(rng)))
 
     def prior_logpdf(self, value):
         """
@@ -1620,17 +1621,22 @@ class FreeParameter:
         
         return self.set_value(self.value * summand, reflect)
 
-    def add_rand(self, lb, ub, reflect=True):
+    def add_rand(self, lb, ub, rng, reflect=True):
         """
         Like FreeParameter.add but instead adds a uniformly distributed random value according to the
         bounds provided
 
         :param lb:
         :param ub:
+        :param rng: the caller's np.random.Generator
         :return:
         """
         try:
-            r = np.random.uniform(lb, ub)
+            # lb + (ub-lb)*U, matching legacy np.random.uniform(lb, ub). Computed
+            # explicitly (rather than rng.uniform) because callers may pass lb > ub
+            # (e.g. Scatter Search), which Generator.uniform rejects but the legacy
+            # RandomState.uniform silently accepted.
+            r = lb + (ub - lb) * rng.random()
         except OverflowError:
             logger.error(f'Random number overflow with lower bound {lb}, upper bound {ub}')
             r = 0.

@@ -181,7 +181,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.alpha[index] = 1
         else:
             self.alpha[index] = np.exp((lnposterior-self.ln_current_P[index]))
-            if np.random.random() < self.alpha[index]:
+            if self.chain_rngs[index].random() < self.alpha[index]:
                 self.accept = True
         # if accept then update the lists
         if self.accept == True:
@@ -256,7 +256,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 for l in self.output_noise_columns:     
                     for i in self.output_run_noise_current.keys():
                         if l in i:
-                            self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index])
+                            self.output_run_noise_all[i][index][self.factor[index]] =  self.generateBinomialNoise(self.output_run_noise_current[i][index][0], self.current_pset[index], self.chain_rngs[index])
             if self.config.config['output_trajectory']:
                 for l in self.output_columns:
                     for i in self.output_run_current.keys():
@@ -344,8 +344,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
             return next_generation
         return []
 
-    def generateBinomialNoise(self, timeseries, pset):
-        # Generate the binomial noise for the results
+    def generateBinomialNoise(self, timeseries, pset, rng):
+        # Generate the binomial noise for the results (rng = the chain's own Generator)
         self.output = np.copy(timeseries)
         self.pset = pset
         if self.config.config['objfunc'] == 'neg_bin_dynamic':
@@ -356,7 +356,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.r = self.config.config['neg_bin_r']
         for i in range(len(timeseries)):
             self.prob = np.clip( self.r/(self.r+timeseries[i]), 1e-10, 1-1e-10)
-            self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1)
+            self.output[i] = stats.nbinom.rvs(n=self.r, p=self.prob, size=1, random_state=rng)
 
         return self.output
 
@@ -475,7 +475,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             num = 0
             while num != 10000*len_params:
                 new_vars = []
-                delta_vector = np.random.multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
+                delta_vector = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
                 delta_vector_add = {k: self.diff[idx]*delta_vector[i] for i,k in enumerate(oldpset.keys())}
                 try:
                     for i, p in enumerate(oldpset):
@@ -509,7 +509,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             num = 0
             while num != 10000*len_params:
                 new_vars = []
-                delta_vector = np.random.multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
+                delta_vector = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len_params,)), cov=self.diffMatrix[idx])
                 delta_vector_add = {k: self.diff[idx] * delta_vector[i] for i,k in enumerate(oldpset.keys())}
                 try:
                     for i, p in enumerate(oldpset):
@@ -530,7 +530,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             num = 0
             while num != 10000*len_params:
                 new_vars = []
-                delta_vector = np.random.multivariate_normal(mean=np.zeros((len_params,)), cov=diffMatrix)
+                delta_vector = self.chain_rngs[idx].multivariate_normal(mean=np.zeros((len_params,)), cov=diffMatrix)
                 delta_vector_add = {k: self.step_size * delta_vector[i] for i,k in enumerate(oldpset.keys())}
                 #delta_vector_multiply_log = {k: self.step_size*delta_vector_log[i] for i,k in enumerate(oldpset.keys())}
                 try:

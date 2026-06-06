@@ -27,16 +27,19 @@ from pathlib import Path
 
 def _initialize_random_seed(config):
     """
-    Seed NumPy's global random number generator and log the effective seed.
+    Resolve and log the run's random seed.
 
-    If the config does not specify a seed, choose one from system entropy first
-    so it can be reused later for reproducibility.
+    If the config does not specify a seed, one is chosen from system entropy so it
+    can be reused later for reproducibility. The resolved seed is written back into
+    the config; each algorithm builds its own ``np.random.Generator`` (default_rng)
+    from it in ``Algorithm.__init__``. NumPy's legacy global RNG is no longer seeded
+    or used.
     """
     seed = config.config['random_seed']
     if seed is None:
-        np.random.seed()
-        seed = int(np.random.randint(0, 2**31))
-    np.random.seed(seed)
+        # Draw a fresh seed from OS entropy (kept within the config's allowed
+        # [0, 2**32) range) without touching the legacy global RNG.
+        seed = int(np.random.SeedSequence().generate_state(1)[0])
     config.config['random_seed'] = seed
     logger = logging.getLogger(__name__)
     logger.info('Random seed: %d', seed)
@@ -364,7 +367,9 @@ def _run_bootstrapping(config, alg, cluster, debug):
 
         for model in alg.exp_data:
             for name, data in alg.exp_data[model].items():
-                data.gen_bootstrap_weights()
+                # alg.reset(bootstrap=...) just reseeded alg.rng to this replicate's
+                # deterministic sub-stream, so the resampled weights are reproducible.
+                data.gen_bootstrap_weights(alg.rng)
                 data.weights_to_file(f'{alg.res_dir}/{name}_weights_{completed_bootstrap_runs}.txt')
 
         logger.info(f'Beginning bootstrap run {completed_bootstrap_runs}')

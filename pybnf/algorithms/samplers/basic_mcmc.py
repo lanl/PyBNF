@@ -150,7 +150,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
 
         # Decide whether to accept move.
         self.attempts += 1
-        if np.random.rand() < np.exp(ln_p_accept*self.betas[index]) or np.isnan(self.ln_current_P[index]):
+        if self.chain_rngs[index].random() < np.exp(ln_p_accept*self.betas[index]) or np.isnan(self.ln_current_P[index]):
             # Accept the move, so update our current PSet and P
             self.accepted += 1
             self.current_pset[index] = pset
@@ -256,7 +256,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 # Need to wait for the rest of the chains to catch up to do replica exchange
                 self.wait_for_sync[index] = True
                 return None
-            proposed_pset = self.choose_new_pset(self.current_pset[index])
+            proposed_pset = self.choose_new_pset(self.current_pset[index], index)
         return proposed_pset
 
     def should_sample(self, index):
@@ -266,17 +266,19 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         """
         return (index + 1) % self.betas_per_group == 0 if self.pt else True
 
-    def choose_new_pset(self, oldpset):
+    def choose_new_pset(self, oldpset, index):
         """
         Helper function to perturb the old PSet, generating a new proposed PSet.
         The step is a fixed-magnitude (step_size) random-walk move; any component
         that would leave the box is reflected back inside (see FreeParameter._reflect).
         :param oldpset: The PSet to be changed
         :type oldpset: PSet
+        :param index: The chain index, selecting that chain's own Generator
+        :type index: int
         :return: the new PSet
         """
 
-        delta_vector = {k: np.random.normal() for k in oldpset.keys()}
+        delta_vector = {k: self.chain_rngs[index].normal() for k in oldpset.keys()}
         delta_vector_magnitude = np.sqrt(sum([x ** 2 for x in delta_vector.values()]))
         delta_vector_normalized = {k: self.step_size * delta_vector[k] / delta_vector_magnitude for k in oldpset.keys()}
         new_vars = []
@@ -301,7 +303,9 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         # beta. But if we have multiple reps per beta, then the exchanges aren't necessarily within the same group of
         # reps. We use this random permutation to determine which groups exchange.
         for i in range(self.betas_per_group - 1):
-            permutation = np.random.permutation(range(self.reps_per_beta))
+            # Replica exchange is a cross-chain coordination step at the sync
+            # barrier (all chains have reported), so it draws from the root rng.
+            permutation = self.rng.permutation(self.reps_per_beta)
             for group in range(self.reps_per_beta):
                 # Determine the 2 indices we're exchanging, ind_hi and ind_lo
                 ind_hi = self.betas_per_group * group + i
@@ -314,7 +318,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 # term is positive if ind_lo is better. But you want a positive final answer when ind_hi, currently at
                 # higher T, is better. So you need a - sign.
                 self.exchange_attempts += 1
-                if np.random.random() < np.exp(ln_p_exchange):
+                if self.rng.random() < np.exp(ln_p_exchange):
                     # Do the exchange
                     logger.debug('Exchanging individuals %i and %i' % (ind_hi, ind_lo))
                     self.exchange_accepted += 1

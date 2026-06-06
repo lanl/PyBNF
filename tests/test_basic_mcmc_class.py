@@ -94,9 +94,9 @@ class TestChooseNewPset:
         old = _normal_pset((5.0, -2.0, 1.0))     # unbounded -> never rejected
         old_vec = algo._param_vec(old)
 
-        np.random.seed(7)
+        algo.chain_rngs[0] = np.random.default_rng(7)
         for _ in range(200):
-            new = algo.choose_new_pset(old)
+            new = algo.choose_new_pset(old, 0)
             jump = algo._param_vec(new) - old_vec
             np.testing.assert_allclose(np.linalg.norm(jump), step, rtol=1e-12)
 
@@ -110,8 +110,8 @@ class TestChooseNewPset:
         algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
         old = _normal_pset((5.0, 5.0, 5.0))
         old_vec = algo._param_vec(old)
-        np.random.seed(11)
-        jumps = np.array([algo._param_vec(algo.choose_new_pset(old)) - old_vec
+        algo.chain_rngs[0] = np.random.default_rng(11)
+        jumps = np.array([algo._param_vec(algo.choose_new_pset(old, 0)) - old_vec
                           for _ in range(4000)])
         np.testing.assert_allclose(jumps.mean(axis=0), np.zeros(3), atol=0.02)
 
@@ -123,9 +123,9 @@ class TestChooseNewPset:
         cfg = _make_config(tmp_path, UNIFORM_VARS, step_size=100.0)
         algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
         old = _uniform_pset((5.0, 5.0, 5.0))     # step_size 100 >> box width 10
-        np.random.seed(3)
+        algo.chain_rngs[0] = np.random.default_rng(3)
         for _ in range(50):
-            new = algo.choose_new_pset(old)
+            new = algo.choose_new_pset(old, 0)
             assert new is not None
             for name in ('v1__FREE', 'v2__FREE', 'v3__FREE'):
                 assert 0.0 <= new[name] <= 10.0
@@ -235,7 +235,6 @@ class TestDrivenMcmcRun:
         queue = list(algo.start_run())
 
         rng = np.random.default_rng(0)
-        np.random.seed(0)
         stopped = False
         guard = 0
         while queue and guard < 10000:

@@ -4,7 +4,7 @@ sampling space ``u`` (ADR-0010).
 A ``Prior`` is **scale-agnostic** -- it knows nothing about ``theta`` or
 ``log10``. The owning ``FreeParameter`` holds the ``Scale`` and applies the
 ``theta <-> u`` transform, calling ``prior.logpdf(scale.forward(theta))`` and
-``scale.inverse(prior.rvs())``. This keeps each family's math pure and the
+``scale.inverse(prior.rvs(rng))``. This keeps each family's math pure and the
 scale in one place (ADR-0003).
 
 Concrete families (``Normal``, ``Uniform``, ...) live one-per-file and
@@ -42,8 +42,13 @@ class Prior(ABC):
         """Log prior density at sampling-space value ``u``."""
 
     @abstractmethod
-    def rvs(self):
-        """Draw one sample in sampling space ``u``."""
+    def rvs(self, rng):
+        """Draw one sample in sampling space ``u`` using ``rng``.
+
+        ``rng`` is the caller's :class:`numpy.random.Generator`; it is passed to
+        scipy as ``random_state`` so prior sampling draws from the algorithm's
+        seeded Generator rather than NumPy's legacy global RNG.
+        """
 
     @abstractmethod
     def ppf(self, q):
@@ -75,7 +80,7 @@ class NoPrior(Prior):
     def logpdf(self, u):
         return 0.0
 
-    def rvs(self):
+    def rvs(self, rng):
         raise PybnfError("Parameter does not have a sampling distribution")
 
     def ppf(self, q):

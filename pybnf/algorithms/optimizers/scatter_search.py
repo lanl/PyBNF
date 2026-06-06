@@ -126,7 +126,7 @@ class ScatterSearch(Algorithm):
         topcount = int(np.ceil(self.popsize / 2.))
         randcount = int(np.floor(self.popsize / 2.))
         self.refs = start_psets[:topcount]
-        randindices = np.random.choice(range(topcount, len(start_psets)), randcount, replace=False)
+        randindices = self.rng.choice(np.arange(topcount, len(start_psets)), randcount, replace=False)
         for i in randindices:
             self.refs.append(start_psets[i])
         self.stuckcounter = {r[0]: 0 for r in self.refs}
@@ -214,7 +214,7 @@ class ScatterSearch(Algorithm):
                         d = self.refs[hi][0].get_param(v.name).diff(self.refs[pi][0].get_param(v.name))
                         alpha = np.sign(hi-pi)
                         beta = (abs(hi-pi) - 1) / (self.popsize - 2)
-                        new_vars.append(self.refs[pi][0].get_param(v.name).add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta)))
+                        new_vars.append(self.refs[pi][0].get_param(v.name).add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta), self.rng))
                     newpset = PSet(new_vars)
                     # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really
                     # care about the number of PSets queried.

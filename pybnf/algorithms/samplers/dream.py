@@ -148,7 +148,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         x0_vec = self._param_vec(x0)
 
         # Draw three distinct archive indices: c (reference), a, b (for projection difference)
-        sel = np.random.choice(len(self.archive), 3, replace=False)
+        sel = self.chain_rngs[idx].choice(len(self.archive), 3, replace=False)
         zc_vec = self._param_vec(self.archive[sel[0]])
         za_vec = self._param_vec(self.archive[sel[1]])
         zb_vec = self._param_vec(self.archive[sel[2]])
@@ -167,11 +167,11 @@ class DreamAlgorithm(BayesianAlgorithm):
         diff_proj = za_proj - zb_proj
 
         # Gamma for snooker: U(1.2, 2.2) per Vrugt (2016)
-        gamma_s = np.random.uniform(1.2, 2.2)
+        gamma_s = self.chain_rngs[idx].uniform(1.2, 2.2)
 
         # Small perturbations
-        zeta_vec = np.random.normal(0, self.config.config['zeta'], size=self.n_dim)
-        lamb = np.random.uniform(-self.config.config['lambda'], self.config.config['lambda'])
+        zeta_vec = self.chain_rngs[idx].normal(0, self.config.config['zeta'], size=self.n_dim)
+        lamb = self.chain_rngs[idx].uniform(-self.config.config['lambda'], self.config.config['lambda'])
 
         xp_vec = x0_vec + zeta_vec + (1.0 + lamb) * gamma_s * diff_proj
 
@@ -243,7 +243,8 @@ class DreamAlgorithm(BayesianAlgorithm):
             return
 
         for out_idx in outlier_indices:
-            donor_idx = np.random.choice(good_indices)
+            # Cross-chain reset (resolved at the generation barrier) -> root rng.
+            donor_idx = self.rng.choice(good_indices)
             logger.warning('Outlier chain %d reset to chain %d at iteration %d (method=%s)'
                            % (out_idx, donor_idx, self.iteration[out_idx], self.outlier_method))
             self.current_pset[out_idx] = copy.deepcopy(self.current_pset[donor_idx])
@@ -276,7 +277,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         # Metropolis-Hastings criterion (includes snooker Hastings correction when applicable)
         ln_p_accept = min(0., lnposterior - self.ln_current_P[index]
                           + self.gen_log_snooker_correction[index])
-        if np.log(np.random.uniform()) < ln_p_accept:  # accept update based on MH criterion
+        if np.log(self.chain_rngs[index].uniform()) < ln_p_accept:  # accept update based on MH criterion
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
             self.acceptances[index] += 1
@@ -366,7 +367,7 @@ class DreamAlgorithm(BayesianAlgorithm):
 
             next_gen = []
             for i, p in enumerate(self.current_pset):
-                if np.random.uniform() < self.snooker_prob:
+                if self.chain_rngs[i].uniform() < self.snooker_prob:
                     # Snooker update
                     new_pset, log_corr = self.calculate_snooker_pset(i)
                     self.gen_log_snooker_correction[i] = log_corr
@@ -414,18 +415,18 @@ class DreamAlgorithm(BayesianAlgorithm):
         x0 = self.current_pset[idx]
 
         # Draw 2*delta donor states from the ZS archive (without replacement)
-        sel = np.random.choice(len(self.archive), 2 * self.delta, replace=False)
+        sel = self.chain_rngs[idx].choice(len(self.archive), 2 * self.delta, replace=False)
 
         # Sample crossover value and mask
-        cr_idx = np.random.choice(self.ncr_count, p=self.cr_probs)
+        cr_idx = self.chain_rngs[idx].choice(self.ncr_count, p=self.cr_probs)
         cr = self.ncr[cr_idx]
         while True:
-            ds = np.random.uniform(size=self.n_dim) <= cr  # sample parameter subspace
+            ds = self.chain_rngs[idx].uniform(size=self.n_dim) <= cr  # sample parameter subspace
             if np.any(ds):
                 break
 
         # Gamma selection: mode jump (gamma=1) or adaptive/fixed step size
-        if np.random.uniform() < self.g_prob:
+        if self.chain_rngs[idx].uniform() < self.g_prob:
             gamma = 1
             ds[:] = True  # mode jump updates all dimensions
         else:
@@ -446,8 +447,8 @@ class DreamAlgorithm(BayesianAlgorithm):
                         self.archive[sel[self.delta + j]].get_param(k.name))
             else:
                 total_diff = 0.0
-            zeta = np.random.normal(0, self.config.config['zeta'])
-            lamb = np.random.uniform(-self.config.config['lambda'], self.config.config['lambda'])
+            zeta = self.chain_rngs[idx].normal(0, self.config.config['zeta'])
+            lamb = self.chain_rngs[idx].uniform(-self.config.config['lambda'], self.config.config['lambda'])
 
             # Differential evolution calculation (while satisfying detailed balance)
             try:

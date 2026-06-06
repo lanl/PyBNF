@@ -1,4 +1,5 @@
 from .context import data, algorithms, pset, objective, config
+from types import SimpleNamespace
 import numpy as np
 import numpy.testing as npt
 from os import path
@@ -184,8 +185,10 @@ class TestParticleSwarmUpdate:
         k=0.5; then v_new = w0*v_old + c1*k*(best-cur) + c2*k*(gbest-cur). With
         distinct c1!=c2 and best!=gbest, swapping the cognitive and social
         coefficients (or flipping a diff sign) changes the result per dimension."""
-        monkeypatch.setattr(np.random, 'random', lambda: 0.5)
         ps = self._pso(tmp_path, cognitive=2.0, social=3.0, particle_weight=0.7)
+        # Freeze the per-dimension velocity-pull coefficient to k=0.5 (the alg now
+        # draws from its own Generator, whose methods can't be patched in place).
+        monkeypatch.setattr(ps, 'rng', SimpleNamespace(random=lambda: 0.5))
         cur = _uniform_pset((5., 5., 5.)); cur.name = 'iter0p0'
         vel = {'v1__FREE': 0.4, 'v2__FREE': -0.3, 'v3__FREE': 0.2}
         best = _uniform_pset((6., 4., 5.5)); gbest = _uniform_pset((5.5, 6., 4.))

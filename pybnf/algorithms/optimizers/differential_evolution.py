@@ -81,7 +81,7 @@ class DifferentialEvolutionBase(Algorithm):
 
         # Choose pickn random unique indices, or if base_index was given, choose base_index followed by pickn-1 unique
         # indices
-        picks = np.random.choice(len(individuals), pickn, replace=False)
+        picks = self.rng.choice(len(individuals), pickn, replace=False)
         if base_index is not None:
             if base_index in picks:
                 # If we accidentally picked base_index, replace it with picks[0], preserving uniqueness in our list
@@ -96,7 +96,7 @@ class DifferentialEvolutionBase(Algorithm):
         # Iterate through parameters; decide whether to mutate or leave the same.
         new_pset_vars = []
         for p in base:
-            if np.random.random() < self.mutation_rate:
+            if self.rng.random() < self.mutation_rate:
                 if '1' in self.strategy:
                     update_val = self.mutation_factor * others[0].get_param(p.name).diff(others[1].get_param(p.name))
                 else:
@@ -300,9 +300,9 @@ class DifferentialEvolution(DifferentialEvolutionBase):
                     # This is the first island to reach this migration.
                     # Need to set global parameters for this migration.
                     self.migration_transit[migration_num] = [list() for i in range(self.num_islands)]
-                    self.migration_indices[migration_num] = np.random.choice(range(self.num_per_island),
-                                                                             size=self.num_to_migrate, replace=False)
-                    self.migration_perms[migration_num] = [np.random.permutation(self.num_islands)
+                    self.migration_indices[migration_num] = self.rng.choice(self.num_per_island,
+                                                                            size=self.num_to_migrate, replace=False)
+                    self.migration_perms[migration_num] = [self.rng.permutation(self.num_islands)
                                                            for i in range(self.num_to_migrate)]
                     logger.debug('Island %i just set up the migration.' % island)
 
@@ -347,7 +347,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
                 # If the new pset is a duplicate of one already in the island_map, it will cause problems.
                 # As a workaround, perturb it slightly.
                 while new_pset in self.island_map:
-                    new_pset = PSet([v.add(np.random.uniform(-1e-6, 1e-6)) for v in new_pset])
+                    new_pset = PSet([v.add(self.rng.uniform(-1e-6, 1e-6)) for v in new_pset])
                 self.proposed_individuals[island][jj] = new_pset
                 self.island_map[new_pset] = (island, jj)
                 if self.num_islands == 1:

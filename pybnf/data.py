@@ -85,16 +85,17 @@ class Data:
                     valid_indices.append((i, j))
         return valid_indices
 
-    def gen_bootstrap_weights(self):
+    def gen_bootstrap_weights(self, rng):
         """
         Generates a integer weight for each point in the set of dependent variables.  Equivalent
         to sampling with replacement.  Weights are used when calculating the objective function
         for bootstrapped data.  Used for experimental data sets
 
+        :param rng: the caller's np.random.Generator (the algorithm's root rng)
         :return:
         """
         indices = np.array(self._valid_indices())
-        samples = indices[np.random.choice(indices.shape[0], size=indices.shape[0], replace=True)]
+        samples = indices[rng.choice(indices.shape[0], size=indices.shape[0], replace=True)]
         self.weights = np.zeros(self.data.shape)
         for s in samples:
             self.weights[s[0], s[1]] += 1
