@@ -220,6 +220,51 @@ def test_cmaes_finds_gaussian_mode(tmp_path):
     assert alg.trajectory.best_score() < 0.05
 
 
+def test_cmaes_box_mode_finds_gaussian_mode(tmp_path):
+    """CMA-ES in box / global-start mode (#404) recovers the Gaussian mode.
+
+    Unlike ``test_cmaes_finds_gaussian_mode`` (a single ``var`` start point), this
+    fit uses bounded ``uniform_var`` priors — the population-optimizer style. There
+    is no injected start point, so CMA-ES begins at the box *center* and seeds its
+    covariance with the per-coordinate box widths, then concentrates on the mode.
+    This is the path that makes CMA-ES a standalone global optimizer, not just a
+    refiner."""
+    mean, var = [2.0, -1.0, 0.5], [1.0, 1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'cmaes', tgt, exp, n_params=3,
+        var_type='uniform_var', bounds=(-10.0, 10.0),
+        population_size=14, max_iterations=300, random_seed=1234)
+    alg = algorithms.CMAESAlgorithm(conf)
+    assert alg._is_box_start()                       # the new mode is engaged
+    assert np.allclose(alg.mean, [0.0, 0.0, 0.0])    # started at the box center (u)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 3)
+    assert np.allclose(recovered, mean, atol=0.1), recovered
+    assert alg.trajectory.best_score() < 0.05
+
+
+def test_cmaes_box_mode_recovers_log_scaled_mode(tmp_path):
+    """Box mode over ``loguniform_var`` priors searches in log10 space: the box
+    center is the geometric center and the covariance widths are in log10 units, so
+    a mode spanning orders of magnitude is recovered. Guards that the u-space box
+    geometry (#404) is taken consistently for log parameters."""
+    mean = [10.0, 100.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, [4.0, 100.0]))
+    conf = H.make_config(
+        tmp_path, 'cmaes', tgt, exp, n_params=2,
+        var_type='loguniform_var', bounds=(0.1, 1000.0),
+        population_size=16, max_iterations=400, random_seed=1234)
+    alg = algorithms.CMAESAlgorithm(conf)
+    assert alg._is_box_start()
+    assert np.allclose(alg.mean, [1.0, 1.0])         # geometric center: log10(10)=1
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, mean, rtol=0.05), recovered
+
+
 def test_sa_finds_gaussian_mode(tmp_path):
     """Simulated annealing recovers the Gaussian mode on an all-uniform-prior fit.
 

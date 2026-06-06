@@ -24,6 +24,20 @@ is the initial step in ``u``; the run ends at ``max_iterations`` generations or
 when the largest principal step ``sigma*sqrt(max eig C)`` falls below
 ``cmaes_stop_tol``.
 
+CMA-ES is also a strong *global* optimizer over a bounded box, so it gains a
+**box / global-start mode** (#404, ADR-0017; registry ``start_from_box=True``):
+given bounded ``uniform_var`` / ``loguniform_var`` priors instead of a
+``var`` / ``logvar`` start point, it begins at the box center (``StartPointOptimizer``)
+and seeds the covariance with the per-coordinate box widths in ``u`` -- so the
+initial per-coordinate standard deviation is ``cmaes_sigma0 * (box width)`` and
+the first generation spans the whole box. There ``cmaes_sigma0`` is read as a
+*fraction* of each box width (default 0.3); in point-start / refine mode it is the
+absolute initial step in ``u`` as before. Candidates are repaired into the box by
+``FreeParameter.set_value`` and the *reflected* point enters the update (see
+``got_result``), so bounds are respected. As a refiner (``refine_method = cmaes``)
+the start point is the injected best fit and the covariance starts isotropic --
+box mode applies only to a standalone bounded-prior fit.
+
 All state is plain ``numpy`` / ``float`` / ``list`` (mean, sigma, covariance,
 evolution paths, the pending generation) -- picklable, so backup/resume work like
 every other method.
@@ -48,8 +62,12 @@ class CMAESConfig(PyBNFConfigModel):
     """CMA-ES config fields, co-located with the method (ADR-0002, ADR-0006).
 
     ``cmaes_sigma0`` is the initial overall step size in sampling space ``u`` (a
-    factor of ``10**cmaes_sigma0`` for a log parameter); ``cmaes_stop_tol`` ends
-    the run when the largest principal standard deviation of the search
+    factor of ``10**cmaes_sigma0`` for a log parameter) in point-start / refine
+    mode; in box / global-start mode (bounded priors, #404/ADR-0017) it is instead
+    read as a *fraction of each box width*, so the initial per-coordinate standard
+    deviation is ``cmaes_sigma0 * (box width)`` -- one knob, one default (0.3),
+    interpreted relative to the start the fit actually uses. ``cmaes_stop_tol``
+    ends the run when the largest principal standard deviation of the search
     distribution shrinks below it. The population size ``lambda`` is the global
     ``population_size`` (consistent with de/pso/sa), and the generation budget is
     the global ``max_iterations``, so neither is duplicated here.
@@ -62,7 +80,7 @@ class CMAESConfig(PyBNFConfigModel):
 
 
 @register_fit_type('cmaes', family='optimizer', display_name='CMA-ES',
-                   schema=CMAESConfig, refiner=True)
+                   schema=CMAESConfig, refiner=True, start_from_box=True)
 class CMAESAlgorithm(StartPointOptimizer):
     """CMA-ES as a picklable, generation-synchronized reactor state machine."""
 
@@ -108,7 +126,17 @@ class CMAESAlgorithm(StartPointOptimizer):
         accumulators."""
         self.mean = self._u_from_pset(self.start_pset)
         self.sigma = self.sigma0
-        self.C = np.eye(self.n)
+        # Box / global-start mode (#404): seed the covariance with the per-coordinate
+        # box widths in u so the first generation spans the whole box -- the initial
+        # std dev per coordinate is sigma0 * (box width). CMA-ES's covariance is
+        # exactly the per-coordinate-scale carrier, and the update is scale-covariant
+        # in C (the step-size path whitens by C^{-1/2}), so a diagonal width seed is
+        # the standard anisotropic init. In point-start / refine mode C is isotropic
+        # and sigma0 is an absolute u-step (unchanged behavior).
+        if self._is_box_start():
+            self.C = np.diag(self._box_widths_u() ** 2)
+        else:
+            self.C = np.eye(self.n)
         self.pc = np.zeros(self.n)
         self.ps = np.zeros(self.n)
         self.generation = 0

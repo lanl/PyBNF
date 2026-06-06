@@ -738,10 +738,10 @@ These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``fit_
 :ref:`CMA-ES <alg-cmaes>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_type = cmaes`` and to any algorithm run with ``refine = 1`` and ``refine_method = cmaes``. CMA-ES uses ``population_size`` as its population size (lambda, at least 4) and ``max_iterations`` as its generation budget.
+These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_type = cmaes`` and to any algorithm run with ``refine = 1`` and ``refine_method = cmaes``. CMA-ES uses ``population_size`` as its population size (lambda, at least 4) and ``max_iterations`` as its generation budget. Standalone, ``fit_type = cmaes`` accepts either a single ``var`` / ``logvar`` start point (local search) or a bounded ``uniform_var`` / ``loguniform_var`` box (its global-start mode, starting from the box center); see :ref:`CMA-ES <alg-cmaes>`.
 
 **cmaes_sigma0**
-  Initial overall step size of the search distribution, in the parameter sampling space (a factor of ``10**cmaes_sigma0`` for a log-scaled parameter).
+  Initial overall step size of the search distribution, in the parameter sampling space (a factor of ``10**cmaes_sigma0`` for a log-scaled parameter). In box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors) it is instead read as a fraction of each box width, so the initial per-coordinate standard deviation is ``cmaes_sigma0`` × (box width).
 
   Default: 0.3
 

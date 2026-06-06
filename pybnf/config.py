@@ -5,6 +5,7 @@ from .data import Data, DuplicateColumnError
 from . import objective  # noqa: F401 -- imported for its side effect: running the module fires the @register_objfunc decorators, populating OBJFUNC_REGISTRY before _load_obj_func dispatches.
 from . import algorithms  # noqa: F401 -- imported for its side effect: running the leaves fires the @register_fit_type decorators, populating FIT_TYPE_REGISTRY (incl. each method's config schema) before _build_config dispatches. No cycle: nothing in algorithms/ imports config.
 from .registry import OBJFUNC_REGISTRY, FIT_TYPE_REGISTRY
+from .priors import PRIOR_KEYWORD_MAP
 from . import config_schema
 
 from pydantic import ValidationError
@@ -819,54 +820,103 @@ class Configuration(object):
                 pass
             else:
                 raise PybnfError('Using the chi_sq_dynamic objective function requires the sigma__FREE parameter in the .conf file and the model file')        
-        # The start-point optimizers (Simplex, Powell, CMA-ES) begin from a single
-        # value per parameter, so they take the no-prior var/logvar keywords; every
-        # other method draws from a prior and takes uniform_var / normal_var / ...
-        # These are exactly the registered refiners (ADR-0015): a refiner is a
-        # start-point optimizer, so the two sets coincide and we derive one from
-        # the other rather than maintain a second hardcoded list.
-        start_point_types = {code for code, e in FIT_TYPE_REGISTRY.items() if e.refiner}
         fit_type = self.config['fit_type']
+        self._check_variable_keyword_combination(fit_type)
         variables = []
         for k in self.config.keys():
-            if isinstance(k, tuple):
-                if re.search('var$', k[0]):
-                    if fit_type in start_point_types and k[0] not in ('var', 'logvar'):
-                        names = ' / '.join(sorted(start_point_types))
-                        raise PybnfError('Invalid start-point variable type %s' % k[0],
-                               "You've specified a start-point optimizer (fit_type = %s; one of %s), "
-                               "but defined variable %s with the %s keyword.\n"
-                               "For these optimizers, you must instead define a single initial value "
-                               "for each variable\nusing the var or logvar keyword (e.g. var=%s 42 )"
-                               % (fit_type, names, k[1], k[0], k[1]))
-
-                    if fit_type not in start_point_types and k[0] in ('var', 'logvar'):
-                        names = ' / '.join(sorted(start_point_types))
-                        raise PybnfError('Tried to use start-point variable type %s in another algorithm.' % k[0],
-                               "You've specified variable %s with keyword %s, but that keyword "
-                               "is only to be used with the start-point optimizers (fit_type = %s)\n"
-                               "Valid keywords for other algorithms are: uniform_var, normal_var, \n"
-                               "lognormal_var, loguniform_var." % (k[1], k[0], names))
-
-                    if k[0] in ('var', 'logvar'):
-                        # 2nd number (step size) may be absent, must fill in appropriately
-                        if len(self.config[k]) >= 2:
-                            stepsize = self.config[k][1] # easy, it was right there
-                        else:
-                            stepsize = None  # Will sort out within SimplexAlgorithm
-                        free_param = FreeParameter(k[1], k[0], self.config[k][0], stepsize)
+            if isinstance(k, tuple) and re.search('var$', k[0]):
+                if k[0] in ('var', 'logvar'):
+                    # 2nd number (step size) may be absent, must fill in appropriately
+                    if len(self.config[k]) >= 2:
+                        stepsize = self.config[k][1] # easy, it was right there
                     else:
-                        if len(self.config[k]) == 3:
-                            free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
-                                                           bounded=self.config[k][2])
-                        else:
-                            free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1])
+                        stepsize = None  # Will sort out within SimplexAlgorithm
+                    free_param = FreeParameter(k[1], k[0], self.config[k][0], stepsize)
+                else:
+                    if len(self.config[k]) == 3:
+                        free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
+                                                       bounded=self.config[k][2])
+                    else:
+                        free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1])
 
-                    logger.debug('Adding parameter %s with bounds [%s, %s]' %
-                                 (free_param.name, free_param.lower_bound, free_param.upper_bound))
-                    variables.append(free_param)
+                logger.debug('Adding parameter %s with bounds [%s, %s]' %
+                             (free_param.name, free_param.lower_bound, free_param.upper_bound))
+                variables.append(free_param)
         logger.info('Loaded variables')
         return variables
+
+    def _check_variable_keyword_combination(self, fit_type):
+        """Validate that the fit's free-parameter keywords match what the fit_type
+        accepts -- the var/logvar-vs-prior rule, generalized for the box optimizers.
+
+        Three categories of fit_type, derived from two registry flags (ADR-0005):
+
+        * **point-only start optimizer** (``refiner`` and not ``start_from_box`` --
+          Simplex, Powell): begins from a single value per parameter, so it takes
+          only the no-prior ``var`` / ``logvar`` keywords.
+        * **box-capable start optimizer** (``refiner`` and ``start_from_box`` --
+          CMA-ES, #404/ADR-0017): runs either from a single ``var`` / ``logvar``
+          point *or* over a bounded-prior box (``uniform_var`` / ``loguniform_var``),
+          but not a mix, and not an unbounded prior (which has no box to span).
+        * **everything else** (samplers, population optimizers): draws every
+          variable from a prior, so it never takes ``var`` / ``logvar``.
+
+        ADR-0015 derived the var/logvar rule from ``refiner`` alone because "is a
+        refiner" and "takes a var/logvar point" then coincided; box mode is exactly
+        the divergence it flagged, so the capability splits onto ``start_from_box``.
+        """
+        start_point_types = {code for code, e in FIT_TYPE_REGISTRY.items() if e.refiner}
+        box_types = {code for code, e in FIT_TYPE_REGISTRY.items() if e.start_from_box}
+        bounded_prior_kws = {kw for kw, (fam, _scale) in PRIOR_KEYWORD_MAP.items()
+                             if fam.has_bounded_support}
+
+        used = {k[0] for k in self.config.keys()
+                if isinstance(k, tuple) and re.search('var$', k[0])}
+        point_kws = used & {'var', 'logvar'}
+        prior_kws = used - {'var', 'logvar'}
+        unbounded_prior_kws = prior_kws - bounded_prior_kws
+
+        if fit_type not in start_point_types:
+            if point_kws:
+                names = ' / '.join(sorted(start_point_types))
+                raise PybnfError(
+                    'Tried to use start-point variable type %s in another algorithm.'
+                    % ' / '.join(sorted(point_kws)),
+                    "You've used the %s keyword, but var / logvar are only for the "
+                    "start-point optimizers (fit_type = %s).\nValid keywords for other "
+                    "algorithms are: uniform_var, normal_var, lognormal_var, "
+                    "loguniform_var." % (' / '.join(sorted(point_kws)), names))
+            return
+
+        # A start-point optimizer (Simplex / Powell / CMA-ES) from here on.
+        if not prior_kws:
+            return  # classic single-point start (var / logvar only, or no vars)
+
+        names = ' / '.join(sorted(start_point_types))
+        if fit_type not in box_types:
+            raise PybnfError(
+                'Invalid start-point variable type %s' % ' / '.join(sorted(prior_kws)),
+                "You've specified a start-point optimizer (fit_type = %s; one of %s), "
+                "but defined a variable with the %s keyword.\nFor these optimizers, "
+                "you must instead define a single initial value for each variable\n"
+                "using the var or logvar keyword (e.g. var = p1 42 )."
+                % (fit_type, names, ' / '.join(sorted(prior_kws))))
+
+        # Box-capable optimizer given priors: must be a clean bounded-prior box.
+        if point_kws:
+            raise PybnfError(
+                'Mixed start-point and box variable types',
+                "fit_type = %s uses both a single-value start point (var / logvar) and "
+                "a prior-based variable (%s).\nUse one consistent style: var / logvar "
+                "for a point start, or uniform_var / loguniform_var for a global box "
+                "search." % (fit_type, ' / '.join(sorted(prior_kws))))
+        if unbounded_prior_kws:
+            raise PybnfError(
+                'Box-mode optimizer requires a bounded prior',
+                "fit_type = %s runs a global box search when given priors, which needs a "
+                "bounded box, but variable type %s is unbounded.\nUse uniform_var / "
+                "loguniform_var for box mode, or var / logvar for a single-point start."
+                % (fit_type, ' / '.join(sorted(unbounded_prior_kws))))
 
     def _check_variable_correspondence(self):
         """Verify the config's free parameters and the models' parameters line up.

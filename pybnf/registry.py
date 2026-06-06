@@ -35,7 +35,14 @@ class FitTypeEntry:
     ``refiner`` marks a start-point local optimizer that ``refine = 1`` may run as
     a post-fit polish (``refine_method``, #403, ADR-0015) -- ``sim`` / ``powell`` /
     ``cmaes``; the chosen refiner's schema is the coherent group the refiner seam
-    in ``config.py`` pulls into a non-self fit's effective config.
+    in ``config.py`` pulls into a non-self fit's effective config. ``start_from_box``
+    marks a start-point optimizer that may *also* run as a standalone global
+    optimizer over a bounded-prior box (``uniform_var`` / ``loguniform_var``),
+    starting from the box center -- ``cmaes`` (#404, ADR-0017). It is the
+    capability ADR-0015 anticipated would split off from ``refiner`` once a refiner
+    learned to start from a box instead of a single ``var`` / ``logvar`` point: a
+    refiner takes a start point, a ``start_from_box`` refiner may *additionally*
+    take a bounded box.
     """
 
     cls: type
@@ -45,25 +52,29 @@ class FitTypeEntry:
     deprecated: bool = False
     schema: type = None
     refiner: bool = False
+    start_from_box: bool = False
 
 
 FIT_TYPE_REGISTRY: dict = {}
 
 
 def register_fit_type(*codes, family, display_name, kwargs=None, deprecated=False,
-                      schema=None, refiner=False):
+                      schema=None, refiner=False, start_from_box=False):
     """Class decorator registering ``codes`` -> the decorated Algorithm class.
 
     May be stacked to bind several codes with differing metadata to one class
     (e.g. ``pt`` / ``mh`` / ``sa`` all map to ``BasicBayesMCMCAlgorithm`` but
     differ in ``deprecated`` / ``kwargs``). ``schema`` is the method's
     co-located Pydantic config model (M2.1 Stage b, ADR-0006). ``refiner`` marks a
-    fit_type usable as a ``refine_method`` (#403, ADR-0015).
+    fit_type usable as a ``refine_method`` (#403, ADR-0015). ``start_from_box``
+    marks a start-point optimizer that may also run standalone over a bounded-prior
+    box (#404, ADR-0017).
     """
     def deco(cls):
         entry = FitTypeEntry(cls=cls, kwargs=dict(kwargs or {}), family=family,
                              display_name=display_name, deprecated=deprecated,
-                             schema=schema, refiner=refiner)
+                             schema=schema, refiner=refiner,
+                             start_from_box=start_from_box)
         for code in codes:
             FIT_TYPE_REGISTRY[code] = entry
         return cls

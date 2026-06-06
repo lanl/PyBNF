@@ -244,6 +244,23 @@ max_iterations = 10
 cmaes_sigma0 = 0.5
 wall_time_sim = 0
 """,
+    # cmaes in box / global-start mode (#404/ADR-0017): bounded uniform priors
+    # instead of a var/logvar start point. start_from_box lets cmaes (alone among
+    # the start-point optimizers) accept these; the effective config is byte-identical
+    # in shape to matrix/cmaes (same own schema) -- box mode is a runtime start
+    # behavior, not a config-key change -- so this pins that the bounded-prior fit
+    # builds and narrows to exactly cmaes's own schema.
+    'matrix/cmaes_box': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = cmaes
+uniform_var = p1 -10 10
+loguniform_var = p2 0.1 100
+population_size = 10
+max_iterations = 10
+cmaes_sigma0 = 0.25
+wall_time_sim = 0
+""",
     # de + refine=1 + refine_method = powell | cmaes: the generalized refiner seam
     # (ADR-0015) pulls the *chosen* refiner's whole schema into a non-self fit as a
     # coherent group -- the analog of matrix/de_refine (which uses the default sim).

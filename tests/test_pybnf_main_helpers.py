@@ -93,6 +93,17 @@ def test_refiners_are_the_start_point_optimizers():
     assert {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner} == {'sim', 'powell', 'cmaes'}
 
 
+def test_only_cmaes_starts_from_a_box():
+    """The ``start_from_box`` flag (#404/ADR-0017) marks the start-point optimizers
+    that may *also* run as a standalone global search over a bounded-prior box --
+    only CMA-ES today. It is a strict subset of the refiners: a box optimizer is a
+    refiner that learned a second start mode."""
+    box = {c for c, e in FIT_TYPE_REGISTRY.items() if e.start_from_box}
+    refiners = {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner}
+    assert box == {'cmaes'}
+    assert box <= refiners
+
+
 # --- _create_algorithm reads the table (thin construct seam) ------------------
 
 def test_create_algorithm_constructs_via_registry(monkeypatch):

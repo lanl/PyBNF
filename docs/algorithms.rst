@@ -435,7 +435,9 @@ polish step (``refine = 1``): `Simplex`_ (Nelder–Mead), `Powell`_, and `CMA-ES
 Set ``refine_method`` to ``sim`` (the default, backward-compatible), ``powell``,
 or ``cmaes`` to choose; only the chosen optimizer's config keys are read. Each
 also runs standalone as its own ``fit_type`` (``sim`` / ``powell`` / ``cmaes``),
-started from a single point given with the ``var`` / ``logvar`` keys.
+started from a single point given with the ``var`` / ``logvar`` keys. CMA-ES
+additionally runs standalone as a *global* optimizer over a bounded ``uniform_var``
+/ ``loguniform_var`` box (see `CMA-ES`_).
 
 All three need only objective values (no gradients), which suits PyBNF's
 black-box, often-noisy simulator objectives. As rough guidance:
@@ -511,11 +513,25 @@ it searches in the parameter sampling space (log-scaled for log parameters).
 Applications
 ^^^^^^^^^^^^
 Use CMA-ES to refine a result (``refine = 1`` with ``refine_method = cmaes``) or
-standalone (``fit_type = cmaes``) from a starting point given with the ``var`` /
-``logvar`` keys. The population size is ``population_size`` (at least 4) and the
-generation budget is ``max_iterations``; ``cmaes_sigma0`` sets the initial step
-size and ``cmaes_stop_tol`` the convergence threshold on the search distribution's
-spread.
+standalone (``fit_type = cmaes``). Standalone, it accepts either of two starts:
+
+* a single starting **point** given with the ``var`` / ``logvar`` keys (local
+  search, like Simplex and Powell); or
+* a bounded **box** given with the ``uniform_var`` / ``loguniform_var`` keys —
+  its *global-start* mode. CMA-ES begins at the box center and seeds its
+  covariance with the per-coordinate box widths, so the first generation spans the
+  whole box; candidates are reflected back into the box. Because covariance
+  adaptation makes CMA-ES one of the strongest general-purpose black-box global
+  optimizers, this is the recommended way to run it as a primary search (the
+  ergonomics of ``de`` / ``pso``, with covariance adaptation). Use ``var`` /
+  ``logvar`` only with a single value per parameter, and ``uniform_var`` /
+  ``loguniform_var`` only with bounds — do not mix the two.
+
+The population size is ``population_size`` (at least 4) and the generation budget
+is ``max_iterations``. ``cmaes_sigma0`` sets the initial step size — in point-start
+mode an absolute step in the sampling space, in box mode a fraction of each box
+width — and ``cmaes_stop_tol`` the convergence threshold on the search
+distribution's spread. As a refiner the start is always the injected best fit.
 
 
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
