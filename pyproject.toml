@@ -80,6 +80,14 @@ target-version = "py310"
 # intentionally left off for v1; revisit once the codebase is reformatted.
 
 [tool.ruff.lint]
+# UP032 (use an f-string over str.format) is enforced as a cheap regression
+# guard: the package source is f-string-clean after the UP031/UP032 sweep and
+# there are zero UP032 violations repo-wide. UP031 (printf % -> f-string) is
+# deliberately NOT gated -- ~290 %-format sites remain on purpose (e.g. '%d'
+# over divmod floats, which truncate where an f-string would not, plus the test
+# suite's established %-style), so enforcing it would force incorrect rewrites.
+extend-select = ["UP032"]
+
 # Pre-existing legacy style that PyBNF does not enforce. Each is either purely
 # cosmetic or a behavioral change to "fix", so it is out of scope for the lint
 # gate (which must stay mechanical). Items tied to dev/PUNCHLIST.md are tracked
