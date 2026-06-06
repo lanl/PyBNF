@@ -1,3 +1,4 @@
+import fnmatch
 import os
 import subprocess
 import sys
@@ -17,6 +18,46 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
 
     assert project['requires-python'] == '>=3.10'
     assert 'bngsim>=0.5.0,<1' in project['dependencies']
+
+
+def test_every_pybnf_subpackage_is_shipped():
+    """Every importable subpackage under ``pybnf/`` must be matched by the
+    setuptools package-discovery config, so a newly added subpackage cannot
+    silently vanish from the built wheel.
+
+    Regression guard: a hand-maintained ``[tool.setuptools] packages`` list
+    omitted ``pybnf.priors`` and ``pybnf.noise`` (added in later refactors).
+    The source tree imports both at module load, so the gap broke an installed
+    wheel while a source checkout kept working. We now use glob discovery
+    (``[tool.setuptools.packages.find] include = ["pybnf*"]``); this test
+    re-derives the on-disk packages and asserts the include patterns cover
+    them, using ``fnmatch`` to mirror setuptools' own glob semantics (and so
+    avoid importing setuptools, which the test venv may not provide).
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((repo_root / 'pyproject.toml').read_text())
+
+    # On-disk subpackages: every directory under pybnf/ holding an __init__.py.
+    pkg_root = repo_root / 'pybnf'
+    ondisk = sorted(
+        '.'.join(init.parent.relative_to(repo_root).parts)
+        for init in pkg_root.rglob('__init__.py')
+    )
+    # The two subpackages the old hand-maintained list dropped -- anchor the
+    # regression so the test is meaningful even if discovery is reworked again.
+    assert 'pybnf.priors' in ondisk
+    assert 'pybnf.noise' in ondisk
+
+    find_cfg = metadata['tool']['setuptools']['packages']['find']
+    includes = find_cfg.get('include', ['*'])
+    excludes = find_cfg.get('exclude', [])
+    for pkg in ondisk:
+        assert any(fnmatch.fnmatch(pkg, pat) for pat in includes), (
+            f'{pkg} is on disk but not matched by packages.find include={includes}'
+        )
+        assert not any(fnmatch.fnmatch(pkg, pat) for pat in excludes), (
+            f'{pkg} is on disk but excluded by packages.find exclude={excludes}'
+        )
 
 
 def test_subprocess_pybnf_no_bngsim_package_root_import_smoke():

@@ -61,8 +61,14 @@ Documentation = "https://pybnf.readthedocs.io/en/latest/"
 Source = "https://github.com/lanl/PyBNF"
 Issues = "https://github.com/lanl/PyBNF/issues"
 
-[tool.setuptools]
-packages = ["pybnf", "pybnf.algorithms", "pybnf.algorithms.samplers", "pybnf.algorithms.optimizers"]
+# Auto-discover every subpackage under pybnf/ rather than hand-maintaining the
+# list. A hand-maintained list silently dropped pybnf.priors and pybnf.noise
+# from the built wheel when those subpackages were added (the source tree still
+# imported them, so it only broke an installed wheel, never a source checkout).
+# tests/test_packaging_metadata.py guards that every on-disk subpackage is
+# matched by this include pattern.
+[tool.setuptools.packages.find]
+include = ["pybnf*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "pybnf.__version__" }
