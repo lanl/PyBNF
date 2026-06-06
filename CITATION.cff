@@ -1,0 +1,72 @@
+cff-version: 1.2.0
+message: If you use PyBioNetFit (pybnf), please cite the works listed below.
+title: PyBioNetFit (pybnf)
+type: software
+version: 1.3.0
+repository-code: https://github.com/lanl/PyBNF
+
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Mitra
+      given-names: Eshan D.
+    - family-names: Suderman
+      given-names: Ryan
+    - family-names: Colvin
+      given-names: Joshua
+    - family-names: Ionkov
+      given-names: Alexander
+    - family-names: Hu
+      given-names: Andrew
+    - family-names: Sauro
+      given-names: Herbert M.
+    - family-names: Posner
+      given-names: Richard G.
+    - family-names: Hlavacek
+      given-names: William S.
+  title: PyBioNetFit and the Biological Property Specification Language
+  journal: iScience
+  volume: "19"
+  pages: 1012-1036
+  date-published: 2019-09-27
+  doi: 10.1016/j.isci.2019.08.045
+
+references:
+  - type: article
+    authors:
+      - family-names: Mitra
+        given-names: Eshan D.
+      - family-names: Hlavacek
+        given-names: William S.
+    title: Bayesian inference using qualitative observations of underlying continuous variables
+    journal: Bioinformatics
+    volume: "36"
+    issue: "10"
+    pages: 3177-3184
+    date-published: 2020-02-12
+    doi: 10.1093/bioinformatics/btaa084
+
+  - type: article
+    authors:
+      - family-names: Neumann
+        given-names: Jacob
+      - family-names: Lin
+        given-names: Yen Ting
+      - family-names: Mallela
+        given-names: Abhishek
+      - family-names: Miller
+        given-names: Ely F.
+      - family-names: Colvin
+        given-names: Joshua
+      - family-names: Duprat
+        given-names: Abell T.
+      - family-names: Chen
+        given-names: Ye
+      - family-names: Hlavacek
+        given-names: William S.
+      - family-names: Posner
+        given-names: Richard G.
+    title: Implementation of a practical Markov chain Monte Carlo sampling algorithm in PyBioNetFit
+    journal: Bioinformatics
+    date-published: 2022-03-22
+    doi: 10.1093/bioinformatics/btac004
