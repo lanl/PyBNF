@@ -23,8 +23,6 @@ POLICY_AUTO_HONORBNGL = 'auto_honorbngl'
 POLICY_RANDOM = 'random'
 POLICY_RANDOM_HONORBNGL = 'random_honorbngl'
 
-ALLOWED_POLICIES = (POLICY_AUTO, POLICY_AUTO_HONORBNGL, POLICY_RANDOM, POLICY_RANDOM_HONORBNGL)
-
 _HONORBNGL_POLICIES = frozenset((POLICY_AUTO_HONORBNGL, POLICY_RANDOM_HONORBNGL))
 _AUTO_POLICIES = frozenset((POLICY_AUTO, POLICY_AUTO_HONORBNGL))
 
@@ -80,8 +78,3 @@ def resolve_seed(*, explicit_seed, policy, param_set, model_name, action_index,
         )
         return seed, overridden
     return None, overridden
-
-
-def policy_honors_bngl(policy):
-    """Return True if `policy` honors explicit BNGL `seed=>N` arguments."""
-    return policy in _HONORBNGL_POLICIES

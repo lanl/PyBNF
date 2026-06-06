@@ -51,7 +51,7 @@ class DifferentialEvolutionConfig(DEFamilyConfig):
 class DifferentialEvolutionBase(Algorithm):
 
     def __init__(self, config):
-        super(DifferentialEvolutionBase, self).__init__(config)
+        super().__init__(config)
 
         self.mutation_rate = config.config['mutation_rate']
         self.mutation_factor = config.config['mutation_factor']
@@ -151,7 +151,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
         num_to_migrate
 
         """
-        super(DifferentialEvolution, self).__init__(config)
+        super().__init__(config)
 
         self.num_islands = config.config['islands']
         self.num_per_island = int(config.config['population_size'] / self.num_islands)
@@ -192,7 +192,7 @@ class DifferentialEvolution(DifferentialEvolutionBase):
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
 
     def reset(self, bootstrap=None):
-        super(DifferentialEvolution, self).reset(bootstrap)
+        super().reset(bootstrap)
         self.island_map = dict()
         self.iter_num = [0] * self.num_islands
         self.waiting_count = []
@@ -390,7 +390,7 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
         Initializes algorithm based on the config object.
 
         """
-        super(AsynchronousDifferentialEvolution, self).__init__(config)
+        super().__init__(config)
 
         self.population_size = config.config['population_size']
         if self.population_size < 3:
@@ -405,7 +405,7 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
         self.fitnesses = []  # List of same shape, gives fitness of each individual
 
     def reset(self, bootstrap=None):
-        super(AsynchronousDifferentialEvolution, self).reset(bootstrap)
+        super().reset(bootstrap)
         self.sims_completed = 0
         self.individuals = []
         self.fitnesses = []

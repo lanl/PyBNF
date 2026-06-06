@@ -49,7 +49,7 @@ class ScatterSearch(Algorithm):
 
     def __init__(self, config):  # variables, popsize, maxiters, saveevery):
 
-        super(ScatterSearch, self).__init__(config)
+        super().__init__(config)
 
         self.popsize = config.config['population_size']
         if self.popsize < 3:
@@ -87,7 +87,7 @@ class ScatterSearch(Algorithm):
         self.reserve = []
 
     def reset(self, bootstrap=None):
-        super(ScatterSearch, self).reset(bootstrap)
+        super().reset(bootstrap)
         self.pending = dict()
         self.received = dict()
         self.refs = []
@@ -211,14 +211,9 @@ class ScatterSearch(Algorithm):
                         continue
                     new_vars = []
                     for v in self.variables:
-                        # d = (self.refs[hi][0][v] - self.refs[pi][0][v]) / 2.
                         d = self.refs[hi][0].get_param(v.name).diff(self.refs[pi][0].get_param(v.name))
                         alpha = np.sign(hi-pi)
                         beta = (abs(hi-pi) - 1) / (self.popsize - 2)
-                        # c1 = self.refs[pi][0][v] - d*(1 + alpha*beta)
-                        # c2 = self.refs[pi][0][v] + d*(1 - alpha*beta)
-                        # newval = np.random.uniform(c1, c2)
-                        # newdict[v] = max(min(newval, var[2]), var[1])
                         new_vars.append(self.refs[pi][0].get_param(v.name).add_rand(-d*(1 + alpha*beta), d*(1 - alpha * beta)))
                     newpset = PSet(new_vars)
                     # Check to avoid duplicate PSets. If duplicate, don't have to try again because SS doesn't really

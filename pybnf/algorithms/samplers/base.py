@@ -142,7 +142,7 @@ class BayesianAlgorithm(Algorithm):
     """Superclass for Bayesian MCMC algorithms"""
 
     def __init__(self, config):
-        super(BayesianAlgorithm, self).__init__(config)
+        super().__init__(config)
         self.num_parallel = config.config['population_size']
         self.max_iterations = config.config['max_iterations']
         self.step_size = config.config['step_size']

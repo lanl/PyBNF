@@ -34,7 +34,7 @@ class AdaptiveMCMCConfig(MCMCFamilyConfig):
                    schema=AdaptiveMCMCConfig)
 class Adaptive_MCMC(BayesianAlgorithm):
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
-        super(Adaptive_MCMC, self).__init__(config)
+        super().__init__(config)
         # set the params decleared in the configuaration file
         if self.config.config['normalization']:
             self.norm = self.config.config['normalization']
@@ -133,7 +133,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
             raise PybnfError('The max iterations must be at least 2 more then the sum of the adaptive and burn-in iterations.')    
     ''' Used for resuming runs and adding iterations'''
     def reset(self, bootstrap=None):
-        super(Adaptive_MCMC, self).reset(bootstrap)
+        super().reset(bootstrap)
 
         self.current_pset = None
         self.ln_current_P = None
@@ -153,7 +153,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 % (self.num_parallel, self.max_iterations))
 
 
-        return super(Adaptive_MCMC, self).start_run(setup_samples=True)
+        return super().start_run(setup_samples=True)
 
     def got_result(self, res):
         """
@@ -290,9 +290,6 @@ class Adaptive_MCMC(BayesianAlgorithm):
             #self.wait_for_sync = [False] * self.num_parallel
             # Increase or reset the factor number and see if it's time to write things out
             for i in range(self.num_parallel):
-                # self.factor[i] +=1
-                # if self.factor[i] == self.arr_length:
-                #     self.factor[i] = 0
                 if self.iteration[i] % self.arr_length == 0 :
                     self.write_out_scores(i)
                 if self.iteration[i] >= (self.burn_in -1) and self.iteration[i] <= (self.burn_in + self.adaptive):

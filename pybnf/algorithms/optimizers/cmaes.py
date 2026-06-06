@@ -88,7 +88,7 @@ class CMAESAlgorithm(StartPointOptimizer):
     START_POINT_KEY = 'cmaes_start_point'
 
     def __init__(self, config, refine=False):
-        super(CMAESAlgorithm, self).__init__(config)
+        super().__init__(config)
         self.refine = refine
         self.n = len(self.variables)
         self.sigma0 = config.config['cmaes_sigma0']
@@ -147,7 +147,7 @@ class CMAESAlgorithm(StartPointOptimizer):
         self.waiting = 0
 
     def reset(self, bootstrap=None):
-        super(CMAESAlgorithm, self).reset(bootstrap)
+        super().reset(bootstrap)
         self._init_state()
 
     def add_iterations(self, n):

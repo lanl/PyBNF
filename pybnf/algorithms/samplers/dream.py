@@ -74,7 +74,7 @@ class DreamAlgorithm(BayesianAlgorithm):
     """
 
     def __init__(self, config):
-        super(DreamAlgorithm, self).__init__(config)
+        super().__init__(config)
         self.ncr = [(1+x)/self.config.config['crossover_number'] for x in range(self.config.config['crossover_number'])]
         self.ncr_count = len(self.ncr)
         self.g_prob = self.config.config['gamma_prob']

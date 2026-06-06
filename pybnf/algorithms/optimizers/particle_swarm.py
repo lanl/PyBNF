@@ -95,7 +95,7 @@ class ParticleSwarm(Algorithm):
 
         """
 
-        super(ParticleSwarm, self).__init__(config)
+        super().__init__(config)
 
         # This default value gets special treatment because if missing, it should take the value of particle_weight,
         # disabling the adaptive weight change entirely.
@@ -135,7 +135,7 @@ class ParticleSwarm(Algorithm):
         self.last_best = np.inf
 
     def reset(self, bootstrap=None):
-        super(ParticleSwarm, self).reset(bootstrap)
+        super().reset(bootstrap)
         self.nv = 0
         self.num_evals = 0
         self.swarm = []

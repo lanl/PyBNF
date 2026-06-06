@@ -32,7 +32,7 @@ logger = logging.getLogger('pybnf.algorithms')
 
 
 @register_fit_type('check', family='checker', display_name='Model Check')
-class ModelCheck(object):
+class ModelCheck:
     """
     An algorithm that just checks the fit quality for a job with no free parameters.
 

@@ -71,7 +71,7 @@ class SimplexAlgorithm(Algorithm):
     START_POINT_KEY = 'simplex_start_point'
 
     def __init__(self, config, refine=False):
-        super(SimplexAlgorithm, self).__init__(config)
+        super().__init__(config)
         if 'simplex_start_point' not in self.config.config:
             # We need to set up the initial point ourselfs
             self._parse_start_point()
@@ -113,7 +113,7 @@ class SimplexAlgorithm(Algorithm):
         self.refine = refine
 
     def reset(self, bootstrap=None):
-        super(SimplexAlgorithm, self).reset(bootstrap)
+        super().reset(bootstrap)
         self.iteration = 0
         self.simplex = []
 

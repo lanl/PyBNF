@@ -56,7 +56,7 @@ class SimulatedAnnealing(Algorithm):
     objective across ``population_size`` independent annealing chains."""
 
     def __init__(self, config):
-        super(SimulatedAnnealing, self).__init__(config)
+        super().__init__(config)
         self.num_parallel = self.config.config['population_size']
         self.step_size = self.config.config['step_size']
         self.cooling = self.config.config['cooling']
@@ -89,7 +89,7 @@ class SimulatedAnnealing(Algorithm):
             % (self.num_parallel, len(beta)))
 
     def reset(self, bootstrap=None):
-        super(SimulatedAnnealing, self).reset(bootstrap)
+        super().reset(bootstrap)
         self.current_pset = [None] * self.num_parallel
         self.current_score = [np.inf] * self.num_parallel
         self.iteration = [0] * self.num_parallel

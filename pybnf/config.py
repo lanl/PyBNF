@@ -141,7 +141,7 @@ STRUCTURAL_PASSTHROUGH = frozenset({
 })
 
 
-class Configuration(object):
+class Configuration:
     def __init__(self, d=None):
         """
         Instantiates a Configuration object using a dictionary generated

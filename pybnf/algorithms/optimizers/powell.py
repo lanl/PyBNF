@@ -87,7 +87,7 @@ class PowellAlgorithm(StartPointOptimizer):
     _MAX_LINE_EVALS = 100
 
     def __init__(self, config, refine=False):
-        super(PowellAlgorithm, self).__init__(config)
+        super().__init__(config)
         self.refine = refine
         self.n = len(self.variables)
         self.step = config.config['powell_step']
@@ -145,7 +145,7 @@ class PowellAlgorithm(StartPointOptimizer):
         self.probe_counter = 0
 
     def reset(self, bootstrap=None):
-        super(PowellAlgorithm, self).reset(bootstrap)
+        super().reset(bootstrap)
         self._init_state()
 
     def add_iterations(self, n):
@@ -328,7 +328,7 @@ class PowellAlgorithm(StartPointOptimizer):
         raise RuntimeError('Powell: missing batch result %r' % label)
 
 
-class _BrentLineSearch(object):
+class _BrentLineSearch:
     """A resumable, picklable 1-D minimizer along a fixed direction (ADR-0016).
 
     Minimizes the objective along ``t``, the signed step length from the line base

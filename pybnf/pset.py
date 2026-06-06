@@ -198,7 +198,7 @@ def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None, env=None)
     return stdout_data
 
 
-class Model(object):
+class Model:
     """
     An abstract class representing an executable model
     """
@@ -1268,7 +1268,7 @@ class ModelError(Exception):
         self.message = message
 
 
-class FreeParameter(object):
+class FreeParameter:
     """
     Class representing a free parameter in a model
     """
@@ -1514,7 +1514,7 @@ class FreeParameter(object):
         return self.__str__()
 
 
-class PSet(object):
+class PSet:
     """
     Class representing a parameter set
 
@@ -1634,7 +1634,7 @@ class PSet(object):
         return '\t'.join(values)
 
 
-class Trajectory(object):
+class Trajectory:
     """
     Tracks the various PSet instances and the corresponding objective function values
     """

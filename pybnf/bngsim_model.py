@@ -985,7 +985,7 @@ class BngsimModel(NetModel):
 
     def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None,
                  save_files=False):
-        super(BngsimModel, self).__init__(
+        super().__init__(
             name,
             acts,
             suffs,
@@ -2213,7 +2213,7 @@ class BngsimModel(NetModel):
 
     def save(self, file_prefix, **kwargs):
         """Still write debug/export files via the NetModel implementation."""
-        super(BngsimModel, self).save(file_prefix)
+        super().save(file_prefix)
 
 
 class BngsimNfModel(Model):

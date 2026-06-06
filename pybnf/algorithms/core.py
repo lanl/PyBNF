@@ -40,7 +40,7 @@ from ..printing import print0, print1, PybnfError
 logger = logging.getLogger('pybnf.algorithms')
 
 
-class Result(object):
+class Result:
     """
     Container for the results of a single evaluation in the fitting algorithm
     """
@@ -130,7 +130,7 @@ class FailedSimulation(Result):
         :param einfo:
         :type einfo: tuple
         """
-        super(FailedSimulation, self).__init__(paramset, None, name)
+        super().__init__(paramset, None, name)
         self.fail_type = fail_type
         self.failed = True
         self.traceback = ''.join(traceback.format_exception(*einfo))
@@ -426,7 +426,7 @@ class HybridJobGroup(JobGroup):
         smoothing replica.
         """
         subjob_ids = [sid for _, ids in replica_subjob_ids for sid in ids]
-        super(HybridJobGroup, self).__init__(job_id, subjob_ids)
+        super().__init__(job_id, subjob_ids)
         self.replica_groups = [MultimodelJobGroup(replica_id, ids) for replica_id, ids in replica_subjob_ids]
 
     def job_finished(self, res):

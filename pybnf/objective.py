@@ -32,7 +32,7 @@ class ObjectiveCalculator:
 
 
 
-class ObjectiveFunction(object):
+class ObjectiveFunction:
     """
     Abstract class representing an objective function
     Subclasses customize how the objective value is calculated from the quantitative exp data

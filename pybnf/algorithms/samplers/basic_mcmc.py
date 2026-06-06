@@ -64,7 +64,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
     """
 
     def __init__(self, config):  # expdata, objective, priorfile, gamma=0.1):
-        super(BasicBayesMCMCAlgorithm, self).__init__(config)
+        super().__init__(config)
 
         self.exchange_every = config.config['exchange_every']
         self.pt = self.exchange_every != np.inf
@@ -92,7 +92,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         self.converged = False  # Set by try_to_choose_new_pset on R-hat convergence
 
     def reset(self, bootstrap=None):
-        super(BasicBayesMCMCAlgorithm, self).reset(bootstrap)
+        super().reset(bootstrap)
 
         self.current_pset = None
         self.ln_current_P = None
@@ -122,7 +122,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 'otherwise no samples will be collected.'
                 % (self.max_iterations, self.burn_in))
 
-        return super(BasicBayesMCMCAlgorithm, self).start_run(setup_samples=True)
+        return super().start_run(setup_samples=True)
 
     def got_result(self, res):
         """

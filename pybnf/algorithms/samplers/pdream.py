@@ -50,7 +50,7 @@ class PDreamAlgorithm(DreamAlgorithm):
     """
 
     def __init__(self, config):
-        super(PDreamAlgorithm, self).__init__(config)
+        super().__init__(config)
         pa = config.config['precondition_adapt']
         self.precondition_adapt = pa if pa is not None else self.burn_in // 2
         self._cov_L = None       # Cholesky factor of the covariance estimate
@@ -107,7 +107,7 @@ class PDreamAlgorithm(DreamAlgorithm):
 
     def got_result(self, res):
         """Override to update covariance estimate after each generation sync."""
-        result = super(PDreamAlgorithm, self).got_result(res)
+        result = super().got_result(res)
 
         # After a full generation sync with new proposals, update the covariance
         if isinstance(result, list) and len(result) > 0:
@@ -131,13 +131,10 @@ class PDreamAlgorithm(DreamAlgorithm):
         Before preconditioning activates, falls back to standard DREAM proposals.
         """
         if not self._preconditioned:
-            return super(PDreamAlgorithm, self).calculate_new_pset(idx)
+            return super().calculate_new_pset(idx)
 
         x0 = self.current_pset[idx]
         x0_vec = self._param_vec(x0)
-
-        # Whiten the current state
-        z0 = self._whiten(x0_vec)
 
         # Draw 2*delta donor states from the ZS archive (without replacement)
         sel = np.random.choice(len(self.archive), 2 * self.delta, replace=False)

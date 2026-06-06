@@ -10,7 +10,7 @@ from .printing import PybnfError
 logger = logging.getLogger(__name__)
 
 
-class Data(object):
+class Data:
     """Top level class for managing data"""
 
     def __init__(self, file_name=None, arr=None, named_arr=None):
