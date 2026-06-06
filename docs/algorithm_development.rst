@@ -69,6 +69,6 @@ Other supporting configuration methods should also be added to the ``Configurati
 Pull requests
 -------------
 
-To have new algorithms added into the PyBNF software suite, submit a pull request to the master branch at
+To have new algorithms added into the PyBNF software suite, submit a pull request to the main branch at
 `<https://github.com/lanl/PyBNF>`_
 
