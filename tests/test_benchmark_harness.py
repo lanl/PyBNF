@@ -36,8 +36,12 @@ _ORACLE_FILE = _HERE / 'benchmark_golden' / 'benchmark_effective_golden.json'
 sys.path.insert(0, str(_BENCH))
 import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness script)
 
-# Excluded from the snapshot: env-derived bng_command, harness-owned output_dir.
-_EXCLUDE = frozenset({'bng_command', 'output_dir'})
+# Excluded from the snapshot: env-derived bng_command, harness-owned output_dir,
+# and refine_method -- a global key added after the oracle was frozen (#403/ADR-0015;
+# it always defaults to 'sim', a no-op for these non-refining sampler benchmarks).
+# Excluding it keeps the oracle an independent *pre-migration* witness without
+# regenerating it for a key the original confs could not have carried.
+_EXCLUDE = frozenset({'bng_command', 'output_dir', 'refine_method'})
 
 
 def _canon(o):

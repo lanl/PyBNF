@@ -155,6 +155,14 @@ class GlobalConfig(PyBNFConfigModel):
     output_every: int = 20
     initialization: str = 'lh'
     refine: int = 0
+    # Which local optimizer polishes the best fit when refine == 1 (#403). One of
+    # the start-point optimizer fit_type codes -- 'sim' (Nelder-Mead Simplex,
+    # default + backward-compatible), 'powell' (conjugate-direction), or 'cmaes'
+    # (CMA-ES). The chosen refiner's whole method schema is pulled into a non-self
+    # fit's effective config as a coherent group (the refiner seam, ADR-0013/0015);
+    # validated against the registry in Configuration. Run-level (not method-owned)
+    # because it selects across methods.
+    refine_method: str = 'sim'
     bng_command: str = Field(default_factory=_default_bng_command)
     smoothing: int = 1
     backup_every: int = 1

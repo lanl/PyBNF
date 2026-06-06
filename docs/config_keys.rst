@@ -542,13 +542,22 @@ Algorithm Options
     * ``postprocess = path/to/script.py suff1 suff2``
   
 **refine**
-  If 1, after fitting is completed, refine the best fit parameter set by a local search with the simplex algorithm. 
-  
+  If 1, after fitting is completed, refine the best fit parameter set by a local search. The optimizer used is set by ``refine_method`` (Simplex by default). Set that optimizer's config keys in addition to the config for your main algorithm.
+
   Default: 0
-  
+
   Example:
-  
+
     * ``refine = 1``
+
+**refine_method**
+  Which local optimizer to use for refinement when ``refine = 1``: ``sim`` (Nelder–Mead Simplex), ``powell`` (Powell's conjugate-direction method), or ``cmaes`` (CMA-ES). See :ref:`refinement <refinement>`. Has no effect unless ``refine = 1``.
+
+  Default: sim
+
+  Example:
+
+    * ``refine_method = powell``
 
 **sbml_integrator**
   Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. 
@@ -674,14 +683,71 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
   
     * ``simplex_max_iterations = 20``
     
-**simplex_stop_tol** 
-  Stop the algorithm if all parameters have converged to within this value (specifically, if all reflections in an iteration move the parameter by less than this 
+**simplex_stop_tol**
+  Stop the algorithm if all parameters have converged to within this value (specifically, if all reflections in an iteration move the parameter by less than this
   value)
-  
+
   Default: 0 (don't use this criterion)
-  
+
   Example:
     * ``simplex_stop_tol = 0.01``
+
+
+:ref:`Powell <alg-powell>`
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``fit_type = powell`` and to any algorithm run with ``refine = 1`` and ``refine_method = powell``.
+
+**powell_step**
+  Initial probe half-step along each search direction, in the parameter sampling space (a factor of ``10**powell_step`` for a log-scaled parameter). Each line search fits a parabola to probes at ``±powell_step`` and jumps to its vertex.
+
+  Default: 1.0
+
+  Example:
+
+    * ``powell_step = 0.3``
+
+**powell_stop_tol**
+  Stop when a whole cycle of line searches improves the objective by less than this fraction.
+
+  Default: 1e-5
+
+  Example:
+
+    * ``powell_stop_tol = 1e-4``
+
+**powell_max_iterations**
+  If specified, the number of Powell cycles (one line search along each direction), overriding ``max_iterations``. Useful when using ``refine`` and you want ``max_iterations`` to refer to your main algorithm.
+
+  Default: value of ``max_iterations``
+
+  Example:
+
+    * ``powell_max_iterations = 20``
+
+
+:ref:`CMA-ES <alg-cmaes>`
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_type = cmaes`` and to any algorithm run with ``refine = 1`` and ``refine_method = cmaes``. CMA-ES uses ``population_size`` as its population size (lambda, at least 4) and ``max_iterations`` as its generation budget.
+
+**cmaes_sigma0**
+  Initial overall step size of the search distribution, in the parameter sampling space (a factor of ``10**cmaes_sigma0`` for a log-scaled parameter).
+
+  Default: 0.3
+
+  Example:
+
+    * ``cmaes_sigma0 = 0.5``
+
+**cmaes_stop_tol**
+  Stop when the largest principal standard deviation of the search distribution falls below this value.
+
+  Default: 1e-11
+
+  Example:
+
+    * ``cmaes_stop_tol = 1e-8``
 
 
 :ref:`Differential Evolution <alg-de>`

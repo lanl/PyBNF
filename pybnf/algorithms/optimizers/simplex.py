@@ -54,7 +54,7 @@ class SimplexConfig(PyBNFConfigModel):
 
 
 @register_fit_type('sim', family='optimizer', display_name='Simplex',
-                   schema=SimplexConfig)
+                   schema=SimplexConfig, refiner=True)
 class SimplexAlgorithm(Algorithm):
     """
     Implements a parallelized version of the Simplex local search algorithm, as described in Lee and Wiswall 2007,
@@ -63,6 +63,12 @@ class SimplexAlgorithm(Algorithm):
     """
 
     _is_simplex = True
+
+    #: Internal config key the refiner start point is injected under, read by
+    #: __init__ below and written by pybnf._refine_best_fit (the registry-driven
+    #: refiner dispatch, #403/ADR-0015). Simplex predates StartPointOptimizer and
+    #: keeps its own byte-identical start-point parsing, so this is declared here.
+    START_POINT_KEY = 'simplex_start_point'
 
     def __init__(self, config, refine=False):
         super(SimplexAlgorithm, self).__init__(config)

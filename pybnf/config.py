@@ -6,7 +6,6 @@ from . import objective  # noqa: F401 -- imported for its side effect: running t
 from . import algorithms  # noqa: F401 -- imported for its side effect: running the leaves fires the @register_fit_type decorators, populating FIT_TYPE_REGISTRY (incl. each method's config schema) before _build_config dispatches. No cycle: nothing in algorithms/ imports config.
 from .registry import OBJFUNC_REGISTRY, FIT_TYPE_REGISTRY
 from . import config_schema
-from .algorithms.optimizers.simplex import SimplexConfig
 
 from pydantic import ValidationError
 
@@ -111,15 +110,16 @@ def reinit_logging(file_prefix, debug=False, log_level_name='info'):
     init_logging(file_prefix, debug, log_level_name)
 
 
-# The one cross-fit_type config reach (ADR-0013): refine == 1 runs the Simplex
-# refiner over a *non*-simplex fit's best fit, so that fit's effective config must
-# carry the whole Simplex schema as a coherent group. ``_REFINER_SCHEMA`` plus
-# ``Configuration._refine_pulls_in`` are the single source of this fact, shared by
+# The one cross-fit_type config reach (ADR-0013, generalized in ADR-0015): when
+# refine == 1, the optimizer named by ``refine_method`` (a start-point refiner --
+# sim / powell / cmaes) polishes a *non*-self fit's best fit, so that fit's
+# effective config must carry the whole chosen-refiner schema as a coherent group.
+# ``Configuration._refiner_schema`` (a registry-keyed lookup off ``refine_method``)
+# plus ``_refine_pulls_in`` are the single source of this fact, shared by
 # ``_build_config`` (which overlays the schema) and ``check_unused_keys`` (which
-# exempts simplex_* from the unused-key warning) -- so narrowing does not duplicate
-# the refine fact. A second refiner (Powell, issue #403) turns the constant into a
-# refiner-keyed lookup without touching either call site.
-_REFINER_SCHEMA = SimplexConfig
+# exempts the refiner's keys from the unused-key warning) -- so narrowing does not
+# duplicate the refine fact, and adding a refiner is one ``refiner=True`` registry
+# flag, not a config-py edit. Defaults to ``sim`` for backward compatibility.
 
 
 # Non-schema config keys that are valid for *every* fit_type, so they never count as
@@ -176,6 +176,7 @@ class Configuration(object):
             # -- check just has no method schema, so its valid set is global +
             # structural (#401, ADR-0014).
             self._strip_uncheckable_keys(d)
+        self._check_refine_method(d)
         if verbosity >= 1:
             self.check_unused_keys(d)
         # The MCMC-family beta-ladder preprocessing now runs inside _build_config
@@ -277,15 +278,18 @@ class Configuration(object):
             if method_schema is not None:
                 effective.update(
                     config_schema.build_effective_method(method_schema, method_input))
-            # The one cross-fit_type reach (ADR-0013): when refine pulls in the
-            # Simplex refiner on a non-sim fit, overlay the whole Simplex schema as
-            # a coherent group (its six defaults overlaid by any simplex_* the user
-            # set). A sim fit already carries the group via its method schema above.
-            if Configuration._refine_pulls_in(d) and d.get('fit_type') != 'sim':
+            # The one cross-fit_type reach (ADR-0013/0015): when refine pulls in
+            # the chosen refiner (refine_method) on a fit that is not itself that
+            # refiner, overlay the whole refiner schema as a coherent group (its
+            # defaults overlaid by any of its keys the user set). A fit that *is*
+            # the refiner already carries the group via its own method schema above.
+            refiner_schema = Configuration._refiner_schema(d)
+            if (Configuration._refine_pulls_in(d) and refiner_schema is not None
+                    and d.get('fit_type') != d.get('refine_method', 'sim')):
                 refiner_input = {k: v for k, v in d.items()
-                                 if isinstance(k, str) and k in _REFINER_SCHEMA.owned_keys()}
+                                 if isinstance(k, str) and k in refiner_schema.owned_keys()}
                 effective.update(
-                    config_schema.build_effective_method(_REFINER_SCHEMA, refiner_input))
+                    config_schema.build_effective_method(refiner_schema, refiner_input))
         except ValidationError as e:
             raise PybnfError('Invalid configuration', 'Invalid configuration:\n%s' % e)
         effective.update(extras)
@@ -293,11 +297,41 @@ class Configuration(object):
 
     @staticmethod
     def _refine_pulls_in(conf_dict):
-        """True when ``refine`` will run the Simplex refiner over this fit's config,
-        so the whole Simplex schema must be present (ADR-0013). The single predicate
-        behind both the :meth:`_build_config` overlay and ``check_unused_keys``'s
-        ``alg == 'sim'`` exemption -- contains the refine fact in one place."""
+        """True when ``refine`` will run a refiner over this fit's config, so the
+        whole chosen-refiner schema must be present (ADR-0013/0015). The single
+        predicate behind both the :meth:`_build_config` overlay and
+        ``check_unused_keys``'s refiner-key exemption -- the refine fact in one
+        place."""
         return conf_dict.get('refine') == 1
+
+    @staticmethod
+    def _refiner_schema(conf_dict):
+        """The config schema of the refiner selected by ``refine_method`` (default
+        ``sim``), or ``None`` when ``refine_method`` is not a registered refiner.
+
+        Registry-keyed (ADR-0005/0015): adding a refiner is a ``refiner=True`` flag
+        on its ``register_fit_type``, with no edit here. An invalid ``refine_method``
+        is reported with a friendly error by :meth:`_check_refine_method`; this
+        helper degrades to ``None`` so the build does not also raise."""
+        method = conf_dict.get('refine_method', 'sim')
+        entry = FIT_TYPE_REGISTRY.get(method)
+        if entry is not None and entry.refiner:
+            return entry.schema
+        return None
+
+    @staticmethod
+    def _check_refine_method(conf_dict):
+        """Validate ``refine_method`` when ``refine == 1``: it must name a
+        registered refiner (``refiner=True``). Raises ``PybnfError`` otherwise.
+        A no-op when refine is off (or stripped, e.g. for ``check``)."""
+        if conf_dict.get('refine') != 1:
+            return
+        method = conf_dict.get('refine_method', 'sim')
+        entry = FIT_TYPE_REGISTRY.get(method)
+        if entry is None or not entry.refiner:
+            valid = ', '.join(sorted(c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner))
+            raise PybnfError('Invalid refine_method %s' % method,
+                             "Invalid refine_method '%s'. Options are: %s." % (method, valid))
 
     def _check_random_seed(self):
         """Validate the optional random seed before NumPy consumes it."""
@@ -322,8 +356,9 @@ class Configuration(object):
           runtime-defaulted keys it reads but does not model (``schema.valid_keys()``);
           absent for ``check``, which has no co-located schema, so its valid set is
           just global + structural;
-        * the refine->simplex group, when ``refine`` pulls in the Simplex refiner on a
-          non-``sim`` fit (the one cross-fit_type reach, ``_REFINER_SCHEMA``);
+        * the chosen-refiner group, when ``refine`` pulls in the ``refine_method``
+          refiner on a fit that is not itself that refiner (the one cross-fit_type
+          reach, ``_refiner_schema``, ADR-0013/0015);
         * :data:`STRUCTURAL_PASSTHROUGH` -- the schema-free always-valid keys.
 
         This is exactly the ownership ``_build_config`` partitions a raw dict by, so
@@ -333,9 +368,10 @@ class Configuration(object):
         entry = FIT_TYPE_REGISTRY.get(conf_dict.get('fit_type'))
         if entry is not None and entry.schema is not None:
             keys |= entry.schema.valid_keys()
-        if (Configuration._refine_pulls_in(conf_dict)
-                and conf_dict.get('fit_type') != 'sim'):
-            keys |= _REFINER_SCHEMA.valid_keys()
+        refiner_schema = Configuration._refiner_schema(conf_dict)
+        if (Configuration._refine_pulls_in(conf_dict) and refiner_schema is not None
+                and conf_dict.get('fit_type') != conf_dict.get('refine_method', 'sim')):
+            keys |= refiner_schema.valid_keys()
         return keys
 
     @staticmethod
@@ -783,23 +819,34 @@ class Configuration(object):
                 pass
             else:
                 raise PybnfError('Using the chi_sq_dynamic objective function requires the sigma__FREE parameter in the .conf file and the model file')        
+        # The start-point optimizers (Simplex, Powell, CMA-ES) begin from a single
+        # value per parameter, so they take the no-prior var/logvar keywords; every
+        # other method draws from a prior and takes uniform_var / normal_var / ...
+        # These are exactly the registered refiners (ADR-0015): a refiner is a
+        # start-point optimizer, so the two sets coincide and we derive one from
+        # the other rather than maintain a second hardcoded list.
+        start_point_types = {code for code, e in FIT_TYPE_REGISTRY.items() if e.refiner}
+        fit_type = self.config['fit_type']
         variables = []
         for k in self.config.keys():
             if isinstance(k, tuple):
                 if re.search('var$', k[0]):
-                    if self.config['fit_type'] == 'sim' and k[0] not in ('var', 'logvar'):
-                        raise PybnfError('Invalid Simplex variable type %s' % k[0],
-                               "You've specified the Simplex algorithm (fit_type = sim), "
+                    if fit_type in start_point_types and k[0] not in ('var', 'logvar'):
+                        names = ' / '.join(sorted(start_point_types))
+                        raise PybnfError('Invalid start-point variable type %s' % k[0],
+                               "You've specified a start-point optimizer (fit_type = %s; one of %s), "
                                "but defined variable %s with the %s keyword.\n"
-                               "For Simplex, you must instead define a single initial value for each variable\n"
-                               "using the var or logvar keyword (e.g. var=%s 42 )" % (k[1], k[0], k[1]))
+                               "For these optimizers, you must instead define a single initial value "
+                               "for each variable\nusing the var or logvar keyword (e.g. var=%s 42 )"
+                               % (fit_type, names, k[1], k[0], k[1]))
 
-                    if self.config['fit_type'] != 'sim' and k[0] in ('var', 'logvar'):
-                        raise PybnfError('Tried to use Simplex variable type %s in another algorithm.' % k[0],
+                    if fit_type not in start_point_types and k[0] in ('var', 'logvar'):
+                        names = ' / '.join(sorted(start_point_types))
+                        raise PybnfError('Tried to use start-point variable type %s in another algorithm.' % k[0],
                                "You've specified variable %s with keyword %s, but that keyword "
-                               "is only to be used with the Simplex algorithm (fit_type = sim)\n"
+                               "is only to be used with the start-point optimizers (fit_type = %s)\n"
                                "Valid keywords for other algorithms are: uniform_var, normal_var, \n"
-                               "lognormal_var, loguniform_var." % (k[1], k[0]))
+                               "lognormal_var, loguniform_var." % (k[1], k[0], names))
 
                     if k[0] in ('var', 'logvar'):
                         # 2nd number (step size) may be absent, must fill in appropriately

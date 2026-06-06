@@ -42,7 +42,7 @@ The box a proposal is folded back into during proposal arithmetic (the triangle-
 _Avoid_: box constraint, bounds (unqualified), limits
 
 **No Prior** (`var`, `logvar`):
-A free parameter given a single start value and no prior distribution — a Simplex start point. It still carries a scale (`logvar` is Log10), contributes nothing to the log prior, and cannot be prior-sampled.
+A free parameter given a single start value and no prior distribution — a start point for the start-point optimizers (Simplex, Powell, CMA-ES). It still carries a scale (`logvar` is Log10), contributes nothing to the log prior, and cannot be prior-sampled.
 _Avoid_: null parameter, fixed parameter (it is varied during the fit, just not prior-sampled)
 
 **PSet** (Parameter Set):
@@ -129,9 +129,13 @@ _Avoid_: repeat, trial, sample
 Refitting on resampled experimental data to estimate the uncertainty in the fitted parameters.
 _Avoid_: resampling run, jackknife
 
-**Refine** (`refine`):
-An optional Nelder–Mead Simplex polish run after the main fit completes, locally improving its best-fit PSet; enabled by `refine = 1`. It runs the Simplex algorithm on the *original* (non-Simplex) fit's configuration, so a refined fit of any fit_type needs the full set of Simplex settings available — the one cross-fit_type configuration reach in PyBNF. Skipped when the fit_type is already `sim`.
+**Refine** (`refine`, `refine_method`):
+An optional local-optimizer polish run after the main fit completes, locally improving its best-fit PSet; enabled by `refine = 1`. The optimizer is chosen by `refine_method` — one of the **Refiners** `sim` (Nelder–Mead Simplex, the default), `powell` (Powell), or `cmaes` (CMA-ES). It runs that optimizer on the *original* fit's configuration, so a refined fit of any fit_type needs the chosen refiner's full set of settings available — the one cross-fit_type configuration reach in PyBNF (a registry-keyed lookup off `refine_method`, ADR-0013/0015). Skipped when the fit_type already *is* the chosen refiner.
 _Avoid_: polish, local search, post-optimization
+
+**Refiner** / **Start-point optimizer** (registry `refiner=True`):
+A derivative-free local optimizer that begins from a single start point and can serve as a `refine_method`: Simplex (`sim`), Powell (`powell`), CMA-ES (`cmaes`). These are exactly the fit types that take the no-prior `var`/`logvar` start point. All search in the parameter sampling space `u` (ADR-0015).
+_Avoid_: local solver, polisher
 
 **Noise Model**:
 A probabilistic observation model mapping a deterministic prediction plus noise parameters to a distribution over the observed data; its negative log-likelihood is the objective value. PyBNF recognizes two **shapes**. A **Per-point Noise Model** has a log-likelihood that factors into a sum of independent per-observation terms (`chi_sq` = Gaussian, `neg_bin` = NegBinomial); it is defined by the three orthogonal axes distribution family × scale-the-noise-is-additive-on × location interpretation. A **Column-joint Noise Model** has per-observation contributions coupled across a whole data column, so the likelihood does not factor point-by-point (today only `kl`, the multinomial cross-entropy). Non-probabilistic objectives (`sos`, `sod`, `norm_sos`, `ave_norm_sos`) are losses, not noise models.
@@ -161,7 +165,7 @@ configuration, and the registry `family` field treat them distinctly (`mh`,
 `pt`, `am`, `dream`, `p_dream` form the Bayesian group).
 
 **Optimization Algorithm**:
-A fit type that searches for the single best-fitting PSet. Codes: `de` (Differential Evolution, the default), `ade` (Asynchronous DE), `pso` (Particle Swarm), `ss` (Scatter Search), `sim` (Nelder–Mead Simplex).
+A fit type that searches for the single best-fitting PSet. Codes: `de` (Differential Evolution, the default), `ade` (Asynchronous DE), `pso` (Particle Swarm), `ss` (Scatter Search), `sim` (Nelder–Mead Simplex), `powell` (Powell), `cmaes` (CMA-ES). The last three are the start-point **Refiners** (also usable as `refine_method`).
 _Avoid_: optimizer, minimizer, solver
 
 **Bayesian Sampler**:

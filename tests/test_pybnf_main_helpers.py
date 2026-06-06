@@ -43,6 +43,8 @@ _DISPATCH = [
     ('am', 'Adaptive_MCMC'),
     ('sa', 'SimulatedAnnealing'),
     ('sim', 'SimplexAlgorithm'),
+    ('powell', 'PowellAlgorithm'),
+    ('cmaes', 'CMAESAlgorithm'),
     ('ade', 'AsynchronousDifferentialEvolution'),
     ('dream', 'DreamAlgorithm'),
     ('p_dream', 'PDreamAlgorithm'),
@@ -80,9 +82,15 @@ def test_only_mh_and_sa_are_deprecated():
 
 def test_families_partition_the_codes():
     fam = {code: e.family for code, e in FIT_TYPE_REGISTRY.items()}
-    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa'}
+    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa', 'powell', 'cmaes'}
     assert {c for c, f in fam.items() if f == 'sampler'} == {'mh', 'pt', 'am', 'dream', 'p_dream'}
     assert {c for c, f in fam.items() if f == 'checker'} == {'check'}
+
+
+def test_refiners_are_the_start_point_optimizers():
+    """The ``refiner`` flag (refine_method targets, #403/ADR-0015) marks exactly
+    the start-point local optimizers: Simplex, Powell, CMA-ES."""
+    assert {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner} == {'sim', 'powell', 'cmaes'}
 
 
 # --- _create_algorithm reads the table (thin construct seam) ------------------

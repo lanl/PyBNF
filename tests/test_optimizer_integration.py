@@ -109,6 +109,44 @@ def test_simplex_finds_gaussian_mode(tmp_path):
     assert alg.trajectory.best_score() < 0.01
 
 
+def test_powell_finds_gaussian_mode(tmp_path):
+    """Powell's conjugate-direction method descends a smooth quadratic to its
+    minimum from a start point. Like Simplex, it needs single-value var/logvar
+    start points. On a diagonal-Gaussian (separable) objective each parabolic line
+    search is exact, so one cycle suffices; the budget is generous anyway."""
+    mean, var = [2.0, -1.0, 0.5], [1.0, 1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'powell', tgt, exp, n_params=3,
+        var_type='var', start=[0.0, 0.0, 0.0],
+        population_size=1, max_iterations=200, powell_step=1.0)
+    alg = algorithms.PowellAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 3)
+    assert np.allclose(recovered, mean, atol=0.05), recovered
+    assert alg.trajectory.best_score() < 0.01
+
+
+def test_cmaes_finds_gaussian_mode(tmp_path):
+    """CMA-ES recovers the Gaussian mode. It is started from a single point
+    (var/logvar) with an initial step ``cmaes_sigma0`` and adapts its search
+    distribution generation by generation until it concentrates on the mode."""
+    mean, var = [2.0, -1.0, 0.5], [1.0, 1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'cmaes', tgt, exp, n_params=3,
+        var_type='var', start=[0.0, 0.0, 0.0],
+        population_size=12, max_iterations=200, cmaes_sigma0=2.0,
+        random_seed=1234)
+    alg = algorithms.CMAESAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 3)
+    assert np.allclose(recovered, mean, atol=0.1), recovered
+    assert alg.trajectory.best_score() < 0.05
+
+
 def test_sa_finds_gaussian_mode(tmp_path):
     """Simulated annealing recovers the Gaussian mode on an all-uniform-prior fit.
 
@@ -163,6 +201,74 @@ def test_refine_on_nonsim_fit_runs_end_to_end(tmp_path):
     # refine==1 pulled it in (a plain de fit no longer has it)
     assert conf.config['refine'] == 1
     assert {'simplex_step', 'simplex_reflection', 'simplex_stop_tol'} <= set(conf.config)
+
+    alg = algorithms.DifferentialEvolution(conf)
+    H.drive(alg)
+    pre_refine_best = alg.trajectory.best_score()
+
+    # drive _refine_best_fit exactly as main() does, with the harness's fake cluster
+    cluster = types.SimpleNamespace(client=H.FakeClient())
+    pybnf_main._refine_best_fit(conf, alg, cluster, debug=False)  # must NOT raise
+
+    refined_best = alg.trajectory.best_score()
+    assert np.isfinite(refined_best)
+    assert refined_best <= pre_refine_best + 1e-9          # refine never worsens the best
+    assert np.allclose(H.best_params(alg, 2), mean, atol=0.25)
+
+
+@pytest.mark.parametrize('fit_type,cls', [
+    ('powell', algorithms.PowellAlgorithm),
+    ('cmaes', algorithms.CMAESAlgorithm),
+])
+def test_start_point_optimizer_is_picklable(tmp_path, fit_type, cls):
+    """``Algorithm.backup`` does ``pickle.dump((self, pending))``, and only IOError
+    is caught -- an unpicklable attribute would crash a backing-up run. Powell and
+    CMA-ES keep all search state as plain numpy/float/list (no generator, no
+    thread), precisely so backup/resume work like every other method (ADR-0015).
+    Guard that the optimizer pickle-round-trips both before and after a run."""
+    import pickle
+    mean, var = [2.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, fit_type, tgt, exp, n_params=2,
+        var_type='var', start=[0.0, 0.0], population_size=8, max_iterations=15)
+    alg = cls(conf)
+    pickle.loads(pickle.dumps(alg))   # constructed search state round-trips
+    H.drive(alg)
+    pickle.loads(pickle.dumps(alg))   # state after a completed run round-trips
+
+
+# refine_method -> the method schema keys its overlay must pull into a non-self
+# fit's effective config (the generalized refiner seam, #403/ADR-0015).
+_REFINER_KEYS = {
+    'powell': {'powell_step', 'powell_stop_tol'},
+    'cmaes': {'cmaes_sigma0', 'cmaes_stop_tol'},
+}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('refine_method', list(_REFINER_KEYS))
+def test_refine_method_on_nonself_fit_runs_end_to_end(tmp_path, refine_method):
+    """ADR-0015 runtime net: refine_method = powell|cmaes runs that optimizer over
+    a non-self (de) fit's effective config. Narrowing must pull the chosen refiner's
+    whole schema in via the refiner overlay; a half-populated config would KeyError
+    the instant the refiner's __init__ reads its own keys. Only actually running the
+    refine proves the overlaid keys are the ones the refiner reads (mirrors the
+    Simplex refine net above)."""
+    import types
+    from pybnf import pybnf as pybnf_main
+
+    mean, var = [2.0, -1.0], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    conf = H.make_config(
+        tmp_path, 'de', tgt, exp, n_params=2,
+        population_size=20, max_iterations=40, stop_tolerance=1e-7,
+        refine=1, refine_method=refine_method)
+    # the narrowed effective config carries the chosen refiner's coherent group ONLY
+    # because refine==1 + refine_method pulled it in (a plain de fit has neither set)
+    assert conf.config['refine'] == 1
+    assert conf.config['refine_method'] == refine_method
+    assert _REFINER_KEYS[refine_method] <= set(conf.config)
 
     alg = algorithms.DifferentialEvolution(conf)
     H.drive(alg)

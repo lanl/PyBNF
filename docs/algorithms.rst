@@ -26,6 +26,10 @@ Summary of Available Algorithms
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Simplex`_                  | Local search     | Synchronous     | Local optimization, or refinement of a result from another algorithm.     |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
+| `Powell`_                   | Local search     | Synchronous     | Local optimization, or refinement of a result from another algorithm.     |
++-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
+| `CMA-ES`_                   | Population-based | Synchronous     | Local optimization or refinement; robust on ill-conditioned objectives.   |
++-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Adaptive MCMC`_            | Metropolis       | Independent     | Finding probability distributions in challenging probablity landscapes    |
 |                             | sampling         | Markov Chains   |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
@@ -417,19 +421,108 @@ If in a given iteration, all k points resulted in Case 3 and did not update to P
 
 Applications
 ^^^^^^^^^^^^
-Local optimization with the simplex algorithm is useful for improving on an already known good solution. In PyBNF, the most common application is to apply the simplex algorithm to the best-fit result obtained from one of the other algorithms. You can automatically refine your final result with the simplex algorithm by setting the ``refine`` key to 1, and setting simplex config keys in addition to the config for your main algorithm. 
+Local optimization with the simplex algorithm is useful for improving on an already known good solution. In PyBNF, the most common application is to apply the simplex algorithm to the best-fit result obtained from one of the other algorithms. You can automatically refine your final result with the simplex algorithm by setting the ``refine`` key to 1, and setting simplex config keys in addition to the config for your main algorithm.
 
-It is also possible to run the Simplex algorithm on its own, using a custom starting point. In this case, you should use the ``var`` and ``log_var`` keys to specify your known starting point. 
+It is also possible to run the Simplex algorithm on its own, using a custom starting point. In this case, you should use the ``var`` and ``log_var`` keys to specify your known starting point.
+
+
+.. _refinement:
+
+Refinement (choosing a local optimizer)
+---------------------------------------
+PyBNF offers three derivative-free, black-box local optimizers for the post-fit
+polish step (``refine = 1``): `Simplex`_ (Nelder–Mead), `Powell`_, and `CMA-ES`_.
+Set ``refine_method`` to ``sim`` (the default, backward-compatible), ``powell``,
+or ``cmaes`` to choose; only the chosen optimizer's config keys are read. Each
+also runs standalone as its own ``fit_type`` (``sim`` / ``powell`` / ``cmaes``),
+started from a single point given with the ``var`` / ``logvar`` keys.
+
+All three need only objective values (no gradients), which suits PyBNF's
+black-box, often-noisy simulator objectives. As rough guidance:
+
+* **Simplex** — the long-standing default; a robust, low-overhead amoeba search.
+* **Powell** — conjugate-direction line minimization; often converges faster than
+  Simplex on smooth, well-behaved objectives.
+* **CMA-ES** — adapts a full covariance model of the search distribution, so it is
+  the most robust of the three on ill-conditioned or rotated (correlated)
+  objectives, at the cost of more evaluations per step. Being population-based, it
+  also parallelizes across the whole generation.
+
+
+.. _alg-powell:
+
+Powell
+------
+
+Algorithm
+^^^^^^^^^
+Powell's method is a derivative-free local optimizer that minimizes the objective
+by a sequence of one-dimensional line minimizations along a set of search
+directions (initially the coordinate axes). After each cycle of line searches it
+may replace one direction with the net direction of the cycle's progress, building
+up *conjugate* directions that give quadratic convergence on a quadratic bowl
+([Powell1964]_; see also [NumericalRecipes]_). PyBNF performs each line
+minimization by fitting a parabola to objective probes at ``±powell_step`` along
+the direction and jumping to its vertex — exact for a locally quadratic objective.
+
+Parallelization
+^^^^^^^^^^^^^^^
+Powell is fundamentally serial (each step depends on the previous), but the two
+symmetric probes of a line search are evaluated concurrently. The search runs in
+the parameter sampling space (log-scaled for log parameters), so a step is
+geometric for a log parameter.
+
+Applications
+^^^^^^^^^^^^
+Use Powell to refine an already-good solution (``refine = 1`` with
+``refine_method = powell``), or standalone (``fit_type = powell``) from a starting
+point given with the ``var`` / ``logvar`` keys. Tune ``powell_step`` (initial
+probe step), ``powell_stop_tol`` (per-cycle convergence), and
+``powell_max_iterations`` (cycle budget; defaults to ``max_iterations``).
+
+
+.. _alg-cmaes:
+
+CMA-ES
+------
+
+Algorithm
+^^^^^^^^^
+The Covariance Matrix Adaptation Evolution Strategy ([Hansen2001]_) is a
+derivative-free, population-based optimizer. Each generation it samples
+``population_size`` candidate parameter sets from a multivariate normal
+distribution and, from the best of them, updates the distribution's mean, overall
+step size, and full covariance matrix. Adapting the covariance lets the search
+stretch and rotate to match the local objective geometry, which makes CMA-ES
+notably robust on ill-conditioned and correlated problems.
+
+Parallelization
+^^^^^^^^^^^^^^^
+Synchronous and population-based: every candidate in a generation is evaluated in
+parallel, then the distribution is updated. Like the other start-point optimizers
+it searches in the parameter sampling space (log-scaled for log parameters).
+
+Applications
+^^^^^^^^^^^^
+Use CMA-ES to refine a result (``refine = 1`` with ``refine_method = cmaes``) or
+standalone (``fit_type = cmaes``) from a starting point given with the ``var`` /
+``logvar`` keys. The population size is ``population_size`` (at least 4) and the
+generation budget is ``max_iterations``; ``cmaes_sigma0`` sets the initial step
+size and ``cmaes_stop_tol`` the convergence threshold on the search distribution's
+spread.
 
 
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.
+.. [Hansen2001] Hansen, N.; Ostermeier, A. Completely Derandomized Self-Adaptation in Evolution Strategies. Evol. Comput. 2001, 9 (2), 159–195.
 .. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
 .. [Lee2007] Lee, D.; Wiswall, M. A Parallel Implementation of the Simplex Function Minimization Routine. Comput. Econ. 2007, 30 (2), 171–187.
 .. [Moraes2015] Moraes, A. O. S.; Mitre, J. F.; Lage, P. L. C.; Secchi, A. R. A Robust Parallel Algorithm of the Particle Swarm Optimization Method for Large Dimensional Engineering Problems. Appl. Math. Model. 2015, 39 (14), 4223–4241.
 .. [Penas2015] Penas, D. R.; González, P.; Egea, J. A.; Banga, J. R.; Doallo, R. Parallel Metaheuristics in Computational Biology: An Asynchronous Cooperative Enhanced Scatter Search Method. Procedia Comput. Sci. 2015, 51 (1), 630–639.
 .. [Penas2017] Penas, D. R.; González, P.; Egea, J. A.; Doallo, R.; Banga, J. R. Parameter Estimation in Large-Scale Systems Biology Models: A Parallel and Self-Adaptive Cooperative Strategy. BMC Bioinformatics 2017, 18 (1), 52.
+.. [Powell1964] Powell, M. J. D. An Efficient Method for Finding the Minimum of a Function of Several Variables without Calculating Derivatives. Comput. J. 1964, 7 (2), 155–162.
+.. [NumericalRecipes] Press, W. H.; Teukolsky, S. A.; Vetterling, W. T.; Flannery, B. P. Numerical Recipes: The Art of Scientific Computing, 3rd ed.; Cambridge University Press, 2007 (§10.7, Powell's method).
 .. [terBraak2008] ter Braak, C. J. F.; Vrugt, J. A. Differential Evolution Markov Chain with Snooker Updater and Fewer Chains. Stat. Comput. 2008, 18 (4), 435–446.
 .. [Vehtari2021] Vehtari, A.; Gelman, A.; Simpson, D.; Carpenter, B.; Bürkner, P.-C. Rank-Normalization, Folding, and Localization: An Improved R-hat for Assessing Convergence of MCMC. Bayesian Anal. 2021, 16 (2), 667–718.
 .. [Vrugt2016] Vrugt, J. A. Markov Chain Monte Carlo Simulation Using the DREAM Software Package: Theory, Concepts, and MATLAB Implementation. Environ. Model. Softw. 2016, 75, 273–316.

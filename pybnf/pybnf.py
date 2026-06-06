@@ -258,7 +258,7 @@ def _create_algorithm(config):
     fit_type = config.config['fit_type']
     entry = FIT_TYPE_REGISTRY.get(fit_type)
     if entry is None:
-        raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, am, dream, p_dream, check' % fit_type)
+        raise PybnfError('Invalid fit_type %s. Options are: %s' % (fit_type, ', '.join(FIT_TYPE_REGISTRY)))
     if entry.deprecated:
         msg = 'fit_type %s is deprecated and may be removed in a future release.' % fit_type
         logger.warning(msg)
@@ -267,28 +267,35 @@ def _create_algorithm(config):
 
 
 def _refine_best_fit(config, alg, cluster, debug):
-    """Refine the best-fit parameter set with the Simplex algorithm, if requested.
+    """Refine the best-fit parameter set with the chosen local optimizer, if
+    requested.
 
-    A no-op unless ``refine == 1``; skipped (with a message) when the original
-    fit already used Simplex. Reuses the algorithm's generated networks and
-    trajectory so refinement continues from the existing best fit.
+    A no-op unless ``refine == 1``; the refiner is the start-point optimizer named
+    by ``refine_method`` (Simplex / Powell / CMA-ES, #403/ADR-0015), dispatched
+    through the registry's ``refiner`` flag. Skipped (with a message) when the
+    original fit already used that same algorithm. Reuses the algorithm's generated
+    networks and trajectory so refinement continues from the existing best fit.
     """
     logger = logging.getLogger(__name__)
     if config.config['refine'] != 1:
         return
     logger.debug('Refinement requested for best fit parameter set')
-    if config.config['fit_type'] == 'sim':
-        logger.debug('Cannot refine further if Simplex algorithm was used for original fit')
-        print1("You specified refine=1, but refine uses the Simplex algorithm, which you already just ran."
-               "\nSkipping refine.")
-    else:
-        logger.debug('Refining further using the Simplex algorithm')
-        print1("Refining the best fit by the Simplex algorithm")
-        config.config['simplex_start_point'] = alg.trajectory.best_fit()
-        simplex = algs.SimplexAlgorithm(config, refine=True)
-        simplex.model_list = alg.model_list  # Reuse already-generated networks
-        simplex.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
-        simplex.run(cluster.client, debug=debug)
+    method = config.config['refine_method']
+    entry = FIT_TYPE_REGISTRY[method]   # validated by Configuration._check_refine_method
+    refiner_cls = entry.cls
+    name = entry.display_name
+    if config.config['fit_type'] == method:
+        logger.debug('Cannot refine further if the %s algorithm was used for the original fit' % name)
+        print1("You specified refine=1 with refine_method=%s, but that is the algorithm you just ran."
+               "\nSkipping refine." % method)
+        return
+    logger.debug('Refining further using the %s algorithm' % name)
+    print1("Refining the best fit by the %s algorithm" % name)
+    config.config[refiner_cls.START_POINT_KEY] = alg.trajectory.best_fit()
+    refiner = refiner_cls(config, refine=True)
+    refiner.model_list = alg.model_list  # Reuse already-generated networks
+    refiner.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+    refiner.run(cluster.client, debug=debug)
 
 
 def _run_bootstrapping(config, alg, cluster, debug):

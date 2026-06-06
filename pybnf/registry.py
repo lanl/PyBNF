@@ -32,6 +32,10 @@ class FitTypeEntry:
     (``PyBNFConfigModel`` subclass) that ``config._build_config`` validates this
     fit_type's keys against (M2.1 Stage b, ADR-0006); ``None`` until that method
     has been migrated, in which case its keys stay pass-through extras.
+    ``refiner`` marks a start-point local optimizer that ``refine = 1`` may run as
+    a post-fit polish (``refine_method``, #403, ADR-0015) -- ``sim`` / ``powell`` /
+    ``cmaes``; the chosen refiner's schema is the coherent group the refiner seam
+    in ``config.py`` pulls into a non-self fit's effective config.
     """
 
     cls: type
@@ -40,24 +44,26 @@ class FitTypeEntry:
     display_name: str = ''
     deprecated: bool = False
     schema: type = None
+    refiner: bool = False
 
 
 FIT_TYPE_REGISTRY: dict = {}
 
 
 def register_fit_type(*codes, family, display_name, kwargs=None, deprecated=False,
-                      schema=None):
+                      schema=None, refiner=False):
     """Class decorator registering ``codes`` -> the decorated Algorithm class.
 
     May be stacked to bind several codes with differing metadata to one class
     (e.g. ``pt`` / ``mh`` / ``sa`` all map to ``BasicBayesMCMCAlgorithm`` but
     differ in ``deprecated`` / ``kwargs``). ``schema`` is the method's
-    co-located Pydantic config model (M2.1 Stage b, ADR-0006).
+    co-located Pydantic config model (M2.1 Stage b, ADR-0006). ``refiner`` marks a
+    fit_type usable as a ``refine_method`` (#403, ADR-0015).
     """
     def deco(cls):
         entry = FitTypeEntry(cls=cls, kwargs=dict(kwargs or {}), family=family,
                              display_name=display_name, deprecated=deprecated,
-                             schema=schema)
+                             schema=schema, refiner=refiner)
         for code in codes:
             FIT_TYPE_REGISTRY[code] = entry
         return cls

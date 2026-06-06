@@ -218,6 +218,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -582,6 +586,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "reps_per_beta",
@@ -958,6 +966,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -1298,6 +1310,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "reps_per_beta",
@@ -1776,6 +1792,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "reps_per_beta",
@@ -2264,6 +2284,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -2718,6 +2742,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -3082,6 +3110,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "reps_per_beta",
@@ -3458,6 +3490,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -3737,6 +3773,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "save_best_data",
@@ -4047,6 +4087,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -4300,6 +4344,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -4505,6 +4553,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -4582,6 +4634,256 @@
      -10.0,
      10.0,
      true
+    ]
+   ]
+  ]
+ ],
+ "matrix/cmaes": [
+  "$map",
+  [
+   [
+    "backup_every",
+    1
+   ],
+   [
+    "bngl_backend",
+    "auto"
+   ],
+   [
+    "bootstrap",
+    0
+   ],
+   [
+    "bootstrap_max_obj",
+    null
+   ],
+   [
+    "cluster_type",
+    null
+   ],
+   [
+    "cmaes_sigma0",
+    0.5
+   ],
+   [
+    "cmaes_stop_tol",
+    1e-11
+   ],
+   [
+    "constraint_scale",
+    1.0
+   ],
+   [
+    "delete_old_files",
+    1
+   ],
+   [
+    "exp_data",
+    [
+     "$set",
+     [
+      "target.exp"
+     ]
+    ]
+   ],
+   [
+    "fit_type",
+    "cmaes"
+   ],
+   [
+    "gaussian.target",
+    [
+     "target.exp"
+    ]
+   ],
+   [
+    "ind_var_rounding",
+    0
+   ],
+   [
+    "initialization",
+    "lh"
+   ],
+   [
+    "local_objective_eval",
+    0
+   ],
+   [
+    "max_failed_simulations",
+    100
+   ],
+   [
+    "max_iterations",
+    10
+   ],
+   [
+    "min_objective",
+    [
+     "$float",
+     "-inf"
+    ]
+   ],
+   [
+    "models",
+    [
+     "$set",
+     [
+      "gaussian.target"
+     ]
+    ]
+   ],
+   [
+    "neg_bin_r",
+    24.0
+   ],
+   [
+    "normalization",
+    null
+   ],
+   [
+    "num_to_output",
+    5000
+   ],
+   [
+    "objfunc",
+    "direct_pass"
+   ],
+   [
+    "output_dir",
+    "pybnf_output"
+   ],
+   [
+    "output_every",
+    20
+   ],
+   [
+    "output_noise_trajectory",
+    null
+   ],
+   [
+    "output_trajectory",
+    null
+   ],
+   [
+    "parallel_count",
+    null
+   ],
+   [
+    "parallelize_models",
+    1
+   ],
+   [
+    "param_scan",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "population_size",
+    10
+   ],
+   [
+    "random_seed",
+    null
+   ],
+   [
+    "refine",
+    0
+   ],
+   [
+    "refine_method",
+    "sim"
+   ],
+   [
+    "save_best_data",
+    0
+   ],
+   [
+    "sbml_backend",
+    "roadrunner"
+   ],
+   [
+    "sbml_integrator",
+    "cvode"
+   ],
+   [
+    "sbml_ssa_strict",
+    1
+   ],
+   [
+    "scheduler_file",
+    null
+   ],
+   [
+    "scheduler_node",
+    null
+   ],
+   [
+    "simulation_dir",
+    null
+   ],
+   [
+    "smoothing",
+    1
+   ],
+   [
+    "starting_params",
+    null
+   ],
+   [
+    "stochastic_seed",
+    "auto"
+   ],
+   [
+    "time_course",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "time_length",
+    [
+     "$map",
+     []
+    ]
+   ],
+   [
+    "wall_time_gen",
+    3600
+   ],
+   [
+    "wall_time_sim",
+    0
+   ],
+   [
+    "worker_nodes",
+    null
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "logvar",
+      "p2"
+     ]
+    ],
+    [
+     3.0
+    ]
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "var",
+      "p1"
+     ]
+    ],
+    [
+     1.0,
+     0.5
     ]
    ]
   ]
@@ -4754,6 +5056,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "save_best_data",
@@ -5025,6 +5331,10 @@
     1
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -5071,6 +5381,568 @@
    [
     "simplex_stop_tol",
     0.0
+   ],
+   [
+    "simulation_dir",
+    null
+   ],
+   [
+    "smoothing",
+    1
+   ],
+   [
+    "starting_params",
+    null
+   ],
+   [
+    "stochastic_seed",
+    "auto"
+   ],
+   [
+    "stop_tolerance",
+    0.002
+   ],
+   [
+    "time_course",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "time_length",
+    [
+     "$map",
+     []
+    ]
+   ],
+   [
+    "wall_time_gen",
+    3600
+   ],
+   [
+    "wall_time_sim",
+    0
+   ],
+   [
+    "worker_nodes",
+    null
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "uniform_var",
+      "p1"
+     ]
+    ],
+    [
+     -10.0,
+     10.0,
+     true
+    ]
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "uniform_var",
+      "p2"
+     ]
+    ],
+    [
+     -10.0,
+     10.0,
+     true
+    ]
+   ]
+  ]
+ ],
+ "matrix/de_refine_cmaes": [
+  "$map",
+  [
+   [
+    "backup_every",
+    1
+   ],
+   [
+    "bngl_backend",
+    "auto"
+   ],
+   [
+    "bootstrap",
+    0
+   ],
+   [
+    "bootstrap_max_obj",
+    null
+   ],
+   [
+    "cluster_type",
+    null
+   ],
+   [
+    "cmaes_sigma0",
+    0.3
+   ],
+   [
+    "cmaes_stop_tol",
+    1e-11
+   ],
+   [
+    "constraint_scale",
+    1.0
+   ],
+   [
+    "de_strategy",
+    "rand1"
+   ],
+   [
+    "delete_old_files",
+    1
+   ],
+   [
+    "exp_data",
+    [
+     "$set",
+     [
+      "target.exp"
+     ]
+    ]
+   ],
+   [
+    "fit_type",
+    "de"
+   ],
+   [
+    "gaussian.target",
+    [
+     "target.exp"
+    ]
+   ],
+   [
+    "ind_var_rounding",
+    0
+   ],
+   [
+    "initialization",
+    "lh"
+   ],
+   [
+    "islands",
+    1
+   ],
+   [
+    "local_objective_eval",
+    0
+   ],
+   [
+    "max_failed_simulations",
+    100
+   ],
+   [
+    "max_iterations",
+    10
+   ],
+   [
+    "migrate_every",
+    20
+   ],
+   [
+    "min_objective",
+    [
+     "$float",
+     "-inf"
+    ]
+   ],
+   [
+    "models",
+    [
+     "$set",
+     [
+      "gaussian.target"
+     ]
+    ]
+   ],
+   [
+    "mutation_factor",
+    0.5
+   ],
+   [
+    "mutation_rate",
+    0.5
+   ],
+   [
+    "neg_bin_r",
+    24.0
+   ],
+   [
+    "normalization",
+    null
+   ],
+   [
+    "num_to_migrate",
+    3
+   ],
+   [
+    "num_to_output",
+    5000
+   ],
+   [
+    "objfunc",
+    "direct_pass"
+   ],
+   [
+    "output_dir",
+    "pybnf_output"
+   ],
+   [
+    "output_every",
+    20
+   ],
+   [
+    "output_noise_trajectory",
+    null
+   ],
+   [
+    "output_trajectory",
+    null
+   ],
+   [
+    "parallel_count",
+    null
+   ],
+   [
+    "parallelize_models",
+    1
+   ],
+   [
+    "param_scan",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "population_size",
+    10
+   ],
+   [
+    "random_seed",
+    null
+   ],
+   [
+    "refine",
+    1
+   ],
+   [
+    "refine_method",
+    "cmaes"
+   ],
+   [
+    "save_best_data",
+    0
+   ],
+   [
+    "sbml_backend",
+    "roadrunner"
+   ],
+   [
+    "sbml_integrator",
+    "cvode"
+   ],
+   [
+    "sbml_ssa_strict",
+    1
+   ],
+   [
+    "scheduler_file",
+    null
+   ],
+   [
+    "scheduler_node",
+    null
+   ],
+   [
+    "simulation_dir",
+    null
+   ],
+   [
+    "smoothing",
+    1
+   ],
+   [
+    "starting_params",
+    null
+   ],
+   [
+    "stochastic_seed",
+    "auto"
+   ],
+   [
+    "stop_tolerance",
+    0.002
+   ],
+   [
+    "time_course",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "time_length",
+    [
+     "$map",
+     []
+    ]
+   ],
+   [
+    "wall_time_gen",
+    3600
+   ],
+   [
+    "wall_time_sim",
+    0
+   ],
+   [
+    "worker_nodes",
+    null
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "uniform_var",
+      "p1"
+     ]
+    ],
+    [
+     -10.0,
+     10.0,
+     true
+    ]
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "uniform_var",
+      "p2"
+     ]
+    ],
+    [
+     -10.0,
+     10.0,
+     true
+    ]
+   ]
+  ]
+ ],
+ "matrix/de_refine_powell": [
+  "$map",
+  [
+   [
+    "backup_every",
+    1
+   ],
+   [
+    "bngl_backend",
+    "auto"
+   ],
+   [
+    "bootstrap",
+    0
+   ],
+   [
+    "bootstrap_max_obj",
+    null
+   ],
+   [
+    "cluster_type",
+    null
+   ],
+   [
+    "constraint_scale",
+    1.0
+   ],
+   [
+    "de_strategy",
+    "rand1"
+   ],
+   [
+    "delete_old_files",
+    1
+   ],
+   [
+    "exp_data",
+    [
+     "$set",
+     [
+      "target.exp"
+     ]
+    ]
+   ],
+   [
+    "fit_type",
+    "de"
+   ],
+   [
+    "gaussian.target",
+    [
+     "target.exp"
+    ]
+   ],
+   [
+    "ind_var_rounding",
+    0
+   ],
+   [
+    "initialization",
+    "lh"
+   ],
+   [
+    "islands",
+    1
+   ],
+   [
+    "local_objective_eval",
+    0
+   ],
+   [
+    "max_failed_simulations",
+    100
+   ],
+   [
+    "max_iterations",
+    10
+   ],
+   [
+    "migrate_every",
+    20
+   ],
+   [
+    "min_objective",
+    [
+     "$float",
+     "-inf"
+    ]
+   ],
+   [
+    "models",
+    [
+     "$set",
+     [
+      "gaussian.target"
+     ]
+    ]
+   ],
+   [
+    "mutation_factor",
+    0.5
+   ],
+   [
+    "mutation_rate",
+    0.5
+   ],
+   [
+    "neg_bin_r",
+    24.0
+   ],
+   [
+    "normalization",
+    null
+   ],
+   [
+    "num_to_migrate",
+    3
+   ],
+   [
+    "num_to_output",
+    5000
+   ],
+   [
+    "objfunc",
+    "direct_pass"
+   ],
+   [
+    "output_dir",
+    "pybnf_output"
+   ],
+   [
+    "output_every",
+    20
+   ],
+   [
+    "output_noise_trajectory",
+    null
+   ],
+   [
+    "output_trajectory",
+    null
+   ],
+   [
+    "parallel_count",
+    null
+   ],
+   [
+    "parallelize_models",
+    1
+   ],
+   [
+    "param_scan",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "population_size",
+    10
+   ],
+   [
+    "powell_step",
+    1.0
+   ],
+   [
+    "powell_stop_tol",
+    1e-05
+   ],
+   [
+    "random_seed",
+    null
+   ],
+   [
+    "refine",
+    1
+   ],
+   [
+    "refine_method",
+    "powell"
+   ],
+   [
+    "save_best_data",
+    0
+   ],
+   [
+    "sbml_backend",
+    "roadrunner"
+   ],
+   [
+    "sbml_integrator",
+    "cvode"
+   ],
+   [
+    "sbml_ssa_strict",
+    1
+   ],
+   [
+    "scheduler_file",
+    null
+   ],
+   [
+    "scheduler_node",
+    null
    ],
    [
     "simulation_dir",
@@ -5351,6 +6223,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "reps_per_beta",
@@ -5634,6 +6510,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -5901,6 +6781,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "save_best_data",
@@ -6172,6 +7056,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -6441,6 +7329,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -6536,6 +7428,256 @@
      -10.0,
      10.0,
      true
+    ]
+   ]
+  ]
+ ],
+ "matrix/powell": [
+  "$map",
+  [
+   [
+    "backup_every",
+    1
+   ],
+   [
+    "bngl_backend",
+    "auto"
+   ],
+   [
+    "bootstrap",
+    0
+   ],
+   [
+    "bootstrap_max_obj",
+    null
+   ],
+   [
+    "cluster_type",
+    null
+   ],
+   [
+    "constraint_scale",
+    1.0
+   ],
+   [
+    "delete_old_files",
+    1
+   ],
+   [
+    "exp_data",
+    [
+     "$set",
+     [
+      "target.exp"
+     ]
+    ]
+   ],
+   [
+    "fit_type",
+    "powell"
+   ],
+   [
+    "gaussian.target",
+    [
+     "target.exp"
+    ]
+   ],
+   [
+    "ind_var_rounding",
+    0
+   ],
+   [
+    "initialization",
+    "lh"
+   ],
+   [
+    "local_objective_eval",
+    0
+   ],
+   [
+    "max_failed_simulations",
+    100
+   ],
+   [
+    "max_iterations",
+    10
+   ],
+   [
+    "min_objective",
+    [
+     "$float",
+     "-inf"
+    ]
+   ],
+   [
+    "models",
+    [
+     "$set",
+     [
+      "gaussian.target"
+     ]
+    ]
+   ],
+   [
+    "neg_bin_r",
+    24.0
+   ],
+   [
+    "normalization",
+    null
+   ],
+   [
+    "num_to_output",
+    5000
+   ],
+   [
+    "objfunc",
+    "direct_pass"
+   ],
+   [
+    "output_dir",
+    "pybnf_output"
+   ],
+   [
+    "output_every",
+    20
+   ],
+   [
+    "output_noise_trajectory",
+    null
+   ],
+   [
+    "output_trajectory",
+    null
+   ],
+   [
+    "parallel_count",
+    null
+   ],
+   [
+    "parallelize_models",
+    1
+   ],
+   [
+    "param_scan",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "population_size",
+    10
+   ],
+   [
+    "powell_step",
+    0.3
+   ],
+   [
+    "powell_stop_tol",
+    1e-05
+   ],
+   [
+    "random_seed",
+    null
+   ],
+   [
+    "refine",
+    0
+   ],
+   [
+    "refine_method",
+    "sim"
+   ],
+   [
+    "save_best_data",
+    0
+   ],
+   [
+    "sbml_backend",
+    "roadrunner"
+   ],
+   [
+    "sbml_integrator",
+    "cvode"
+   ],
+   [
+    "sbml_ssa_strict",
+    1
+   ],
+   [
+    "scheduler_file",
+    null
+   ],
+   [
+    "scheduler_node",
+    null
+   ],
+   [
+    "simulation_dir",
+    null
+   ],
+   [
+    "smoothing",
+    1
+   ],
+   [
+    "starting_params",
+    null
+   ],
+   [
+    "stochastic_seed",
+    "auto"
+   ],
+   [
+    "time_course",
+    [
+     "$tuple",
+     []
+    ]
+   ],
+   [
+    "time_length",
+    [
+     "$map",
+     []
+    ]
+   ],
+   [
+    "wall_time_gen",
+    3600
+   ],
+   [
+    "wall_time_sim",
+    0
+   ],
+   [
+    "worker_nodes",
+    null
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "logvar",
+      "p2"
+     ]
+    ],
+    [
+     3.0
+    ]
+   ],
+   [
+    [
+     "$tuple",
+     [
+      "var",
+      "p1"
+     ]
+    ],
+    [
+     1.0,
+     0.5
     ]
    ]
   ]
@@ -6711,6 +7853,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "save_best_data",
@@ -7017,6 +8163,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "reps_per_beta",
@@ -7327,6 +8477,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "reps_per_beta",
     1
    ],
@@ -7598,6 +8752,10 @@
     0
    ],
    [
+    "refine_method",
+    "sim"
+   ],
+   [
     "save_best_data",
     0
    ],
@@ -7841,6 +8999,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "save_best_data",
@@ -8107,6 +9269,10 @@
    [
     "refine",
     0
+   ],
+   [
+    "refine_method",
+    "sim"
    ],
    [
     "save_best_data",

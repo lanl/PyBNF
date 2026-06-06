@@ -220,6 +220,57 @@ max_iterations = 10
 simplex_step = 0.3
 wall_time_sim = 0
 """,
+    # powell + cmaes: the two new start-point optimizers (#403/ADR-0015). Like sim
+    # they take the no-prior var/logvar start point; each narrows to its own schema.
+    'matrix/powell': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = powell
+var = p1 1 0.5
+logvar = p2 3
+population_size = 10
+max_iterations = 10
+powell_step = 0.3
+wall_time_sim = 0
+""",
+    'matrix/cmaes': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = cmaes
+var = p1 1 0.5
+logvar = p2 3
+population_size = 10
+max_iterations = 10
+cmaes_sigma0 = 0.5
+wall_time_sim = 0
+""",
+    # de + refine=1 + refine_method = powell | cmaes: the generalized refiner seam
+    # (ADR-0015) pulls the *chosen* refiner's whole schema into a non-self fit as a
+    # coherent group -- the analog of matrix/de_refine (which uses the default sim).
+    'matrix/de_refine_powell': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = de
+refine = 1
+refine_method = powell
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+""",
+    'matrix/de_refine_cmaes': """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = de
+refine = 1
+refine_method = cmaes
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+""",
     # --- samplers (preprocessing-heavy) ---
     'matrix/mh': """
 model = gaussian.target : target.exp

@@ -47,6 +47,8 @@ from .optimizers.differential_evolution import (
 from .optimizers.scatter_search import ScatterSearch as ScatterSearch
 from .optimizers.simplex import SimplexAlgorithm as SimplexAlgorithm
 from .optimizers.simulated_annealing import SimulatedAnnealing as SimulatedAnnealing
+from .optimizers.powell import PowellAlgorithm as PowellAlgorithm
+from .optimizers.cmaes import CMAESAlgorithm as CMAESAlgorithm
 from .samplers.dream import DreamAlgorithm as DreamAlgorithm
 from .samplers.pdream import PDreamAlgorithm as PDreamAlgorithm
 from .samplers.basic_mcmc import BasicBayesMCMCAlgorithm as BasicBayesMCMCAlgorithm

@@ -32,7 +32,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'hist_bins', 'refine', 'simplex_max_iterations', 'wall_time_sim', 'wall_time_gen', 'verbosity',
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
                'local_objective_eval', 'reps_per_beta', 'save_best_data', 'parallelize_models', 'adaptive', 'continue_run',
-               'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size',
+               'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size', 'powell_max_iterations',
                'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
@@ -40,7 +40,8 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'simplex_reflection', 'simplex_expansion', 'simplex_contraction', 'simplex_shrink', 'cooling',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
-                 'rhat_threshold', 'snooker_prob']
+                 'rhat_threshold', 'snooker_prob',
+                 'powell_step', 'powell_stop_tol', 'cmaes_sigma0', 'cmaes_stop_tol']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
 # The prior-family var keywords are derived from the registry (ADR-0010): each
 # family yields {base}_var (linear) + log{base}_var (log10). Bounded-support
@@ -52,7 +53,7 @@ var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
-              'outlier_method']
+              'outlier_method', 'refine_method']
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
