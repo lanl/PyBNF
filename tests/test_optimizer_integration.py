@@ -302,3 +302,30 @@ def test_de_finds_banana_valley(tmp_path):
 
     recovered = H.best_params(alg, 2)
     assert np.allclose(recovered, [a, a ** 2], atol=0.2), recovered
+
+
+@pytest.mark.slow
+def test_cmaes_finds_banana_valley(tmp_path):
+    """CMA-ES finds the Rosenbrock/banana minimum at (a, a^2). The curved,
+    ill-conditioned valley is exactly what the covariance adaptation is for, so
+    this exercises the rank-one/rank-mu C update and step-size control that the
+    well-conditioned Gaussian test does not.
+
+    (No analogous Powell test: like Simplex, Powell is a *local* search, and on
+    the banana every valley point (x, x^2) is a local minimum of both coordinate
+    slices, so axis line searches stall — a local optimizer is not expected to
+    cross the valley globally. CMA-ES is population-based and semi-global, so it
+    can. Powell's local convergence is covered by the Gaussian and refine tests.)
+    """
+    a, b = 1.0, 100.0
+    tgt, exp = H.write_target(tmp_path, H.banana_spec(a, b))
+    conf = H.make_config(
+        tmp_path, 'cmaes', tgt, exp, n_params=2,
+        var_type='var', start=[-1.0, 1.0],
+        population_size=16, max_iterations=400, cmaes_sigma0=0.5,
+        random_seed=1234)
+    alg = algorithms.CMAESAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, [a, a ** 2], atol=0.05), recovered
