@@ -109,14 +109,14 @@ class MCMCFamilyConfig(PyBNFConfigModel):
             if 'beta' in conf_dict:
                 print1("Warning: Ignoring config key 'beta' because it is overridden by config key 'beta_range'")
             if conf_dict['fit_type'] != 'pt':
-                print1("Warning: You used 'beta_range' with the method %s. This is an odd thing to do. Usually, you "
-                       "would want all your replicates starting at the same beta value." % conf_dict['fit_type'])
+                print1("Warning: You used 'beta_range' with the method {}. This is an odd thing to do. Usually, you "
+                       "would want all your replicates starting at the same beta value.".format(conf_dict['fit_type']))
             betalist = list(np.geomspace(conf_dict['beta_range'][0], conf_dict['beta_range'][1], subpop_size))
         elif len(conf_dict['beta']) > 1:
             betalist = conf_dict['beta']
             if conf_dict['fit_type'] != 'pt':
-                print1("Warning: You specified multiple beta values with the method %s. This is an odd thing to do. "
-                       "Usually, you would specify one beta value to use with all your replicates. " % conf_dict['fit_type'])
+                print1("Warning: You specified multiple beta values with the method {}. This is an odd thing to do. "
+                       "Usually, you would specify one beta value to use with all your replicates. ".format(conf_dict['fit_type']))
             if len(betalist) != subpop_size:
                 print1("Warning: You specified %i beta values, so I will run %i replicates instead of using your "
                        "population_size setting" % (len(betalist), len(betalist)*conf_dict['reps_per_beta']))
@@ -259,7 +259,7 @@ class BayesianAlgorithm(Algorithm):
         for v, prior_var in self.prior.items():
             contribution = prior_var.prior_logpdf(pset[v])
             if not np.isfinite(contribution) and prior_var.has_bounded_support:
-                logger.warning('Box-constrained parameter %s reached a value outside the box.' % v)
+                logger.warning(f'Box-constrained parameter {v} reached a value outside the box.')
             total += contribution
         return total
 
@@ -307,7 +307,7 @@ class BayesianAlgorithm(Algorithm):
         if dat.ndim < 2 or dat.shape[0] == 0:
             return
         n_samples = dat.shape[0]
-        filepath = self.config.config['output_dir'] + '/Results/constraint_satisfaction%s.txt' % file_ext
+        filepath = self.config.config['output_dir'] + f'/Results/constraint_satisfaction{file_ext}.txt'
         with open(filepath, 'w') as f:
             f.write('# constraint\tpercent_satisfied\tn_satisfied\tn_total\n')
             for i, c in enumerate(self.all_constraints):
@@ -341,7 +341,7 @@ class BayesianAlgorithm(Algorithm):
 
         for i in range(len(self.variables)):
             v = self.variables[i]
-            fname = self.config.config['output_dir']+'/Results/Histograms/%s%s.txt' % (v.name, file_ext)
+            fname = self.config.config['output_dir']+f'/Results/Histograms/{v.name}{file_ext}.txt'
             # For log-space variables, we want the histogram in log space
             if v.log_space:
                 histdata = np.log10(dat_array[:, i])
@@ -362,7 +362,7 @@ class BayesianAlgorithm(Algorithm):
                 # (silently wraps to the wrong end via negative indexing).
                 min_index = max(0, int(np.round(n/2 - want/2)))
                 max_index = min(n - 1, int(np.round(n/2 + want/2 - 1)))
-                file.write('%s\t%s\t%s\n' % (v.name, sorted_data[min_index], sorted_data[max_index]))
+                file.write(f'{v.name}\t{sorted_data[min_index]}\t{sorted_data[max_index]}\n')
 
         for file in cred_files:
             file.close()
@@ -394,22 +394,22 @@ class BayesianAlgorithm(Algorithm):
         max_rhat = None
         if rhat is not None:
             max_rhat = np.nanmax(rhat)
-            print1('Max R-hat: %.4f' % max_rhat)
-            print2('R-hat per parameter: %s' % str(np.round(rhat, 4)))
-            logger.info('R-hat values: %s' % str(rhat))
+            print1(f'Max R-hat: {max_rhat:.4f}')
+            print2(f'R-hat per parameter: {str(np.round(rhat, 4))}')
+            logger.info(f'R-hat values: {str(rhat)}')
 
         bulk_ess, tail_ess = self.compute_ess()
         if bulk_ess is not None:
-            print1('Min bulk ESS: %.1f  Min tail ESS: %.1f' % (np.nanmin(bulk_ess), np.nanmin(tail_ess)))
-            print2('Bulk ESS per parameter: %s' % str(np.round(bulk_ess, 1)))
-            print2('Tail ESS per parameter: %s' % str(np.round(tail_ess, 1)))
-            logger.info('Bulk ESS: %s' % str(bulk_ess))
-            logger.info('Tail ESS: %s' % str(tail_ess))
+            print1(f'Min bulk ESS: {np.nanmin(bulk_ess):.1f}  Min tail ESS: {np.nanmin(tail_ess):.1f}')
+            print2(f'Bulk ESS per parameter: {str(np.round(bulk_ess, 1))}')
+            print2(f'Tail ESS per parameter: {str(np.round(tail_ess, 1))}')
+            logger.info(f'Bulk ESS: {str(bulk_ess)}')
+            logger.info(f'Tail ESS: {str(tail_ess)}')
 
             if self.total_evaluations > 0:
                 ess_per_eval = bulk_ess / self.total_evaluations
-                print2('Bulk ESS/evaluation: %s' % str(np.round(ess_per_eval, 6)))
-                logger.info('Bulk ESS/evaluation: %s' % str(ess_per_eval))
+                print2(f'Bulk ESS/evaluation: {str(np.round(ess_per_eval, 6))}')
+                logger.info(f'Bulk ESS/evaluation: {str(ess_per_eval)}')
 
             # Write diagnostics to file
             self._write_diagnostics(iteration, rhat, bulk_ess, tail_ess)
@@ -422,7 +422,7 @@ class BayesianAlgorithm(Algorithm):
                 and iteration > self.burn_in
                 and max_rhat is not None
                 and max_rhat <= self.rhat_threshold):
-            print1('R-hat converged (%.4f <= %.4f). Stopping.' % (max_rhat, self.rhat_threshold))
+            print1(f'R-hat converged ({max_rhat:.4f} <= {self.rhat_threshold:.4f}). Stopping.')
             self.update_histograms('_final')
             self.report_constraint_satisfaction('_final')
             return True
@@ -437,13 +437,13 @@ class BayesianAlgorithm(Algorithm):
             if write_header:
                 cols = ['iteration', 'total_evaluations']
                 for name in param_names:
-                    cols.extend(['rhat_%s' % name, 'bulk_ess_%s' % name, 'tail_ess_%s' % name])
+                    cols.extend([f'rhat_{name}', f'bulk_ess_{name}', f'tail_ess_{name}'])
                 f.write('# ' + '\t'.join(cols) + '\n')
             vals = [str(iteration), str(self.total_evaluations)]
             for i in range(len(param_names)):
-                rhat_val = '%.6f' % rhat[i] if rhat is not None else 'nan'
-                bulk_val = '%.2f' % bulk_ess[i] if bulk_ess is not None else 'nan'
-                tail_val = '%.2f' % tail_ess[i] if tail_ess is not None else 'nan'
+                rhat_val = f'{rhat[i]:.6f}' if rhat is not None else 'nan'
+                bulk_val = f'{bulk_ess[i]:.2f}' if bulk_ess is not None else 'nan'
+                tail_val = f'{tail_ess[i]:.2f}' if tail_ess is not None else 'nan'
                 vals.extend([rhat_val, bulk_val, tail_val])
             f.write('\t'.join(vals) + '\n')
 

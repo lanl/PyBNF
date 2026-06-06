@@ -236,11 +236,11 @@ class CMAESAlgorithm(StartPointOptimizer):
             print1('Completed %i of %i CMA-ES generations' % (self.generation, self.max_generations))
         else:
             print2('Completed %i of %i CMA-ES generations' % (self.generation, self.max_generations))
-        print2('Current best objective: %f, sigma %g' % (self.gen_score[order[0]], self.sigma))
+        print2(f'Current best objective: {self.gen_score[order[0]]:f}, sigma {self.sigma:g}')
 
         stop = self._stop_reason()
         if stop is not None:
-            logger.info('CMA-ES stopping: %s' % stop)
+            logger.info(f'CMA-ES stopping: {stop}')
             return 'STOP'
         return self._sample_generation()
 
@@ -253,6 +253,5 @@ class CMAESAlgorithm(StartPointOptimizer):
         # Largest principal standard deviation of the search distribution.
         principal = self.sigma * float(np.max(self.d))
         if principal < self.stop_tol:
-            return ('search distribution converged (principal step %.3g < %g)'
-                    % (principal, self.stop_tol))
+            return (f'search distribution converged (principal step {principal:.3g} < {self.stop_tol:g})')
         return None

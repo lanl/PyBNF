@@ -106,9 +106,9 @@ class Adaptive_MCMC(BayesianAlgorithm):
             if missing:
                 raise PybnfError(
                     'continue_run = 1 requires adaptive files from a completed prior run, '
-                    'but the following files are missing from %s: %s. '
+                    'but the following files are missing from {}: {}. '
                     'Run the model first without continue_run, or check that output_dir '
-                    'points to a previous run\'s output.' % (adaptive_dir, ', '.join(missing)))
+                    'points to a previous run\'s output.'.format(adaptive_dir, ', '.join(missing)))
             self.diff = [self.step_size] * self.num_parallel
             self.diff_best = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt')
             self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables))) 
@@ -328,8 +328,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 return 'STOP'
             # Check if it's time to report stuff
             if self.iteration[index] % 10 == 0:
-                print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
-                print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
+                print2(f'Acceptance rates: {str(self.acceptance_rates)}\n')
+                print2(f'Current -Ln Posteriors: {str(self.ln_current_P)}')
             print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
 
             

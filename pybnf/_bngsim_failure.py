@@ -21,7 +21,7 @@ def _format_param_set(param_set: Any) -> str:
     try:
         keys = sorted(param_set.keys())
     except Exception:
-        return '  (parameter set unavailable: %r)\n' % (param_set,)
+        return f'  (parameter set unavailable: {param_set!r})\n'
     if not keys:
         return '  (parameter set is empty)\n'
     lines = []
@@ -29,8 +29,8 @@ def _format_param_set(param_set: Any) -> str:
         try:
             value = param_set[key]
         except Exception as exc:
-            value = '<unreadable: %s>' % exc
-        lines.append('  %s = %s' % (key, value))
+            value = f'<unreadable: {exc}>'
+        lines.append(f'  {key} = {value}')
     return '\n'.join(lines) + '\n'
 
 
@@ -41,13 +41,13 @@ def _format_action_info(info: Optional[Mapping[str, Any]]) -> str:
     for key in ('action_index', 'method', 'suffix', 'seed', 'gml',
                 't_start', 't_end', 'n_steps'):
         if key in info and info[key] is not None:
-            lines.append('  %s: %s' % (key, info[key]))
+            lines.append(f'  {key}: {info[key]}')
     extras = {k: v for k, v in info.items() if k not in {
         'action_index', 'method', 'suffix', 'seed', 'gml',
         't_start', 't_end', 'n_steps',
     } and v is not None}
     for key in sorted(extras):
-        lines.append('  %s: %s' % (key, extras[key]))
+        lines.append(f'  {key}: {extras[key]}')
     if not lines:
         return '  (no action context recorded)\n'
     return '\n'.join(lines) + '\n'
@@ -75,7 +75,7 @@ def write_failure_report(
     if not os.path.isdir(folder):
         return None
 
-    target = os.path.join(folder, '%s.log' % filename)
+    target = os.path.join(folder, f'{filename}.log')
     model_name = getattr(model, 'name', None) or '<unknown>'
     param_set = getattr(model, 'param_set', None)
     tb_text = ''.join(
@@ -84,13 +84,13 @@ def write_failure_report(
 
     body = []
     body.append('# BNGsim failure report')
-    body.append('backend: %s' % backend)
+    body.append(f'backend: {backend}')
     body.append('bngsim_version: %s' % (bngsim_version or '<unknown>'))
-    body.append('model_name: %s' % model_name)
-    body.append('job_filename: %s' % filename)
+    body.append(f'model_name: {model_name}')
+    body.append(f'job_filename: {filename}')
     if input_path:
-        body.append('input_path: %s' % input_path)
-        body.append('input_present: %s' % os.path.isfile(input_path))
+        body.append(f'input_path: {input_path}')
+        body.append(f'input_present: {os.path.isfile(input_path)}')
     else:
         body.append('input_path: <not recorded>')
     body.append('')
@@ -100,9 +100,7 @@ def write_failure_report(
     body.append('parameters:')
     body.append(_format_param_set(param_set).rstrip('\n'))
     body.append('')
-    body.append('exception_type: %s.%s' % (
-        type(exception).__module__, type(exception).__qualname__,
-    ))
+    body.append(f'exception_type: {type(exception).__module__}.{type(exception).__qualname__}')
     body.append('exception_message: %s' % (str(exception) or '<empty>'))
     body.append('traceback:')
     body.append(tb_text.rstrip('\n'))

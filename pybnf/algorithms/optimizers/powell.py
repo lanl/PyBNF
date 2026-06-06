@@ -189,7 +189,7 @@ class PowellAlgorithm(StartPointOptimizer):
             return self._after_line_point()
         if self.phase == 'extrap':
             return self._after_extrap()
-        raise RuntimeError('Internal error in PowellAlgorithm: phase %r' % self.phase)
+        raise RuntimeError(f'Internal error in PowellAlgorithm: phase {self.phase!r}')
 
     def _begin_cycle(self):
         self.cycle_start_point = self.point.copy()
@@ -314,7 +314,7 @@ class PowellAlgorithm(StartPointOptimizer):
             print1('Completed %i of %i Powell cycles' % (self.cycle, self.max_cycles))
         else:
             print2('Completed %i of %i Powell cycles' % (self.cycle, self.max_cycles))
-        print2('Current best objective: %f' % self.fval)
+        print2(f'Current best objective: {self.fval:f}')
         if self.cycle >= self.max_cycles:
             return 'STOP'
         return self._begin_cycle()
@@ -325,7 +325,7 @@ class PowellAlgorithm(StartPointOptimizer):
         for name, value in self.batch.items():
             if name.endswith('_' + label):
                 return value
-        raise RuntimeError('Powell: missing batch result %r' % label)
+        raise RuntimeError(f'Powell: missing batch result {label!r}')
 
 
 class _BrentLineSearch:
@@ -430,7 +430,7 @@ class _BrentLineSearch:
         if self.phase == 'brent':
             self._brent_incorporate(t, f)
             return self._brent_propose()
-        raise RuntimeError('Internal error in _BrentLineSearch: phase %r' % self.phase)
+        raise RuntimeError(f'Internal error in _BrentLineSearch: phase {self.phase!r}')
 
     # -- bracketing --------------------------------------------------------- #
     def _after_probe_plus(self, t, f):

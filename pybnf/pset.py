@@ -69,7 +69,7 @@ def _rewrite_tfun_file_refs(text, path_map):
         path_ref = match.group('path')
         if path_ref not in path_map:
             return match.group(0)
-        return '%s%s%s%s' % (
+        return '{}{}{}{}'.format(
             match.group('prefix'),
             match.group('quote'),
             path_map[path_ref],
@@ -104,11 +104,10 @@ def _stage_and_rewrite_tfun_files(text, source_dir, dest_dir):
         source_path = os.path.abspath(os.path.join(source_dir, path_ref))
         if not os.path.isfile(source_path):
             raise FileNotFoundError(
-                "Required tfun file '%s' referenced from '%s' was not found at '%s'" %
-                (path_ref, source_dir, source_path)
+                f"Required tfun file '{path_ref}' referenced from '{source_dir}' was not found at '{source_path}'"
             )
 
-        staged_name = '%s_%s' % (
+        staged_name = '{}_{}'.format(
             hashlib.sha1(path_ref.encode('utf-8')).hexdigest()[:12],
             os.path.basename(path_ref),
         )
@@ -221,7 +220,7 @@ class Model:
         raise NotImplementedError("save is not implemented")
 
     def save_all(self, file_prefix):
-        logger.warning('Model of type %s does not implement save_all(). Falling back to save()' % type(self))
+        logger.warning(f'Model of type {type(self)} does not implement save_all(). Falling back to save()')
         self.save(file_prefix)
 
     def execute(self, folder, filename, timeout):
@@ -238,7 +237,7 @@ class Model:
         raise NotImplementedError("Subclasses of Model must override execute()")
 
     def add_action(self, action):
-        raise PybnfError('Model type %s does not support adding actions' % type(self))
+        raise PybnfError(f'Model type {type(self)} does not support adding actions')
 
     def get_suffixes(self):
         """
@@ -257,7 +256,7 @@ class Model:
         try:
             self.mutants.append(mut_set)
         except AttributeError:
-            raise PybnfError('Model type %s does not support adding mutations' % type(self))
+            raise PybnfError(f'Model type {type(self)} does not support adding mutations')
 
 
 class BNGLModel(Model):
@@ -425,8 +424,8 @@ class BNGLModel(Model):
             self.generate_network_line = 'generate_network({overwrite=>1})'
 
         if len(param_names_set) == 0 and not suppress_free_param_error:
-            raise ModelError("No free parameters found in model %s. Your model file needs to include variable names "
-                             "that end in '__FREE' to tell BioNetFit which parameters to fit." % bngl_file)
+            raise ModelError(f"No free parameters found in model {bngl_file}. Your model file needs to include variable names "
+                             "that end in '__FREE' to tell BioNetFit which parameters to fit.")
 
         # Save model_params as a sorted tuple
         param_names_list = list(param_names_set)
@@ -488,8 +487,8 @@ class BNGLModel(Model):
             else:
                 raise PybnfError(
                     "Could not determine the simulation length for the simulate action with "
-                    "suffix '%s' in model %s: the action specifies neither n_steps nor "
-                    "sample_times." % (suffix, self.file_path))
+                    f"suffix '{suffix}' in model {self.file_path}: the action specifies neither n_steps nor "
+                    "sample_times.")
 
         return timeDict
 
@@ -503,11 +502,10 @@ class BNGLModel(Model):
         """
         # Check that the PSet has definitions for the right parameters for this model
         if not set(pset.keys()) >= set(self.param_names):
-            raise PybnfError('Parameter names in the PSet do not match those in the Model\n%s\n%s' %
-                             (pset.keys(), self.param_names))
+            raise PybnfError(f'Parameter names in the PSet do not match those in the Model\n{pset.keys()}\n{self.param_names}')
 
         if set(pset.keys()) != set(self.param_names):
-            logger.warning('Model %s does not contain all defined free parameters' % self.name)
+            logger.warning(f'Model {self.name} does not contain all defined free parameters')
 
         newmodel = copy.deepcopy(self)
         newmodel.param_set = pset
@@ -529,7 +527,7 @@ class BNGLModel(Model):
             raise ModelError("No actions found in model")
 
         # Generate the text associated with defining __FREE parameter values
-        param_text_lines = ['%s %s' % (k, str(self.param_set[k])) for k in self.param_names]
+        param_text_lines = [f'{k} {str(self.param_set[k])}' for k in self.param_names]
 
         # Insert the generated text at the correct point within the text of the model
         if gen_only:
@@ -596,12 +594,12 @@ class BNGLModel(Model):
         :return: Data object
         """
         # Create the modified BNGL file
-        file = '%s/%s' % (folder, filename)
+        file = f'{folder}/{filename}'
         self.save(file)
 
         # Run BioNetGen
-        cmd = [self.bng_command, '%s.bngl' % file, '--outdir', folder]
-        log_file = '%s.log' % file
+        cmd = [self.bng_command, f'{file}.bngl', '--outdir', folder]
+        log_file = f'{file}.log'
         if os.name == 'nt':  # Windows
             # Explicitly call perl because the #! line in BNG2.pl is not supported.
             cmd = ['perl'] + cmd
@@ -614,12 +612,12 @@ class BNGLModel(Model):
         if with_mutants:
             for mut in self.mutants:
                 # Inefficient iteration over PSet to build the mutant one, but hopefully not performance-critical
-                logger.debug('Working on mutant %s' % mut.suffix)
+                logger.debug(f'Working on mutant {mut.suffix}')
                 mut_model = self._get_mutant_model(mut)
                 mut_data = mut_model.execute(folder, filename+mut.suffix, timeout, with_mutants=False)
                 for suff in mut_data:
                     ds[suff + mut.suffix] = mut_data[suff]
-                logger.debug('Finished mutant %s' % mut.suffix)
+                logger.debug(f'Finished mutant {mut.suffix}')
         return ds
 
     def _get_mutant_model(self, mut):
@@ -648,10 +646,10 @@ class BNGLModel(Model):
         ds = {}
         for suff in self.suffixes:
             if suff[0] == 'simulate':
-                data_file = '%s/%s_%s.gdat' % (folder, filename, suff[1])
+                data_file = f'{folder}/{filename}_{suff[1]}.gdat'
                 data = Data(file_name=data_file)
             else:  # suff[0] == 'parameter_scan'
-                data_file = '%s/%s_%s.scan' % (folder, filename, suff[1])
+                data_file = f'{folder}/{filename}_{suff[1]}.scan'
                 data = Data(file_name=data_file)
             ds[suff[1]] = data
         return ds
@@ -665,15 +663,12 @@ class BNGLModel(Model):
         write actions in the BNGL file's ``begin actions`` block instead.
         """
         if isinstance(action, TimeCourse):
-            line = 'simulate({method=>"%s",t_start=>0,t_end=>%s,n_steps=>%s,suffix=>"%s",print_functions=>1})' % \
-                   (action.method, action.time, action.stepnumber, action.suffix)
+            line = f'simulate({{method=>"{action.method}",t_start=>0,t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
         elif isinstance(action, ParamScan):
-            line = 'parameter_scan({parameter=>"%s",method=>"%s",t_start=>0,t_end=>%s,par_min=>%s,par_max=>%s,' \
-                   'n_scan_pts=>%s,log_scale=>%s,suffix=>"%s",print_functions=>1})' % \
-                   (action.param, action.method, action.time, action.min, action.max, action.stepnumber + 1,
-                    action.logspace, action.suffix)
+            line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},' \
+                   f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
         else:
-            raise RuntimeError('Unknown action type %s' % type(action))
+            raise RuntimeError(f'Unknown action type {type(action)}')
         # Config actions are assumed to be independent, so need to reset concentrations before each one.
         self.actions.append('resetConcentrations()')
         self.actions.append(line)
@@ -738,7 +733,7 @@ class NetModel(BNGLModel):
                 m = re.match(r'(\s+)(\d+)\s+([A-Za-z_]\w*)(\s+)([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)(?=\s+)', l)
                 if m:
                     if m.group(3) in pset.keys():
-                        lines_copy[i] = '%s%s %s%s%s\n' % (m.group(1), m.group(2), m.group(3), m.group(4), str(pset[m.group(3)]))
+                        lines_copy[i] = f'{m.group(1)}{m.group(2)} {m.group(3)}{m.group(4)}{str(pset[m.group(3)])}\n'
 
         newmodel = NetModel(self.name, self.actions, self.suffixes, self.mutants, ls=lines_copy,
                             source_dir=self.net_file_dir)
@@ -757,7 +752,7 @@ class NetModel(BNGLModel):
             wf.write(net_text)
         with open(file_prefix + '.bngl', 'w') as wf:
             wf.write('readFile({file=>"%s"})\n' % (file_prefix + '.net'))
-            wf.write('begin actions\n\n%s\n\nend actions\n' % '\n'.join(self.actions))
+            wf.write('begin actions\n\n{}\n\nend actions\n'.format('\n'.join(self.actions)))
 
 
 class SbmlModelNoTimeout(Model):
@@ -789,13 +784,13 @@ class SbmlModelNoTimeout(Model):
             rr.Logger.disableLogging()
         except RuntimeError:
             # XML was not found, or had a bug in it, or some other problem in RoadRunner
-            logger.exception('Failed to load model %s in Roadrunner' % self.name)
+            logger.exception(f'Failed to load model {self.name} in Roadrunner')
             exceptiondata = traceback.format_exc().splitlines()
-            if 'could not open %s as a file' % file in exceptiondata[-1]:
-                message = 'File %s was not found' % file
+            if f'could not open {file} as a file' in exceptiondata[-1]:
+                message = f'File {file} was not found'
             else:
                 message = 'There were errors in parsing this SBML file. See log for details.'
-            raise PybnfError('Failed to load model %s.xml - %s' % (self.name, message))
+            raise PybnfError(f'Failed to load model {self.name}.xml - {message}')
 
         self.species_names = set(runner.model.getFloatingSpeciesIds()).union(set(runner.model.getBoundarySpeciesIds()))
         self.global_param_names = tuple(runner.model.getGlobalParameterIds())
@@ -819,7 +814,7 @@ class SbmlModelNoTimeout(Model):
             except OSError:
                 pass
 
-        logger.debug('Loaded model %s with Roadrunner' % self.name)
+        logger.debug(f'Loaded model {self.name} with Roadrunner')
 
     def copy_with_param_set(self, pset):
 
@@ -877,7 +872,7 @@ class SbmlModelNoTimeout(Model):
         Should only be used when saving the model to disk, which is not often done.
         :return:
         """
-        logger.info('Generating model text for %s' % self.name)
+        logger.info(f'Generating model text for {self.name}')
         runner = self._load_runner()
         self._modify_params(runner)
         if mut:
@@ -886,18 +881,18 @@ class SbmlModelNoTimeout(Model):
         return runner.getCurrentSBML()
 
     def save(self, file_prefix):
-        with open('%s.xml' % file_prefix, 'w') as out:
+        with open(f'{file_prefix}.xml', 'w') as out:
             out.write(self.model_text())
 
     def save_all(self, file_prefix):
         for mut in self.mutants:
-            with open('%s%s.xml' % (file_prefix, mut.suffix), 'w') as out:
+            with open(f'{file_prefix}{mut.suffix}.xml', 'w') as out:
                 out.write(self.model_text(mut=mut))
 
     def add_action(self, action):
         if action.method not in ('ode', 'ssa'):
-            raise PybnfError('time_course or param_scan method %s is not possible with an SBML model. Options are '
-                             'ode or ssa.' % action.method)
+            raise PybnfError(f'time_course or param_scan method {action.method} is not possible with an SBML model. Options are '
+                             'ode or ssa.')
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
         if action.method == 'ssa':
@@ -919,7 +914,7 @@ class SbmlModelNoTimeout(Model):
         for p in self.param_set.keys():
             if p in self.species_names:
                 # Initial condition
-                runner.model['init([%s])' % p] = self.param_set[p]
+                runner.model[f'init([{p}])'] = self.param_set[p]
             elif p in self.param_names:
                 setattr(runner, p, self.param_set[p])
             # else The parameter does not appear in this model (might appear in another model, so not an error)
@@ -928,7 +923,7 @@ class SbmlModelNoTimeout(Model):
         """Modify the parameters in this runner instance according to the MutationSet mut"""
         for mi in mut:
             if mi.name in self.species_names:
-                runner.model['init([%s])' % mi.name] = mi.mutate(runner.model['init([%s])' % mi.name])
+                runner.model[f'init([{mi.name}])'] = mi.mutate(runner.model[f'init([{mi.name}])'])
             elif mi.name in self.param_names:
                 setattr(runner, mi.name, mi.mutate(getattr(runner, mi.name)))
 
@@ -937,7 +932,7 @@ class SbmlModelNoTimeout(Model):
         _apply_mutant()"""
         for mi in mut:
             if mi.name in self.species_names:
-                runner.model['init([%s])' % mi.name] = mi.undo()
+                runner.model[f'init([{mi.name}])'] = mi.undo()
             elif mi.name in self.param_names:
                 setattr(runner, mi.name, mi.undo())
 
@@ -949,7 +944,7 @@ class SbmlModelNoTimeout(Model):
 
         # Run the model actions
         result_dict = dict()
-        selection = ['time'] + ['[%s]' % s for s in self.species_names]
+        selection = ['time'] + [f'[{s}]' for s in self.species_names]
         for mut in self.mutants:
             # Apply all mutations
             self._apply_mutant(mut, runner)
@@ -972,15 +967,15 @@ class SbmlModelNoTimeout(Model):
                     res = Data(named_arr=res_array)
                     result_dict[act.suffix + mut.suffix] = res
                     if self.save_files:
-                        np.savetxt('%s/%s_%s%s.gdat' % (folder, filename, act.suffix, mut.suffix), res_array,
+                        np.savetxt(f'{folder}/{filename}_{act.suffix}{mut.suffix}.gdat', res_array,
                                    header=' '.join(res_array.colnames))
                 elif isinstance(act, ParamScan):
                     # Manually run parameter scan with several simulate commands
                     if act.param not in self.param_names:
-                        raise PybnfError('Parameter_scan parameter %s was not found in model %s' % (act.param, self.name))
+                        raise PybnfError(f'Parameter_scan parameter {act.param} was not found in model {self.name}')
                     if act.param in self.species_names:
                         icscan = True
-                        init_val = runner.model['init([%s])' % act.param]
+                        init_val = runner.model[f'init([{act.param}])']
                     else:
                         icscan = False
                         init_val = getattr(runner, act.param)
@@ -989,7 +984,7 @@ class SbmlModelNoTimeout(Model):
                     labels = None
                     for i, x in enumerate(points):
                         if icscan:
-                            runner.model['init([%s])' % act.param] = x
+                            runner.model[f'init([{act.param}])'] = x
                         else:
                             setattr(runner, act.param, x)
                         runner.reset()  # Reset concentrations to current ICs
@@ -1008,14 +1003,14 @@ class SbmlModelNoTimeout(Model):
                         res_array[i, 1:] = i_array[1, :]
                     # Restore the original value of the scanned param, for any future actions / models
                     if icscan:
-                        runner.model['init([%s])' % act.param] = init_val
+                        runner.model[f'init([{act.param}])'] = init_val
                     else:
                         setattr(runner, act.param, init_val)
                     res = Data(arr=res_array)
                     res.load_rr_header(labels)
                     result_dict[act.suffix + mut.suffix] = res
                     if self.save_files:
-                        np.savetxt('%s/%s_%s%s.scan' % (folder, filename, act.suffix, mut.suffix), res_array,
+                        np.savetxt(f'{folder}/{filename}_{act.suffix}{mut.suffix}.scan', res_array,
                                    header=' '.join([act.param] + i_array.colnames))
                 else:
                     raise NotImplementedError('Unknown action type')
@@ -1030,7 +1025,7 @@ class SbmlModel(SbmlModelNoTimeout):
         self.curr_folder = folder
         self.curr_file = filename
         arg = pickle.dumps(self)
-        with open('%s/%s.log' % (folder, filename), 'w') as errout:
+        with open(f'{folder}/{filename}.log', 'w') as errout:
             stdout_data = run_subprocess([executable, '-m', 'pybnf.sbml_runner'],
                                          timeout=timeout, stdout=PIPE, stderr=errout, input=arg)
         result = pickle.loads(stdout_data)
@@ -1093,26 +1088,25 @@ class TimeCourse(Action):
                 try:
                     num = float(d[k])
                 except ValueError:
-                    raise PybnfError('For key "time_course", the value of "%s" must be a number.' % k)
+                    raise PybnfError(f'For key "time_course", the value of "{k}" must be a number.')
                 self.__setattr__(k, num)
             elif k in int_keys:
                 try:
                     num = int(d[k])
                 except ValueError:
-                    raise PybnfError('For key "time_course", the value of "%s" must be an integer.' % k)
+                    raise PybnfError(f'For key "time_course", the value of "{k}" must be an integer.')
                 self.__setattr__(k, num)
             elif k in str_keys:
                 self.__setattr__(k, d[k])
             else:
-                raise PybnfError('"%s" is not a valid attribute for "time_course".' % k,
-                                 '"%s" is not a valid attribute for "time_course". Possible attributes are: %s' %
-                                 (k, ','.join(num_keys.union(str_keys))))
+                raise PybnfError(f'"{k}" is not a valid attribute for "time_course".',
+                                 '"{}" is not a valid attribute for "time_course". Possible attributes are: {}'.format(k, ','.join(num_keys.union(str_keys))))
 
         if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')
 
         if self.method not in ('ode', 'ssa', 'pla', 'nf'):
-            raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
+            raise PybnfError(f'Invalid time course method {self.method}. Options are ode, ssa, pla, nf')
 
         if self.step == 0:
             raise PybnfError('For key "time_course", the value of "step" must be nonzero.')
@@ -1161,29 +1155,28 @@ class ParamScan(Action):
                 try:
                     num = float(d[k])
                 except ValueError:
-                    raise PybnfError('For key "param_scan", the value of "%s" must be a number.' % k)
+                    raise PybnfError(f'For key "param_scan", the value of "{k}" must be a number.')
                 self.__setattr__(k, num)
             elif k in int_keys:
                 try:
                     num = int(d[k])
                 except ValueError:
-                    raise PybnfError('For key "time_course", the value of "%s" must be an integer.' % k)
+                    raise PybnfError(f'For key "time_course", the value of "{k}" must be an integer.')
                 self.__setattr__(k, num)
             elif k in str_keys:
                 self.__setattr__(k, d[k])
             else:
-                raise PybnfError('"%s" is not a valid attribute for "param_scan".' % k,
-                                 '"%s" is not a valid attribute for "param_scan". Possible attributes are: %s' %
-                                 (k, ','.join(num_keys.union(str_keys))))
+                raise PybnfError(f'"{k}" is not a valid attribute for "param_scan".',
+                                 '"{}" is not a valid attribute for "param_scan". Possible attributes are: {}'.format(k, ','.join(num_keys.union(str_keys))))
 
         for k in required_keys:
             if self.__getattribute__(k) is None:
-                raise PybnfError('For key "param_scan" a value for "%s" must be specified.' % k)
+                raise PybnfError(f'For key "param_scan" a value for "{k}" must be specified.')
         self.logspace = int(self.logspace)
         if self.logspace not in (0, 1):
             raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
         if self.method not in ('ode', 'ssa', 'pla', 'nf'):
-            raise PybnfError('Invalid time course method %s. Options are ode, ssa, pla, nf' % self.method)
+            raise PybnfError(f'Invalid time course method {self.method}. Options are ode, ssa, pla, nf')
 
         if self.step == 0:
             raise PybnfError('For key "param_scan", the value of "step" must be nonzero.')
@@ -1207,9 +1200,9 @@ class Mutation:
         self.operation = operation
         self.value = value
         if operation not in ('+', '-', '*', '/', '='):
-            raise RuntimeError('Invalid mutation operation %s' % operation)
+            raise RuntimeError(f'Invalid mutation operation {operation}')
         self.old = None
-        logger.debug('Created mutation %s %s %s' % (self.name, self.operation, self.value))
+        logger.debug(f'Created mutation {self.name} {self.operation} {self.value}')
 
     def mutate(self, num):
         """
@@ -1308,7 +1301,7 @@ class FreeParameter:
         self.upper_bound = np.inf if not self.bounded else self.p2
 
         if self.lower_bound > self.upper_bound:
-            raise PybnfError("Parameter %s has a lower bound that is greater than its upper bound" % self.name)
+            raise PybnfError(f"Parameter {self.name} has a lower bound that is greater than its upper bound")
 
         # Determine a positive value that can serve as the default for network generation
         self.default_value = None
@@ -1321,7 +1314,7 @@ class FreeParameter:
 
         if value:
             if not self.lower_bound <= value <= self.upper_bound:  # not quite precise, but works well
-                raise OutOfBoundsException("Free parameter %s cannot be assigned the value %s" % (self.name, value))
+                raise OutOfBoundsException(f"Free parameter {self.name} cannot be assigned the value {value}")
         self.value = value
 
         self.log_space = self._scale.is_log
@@ -1345,14 +1338,14 @@ class FreeParameter:
         """
         if new_value < self.lower_bound or new_value > self.upper_bound:
             if not reflect:
-                raise OutOfBoundsException("Parameter %s is outside of bounds" % self)
+                raise OutOfBoundsException(f"Parameter {self} is outside of bounds")
             if self.value is None:
                 self.value = self.lower_bound
-                logger.info("Assigning parameter %s to take a value equal to its lower bound: %s" % (self.name, self.lower_bound))
+                logger.info(f"Assigning parameter {self.name} to take a value equal to its lower bound: {self.lower_bound}")
             # reflective number line, can never realize self.lower_bound or self.upper_bound this way
             adj = self._reflect(new_value)
-            logger.debug('Assigned value %f is out of defined bounds: [%s, %s].  '
-                           'Adjusted to %f' % (new_value, self.lower_bound, self.upper_bound, adj))
+            logger.debug(f'Assigned value {new_value:f} is out of defined bounds: [{self.lower_bound}, {self.upper_bound}].  '
+                           f'Adjusted to {adj:f}')
             new_value = adj
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
 
@@ -1378,7 +1371,7 @@ class FreeParameter:
         lb = self._scale.forward(lb)
         new = self._scale.forward(new)
         if self._scale.is_log:
-            logger.debug("Reflecting in log space: new=%s lb=%s ub=%s" % (new, lb, ub))
+            logger.debug(f"Reflecting in log space: new={new} lb={lb} ub={ub}")
 
         width = ub - lb
         q = (new - lb) % (2.0 * width)
@@ -1393,7 +1386,7 @@ class FreeParameter:
         :return: new FreeParameter instance or None
         """
         if not self._prior.has_prior:
-            raise PybnfError("Parameter %s does not have a sampling distribution" % self.name)
+            raise PybnfError(f"Parameter {self.name} does not have a sampling distribution")
 
         return self.set_value(self._scale.inverse(self._prior.rvs()))
 
@@ -1473,7 +1466,7 @@ class FreeParameter:
         try:
             r = np.random.uniform(lb, ub)
         except OverflowError:
-            logger.error('Random number overflow with lower bound %s, upper bound %s' % (lb, ub))
+            logger.error(f'Random number overflow with lower bound {lb}, upper bound {ub}')
             r = 0.
         return self.add(r, reflect)
 
@@ -1508,7 +1501,7 @@ class FreeParameter:
         return self.name < other.name
 
     def __str__(self):
-        return "FreeParameter: %s = %s -- [%s, %s]" % (self.name, self.value, self.lower_bound, self.upper_bound)
+        return f"FreeParameter: {self.name} = {self.value} -- [{self.lower_bound}, {self.upper_bound}]"
 
     def __repr__(self):
         return self.__str__()
@@ -1532,7 +1525,7 @@ class PSet:
 
         for fp in fps:
             if fp.value is None:
-                raise PybnfError("Parameter %s has no value" % fp.name)
+                raise PybnfError(f"Parameter {fp.name} has no value")
             elif fp.name in self._param_dict.keys():
                 raise PybnfError("Parameters must have unique names")
             self._param_dict[fp.name] = fp
@@ -1667,7 +1660,7 @@ class Trajectory:
         """
         if len(self._trajectory) > 0:
             if not self._valid_pset(pset):
-                raise ValueError("PSet %s has incompatible parameters" % pset)
+                raise ValueError(f"PSet {pset} has incompatible parameters")
         if np.isnan(obj):
             # Treat nan values as Inf in order to sort correctly
             obj = np.inf
@@ -1686,13 +1679,13 @@ class Trajectory:
 
     def _traj_write_header(self):
         header = self._trajectory[0][2].keys_to_string()
-        return '#\tSimulation\tObj\t%s\n' % header
+        return f'#\tSimulation\tObj\t{header}\n'
 
     def _traj_entry_format(self, entry):
         """
         Formats a tuple (-obj, name, pset) as stored in self.trajectory into a string for printing
         """
-        return '\t%s\t%s\t%s\n' % (entry[1], -entry[0], entry[2].values_to_string())
+        return f'\t{entry[1]}\t{-entry[0]}\t{entry[2].values_to_string()}\n'
 
     def _write(self):
         """Writes the Trajectory in a tab-delimited format"""
@@ -1709,11 +1702,11 @@ class Trajectory:
     def load_trajectory(filename, variables, max_output):
         """Loads a Trajectory from file given Algorithm.variables information"""
 
-        logger.info('Loading trajectory from %s' % filename)
+        logger.info(f'Loading trajectory from {filename}')
         with open(filename, encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
         if len(lines) == 0:
-            raise IOError('Empty parameters file %s' % filename)
+            raise IOError(f'Empty parameters file {filename}')
         var_names = re.split(r'\s+', lines[0].strip('#').strip())[2:]
 
         t = Trajectory(max_output)

@@ -238,7 +238,7 @@ class SimplexAlgorithm(Algorithm):
                 print1('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
             else:
                 print2('Completed %i of %i iterations' % (self.iteration, self.max_iterations))
-            print2('Current best score: %f' % sorted(self.simplex, key=lambda x: x[0])[0][0])
+            print2(f'Current best score: {sorted(self.simplex, key=lambda x: x[0])[0][0]:f}')
 
             # If not an initialization iteration, update the simplex based on all the results
             if len(self.first_points) > 0:
@@ -328,7 +328,7 @@ class SimplexAlgorithm(Algorithm):
                 self.pending[new_pset.name] = ai
             # Check for stop criterion due to moves being too small
             if max_diff < self.config.config['simplex_stop_tol']:
-                logger.info('Stopping simplex because the maximum move attempted this iteration was %s' % max_diff)
+                logger.info(f'Stopping simplex because the maximum move attempted this iteration was {max_diff}')
                 return 'STOP'
 
             # Reset data structures to track this iteration
@@ -390,7 +390,7 @@ class SimplexAlgorithm(Algorithm):
             threshold = (1e-10 * scale) ** min(edge_matrix.shape)
 
         if vol < threshold:
-            logger.warning('Simplex is nearly degenerate (volume=%.2e). Perturbing vertices.' % vol)
+            logger.warning(f'Simplex is nearly degenerate (volume={vol:.2e}). Perturbing vertices.')
             for i in range(1, len(self.simplex)):
                 old_pset = self.simplex[i][1]
                 new_vars = []

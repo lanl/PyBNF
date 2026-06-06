@@ -194,7 +194,7 @@ class Data:
         for c in header:
             l = len(self.cols)
             if c in self.cols:
-                raise DuplicateColumnError('Data file contains duplicate column name "%s"' % c)
+                raise DuplicateColumnError(f'Data file contains duplicate column name "{c}"')
             self.cols[c] = l
             self.headers[l] = c
 
@@ -366,7 +366,7 @@ class Data:
                 self.normalize_to_unit_scale(cols=cols)
             else:
                 # Should have caught a user-defined invalid setting in config before getting here.
-                raise ValueError('Invalid method %s for Data.normalize()' % m)
+                raise ValueError(f'Invalid method {m} for Data.normalize()')
 
         if type(method) == str:
             normalize_once(method, 'all')
@@ -378,7 +378,7 @@ class Data:
                 normalize_once(mi, cols_i)
 
     def weights_to_file(self, file_name):
-        logger.info("Saving weights in file %s" % file_name)
+        logger.info(f"Saving weights in file {file_name}")
         np.savetxt(file_name, self.weights, fmt='%d', header='\t'.join(sorted(self.cols, key=self.cols.get)))
 
 

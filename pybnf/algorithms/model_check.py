@@ -92,7 +92,7 @@ class ModelCheck:
         if result.score is None:
             print0('Simulation contained NaN or Inf values. Cannot calculate objective value.')
             return
-        print0('Objective value is %s' % result.score)
+        print0(f'Objective value is {result.score}')
         if len(self.config.constraints) > 0:
             counter = ConstraintCounter()
             fail_count = counter.evaluate_multiple(result.simdata, self.exp_data, self.config.constraints)

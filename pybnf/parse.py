@@ -134,7 +134,7 @@ def load_config(path):
     try:
         infile = open(path, 'r', encoding='utf-8', errors='replace')
     except FileNotFoundError:
-        raise PybnfError('Configuration file %s not found' % path)
+        raise PybnfError(f'Configuration file {path} not found')
     with infile:
         param_dict = ploop(infile.readlines())
     return Configuration(param_dict)
@@ -152,7 +152,7 @@ def ploop(ls):  # parse loop
         if re.match(r'\s*$', line) or re.match(r'\s*#', line):
             continue
         try:
-            logger.debug('Parsing line %s' % line.strip())
+            logger.debug(f'Parsing line {line.strip()}')
             l = parse(line)
 
             # Find parameter assignments that reference distinct parameters
@@ -195,8 +195,7 @@ def ploop(ls):  # parse loop
                 entry = dict()
                 for xi in range(0, len(values), 2):
                     if values[xi] in entry:
-                        raise PybnfError('For config key %s, attribute %s is specified multiple times' %
-                                         (l[0], values[xi]))
+                        raise PybnfError(f'For config key {l[0]}, attribute {values[xi]} is specified multiple times')
                     entry[values[xi]] = values[xi+1]
                 if l[0] in d:
                     d[l[0]].append(entry)
@@ -241,9 +240,9 @@ def ploop(ls):  # parse loop
                         d['normalization'] = dict()
                     for k in parsed:
                         if k in d['normalization'] and (type(parsed[k]) == str or type(d['normalization'][k]) == str):
-                            raise PybnfError('contradictory normalization keys for %s' % k,
-                                             "File %s has normalization specified multiple times in a way that is "
-                                             "contradictory." % k)
+                            raise PybnfError(f'contradictory normalization keys for {k}',
+                                             f"File {k} has normalization specified multiple times in a way that is "
+                                             "contradictory.")
                         if type(parsed[k]) == str:
                             d['normalization'][k] = parsed[k]
                         else:
@@ -253,51 +252,50 @@ def ploop(ls):  # parse loop
             else:
                 if key in d:
                     if d[key] == values:
-                        print1("Warning: Config key '%s' is specified multiple times" % (key,))
+                        print1(f"Warning: Config key '{key}' is specified multiple times")
                     else:
-                        raise PybnfError("Config key '%s' is specified multiple times with different values." % (key,))
+                        raise PybnfError(f"Config key '{key}' is specified multiple times with different values.")
                 d[key] = values
 
         except pp.ParseBaseException:
             key = re.split('[ =]', line)[0].lower()
             fmt = ''
             if key in numkeys_int:
-                fmt = "'%s=x' where x is an integer" % key
+                fmt = f"'{key}=x' where x is an integer"
             elif key in numkeys_float:
-                fmt = "'%s=x' where x is a decimal number" % key
+                fmt = f"'{key}=x' where x is a decimal number"
             elif key in multnumkeys:
-                fmt = "'%s=x1 x2 ...' where x1, x2, ... is a list of numbers" % key
+                fmt = f"'{key}=x1 x2 ...' where x1, x2, ... is a list of numbers"
             elif key in var_def_keys:
-                fmt = "'%s=v x y' where v is a variable name, and x and y are numbers" % key
+                fmt = f"'{key}=v x y' where v is a variable name, and x and y are numbers"
             elif key in b_var_def_keys:
-                fmt = "'%s=v x y z' where v is a variable name, x and y are numbers, and z is optional and specifies " \
-                      "whether or not the variable should be bounded ('u' is unbounded, 'b' or left blank is bounded)" % key
+                fmt = f"'{key}=v x y z' where v is a variable name, x and y are numbers, and z is optional and specifies " \
+                      "whether or not the variable should be bounded ('u' is unbounded, 'b' or left blank is bounded)"
             elif key in var_def_keys_1or2nums:
-                fmt = "'%s=v x' or '%s=v x y' where v is a variable name, and x and y are decimal numbers" % (key, key)
+                fmt = f"'{key}=v x' or '{key}=v x y' where v is a variable name, and x and y are decimal numbers"
             elif key in strkeylist:
-                fmt = "'%s=s' where s is a string" % key
+                fmt = f"'{key}=s' where s is a string"
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'" \
                       " Supported modelfile extensions are .bngl, .xml, .ant, and .target"
             elif key == 'normalization':
-                fmt = "'%s=s' or '%s=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
-                      "'unit', or 'zero')"\
-                    % (key, key)
+                fmt = f"'{key}=s' or '{key}=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
+                      "'unit', or 'zero')"
             elif key in dictkeys:
-                fmt = "'%s=key1: value1, key2: value2,...' where key1, key2, etc are attributes of the %s (see " \
-                      "documentation for available options)" % (key, key)
+                fmt = f"'{key}=key1: value1, key2: value2,...' where key1, key2, etc are attributes of the {key} (see " \
+                      "documentation for available options)"
             elif key == 'mutant':
                 fmt = "'mutant=base model var1=val1 var2*val2 ... : datafile1.exp, datafile2.exp' where mutation " \
                       "operations (var1=val1 etc) have the format [variable_name][operator][number] and other " \
                       "arguments are strings"
 
-            message = "Parsing configuration key '%s' on line %s.\n" % (key, i)
+            message = f"Parsing configuration key '{key}' on line {i}.\n"
             if fmt == '':
-                message += '%s is not a valid configuration key.' % key
+                message += f'{key} is not a valid configuration key.'
             else:
-                message += '%s should be specified in the format %s' % (key, fmt)
+                message += f'{key} should be specified in the format {fmt}'
 
-            raise PybnfError("Misconfigured config key '%s' at line: %s" % (line.strip(), i), message)
+            raise PybnfError(f"Misconfigured config key '{line.strip()}' at line: {i}", message)
 
     d['models'] = models
     d['exp_data'] = exp_data
@@ -353,7 +351,7 @@ def parse_normalization_def(s):
                         col_names = cols.split(',')
                         res[e] = (normtype, col_names)
                 else:
-                    raise PybnfError("Parsing normalization key - the item '%s' has too many colons in it" % e)
+                    raise PybnfError(f"Parsing normalization key - the item '{e}' has too many colons in it")
             else:
                 # It's just an exp
                 res[e] = normtype

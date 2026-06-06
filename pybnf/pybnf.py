@@ -108,14 +108,14 @@ def _setup_logging(cmdline_args):
     if cmdline_args.log_prefix:
         log_prefix = cmdline_args.log_prefix
     else:
-        log_prefix = 'bnf_%s' % time.strftime('%Y%m%d-%H%M%S')
+        log_prefix = 'bnf_{}'.format(time.strftime('%Y%m%d-%H%M%S'))
     debug = cmdline_args.debug_logging
 
     # Overwrite log file if it exists
-    if os.path.isfile('%s_debug.log' % log_prefix):
-        os.remove('%s_debug.log' % log_prefix)
-    if os.path.isfile('%s.log' % log_prefix):
-        os.remove('%s.log' % log_prefix)
+    if os.path.isfile(f'{log_prefix}_debug.log'):
+        os.remove(f'{log_prefix}_debug.log')
+    if os.path.isfile(f'{log_prefix}.log'):
+        os.remove(f'{log_prefix}.log')
 
     init_logging(log_prefix, debug, cmdline_args.log_level)
     return log_prefix, debug
@@ -135,12 +135,12 @@ def _resolve_continue_file(config, cmdline_args):
             continue_file = config.config['output_dir'] + '/alg_backup.bp'
         elif os.path.exists(config.config['output_dir'] + '/alg_finished.bp'):
             if cmdline_args.resume <= 0:
-                raise PybnfError('The fitting run saved in %s already finished. If you want to continue the '
+                raise PybnfError('The fitting run saved in {} already finished. If you want to continue the '
                                  'fitting with more iterations, pass a number of iterations with the '
-                                 '--resume flag.' % config.config['output_dir'])
+                                 '--resume flag.'.format(config.config['output_dir']))
             continue_file = config.config['output_dir'] + '/alg_finished.bp'
         else:
-            raise PybnfError('No algorithm found to resume in %s' % (config.config['output_dir']))
+            raise PybnfError('No algorithm found to resume in {}'.format(config.config['output_dir']))
     elif os.path.exists(config.config['output_dir'] + '/alg_backup.bp') and not cmdline_args.overwrite:
         ans = 'x'
         while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
@@ -206,7 +206,7 @@ def _prepare_run_directories(config, cmdline_args):
             logger.info("Output directory already exists... querying user for overwrite permission")
             ans = 'x'
             while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
-                print0('Your output directory contains files from a previous run: %s.' % ', '.join(will_overwrite))
+                print0('Your output directory contains files from a previous run: {}.'.format(', '.join(will_overwrite)))
                 ans = input(
                     'Overwrite them with the current run? [y/n] (n) ')
             if not(ans.lower() == 'y' or ans.lower() == 'yes'):
@@ -217,23 +217,21 @@ def _prepare_run_directories(config, cmdline_args):
         for subdir in subdirs:
             try:
                 shutil.rmtree(config.config['output_dir'] + '/' + subdir)
-                logger.info('Deleted old directory %s' % config.config['output_dir'] + '/' + subdir)
+                logger.info('Deleted old directory {}'.format(config.config['output_dir']) + '/' + subdir)
             except OSError:
-                logger.debug('Directory %s does not already exist' % config.config['output_dir'] + '/' + subdir)
+                logger.debug('Directory {} does not already exist'.format(config.config['output_dir']) + '/' + subdir)
         for subfile in subfiles:
             try:
                 os.remove(config.config['output_dir'] + '/' + subfile)
-                logger.info('Deleted old file %s' % config.config['output_dir'] + '/' + subfile)
+                logger.info('Deleted old file {}'.format(config.config['output_dir']) + '/' + subfile)
             except OSError:
-                logger.debug('File %s does not already exist' % config.config['output_dir'] + '/' + subfile)
+                logger.debug('File {} does not already exist'.format(config.config['output_dir']) + '/' + subfile)
         if config.config['simulation_dir']:
             try:
                 shutil.rmtree(config.config['simulation_dir']+'/Simulations')
-                logger.info('Deleted old simulation directory %s' %
-                            config.config['simulation_dir']+'/Simulations')
+                logger.info('Deleted old simulation directory {}'.format(config.config['simulation_dir'])+'/Simulations')
             except OSError:
-                logger.debug('Simulation directory %s does not already exist' %
-                             config.config['simulation_dir']+'/Simulations')
+                logger.debug('Simulation directory {} does not already exist'.format(config.config['simulation_dir'])+'/Simulations')
 
     # Create new directories for the current run.
     os.makedirs(config.config['output_dir'] + '/Results')
@@ -257,11 +255,11 @@ def _create_algorithm(config):
     fit_type = config.config['fit_type']
     entry = FIT_TYPE_REGISTRY.get(fit_type)
     if entry is None:
-        raise PybnfError('Invalid fit_type %s. Options are: %s' % (fit_type, ', '.join(FIT_TYPE_REGISTRY)))
+        raise PybnfError('Invalid fit_type {}. Options are: {}'.format(fit_type, ', '.join(FIT_TYPE_REGISTRY)))
     if entry.deprecated:
-        msg = 'fit_type %s is deprecated and may be removed in a future release.' % fit_type
+        msg = f'fit_type {fit_type} is deprecated and may be removed in a future release.'
         logger.warning(msg)
-        print1('Warning: %s' % msg)
+        print1(f'Warning: {msg}')
     return entry.cls(config, **entry.kwargs)
 
 
@@ -284,12 +282,12 @@ def _refine_best_fit(config, alg, cluster, debug):
     refiner_cls = entry.cls
     name = entry.display_name
     if config.config['fit_type'] == method:
-        logger.debug('Cannot refine further if the %s algorithm was used for the original fit' % name)
-        print1("You specified refine=1 with refine_method=%s, but that is the algorithm you just ran."
-               "\nSkipping refine." % method)
+        logger.debug(f'Cannot refine further if the {name} algorithm was used for the original fit')
+        print1(f"You specified refine=1 with refine_method={method}, but that is the algorithm you just ran."
+               "\nSkipping refine.")
         return
-    logger.debug('Refining further using the %s algorithm' % name)
-    print1("Refining the best fit by the %s algorithm" % name)
+    logger.debug(f'Refining further using the {name} algorithm')
+    print1(f"Refining the best fit by the {name} algorithm")
     config.config[refiner_cls.START_POINT_KEY] = alg.trajectory.best_fit()
     refiner = refiner_cls(config, refine=True)
     refiner.model_list = alg.model_list  # Reuse already-generated networks
@@ -330,20 +328,20 @@ def _run_bootstrapping(config, alg, cluster, debug):
                                                                 config.config['num_to_output'])
 
         if alg.best_fit_obj <= bootstrap_max_obj:
-            logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
+            logger.info(f'Bootstrap run {completed_bootstrap_runs} complete')
             bootstrapped_psets.add(alg.trajectory.best_fit(), alg.best_fit_obj,
-                                   'bootstrap_run_%s' % completed_bootstrap_runs,
+                                   f'bootstrap_run_{completed_bootstrap_runs}',
                                    config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
                                    completed_bootstrap_runs == 0)
-            logger.info('Succesfully completed resumed bootstrapping run %s' % completed_bootstrap_runs)
+            logger.info(f'Succesfully completed resumed bootstrapping run {completed_bootstrap_runs}')
             completed_bootstrap_runs += 1
         else:
             shutil.rmtree(alg.res_dir)
             if os.path.exists(alg.sim_dir):
                 shutil.rmtree(alg.sim_dir)
             print0("Bootstrap run did not achieve maximum allowable objective function value.  Retrying")
-            logger.info('Resumed bootstrapping run %s did not achieve maximum allowable objective function '
-                        'value.  Retrying' % completed_bootstrap_runs)
+            logger.info(f'Resumed bootstrapping run {completed_bootstrap_runs} did not achieve maximum allowable objective function '
+                        'value.  Retrying')
 
     # Run bootstrapping
     consec_failed_bootstrap_runs = 0
@@ -353,10 +351,10 @@ def _run_bootstrapping(config, alg, cluster, debug):
         for model in alg.exp_data:
             for name, data in alg.exp_data[model].items():
                 data.gen_bootstrap_weights()
-                data.weights_to_file('%s/%s_weights_%s.txt' % (alg.res_dir, name, completed_bootstrap_runs))
+                data.weights_to_file(f'{alg.res_dir}/{name}_weights_{completed_bootstrap_runs}.txt')
 
-        logger.info('Beginning bootstrap run %s' % completed_bootstrap_runs)
-        print0("Beginning bootstrap run %s" % completed_bootstrap_runs)
+        logger.info(f'Beginning bootstrap run {completed_bootstrap_runs}')
+        print0(f"Beginning bootstrap run {completed_bootstrap_runs}")
         alg.run(cluster.client, debug=debug)
 
         _refine_best_fit(config, alg, cluster, debug)
@@ -364,8 +362,8 @@ def _run_bootstrapping(config, alg, cluster, debug):
         best_fit_pset = alg.trajectory.best_fit()
 
         if alg.best_fit_obj <= bootstrap_max_obj:
-            logger.info('Bootstrap run %s complete' % completed_bootstrap_runs)
-            bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, 'bootstrap_run_%s' % completed_bootstrap_runs,
+            logger.info(f'Bootstrap run {completed_bootstrap_runs} complete')
+            bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, f'bootstrap_run_{completed_bootstrap_runs}',
                                    config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
                                    completed_bootstrap_runs == 0)
             completed_bootstrap_runs += 1
@@ -426,15 +424,15 @@ def main():
     log_prefix, debug = _setup_logging(cmdline_args)
     logger = logging.getLogger(__name__)
 
-    print0("PyBNF v%s" % __version__)
-    logger.info('Running PyBNF v%s' % __version__)
+    print0(f"PyBNF v{__version__}")
+    logger.info(f'Running PyBNF v{__version__}')
 
     try:
         # Load the conf file and create the algorithm
         if cmdline_args.conf_file is None:
             print0('No configuration file given, so I won''t do anything.\nFor more information, try pybnf --help')
             exit(0)
-        logger.info('Loading configuration file: %s' % cmdline_args.conf_file)
+        logger.info(f'Loading configuration file: {cmdline_args.conf_file}')
 
         config = load_config(cmdline_args.conf_file)
         if 'verbosity' in config.config:
@@ -488,7 +486,7 @@ def main():
         # before quitting
         logger.error('Terminating due to a PybnfError:')
         logger.error(e.log_message)
-        print0('Error: %s' % e.message)
+        print0(f'Error: {e.message}')
     except KeyboardInterrupt:
         print0('Fitting aborted.')
         logger.info('Terminating due to keyboard interrupt')
@@ -497,9 +495,9 @@ def main():
         # Sends any unhandled errors to log instead of to user output
         logger.exception('Internal error')
         exceptiondata = traceback.format_exc().splitlines()
-        print0('Sorry, an unknown error occurred: %s\n'
-               'Logs have been saved to %s.log.\n'
-               'Please report this bug to help us improve PyBNF.' % (exceptiondata[-1], log_prefix))
+        print0(f'Sorry, an unknown error occurred: {exceptiondata[-1]}\n'
+               f'Logs have been saved to {log_prefix}.log.\n'
+               'Please report this bug to help us improve PyBNF.')
     finally:
         _teardown_cluster(cluster)
         _cleanup_dask_workspace()

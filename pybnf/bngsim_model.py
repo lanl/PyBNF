@@ -197,7 +197,7 @@ def _collapse_action_line_continuations(action_line):
 def _extract_action_body(action_line, action_name):
     """Return the body inside action_name({...}) or None if it doesn't match."""
     collapsed = _collapse_action_line_continuations(action_line).strip()
-    pattern = r'\s*%s\s*\(\s*\{(.*)\}\s*\)\s*$' % re.escape(action_name)
+    pattern = rf'\s*{re.escape(action_name)}\s*\(\s*\{{(.*)\}}\s*\)\s*$'
     match = re.match(pattern, collapsed, re.DOTALL)
     if not match:
         return None
@@ -483,7 +483,7 @@ def _bngsim_normalize_method(method):
     """Delegate to bngsim.normalize_method, raising a uniform ValueError."""
     if not BNGSIM_AVAILABLE:
         raise ValueError(
-            "method=>'%s' cannot be normalized: %s" % (method, BNGSIM_ERROR)
+            f"method=>'{method}' cannot be normalized: {BNGSIM_ERROR}"
         )
     return bngsim.normalize_method(method)
 
@@ -498,7 +498,7 @@ def _normalize_nf_action_method(method):
     canonical, _ = _bngsim_normalize_method(method)
     if canonical not in _BNGSIM_NF_CANONICAL_METHODS:
         raise ValueError(
-            "method=>'%s' is not supported by the bngsim NF bridge" % method
+            f"method=>'{method}' is not supported by the bngsim NF bridge"
         )
     return canonical
 
@@ -508,7 +508,7 @@ def _nf_session_backend_for_method(method):
     canonical, dispatch = _bngsim_normalize_method(method)
     if canonical not in _BNGSIM_NF_CANONICAL_METHODS:
         raise ValueError(
-            "method=>'%s' is not supported by the bngsim NF bridge" % method
+            f"method=>'{method}' is not supported by the bngsim NF bridge"
         )
     return dispatch
 
@@ -584,8 +584,7 @@ def _get_nf_session_class(session_backend):
     if session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
         return bngsim.RuleMonkeySession
     raise RuntimeError(
-        'bngsim does not provide %s session support'
-        % _nf_session_backend_label(session_backend)
+        f'bngsim does not provide {_nf_session_backend_label(session_backend)} session support'
     )
 
 
@@ -944,9 +943,7 @@ def _evaluate_bngl_params(param_exprs, input_overrides=None):
                 # substituting 0.0 turns a missing parameter into a wrong
                 # answer (a zeroed rate constant), so fail loudly instead.
                 raise ValueError(
-                    "BngsimNfModel: could not evaluate param {} = {!r}: {}".format(
-                        name, expr, exc
-                    )
+                    f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
                 ) from exc
 
         # Don't let parameter values shadow builtin math functions
@@ -976,7 +973,7 @@ def _write_saved_action_outputs(folder, filename, suffixes, ds):
         if data is None:
             continue
         headers = [data.headers[i] for i in range(data.data.shape[1])]
-        path = '%s/%s_%s.%s' % (folder, filename, suffix, _ext_for_simtype(simtype))
+        path = f'{folder}/{filename}_{suffix}.{_ext_for_simtype(simtype)}'
         np.savetxt(path, data.data, header=' '.join(headers))
 
 
@@ -2245,8 +2242,7 @@ class BngsimNfModel(Model):
         missing_nf_support = missing_bngsim_nf_action_support(acts)
         if missing_nf_support:
             raise RuntimeError(
-                'bngsim does not provide %s support'
-                % ', '.join(missing_nf_support)
+                'bngsim does not provide {} support'.format(', '.join(missing_nf_support))
             )
 
         if bngl_model_lines is not None:
@@ -2684,7 +2680,7 @@ class BngsimNfModel(Model):
             return None
 
         param_text_lines = [
-            '%s %s' % (k, str(self.param_set[k]))
+            f'{k} {str(self.param_set[k])}'
             for k in self.param_names
         ]
         action_lines = ['begin actions\n'] + list(self.actions) + ['end actions']

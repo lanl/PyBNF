@@ -187,7 +187,7 @@ class ParticleSwarm(Algorithm):
                 print1('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
             else:
                 print2('Completed %i of %i simulations' % (self.num_evals, self.max_evals))
-            print2('Current best score: %f' % self.global_best[1])
+            print2(f'Current best score: {self.global_best[1]:f}')
             # End of one "pseudoflight", check if it was productive.
             if (self.last_best != np.inf and
                     np.abs(self.last_best - self.global_best[1]) <
@@ -199,7 +199,7 @@ class ParticleSwarm(Algorithm):
             if self.config.config['v_stop'] > 0:
                 max_speed = max([abs(v) for p in self.swarm for v in p[1].values()])
                 if max_speed < self.config.config['v_stop']:
-                    logger.info('Stopping particle swarm because the max speed is %s' % max_speed)
+                    logger.info(f'Stopping particle swarm because the max speed is {max_speed}')
                     return 'STOP'
 
         if self.num_evals % self.output_every == 0:

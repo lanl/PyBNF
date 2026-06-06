@@ -61,7 +61,7 @@ class Cluster:
         else:
             self._dask_proc = None
 
-        logger.info('Initializing dask Client with dask v%s, distributed v%s' % (daskv, distributedv))
+        logger.info(f'Initializing dask Client with dask v{daskv}, distributed v{distributedv}')
 
         if config.config['scheduler_file']:
             # Scheduler node read in from scheduler file stored on shared file system
@@ -69,8 +69,8 @@ class Cluster:
             self.client = Client(scheduler_file=config.config['scheduler_file'])
             self.local = False
         elif scheduler_node:
-            logger.info('Creating a client by connecting to the scheduler node %s:8786' % scheduler_node)
-            self.client = Client('%s:8786' % scheduler_node)
+            logger.info(f'Creating a client by connecting to the scheduler node {scheduler_node}:8786')
+            self.client = Client(f'{scheduler_node}:8786')
             self.local = False
         elif config.config['parallel_count'] is not None:
             logger.info('Creating a local client manually set to %i workers' % config.config['parallel_count'])
@@ -122,18 +122,18 @@ class Cluster:
                     logger.error('Could not retrieve host names in 10s')
                     raise PybnfError('Failed to find node names in a reasonable time.  Exiting')
                 except CalledProcessError:
-                    logger.error('User specified SLURM cluster, but command "%s" failed' % ' '.join(get_hosts_cmd))
+                    logger.error('User specified SLURM cluster, but command "{}" failed'.format(' '.join(get_hosts_cmd)))
                     raise PybnfError('Command to find node names failed.  Confirm use of SLURM cluster.  Exiting')
                 nodes = re.split('\n', proc.stdout.decode('UTF-8').strip())
                 scheduler_node = nodes[0]
-                logger.info('Node %s is being used as the scheduler node' % scheduler_node)
-                logger.info('Node(s) %s is/are being used as compute nodes' % ','.join(nodes))
+                logger.info(f'Node {scheduler_node} is being used as the scheduler node')
+                logger.info('Node(s) {} is/are being used as compute nodes'.format(','.join(nodes)))
                 node_string = ' '.join(nodes)
             elif re.match('((torque)|(pbs))', ctype, flags=re.IGNORECASE):
                 raise PybnfError("TORQUE cluster support is not yet implemented")
             else:
-                logger.error("Unknown cluster type: %s" % config.config['cluster_type'])
-                raise PybnfError("Unknown cluster type: %s" % config.config['cluster_type'])
+                logger.error("Unknown cluster type: {}".format(config.config['cluster_type']))
+                raise PybnfError("Unknown cluster type: {}".format(config.config['cluster_type']))
         return scheduler_node, node_string
 
     @staticmethod
@@ -147,7 +147,7 @@ class Cluster:
         (the dask-ssh default)
         :return: subprocess.Popen
         """
-        logger.info('Starting dask-ssh subprocess using nodes %s' % node_string)
+        logger.info(f'Starting dask-ssh subprocess using nodes {node_string}')
         # Build the dask-ssh invocation as an argument list and launch it WITHOUT
         # a shell (ROB-3): each node name becomes its own literal argv entry, so
         # node names from config/SLURM can't be interpreted by a shell.
@@ -175,10 +175,8 @@ class Cluster:
             dask_ssh_err.seek(0)
             err_text = dask_ssh_err.read().decode('UTF-8', errors='replace').strip()
             dask_ssh_err.close()
-            logger.error('dask-ssh exited with code %s during cluster bring-up. stderr:\n%s'
-                         % (returncode, err_text))
-            raise PybnfError('Failed to start the dask-ssh cluster (dask-ssh exited with code %s). %s'
-                             % (returncode, ('Details:\n%s' % err_text) if err_text
+            logger.error(f'dask-ssh exited with code {returncode} during cluster bring-up. stderr:\n{err_text}')
+            raise PybnfError('Failed to start the dask-ssh cluster (dask-ssh exited with code {}). {}'.format(returncode, (f'Details:\n{err_text}') if err_text
                                 else 'Check the cluster log directory for details.'))
         return dask_ssh_proc
 

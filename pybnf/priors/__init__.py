@@ -28,8 +28,8 @@ PRIOR_KEYWORD_MAP = {
     'logvar': (NoPrior, LOG10),
 }
 for _base, _entry in PRIOR_FAMILY_REGISTRY.items():
-    PRIOR_KEYWORD_MAP['%s_var' % _base] = (_entry.cls, LINEAR)
-    PRIOR_KEYWORD_MAP['log%s_var' % _base] = (_entry.cls, LOG10)
+    PRIOR_KEYWORD_MAP[f'{_base}_var'] = (_entry.cls, LINEAR)
+    PRIOR_KEYWORD_MAP[f'log{_base}_var'] = (_entry.cls, LOG10)
 
 
 def build_prior(keyword, p1, p2):
@@ -60,8 +60,8 @@ def var_keyword_grammar():
     bounded, unbounded = [], []
     for base, entry in PRIOR_FAMILY_REGISTRY.items():
         target = bounded if entry.has_bounded_support else unbounded
-        target.append('%s_var' % base)
-        target.append('log%s_var' % base)
+        target.append(f'{base}_var')
+        target.append(f'log{base}_var')
     return bounded, unbounded
 
 

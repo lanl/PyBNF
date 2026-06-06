@@ -61,8 +61,7 @@ class DifferentialEvolutionBase(Algorithm):
         self.strategy = config.config['de_strategy']
         options = ('rand1', 'rand2', 'best1', 'best2', 'all1', 'all2')
         if self.strategy not in options:
-            raise PybnfError('Invalid differential evolution strategy "%s". Options are: %s' %
-                             (self.strategy, ','.join(options)))
+            raise PybnfError('Invalid differential evolution strategy "{}". Options are: {}'.format(self.strategy, ','.join(options)))
 
     def new_individual(self, individuals, base_index=None):
         """

@@ -217,13 +217,13 @@ class Job:
         self.timeout = timeout
 
         # Folder where we save the model files and outputs.
-        self.folder = '%s/%s' % (self.output_dir, self.job_id)
+        self.folder = f'{self.output_dir}/{self.job_id}'
         self.delete_folder = delete_folder
         self.replicate_index = replicate_index
         self.stochastic_seed_policy = stochastic_seed_policy
 
     def _name_with_id(self, model):
-        return '%s_%s' % (model.name, self.job_id)
+        return f'{model.name}_{self.job_id}'
 
     def _run_models(self):
         ds = {}
@@ -245,9 +245,9 @@ class Job:
             self.jlogger.error('Cannot save log files without specified directory')
             return
         for m in self.models:
-            lf = '%s/%s.log' % (self.folder, self._name_with_id(m))
+            lf = f'{self.folder}/{self._name_with_id(m)}.log'
             if os.path.isfile(lf):
-                self.jlogger.debug('Copying log file %s' % lf)
+                self.jlogger.debug(f'Copying log file {lf}')
                 shutil.copy(lf, failed_logs_dir)
 
     def run_simulation(self, debug=False, failed_logs_dir=''):
@@ -262,15 +262,14 @@ class Job:
         while not made_folder:
             try:
                 os.mkdir(self.folder)
-                self.jlogger.debug('Created folder %s for simulation' % self.folder)
+                self.jlogger.debug(f'Created folder {self.folder} for simulation')
                 made_folder = True
             except OSError:
-                self.jlogger.warning('Failed to create folder %s, trying again.' % self.folder)
+                self.jlogger.warning(f'Failed to create folder {self.folder}, trying again.')
                 failures += 1
                 self.folder = '%s/%s_rerun%i' % (self.output_dir, self.job_id, failures)
                 if failures > 1000:
-                    self.jlogger.error('Job %s failed because it was unable to write to the Simulations folder' %
-                                       self.job_id)
+                    self.jlogger.error(f'Job {self.job_id} failed because it was unable to write to the Simulations folder')
                     return FailedSimulation(self.params, self.job_id, 1)
         try:
             simdata = self._run_models()
@@ -284,15 +283,15 @@ class Job:
                 self._copy_log_files(failed_logs_dir)
             res = FailedSimulation(self.params, self.job_id, 0)
         except FileNotFoundError:
-            self.jlogger.exception('File not found during job %s. This should only happen if the fitting '
-                                   'is already done.' % self.job_id)
+            self.jlogger.exception(f'File not found during job {self.job_id}. This should only happen if the fitting '
+                                   'is already done.')
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         except Exception:
             if debug:
                 self._copy_log_files(failed_logs_dir)
             print1('A simulation failed with an unknown error. See the log for details, and consider reporting this '
                    'as a bug.')
-            self.jlogger.exception('Unknown error during job %s' % self.job_id)
+            self.jlogger.exception(f'Unknown error during job {self.job_id}')
             res = FailedSimulation(self.params, self.job_id, 2, sys.exc_info())
         else:
             if self.calc_future is not None:
@@ -310,30 +309,30 @@ class Job:
                         res.out = simdata
                         if res.score is None:
                             res.score = np.inf
-                            logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-                            logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
+                            logger.warning(f'Simulation corresponding to Result {res.name} contained NaNs or Infs')
+                            logger.warning(f'Discarding Result {res.name} as having an infinite objective function value')
                 except Exception:
                     # A failure while normalizing or scoring this one parameter set
                     # (e.g. a PybnfError from mismatched simulation/exp columns) should
                     # penalize this evaluation, not crash the whole run. See lanl/PyBNF#388.
                     if debug:
                         self._copy_log_files(failed_logs_dir)
-                    self.jlogger.exception('Objective evaluation failed during job %s' % self.job_id)
+                    self.jlogger.exception(f'Objective evaluation failed during job {self.job_id}')
                     res = FailedSimulation(self.params, self.job_id, 1, sys.exc_info())
                 res.simdata = None
         if self.delete_folder:
             if os.name == 'nt':  # Windows
                 try:
                     shutil.rmtree(self.folder)
-                    self.jlogger.debug('Removed folder %s' % self.folder)
+                    self.jlogger.debug(f'Removed folder {self.folder}')
                 except OSError:
-                    self.jlogger.error('Failed to remove folder %s.' % self.folder)
+                    self.jlogger.error(f'Failed to remove folder {self.folder}.')
             else:
                 try:
                     run(['rm', '-rf', self.folder], check=True, timeout=1800)
-                    self.jlogger.debug('Removed folder %s' % self.folder)
+                    self.jlogger.debug(f'Removed folder {self.folder}')
                 except (CalledProcessError, TimeoutExpired):
-                    self.jlogger.error('Failed to remove folder %s.' % self.folder)
+                    self.jlogger.error(f'Failed to remove folder {self.folder}.')
 
         return res
 
@@ -368,7 +367,7 @@ class JobGroup:
             return True
 
         if res.name not in self.subjob_ids:
-            raise ValueError('Job group %s received unwanted result %s' % (self.job_id, res.name))
+            raise ValueError(f'Job group {self.job_id} received unwanted result {res.name}')
         self.result_list.append(res)
         return len(self.result_list) == len(self.subjob_ids)
 
@@ -442,7 +441,7 @@ class HybridJobGroup(JobGroup):
             return True
 
         if res.name not in self.subjob_ids:
-            raise ValueError('Job group %s received unwanted result %s' % (self.job_id, res.name))
+            raise ValueError(f'Job group {self.job_id} received unwanted result {res.name}')
 
         for group in self.replica_groups:
             if res.name in group.subjob_ids:
@@ -491,7 +490,7 @@ def result_from_completed(future, result, params, job_id):
         typ, exc, tb = result
         if isinstance(exc, PybnfError):
             raise exc  # User-targeted error should be raised instead of skipped
-        logger.error('Job %s failed with an exception' % job_id)
+        logger.error(f'Job {job_id} failed with an exception')
         logger.error(''.join(traceback.format_exception(typ, exc, tb)))
         return FailedSimulation(params, job_id, 3)
     if isinstance(result, CancelledError):
@@ -499,7 +498,6 @@ def result_from_completed(future, result, params, job_id):
     if not isinstance(result, Result):
         # e.g. a raw tuple leaking from as_completed for an errored future whose
         # status we somehow didn't catch; never crash the run over it.
-        logger.error('Job %s returned an unexpected result of type %s; treating as a failed simulation'
-                     % (job_id, type(result).__name__))
+        logger.error(f'Job {job_id} returned an unexpected result of type {type(result).__name__}; treating as a failed simulation')
         return FailedSimulation(params, job_id, 3)
     return result

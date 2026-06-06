@@ -53,9 +53,9 @@ class ConstraintSet:
         :param output_dir: Directory where the file should be saved
         :return:
         """
-        with open('%s/%s_constraint_eval.txt' % (output_dir, self.base_suffix), 'w') as out:
+        with open(f'{output_dir}/{self.base_suffix}_constraint_eval.txt', 'w') as out:
             for c in self.constraints:
-                out.write('%s\n' % c.penalty(sim_data_dict))
+                out.write(f'{c.penalty(sim_data_dict)}\n')
 
     def load_constraint_file(self, filename, scale=1.0):
         """
@@ -63,7 +63,7 @@ class ConstraintSet:
         :param filename: Path of constraint file
         :param scale: Factor by which we multiply all constraint weights
         """
-        logger.info('Loading constraints for %s suffix %s from %s' % (self.base_model, self.base_suffix, filename))
+        logger.info(f'Loading constraints for {self.base_model} suffix {self.base_suffix} from {filename}')
         with open(filename) as f:
             linenum = 0
             for line in f:
@@ -191,7 +191,7 @@ class ConstraintSet:
                     con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty,
                                          minpenalty, pmin, pmax, tolerance)
                 else:
-                    raise RuntimeError('Unknown enforcement keyword %s' % p.enforce[0])
+                    raise RuntimeError(f'Unknown enforcement keyword {p.enforce[0]}')
                 con.source_line = line.strip()
                 self.constraints.append(con)
         logger.info('Loaded %i constraints' % len(self.constraints))
@@ -308,24 +308,22 @@ class Constraint:
         if weight is not None:
             self.penalty_model = 'static'
             if pmin is not None or pmax is not None or tolerance is not None:
-                raise ValueError('Constraint %s%s%s has a weight, and so should not have a pmin, pmax and/or tolerance'
-                                 % (quant1, sign, quant2))
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} has a weight, and so should not have a pmin, pmax and/or tolerance')
         elif pmin is not None:
             self.penalty_model = 'likelihood'
             if pmax is None:
-                raise ValueError('Constraint %s%s%s has a pmin but not a pmax' % (quant1, sign, quant2))
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} has a pmin but not a pmax')
             if tolerance is None:
-                raise ValueError('Constraint %s%s%s has a pmin and pmax but not a tolerance' % (quant1, sign, quant2))
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} has a pmin and pmax but not a tolerance')
             if altpenalty is not None:
-                raise ValueError('Constraint %s%s%s should not have both a confidence and a altpenalty' %
-                                 (quant1, sign, quant2))
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} should not have both a confidence and a altpenalty')
             if pmin < 0. or pmax > 1.:
-                raise PybnfError('Constraint %s%s%s has invalid probabilities. Settings for confidence, pmin, and/or '
-                                 'pmax must be between 0 and 1.' % (quant1, sign, quant2))
+                raise PybnfError(f'Constraint {quant1}{sign}{quant2} has invalid probabilities. Settings for confidence, pmin, and/or '
+                                 'pmax must be between 0 and 1.')
             if pmin > pmax:
-                raise PybnfError('Constraint %s%s%s has pmin set larger than pmax.' % (quant1, sign, quant2))
+                raise PybnfError(f'Constraint {quant1}{sign}{quant2} has pmin set larger than pmax.')
         else:
-            raise ValueError('Constraint %s%s%s must have either a weight or a confidence' % (quant1, sign, quant2))
+            raise ValueError(f'Constraint {quant1}{sign}{quant2} must have either a weight or a confidence')
 
         # Key tuples need to be initialized after we receive the first data result, so we can figure out the keys.
         self.qkeys1 = None
@@ -350,8 +348,7 @@ class Constraint:
         self.qkeys1, self.qkeys2, self.akeys1, self.akeys2 = (
             self.get_key(q, sim_data_dict) for q in (self.quant1, self.quant2, self.alt1, self.alt2))
         self._find_extra_keys(sim_data_dict)
-        logger.debug("Got keys for constraint %s<%s: %s" %
-                     (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2]))
+        logger.debug(f"Got keys for constraint {self.quant1}<{self.quant2}: {[self.qkeys1, self.qkeys2, self.akeys1, self.akeys2]}")
 
     def _find_extra_keys(self, sim_data_dict):
         """
@@ -385,20 +382,18 @@ class Constraint:
             return None
         if '.' not in q:
             if self.base_model not in sim_data_dict:
-                raise PybnfError('Constraint file is associated with model %s, but that model was not found' %
-                                 self.base_model)
+                raise PybnfError(f'Constraint file is associated with model {self.base_model}, but that model was not found')
             if self.base_suffix not in sim_data_dict[self.base_model]:
-                raise PybnfError("Constraint file %s.prop refers to suffix '%s' in model '%s', but that model does not "
-                                 "produce output with that suffix" %
-                                 (self.base_suffix, self.base_suffix, self.base_model))
+                raise PybnfError(f"Constraint file {self.base_suffix}.prop refers to suffix '{self.base_suffix}' in model '{self.base_model}', but that model does not "
+                                 "produce output with that suffix")
             if q not in sim_data_dict[self.base_model][self.base_suffix].cols:
-                raise PybnfError("Observable '%s' specified in constraint file was not found in the output of model "
-                                 "'%s', suffix '%s'" % (q, self.base_model, self.base_suffix))
+                raise PybnfError(f"Observable '{q}' specified in constraint file was not found in the output of model "
+                                 f"'{self.base_model}', suffix '{self.base_suffix}'")
             return (self.base_model, self.base_suffix, q)
         else:
             parts = q.split('.')
             if len(parts) > 2:
-                raise PybnfError('Parsing constraint variable %s' % q,
+                raise PybnfError(f'Parsing constraint variable {q}',
                                  "Parsing constraint variable %s - The format should be 'suffix.Observable' Should "
                                  "not contain multiple '.' characters.")
             options = []
@@ -406,14 +401,14 @@ class Constraint:
                 if parts[0] in sim_data_dict[m]:
                     options.append(m)
             if len(options) == 0:
-                raise PybnfError("Could not find any experimental data corresponding to the suffix '%s' specified "
-                                 "in your constraint file" % parts[0])
+                raise PybnfError(f"Could not find any experimental data corresponding to the suffix '{parts[0]}' specified "
+                                 "in your constraint file")
             if len(options) > 1:
-                raise PybnfError("Suffix '%s' in your constraint file appears in multiple model files. Please "
-                                 "change your suffix names so it isn't ambiguous" % parts[0])
+                raise PybnfError(f"Suffix '{parts[0]}' in your constraint file appears in multiple model files. Please "
+                                 "change your suffix names so it isn't ambiguous")
             if parts[1] not in sim_data_dict[options[0]][parts[0]].cols:
-                raise PybnfError("Obserable '%s' in constraint file - The output with suffix %s does not contain an "
-                                 "observable %s" % (q, parts[0], parts[1]))
+                raise PybnfError(f"Obserable '{q}' in constraint file - The output with suffix {parts[0]} does not contain an "
+                                 f"observable {parts[1]}")
             return (options[0], parts[0], parts[1])
 
     def index(self, sim_data_dict, keys):
@@ -434,7 +429,7 @@ class Constraint:
         elif self.penalty_model == 'likelihood':
             return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         else:
-            raise ValueError('Invalid penalty model: %s' % self.penalty_model)
+            raise ValueError(f'Invalid penalty model: {self.penalty_model}')
 
     def get_difference(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
@@ -458,9 +453,8 @@ class Constraint:
         """
 
         def length_error():
-            raise PybnfError('Applying constraint %s<%s. Constraints involving observables that have different time '
-                             'points in their simulation outputs are not currently supported' %
-                             (self.quant1, self.quant2))
+            raise PybnfError(f'Applying constraint {self.quant1}<{self.quant2}. Constraints involving observables that have different time '
+                             'points in their simulation outputs are not currently supported')
 
         if imin2 is None:
             imin2 = imin
@@ -620,7 +614,7 @@ class AtConstraint(Constraint):
         self.before = before
 
         self.atkeys = None
-        logger.debug("Created 'at' constraint %s<%s" % (self.quant1, self.quant2))
+        logger.debug(f"Created 'at' constraint {self.quant1}<{self.quant2}")
 
     def _find_extra_keys(self, sim_data_dict):
         """Resolve the 'at' condition variable, defaulting to the indvar."""
@@ -697,7 +691,7 @@ class SplitAtConstraint(Constraint):
 
         self.atkeys1 = None
         self.atkeys2 = None
-        logger.debug("Created split 'at' constraint %s<%s" % (self.quant1, self.quant2))
+        logger.debug(f"Created split 'at' constraint {self.quant1}<{self.quant2}")
 
     def _find_extra_keys(self, sim_data_dict):
         """Resolve both 'at' condition variables, each defaulting to the indvar."""
@@ -776,7 +770,7 @@ class BetweenConstraint(Constraint):
         self.startkeys = None
         self.endkeys = None
         self.once = once
-        logger.debug("Created 'between' constraint %s<%s" % (self.quant1, self.quant2))
+        logger.debug(f"Created 'between' constraint {self.quant1}<{self.quant2}")
 
     def _find_extra_keys(self, sim_data_dict):
         """Resolve the start/end interval variables, each defaulting to the indvar."""
@@ -808,9 +802,8 @@ class BetweenConstraint(Constraint):
         enddat = self.index(sim_data_dict, self.endkeys)
         endcol = enddat < self.endval
         if len(startcol) != len(endcol):
-            raise PybnfError('Applying constraint %s<%s. Constraints involving observables that have different time '
-                             'points in their simulation outputs are not currently supported' %
-                             (self.quant1, self.quant2))
+            raise PybnfError(f'Applying constraint {self.quant1}<{self.quant2}. Constraints involving observables that have different time '
+                             'points in their simulation outputs are not currently supported')
         # Note: [0] strips a useless extra dimension
         end = np.nonzero(endcol[start+1:-1] != endcol[start+2:])[0]
         if len(end) == 0:
@@ -839,7 +832,7 @@ class AlwaysConstraint(Constraint):
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
                          tolerance)
-        logger.debug("Created 'always' constraint %s<%s" % (self.quant1, self.quant2))
+        logger.debug(f"Created 'always' constraint {self.quant1}<{self.quant2}")
 
     def penalty(self, sim_data_dict):
         """
@@ -866,7 +859,7 @@ class OnceConstraint(Constraint):
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
                          tolerance)
-        logger.debug("Created 'once' constraint %s<%s" % (self.quant1, self.quant2))
+        logger.debug(f"Created 'once' constraint {self.quant1}<{self.quant2}")
 
     def penalty(self, sim_data_dict):
         """

@@ -322,7 +322,7 @@ class DreamAlgorithm(BayesianAlgorithm):
 
             if self.iteration[index] % 10 == 0:
                 print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                print2('Acceptance rates: %s\n' % str(self.acceptance_rates))
+                print2(f'Acceptance rates: {str(self.acceptance_rates)}\n')
             else:
                 print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
             # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
@@ -331,7 +331,7 @@ class DreamAlgorithm(BayesianAlgorithm):
                 if self.check_convergence(self.iteration[index], max_rhat):
                     return 'STOP'
             logger.debug('Completed %i iterations' % self.iteration[index])
-            print2('Current -Ln Posteriors: %s' % str(self.ln_current_P))
+            print2(f'Current -Ln Posteriors: {str(self.ln_current_P)}')
 
             # Outlier detection (every 10 iterations, only during burn-in)
             if self.iteration[index] % 10 == 0 and self.iteration[index] <= self.burn_in:
@@ -345,7 +345,7 @@ class DreamAlgorithm(BayesianAlgorithm):
                     mean_dist = self.cr_total_distance / np.maximum(self.cr_usage_count, 1)
                 if np.sum(mean_dist) > 0:
                     self.cr_probs = mean_dist / np.sum(mean_dist)
-                    logger.debug('Updated CR probabilities: %s' % str(self.cr_probs))
+                    logger.debug(f'Updated CR probabilities: {str(self.cr_probs)}')
             elif self.iteration[index] > self.cr_adapt_end and not self.cr_frozen:
                 self.cr_frozen = True
                 logger.debug('CR probabilities frozen at iteration %d: %s'

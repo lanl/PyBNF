@@ -137,7 +137,7 @@ def feature_missing_reason(name):
         return ''
     return BNGSIM_MISSING.get(
         name,
-        'bngsim feature %r is unavailable in this install' % name,
+        f'bngsim feature {name!r} is unavailable in this install',
     )
 
 

@@ -153,8 +153,7 @@ class SummationObjective(ObjectiveFunction):
         try:
             compare_cols.remove(indvar)
         except KeyError:
-            raise PybnfError('The independent variable "%s" in your exp file was not found in the simulation data.'
-                             % indvar)
+            raise PybnfError(f'The independent variable "{indvar}" in your exp file was not found in the simulation data.')
 
         func_value = 0.0
         # Iterate through rows of experimental data
@@ -166,8 +165,7 @@ class SummationObjective(ObjectiveFunction):
                 sim_row = np.argmax(np.isclose(sim_data[indvar], exp_data.data[rownum, 0], atol=0.))
                 # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
                 if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
-                    raise PybnfError('Experimental data includes %s=%s, but that %s is not in the simulation output. '
-                                     % (indvar, exp_data.data[rownum, 0], indvar))
+                    raise PybnfError(f'Experimental data includes {indvar}={exp_data.data[rownum, 0]}, but that {indvar} is not in the simulation output. ')
             elif self.rounding == 1:
                 # Take the closest row to the exp data
                 sim_row = np.argmin(abs(sim_data[indvar] - exp_data.data[rownum, 0]))
@@ -176,8 +174,7 @@ class SummationObjective(ObjectiveFunction):
                 if diff > 1. and diff / exp_data.data[rownum, 0] > 0.1:
                     warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
                     if show_warnings and warnstr not in self.warned:
-                        print1("Warning: For exp point %s=%s, used sim data at %s=%s" %
-                               (indvar, exp_data.data[rownum, 0], indvar, sim_data[indvar][sim_row]))
+                        print1(f"Warning: For exp point {indvar}={exp_data.data[rownum, 0]}, used sim data at {indvar}={sim_data[indvar][sim_row]}")
                         self.warned.add(warnstr)
             else:
                 raise PybnfError('Possible values for ind_var_rounding are 0 or 1.')
@@ -256,8 +253,7 @@ class ColumnSummationObjective(ObjectiveFunction):
         try:
             compare_cols.remove(indvar)
         except KeyError:
-            raise PybnfError('The independent variable "%s" in your exp file was not found in the simulation data.'
-                             % indvar)
+            raise PybnfError(f'The independent variable "{indvar}" in your exp file was not found in the simulation data.')
 
         func_value = 0.0
         # Iterate through rows of experimental data
@@ -302,10 +298,10 @@ class ChiSquareObjective(SummationObjective):
             # Todo: Check for this and throw the error before all the workers get created.
             sd_col = exp_data.cols[col_name + '_SD']
         except KeyError:
-            raise PybnfError('Column %s_SD not found' % col_name,
-                 "Column %s_SD was not found in the experimental data. When using the chi_sq objective function, your "
+            raise PybnfError(f'Column {col_name}_SD not found',
+                 f"Column {col_name}_SD was not found in the experimental data. When using the chi_sq objective function, your "
                  "data file must include a _SD column corresponding to each experimental variable, giving the standard "
-                 "deviations of that variable. " % col_name)
+                 "deviations of that variable. ")
         exp_sigma = exp_data.data[exp_row, sd_col]
         # sigma comes fixed from the data, so the Gaussian normalizer is constant
         # and dropped: the data-fit term alone (ADR-0011).
@@ -318,7 +314,7 @@ class ChiSquareObjective(SummationObjective):
         :param compare_cols: Iterable of the names being used
         :return: None
         """
-        missed = set(exp_cols).difference(set(compare_cols).union(set(['%s_SD' % s for s in compare_cols])))
+        missed = set(exp_cols).difference(set(compare_cols).union(set([f'{s}_SD' for s in compare_cols])))
         if len(missed) > 0:
             raise PybnfError('The following experimental data columns were not found in the simulation output: '
                              + str(missed))

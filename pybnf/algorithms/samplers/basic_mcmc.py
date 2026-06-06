@@ -363,5 +363,5 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
                 if ps:
                     # Add to a list of new psets to run that will be submitted when the first result comes back.
                     ps.name = 'iter%irun%i' % (self.iteration[index], index)
-                    logger.debug('Added PSet %s to BayesAlgorithm.staged to resume a chain' % (ps.name))
+                    logger.debug(f'Added PSet {ps.name} to BayesAlgorithm.staged to resume a chain')
                     self.staged.append(ps)

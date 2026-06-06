@@ -75,7 +75,7 @@ class AnalyticalModel(Model):
                 var = np.array(mode['variance'])
                 self._modes.append((np.log(w), mu, 1.0 / var))
         else:
-            raise ValueError('Unknown analytical target type: %s' % self.target_type)
+            raise ValueError(f'Unknown analytical target type: {self.target_type}')
 
     def copy_with_param_set(self, pset):
         m = copy.copy(self)
@@ -124,7 +124,7 @@ class AnalyticalModel(Model):
             # Unreachable in practice (__init__ already rejects unknown types),
             # but fail loud rather than return an implicit None if a new target
             # type is ever added to __init__ but not here.
-            raise ValueError('Unknown analytical target type: %s' % self.target_type)
+            raise ValueError(f'Unknown analytical target type: {self.target_type}')
 
     def _nll_gaussian(self, params):
         """NLL of multivariate Gaussian: 0.5 * sum((x - mu)^2 / sigma^2)"""

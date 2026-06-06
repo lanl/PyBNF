@@ -156,9 +156,9 @@ class Algorithm(ABC):
         if bootstrap is not None:
             self.bootstrap_number = bootstrap
 
-            self.sim_dir = self.config.config['output_dir'] + '/Simulations-boot%s' % bootstrap
-            self.res_dir = self.config.config['output_dir'] + '/Results-boot%s' % bootstrap
-            self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs-boot%s' % bootstrap
+            self.sim_dir = self.config.config['output_dir'] + f'/Simulations-boot{bootstrap}'
+            self.res_dir = self.config.config['output_dir'] + f'/Results-boot{bootstrap}'
+            self.failed_logs_dir = self.config.config['output_dir'] + f'/FailedSimLogs-boot{bootstrap}'
             for boot_dir in (self.sim_dir, self.res_dir, self.failed_logs_dir):
                 if os.path.exists(boot_dir):
                     try:
@@ -209,7 +209,7 @@ class Algorithm(ABC):
         self.__dict__.update(state)
         try:
             backup_params = 'sorted_params_backup.txt' if not self.refine else 'sorted_params_refine_backup.txt'
-            self.trajectory = Trajectory.load_trajectory('%s/%s' % (self.res_dir, backup_params),
+            self.trajectory = Trajectory.load_trajectory(f'{self.res_dir}/{backup_params}',
                                                          self.config.variables, self.config.config['num_to_output'])
         except IOError:
             logger.exception('Failed to load trajectory from file')
@@ -254,44 +254,43 @@ class Algorithm(ABC):
             if isinstance(m, BNGLModel) and explicit_bngsim:
                 if bridge_backend not in BNGSIM_SUPPORTED_BNGL_BACKENDS:
                     raise PybnfError(
-                        'bngl_backend = bngsim was requested for model %s, but its BNGL actions are not '
-                        'supported by the bngsim bridge.' % m.name
+                        f'bngl_backend = bngsim was requested for model {m.name}, but its BNGL actions are not '
+                        'supported by the bngsim bridge.'
                     )
                 if not bngsim_available:
                     raise PybnfError(
-                        'bngl_backend = bngsim was requested for model %s, but %s.' %
-                        (m.name, _bngsim_unavailable_reason())
+                        f'bngl_backend = bngsim was requested for model {m.name}, but {_bngsim_unavailable_reason()}.'
                     )
                 if missing_nf_support:
                     raise PybnfError(
-                        'bngl_backend = bngsim was requested for model %s, but the installed bngsim '
-                        'does not provide %s support.' % (m.name, ', '.join(missing_nf_support))
+                        'bngl_backend = bngsim was requested for model {}, but the installed bngsim '
+                        'does not provide {} support.'.format(m.name, ', '.join(missing_nf_support))
                     )
 
             if isinstance(m, BNGLModel) and m.generates_network:
-                logger.debug('Model %s requires network generation' % m.name)
+                logger.debug(f'Model {m.name} requires network generation')
 
                 if not os.path.isdir(init_dir):
-                    logger.debug('Creating initialization directory: %s' % init_dir)
+                    logger.debug(f'Creating initialization directory: {init_dir}')
                     os.mkdir(init_dir)
                 os.chdir(init_dir)
 
-                gnm_name = '%s_gen_net' % m.name
+                gnm_name = f'{m.name}_gen_net'
                 default_pset = PSet([var.set_value(var.default_value) for var in self.variables])
                 m.save(gnm_name, gen_only=True, pset=default_pset)
-                gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
+                gn_cmd = [self.config.config['bng_command'], f'{gnm_name}.bngl']
                 if os.name == 'nt':  # Windows
                     # Explicitly call perl because the #! line in BNG2.pl is not supported.
                     gn_cmd = ['perl'] + gn_cmd
                 try:
-                    with open('%s.log' % gnm_name, 'w') as lf:
-                        print2('Generating network for model %s.bngl' % gnm_name)
+                    with open(f'{gnm_name}.log', 'w') as lf:
+                        print2(f'Generating network for model {gnm_name}.bngl')
                         run_subprocess(gn_cmd, timeout=self.config.config['wall_time_gen'], stdout=lf, stderr=STDOUT)
                 except CalledProcessError as c:
-                    logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                    logger.error(f"Command {gn_cmd} failed in directory {os.getcwd()}")
                     logger.error(c.stdout)
-                    print0('Error: Initial network generation failed for model %s... see BioNetGen error log at '
-                           '%s/%s.log' % (m.name, os.getcwd(), gnm_name))
+                    print0(f'Error: Initial network generation failed for model {m.name}... see BioNetGen error log at '
+                           f'{os.getcwd()}/{gnm_name}.log')
                     exit(1)
                 except TimeoutExpired:
                     logger.debug("Network generation exceeded %d seconds... exiting" %
@@ -300,14 +299,13 @@ class Algorithm(ABC):
                     exit(1)
                 except:
                     tb = traceback.format_exc()
-                    logger.debug("Other exception occurred:\n%s" % tb)
+                    logger.debug(f"Other exception occurred:\n{tb}")
                     print0("Unknown error occurred during network generation, see log... exiting")
                     exit(1)
                 finally:
                     os.chdir(home_dir)
 
-                logger.info('Output for network generation of model %s logged in %s/%s.log' %
-                             (m.name, init_dir, gnm_name))
+                logger.info(f'Output for network generation of model {m.name} logged in {init_dir}/{gnm_name}.log')
                 net_path = init_dir + '/' + gnm_name + '.net'
                 use_bngsim = allow_bngsim and bngsim_available and bridge_backend == BNGSIM_BACKEND_NET
                 use_hybrid = (
@@ -332,7 +330,7 @@ class Algorithm(ABC):
                         m.name,
                     )
                     os.chdir(init_dir)
-                    hybrid_name = '%s_gen_hybrid' % m.name
+                    hybrid_name = f'{m.name}_gen_hybrid'
                     m_copy = copy.deepcopy(m)
                     m_copy.actions = ['writeXML()']
                     try:
@@ -341,8 +339,8 @@ class Algorithm(ABC):
                         if explicit_bngsim:
                             os.chdir(home_dir)
                             raise PybnfError(
-                                'bngl_backend = bngsim was requested for model %s, but staging the '
-                                'hybrid BNGL for XML generation failed: %s' % (m.name, exc)
+                                f'bngl_backend = bngsim was requested for model {m.name}, but staging the '
+                                f'hybrid BNGL for XML generation failed: {exc}'
                             )
                         logger.exception(
                             'Failed to stage the hybrid BNGL for model %s. '
@@ -354,12 +352,12 @@ class Algorithm(ABC):
                         final_model_list[-1].bng_command = m.bng_command
                         continue
 
-                    hybrid_cmd = [self.config.config['bng_command'], '%s.bngl' % hybrid_name]
+                    hybrid_cmd = [self.config.config['bng_command'], f'{hybrid_name}.bngl']
                     if os.name == 'nt':
                         hybrid_cmd = ['perl'] + hybrid_cmd
                     try:
-                        with open('%s.log' % hybrid_name, 'w') as lf:
-                            print2('Generating XML for hybrid model %s.bngl' % hybrid_name)
+                        with open(f'{hybrid_name}.log', 'w') as lf:
+                            print2(f'Generating XML for hybrid model {hybrid_name}.bngl')
                             run_subprocess(
                                 hybrid_cmd,
                                 timeout=self.config.config['wall_time_gen'],
@@ -369,8 +367,8 @@ class Algorithm(ABC):
                     except (CalledProcessError, TimeoutExpired, Exception) as exc:
                         if explicit_bngsim:
                             raise PybnfError(
-                                'bngl_backend = bngsim was requested for model %s, but hybrid XML '
-                                'generation failed: %s' % (m.name, exc)
+                                f'bngl_backend = bngsim was requested for model {m.name}, but hybrid XML '
+                                f'generation failed: {exc}'
                             )
                         logger.exception(
                             'Hybrid XML generation failed for model %s. '
@@ -388,8 +386,8 @@ class Algorithm(ABC):
                     if not os.path.isfile(xml_path):
                         if explicit_bngsim:
                             raise PybnfError(
-                                'bngl_backend = bngsim was requested for model %s, but hybrid XML '
-                                'generation did not produce %s.' % (m.name, xml_path)
+                                f'bngl_backend = bngsim was requested for model {m.name}, but hybrid XML '
+                                f'generation did not produce {xml_path}.'
                             )
                         logger.warning(
                             'XML file not found at %s for model %s. '
@@ -420,8 +418,8 @@ class Algorithm(ABC):
                     except Exception as exc:
                         if explicit_bngsim:
                             raise PybnfError(
-                                'bngl_backend = bngsim was requested for model %s, but bngsim NF '
-                                'bridge initialization failed: %s' % (m.name, exc)
+                                f'bngl_backend = bngsim was requested for model {m.name}, but bngsim NF '
+                                f'bridge initialization failed: {exc}'
                             )
                         logger.exception(
                             'Failed to initialize the bngsim NF bridge for hybrid model %s. '
@@ -432,14 +430,14 @@ class Algorithm(ABC):
                         final_model_list[-1].bng_command = m.bng_command
                 elif use_bngsim:
                     try:
-                        logger.info('Using bngsim for in-process simulation of model %s' % m.name)
+                        logger.info(f'Using bngsim for in-process simulation of model {m.name}')
                         model = BngsimModel(m.name, m.actions, m.suffixes, m.mutants, nf=net_path,
                                             protocol=m.protocol, save_files=bngsim_save_files)
                     except Exception as exc:
                         if explicit_bngsim:
                             raise PybnfError(
-                                'bngl_backend = bngsim was requested for model %s, but bngsim bridge '
-                                'initialization failed: %s' % (m.name, exc)
+                                f'bngl_backend = bngsim was requested for model {m.name}, but bngsim bridge '
+                                f'initialization failed: {exc}'
                             )
                         logger.exception(
                             'Failed to initialize bngsim bridge for model %s. Falling back to NetModel.',
@@ -456,8 +454,7 @@ class Algorithm(ABC):
                 if not bngsim_available:
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but %s.' %
-                            (m.name, _bngsim_unavailable_reason())
+                            f'bngl_backend = bngsim was requested for model {m.name}, but {_bngsim_unavailable_reason()}.'
                         )
                     logger.info(
                         'Model %s uses NF actions, but bngsim is not available; '
@@ -470,8 +467,8 @@ class Algorithm(ABC):
                 if missing_nf_support:
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but the installed bngsim '
-                            'does not provide %s support.' % (m.name, ', '.join(missing_nf_support))
+                            'bngl_backend = bngsim was requested for model {}, but the installed bngsim '
+                            'does not provide {} support.'.format(m.name, ', '.join(missing_nf_support))
                         )
                     logger.info(
                         'Model %s uses NF actions, but the installed bngsim lacks %s support; '
@@ -482,14 +479,14 @@ class Algorithm(ABC):
                     final_model_list.append(m)
                     continue
 
-                logger.info('Model %s is NF-only; generating XML for bngsim network-free simulation' % m.name)
+                logger.info(f'Model {m.name} is NF-only; generating XML for bngsim network-free simulation')
 
                 if not os.path.isdir(init_dir):
-                    logger.debug('Creating initialization directory: %s' % init_dir)
+                    logger.debug(f'Creating initialization directory: {init_dir}')
                     os.mkdir(init_dir)
                 os.chdir(init_dir)
 
-                gnm_name = '%s_gen_xml' % m.name
+                gnm_name = f'{m.name}_gen_xml'
                 default_pset = PSet([var.set_value(var.default_value) for var in self.variables])
                 m_copy = copy.deepcopy(m)
                 m_copy.actions = ['writeXML()']
@@ -499,8 +496,8 @@ class Algorithm(ABC):
                     if explicit_bngsim:
                         os.chdir(home_dir)
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but staging the '
-                            'XML-generation BNGL failed: %s' % (m.name, exc)
+                            f'bngl_backend = bngsim was requested for model {m.name}, but staging the '
+                            f'XML-generation BNGL failed: {exc}'
                         )
                     logger.exception(
                         'Failed to stage the XML-generation BNGL for model %s. '
@@ -511,12 +508,12 @@ class Algorithm(ABC):
                     final_model_list.append(m)
                     continue
 
-                gn_cmd = [self.config.config['bng_command'], '%s.bngl' % gnm_name]
+                gn_cmd = [self.config.config['bng_command'], f'{gnm_name}.bngl']
                 if os.name == 'nt':
                     gn_cmd = ['perl'] + gn_cmd
                 try:
-                    with open('%s.log' % gnm_name, 'w') as lf:
-                        print2('Generating XML for network-free model %s.bngl' % gnm_name)
+                    with open(f'{gnm_name}.log', 'w') as lf:
+                        print2(f'Generating XML for network-free model {gnm_name}.bngl')
                         run_subprocess(
                             gn_cmd,
                             timeout=self.config.config['wall_time_gen'],
@@ -524,12 +521,12 @@ class Algorithm(ABC):
                             stderr=STDOUT,
                         )
                 except CalledProcessError as c:
-                    logger.error("Command %s failed in directory %s" % (gn_cmd, os.getcwd()))
+                    logger.error(f"Command {gn_cmd} failed in directory {os.getcwd()}")
                     logger.error(c.stdout)
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but XML generation '
-                            'failed: %s' % (m.name, c)
+                            f'bngl_backend = bngsim was requested for model {m.name}, but XML generation '
+                            f'failed: {c}'
                         )
                     logger.warning(
                         'XML generation failed for model %s. Falling back to subprocess simulation.',
@@ -541,8 +538,8 @@ class Algorithm(ABC):
                 except TimeoutExpired:
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but XML generation '
-                            'timed out.' % m.name
+                            f'bngl_backend = bngsim was requested for model {m.name}, but XML generation '
+                            'timed out.'
                         )
                     logger.warning(
                         'XML generation timed out for model %s. Falling back to subprocess simulation.',
@@ -554,8 +551,8 @@ class Algorithm(ABC):
                 except Exception as exc:
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but XML generation '
-                            'failed: %s' % (m.name, exc)
+                            f'bngl_backend = bngsim was requested for model {m.name}, but XML generation '
+                            f'failed: {exc}'
                         )
                     logger.exception(
                         'Unknown error during XML generation for model %s. '
@@ -572,8 +569,8 @@ class Algorithm(ABC):
                 if not os.path.isfile(xml_path):
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but XML generation did '
-                            'not produce %s.' % (m.name, xml_path)
+                            f'bngl_backend = bngsim was requested for model {m.name}, but XML generation did '
+                            f'not produce {xml_path}.'
                         )
                     logger.warning(
                         'XML file not found at %s for model %s. Falling back to subprocess simulation.',
@@ -602,8 +599,8 @@ class Algorithm(ABC):
                 except Exception as exc:
                     if explicit_bngsim:
                         raise PybnfError(
-                            'bngl_backend = bngsim was requested for model %s, but bngsim NF bridge '
-                            'initialization failed: %s' % (m.name, exc)
+                            f'bngl_backend = bngsim was requested for model {m.name}, but bngsim NF bridge '
+                            f'initialization failed: {exc}'
                         )
                     logger.exception(
                         'Failed to initialize the bngsim NF bridge for model %s. '
@@ -612,7 +609,7 @@ class Algorithm(ABC):
                     )
                     final_model_list.append(m)
             else:
-                logger.info('Model %s does not require network generation' % m.name)
+                logger.info(f'Model {m.name} does not require network generation')
                 final_model_list.append(m)
         os.chdir(home_dir)
         return final_model_list
@@ -662,15 +659,15 @@ class Algorithm(ABC):
             except Exception:
                 # A failure while normalizing or scoring this one parameter set should
                 # penalize this evaluation, not crash the whole run. See lanl/PyBNF#388.
-                logger.exception('Objective evaluation failed for Result %s' % res.name)
+                logger.exception(f'Objective evaluation failed for Result {res.name}')
                 res.score = np.inf
-                print1('Objective evaluation failed for Result %s; discarding this parameter set' % res.name)
+                print1(f'Objective evaluation failed for Result {res.name}; discarding this parameter set')
             if res.score is None:  # Check if the above evaluation failed
                 res.score = np.inf
-                logger.warning('Simulation corresponding to Result %s contained NaNs or Infs' % res.name)
-                logger.warning('Discarding Result %s as having an infinite objective function value' % res.name)
-                print1('Simulation data in Result %s has NaN or Inf values.  Discarding this parameter set' % res.name)
-        logger.debug('Adding Result %s to Trajectory with score %.4f' % (res.name, res.score))
+                logger.warning(f'Simulation corresponding to Result {res.name} contained NaNs or Infs')
+                logger.warning(f'Discarding Result {res.name} as having an infinite objective function value')
+                print1(f'Simulation data in Result {res.name} has NaN or Inf values.  Discarding this parameter set')
+        logger.debug(f'Adding Result {res.name} to Trajectory with score {res.score:.4f}')
         self.trajectory.add(res.pset, res.score, res.name)
 
     def random_pset(self):
@@ -732,7 +729,7 @@ class Algorithm(ABC):
         else:
             self.job_id_counter += 1
             job_id = 'sim_%i' % self.job_id_counter
-        logger.debug('Creating Job %s' % job_id)
+        logger.debug(f'Creating Job {job_id}')
         if self.config.config['smoothing'] > 1 and self.config.config['parallelize_models'] > 1:
             # Create smoothing replicates, and partition each replicate's model list across jobs
             newjobs = []
@@ -822,16 +819,16 @@ class Algorithm(ABC):
             name = str(self.output_counter)
             self.output_counter += 1
         if self.refine:
-            name = 'refine_%s' % name
-        filepath = '%s/sorted_params_%s.txt' % (self.res_dir, name)
-        logger.info('Outputting results to file %s' % filepath)
+            name = f'refine_{name}'
+        filepath = f'{self.res_dir}/sorted_params_{name}.txt'
+        logger.info(f'Outputting results to file {filepath}')
         self.trajectory.write_to_file(filepath)
 
         # If the user has asked for fewer output files, each time we're here, move the new file to
         # Results/sorted_params.txt, overwriting the previous one.
         if self.config.config['delete_old_files'] >= 2 and not no_move:
             logger.debug("Overwriting previous 'sorted_params.txt'")
-            noname_filepath = '%s/sorted_params.txt' % self.res_dir
+            noname_filepath = f'{self.res_dir}/sorted_params.txt'
             if os.path.isfile(noname_filepath):
                 os.remove(noname_filepath)
             os.replace(filepath, noname_filepath)
@@ -851,8 +848,8 @@ class Algorithm(ABC):
 
         # Pickle the algorithm
         # Save to a temporary file first, so we can't get interrupted and left with no backup.
-        picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
-        temppicklepath = '%s/alg_backup_temp.bp' % self.config.config['output_dir']
+        picklepath = '{}/alg_backup.bp'.format(self.config.config['output_dir'])
+        temppicklepath = '{}/alg_backup_temp.bp'.format(self.config.config['output_dir'])
         try:
             with open(temppicklepath, 'wb') as f:
                 pickle.dump((self, pending_psets), f)
@@ -911,9 +908,9 @@ class Algorithm(ABC):
 
             logger.debug('Job %s failed with code %d%s' % (res.name, res.fail_type, tb))
             if res.fail_type >= 1:
-                print1('Job %s failed' % res.name)
+                print1(f'Job {res.name} failed')
             else:
-                print1('Job %s timed out' % res.name)
+                print1(f'Job {res.name} timed out')
             if self.success_count == 0 and self.fail_count >= self.config.config['max_failed_simulations']:
                 raise PybnfError('Aborted because all jobs are failing',
                                  'Your simulations are failing to run. Logs from failed simulations are saved in '
@@ -934,8 +931,8 @@ class Algorithm(ABC):
         response = self.got_result(res)
         if response == 'STOP':
             self.best_fit_obj = self.trajectory.best_score()
-            logger.info("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
-            print1("Stop criterion satisfied with objective function value of %s" % self.best_fit_obj)
+            logger.info(f"Stop criterion satisfied with objective function value of {self.best_fit_obj}")
+            print1(f"Stop criterion satisfied with objective function value of {self.best_fit_obj}")
             return 'STOP'
         return response
 
@@ -1043,7 +1040,7 @@ class Algorithm(ABC):
         for m in self.config.models:
             this_model = self.config.models[m]
             to_save = this_model.copy_with_param_set(best_pset)
-            to_save.save_all('%s/%s_%s' % (self.res_dir, to_save.name, best_name))
+            to_save.save_all(f'{self.res_dir}/{to_save.name}_{best_name}')
             if self.config.config['delete_old_files'] == 0:
                 for suffix_entry in this_model.suffixes:
                     # Most model types carry (sim_type, suffix) 2-tuples, but
@@ -1060,8 +1057,8 @@ class Algorithm(ABC):
                     if self.config.config['smoothing'] > 1:
                         best_name = best_name + '_rep0'  # Look for one specific replicate of the data
                     try:
-                        shutil.copy('%s/%s/%s_%s_%s.%s' % (self.sim_dir, best_name, m, best_name, suf, ext),
-                                    '%s' % self.res_dir)
+                        shutil.copy(f'{self.sim_dir}/{best_name}/{m}_{best_name}_{suf}.{ext}',
+                                    f'{self.res_dir}')
                     except FileNotFoundError:
                         logger.error('Cannot find files corresponding to best fit parameter set')
                         print0('Could not find your best fit gdat file. This could happen if all of the simulations\n'
@@ -1121,8 +1118,8 @@ class Algorithm(ABC):
         """
         if self.bootstrap_number is None or self.bootstrap_number == self.config.config['bootstrap']:
             try:
-                os.replace('%s/alg_backup.bp' % self.config.config['output_dir'],
-                          '%s/alg_%s.bp' % (self.config.config['output_dir'],
+                os.replace('{}/alg_backup.bp'.format(self.config.config['output_dir']),
+                          '{}/alg_{}.bp'.format(self.config.config['output_dir'],
                                             ('finished' if not self.refine else 'refine_finished')))
                 logger.info('Renamed pickled algorithm backup to alg_%s.bp' %
                             ('finished' if not self.refine else 'refine_finished'))

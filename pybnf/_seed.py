@@ -43,7 +43,7 @@ def derive_seed(*, param_set, model_name, action_index, suffix, method,
     Parts are joined with '|' and SHA-256 hashed; the first 4 bytes are
     masked to 31 bits so the result fits any backend's signed-int seed.
     """
-    parts = ['%s=%r' % (name, value) for name, value in _iter_param_items(param_set)]
+    parts = [f'{name}={value!r}' for name, value in _iter_param_items(param_set)]
     parts.append('m:%s' % (model_name or ''))
     parts.append('i:%d' % int(action_index))
     parts.append('s:%s' % (suffix or ''))

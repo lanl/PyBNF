@@ -49,7 +49,7 @@ def _sbml_doc_from_text(text, source_desc):
     reader = libsbml.SBMLReader()
     doc = reader.readSBMLFromString(text)
     if doc is None:
-        raise ModelError('Failed to parse SBML from %s' % source_desc)
+        raise ModelError(f'Failed to parse SBML from {source_desc}')
 
     messages = []
     for i in range(doc.getNumErrors()):
@@ -58,12 +58,11 @@ def _sbml_doc_from_text(text, source_desc):
             messages.append(err.getMessage())
     if messages:
         raise ModelError(
-            'Failed to parse SBML from %s: %s' %
-            (source_desc, '; '.join(messages[:3]))
+            'Failed to parse SBML from {}: {}'.format(source_desc, '; '.join(messages[:3]))
         )
 
     if doc.getModel() is None:
-        raise ModelError('SBML document from %s does not contain a model' % source_desc)
+        raise ModelError(f'SBML document from {source_desc} does not contain a model')
 
     return doc
 
@@ -84,7 +83,7 @@ def _mutate_scalar(value, operation, amount):
         return value * amount
     if operation == '/':
         return value / amount
-    raise RuntimeError('Invalid mutation operation %s' % operation)
+    raise RuntimeError(f'Invalid mutation operation {operation}')
 
 
 class BngsimSbmlModelNoTimeout(Model):
@@ -92,8 +91,7 @@ class BngsimSbmlModelNoTimeout(Model):
                  strict_ssa=True):
         if integrator not in _SUPPORTED_INTEGRATORS:
             raise ModelError(
-                'sbml_backend = bngsim supports sbml_integrator in %s; got %s' %
-                (', '.join(_SUPPORTED_INTEGRATORS), integrator)
+                'sbml_backend = bngsim supports sbml_integrator in {}; got {}'.format(', '.join(_SUPPORTED_INTEGRATORS), integrator)
             )
 
         _require_bngsim_sbml_support()
@@ -109,8 +107,7 @@ class BngsimSbmlModelNoTimeout(Model):
 
         self._extract_sbml_structure()
         self._load_engine_model_or_raise(
-            'Failed to load model %s.xml - There were errors in parsing this SBML file. See log for details.'
-            % self.name
+            f'Failed to load model {self.name}.xml - There were errors in parsing this SBML file. See log for details.'
         )
 
         logger.debug('Loaded model %s with bngsim SBML backend', self.name)
@@ -268,19 +265,19 @@ class BngsimSbmlModelNoTimeout(Model):
         return _sbml_doc_to_text(self._build_sbml_doc(mut=mut))
 
     def save(self, file_prefix):
-        with open('%s.xml' % file_prefix, 'w') as out:
+        with open(f'{file_prefix}.xml', 'w') as out:
             out.write(self.model_text())
 
     def save_all(self, file_prefix):
         for mut in self.mutants:
-            with open('%s%s.xml' % (file_prefix, mut.suffix), 'w') as out:
+            with open(f'{file_prefix}{mut.suffix}.xml', 'w') as out:
                 out.write(self.model_text(mut=mut))
 
     def add_action(self, action):
         if action.method not in ('ode', 'ssa'):
             raise PybnfError(
-                'time_course or param_scan method %s is not currently supported with '
-                'sbml_backend = bngsim. Options are ode or ssa.' % action.method
+                f'time_course or param_scan method {action.method} is not currently supported with '
+                'sbml_backend = bngsim. Options are ode or ssa.'
             )
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
@@ -406,14 +403,13 @@ class BngsimSbmlModelNoTimeout(Model):
                         result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(
-                                '%s/%s_%s%s.gdat' % (folder, filename, act.suffix, mut.suffix),
+                                f'{folder}/{filename}_{act.suffix}{mut.suffix}.gdat',
                                 data,
                             )
                     elif isinstance(act, ParamScan):
                         if act.param not in self.param_names:
                             raise PybnfError(
-                                'Parameter_scan parameter %s was not found in model %s' %
-                                (act.param, self.name)
+                                f'Parameter_scan parameter {act.param} was not found in model {self.name}'
                             )
 
                         scan_label = act.param + '_0' if act.param in self._species_name_set else act.param
@@ -437,7 +433,7 @@ class BngsimSbmlModelNoTimeout(Model):
                         result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(
-                                '%s/%s_%s%s.scan' % (folder, filename, act.suffix, mut.suffix),
+                                f'{folder}/{filename}_{act.suffix}{mut.suffix}.scan',
                                 data,
                             )
                     else:

@@ -52,7 +52,7 @@ def _antimony_text_to_sbml_text(text, source_desc):
         if isinstance(load_result, (int, float)) and load_result < 0:
             error = _antimony_last_error() or 'unknown Antimony parse error'
             raise ModelError(
-                'Failed to parse Antimony from %s: %s' % (source_desc, error)
+                f'Failed to parse Antimony from {source_desc}: {error}'
             )
 
         module_names = list(antimony.getModuleNames() or [])
@@ -66,14 +66,14 @@ def _antimony_text_to_sbml_text(text, source_desc):
         if module_name is None:
             error = _antimony_last_error() or 'Antimony did not report a loadable module'
             raise ModelError(
-                'Failed to parse Antimony from %s: %s' % (source_desc, error)
+                f'Failed to parse Antimony from {source_desc}: {error}'
             )
 
         sbml_text = antimony.getSBMLString(module_name)
         if not sbml_text:
             error = _antimony_last_error() or 'Antimony did not produce SBML output'
             raise ModelError(
-                'Failed to convert Antimony from %s to SBML: %s' % (source_desc, error)
+                f'Failed to convert Antimony from {source_desc} to SBML: {error}'
             )
         return sbml_text
     finally:
@@ -101,8 +101,8 @@ class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
         self._base_sbml_text = _antimony_text_to_sbml_text(self._base_antimony_text, self.file_path)
         self._extract_sbml_structure()
         self._load_engine_model_or_raise(
-            'Failed to load model %s.ant - There were errors in parsing this Antimony file. '
-            'See log for details.' % self.name
+            f'Failed to load model {self.name}.ant - There were errors in parsing this Antimony file. '
+            'See log for details.'
         )
 
         logger.debug('Loaded model %s with bngsim Antimony backend', self.name)
@@ -122,7 +122,7 @@ class BngsimAntimonyModelNoTimeout(BngsimSbmlModelNoTimeout):
         for mut in self.mutants:
             mutant_prefix = file_prefix + mut.suffix
             self._save_antimony_source(mutant_prefix)
-            with open('%s.xml' % mutant_prefix, 'w') as out:
+            with open(f'{mutant_prefix}.xml', 'w') as out:
                 out.write(self.model_text(mut=mut))
 
 

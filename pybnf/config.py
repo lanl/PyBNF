@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
 
-    file_name = '%s.log' % file_prefix
+    file_name = f'{file_prefix}.log'
 
     # Parse log level
     if log_level_name == 'debug' or log_level_name == 'd':
@@ -56,7 +56,7 @@ def init_logging(file_prefix, debug=False, log_level_name='info'):
         file_name = os.devnull
     else:
         # Should not get here because ArgumentParser catches invalid input
-        raise ValueError('Invalid --log_level setting "%s"' % log_level_name)
+        raise ValueError(f'Invalid --log_level setting "{log_level_name}"')
 
 
     fmt = logging.Formatter(fmt='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
@@ -92,7 +92,7 @@ def init_logging(file_prefix, debug=False, log_level_name='info'):
     asynclog.setLevel(999)  # Higher than critical -> silent
 
     if debug:
-        dfh = logging.FileHandler('%s_debug.log' % file_prefix, mode='a')
+        dfh = logging.FileHandler(f'{file_prefix}_debug.log', mode='a')
         dfh.setLevel(logging.DEBUG)
         dfh.setFormatter(fmt)
 
@@ -292,7 +292,7 @@ class Configuration:
                 effective.update(
                     config_schema.build_effective_method(refiner_schema, refiner_input))
         except ValidationError as e:
-            raise PybnfError('Invalid configuration', 'Invalid configuration:\n%s' % e)
+            raise PybnfError('Invalid configuration', f'Invalid configuration:\n{e}')
         effective.update(extras)
         return effective
 
@@ -331,8 +331,8 @@ class Configuration:
         entry = FIT_TYPE_REGISTRY.get(method)
         if entry is None or not entry.refiner:
             valid = ', '.join(sorted(c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner))
-            raise PybnfError('Invalid refine_method %s' % method,
-                             "Invalid refine_method '%s'. Options are: %s." % (method, valid))
+            raise PybnfError(f'Invalid refine_method {method}',
+                             f"Invalid refine_method '{method}'. Options are: {valid}.")
 
     def _check_random_seed(self):
         """Validate the optional random seed before NumPy consumes it."""
@@ -340,7 +340,7 @@ class Configuration:
         if seed is None:
             return
         if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, (int, np.integer)) or seed < 0 or seed >= 2**32:
-            raise PybnfError('Invalid random_seed %s' % seed,
+            raise PybnfError(f'Invalid random_seed {seed}',
                              "Config key 'random_seed' must be an integer from 0 to %i." % (2**32 - 1))
         self.config['random_seed'] = int(seed)
 
@@ -414,10 +414,8 @@ class Configuration:
             if Configuration._is_unused_key(k, valid):
                 # % (k,) (not % k): only string keys reach here, but keep the
                 # single-arg tuple form so the message can never spread a value.
-                print1('Warning: Configuration key %s is not used in fit_type %s, so I am ignoring it'
-                       % (k, conf_dict['fit_type']))
-                logger.warning('Ignoring unused key %s for fitting algorithm %s'
-                               % (k, conf_dict['fit_type']))
+                print1('Warning: Configuration key {} is not used in fit_type {}, so I am ignoring it'.format(k, conf_dict['fit_type']))
+                logger.warning('Ignoring unused key {} for fitting algorithm {}'.format(k, conf_dict['fit_type']))
 
     @staticmethod
     def _strip_uncheckable_keys(conf_dict):
@@ -481,21 +479,18 @@ class Configuration:
 
         allowed_sbml_backends = ('roadrunner', 'bngsim')
         if self.config['sbml_backend'] not in allowed_sbml_backends:
-            raise PybnfError('Invalid sbml_backend %s. Options are: %s.' %
-                             (self.config['sbml_backend'], ', '.join(allowed_sbml_backends)))
+            raise PybnfError('Invalid sbml_backend {}. Options are: {}.'.format(self.config['sbml_backend'], ', '.join(allowed_sbml_backends)))
         allowed_bngl_backends = ('auto', 'bionetgen', 'bngsim')
         bngl_backend = self.config.get('bngl_backend', 'auto')
         self.config['bngl_backend'] = bngl_backend
         if bngl_backend not in allowed_bngl_backends:
-            raise PybnfError('Invalid bngl_backend %s. Options are: %s.' %
-                             (bngl_backend, ', '.join(allowed_bngl_backends)))
+            raise PybnfError('Invalid bngl_backend {}. Options are: {}.'.format(bngl_backend, ', '.join(allowed_bngl_backends)))
 
         allowed_stochastic_seed = ('auto', 'auto_honorbngl', 'random', 'random_honorbngl')
         stochastic_seed = self.config.get('stochastic_seed', 'auto')
         self.config['stochastic_seed'] = stochastic_seed
         if stochastic_seed not in allowed_stochastic_seed:
-            raise PybnfError('Invalid stochastic_seed %s. Options are: %s.' %
-                             (stochastic_seed, ', '.join(allowed_stochastic_seed)))
+            raise PybnfError('Invalid stochastic_seed {}. Options are: {}.'.format(stochastic_seed, ', '.join(allowed_stochastic_seed)))
 
         # If needed, choose the default timeout, which depends on what simulators the models use.
         if self.config['wall_time_sim'] is None:
@@ -512,13 +507,13 @@ class Configuration:
                 if re.search(r'\.bngl$', mf):
                     model = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check')
                     model.bng_command = self._absolute(self.config['bng_command'])
-                    logger.debug('Set model %s command to %s' % (mf, model.bng_command))
+                    logger.debug(f'Set model {mf} command to {model.bng_command}')
                 elif re.search(r'\.xml$', mf):
                     save_flag = (self.config['delete_old_files'] == 0)
                     if self.config['sbml_backend'] == 'bngsim':
                         if not BNGSIM_HAS_SBML:
                             raise PybnfError(
-                                'sbml_backend = bngsim was requested, but %s.' % BNGSIM_SBML_ERROR
+                                f'sbml_backend = bngsim was requested, but {BNGSIM_SBML_ERROR}.'
                             )
                         strict_ssa = bool(self.config.get('sbml_ssa_strict', 1))
                         # bngsim now enforces wall_time_sim in-process via
@@ -549,7 +544,7 @@ class Configuration:
                     save_flag = (self.config['delete_old_files'] == 0)
                     if not BNGSIM_HAS_ANTIMONY:
                         raise PybnfError(
-                            'Antimony model support was requested, but %s.' % BNGSIM_ANTIMONY_ERROR
+                            f'Antimony model support was requested, but {BNGSIM_ANTIMONY_ERROR}.'
                         )
                     strict_ssa = bool(self.config.get('sbml_ssa_strict', 1))
                     # bngsim now enforces wall_time_sim in-process via
@@ -567,22 +562,20 @@ class Configuration:
                     model = AnalyticalModel(mf)
                 else:
                     # Should not get here - should be caught in parsing
-                    raise ValueError('Unrecognized model suffix in %s' % mf)
+                    raise ValueError(f'Unrecognized model suffix in {mf}')
             except FileNotFoundError:
-                raise PybnfError('Model file %s was not found.' % mf)
+                raise PybnfError(f'Model file {mf} was not found.')
             except ModelError as e:
-                raise PybnfError('In model file %s: %s' % (mf, e.message))
+                raise PybnfError(f'In model file {mf}: {e.message}')
             if model.name in md:
-                raise PybnfError('Multiple models with the name "%s". Please give all your models different names. '
-                                 % model.name)
+                raise PybnfError(f'Multiple models with the name "{model.name}". Please give all your models different names. ')
             md[model.name] = model
             self._data_map[model.name] = self.config[mf]  # List of exp files associated with this model
 
         for model in md.values():
             if isinstance(model, BNGLModel) and not model.has_observables:
-                print1('Warning: Model %s has no observables defined. Fitting will not work without observables.'
-                       % model.file_path)
-                logger.warning('Model %s has no observables defined' % model.file_path)
+                print1(f'Warning: Model {model.file_path} has no observables defined. Fitting will not work without observables.')
+                logger.warning(f'Model {model.file_path} has no observables defined')
 
         if self.config['smoothing'] > 1:
             # Check for misuse of 'smoothing' feature
@@ -607,10 +600,9 @@ class Configuration:
         if self.config['stochastic_seed'] in ('auto', 'random'):
             for m in md.values():
                 if isinstance(m, BNGLModel) and m.seeded:
-                    print1('Warning: model %s contains an explicit "seed" argument; it will be '
-                           'overridden by stochastic_seed=%s. Use stochastic_seed=%s_honorbngl to '
-                           'honor the BNGL seed.' %
-                           (m.name, self.config['stochastic_seed'], self.config['stochastic_seed']))
+                    print1('Warning: model {} contains an explicit "seed" argument; it will be '
+                           'overridden by stochastic_seed={}. Use stochastic_seed={}_honorbngl to '
+                           'honor the BNGL seed.'.format(m.name, self.config['stochastic_seed'], self.config['stochastic_seed']))
 
         if self.config['parallelize_models'] > len(md):
             raise PybnfError('Job contains %i models, so "parallelize_models" should be at most %i' % (len(md), len(md)))
@@ -625,23 +617,21 @@ class Configuration:
         for base, name, mutations, exps in self.config['mutant']:
             base = self._file_prefix(base, '(bngl|xml|ant)')
             if base not in self.models:
-                raise PybnfError('Mutant %s declared corresponding to model %s, but that model was not found' %
-                                 (name, base))
+                raise PybnfError(f'Mutant {name} declared corresponding to model {base}, but that model was not found')
             mut_objects = [Mutation(var, op, float(val)) for var, op, val in mutations]
             mut_set = MutationSet(mut_objects, name)
             self.models[base].add_mutant(mut_set)
             # Check that the exp files will have simulation outputs
             for ex in exps:
                 ename = self._file_prefix(ex, '(exp|con|prop)')
-                base_suffix = re.match('.*(?=%s)' % name, ename)
+                base_suffix = re.match(f'.*(?={name})', ename)
                 suffix_choices = [x[1] for x in self.models[base].suffixes]
                 if len(suffix_choices) == 0:
-                    raise PybnfError("Model %s has no action suffixes, so I can't have mutant model %s with "
-                                     "data file %s based on that model" % (base, name, ex))
+                    raise PybnfError(f"Model {base} has no action suffixes, so I can't have mutant model {name} with "
+                                     f"data file {ex} based on that model")
                 if not base_suffix or base_suffix.group(0) not in suffix_choices:
-                    raise PybnfError('Experimental file name %s in mutant model %s. This file name should consist of '
-                                     'the model suffix it corresponds to, followed by the mutant name (e.g. %s%s.exp)'
-                                     % (ex, name, suffix_choices[0], name))
+                    raise PybnfError(f'Experimental file name {ex} in mutant model {name}. This file name should consist of '
+                                     f'the model suffix it corresponds to, followed by the mutant name (e.g. {suffix_choices[0]}{name}.exp)')
             # Stages these exp files to get loaded along with regular model ones
             self._data_map[base] += exps
 
@@ -687,24 +677,23 @@ class Configuration:
             bngsim_integrators = ('cvode', 'gillespie')
             if self.config['sbml_integrator'] not in bngsim_integrators:
                 raise PybnfError(
-                    'Config option "sbml_backend = bngsim" supports sbml_integrator in %s; got %s.' %
-                    (', '.join(bngsim_integrators), self.config['sbml_integrator'])
+                    'Config option "sbml_backend = bngsim" supports sbml_integrator in {}; got {}.'.format(', '.join(bngsim_integrators), self.config['sbml_integrator'])
                 )
         else:
             integrators = ('cvode', 'euler', 'rk4', 'gillespie')
             if self.config['sbml_integrator'] not in integrators:
-                raise PybnfError('Invalid sbml_integrator %s. Options are: %s.' % (self.config['sbml_integrator'],
+                raise PybnfError('Invalid sbml_integrator {}. Options are: {}.'.format(self.config['sbml_integrator'],
                                                                                    ', '.join(integrators)))
             if self.config['sbml_integrator'] == 'euler':
                 if roadrunner.__version__ < '1.5.1':
                     raise PybnfError('Config option "sbml_integrator = euler" requires Roadrunner version 1.5.1 or higher. You '
-                                     'have version %s' % roadrunner.__version__)
+                                     f'have version {roadrunner.__version__}')
                 print1('Warning: "sbml_integrator = euler" can be numerically unstable. Confirm that your model is '
                        'producing reasonable output.')
             if self.config.get('sbml_ssa_strict', 1) != 1:
                 raise PybnfError(
                     'Config option "sbml_ssa_strict" is only supported when sbml_backend = bngsim. '
-                    'Current sbml_backend is "%s".' % self.config['sbml_backend']
+                    'Current sbml_backend is "{}".'.format(self.config['sbml_backend'])
                 )
 
     def _load_actions(self):
@@ -723,12 +712,11 @@ class Configuration:
                         model_key = self._file_prefix(action_dict['model'], '(bngl|xml|ant)')
                         self.models[model_key].add_action(action)
                     except KeyError:
-                        raise PybnfError('%s declared for model %s, but that model was not found.' %
-                                         (key, action_dict['model']))
+                        raise PybnfError('{} declared for model {}, but that model was not found.'.format(key, action_dict['model']))
                 else:
                     # Apply to all models (hopefully just 1)
                     if len(self.models) > 1:
-                        print1('Warning: Applying the same %s action to all models in this fitting run.' % key)
+                        print1(f'Warning: Applying the same {key} action to all models in this fitting run.')
                     for m in self.models:
                         self.models[m].add_action(ActionType(action_dict))
 
@@ -751,16 +739,16 @@ class Configuration:
                     try:
                         d = Data(file_name=ef)
                     except FileNotFoundError:
-                        raise PybnfError('Experimental data file %s was not found.' % ef)
+                        raise PybnfError(f'Experimental data file {ef} was not found.')
                     except DuplicateColumnError as err:
-                        raise PybnfError('Parsing data file %s. %s' % (ef, err.args[0]))
+                        raise PybnfError(f'Parsing data file {ef}. {err.args[0]}')
                     ed[m][self._file_prefix(ef)] = d
                 else:
                     cs = ConstraintSet(self._file_prefix(m, '(bngl|xml|ant)'), self._file_prefix(ef, '(con|prop)'))
                     try:
                         cs.load_constraint_file(ef, scale=self.config['constraint_scale'])
                     except FileNotFoundError:
-                        raise PybnfError('Constraint file %s was not found' % ef)
+                        raise PybnfError(f'Constraint file {ef} was not found')
                     csets.add(cs)
         return ed, csets
 
@@ -772,12 +760,12 @@ class Configuration:
             if not efs_per_m <= suffs:
                 for ef in efs_per_m:
                     if ef not in suffs:
-                        raise UnmatchedExperimentalDataError("Action not specified for '%s.exp'" % ef,
-                              "You specified that model %s corresponds to data file %s.exp, but I can't find the "
-                              "corresponding action in the model file or config file. One of the actions in %s "
-                              "needs to include the argument 'suffix=>\"%s\" ', or your config file needs to include "
-                              "an action with the suffix %s." % (model.name, ef, model.file_path, ef, ef))
-            logger.debug('Model %s was mapped to %s' % (model.name, efs_per_m))
+                        raise UnmatchedExperimentalDataError(f"Action not specified for '{ef}.exp'",
+                              f"You specified that model {model.name} corresponds to data file {ef}.exp, but I can't find the "
+                              f"corresponding action in the model file or config file. One of the actions in {model.file_path} "
+                              f"needs to include the argument 'suffix=>\"{ef}\" ', or your config file needs to include "
+                              f"an action with the suffix {ef}.")
+            logger.debug(f'Model {model.name} was mapped to {efs_per_m}')
             mapping[model.name] = efs_per_m
         return mapping
 
@@ -791,9 +779,9 @@ class Configuration:
                                                 "configuration neg_bin_r defined")
         entry = OBJFUNC_REGISTRY.get(objfunc)
         if entry is None:
-            raise UnknownObjectiveFunctionError("Objective function %s not defined" % objfunc,
-                  "Objective function %s is not defined. Valid objective function choices are: "
-                  "chi_sq, lognormal, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass" % objfunc)
+            raise UnknownObjectiveFunctionError(f"Objective function {objfunc} not defined",
+                  f"Objective function {objfunc} is not defined. Valid objective function choices are: "
+                  "chi_sq, lognormal, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass")
         # Uniform construction (ADR-0011): every objective builds itself from the
         # config via its from_config classmethod -- no per-objfunc recipe.
         return entry.cls.from_config(self.config)
@@ -839,8 +827,7 @@ class Configuration:
                     else:
                         free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1])
 
-                logger.debug('Adding parameter %s with bounds [%s, %s]' %
-                             (free_param.name, free_param.lower_bound, free_param.upper_bound))
+                logger.debug(f'Adding parameter {free_param.name} with bounds [{free_param.lower_bound}, {free_param.upper_bound}]')
                 variables.append(free_param)
         logger.info('Loaded variables')
         return variables
@@ -880,12 +867,11 @@ class Configuration:
             if point_kws:
                 names = ' / '.join(sorted(start_point_types))
                 raise PybnfError(
-                    'Tried to use start-point variable type %s in another algorithm.'
-                    % ' / '.join(sorted(point_kws)),
-                    "You've used the %s keyword, but var / logvar are only for the "
-                    "start-point optimizers (fit_type = %s).\nValid keywords for other "
+                    'Tried to use start-point variable type {} in another algorithm.'.format(' / '.join(sorted(point_kws))),
+                    "You've used the {} keyword, but var / logvar are only for the "
+                    "start-point optimizers (fit_type = {}).\nValid keywords for other "
                     "algorithms are: uniform_var, normal_var, lognormal_var, "
-                    "loguniform_var." % (' / '.join(sorted(point_kws)), names))
+                    "loguniform_var.".format(' / '.join(sorted(point_kws)), names))
             return
 
         # A start-point optimizer (Simplex / Powell / CMA-ES) from here on.
@@ -895,28 +881,26 @@ class Configuration:
         names = ' / '.join(sorted(start_point_types))
         if fit_type not in box_types:
             raise PybnfError(
-                'Invalid start-point variable type %s' % ' / '.join(sorted(prior_kws)),
-                "You've specified a start-point optimizer (fit_type = %s; one of %s), "
-                "but defined a variable with the %s keyword.\nFor these optimizers, "
+                'Invalid start-point variable type {}'.format(' / '.join(sorted(prior_kws))),
+                "You've specified a start-point optimizer (fit_type = {}; one of {}), "
+                "but defined a variable with the {} keyword.\nFor these optimizers, "
                 "you must instead define a single initial value for each variable\n"
-                "using the var or logvar keyword (e.g. var = p1 42 )."
-                % (fit_type, names, ' / '.join(sorted(prior_kws))))
+                "using the var or logvar keyword (e.g. var = p1 42 ).".format(fit_type, names, ' / '.join(sorted(prior_kws))))
 
         # Box-capable optimizer given priors: must be a clean bounded-prior box.
         if point_kws:
             raise PybnfError(
                 'Mixed start-point and box variable types',
-                "fit_type = %s uses both a single-value start point (var / logvar) and "
-                "a prior-based variable (%s).\nUse one consistent style: var / logvar "
+                "fit_type = {} uses both a single-value start point (var / logvar) and "
+                "a prior-based variable ({}).\nUse one consistent style: var / logvar "
                 "for a point start, or uniform_var / loguniform_var for a global box "
-                "search." % (fit_type, ' / '.join(sorted(prior_kws))))
+                "search.".format(fit_type, ' / '.join(sorted(prior_kws))))
         if unbounded_prior_kws:
             raise PybnfError(
                 'Box-mode optimizer requires a bounded prior',
-                "fit_type = %s runs a global box search when given priors, which needs a "
-                "bounded box, but variable type %s is unbounded.\nUse uniform_var / "
-                "loguniform_var for box mode, or var / logvar for a single-point start."
-                % (fit_type, ' / '.join(sorted(unbounded_prior_kws))))
+                "fit_type = {} runs a global box search when given priors, which needs a "
+                "bounded box, but variable type {} is unbounded.\nUse uniform_var / "
+                "loguniform_var for box mode, or var / logvar for a single-point start.".format(fit_type, ' / '.join(sorted(unbounded_prior_kws))))
 
     def _check_variable_correspondence(self):
         """Verify the config's free parameters and the models' parameters line up.
@@ -973,10 +957,10 @@ class Configuration:
 
         if len(extra_in_conf) > 0:
             raise PybnfError('The following variables are declared in the .conf file, but were not found in any model '
-                             'file: %s' % extra_in_conf)
+                             f'file: {extra_in_conf}')
         if len(extra_in_model) > 0:
             raise PybnfError('The following free parameters are in your model files, but are not declared in your '
-                             '.conf file: %s' % extra_in_model)
+                             f'.conf file: {extra_in_model}')
 
     def _postprocess_normalization(self):
         """
@@ -991,9 +975,9 @@ class Configuration:
             newdict = dict()
             for ef in self.config['normalization']:
                 if ef not in self.config['exp_data']:
-                    raise PybnfError("Invalid exp file %s under the normalization key" % ef,
-                                     "The exp file %s given under the 'normalization' keyword is not associated with "
-                                     "any model." % ef + seedoc)
+                    raise PybnfError(f"Invalid exp file {ef} under the normalization key",
+                                     f"The exp file {ef} given under the 'normalization' keyword is not associated with "
+                                     "any model." + seedoc)
                 val = self.config['normalization'][ef]
 
                 # Figure out how to get to the right data object (it's in a dict keyed on model name, then suffix)
@@ -1006,9 +990,8 @@ class Configuration:
 
                 def checkval(v):
                     if v not in valid:
-                        raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'][ef],
-                                         "Invalid normalization type '%s'. Options are: init, peak, zero, unit" %
-                                         self.config['normalization'][ef] + seedoc)
+                        raise PybnfError("Invalid normalization type '{}'".format(self.config['normalization'][ef]),
+                                         "Invalid normalization type '{}'. Options are: init, peak, zero, unit".format(self.config['normalization'][ef]) + seedoc)
                 if type(val) == str:
                     # This exp file has a single normalization type for all columns.
                     # Convert to column-specific form using only the columns present in the .exp file,
@@ -1033,7 +1016,7 @@ class Configuration:
                                     to_convert.remove(ci)
                                     new_cols.append(label)
                             if len(to_convert) > 0:
-                                raise PybnfError("Invalid normalization column %s for file %s" % (to_convert[0], ef),
+                                raise PybnfError(f"Invalid normalization column {to_convert[0]} for file {ef}",
                                                  "Specified normalization for column %i in file %s, but that file "
                                                  "contains only %i columns." % (
                                                  to_convert[0], ef, self.exp_data[m][suff].data.shape[1]) + seedoc)
@@ -1046,15 +1029,15 @@ class Configuration:
                         new_cols_iter = list(new_cols)
                         for c in new_cols_iter:
                             if c not in self.exp_data[m][suff].cols:
-                                raise PybnfError("Invalid normalization column %s for file %s" % (c, ef),
-                                                 "Specified normalization for column %s in file %s, but that file does "
-                                                 "not contain that column name." % (c, ef) + seedoc)
+                                raise PybnfError(f"Invalid normalization column {c} for file {ef}",
+                                                 f"Specified normalization for column {c} in file {ef}, but that file does "
+                                                 "not contain that column name." + seedoc)
                             if c[-3:] == '_SD':
-                                logger.info('Removing %s from the normalization list' % c)
-                                print1("Warning: You specified a normalization for %s, but I can't normalize a "
+                                logger.info(f'Removing {c} from the normalization list')
+                                print1(f"Warning: You specified a normalization for {c}, but I can't normalize a "
                                        "standard deviation separately, because it's not an output of the simulation. "
-                                       "I'm ignoring your %s setting and assuming it's on the same scale as its data "
-                                       "column." % (c, c))
+                                       f"I'm ignoring your {c} setting and assuming it's on the same scale as its data "
+                                       "column.")
                                 new_cols.remove(c)
                         # Update with the postprocessed normalization info
                         val[i] = (ntype, new_cols)
@@ -1063,9 +1046,8 @@ class Configuration:
             self.config['normalization'].update(newdict)
         elif type(self.config['normalization']) == str:
             if self.config['normalization'] not in valid:
-                raise PybnfError("Invalid normalization type '%s'" % self.config['normalization'],
-                                 "Invalid normalization type '%s'. Options are: init, peak, zero, unit" %
-                                 self.config['normalization'] + seedoc)
+                raise PybnfError("Invalid normalization type '{}'".format(self.config['normalization']),
+                                 "Invalid normalization type '{}'. Options are: init, peak, zero, unit".format(self.config['normalization']) + seedoc)
             # Convert global normalization to column-specific form for each exp file,
             # so that simulation columns used only by .prop constraints are not normalized.
             ntype = self.config['normalization']
@@ -1095,21 +1077,21 @@ class Configuration:
             try:
                 # This incantation loads the module as postproc
                 import importlib.util
-                logger.info('Prepare to load the script %s' % script)
+                logger.info(f'Prepare to load the script {script}')
                 spec = importlib.util.spec_from_file_location("postprocessor", script)
                 if not spec:
-                    raise PybnfError('Could not load the postprocessing script %s. Make sure this is a Python '
-                                     'file (.py)' % script)
+                    raise PybnfError(f'Could not load the postprocessing script {script}. Make sure this is a Python '
+                                     'file (.py)')
                 postproc = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(postproc)
                 # Now postproc is the user-defined Python module
             except OSError:
-                raise PybnfError('Could not load the postprocessing script %s' % script)
+                raise PybnfError(f'Could not load the postprocessing script {script}')
             try:
                 func = postproc.postprocess
             except NameError:
-                raise PybnfError('The postprocessing script %s should contain a definition of the function '
-                                 'postprocess(data). This function was not found.' % script)
+                raise PybnfError(f'The postprocessing script {script} should contain a definition of the function '
+                                 'postprocess(data). This function was not found.')
 
             for suff in suffixes:
 
@@ -1119,11 +1101,11 @@ class Configuration:
                     if suff in self.models[modelname].get_suffixes():
                         model_choices.append(modelname)
                 if len(model_choices) == 0:
-                    raise PybnfError('Suffix %s was specified for a postprocessing script, but that suffix was not '
-                                     'found in any model' % suff)
+                    raise PybnfError(f'Suffix {suff} was specified for a postprocessing script, but that suffix was not '
+                                     'found in any model')
                 if len(model_choices) > 1:
-                    raise PybnfError('Suffix %s was specified for a postprocessing script, but was found in multiple '
-                                     'models. Please rename suffixes to avoid this ambiguity.' % suff)
+                    raise PybnfError(f'Suffix {suff} was specified for a postprocessing script, but was found in multiple '
+                                     'models. Please rename suffixes to avoid this ambiguity.')
                 self.postprocessing[(model_choices[0], suff)] = script
 
 
