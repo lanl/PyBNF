@@ -9,10 +9,11 @@ import numpy as np
 import re
 import copy
 import signal
-from subprocess import Popen, STDOUT, PIPE, CalledProcessError, TimeoutExpired
+from subprocess import Popen, STDOUT, PIPE, CalledProcessError
 from .data import Data
 from .priors import build_prior
 import heapq
+import time
 import traceback
 import roadrunner as rr
 import pickle
@@ -155,6 +156,152 @@ def _subprocess_env(cmd, env=None):
     return resolved_env
 
 
+# --------------------------------------------------------------------------- #
+# Live-simulation registry (node-local) for aborting a fit cleanly.
+#
+# Simulation subprocesses are launched with start_new_session=True (see
+# run_subprocess), which detaches each into its own session/process group. That
+# is needed so a timeout can killpg the sim's whole tree without touching PyBNF
+# -- but it also means a terminal Ctrl-C (delivered only to PyBNF's foreground
+# process group) never reaches a running sim. And on abort the dask worker that
+# launched the sim is SIGKILLed by its nanny, so no in-worker cleanup runs; the
+# sim re-parents to init and orphans (the "Ctrl-C does nothing; kill -9 needed"
+# problem). To kill in-flight sims reliably, run_subprocess records each sim's
+# process-group id (PGID) as an empty file named by the PGID under a node-local
+# directory, and pybnf.main() reaps that directory on *any* exit (Ctrl-C, crash,
+# or normal completion) by SIGKILL-ing each recorded group -- see
+# reap_active_sims(). The directory is node-local (each host's own tempdir), so
+# its PGIDs are only ever killed by a process on the same host, because killpg is
+# host-local. Remote dask-ssh worker nodes get no registry (the env var below is
+# not inherited across ssh); their orphans are cleaned by SLURM's cgroup tracking
+# at step/job teardown.
+#
+# Storage is bounded: the files are empty (the PGID *is* the filename) and are
+# removed when their sim finishes, so the live count tracks the number of
+# concurrent sims (~= the worker count), never the total number of evaluations.
+# The whole directory is rmtree'd at run end (clear_sim_registry); a startup
+# sweep (set_sim_registry) clears any directory orphaned by a prior `kill -9`.
+# --------------------------------------------------------------------------- #
+_REGISTRY_ENV_VAR = 'PYBNF_SIM_REGISTRY'
+
+
+def _registry_path(run_id):
+    """Node-local registry directory path for ``run_id`` (sanitised to a safe
+    path component). Uses this host's own tempdir, so the same run_id resolves to
+    a distinct, node-local directory on every machine."""
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', str(run_id))
+    return os.path.join(tempfile.gettempdir(), f'pybnf_sims_{safe}')
+
+
+def _registry_dir():
+    """This process's node-local registry directory (created on demand), or None
+    if the registry is disabled (``PYBNF_SIM_REGISTRY`` unset). The env var is the
+    single source of truth -- set by pybnf.main() and inherited by locally-spawned
+    dask workers -- so workers need no broadcast to find the same directory."""
+    run_id = os.environ.get(_REGISTRY_ENV_VAR)
+    if not run_id:
+        return None
+    path = _registry_path(run_id)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        logger.debug('Could not create sim registry %s', path, exc_info=True)
+        return None
+    return path
+
+
+def set_sim_registry(run_id):
+    """Enable the live-sim registry for this run (called once by pybnf.main()).
+
+    Sets ``PYBNF_SIM_REGISTRY`` so locally-spawned dask workers inherit it, sweeps
+    stale registry directories from previous ``kill -9``'d runs, and creates this
+    run's directory up front.
+    """
+    os.environ[_REGISTRY_ENV_VAR] = str(run_id)
+    _sweep_stale_sim_registries()
+    _registry_dir()
+
+
+def _register_sim(pgid):
+    """Record a running sim's process group; best-effort, never blocks the sim."""
+    d = _registry_dir()
+    if d:
+        try:
+            # 'x': the PGID is the filename, and concurrent workers can't clobber.
+            open(os.path.join(d, str(pgid)), 'x').close()
+        except OSError:
+            pass
+
+
+def _deregister_sim(pgid):
+    """Drop a finished sim's process group from the registry; best-effort."""
+    d = _registry_dir()
+    if d:
+        try:
+            os.remove(os.path.join(d, str(pgid)))
+        except OSError:
+            pass
+
+
+def reap_active_sims():
+    """SIGKILL every process group recorded in this node's registry, returning the
+    PGIDs killed. Called from pybnf.main()'s finally on every exit -- a no-op on
+    normal completion (finished sims have deregistered). Already-dead groups
+    (ProcessLookupError) and non-PGID filenames are skipped."""
+    d = _registry_dir()
+    if not d:
+        return []
+    reaped = []
+    for name in os.listdir(d):
+        try:
+            pgid = int(name)
+        except ValueError:
+            continue  # not a PGID entry
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            reaped.append(pgid)
+        except ProcessLookupError:
+            pass  # already gone
+        except OSError:
+            logger.debug('Could not kill sim process group %d', pgid, exc_info=True)
+        try:
+            os.remove(os.path.join(d, name))
+        except OSError:
+            pass
+    return reaped
+
+
+def clear_sim_registry():
+    """Remove this run's registry directory and disable the registry (called at
+    normal run end so the directory does not linger in tempdir)."""
+    d = _registry_dir()
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
+    os.environ.pop(_REGISTRY_ENV_VAR, None)
+
+
+def _sweep_stale_sim_registries(max_age_seconds=86400):
+    """Remove ``pybnf_sims_*`` directories older than ``max_age_seconds`` (default
+    1 day) -- registries orphaned by a previous ``kill -9`` that bypassed
+    clear_sim_registry. The age guard ensures a concurrent run's registry is never
+    touched. Best-effort housekeeping; failures are ignored."""
+    tmp = tempfile.gettempdir()
+    try:
+        entries = os.listdir(tmp)
+    except OSError:
+        return
+    now = time.time()
+    for name in entries:
+        if not name.startswith('pybnf_sims_'):
+            continue
+        path = os.path.join(tmp, name)
+        try:
+            if os.path.isdir(path) and now - os.path.getmtime(path) > max_age_seconds:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None, env=None):
     """
     Run a subprocess with process-group-based cleanup on timeout.
@@ -180,18 +327,37 @@ def run_subprocess(cmd, timeout, stdout=None, stderr=None, input=None, env=None)
                  stdin=PIPE if input is not None else None,
                  start_new_session=use_pgid,
                  env=_subprocess_env(cmd, env))
+    # Record the sim's process group so an aborting fit can reap it (see the
+    # registry block above). getpgid can race a sim that exits immediately.
+    pgid = None
+    if use_pgid:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            pgid = None
+    if pgid is not None:
+        _register_sim(pgid)
     try:
-        stdout_data, _ = proc.communicate(input=input, timeout=timeout)
-    except TimeoutExpired:
-        if use_pgid:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            proc.kill()
-        proc.wait()
-        raise
+        try:
+            stdout_data, _ = proc.communicate(input=input, timeout=timeout)
+        except BaseException:
+            # Any interruption -- TimeoutExpired, KeyboardInterrupt, task
+            # cancellation -- must take the whole detached sim process group down
+            # with it, so a sim never outlives the call that launched it.
+            # (Previously only TimeoutExpired was handled, orphaning the sim on
+            # every other interruption.)
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+            proc.wait()
+            raise
+    finally:
+        if pgid is not None:
+            _deregister_sim(pgid)
     if proc.returncode != 0:
         raise CalledProcessError(proc.returncode, cmd)
     return stdout_data

@@ -6,7 +6,7 @@ from .parse import load_config
 from .config import init_logging
 from .printing import print0, print1, print2, PybnfError
 from .cluster import Cluster
-from .pset import Trajectory
+from .pset import Trajectory, set_sim_registry, reap_active_sims, clear_sim_registry
 from .registry import FIT_TYPE_REGISTRY
 import pybnf.algorithms as algs
 import pybnf.printing as printing
@@ -62,6 +62,9 @@ def _finalize(success, alg, start_time):
                 logger.info('Completed cleanup after exception')
     except Exception:
         logger.exception('During cleanup, another exception occurred')
+
+    # Remove this run's (now-empty) live-sim registry directory.
+    clear_sim_registry()
 
     secs = time.time() - start_time
     mins, secs = divmod(secs, 60)
@@ -380,6 +383,23 @@ def _run_bootstrapping(config, alg, cluster, debug):
     print0('Bootstrapping complete')
 
 
+def _reap_running_sims():
+    """SIGKILL any simulation subprocesses still running on this node.
+
+    Called from ``main()``'s finally on every exit. On a clean finish it is a
+    no-op (finished sims have deregistered); on a Ctrl-C or crash it kills the
+    in-flight, detached sim process groups that would otherwise orphan (the
+    "kill -9 needed" problem). Local node only: sims on remote dask-ssh worker
+    nodes are cleaned by SLURM's cgroup tracking at step/job teardown.
+    """
+    try:
+        reaped = reap_active_sims()
+        if reaped:
+            logging.info('Killed %d orphaned simulation process group(s) on abort', len(reaped))
+    except Exception:
+        logging.exception('Failed while reaping simulation subprocesses')
+
+
 def _teardown_cluster(cluster):
     """Tear down the dask cluster after a run, logging (not raising on) any failure."""
     # Stop dask-ssh regardless of success
@@ -423,6 +443,11 @@ def main():
     cmdline_args = _build_arg_parser().parse_args()
     log_prefix, debug = _setup_logging(cmdline_args)
     logger = logging.getLogger(__name__)
+
+    # Enable the node-local live-sim registry so a Ctrl-C or crash can reap any
+    # in-flight simulation subprocesses. Set before the cluster is created so
+    # locally-spawned dask workers inherit PYBNF_SIM_REGISTRY (see pset).
+    set_sim_registry(f'{log_prefix}_{os.getpid()}')
 
     print0(f"PyBNF v{__version__}")
     logger.info(f'Running PyBNF v{__version__}')
@@ -499,6 +524,9 @@ def main():
                f'Logs have been saved to {log_prefix}.log.\n'
                'Please report this bug to help us improve PyBNF.')
     finally:
+        # Kill any in-flight sims first (while their PGIDs are still live), then
+        # tear down the cluster and report timing.
+        _reap_running_sims()
         _teardown_cluster(cluster)
         _cleanup_dask_workspace()
         # After any error, try to clean up; then report timing and exit.
