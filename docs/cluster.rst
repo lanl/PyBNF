@@ -64,7 +64,7 @@ Manual configuration with Dask
 
 PyBNF uses `Dask.distributed <http://distributed.readthedocs.io/en/latest/index.html>`_ to manage cluster computing. In most cases, it is not necessary for the user to interact directly with Dask. However, if PyBNF's automatic Dask setup is unsatisfactory, then the instructions in this section may be helpful to set up Dask manually. 
 
-In the automatic PyBNF setup, the command ``dask-ssh`` is run on one of the available nodes (which becomes the scheduler node), with all available nodes as arguments (which become the worker nodes). ``dask-ssh`` is run with ``--nthreads 1`` and ``--nprocs`` equal to the number of available cores per node. The default number of available processes per core is the value returned by ``multiprocessing.cpu_count()``; this default can be overridden by specifying the ``parallel_count`` key equal to the total number of processes over all nodes. This entire automatic setup with ``dask-ssh`` can be overridden as described below. If overriding the automatic setup, it is recommended to keep ``nthreads`` equal to 1 for SBML models because the SBML simulator is not thread safe.
+In the automatic PyBNF setup, the command ``dask-ssh`` is run on one of the available nodes (which becomes the scheduler node), with all available nodes as arguments (which become the worker nodes). ``dask-ssh`` is run with ``--nthreads 1`` and ``--nworkers`` equal to the number of available cores per node. The default number of available processes per core is the value returned by ``multiprocessing.cpu_count()``; this default can be overridden by specifying the ``parallel_count`` key equal to the total number of processes over all nodes. This entire automatic setup with ``dask-ssh`` can be overridden as described below. If overriding the automatic setup, it is recommended to keep ``nthreads`` equal to 1 for SBML models because the SBML simulator is not thread safe.
 
 For manual configuration, you will need to run the series of commands described below. All of these commands must remain running during the entire PyBNF run. Utilites such as ``nohup`` or ``screen`` are helpful for keeping multiple commands running at once. 
 
@@ -74,7 +74,7 @@ To begin, run the command ``dask-scheduler`` on the node you want to use as the 
 
 On each node you want to use as a worker, run the command ``dask-worker``. Pass the scheduler file, and also specify the number of processes and threads per process to use on that worker. For example:
 
-    :command:`dask-worker --scheduler-file cluster.json --nprocs 32 --nthreads 1`
+    :command:`dask-worker --scheduler-file cluster.json --nworkers 32 --nthreads 1`
 
 Finally, run PyBNF, and pass PyBNF the scheduler file using the ``-s`` command line argument or the ``scheduler_file`` configuration key:
 

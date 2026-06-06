@@ -21,7 +21,7 @@ source $P/python_envs/env1/bin/activate
 dask-scheduler --scheduler-file sf &
 workerpath=$(which dask-worker)
 scontrol show hostname $SLURM_JOB_NODELIST | while read node; do
-    ssh -n -f $node "cd $PWD ; nohup $workerpath --scheduler-file sf --nthreads 1 --nprocs 36 > /dev/null 2>&1 &"
+    ssh -n -f $node "cd $PWD ; nohup $workerpath --scheduler-file sf --nthreads 1 --nworkers 36 > /dev/null 2>&1 &"
 done
 
 # Run the test script

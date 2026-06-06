@@ -151,15 +151,19 @@ class Cluster:
         # Build the dask-ssh invocation as an argument list and launch it WITHOUT
         # a shell (ROB-3): each node name becomes its own literal argv entry, so
         # node names from config/SLURM can't be interpreted by a shell.
+        # The per-host worker-count flag is --nworkers. distributed renamed it
+        # from --nprocs (the old name was deprecated ~2022.10 and removed by
+        # 2023.x), so --nprocs no longer parses on any supported dask version
+        # (pyproject pins dask/distributed >=2024.1.0).
         nodes = node_string.split()
         if parallel_count is None:
             dask_ssh_cmd = ['dask-ssh', *nodes,
-                            '--log-directory', out_dir, '--nthreads', '1', '--nprocs', str(cpu_count())]
+                            '--log-directory', out_dir, '--nthreads', '1', '--nworkers', str(cpu_count())]
         else:
             n_per_node = int(np.ceil(parallel_count/len(nodes)))
             logger.info('Manually setting %i workers per node' % n_per_node)
             dask_ssh_cmd = ['dask-ssh', *nodes,
-                            '--log-directory', out_dir, '--nprocs', str(n_per_node), '--nthreads', '1']
+                            '--log-directory', out_dir, '--nworkers', str(n_per_node), '--nthreads', '1']
         # Capture stderr to a temp file rather than a PIPE: dask-ssh stays
         # running for the whole fit, and an undrained PIPE would deadlock once
         # its buffer fills. A regular file lets us surface an early bring-up

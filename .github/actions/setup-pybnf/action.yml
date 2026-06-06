@@ -57,8 +57,8 @@ runs:
         # version bounds in sync with pyproject.toml; bngsim is the only
         # intentional omission.
         uv pip install \
-          'dask>=2021.5.0,<2023.0' \
-          'distributed>=2021.6.2,<2023.0' \
+          'dask>=2024.1.0' \
+          'distributed>=2024.1.0' \
           'libroadrunner>=1.6.0,<3' \
           'msgpack>=0.6.2,<2' \
           'numpy>=1.24,<3' \

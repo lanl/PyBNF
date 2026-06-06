@@ -205,9 +205,9 @@ class TestSetupCluster:
         return popen_calls
 
     def test_default_parallel_count_uses_cpu_count(self, monkeypatch):
-        """parallel_count=None ⇒ dask-ssh's own default of one process per CPU:
-        ``--nthreads 1 --nprocs {cpu_count()}`` (note this branch's flag order is
-        --nthreads then --nprocs). Oracle: the exact argument list (ROB-3: an argv
+        """parallel_count=None ⇒ dask-ssh's own default of one worker per CPU:
+        ``--nthreads 1 --nworkers {cpu_count()}`` (note this branch's flag order is
+        --nthreads then --nworkers). Oracle: the exact argument list (ROB-3: an argv
         list launched with no shell, each node its own entry) with cpu_count()=7."""
         popen_calls = self._patch(monkeypatch, cpu=7)
         proc = cluster.Cluster.setup_cluster('n1 n2', '/out', parallel_count=None)
@@ -215,7 +215,7 @@ class TestSetupCluster:
         assert proc.poll() is None
         (args, kwargs), = popen_calls
         assert args[0] == ['dask-ssh', 'n1', 'n2',
-                           '--log-directory', '/out', '--nthreads', '1', '--nprocs', '7']
+                           '--log-directory', '/out', '--nthreads', '1', '--nworkers', '7']
         assert kwargs.get('shell', False) is False         # no shell -> no injection
         assert kwargs['stdout'] is cluster.DEVNULL
         # stderr is captured to a readable file (not discarded), so an early
@@ -247,13 +247,13 @@ class TestSetupCluster:
         """With an explicit parallel_count, workers are spread over nodes:
         n_per_node = ceil(parallel_count / num_nodes). 5 threads over 3 nodes ⇒
         ceil(5/3) = 2 per node (floor would give 1; multiplication 15). Branch
-        flag order here is --nprocs then --nthreads."""
+        flag order here is --nworkers then --nthreads."""
         popen_calls = self._patch(monkeypatch)
         cluster.Cluster.setup_cluster('a b c', '/log', parallel_count=5)
 
         (args, _), = popen_calls
         assert args[0] == ['dask-ssh', 'a', 'b', 'c',
-                           '--log-directory', '/log', '--nprocs', '2', '--nthreads', '1']
+                           '--log-directory', '/log', '--nworkers', '2', '--nthreads', '1']
 
     def test_parallel_count_exact_division(self, monkeypatch):
         """4 threads over 2 nodes ⇒ exactly 2 per node (ceil of an integer is
@@ -262,7 +262,7 @@ class TestSetupCluster:
         cluster.Cluster.setup_cluster('h1 h2', '/log', parallel_count=4)
         (args, _), = popen_calls
         assert args[0] == ['dask-ssh', 'h1', 'h2',
-                           '--log-directory', '/log', '--nprocs', '2', '--nthreads', '1']
+                           '--log-directory', '/log', '--nworkers', '2', '--nthreads', '1']
 
     def test_single_node_gets_all_workers(self, monkeypatch):
         """One node ⇒ all parallel_count workers land on it (ceil(6/1) = 6); this
@@ -271,7 +271,7 @@ class TestSetupCluster:
         cluster.Cluster.setup_cluster('only', '/log', parallel_count=6)
         (args, _), = popen_calls
         assert args[0] == ['dask-ssh', 'only',
-                           '--log-directory', '/log', '--nprocs', '6', '--nthreads', '1']
+                           '--log-directory', '/log', '--nworkers', '6', '--nthreads', '1']
 
     def test_node_names_passed_as_literal_argv_no_shell(self, monkeypatch):
         """ROB-3: node names reach dask-ssh as their own literal argv entries with
