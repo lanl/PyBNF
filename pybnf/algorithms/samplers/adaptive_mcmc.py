@@ -16,7 +16,6 @@ from typing import Any
 
 import numpy as np
 import os
-import re
 import shutil
 from scipy import stats
 
@@ -168,8 +167,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
         self.total_evaluations += 1
 
         # Figure out which parallel run this is from based on the .name field.
-        m = re.search(r'(?<=run)\d+', pset.name)
-        index = int(m.group(0))
+        index = self._chain_index_from_name(pset.name)
 
         lnprior = self.ln_prior(pset)
         lnlikelihood = -score

@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 import logging
 import numpy as np
-import re
 import copy
 from pydantic import Field
 from scipy import stats
@@ -117,6 +116,25 @@ class DreamAlgorithm(BayesianAlgorithm):
         logger.info('Initialized ZS archive with %d entries (d=%d)' % (self.archive_m0, self.n_dim))
         return first_psets
 
+    def _proposal_pset(self, xp_vec):
+        """Materialize a proposal vector (in sampling space ``u``) into a PSet
+        *without reflection* — DREAM rejects an out-of-bounds proposal rather
+        than folding it back into the box. Returns the PSet, or ``None`` if any
+        coordinate falls outside its parameter's bounds.
+
+        Shared by the snooker proposal and P-DREAM's whitened proposal, which
+        differ only in how ``xp_vec`` is built and in their Hastings/return
+        bookkeeping (kept in each method, per ADR-0009).
+        """
+        new_vars = []
+        for i, v in enumerate(self.variables):
+            try:
+                value = 10 ** xp_vec[i] if v.log_space else xp_vec[i]
+                new_vars.append(v.set_value(value, reflect=False))
+            except OutOfBoundsException:
+                return None
+        return PSet(new_vars)
+
     def calculate_snooker_pset(self, idx):
         """
         Snooker update proposal (ter Braak & Vrugt, 2008).
@@ -157,17 +175,10 @@ class DreamAlgorithm(BayesianAlgorithm):
 
         xp_vec = x0_vec + zeta_vec + (1.0 + lamb) * gamma_s * diff_proj
 
-        # Build the proposed PSet
-        new_vars = []
-        for i, v in enumerate(self.variables):
-            try:
-                if v.log_space:
-                    new_var = v.set_value(10**xp_vec[i], reflect=False)
-                else:
-                    new_var = v.set_value(xp_vec[i], reflect=False)
-                new_vars.append(new_var)
-            except OutOfBoundsException:
-                return None, 0.0
+        # Build the proposed PSet (reject rather than reflect out-of-bounds)
+        proposal = self._proposal_pset(xp_vec)
+        if proposal is None:
+            return None, 0.0
 
         # Hastings correction: (||Xp - Zc|| / ||X - Zc||)^(d-1).
         # dist_x0_zc = sqrt(axis_norm_sq) is already guaranteed nonzero by the
@@ -176,7 +187,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         dist_x0_zc = np.linalg.norm(x0_vec - zc_vec)
         log_correction = (self.n_dim - 1) * np.log(dist_xp_zc / dist_x0_zc)
 
-        return PSet(new_vars), log_correction
+        return proposal, log_correction
 
     def _detect_outliers_iqr(self, mean_ln_p):
         """IQR outlier detection: chains below Q25 - 2*IQR are outliers."""
@@ -254,8 +265,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         score = res.score
         self.total_evaluations += 1
 
-        m = re.search(r'(?<=run)\d+', pset.name)
-        index = int(m.group(0))
+        index = self._chain_index_from_name(pset.name)
 
         # Calculate posterior of finished job
         lnprior = self.ln_prior(pset)

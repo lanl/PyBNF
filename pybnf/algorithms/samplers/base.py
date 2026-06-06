@@ -367,13 +367,6 @@ class BayesianAlgorithm(Algorithm):
         for file in cred_files:
             file.close()
 
-    def _param_vec(self, pset):
-        """Extract parameter values from a PSet as a numpy array in the sampling space."""
-        return np.array([
-            np.log10(pset[v.name]) if v.log_space else pset[v.name]
-            for v in self.variables
-        ])
-
     def compute_rhat(self):
         """Rank-normalized split-R-hat per parameter (Vehtari et al. 2021).
 

@@ -135,8 +135,8 @@ def load_config(path):
         infile = open(path, 'r', encoding='utf-8', errors='replace')
     except FileNotFoundError:
         raise PybnfError('Configuration file %s not found' % path)
-    param_dict = ploop(infile.readlines())
-    infile.close()
+    with infile:
+        param_dict = ploop(infile.readlines())
     return Configuration(param_dict)
 
 

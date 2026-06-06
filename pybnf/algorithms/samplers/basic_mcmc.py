@@ -18,7 +18,6 @@ from typing import Any
 
 import logging
 import numpy as np
-import re
 
 
 # Preserve the original module logger name so log records keep the
@@ -138,8 +137,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
         self.total_evaluations += 1
 
         # Figure out which parallel run this is from based on the .name field.
-        m = re.search(r'(?<=run)\d+', pset.name)
-        index = int(m.group(0))
+        index = self._chain_index_from_name(pset.name)
 
         # Calculate the acceptance probability
         lnprior = self.ln_prior(pset) # Need something clever for box constraints

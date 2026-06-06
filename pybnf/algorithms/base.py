@@ -39,6 +39,7 @@ import shutil
 import copy
 import traceback
 import pickle
+import re
 from glob import glob
 from concurrent.futures import CancelledError
 
@@ -167,6 +168,28 @@ class Algorithm(ABC):
                 os.mkdir(boot_dir)
 
         self.best_fit_obj = None
+
+    def _param_vec(self, pset):
+        """Project a PSet onto its parameter vector in sampling space ``u``,
+        ordered by ``self.variables`` (``log10`` for log-scaled parameters,
+        identity otherwise).
+
+        The single PSet→u bridge: the Bayesian samplers use it for chain history
+        and proposal arithmetic, the start-point optimizers for their search
+        coordinate (where it is also exposed under the name ``_u_from_pset``).
+        Hoisted here from ``BayesianAlgorithm`` once the start-point optimizers
+        grew the identical transform (the ≥2-user event, ADR-0009).
+        """
+        return np.array(
+            [np.log10(pset[v.name]) if v.log_space else pset[v.name]
+             for v in self.variables], dtype=float)
+
+    @staticmethod
+    def _chain_index_from_name(name):
+        """Parse the parallel-run index from a PSet name of the form
+        ``...run<N>...`` — the ``iter%irun%i`` naming the population samplers
+        and Simulated Annealing assign their per-chain PSets."""
+        return int(re.search(r'(?<=run)\d+', name).group(0))
 
     @staticmethod
     def should_pickle(k):
@@ -831,9 +854,8 @@ class Algorithm(ABC):
         picklepath = '%s/alg_backup.bp' % self.config.config['output_dir']
         temppicklepath = '%s/alg_backup_temp.bp' % self.config.config['output_dir']
         try:
-            f = open(temppicklepath, 'wb')
-            pickle.dump((self, pending_psets), f)
-            f.close()
+            with open(temppicklepath, 'wb') as f:
+                pickle.dump((self, pending_psets), f)
             os.replace(temppicklepath, picklepath)
         except IOError as e:
             logger.exception('Failed to save backup of algorithm')

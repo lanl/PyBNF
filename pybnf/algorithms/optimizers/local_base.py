@@ -90,11 +90,11 @@ class StartPointOptimizer(Algorithm):
              for v in self.variables], dtype=float)
 
     def _u_from_pset(self, pset):
-        """The parameter vector of ``pset`` in sampling space ``u``, ordered by
-        ``self.variables`` (``log10`` for log parameters, identity otherwise)."""
-        return np.array(
-            [np.log10(pset[v.name]) if v.log_space else pset[v.name]
-             for v in self.variables], dtype=float)
+        """The parameter vector of ``pset`` in sampling space ``u`` (the inverse
+        of :meth:`_pset_from_u`). Delegates to the shared PSet→u bridge
+        :meth:`Algorithm._param_vec`; kept as a named alias because it pairs with
+        ``_pset_from_u`` in this module's ``u`` <-> PSet vocabulary."""
+        return self._param_vec(pset)
 
     def _pset_from_u(self, u, name=None):
         """Build a PSet from a sampling-space vector ``u`` (ordered by

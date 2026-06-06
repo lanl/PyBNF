@@ -7,7 +7,6 @@ Subclasses DreamAlgorithm (a sibling leaf in this sub-package).
 
 
 from .dream import DreamAlgorithm, DreamConfig
-from ...pset import PSet, OutOfBoundsException
 from ...registry import register_fit_type
 
 from typing import Any
@@ -179,18 +178,11 @@ class PDreamAlgorithm(DreamAlgorithm):
         dz_jump = zeta_z + (1.0 + lamb) * gamma * dz_masked
         dx_jump = self._unwhiten_diff(dz_jump)
 
-        # Build proposed PSet in original space
+        # Build proposed PSet in original space (reject rather than reflect)
         xp_vec = x0_vec + dx_jump
-        new_vars = []
-        for i, v in enumerate(self.variables):
-            try:
-                if v.log_space:
-                    new_var = v.set_value(10**xp_vec[i], reflect=False)
-                else:
-                    new_var = v.set_value(xp_vec[i], reflect=False)
-                new_vars.append(new_var)
-            except OutOfBoundsException:
-                logger.debug("Variable %s is outside of bounds")
-                return None, cr_idx
+        proposal = self._proposal_pset(xp_vec)
+        if proposal is None:
+            logger.debug("Proposed parameter outside of bounds")
+            return None, cr_idx
 
-        return PSet(new_vars), cr_idx
+        return proposal, cr_idx

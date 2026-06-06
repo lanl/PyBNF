@@ -160,8 +160,8 @@ def _load_resumed_algorithm(continue_file, cmdline_args):
     """
     logger = logging.getLogger(__name__)
     logger.info('Reloading algorithm')
-    f = open(continue_file, 'rb')
-    alg, pending = pickle.load(f)
+    with open(continue_file, 'rb') as f:
+        alg, pending = pickle.load(f)
     logger.debug('Loaded algorithm is the %s algorithm' % ('refinement' if alg.refine else 'configured'))
     config = alg.config
 
@@ -178,7 +178,6 @@ def _load_resumed_algorithm(continue_file, cmdline_args):
         print0('Resuming a fitting run')
 
     alg.add_iterations(cmdline_args.resume)
-    f.close()
     if isinstance(alg, algs.SimplexAlgorithm):
         # The continuing alg is already on the Simplex stage, so don't restart simplex after completion
         alg.config.config['refine'] = 0

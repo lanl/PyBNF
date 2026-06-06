@@ -27,7 +27,6 @@ from pydantic import Field
 
 import logging
 import numpy as np
-import re
 
 
 # Preserve the original module logger name so log records keep the
@@ -111,7 +110,7 @@ class SimulatedAnnealing(Algorithm):
         return first_psets
 
     def got_result(self, res):
-        index = int(re.search(r'(?<=run)\d+', res.pset.name).group(0))
+        index = self._chain_index_from_name(res.pset.name)
         score = res.score
 
         self.attempts += 1
