@@ -4,9 +4,10 @@ These models compute a negative log-likelihood directly from the free parameters
 bypassing any external simulator. Used with objfunc = direct_pass.
 
 Supported target types:
-  gaussian    - Multivariate Gaussian with configurable dimension, mean, and variance
-  banana      - Rosenbrock/banana-shaped distribution (2D)
-  multimodal  - Mixture of Gaussians with configurable modes
+  gaussian         - Axis-aligned Gaussian (diagonal variance; a *separable* objective)
+  rotated_gaussian - Correlated Gaussian with a full covariance Sigma (non-separable)
+  banana           - Rosenbrock/banana-shaped distribution (2D)
+  multimodal       - Mixture of Gaussians with configurable modes
 """
 
 import copy
@@ -49,6 +50,13 @@ class AnalyticalModel(Model):
             self._mean = np.array(self.target_def['mean'])
             self._var = np.array(self.target_def['variance'])
             self._inv_var = 1.0 / self._var
+        elif self.target_type == 'rotated_gaussian':
+            self._mean = np.array(self.target_def['mean'], dtype=float)
+            self._cov = np.array(self.target_def['covariance'], dtype=float)
+            # Precision Sigma^{-1}; symmetrize to clear any inversion round-off so
+            # the quadratic form stays exactly symmetric.
+            prec = np.linalg.inv(self._cov)
+            self._prec = 0.5 * (prec + prec.T)
         elif self.target_type == 'banana':
             self._a = self.target_def.get('a', 1.0)
             self._b = self.target_def.get('b', 100.0)
@@ -97,6 +105,8 @@ class AnalyticalModel(Model):
         """Compute negative log-likelihood for the target distribution."""
         if self.target_type == 'gaussian':
             return self._nll_gaussian(params)
+        elif self.target_type == 'rotated_gaussian':
+            return self._nll_rotated_gaussian(params)
         elif self.target_type == 'banana':
             return self._nll_banana(params)
         elif self.target_type == 'multimodal':
@@ -111,6 +121,21 @@ class AnalyticalModel(Model):
         """NLL of multivariate Gaussian: 0.5 * sum((x - mu)^2 / sigma^2)"""
         diff = params - self._mean
         return 0.5 * np.sum(diff ** 2 * self._inv_var)
+
+    def _nll_rotated_gaussian(self, params):
+        """NLL of a correlated (rotated) multivariate Gaussian with full
+        covariance Sigma: ``0.5 * (x - mu)^T Sigma^{-1} (x - mu)``.
+
+        Unlike the axis-aligned ``gaussian`` (diagonal variance, a *separable*
+        objective whose principal axes are the coordinate axes), the off-diagonal
+        precision couples the coordinates, so the quadratic bowl's principal axes
+        are rotated off the coordinate axes. That is the textbook validator for
+        conjugate-direction (Powell) and covariance-adapting (CMA-ES) methods:
+        coordinate-only descent zig-zags, while those methods discover the
+        rotation (#405). The mode is still ``mu`` (NLL 0 there).
+        """
+        diff = params - self._mean
+        return 0.5 * float(diff @ self._prec @ diff)
 
     def _nll_banana(self, params):
         """

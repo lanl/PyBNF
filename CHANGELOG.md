@@ -7,6 +7,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Added
 - **Powell and CMA-ES optimizers** — two native, derivative-free black-box optimizers, usable both standalone (`fit_type = powell` / `cmaes`) and as the post-fit refinement step. PyBNF now offers three refiners; choose one with the new `refine_method` config key (`sim` (default, Nelder–Mead Simplex), `powell`, or `cmaes`) when `refine = 1`. Powell uses conjugate-direction parabolic line searches; CMA-ES is a population-based covariance-adapting evolution strategy, robust on ill-conditioned objectives. No new dependency (#403)
+- `rotated_gaussian` analytical target (full covariance matrix `Sigma`, NLL `0.5 (x-mu)^T Sigma^{-1} (x-mu)`) for the in-process integration harness, plus `powell`/`cmaes` recovery tests on a rotated, ill-conditioned bowl. The correlated (non-separable) objective exercises Powell's conjugate-direction update and CMA-ES's covariance adaptation — paths the axis-aligned (separable) Gaussian target leaves untested (#405)
 - **BNGsim in-process simulation bridge** — optional bngsim backend for BNGL models, avoiding subprocess BNG2.pl on every fitting iteration. Supports ODE, SSA, PSA, and NFsim methods with codegen ODE RHS compilation
 - BNGsim SBML backend via bngsim's SBML loader
 - BNGsim Antimony backend via bngsim's Antimony loader

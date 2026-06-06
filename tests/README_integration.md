@@ -42,7 +42,13 @@ algorithm tier runs in well under a minute.
 
 ## Adding a target / algorithm
 
-`AnalyticalModel` supports `gaussian`, `banana`, and `multimodal` targets
+`AnalyticalModel` supports `gaussian` (axis-aligned), `rotated_gaussian`
+(full-covariance / correlated), `banana`, and `multimodal` targets
 (`pybnf/analytical_model.py`); add a spec helper in the harness alongside
-`gaussian_spec` / `banana_spec`. New algorithms slot into the `OPTIMIZERS` /
-`SAMPLERS` dicts once their required config keys are supplied to `make_config`.
+`gaussian_spec` / `rotated_gaussian_spec` / `banana_spec`. The
+`rotated_gaussian` target is the non-separable, ill-conditioned bowl that
+exercises Powell's conjugate-direction update and CMA-ES's covariance adaptation
+(use `rotated_cov(variances, angle)` to build a tilted `Sigma`); the axis-aligned
+`gaussian` is separable and leaves those paths untested. New algorithms slot into
+the `OPTIMIZERS` / `SAMPLERS` dicts once their required config keys are supplied
+to `make_config`.

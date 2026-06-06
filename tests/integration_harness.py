@@ -135,6 +135,27 @@ def banana_spec(a=1.0, b=100.0):
     return {'type': 'banana', 'a': a, 'b': b}
 
 
+def rotated_gaussian_spec(mean, covariance):
+    """A correlated/rotated Gaussian target with a full covariance matrix
+    ``Sigma`` (NLL ``0.5 (x-mu)^T Sigma^{-1} (x-mu)``; mode = ``mean``). Unlike
+    ``gaussian_spec`` (diagonal variance, separable), the off-diagonals tilt the
+    bowl's principal axes off the coordinate axes."""
+    return {'type': 'rotated_gaussian',
+            'mean': np.asarray(mean, dtype=float).tolist(),
+            'covariance': np.asarray(covariance, dtype=float).tolist()}
+
+
+def rotated_cov(variances, angle):
+    """Build ``Sigma = R diag(variances) R^T`` (2-D): the principal-axis variances
+    ``variances`` rotated by ``angle`` radians. When the two variances differ
+    widely the bowl is ill-conditioned, and a non-zero ``angle`` rotates its long
+    axis off the coordinate axes -- so coordinate-only descent is slow and the
+    target exercises the conjugate-direction / covariance-adaptation machinery."""
+    c, s = np.cos(angle), np.sin(angle)
+    R = np.array([[c, -s], [s, c]])
+    return R @ np.diag(np.asarray(variances, dtype=float)) @ R.T
+
+
 def write_target(tmp_path, spec):
     """Write a ``.target`` JSON file and the trivial ``target.exp`` it pairs
     with. Returns ``(target_path, exp_path)``. The exp prefix MUST be 'target'

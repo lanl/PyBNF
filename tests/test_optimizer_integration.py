@@ -128,6 +128,51 @@ def test_powell_finds_gaussian_mode(tmp_path):
     assert alg.trajectory.best_score() < 0.01
 
 
+# A rotated, ill-conditioned 2-D quadratic bowl (condition number 100, long axis
+# tilted 30 deg off the coordinate axes): the textbook validator for
+# conjugate-direction / covariance-adapting methods. Shared by the Powell
+# direction-update test (below) and the CMA-ES rotation test (slow tier).
+_ROT_MEAN = [2.0, -1.0]
+_ROT_COV = H.rotated_cov([100.0, 1.0], np.pi / 6)  # R(30deg) diag(100,1) R^T
+
+
+def test_powell_exercises_conjugate_directions_on_rotated_gaussian(tmp_path):
+    """Powell recovers the mode of a *rotated*, ill-conditioned Gaussian — and
+    does so via the conjugate-direction (direction-replacement) update, the core
+    of the method that the diagonal-Gaussian test above never exercises (#405).
+
+    Why the diagonal test is blind to it: a diagonal Gaussian is *separable*, so
+    the coordinate axes are already mutually conjugate and Powell converges in a
+    single cycle (no direction replacement). Rotating the bowl couples the
+    coordinates; coordinate-only descent then zig-zags and is slow (exact
+    coordinate line searches on this Sigma need ~200 cycles to reach the mode),
+    while Powell's direction-set update builds conjugate directions and converges
+    in ~n cycles. So this target *requires* the direction-replacement path.
+
+    Discriminator: with a generous per-cycle convergence tol but only 25 cycles of
+    budget, the real method converges in 2 cycles to ~machine precision; a method
+    stuck on the coordinate axes would neither reach the mode nor trigger the
+    cycle-level convergence test, exhausting the 25-cycle budget. We assert the
+    mode is recovered tightly AND that it converged in a handful of cycles (not by
+    running out of budget)."""
+    tgt, exp = H.write_target(tmp_path, H.rotated_gaussian_spec(_ROT_MEAN, _ROT_COV))
+    conf = H.make_config(
+        tmp_path, 'powell', tgt, exp, n_params=2,
+        var_type='var', start=[0.0, 0.0],
+        population_size=1, max_iterations=25, powell_step=1.0,
+        powell_stop_tol=1e-9)
+    alg = algorithms.PowellAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, _ROT_MEAN, atol=1e-3), recovered
+    assert alg.trajectory.best_score() < 1e-6
+    # Converged via the conjugate-direction update (a few cycles), not by
+    # exhausting the 25-cycle budget the way coordinate-only descent would.
+    assert alg.cycle <= 4, \
+        'expected conjugate-direction convergence in a few cycles, took %i' % alg.cycle
+
+
 def test_cmaes_finds_gaussian_mode(tmp_path):
     """CMA-ES recovers the Gaussian mode. It is started from a single point
     (var/logvar) with an initial step ``cmaes_sigma0`` and adapts its search
@@ -329,3 +374,46 @@ def test_cmaes_finds_banana_valley(tmp_path):
 
     recovered = H.best_params(alg, 2)
     assert np.allclose(recovered, [a, a ** 2], atol=0.05), recovered
+
+
+@pytest.mark.slow
+def test_cmaes_adapts_covariance_to_rotation(tmp_path):
+    """CMA-ES recovers the mode of the rotated, ill-conditioned Gaussian AND its
+    search covariance adapts to the rotation (#405).
+
+    A quadratic is unimodal with no line-search traps, so this isolates the
+    *covariance adaptation* on a clean target, complementing the banana test
+    (which also stresses the curved-valley line search). For a quadratic
+    ``0.5 (x-mu)^T Sigma^{-1} (x-mu)`` the Hessian is ``Sigma^{-1}``, so the
+    learned search covariance ``C`` converges to a scalar multiple of the inverse
+    Hessian = ``Sigma``: CMA-ES should *discover the rotation*. We check that the
+    learned ``C`` is shaped like ``Sigma`` — same principal-axis direction, same
+    strong correlation, and genuinely anisotropic (not an isotropic shrink)."""
+    tgt, exp = H.write_target(tmp_path, H.rotated_gaussian_spec(_ROT_MEAN, _ROT_COV))
+    conf = H.make_config(
+        tmp_path, 'cmaes', tgt, exp, n_params=2,
+        var_type='var', start=[0.0, 0.0],
+        population_size=12, max_iterations=300, cmaes_sigma0=2.0,
+        cmaes_stop_tol=1e-11, random_seed=1234)
+    alg = algorithms.CMAESAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, _ROT_MEAN, atol=1e-3), recovered
+    assert alg.trajectory.best_score() < 1e-3
+
+    # Compare the learned covariance C to the target Sigma by eigen-structure.
+    tgt_vals, tgt_vecs = np.linalg.eigh(np.asarray(_ROT_COV))
+    c_vals, c_vecs = np.linalg.eigh(alg.C)
+    # (1) Principal axes align: the angle between the long axes is small. (cos of
+    # the angle, |.| since an eigenvector's sign is arbitrary.)
+    cos_align = abs(float(c_vecs[:, -1] @ tgt_vecs[:, -1]))
+    assert cos_align > np.cos(np.radians(10)), \
+        'C principal axis off target by %.1f deg' % np.degrees(np.arccos(cos_align))
+    # (2) Same correlation structure (sign + strength), not an isotropic blob.
+    corr_c = alg.C[0, 1] / np.sqrt(alg.C[0, 0] * alg.C[1, 1])
+    assert corr_c > 0.5, 'learned correlation %.3f did not match the rotation' % corr_c
+    # (3) Genuinely anisotropic — C learned the ill-conditioning, not a round shrink.
+    assert c_vals[-1] / c_vals[0] > 10.0, \
+        'C condition number %.1f — covariance did not elongate along the bowl' \
+        % (c_vals[-1] / c_vals[0])
