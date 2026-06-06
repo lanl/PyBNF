@@ -699,13 +699,22 @@ These settings for the :ref:`simplex <alg-sim>` algorithm may also be used when 
 These settings for the :ref:`Powell <alg-powell>` optimizer apply both to ``fit_type = powell`` and to any algorithm run with ``refine = 1`` and ``refine_method = powell``.
 
 **powell_step**
-  Initial probe half-step along each search direction, in the parameter sampling space (a factor of ``10**powell_step`` for a log-scaled parameter). Each line search fits a parabola to probes at ``±powell_step`` and jumps to its vertex.
+  Initial bracketing step along each search direction, in the parameter sampling space (a factor of ``10**powell_step`` for a log-scaled parameter). Each line search starts by probing this far, then expands a bracket around the minimum and refines it (see ``powell_line_tol``); it is no longer the only step the search can take.
 
   Default: 1.0
 
   Example:
 
     * ``powell_step = 0.3``
+
+**powell_line_tol**
+  Fractional tolerance to which each 1-D (Brent) line minimum is resolved. Smaller values locate each line minimum more precisely at the cost of more objective evaluations per line search; the default is ample for refining a near-quadratic objective.
+
+  Default: 1e-4
+
+  Example:
+
+    * ``powell_line_tol = 1e-3``
 
 **powell_stop_tol**
   Stop when a whole cycle of line searches improves the objective by less than this fraction.

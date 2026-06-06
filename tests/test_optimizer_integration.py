@@ -173,6 +173,34 @@ def test_powell_exercises_conjugate_directions_on_rotated_gaussian(tmp_path):
         'expected conjugate-direction convergence in a few cycles, took %i' % alg.cycle
 
 
+def test_powell_follows_curved_nonquadratic_valley(tmp_path):
+    """Powell's bracketing+Brent line search follows a long, curved, NON-quadratic
+    valley that the old fixed-step parabola could not (#406, ADR-0016).
+
+    Target: ``k1 r1^4 + k2 r2^2`` with ``k1 << k2`` and a 30 deg rotation — a long,
+    flat, curved valley whose only minimum is ``mu`` (trap-free), but non-quadratic
+    along the valley so a single fixed-step parabola is a poor 1-D model. With
+    ``powell_step = 0.5`` the *old* line search stalled here at err ~4.5e-2 (it
+    undershot, and the per-cycle stop then fired prematurely); the bracketing+Brent
+    search instead brackets and refines the true 1-D minimum, and the iteration-0
+    stop guard lets the conjugate direction form. Within a 40-cycle budget — well
+    under the ~89 cycles the fixed step needed even at its best — it reaches the
+    mode to ~1e-7, so asserting err < 1e-3 is a precision the old code could not
+    hit in this budget."""
+    tgt, exp = H.write_target(
+        tmp_path, H.rotated_quartic_spec([2.0, -1.0], np.pi / 6, [0.01, 100.0]))
+    conf = H.make_config(
+        tmp_path, 'powell', tgt, exp, n_params=2,
+        var_type='var', start=[0.0, 0.0],
+        population_size=1, max_iterations=40, powell_step=0.5)
+    alg = algorithms.PowellAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, [2.0, -1.0], atol=1e-3), recovered
+    assert alg.trajectory.best_score() < 1e-6
+
+
 def test_cmaes_finds_gaussian_mode(tmp_path):
     """CMA-ES recovers the Gaussian mode. It is started from a single point
     (var/logvar) with an initial step ``cmaes_sigma0`` and adapts its search
@@ -356,11 +384,10 @@ def test_cmaes_finds_banana_valley(tmp_path):
     this exercises the rank-one/rank-mu C update and step-size control that the
     well-conditioned Gaussian test does not.
 
-    (No analogous Powell test: like Simplex, Powell is a *local* search, and on
-    the banana every valley point (x, x^2) is a local minimum of both coordinate
-    slices, so axis line searches stall — a local optimizer is not expected to
-    cross the valley globally. CMA-ES is population-based and semi-global, so it
-    can. Powell's local convergence is covered by the Gaussian and refine tests.)
+    (Powell now also solves the banana — see test_powell_finds_banana_valley below
+    — once its line search became a real bracketing+Brent search (#406, ADR-0016)
+    that follows the curved valley. Before #406, the fixed-step parabola stalled on
+    it. Simplex, with its fixed reflection/contraction steps, still does not.)
     """
     a, b = 1.0, 100.0
     tgt, exp = H.write_target(tmp_path, H.banana_spec(a, b))
@@ -417,3 +444,68 @@ def test_cmaes_adapts_covariance_to_rotation(tmp_path):
     assert c_vals[-1] / c_vals[0] > 10.0, \
         'C condition number %.1f — covariance did not elongate along the bowl' \
         % (c_vals[-1] / c_vals[0])
+
+
+@pytest.mark.slow
+def test_powell_finds_banana_valley(tmp_path):
+    """Powell now traverses the Rosenbrock/banana valley to its minimum at
+    (a, a^2) (#406, ADR-0016).
+
+    This was a *non-goal* under the original fixed-step line search (#403): the
+    parabola could not take the large adaptive steps needed to follow the curved
+    valley, so Powell stalled at the first valley point it reached. With the
+    bracketing+Brent line search it follows the valley like the textbook method
+    (and like scipy's Powell), converging from a point off the valley. Note this
+    is a *local* method succeeding on a curved valley, distinct from CMA-ES's
+    population-based crossing — the line-search robustification is what enables it."""
+    a, b = 1.0, 100.0
+    tgt, exp = H.write_target(tmp_path, H.banana_spec(a, b))
+    conf = H.make_config(
+        tmp_path, 'powell', tgt, exp, n_params=2,
+        var_type='var', start=[-1.0, 1.0],
+        population_size=1, max_iterations=60, powell_step=1.0)
+    alg = algorithms.PowellAlgorithm(conf)
+    H.drive(alg)
+
+    recovered = H.best_params(alg, 2)
+    assert np.allclose(recovered, [a, a ** 2], atol=1e-3), recovered
+    assert alg.trajectory.best_score() < 1e-6
+
+
+@pytest.mark.slow
+def test_powell_refine_respects_box_bounds_near_boundary(tmp_path):
+    """Powell's line search is box-constrained: in the refine path (bounded
+    parameters) it confines each 1-D search to the feasible interval, so the bound
+    reflection never folds the slice and a minimum that lies past a bound lands
+    cleanly on the boundary (#406, ADR-0016).
+
+    Setup: a bounded `uniform_var` `de` fit over the box [-2, 2]^2 against a
+    Gaussian whose mean (5, 5) is *outside* the box, so the constrained optimum is
+    the corner (2, 2). `de` gets a short budget and stops at an interior point;
+    refining with `refine_method = powell` must then travel to the boundary corner
+    — exercising the box-constrained bracketing (boundary-as-minimum) — and land
+    on it, in-box, without the reflection wandering. A non-box-aware line search
+    would let `set_value` fold points back and could converge to an interior
+    artifact or fail to reach the corner."""
+    import types
+    from pybnf import pybnf as pybnf_main
+
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([5.0, 5.0], [1.0, 1.0]))
+    conf = H.make_config(
+        tmp_path, 'de', tgt, exp, n_params=2, bounds=(-2.0, 2.0),
+        population_size=20, max_iterations=30, stop_tolerance=1e-7,
+        refine=1, refine_method='powell')
+    alg = algorithms.DifferentialEvolution(conf)
+    H.drive(alg)
+    pre_refine_best = alg.trajectory.best_score()
+
+    cluster = types.SimpleNamespace(client=H.FakeClient())
+    pybnf_main._refine_best_fit(conf, alg, cluster, debug=False)   # must NOT raise
+
+    recovered = H.best_params(alg, 2)
+    refined_best = alg.trajectory.best_score()
+    assert refined_best <= pre_refine_best + 1e-9          # refine never worsens
+    # Stayed in the box and reached the constrained optimum (the corner nearest
+    # the out-of-box mean), to tight tolerance — the boundary IS the line minimum.
+    assert np.all(recovered >= -2.0 - 1e-9) and np.all(recovered <= 2.0 + 1e-9), recovered
+    assert np.allclose(recovered, [2.0, 2.0], atol=1e-2), recovered

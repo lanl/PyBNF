@@ -6,6 +6,7 @@ bypassing any external simulator. Used with objfunc = direct_pass.
 Supported target types:
   gaussian         - Axis-aligned Gaussian (diagonal variance; a *separable* objective)
   rotated_gaussian - Correlated Gaussian with a full covariance Sigma (non-separable)
+  rotated_quartic  - Smooth, non-separable, NON-quadratic, trap-free valley (2D)
   banana           - Rosenbrock/banana-shaped distribution (2D)
   multimodal       - Mixture of Gaussians with configurable modes
 """
@@ -57,6 +58,12 @@ class AnalyticalModel(Model):
             # the quadratic form stays exactly symmetric.
             prec = np.linalg.inv(self._cov)
             self._prec = 0.5 * (prec + prec.T)
+        elif self.target_type == 'rotated_quartic':
+            self._mean = np.array(self.target_def['mean'], dtype=float)
+            angle = float(self.target_def['angle'])
+            c, s = np.cos(angle), np.sin(angle)
+            self._rot = np.array([[c, -s], [s, c]])   # R(angle); r = R (x - mu)
+            self._coeff = np.array(self.target_def['coeff'], dtype=float)  # (k1, k2)
         elif self.target_type == 'banana':
             self._a = self.target_def.get('a', 1.0)
             self._b = self.target_def.get('b', 100.0)
@@ -107,6 +114,8 @@ class AnalyticalModel(Model):
             return self._nll_gaussian(params)
         elif self.target_type == 'rotated_gaussian':
             return self._nll_rotated_gaussian(params)
+        elif self.target_type == 'rotated_quartic':
+            return self._nll_rotated_quartic(params)
         elif self.target_type == 'banana':
             return self._nll_banana(params)
         elif self.target_type == 'multimodal':
@@ -136,6 +145,23 @@ class AnalyticalModel(Model):
         """
         diff = params - self._mean
         return 0.5 * float(diff @ self._prec @ diff)
+
+    def _nll_rotated_quartic(self, params):
+        """NLL of a smooth, non-separable, NON-quadratic, trap-free valley:
+        ``k1 * r1**4 + k2 * r2**2`` where ``r = R(angle) (x - mu)``.
+
+        Quartic along the first rotated axis, quadratic along the second; with
+        ``k1 << k2`` this is a long, flat, curved valley. Its *only* stationary
+        point is ``mu`` (the mode, NLL 0), so it is trap-free for a local
+        optimizer — unlike the banana. Because it is non-quadratic, a single
+        fixed-step parabolic line search is a poor 1-D model and converges slowly
+        / stalls, whereas a bracketing + Brent line search follows the valley.
+        This is the discriminating target for Powell's robustified line search
+        (#406); the rotated *Gaussian* (quadratic) cannot discriminate, since a
+        parabola fits a quadratic exactly.
+        """
+        r = self._rot @ (params - self._mean)
+        return self._coeff[0] * r[0] ** 4 + self._coeff[1] * r[1] ** 2
 
     def _nll_banana(self, params):
         """

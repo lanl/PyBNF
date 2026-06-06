@@ -5901,6 +5901,10 @@
     10
    ],
    [
+    "powell_line_tol",
+    0.0001
+   ],
+   [
     "powell_step",
     1.0
    ],
@@ -7568,6 +7572,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "powell_line_tol",
+    0.0001
    ],
    [
     "powell_step",

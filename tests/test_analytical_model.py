@@ -63,3 +63,29 @@ def test_rotated_gaussian_with_diagonal_cov_reduces_to_axis_aligned(tmp_path):
     diag = _load_model(tmp_path, {'type': 'gaussian', 'mean': mu, 'variance': var})
     x = np.array([1.5, 0.0, 1.0])
     assert rot._nll_rotated_gaussian(x) == pytest.approx(diag._nll_gaussian(x), rel=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# rotated_quartic: NLL = k1 r1^4 + k2 r2^2, r = R(angle)(x-mu)  (#406)
+# --------------------------------------------------------------------------- #
+def test_rotated_quartic_nll_is_zero_at_the_mode(tmp_path):
+    """The only stationary point (and the mode) is ``mu``; NLL 0 there."""
+    mu = [2.0, -1.0]
+    m = _load_model(tmp_path, {'type': 'rotated_quartic', 'mean': mu,
+                               'angle': np.pi / 6, 'coeff': [0.5, 3.0]})
+    assert m._nll_rotated_quartic(np.array(mu)) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_rotated_quartic_nll_matches_closed_form(tmp_path):
+    """NLL equals ``k1 r1^4 + k2 r2^2`` for the rotated residual ``r``,
+    computed independently here (quartic in one axis, quadratic in the other)."""
+    mu = np.array([1.0, -2.0])
+    angle = 0.4
+    k1, k2 = 0.7, 2.5
+    m = _load_model(tmp_path, {'type': 'rotated_quartic', 'mean': mu.tolist(),
+                               'angle': angle, 'coeff': [k1, k2]})
+    x = np.array([2.5, 0.5])
+    c, s = np.cos(angle), np.sin(angle)
+    r = np.array([[c, -s], [s, c]]) @ (x - mu)
+    expected = k1 * r[0] ** 4 + k2 * r[1] ** 2
+    assert m._nll_rotated_quartic(x) == pytest.approx(expected, rel=1e-12)

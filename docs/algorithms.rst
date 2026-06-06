@@ -462,23 +462,29 @@ directions (initially the coordinate axes). After each cycle of line searches it
 may replace one direction with the net direction of the cycle's progress, building
 up *conjugate* directions that give quadratic convergence on a quadratic bowl
 ([Powell1964]_; see also [NumericalRecipes]_). PyBNF performs each line
-minimization by fitting a parabola to objective probes at ``±powell_step`` along
-the direction and jumping to its vertex — exact for a locally quadratic objective.
+minimization by **bracketing** the minimum (geometric expansion from
+``±powell_step``) and refining it with **Brent's method** (parabolic interpolation
+with a golden-section fallback) to ``powell_line_tol``. This follows long, curved,
+non-quadratic valleys and adapts its step length, where a single fixed-step
+parabola would stall. The line search is confined to the parameter box, so when
+refining a bounded fit a minimum that lies past a bound is found on the boundary.
 
 Parallelization
 ^^^^^^^^^^^^^^^
-Powell is fundamentally serial (each step depends on the previous), but the two
-symmetric probes of a line search are evaluated concurrently. The search runs in
-the parameter sampling space (log-scaled for log parameters), so a step is
-geometric for a log parameter.
+Powell is fundamentally serial — each line-search evaluation depends on the
+previous, so the bracketing + Brent search runs one objective evaluation at a
+time. (CMA-ES is the derivative-free optimizer that evaluates a whole generation
+in parallel.) The search runs in the parameter sampling space (log-scaled for log
+parameters), so a step is geometric for a log parameter.
 
 Applications
 ^^^^^^^^^^^^
 Use Powell to refine an already-good solution (``refine = 1`` with
 ``refine_method = powell``), or standalone (``fit_type = powell``) from a starting
 point given with the ``var`` / ``logvar`` keys. Tune ``powell_step`` (initial
-probe step), ``powell_stop_tol`` (per-cycle convergence), and
-``powell_max_iterations`` (cycle budget; defaults to ``max_iterations``).
+bracketing step), ``powell_line_tol`` (1-D line-minimum precision),
+``powell_stop_tol`` (per-cycle convergence), and ``powell_max_iterations`` (cycle
+budget; defaults to ``max_iterations``).
 
 
 .. _alg-cmaes:

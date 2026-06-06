@@ -145,6 +145,17 @@ def rotated_gaussian_spec(mean, covariance):
             'covariance': np.asarray(covariance, dtype=float).tolist()}
 
 
+def rotated_quartic_spec(mean, angle, coeff):
+    """A smooth, non-separable, NON-quadratic, trap-free valley target:
+    ``k1 r1^4 + k2 r2^2`` with ``r = R(angle)(x-mu)`` and ``coeff = (k1, k2)``
+    (mode = ``mean``). With ``k1 << k2`` it is a long, flat, curved valley — the
+    discriminator for Powell's bracketing+Brent line search, on which the
+    fixed-step parabola stalls (#406). Unlike the rotated *Gaussian* (quadratic,
+    fit exactly by a parabola), this is genuinely non-quadratic."""
+    return {'type': 'rotated_quartic', 'mean': list(mean),
+            'angle': float(angle), 'coeff': list(coeff)}
+
+
 def rotated_cov(variances, angle):
     """Build ``Sigma = R diag(variances) R^T`` (2-D): the principal-axis variances
     ``variances`` rotated by ``angle`` radians. When the two variances differ
