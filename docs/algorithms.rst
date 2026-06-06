@@ -28,7 +28,8 @@ Summary of Available Algorithms
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Powell`_                   | Local search     | Synchronous     | Local optimization, or refinement of a result from another algorithm.     |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
-| `CMA-ES`_                   | Population-based | Synchronous     | Local optimization or refinement; robust on ill-conditioned objectives.   |
+| `CMA-ES`_                   | Population-based | Synchronous     | Global or local optimization, or refinement; robust on ill-conditioned    |
+|                             |                  |                 | objectives.                                                               |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 | `Adaptive MCMC`_            | Metropolis       | Independent     | Finding probability distributions in challenging probablity landscapes    |
 |                             | sampling         | Markov Chains   |                                                                           |

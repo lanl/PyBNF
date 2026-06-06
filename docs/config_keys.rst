@@ -31,10 +31,13 @@ Required Keys
     * ``pso`` - :ref:`Particle Swarm Optimization <alg-pso>`
     * ``mh`` - :ref:`Metropolis-Hastings MCMC (Not recommended) <alg-mcmc>`
     * ``sim`` - :ref:`Simplex <alg-sim>` local search
+    * ``powell`` - :ref:`Powell <alg-powell>` local search
+    * ``cmaes`` - :ref:`CMA-ES <alg-cmaes>` (local search, or global search over a bounded box)
     * ``sa`` - :ref:`Simulated Annealing (Not recommended) <alg-sa>`
     * ``pt`` - :ref:`Parallel tempering (Not recommended) <alg-pt>`
     * ``am`` - :ref:`Adaptive MCMC <alg-am>`
     * ``dream`` - :ref:`DREAM <alg-dream>`
+    * ``p_dream`` - :ref:`DREAM <alg-dream>` with preconditioning (P-DREAM)
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
 
@@ -224,9 +227,14 @@ Parameter and Model Specification
     * ``lognormal_var = l__FREE 1 0.1``
 
 
-The following two keys (``var`` and ``logvar``) are to be used only with the :ref:`simplex <alg-sim>` algorithm. Simplex should not use any of the
-other parameter specifications. If you are using another algorithm with the flag ``refine``, you must set the simplex
-algorithm's parameters with ``simplex_step`` or ``simplex_log_step``.
+The following two keys (``var`` and ``logvar``) are the single-value start point used by the start-point optimizers —
+:ref:`Simplex <alg-sim>`, :ref:`Powell <alg-powell>`, and :ref:`CMA-ES <alg-cmaes>`. A fit with one of these
+``fit_type``\ s must define every free parameter with ``var`` / ``logvar`` and use none of the prior-based
+parameter specifications above — except that CMA-ES may instead take bounded ``uniform_var`` / ``loguniform_var``
+priors to run as a global search over the box (see :ref:`CMA-ES <alg-cmaes>`). For any other algorithm, define
+parameters with the prior-based specifications, not ``var`` / ``logvar``. When refining a result (``refine = 1``),
+the optimizer is chosen by ``refine_method`` (``sim`` (default), ``powell``, or ``cmaes``); it reads that
+optimizer's own settings (e.g. ``simplex_step`` for Simplex), so you do not need to add ``var`` / ``logvar`` lines.
 
 **var**
   The starting point for a free parameter.  It is defined by a 3-tuple, corresponding to the variable's name, its initial
