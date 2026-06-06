@@ -19,7 +19,7 @@ from .pset import (
     ParamScan,
     TimeCourse,
 )
-from ._seed import POLICY_AUTO, resolve_seed
+from ._seed import resolve_action_seed
 
 
 _SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
@@ -360,17 +360,9 @@ class BngsimSbmlModelNoTimeout(Model):
         """Apply the stochastic_seed policy to one SBML stochastic action."""
         if method != 'ssa':
             return None
-        policy = getattr(self, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
-        seed_value, overridden = resolve_seed(
-            explicit_seed=explicit_seed,
-            policy=policy,
-            param_set=getattr(self, 'param_set', None),
-            model_name=self.name,
-            action_index=action_index,
-            suffix=suffix,
-            method=method,
-            replicate_index=getattr(self, '_pybnf_replicate_index', 0),
-        )
+        seed_value, overridden, policy = resolve_action_seed(
+            self, explicit_seed=explicit_seed, action_index=action_index,
+            suffix=suffix, method=method)
         if overridden:
             logger.debug(
                 "BngsimSbmlModel %s action #%d (suffix=%r): overrode explicit "

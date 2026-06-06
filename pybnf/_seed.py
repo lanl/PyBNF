@@ -78,3 +78,26 @@ def resolve_seed(*, explicit_seed, policy, param_set, model_name, action_index,
         )
         return seed, overridden
     return None, overridden
+
+
+def resolve_action_seed(model, *, explicit_seed, action_index, suffix, method):
+    """Resolve one stochastic action's seed from a bngsim model's policy context.
+
+    Reads the ``stochastic_seed`` policy, ``param_set``, and replicate index off
+    ``model`` and applies :func:`resolve_seed`. Returns
+    ``(seed_value, overridden, policy)``; the caller emits its own backend-
+    specific override log and applies any None-materialization or method gate
+    (which is where the three bngsim backends genuinely differ).
+    """
+    policy = getattr(model, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
+    seed_value, overridden = resolve_seed(
+        explicit_seed=explicit_seed,
+        policy=policy,
+        param_set=getattr(model, 'param_set', None),
+        model_name=model.name,
+        action_index=action_index,
+        suffix=suffix,
+        method=method,
+        replicate_index=getattr(model, '_pybnf_replicate_index', 0),
+    )
+    return seed_value, overridden, policy

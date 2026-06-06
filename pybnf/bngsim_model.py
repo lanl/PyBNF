@@ -23,7 +23,7 @@ from ._bngsim_caps import (
 )
 from .data import Data
 from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
-from ._seed import POLICY_AUTO, resolve_seed
+from ._seed import resolve_action_seed
 
 
 logger = logging.getLogger(__name__)
@@ -1025,17 +1025,9 @@ class BngsimModel(NetModel):
         Returns the seed integer to pass to bngsim, or None to delegate to
         bngsim's own randomization.
         """
-        policy = getattr(self, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
-        seed_value, overridden = resolve_seed(
-            explicit_seed=explicit_seed,
-            policy=policy,
-            param_set=getattr(self, 'param_set', None),
-            model_name=self.name,
-            action_index=action_index,
-            suffix=suffix,
-            method=method,
-            replicate_index=getattr(self, '_pybnf_replicate_index', 0),
-        )
+        seed_value, overridden, policy = resolve_action_seed(
+            self, explicit_seed=explicit_seed, action_index=action_index,
+            suffix=suffix, method=method)
         if overridden:
             logger.debug(
                 "BngsimModel %s action #%d (suffix=%r): overrode explicit BNGL "
@@ -2276,17 +2268,9 @@ class BngsimNfModel(Model):
         callers using arithmetic like `(seed + i)` for per-scan-point
         variation keep working.
         """
-        policy = getattr(self, '_pybnf_stochastic_seed_policy', POLICY_AUTO)
-        seed_value, overridden = resolve_seed(
-            explicit_seed=explicit_seed,
-            policy=policy,
-            param_set=getattr(self, 'param_set', None),
-            model_name=self.name,
-            action_index=action_index,
-            suffix=suffix,
-            method=method,
-            replicate_index=getattr(self, '_pybnf_replicate_index', 0),
-        )
+        seed_value, overridden, policy = resolve_action_seed(
+            self, explicit_seed=explicit_seed, action_index=action_index,
+            suffix=suffix, method=method)
         if overridden:
             logger.debug(
                 "BngsimNfModel %s action #%d (suffix=%r): overrode explicit BNGL "
