@@ -22,6 +22,7 @@ import shutil
 import time
 import traceback
 import pickle
+from pathlib import Path
 
 
 def _initialize_random_seed(config):
@@ -132,25 +133,28 @@ def _resolve_continue_file(config, cmdline_args):
     found in ``output_dir``, ``cmdline_args.resume`` is set to 0 as a side effect.
     """
     logger = logging.getLogger(__name__)
+    output_dir = Path(config.config['output_dir'])
+    backup_file = output_dir / 'alg_backup.bp'
+    finished_file = output_dir / 'alg_finished.bp'
     continue_file = None
     if cmdline_args.resume is not None:
-        if os.path.exists(config.config['output_dir'] + '/alg_backup.bp'):
-            continue_file = config.config['output_dir'] + '/alg_backup.bp'
-        elif os.path.exists(config.config['output_dir'] + '/alg_finished.bp'):
+        if backup_file.exists():
+            continue_file = backup_file
+        elif finished_file.exists():
             if cmdline_args.resume <= 0:
-                raise PybnfError('The fitting run saved in {} already finished. If you want to continue the '
-                                 'fitting with more iterations, pass a number of iterations with the '
-                                 '--resume flag.'.format(config.config['output_dir']))
-            continue_file = config.config['output_dir'] + '/alg_finished.bp'
+                raise PybnfError(f'The fitting run saved in {output_dir} already finished. If you want to continue '
+                                 'the fitting with more iterations, pass a number of iterations with the '
+                                 '--resume flag.')
+            continue_file = finished_file
         else:
-            raise PybnfError('No algorithm found to resume in {}'.format(config.config['output_dir']))
-    elif os.path.exists(config.config['output_dir'] + '/alg_backup.bp') and not cmdline_args.overwrite:
+            raise PybnfError(f'No algorithm found to resume in {output_dir}')
+    elif backup_file.exists() and not cmdline_args.overwrite:
         ans = 'x'
         while ans.lower() not in ['y', 'yes', 'n', 'no', '']:
             ans = input('Your output_dir contains an in-progress run.\nContinue that run? [y/n] (y) ')
         if ans.lower() in ('y', 'yes', ''):
             logger.info('Resuming a previous run')
-            continue_file = config.config['output_dir'] + '/alg_backup.bp'
+            continue_file = backup_file
             cmdline_args.resume = 0
     return continue_file
 
@@ -196,14 +200,16 @@ def _prepare_run_directories(config, cmdline_args):
     """
     logger = logging.getLogger(__name__)
     # Create output folders, checking for overwrites.
+    output_dir = Path(config.config['output_dir'])
+    sim_dir_cfg = config.config['simulation_dir']
     subdirs = ('Simulations', 'Results', 'Initialize', 'FailedSimLogs')
     subfiles = ('alg_backup.bp', 'alg_finished.bp', 'alg_refine_finished.bp')
     will_overwrite = [subdir for subdir in subdirs + subfiles
-                      if os.path.exists(config.config['output_dir'] + '/' + subdir)]
-    if config.config['simulation_dir']:
-        simdir = config.config['simulation_dir'] + '/Simulations'
-        if os.path.exists(simdir):
-            will_overwrite.append(simdir)
+                      if (output_dir / subdir).exists()]
+    if sim_dir_cfg:
+        simdir = Path(sim_dir_cfg) / 'Simulations'
+        if simdir.exists():
+            will_overwrite.append(str(simdir))
     if len(will_overwrite) > 0:
         if not cmdline_args.overwrite:
             logger.info("Output directory already exists... querying user for overwrite permission")
@@ -218,31 +224,34 @@ def _prepare_run_directories(config, cmdline_args):
                 exit(0)
         # If we get here, safe to overwrite files
         for subdir in subdirs:
+            target = output_dir / subdir
             try:
-                shutil.rmtree(config.config['output_dir'] + '/' + subdir)
-                logger.info('Deleted old directory {}'.format(config.config['output_dir']) + '/' + subdir)
+                shutil.rmtree(target)
+                logger.info('Deleted old directory %s' % target)
             except OSError:
-                logger.debug('Directory {} does not already exist'.format(config.config['output_dir']) + '/' + subdir)
+                logger.debug('Directory %s does not already exist' % target)
         for subfile in subfiles:
+            target = output_dir / subfile
             try:
-                os.remove(config.config['output_dir'] + '/' + subfile)
-                logger.info('Deleted old file {}'.format(config.config['output_dir']) + '/' + subfile)
+                target.unlink()
+                logger.info('Deleted old file %s' % target)
             except OSError:
-                logger.debug('File {} does not already exist'.format(config.config['output_dir']) + '/' + subfile)
-        if config.config['simulation_dir']:
+                logger.debug('File %s does not already exist' % target)
+        if sim_dir_cfg:
+            sim_simulations = Path(sim_dir_cfg) / 'Simulations'
             try:
-                shutil.rmtree(config.config['simulation_dir']+'/Simulations')
-                logger.info('Deleted old simulation directory {}'.format(config.config['simulation_dir'])+'/Simulations')
+                shutil.rmtree(sim_simulations)
+                logger.info('Deleted old simulation directory %s' % sim_simulations)
             except OSError:
-                logger.debug('Simulation directory {} does not already exist'.format(config.config['simulation_dir'])+'/Simulations')
+                logger.debug('Simulation directory %s does not already exist' % sim_simulations)
 
     # Create new directories for the current run.
-    os.makedirs(config.config['output_dir'] + '/Results')
-    if config.config['simulation_dir']:
-        os.makedirs(config.config['simulation_dir'] + '/Simulations')
+    (output_dir / 'Results').mkdir(parents=True)
+    if sim_dir_cfg:
+        (Path(sim_dir_cfg) / 'Simulations').mkdir(parents=True)
     else:
-        os.mkdir(config.config['output_dir'] + '/Simulations')
-    shutil.copy(cmdline_args.conf_file, config.config['output_dir'] + '/Results')
+        (output_dir / 'Simulations').mkdir()
+    shutil.copy(cmdline_args.conf_file, output_dir / 'Results')
 
 
 def _create_algorithm(config):
@@ -306,6 +315,9 @@ def _run_bootstrapping(config, alg, cluster, debug):
     whose objective exceeds ``bootstrap_max_obj`` are retried.
     """
     logger = logging.getLogger(__name__)
+    # Path the accepted-replicate parameter sets are accumulated into (str at the
+    # boundary: Trajectory.load_trajectory / Trajectory.add take a filename).
+    bootstrap_file = str(Path(config.config['output_dir']) / 'Results' / 'bootstrapped_parameter_sets.txt')
     # Bootstrapping setup
     if config.config['bootstrap_max_obj']:
         bootstrap_max_obj = config.config['bootstrap_max_obj']
@@ -325,8 +337,7 @@ def _run_bootstrapping(config, alg, cluster, debug):
             bootstrapped_psets = Trajectory(num_to_bootstrap)
         else:
             if completed_bootstrap_runs > 0:
-                bootstrapped_psets = Trajectory.load_trajectory(config.config['output_dir'] +
-                                                                '/Results/bootstrapped_parameter_sets.txt',
+                bootstrapped_psets = Trajectory.load_trajectory(bootstrap_file,
                                                                 config.variables,
                                                                 config.config['num_to_output'])
 
@@ -334,7 +345,7 @@ def _run_bootstrapping(config, alg, cluster, debug):
             logger.info(f'Bootstrap run {completed_bootstrap_runs} complete')
             bootstrapped_psets.add(alg.trajectory.best_fit(), alg.best_fit_obj,
                                    f'bootstrap_run_{completed_bootstrap_runs}',
-                                   config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
+                                   bootstrap_file,
                                    completed_bootstrap_runs == 0)
             logger.info(f'Succesfully completed resumed bootstrapping run {completed_bootstrap_runs}')
             completed_bootstrap_runs += 1
@@ -367,7 +378,7 @@ def _run_bootstrapping(config, alg, cluster, debug):
         if alg.best_fit_obj <= bootstrap_max_obj:
             logger.info(f'Bootstrap run {completed_bootstrap_runs} complete')
             bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, f'bootstrap_run_{completed_bootstrap_runs}',
-                                   config.config['output_dir'] + '/Results/bootstrapped_parameter_sets.txt',
+                                   bootstrap_file,
                                    completed_bootstrap_runs == 0)
             completed_bootstrap_runs += 1
             consec_failed_bootstrap_runs = 0

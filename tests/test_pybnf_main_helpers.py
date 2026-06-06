@@ -16,6 +16,7 @@ longer resolve through.
 """
 
 import logging
+import os
 import types
 from unittest import mock
 
@@ -23,7 +24,12 @@ import pytest
 
 import pybnf.algorithms as algs
 import pybnf.pybnf as pybnf_mod
-from pybnf.pybnf import _create_algorithm, _build_arg_parser
+from pybnf.pybnf import (
+    _create_algorithm,
+    _build_arg_parser,
+    _prepare_run_directories,
+    _resolve_continue_file,
+)
 from pybnf.printing import PybnfError
 from pybnf.registry import FIT_TYPE_REGISTRY, FitTypeEntry
 
@@ -183,3 +189,93 @@ def test_build_arg_parser_resume_flag_without_value():
     # -r with no number means "resume, add zero iterations" (const=0).
     args = _build_arg_parser().parse_args(['-r'])
     assert args.resume == 0
+
+
+# --- run-directory helpers (real filesystem orchestration) --------------------
+# These two helpers do real path-building + directory create/delete. They had no
+# direct coverage; these guard the contract while pybnf.py's path handling moved
+# from string concatenation to pathlib (they only read ``config['output_dir']`` /
+# ``['simulation_dir']`` and a few cmdline_args attrs, so SimpleNamespace stands
+# in for the heavyweight Configuration).
+
+def _dir_config(output_dir, simulation_dir=None):
+    return types.SimpleNamespace(
+        config={'output_dir': str(output_dir), 'simulation_dir': simulation_dir})
+
+
+def _dir_args(**kw):
+    base = dict(overwrite=True, resume=None, conf_file=None)
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def test_prepare_run_directories_fresh_tree(tmp_path):
+    """No simulation_dir: Results + Simulations land under output_dir and the
+    conf file is copied into Results."""
+    out = tmp_path / 'out'
+    conf = tmp_path / 'fit.conf'
+    conf.write_text('# dummy\n')
+
+    _prepare_run_directories(_dir_config(out), _dir_args(conf_file=str(conf)))
+
+    assert (out / 'Results').is_dir()
+    assert (out / 'Simulations').is_dir()
+    assert (out / 'Results' / 'fit.conf').is_file()
+
+
+def test_prepare_run_directories_uses_explicit_simulation_dir(tmp_path):
+    """With simulation_dir set, Simulations is created there -- not under output_dir."""
+    out = tmp_path / 'out'
+    sim = tmp_path / 'simdir'
+    conf = tmp_path / 'fit.conf'
+    conf.write_text('# dummy\n')
+
+    _prepare_run_directories(_dir_config(out, simulation_dir=str(sim)), _dir_args(conf_file=str(conf)))
+
+    assert (sim / 'Simulations').is_dir()
+    assert not (out / 'Simulations').exists()
+
+
+def test_prepare_run_directories_overwrite_clears_old_run(tmp_path):
+    """--overwrite deletes leftover run subdirs/subfiles, then recreates the tree."""
+    out = tmp_path / 'out'
+    conf = tmp_path / 'fit.conf'
+    conf.write_text('# dummy\n')
+    _prepare_run_directories(_dir_config(out), _dir_args(conf_file=str(conf)))
+
+    leftover = out / 'Results' / 'leftover.txt'
+    leftover.write_text('stale')
+    (out / 'alg_backup.bp').write_text('stale')
+
+    _prepare_run_directories(_dir_config(out), _dir_args(overwrite=True, conf_file=str(conf)))
+
+    assert not leftover.exists()                 # old Results contents gone
+    assert not (out / 'alg_backup.bp').exists()  # old subfile gone
+    assert (out / 'Results').is_dir()            # tree recreated
+
+
+def test_resolve_continue_file_returns_backup_when_resuming(tmp_path):
+    out = tmp_path / 'out'
+    out.mkdir()
+    (out / 'alg_backup.bp').write_text('')
+
+    cf = _resolve_continue_file(_dir_config(out), _dir_args(resume=1))
+
+    # A backup present + resume requested -> resume from alg_backup.bp.
+    assert os.fspath(cf) == str(out / 'alg_backup.bp')
+
+
+def test_resolve_continue_file_finished_run_without_iterations_errors(tmp_path):
+    """Resuming a finished run with no added iterations (resume<=0) is an error."""
+    out = tmp_path / 'out'
+    out.mkdir()
+    (out / 'alg_finished.bp').write_text('')
+
+    with pytest.raises(PybnfError, match='already finished'):
+        _resolve_continue_file(_dir_config(out), _dir_args(resume=0))
+
+
+def test_resolve_continue_file_none_when_nothing_to_resume(tmp_path):
+    out = tmp_path / 'out'
+    out.mkdir()
+    assert _resolve_continue_file(_dir_config(out), _dir_args(resume=None)) is None
