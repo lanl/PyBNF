@@ -1,4 +1,4 @@
-![alt text](docs/Logo1.png "PyBioNetFit")
+![alt text](docs/pybnf-pronghorn-logo/pybnf-pronghorn-turquoise-gold-card.svg "PyBioNetFit")
 
 PyBioNetFit (PyBNF) is a general-purpose program for parameterizing biological models specified using the BioNetGen
 rule-based modeling language (BNGL) or the Systems Biology Markup Language (SBML). PyBioNetFit offers a suite of
