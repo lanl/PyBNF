@@ -60,6 +60,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 - Test failures in test_job_groups and test_seed_determinism caused by incorrect fixture paths (#361)
 - `wall_time_sim` for SBML models now works when PyBNF is installed via PyPI (#249)
 - Dependency warning spam (numpy, YAML, etc.) no longer clutters the terminal; routed to log file (#274)
+- Invalid escape sequence `SyntaxWarning`s in the test suite (regex literals such as `'\s+'` not marked raw); Python is escalating these toward `SyntaxError`
 
 ## [v1.3.0] - 2026-03-29 (changes relative to v1.2.2, which was untagged)
 

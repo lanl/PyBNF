@@ -33,7 +33,7 @@ class TestDream:
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
-        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
+        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
         cls.variables = ['v1__FREE', 'v2__FREE', 'v3__FREE']
 
@@ -87,7 +87,7 @@ class TestDream:
                 assert empty == []
 
         for pset in next_gen:
-            assert re.match('iter1run\d+', pset.name) is not None
+            assert re.match(r'iter1run\d+', pset.name) is not None
 
 
 # =========================================================================== #

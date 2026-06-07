@@ -13,7 +13,7 @@ class TestSimplex:
             ' 1 2.1   3.1   6.1\n',
         ]
         cls.d1s = data.Data()
-        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, '\s+')
+        cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
         cls.config = config.Configuration({
             'population_size': 2, 'max_iterations': 20, 'fit_type': 'sim', 'simplex_start_step': 1.0,

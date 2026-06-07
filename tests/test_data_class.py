@@ -24,7 +24,7 @@ class TestData:
             ' 1.00000000e+00  1.20000000e+01  8.00000000e+00  6.00000000e+00  0.00000000e+00  1.60000000e+01\n'
         ]
         cls.d0 = data.Data()
-        cls.d0.data = cls.d0._read_file_lines(cls.data0, '\s+')
+        cls.d0.data = cls.d0._read_file_lines(cls.data0, r'\s+')
 
         cls.data1 = [
             '# x    obs1    obs2    obs3\n',
@@ -33,7 +33,7 @@ class TestData:
             ' 2 4   2   10\n'
         ]
         cls.d1 = data.Data()
-        cls.d1.data = cls.d1._read_file_lines(cls.data1, '\s+')
+        cls.d1.data = cls.d1._read_file_lines(cls.data1, r'\s+')
 
         cls.data1b = [
             '# x    obs1    obs2    obs3\n',
@@ -42,7 +42,7 @@ class TestData:
             ' 2 5   0   10\n'
         ]
         cls.d1b = data.Data()
-        cls.d1b.data = cls.d1b._read_file_lines(cls.data1b, '\s+')
+        cls.d1b.data = cls.d1b._read_file_lines(cls.data1b, r'\s+')
 
         cls.data2 = [
             '# x    obs1    obs2    obs3\n',
@@ -66,7 +66,7 @@ class TestData:
             ' 2 5   0   10\n'
         ]
         cls.d1c = data.Data()
-        cls.d1c.data = cls.d1c._read_file_lines(cls.data1c, '\s+')
+        cls.d1c.data = cls.d1c._read_file_lines(cls.data1c, r'\s+')
 
         cls.data1d = [
             '# x    obs1    obs2    obs3\n',
@@ -74,7 +74,7 @@ class TestData:
             ' 2 5   Inf   10\n'
         ]
         cls.d1d = data.Data()
-        cls.d1d.data = cls.d1d._read_file_lines(cls.data1d, '\s+')
+        cls.d1d.data = cls.d1d._read_file_lines(cls.data1d, r'\s+')
 
     def test_observer_pattern(self):
         d = data.Data()
@@ -125,7 +125,7 @@ class TestData:
 
     def test_read_file_lines(self):
         md = data.Data()
-        loc_data = md._read_file_lines(self.data0, '\s+')
+        loc_data = md._read_file_lines(self.data0, r'\s+')
         md.data = loc_data
         assert md.cols['time'] == 0
         assert len(md.cols.keys()) == 6
@@ -248,24 +248,24 @@ class TestData:
 
     def test_whitespace(self):
         d = data.Data()
-        d.data = d._read_file_lines(self.data2, '\s+')
+        d.data = d._read_file_lines(self.data2, r'\s+')
         assert d['obs1'][1] == 2
 
     @raises(printing.PybnfError)
     def test_misformatted(self):
         d = data.Data()
-        d._read_file_lines(self.data3, '\s+')
+        d._read_file_lines(self.data3, r'\s+')
 
     def test_normalize(self):
         d0 = data.Data()
-        d0.data = d0._read_file_lines(self.data0, '\s+')
+        d0.data = d0._read_file_lines(self.data0, r'\s+')
         d0.normalize('peak')
         npt.assert_allclose(d0.data, np.array([[0., 1., 1., 1., np.nan, 1.], [1., 1., 1., 1., np.nan, 1.]]))
 
     def test_normalize_column_specific_leaves_other_columns(self):
         """Normalization restricted to specific columns should not touch other columns (issue #276)."""
         d = data.Data()
-        d.data = d._read_file_lines(self.data1, '\s+')
+        d.data = d._read_file_lines(self.data1, r'\s+')
         original_obs3 = d.data[:, 3].copy()
         # Normalize only obs1 (column name), leaving obs2 and obs3 untouched
         d.normalize([('peak', ['obs1'])])
@@ -283,7 +283,7 @@ class TestData:
         # Simulate sim data with columns: time, obs1, obs2, obs3
         # where obs1 appears in the .exp file but obs3 only appears in a .prop constraint
         sim = data.Data()
-        sim.data = sim._read_file_lines(self.data1, '\s+')
+        sim.data = sim._read_file_lines(self.data1, r'\s+')
         original_obs3 = sim.data[:, 3].copy()
 
         simdata = {'model1': {'data_suffix': sim}}
