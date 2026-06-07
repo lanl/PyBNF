@@ -26,19 +26,20 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
     "bngsim>=0.5.0,<1",
     "dask>=2024.1.0",
     "distributed>=2024.1.0",
-    "libroadrunner>=1.6.0,<3",
-    "msgpack>=0.6.2,<2",
-    "numpy>=1.24,<3",
-    "paramiko>=2.7,<5",
+    "libroadrunner>=1.6.0",
+    "msgpack>=0.6.2",
+    "numpy>=1.24",
+    "paramiko>=2.7",
     "pydantic>=2,<3",
     "pyparsing>=2.4,<4",
-    "scipy>=1.10,<2",
+    "scipy>=1.10",
     "tornado>=6.1",
 ]
 
