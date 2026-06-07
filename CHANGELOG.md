@@ -5,6 +5,8 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-06-06
+
 ### Added
 - **Powell and CMA-ES optimizers** — two native, derivative-free black-box optimizers, usable both standalone (`fit_type = powell` / `cmaes`) and as the post-fit refinement step. PyBNF now offers three refiners; choose one with the new `refine_method` config key (`sim` (default, Nelder–Mead Simplex), `powell`, or `cmaes`) when `refine = 1`. Powell uses conjugate-direction parabolic line searches; CMA-ES is a population-based covariance-adapting evolution strategy, robust on ill-conditioned objectives. No new dependency (#403)
 - **CMA-ES box / global-start mode** — `fit_type = cmaes` now also accepts bounded `uniform_var` / `loguniform_var` priors instead of a `var` / `logvar` start point. Given a box, CMA-ES runs as a standalone *global* optimizer: it starts at the box center, seeds its covariance with the per-coordinate box widths (so the first generation spans the whole box), and repairs candidates into the box — no start point required, the population-optimizer ergonomics of `de` / `pso` with covariance adaptation. In box mode `cmaes_sigma0` is read as a fraction of each box width (default 0.3); in point-start / refine mode it remains the absolute initial step. Refinement (`refine_method = cmaes`) is unchanged. No new config key (#404, ADR-0017)
