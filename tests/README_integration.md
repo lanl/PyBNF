@@ -19,13 +19,15 @@ so a known optimum / posterior is the oracle.
 
 ```bash
 pytest tests/test_optimizer_integration.py tests/test_sampler_integration.py   # fast tier (slow auto-deselected)
-pytest -m slow                                                                 # full recovery tier only
-pytest -m ""                                                                   # everything, incl. slow
+pytest -m slow                                                                 # full analytical moment-recovery tier
+pytest -m recovery                                                             # real-bngsim parameter-recovery tier (see below)
+pytest -m ""                                                                   # everything, incl. slow + recovery
 ```
 
-The default `addopts = -m 'not slow'` (in `pyproject.toml`) deselects the slow
-tier everywhere, so the whole suite stays fast on every change. The fast
-algorithm tier runs in well under a minute.
+The default `addopts = -m 'not slow and not recovery'` (in `pyproject.toml`)
+deselects both opt-in tiers everywhere, so the whole suite stays fast on every
+change. The fast algorithm tier runs in well under a minute. (`pytest --markers`
+lists every marker, including `slow` and `recovery`, with a one-line reminder.)
 
 ## Tiers, and what each is for
 
@@ -39,6 +41,35 @@ algorithm tier runs in well under a minute.
   `dev/PUNCHLIST.md`**: an efficiency/diagnostic fix must leave recovered
   moments unchanged (and improve ESS/sec); a correctness fix must move them
   toward the analytical truth.
+
+## Recovery tier — real bngsim backend (`-m recovery`)
+
+A separate, opt-in tier (`tests/test_recovery.py`, `tests/recovery_harness.py`,
+`tests/recovery_models/`) that, unlike everything above, fits the **real bngsim
+simulation backend** rather than an analytical target. For each tiny ODE model
+(exponential decay, logistic, Lotka–Volterra, SIR) it simulates at known-true
+parameters to generate a zero-noise `.exp`, then a real fit (DE→Simplex refine,
+plus the `am` sampler on one model) must recover those parameters — exercising the
+simulate→score→propose loop end to end with a genuine engine, the integration
+surface the analytical tiers deliberately fake.
+
+```bash
+pytest -m recovery        # the whole tier (~2–3 min on a dev machine)
+pytest -m recovery -k m03 # just one model
+```
+
+Requirements / behaviour:
+
+- **bngsim** must be installed (the macOS-only C++ wheel) — auto-skips via the
+  `bngsim` marker otherwise, so this never runs in hosted CI.
+- **BNG2.pl** must be resolvable (via `BNGPATH`): bngsim is a simulation engine,
+  not a network generator, so rules→`.net` expansion runs once per fit at setup.
+  `recovery_harness.require_bng2pl` skips the tier if it isn't found.
+- Only dask + per-evaluation folders are faked (`slim_run_job`); the bngsim
+  simulation is real. One test keeps the genuine `run_job`/folder path as a smoke.
+
+See the `test_recovery.py` module docstring for the per-decision test breakdown
+and the `ModelSpec` registry for how to add a model.
 
 ## Adding a target / algorithm
 

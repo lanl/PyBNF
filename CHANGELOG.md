@@ -7,6 +7,7 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ### Added
 - Official support for Python 3.13 and 3.14. CI now tests every supported version (3.11–3.14).
+- **Parameter-recovery test tier** (`pytest -m recovery`, opt-in) — synthetic-data parameter recovery for tiny ODE models (exponential decay, logistic, Lotka–Volterra, SIR) fit through the **real bngsim backend**: each model is simulated at known-true parameters to generate a zero-noise data file, then a real fit (DE→Simplex refine, plus the `am` sampler) must recover them. This exercises the simulate→score→propose loop end to end with a genuine engine, complementing the analytical integration tiers (which use no simulation backend). Needs bngsim and BNG2.pl; auto-skips otherwise, so it never runs in hosted CI. See `tests/README_integration.md`.
 
 ### Changed
 - Raised the minimum Python to 3.11 (was 3.10), aligning with the scientific-Python ecosystem — the latest numpy and scipy require Python 3.11.

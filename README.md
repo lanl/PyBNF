@@ -36,5 +36,7 @@ make bootstrap
 
 This installs the `pre-push` git hook (via `pre-commit`) so the bngsim test subset runs locally before any `git push`.
 
+`pytest` runs the fast suite by default. Two opt-in tiers are deselected unless requested: `pytest -m slow` (statistical recovery against analytical targets) and `pytest -m recovery` (parameter recovery through the real bngsim backend; needs bngsim + BNG2.pl). Run `pytest --markers` for the full list, or see [tests/README_integration.md](tests/README_integration.md).
+
 PyBioNetFit is released under the BSD-3 license. For more information, refer to the
 [LICENSE](LICENSE). LANL code designation: C18062
