@@ -64,6 +64,21 @@ from .expressions import (
     _evaluate_bngl_params as _evaluate_bngl_params,
     _parse_net_species_initializers as _parse_net_species_initializers,
 )
+# Scan-point/sample-time resolution + steady-state constants live in scan.py;
+# on-disk action-output writing in output.py (both numpy-only, bngsim-free).
+# Re-exported so the model classes / classification resolve the bare names.
+from .scan import (
+    _with_sim_timeout as _with_sim_timeout,
+    _resolve_scan_points as _resolve_scan_points,
+    _resolve_sample_times as _resolve_sample_times,
+    _SS_METHOD_PARITY as _SS_METHOD_PARITY,
+    _SS_METHOD_NEWTON as _SS_METHOD_NEWTON,
+    _SS_SCAN_N_POINTS as _SS_SCAN_N_POINTS,
+)
+from .output import (
+    _ext_for_simtype as _ext_for_simtype,
+    _write_saved_action_outputs as _write_saved_action_outputs,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -79,24 +94,6 @@ _BNGSIM_ACTION_BACKENDS = frozenset((BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF))
 # Canonical NF tokens returned by bngsim.normalize_method() — anything outside
 # this pair is non-NF (ode/ssa/psa) for our purposes.
 _BNGSIM_NF_CANONICAL_METHODS = frozenset(('nf_reject', 'nf_exact'))
-
-# ss_method values for steady-state parameter_scan/bifurcate actions.
-# 'parity' = BNG2.pl run_network -c integrate-to-||f||2/n early-stop (default);
-# 'newton' = KINSOL Newton accelerator (monostable dose-response only).
-_SS_METHOD_PARITY = 'parity'
-_SS_METHOD_NEWTON = 'newton'
-
-# Output points used for a parity (integrate-to-steady-state) scan point, so
-# the run(steady_state=True) early-stop has intermediate points to check the
-# ||f||2/n criterion at rather than only the final t_end.
-_SS_SCAN_N_POINTS = 101
-
-
-def _with_sim_timeout(kwargs, normalized):
-    """Add a ``timeout`` kwarg for a scan-point simulation when one is set."""
-    if normalized is not None:
-        kwargs['timeout'] = normalized
-    return kwargs
 
 
 @dataclass
@@ -509,64 +506,6 @@ def actions_compatible_with_bngsim(actions):
     return classify_actions_for_bngsim(actions) == BNGSIM_BACKEND_NET
 
 
-def _resolve_scan_points(ps_params):
-    """Build the parameter-scan point array from explicit values or min/max specs."""
-    par_scan_vals = ps_params.get('par_scan_vals')
-    if par_scan_vals is not None:
-        if isinstance(par_scan_vals, (list, tuple, np.ndarray)):
-            raw_points = par_scan_vals
-        else:
-            raw_points = [par_scan_vals]
-        return np.asarray([float(value) for value in raw_points], dtype=float)
-
-    par_min = float(ps_params.get('par_min', 0))
-    par_max = float(ps_params.get('par_max', 1))
-    n_scan_pts = int(ps_params.get('n_scan_pts', 10))
-    log_scale = int(ps_params.get('log_scale', 0))
-
-    if log_scale:
-        return np.logspace(np.log10(par_min), np.log10(par_max), n_scan_pts)
-    return np.linspace(par_min, par_max, n_scan_pts)
-
-
-def _resolve_sample_times(sim_params):
-    """Extract and validate sample_times from parsed simulate/parameter_scan params.
-
-    Returns a sorted list of floats, or None if sample_times is not specified.
-    If both n_steps and sample_times are present, n_steps takes precedence
-    (with a warning), matching BioNetGen behavior.
-    """
-    raw = sim_params.get('sample_times')
-    if raw is None:
-        return None
-    if not isinstance(raw, list) or len(raw) == 0:
-        return None
-
-    sample_times = sorted(float(t) for t in raw)
-
-    if len(sample_times) < 2:
-        logger.warning(
-            "sample_times must contain at least 2 points, got %d — ignoring",
-            len(sample_times))
-        return None
-
-    # n_steps takes precedence over sample_times (BioNetGen compat)
-    if 'n_steps' in sim_params or 'n_output_steps' in sim_params:
-        precedence_key = 'n_steps' if 'n_steps' in sim_params else 'n_output_steps'
-        logger.warning(
-            "%s and sample_times both defined. %s takes precedence.",
-            precedence_key, precedence_key)
-        return None
-
-    # If t_end is also specified, append it (BioNetGen compat)
-    if 't_end' in sim_params:
-        t_end = float(sim_params['t_end'])
-        if t_end > sample_times[-1]:
-            sample_times.append(t_end)
-
-    return sample_times
-
-
 def _try_prepare_codegen(net_path):
     """Attempt to compile ODE RHS to a shared library for faster simulation.
 
@@ -581,29 +520,6 @@ def _try_prepare_codegen(net_path):
     except Exception as exc:
         logger.warning("Codegen compilation failed (%s); falling back to interpreted ODE RHS (slower)", exc)
         return ""
-
-
-def _ext_for_simtype(simtype):
-    """Return the file extension PyBNF uses for a given action type."""
-    return 'scan' if simtype == 'parameter_scan' else 'gdat'
-
-
-def _write_saved_action_outputs(folder, filename, suffixes, ds):
-    """Write each action's Data to a PyBNF-compatible .gdat/.scan file.
-
-    Mirrors the BNG2.pl on-disk layout that BNGLModel/NetModel rely on:
-    one file per (action, mutant) keyed as ``{folder}/{filename}_{suffix}.{ext}``.
-    Each file has a leading ``#``-prefixed header line listing column names
-    in the same order as ``Data.headers``, followed by whitespace-separated
-    numeric rows — re-readable via :class:`pybnf.data.Data`.
-    """
-    for simtype, suffix in suffixes:
-        data = ds.get(suffix)
-        if data is None:
-            continue
-        headers = [data.headers[i] for i in range(data.data.shape[1])]
-        path = f'{folder}/{filename}_{suffix}.{_ext_for_simtype(simtype)}'
-        np.savetxt(path, data.data, header=' '.join(headers))
 
 
 class BngsimModel(NetModel):
