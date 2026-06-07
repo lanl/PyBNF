@@ -9,7 +9,7 @@ description: >-
 
 inputs:
   python-version:
-    description: Python version for the venv (e.g. "3.10", "3.12").
+    description: Python version for the venv (e.g. "3.11", "3.12").
     required: true
 
 runs:
@@ -17,10 +17,10 @@ runs:
   steps:
     # Provision the interpreter with setup-python rather than uv's managed
     # (python-build-standalone) builds: libroadrunner is a C++ extension that
-    # dlopen's libpython, and uv's standalone Python 3.10 does not expose
-    # libpython3.10.so.1.0 on the loader path (3.12's does). setup-python's
-    # Pythons are built --enable-shared with libpython discoverable, so
-    # roadrunner imports on every matrix leg.
+    # dlopen's libpython, and uv's standalone builds have not reliably exposed
+    # libpython on the loader path. setup-python's Pythons are built
+    # --enable-shared with libpython discoverable, so roadrunner imports on
+    # every matrix leg.
     - uses: actions/setup-python@v6
       id: python
       with:
@@ -69,8 +69,7 @@ runs:
           'tornado>=6.1' \
           'pytest>=7,<10' \
           'hypothesis>=6,<7' \
-          'pytest-xdist' \
-          'tomli>=2,<3; python_version < "3.11"'
+          'pytest-xdist'
         # Install pybnf itself without re-resolving deps (which would pull
         # bngsim and fail).
         uv pip install --no-deps .

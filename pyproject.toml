@@ -7,7 +7,7 @@ name = "pybnf"
 dynamic = ["version"]
 description = "An application for parallel fitting of BioNetGen and SBML models using metaheuristics"
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [
@@ -23,7 +23,6 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -51,7 +50,6 @@ antimony = [
 tests = [
     "pytest>=7,<10",
     "hypothesis>=6,<7",
-    "tomli>=2,<3; python_version < '3.11'",
 ]
 
 [project.scripts]
@@ -76,7 +74,7 @@ include = ["pybnf*"]
 version = { attr = "pybnf.__version__" }
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 # Pins ruff's default rule set (pycodestyle E4/E7/E9 + pyflakes F) so local runs
 # and CI agree. Line length (E501) and the broader style/lint families are
 # intentionally left off for v1; revisit once the codebase is reformatted.

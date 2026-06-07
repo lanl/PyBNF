@@ -5,6 +5,16 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- Official support for Python 3.13 and 3.14. CI now tests every supported version (3.11–3.14).
+
+### Changed
+- Raised the minimum Python to 3.11 (was 3.10), aligning with the scientific-Python ecosystem — the latest numpy and scipy require Python 3.11.
+- Dropped the upper version caps on `paramiko`, `msgpack`, `libroadrunner`, `numpy`, and `scipy` so installs track their latest releases (`pydantic`, `pyparsing`, and `bngsim` stay capped).
+
+### Removed
+- Python 3.10 support, and the `tomli` test dependency it required (the standard-library `tomllib` is available on 3.11+).
+
 ## [v1.4.0] - 2026-06-06
 
 ### Added

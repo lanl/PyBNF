@@ -12,7 +12,7 @@ PyBNF can also be installed on Windows, but functionality on Windows has been le
 Python
 ------
 
-PyBNF requires an installation of Python version 3.10 or higher.
+PyBNF requires an installation of Python version 3.11 or higher.
 This requirement is declared in the package metadata, so installers such as ``pip`` and ``uv`` will refuse to install PyBNF into unsupported Python environments with a clear Python-version error.
 
 Linux and Mac
@@ -20,11 +20,11 @@ Linux and Mac
 
 Python 3 comes built-in on many new Linux and Mac operating systems. 
 To check if you have a supported Python 3, run the command ``python3 --version``. This will print
-the version number, or will give an error if you don't have Python 3. Confirm that the version is 3.10 or higher.
+the version number, or will give an error if you don't have Python 3. Confirm that the version is 3.11 or higher.
 
 Also confirm that your Python 3 has the ``pip`` package manager, which is used to install PyBNF. Run the command ``python3 -m pip``. This will give a help message if you have pip, or an error if not. 
 
-If you are missing python3 or pip, an easy way to get them is by installing the `Anaconda`_ Python distribution for Python v3.10 or higher.
+If you are missing python3 or pip, an easy way to get them is by installing the `Anaconda`_ Python distribution for Python v3.11 or higher.
 Instructions for installing on various platforms can be found on the `Anaconda`_ website.
 
 .. _windows_install:
@@ -34,7 +34,7 @@ Windows
 
 Windows does not come with built-in Python, so it must be installed separately. Additionally, if :ref:`BioNetGen <bng_install>` will be used, Perl installation is required in the same environment as the python installation (i.e., the commands ``python`` and ``perl`` must both work on the same command line).
 
-Our recommended configuration consists of installing `Strawberry Perl`_ and `Anaconda`_ Python 3.10 or higher. The Windows distribution of Anaconda includes the application "Anaconda Prompt", which provides a command line. This is the command line that you should use whenever this documentation refers to the command line or terminal. After installing both Anaconda and Strawberry Perl, a system restart may be required for Anaconda Prompt to find the Perl installation.
+Our recommended configuration consists of installing `Strawberry Perl`_ and `Anaconda`_ Python 3.11 or higher. The Windows distribution of Anaconda includes the application "Anaconda Prompt", which provides a command line. This is the command line that you should use whenever this documentation refers to the command line or terminal. After installing both Anaconda and Strawberry Perl, a system restart may be required for Anaconda Prompt to find the Perl installation.
 
 For troubleshooting, or more advanced configuration, note that the requirement is to have both Python 3 and Perl on the current path. The current path can be checked with the command ``echo %PATH%`` and set (temporarily) with the command ``set PATH=[newpath]``, where ``[newpath]`` is a semicolon-delimited list of directories to search. 
 
@@ -54,7 +54,7 @@ Simply type the following in a terminal:
 Windows users running Anaconda Python 3 from "Anaconda Prompt" should instead type only ``pip install pybnf``.
 
 The above command will use your current version of Python 3 to install the most recent version of PyBNF released on the Python Package Index, along with all required dependencies. 
-If your Python version is older than 3.10, ``pip`` will stop before installation and report that PyBNF requires Python 3.10 or higher.
+If your Python version is older than 3.11, ``pip`` will stop before installation and report that PyBNF requires Python 3.11 or higher.
 
 Depending on your Python configuration, the above command may require root access and install PyBNF for all users on the computer. If you don't want to do this, you may add the flag ``--user`` to the end of the command, to install without root access for only the current user. 
 
@@ -71,7 +71,7 @@ To run PyBNF once without keeping a tool installation, use:
 
     :command:`uvx pybnf --help`
 
-As with ``pip``, ``uv`` will select a Python version compatible with PyBNF or report that Python 3.10 or higher is required.
+As with ``pip``, ``uv`` will select a Python version compatible with PyBNF or report that Python 3.11 or higher is required.
 
 Installing from source
 ^^^^^^^^^^^^^^^^^^^^^^

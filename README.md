@@ -12,7 +12,7 @@ For documentation, refer to [Documentation_PyBioNetFit.pdf](Documentation_PyBioN
 
 ## Installation
 
-PyBNF requires Python 3.10 or higher.
+PyBNF requires Python 3.11 or higher.
 
 ```bash
 python3 -m pip install pybnf
