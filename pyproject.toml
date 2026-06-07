@@ -39,7 +39,7 @@ dependencies = [
     "pydantic>=2,<3",
     "pyparsing>=2.4,<4",
     "scipy>=1.10,<2",
-    "tornado>=6.1,<7",
+    "tornado>=6.1",
 ]
 
 [project.optional-dependencies]
