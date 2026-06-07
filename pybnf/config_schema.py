@@ -61,6 +61,7 @@ schema. They gain typed validation as method schemas land in Stage (b).
 from typing import Any, ClassVar, Optional
 
 import os
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -70,7 +71,7 @@ from .registry import FIT_TYPE_REGISTRY
 def _default_bng_command():
     """Reproduce ``default_config()``'s BNGPATH-derived default exactly."""
     try:
-        return os.environ['BNGPATH'] + '/BNG2.pl'
+        return str(Path(os.environ['BNGPATH']) / 'BNG2.pl')
     except KeyError:
         return ''
 

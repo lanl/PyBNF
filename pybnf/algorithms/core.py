@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import traceback
+from pathlib import Path
 
 import numpy as np
 from concurrent.futures import CancelledError
@@ -213,7 +214,7 @@ class Job:
         if output_dir[0] == '/':
             self.output_dir = output_dir
         else:
-            self.output_dir = self.home_dir + '/' + output_dir
+            self.output_dir = str(Path(self.home_dir) / output_dir)
         self.timeout = timeout
 
         # Folder where we save the model files and outputs.
@@ -254,7 +255,7 @@ class Job:
         """Runs the simulation and reads in the result"""
         # Force absolute path for failed_logs_dir
         if len(failed_logs_dir) > 0 and failed_logs_dir[0] != '/':
-            failed_logs_dir = self.home_dir + '/' + failed_logs_dir
+            failed_logs_dir = str(Path(self.home_dir) / failed_logs_dir)
 
         # The check here is in case dask decides to run the same job twice, both of them can complete.
         made_folder = False

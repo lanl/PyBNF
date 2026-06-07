@@ -24,6 +24,7 @@ import logging
 import os
 import copy
 import traceback
+from pathlib import Path
 
 
 # Preserve the original module logger name so log records keep the
@@ -55,9 +56,9 @@ class ModelCheck:
             os.mkdir(self.config.config['output_dir'])
 
         if self.config.config['simulation_dir']:
-            self.sim_dir = self.config.config['simulation_dir'] + '/Simulations'
+            self.sim_dir = str(Path(self.config.config['simulation_dir']) / 'Simulations')
         else:
-            self.sim_dir = self.config.config['output_dir'] + '/Simulations'
+            self.sim_dir = str(Path(self.config.config['output_dir']) / 'Simulations')
 
         # Store a list of all Model objects.
         self.model_list = copy.deepcopy(list(self.config.models.values()))

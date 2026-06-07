@@ -40,6 +40,7 @@ import copy
 import traceback
 import pickle
 import re
+from pathlib import Path
 from glob import glob
 from concurrent.futures import CancelledError
 
@@ -119,11 +120,11 @@ class Algorithm(ABC):
             os.mkdir(self.config.config['output_dir'])
 
         if self.config.config['simulation_dir']:
-            self.sim_dir = self.config.config['simulation_dir'] + '/Simulations'
+            self.sim_dir = str(Path(self.config.config['simulation_dir']) / 'Simulations')
         else:
-            self.sim_dir = self.config.config['output_dir'] + '/Simulations'
-        self.res_dir = self.config.config['output_dir'] + '/Results'
-        self.failed_logs_dir = self.config.config['output_dir'] + '/FailedSimLogs'
+            self.sim_dir = str(Path(self.config.config['output_dir']) / 'Simulations')
+        self.res_dir = str(Path(self.config.config['output_dir']) / 'Results')
+        self.failed_logs_dir = str(Path(self.config.config['output_dir']) / 'FailedSimLogs')
 
         # Generate a list of variable names
         self.variables = self.config.variables
@@ -1150,7 +1151,7 @@ class Algorithm(ABC):
                 print1('Failed to rerun best fit parameter set. See log for details')
             else:
                 # Copy all gdat and scan to Results
-                for fname in glob(self.sim_dir+'/bestfit/*.gdat') + glob(self.sim_dir+'/bestfit/*.scan'):
+                for fname in glob(str(Path(self.sim_dir) / 'bestfit' / '*.gdat')) + glob(str(Path(self.sim_dir) / 'bestfit' / '*.scan')):
                     shutil.copy(fname, self.res_dir)
             # Restore save_files defaults (in case there is future bootstrapping or refinement)
             for m in self.model_list:

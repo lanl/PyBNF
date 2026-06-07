@@ -30,6 +30,7 @@ import os
 import re
 import logging
 import subprocess
+from pathlib import Path
 import roadrunner
 
 
@@ -449,7 +450,7 @@ class Configuration:
                 return directory
             else:
                 return os.path.join(home_dir, directory)
-        return '' if directory == '' else directory if directory[0] == '/' else home_dir + '/' + directory
+        return '' if directory == '' else directory if directory[0] == '/' else str(Path(home_dir) / directory)
 
     def _load_t_length(self):
         timeDict = {}

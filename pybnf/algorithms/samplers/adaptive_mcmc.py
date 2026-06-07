@@ -15,8 +15,8 @@ from ...registry import register_fit_type
 from typing import Any
 
 import numpy as np
-import os
 import shutil
+from pathlib import Path
 from scipy import stats
 
 
@@ -63,9 +63,11 @@ class Adaptive_MCMC(BayesianAlgorithm):
         self.mu = np.zeros((self.num_parallel, 1, len(self.variables))) 
         # warm start features
         
-        os.makedirs(self.config.config['output_dir'] + '/adaptive_files', exist_ok=True)
-        os.makedirs(self.config.config['output_dir'] + '/Results/A_MCMC/Runs', exist_ok=True)
-        os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+        out = Path(self.config.config['output_dir'])
+        adaptive_dir = out / 'adaptive_files'
+        adaptive_dir.mkdir(parents=True, exist_ok=True)
+        (out / 'Results' / 'A_MCMC' / 'Runs').mkdir(parents=True, exist_ok=True)
+        (out / 'Results' / 'Histograms').mkdir(parents=True, exist_ok=True)
         
         if self.config.config['output_trajectory']:
             self.output_columns = []
@@ -100,9 +102,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                         self.output_run_noise_current[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
                         self.output_run_noise_all[k + i] = np.zeros((self.num_parallel, 1, self.time[k]+1))
         if self.config.config['continue_run'] == 1:
-            adaptive_dir = self.config.config['output_dir'] + '/adaptive_files'
             required = ['diff.txt', 'MLE_params.txt', 'diffMatrix.txt']
-            missing = [f for f in required if not os.path.exists(os.path.join(adaptive_dir, f))]
+            missing = [f for f in required if not (adaptive_dir / f).exists()]
             if missing:
                 raise PybnfError(
                     'continue_run = 1 requires adaptive files from a completed prior run, '
@@ -110,15 +111,15 @@ class Adaptive_MCMC(BayesianAlgorithm):
                     'Run the model first without continue_run, or check that output_dir '
                     'points to a previous run\'s output.'.format(adaptive_dir, ', '.join(missing)))
             self.diff = [self.step_size] * self.num_parallel
-            self.diff_best = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt')
-            self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables))) 
+            self.diff_best = np.loadtxt(adaptive_dir / 'diff.txt')
+            self.diffMatrix = np.zeros((self.num_parallel, len(self.variables), len(self.variables)))
             self.diffMatrix_log = np.zeros((self.num_parallel, len(self.variables), len(self.variables)))
             if self.adaptive != 1:
-                self.mle_best = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/MLE_params.txt')
-                self.diffMatrix_best = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diffMatrix.txt')
-                for i in range(self.num_parallel):  
-                    self.diffMatrix[i] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diffMatrix.txt')
-                    self.diff[i] = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt')
+                self.mle_best = np.loadtxt(adaptive_dir / 'MLE_params.txt')
+                self.diffMatrix_best = np.loadtxt(adaptive_dir / 'diffMatrix.txt')
+                for i in range(self.num_parallel):
+                    self.diffMatrix[i] = np.loadtxt(adaptive_dir / 'diffMatrix.txt')
+                    self.diff[i] = np.loadtxt(adaptive_dir / 'diff.txt')
                     
         else:
             self.mle_best = np.zeros((self.arr_length, len(self.variables)))
@@ -311,19 +312,22 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 if self.check_convergence(self.iteration[index], max_rhat):
                     self.combine_chains_params()
                     self.combine_chains_traj()
-                    self.samples_file = self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_params.txt'
+                    out = Path(self.config.config['output_dir'])
+                    self.samples_file = str(out / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt')
                     return 'STOP'
 
             # Set here because I don't want these commands to exacute more then once.
             if min(self.iteration) >= self.max_iterations:
                 # Save the current postion of the MCMC run
                 self.diff_best = [self.diff_best]
-                np.savetxt(self.config.config['output_dir'] + '/adaptive_files/MLE_params.txt', self.mle_best)
-                np.savetxt(self.config.config['output_dir'] + '/adaptive_files/diffMatrix.txt', self.diffMatrix_best)
-                np.savetxt(self.config.config['output_dir'] + '/adaptive_files/diff.txt', self.diff_best)
+                out = Path(self.config.config['output_dir'])
+                adaptive_dir = out / 'adaptive_files'
+                np.savetxt(adaptive_dir / 'MLE_params.txt', self.mle_best)
+                np.savetxt(adaptive_dir / 'diffMatrix.txt', self.diffMatrix_best)
+                np.savetxt(adaptive_dir / 'diff.txt', self.diff_best)
                 self.combine_chains_params()
                 self.combine_chains_traj()
-                self.samples_file = self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_params.txt'
+                self.samples_file = str(out / 'Results' / 'A_MCMC' / 'Runs' / 'combined_params.txt')
                 self.report_constraint_satisfaction('_final')
                 return 'STOP'
             # Check if it's time to report stuff
@@ -363,74 +367,83 @@ class Adaptive_MCMC(BayesianAlgorithm):
     def write_out_scores(self, idx):
         # Write out the scores. Need more practical method
         self.write_out_score = self.scores[idx]
-        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/scores_' + str(idx) + '.txt', 'a') as f:
+        runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+        with open(runs_dir / f'scores_{idx}.txt', 'a') as f:
             np.savetxt(f, self.write_out_score)
 
     def write_out_params(self, idx):
         # WRite out the param. Need more practical method
+        runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+        params_file = runs_dir / f'params_{idx}.txt'
         if self.iteration[idx] == self.burn_in - 1:
             self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
             varibles = []
             for v in self.variables:
                 varibles.append(v.name)
             varNames = '\t'.join(varibles)
-            with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', 'a') as f:
+            with open(params_file, 'a') as f:
                 f.write(varNames+'\n')
         else:
             self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
-            with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', 'a') as f:
+            with open(params_file, 'a') as f:
                 np.savetxt(f, self.write_out_p)
 
     def write_out_trajactorys(self, idx):
         # write out trajectories need more practical method
+        runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         for l in self.output_columns:     
             for i in self.output_run_current.keys():
                 if l in i:
                     self.write_out_t = self.output_run_all[i][idx][~(self.output_run_all[i][idx]==0).all(1)]
                     if len(self.write_out_t) != 0:
-                        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + i + '_chain_' + str(idx) + '.txt', 'a') as f:
+                        with open(runs_dir / f'traj_{i}_chain_{idx}.txt', 'a') as f:
                             np.savetxt(f, self.write_out_t)
     def write_out_trajactorys_noise(self, idx):
         # Basically this IO on every iter is to expensice timewise
+        runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         for l in self.output_noise_columns:     
             for i in self.output_run_noise_current.keys():
                 if l in i: 
                     self.write_out_t = self.output_run_noise_all[i][idx][~(self.output_run_noise_all[i][idx]==0).all(1)]
                     if len(self.write_out_t) != 0:
-                        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_noise_' + i + '_chain_' + str(idx) + '.txt', 'a') as f:
+                        with open(runs_dir / f'traj_noise_{i}_chain_{idx}.txt', 'a') as f:
                             np.savetxt(f, self.write_out_t)
     def combine_chains_params(self):
         #combine the chains for the final output file
         # if self.num_parallel != 1:
-        with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_params.txt', 'w') as f:
+        out = Path(self.config.config['output_dir'])
+        runs_dir = out / 'Results' / 'A_MCMC' / 'Runs'
+        combined_file = runs_dir / 'combined_params.txt'
+        with open(combined_file, 'w') as f:
             varsnNames = []
             for v in self.variables:
                 varsnNames.append(v.name)
             varsNames = '\t'.join(varsnNames)    
             f.write(varsNames+'\n')
             for i in range(self.num_parallel):
-                file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(i) + '.txt', skiprows=1)
+                file_append = np.loadtxt(runs_dir / f'params_{i}.txt', skiprows=1)
                 file_append = file_append[self.adaptive:]
                 np.savetxt(f, file_append)   
-        shutil.copyfile(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_params.txt', self.config.config['output_dir'] + '/adaptive_files/combined_params.txt')      
+        shutil.copyfile(combined_file, out / 'adaptive_files' / 'combined_params.txt')      
     def combine_chains_traj(self):
         # combine the trains for the file output file
         if self.num_parallel != 1:
+            runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
             if self.config.config['output_trajectory']:
                 for j in range(self.num_parallel):
                     for l in self.output_columns:     
                         for i in self.output_run_current.keys():
                             if l in i:
-                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj_' + i + '.txt', 'a') as f:
-                                    file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_' + i + '_chain_' + str(j) + '.txt')
+                                with open(runs_dir / f'combined_traj_{i}.txt', 'a') as f:
+                                    file_append = np.loadtxt(runs_dir / f'traj_{i}_chain_{j}.txt')
                                     np.savetxt(f, file_append)
             if self.config.config['output_noise_trajectory']:
                 for j in range(self.num_parallel):
                     for l in self.output_noise_columns:     
                         for i in self.output_run_noise_current.keys():
                             if l in i:
-                                with open(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/combined_traj_noise_' + i + '.txt', 'a') as f:
-                                    file_append = np.loadtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/traj_noise_' + i + '_chain_' + str(j) + '.txt')
+                                with open(runs_dir / f'combined_traj_noise_{i}.txt', 'a') as f:
+                                    file_append = np.loadtxt(runs_dir / f'traj_noise_{i}_chain_{j}.txt')
                                     np.savetxt(f, file_append)                                     
 
     def pick_new_pset(self, idx):
@@ -453,7 +466,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
         self.stablizingCov = self.config.config['stablizingCov']*np.eye(len_params)
         if self.iteration[idx] >= self.burn_in + self.adaptive:
             if self.iteration[idx] == self.burn_in + self.adaptive:
-                self.parameter_index_file_input = np.genfromtxt(self.config.config['output_dir'] + '/Results/A_MCMC/Runs/params_' + str(idx) + '.txt', names = True)
+                runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+                self.parameter_index_file_input = np.genfromtxt(runs_dir / f'params_{idx}.txt', names = True)
                 for v in self.variables:
                     if v.log_space:
                         self.parameter_index_file_input[v.name] = np.log10(self.parameter_index_file_input[v.name])
@@ -496,7 +510,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 start = int(start_end[0])
                 end = int(start_end[1])
                 if self.iteration[idx] == 1:
-                    self.parameter_index_file_input = np.genfromtxt(self.config.config['output_dir'] + '/adaptive_files/combined_params.txt', names = True)
+                    adaptive_dir = Path(self.config.config['output_dir']) / 'adaptive_files'
+                    self.parameter_index_file_input = np.genfromtxt(adaptive_dir / 'combined_params.txt', names = True)
                     for v in self.variables:
                         if v.log_space:
                             self.parameter_index_file_input[v.name] = np.log10(self.parameter_index_file_input[v.name])

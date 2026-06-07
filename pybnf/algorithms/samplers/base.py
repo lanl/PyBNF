@@ -15,7 +15,7 @@ from ... import diagnostics
 
 import logging
 import numpy as np
-import os
+from pathlib import Path
 from pydantic import Field
 
 
@@ -171,7 +171,7 @@ class BayesianAlgorithm(Algorithm):
         self.prior = None
         self.load_priors()
 
-        self.samples_file = self.config.config['output_dir'] + '/Results/samples.txt'
+        self.samples_file = str(Path(self.config.config['output_dir']) / 'Results' / 'samples.txt')
 
         # Chain history for convergence diagnostics (R-hat, ESS)
         self.chain_history = [[] for _ in range(self.num_parallel)]
@@ -199,7 +199,7 @@ class BayesianAlgorithm(Algorithm):
         for cset in self.config.constraints:
             self.all_constraints.extend(cset.constraints)
         self.current_constraint_satisfied = [None] * self.num_parallel
-        self.constraint_samples_file = self.config.config['output_dir'] + '/Results/constraint_samples.txt'
+        self.constraint_samples_file = str(Path(self.config.config['output_dir']) / 'Results' / 'constraint_samples.txt')
 
         # Check that the iteration range is valid with respect to the burnin and or adaptive iterations
         
@@ -228,7 +228,7 @@ class BayesianAlgorithm(Algorithm):
         self.current_pset = [None]*self.num_parallel
         
         if self.config.config['continue_run'] == 1:
-            self.mle_start = np.loadtxt(self.config.config['output_dir'] + '/adaptive_files/MLE_params.txt')
+            self.mle_start = np.loadtxt(Path(self.config.config['output_dir']) / 'adaptive_files' / 'MLE_params.txt')
             for n in range(self.num_parallel):
                 for i,p in enumerate(first_psets[n]):
                     p.value = self.mle_start[i]
@@ -249,7 +249,7 @@ class BayesianAlgorithm(Algorithm):
                     header = '\t'.join(c.source_line or 'constraint_%i' % i
                                        for i, c in enumerate(self.all_constraints))
                     f.write('# ' + header + '\n')
-            os.makedirs(self.config.config['output_dir'] + '/Results/Histograms/', exist_ok=True)
+            (Path(self.config.config['output_dir']) / 'Results' / 'Histograms').mkdir(parents=True, exist_ok=True)
 
 
 
@@ -346,7 +346,7 @@ class BayesianAlgorithm(Algorithm):
         # Open the file(s) to save the credible intervals
         cred_files = []
         for i in self.credible_intervals:
-            f = open(self.config.config['output_dir']+'/Results/credible%i%s.txt' % (i, file_ext), 'w')
+            f = open(Path(self.config.config['output_dir']) / 'Results' / f'credible{i}{file_ext}.txt', 'w')
             f.write('# param\tlower_bound\tupper_bound\n')
             cred_files.append(f)
 
@@ -441,8 +441,8 @@ class BayesianAlgorithm(Algorithm):
 
     def _write_diagnostics(self, iteration, rhat, bulk_ess, tail_ess):
         """Append convergence diagnostics to the diagnostics output file."""
-        diag_file = self.config.config['output_dir'] + '/Results/diagnostics.txt'
-        write_header = not os.path.exists(diag_file)
+        diag_file = Path(self.config.config['output_dir']) / 'Results' / 'diagnostics.txt'
+        write_header = not diag_file.exists()
         param_names = [v.name for v in self.variables]
         with open(diag_file, 'a') as f:
             if write_header:
