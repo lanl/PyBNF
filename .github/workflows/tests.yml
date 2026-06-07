@@ -11,9 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Spans the supported range (requires-python >= 3.10; classifiers list
-        # through 3.14).
-        python-version: ['3.10', '3.12', '3.13', '3.14']
+        # Every supported version (requires-python >= 3.10; classifiers list
+        # through 3.14). CI is free on this public repo, so we test each claimed
+        # version rather than just the endpoints.
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
     name: pytest (py${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@v6
