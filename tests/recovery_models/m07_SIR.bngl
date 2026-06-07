@@ -1,0 +1,51 @@
+begin model
+#@model_id: m07_SIR
+#@title: SIR epidemiological model (PyBNF recovery fixture)
+#@description: Kermack-McKendrick SIR with mass-action infection (beta*S*I) and
+#  first-order recovery (gamma*I).
+#@source: trimmed from BNGL_library/m07_SIR.bngl for the recovery test tier
+#  (alias-form free params beta_rate/gamma_rate; single ODE action; ssa dropped).
+
+begin parameters
+  beta_rate   beta_rate__FREE    # 1/(s*molecule)  infection rate per contact (fitted)
+  gamma_rate  gamma_rate__FREE   # 1/s  recovery rate (fitted; ~1/7)
+  S_init      19999999           # molecules  initial susceptible (fixed/known)
+  I_init      1                  # molecules  initial infected (fixed/known)
+  R_init      0                  # molecules  initial recovered (fixed/known)
+end parameters
+
+begin molecule types
+  S()
+  I()
+  R()
+end molecule types
+
+begin seed species
+  S()  S_init
+  I()  I_init
+  R()  R_init
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_S  S()
+  Molecules  Obs_Tot_I  I()
+  Molecules  Obs_Tot_R  R()
+end observables
+
+begin functions
+  rate_infection() = beta_rate * Obs_Tot_S * Obs_Tot_I
+end functions
+
+begin reaction rules
+  S() -> 0  beta_rate*Obs_Tot_I
+  0 -> I()  rate_infection()
+  I() -> 0  gamma_rate
+  0 -> R()  gamma_rate*Obs_Tot_I
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>40})
+end actions

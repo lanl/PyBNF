@@ -1,0 +1,276 @@
+"""Recovery tier (opt-in ``-m recovery``): synthetic-data parameter recovery for
+a small set of tiny ODE models, fit through the **real bngsim backend**.
+
+For each model we simulate at known-true parameters to generate a zero-noise
+``.exp`` (the oracle), then a real fit must recover those parameters. This
+exercises the simulate -> score -> propose loop end to end with a genuine
+simulation engine -- the integration surface the analytical tiers
+(``test_optimizer_integration`` / ``test_sampler_integration``) deliberately fake.
+
+See ``tests/recovery_harness.py`` for the faithfulness boundary (bngsim
+simulation is real; dask + per-evaluation folders are faked, the latter covered
+by ``test_run_loop`` / ``test_job_execution`` -- with one ``real_run_job`` smoke
+below that exercises the genuine path).
+
+Per the orchestration-testing skill, the work is decomposed into separately-named
+decisions so a failure points at the right layer:
+
+  * ``test_synthetic_data_matches_analytic`` -- oracle well-posedness (no
+    optimizer): the generated data matches a closed-form solution where one
+    exists (m01 decay, m02 logistic).
+  * ``test_de_recovers``    -- the fit reproduces the data (hard gate, relative to
+    data magnitude) AND recovers the identifiable parameters (soft gate), across
+    two seeds so it can't pass by a lucky one.
+  * ``test_de_reproducible`` -- a fixed seed gives a bit-identical fit (RNG
+    determinism on the real-sim path).
+  * ``test_m01_real_run_job_smoke`` -- one fit through the genuine run_job/folders.
+
+Needs bngsim (auto-skipped via the ``bngsim`` marker) and BNG2.pl for the
+one-time network generation (``recovery_harness.require_bng2pl`` skips otherwise).
+"""
+from dataclasses import dataclass
+
+import numpy as np
+import pytest
+
+from . import recovery_harness as H
+
+
+pytestmark = [pytest.mark.recovery, pytest.mark.bngsim]
+
+
+# --------------------------------------------------------------------------- #
+# Model registry
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ModelSpec:
+    name: str
+    free: dict          # {param: (var_type, low, high)}
+    true: dict          # {param: true_value}
+    obs: tuple          # observable column names written into the .exp
+    identifiable: tuple # params asserted to recover (subset of free)
+    de_budget: dict
+    soft_tol: float = 0.15      # fractional param-recovery tolerance
+    hard_rel_tol: float = 1e-3  # best_score < hard_rel_tol * (sum of data^2)
+    suffix: str = 'ode'
+    analytic: tuple = None      # (obs_col, fn(t)->values) closed form, or None
+
+    @property
+    def path(self):
+        return H.RECOVERY_MODELS_DIR / (self.name + '.bngl')
+
+
+def _logistic(t):
+    X0, K, r = 100.0, 500.0, 0.5
+    return K * X0 / (X0 + (K - X0) * np.exp(-r * t))
+
+
+MODELS = {
+    'm01_exp_decay': ModelSpec(
+        name='m01_exp_decay',
+        free={'k__FREE': ('uniform_var', 1e-3, 5.0)},
+        true={'k__FREE': 0.3},
+        obs=('Obs_Tot_S',),
+        identifiable=('k__FREE',),
+        de_budget=dict(population_size=10, max_iterations=30),
+        analytic=('Obs_Tot_S', lambda t: 10.0 * np.exp(-0.3 * t)),
+    ),
+    'm02_logistic': ModelSpec(
+        name='m02_logistic',
+        free={'r__FREE': ('uniform_var', 0.05, 5.0),
+              'K__FREE': ('uniform_var', 50.0, 5000.0)},
+        true={'r__FREE': 0.5, 'K__FREE': 500.0},
+        obs=('Obs_Tot_X',),
+        identifiable=('r__FREE', 'K__FREE'),
+        de_budget=dict(population_size=16, max_iterations=50),
+        analytic=('Obs_Tot_X', _logistic),
+    ),
+    'm03_Lotka_Volterra': ModelSpec(
+        name='m03_Lotka_Volterra',
+        # Oscillatory over ~2 periods -> a multimodal landscape (phase/period
+        # traps) where wide bounds let DE stall in a wrong basin. The recovery
+        # tier is an integration test, not a global-optimization benchmark, so we
+        # bracket the truth ~3-5x (an informed modeler's scale prior); the soft
+        # gate still validates genuine recovery within that region.
+        free={'a__FREE': ('uniform_var', 0.3, 3.0),
+              'd__FREE': ('uniform_var', 0.1, 1.5),
+              'b__FREE': ('loguniform_var', 1e-3, 2e-2),
+              'c__FREE': ('loguniform_var', 2e-4, 5e-3)},
+        true={'a__FREE': 1.1, 'b__FREE': 0.004, 'c__FREE': 0.001, 'd__FREE': 0.4},
+        obs=('Obs_Tot_X', 'Obs_Tot_Y'),
+        identifiable=('a__FREE', 'b__FREE', 'c__FREE', 'd__FREE'),
+        de_budget=dict(population_size=30, max_iterations=70),
+        soft_tol=0.25, hard_rel_tol=1e-2,   # oscillatory -> harder; looser gates
+    ),
+    'm07_SIR': ModelSpec(
+        name='m07_SIR',
+        free={'beta_rate__FREE': ('loguniform_var', 1e-9, 1e-5),
+              'gamma_rate__FREE': ('uniform_var', 0.01, 1.0)},
+        true={'beta_rate__FREE': 1e-7, 'gamma_rate__FREE': 0.142857142857143},
+        obs=('Obs_Tot_S', 'Obs_Tot_I', 'Obs_Tot_R'),
+        identifiable=('beta_rate__FREE', 'gamma_rate__FREE'),
+        de_budget=dict(population_size=16, max_iterations=60),
+    ),
+}
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures + helpers
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def _fakes(monkeypatch):
+    H.install(monkeypatch)
+
+
+@pytest.fixture(scope='module')
+def exp_for(tmp_path_factory):
+    """Lazily generate (and cache) each model's zero-noise synthetic ``.exp``.
+
+    Module-scoped so each model's data is generated once even across the
+    seed-parametrized fits; lazy so a ``-k`` selection only builds what it needs.
+    """
+    cache = {}
+
+    def get(name):
+        if name not in cache:
+            H.require_bng2pl()
+            spec = MODELS[name]
+            d = tmp_path_factory.mktemp(name + '_gen')
+            cache[name] = H.simulate_truth(
+                d, spec.path, spec.true, spec.free, spec.obs, spec.suffix)
+        return cache[name]
+
+    return get
+
+
+def _read_exp(path):
+    """Return ``(cols, arr)``: a name->index map and the numeric data (the ``#``
+    header line is skipped by genfromtxt as a comment)."""
+    with open(path) as f:
+        header = f.readline().lstrip('#').split()
+    arr = np.genfromtxt(path)
+    return {name: i for i, name in enumerate(header)}, arr
+
+
+def _data_ss(cols, arr, obs):
+    """Sum of squares of the observable columns -- the scale the hard gate is
+    relative to (so one threshold works across magnitudes ~10 to ~1e7)."""
+    return float(sum((arr[:, cols[o]] ** 2).sum() for o in obs))
+
+
+def _fit_de(tmp_path, spec, exp_path, seed):
+    # DE then a Simplex refine (how PyBNF fits are actually finished): the polish
+    # drives zero-noise data to the true optimum, so a shallow valley (e.g.
+    # logistic r) recovers tightly and the hard gate is met reliably. Exercises
+    # the refine->Simplex path with the bngsim backend as a bonus.
+    # refine=1 makes the Configuration pull in the Simplex schema defaults
+    # (simplex_step, ...) via the refine->Simplex overlay; H.refine() then runs it
+    # (drive()/alg.run() alone does not -- pybnf.main orchestrates refine).
+    conf = H.make_config(tmp_path, spec.path, exp_path, spec.free, 'de',
+                         random_seed=seed, refine=1, **spec.de_budget)
+    alg = H.build(conf, 'de')
+    H.drive(alg)
+    H.refine(alg, conf)
+    return alg
+
+
+def _assert_recovered(spec, alg):
+    rec = H.best_params(alg, spec.identifiable)
+    for p in spec.identifiable:
+        rel = abs(rec[p] - spec.true[p]) / abs(spec.true[p])
+        assert rel < spec.soft_tol, \
+            '%s: %s recovered %g, expected ~%g (%.0f%% off > %.0f%%)' % (
+                spec.name, p, rec[p], spec.true[p], rel * 100, spec.soft_tol * 100)
+
+
+# --------------------------------------------------------------------------- #
+# Oracle well-posedness (no optimizer)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize('name', [n for n, s in MODELS.items() if s.analytic])
+def test_synthetic_data_matches_analytic(name, exp_for):
+    """Where a closed form exists, the generated data matches it -- an
+    independent oracle that the fit has a reachable global optimum at the truth,
+    validating the bngsim simulation + the data-generation path with no optimizer."""
+    spec = MODELS[name]
+    obs_col, fn = spec.analytic
+    cols, arr = _read_exp(exp_for(name))
+    t = arr[:, cols['time']]
+    np.testing.assert_allclose(arr[:, cols[obs_col]], fn(t), rtol=1e-3, atol=1e-2)
+
+
+# --------------------------------------------------------------------------- #
+# Recovery: hard gate (data reproduced) + soft gate (params), across two seeds
+# --------------------------------------------------------------------------- #
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('name', list(MODELS))
+@pytest.mark.parametrize('seed', [1234, 7])
+def test_de_recovers(name, seed, tmp_path, exp_for):
+    """A real DE fit through bngsim reproduces the data and recovers the params."""
+    spec = MODELS[name]
+    exp_path = exp_for(name)
+    alg = _fit_de(tmp_path, spec, exp_path, seed)
+
+    # Hard gate (relative to data magnitude): the loop drove the objective to ~0.
+    cols, arr = _read_exp(exp_path)
+    bound = spec.hard_rel_tol * _data_ss(cols, arr, spec.obs)
+    best = alg.trajectory.best_score()
+    assert best < bound, '%s: best objective %g not < %g' % (spec.name, best, bound)
+
+    # Soft gate: the identifiable parameters come back within tolerance.
+    _assert_recovered(spec, alg)
+
+
+# --------------------------------------------------------------------------- #
+# Determinism (guards the RNG-migration contract on the real-sim path)
+# --------------------------------------------------------------------------- #
+@pytest.mark.usefixtures('_fakes')
+def test_de_reproducible(tmp_path, exp_for):
+    """A fixed seed yields a bit-identical best fit. Determinism is a property of
+    the RNG/framework, not the model, so one model suffices."""
+    spec = MODELS['m01_exp_decay']
+    exp_path = exp_for(spec.name)
+    r1 = H.best_params(_fit_de(tmp_path / 'a', spec, exp_path, 99), spec.identifiable)
+    r2 = H.best_params(_fit_de(tmp_path / 'b', spec, exp_path, 99), spec.identifiable)
+    assert r1 == r2, 'fixed seed gave different best fit: %r vs %r' % (r1, r2)
+
+
+# --------------------------------------------------------------------------- #
+# Real run_job smoke (genuine production path with the bngsim backend)
+# --------------------------------------------------------------------------- #
+def test_m01_real_run_job_smoke(tmp_path, exp_for, monkeypatch):
+    """One fit through the GENUINE ``run_job`` + per-evaluation folders with the
+    bngsim backend, so the production path (not just ``slim_run_job``) is covered."""
+    H.install(monkeypatch, real_run_job=True)
+    spec = MODELS['m01_exp_decay']
+    alg = _fit_de(tmp_path, spec, exp_for(spec.name), seed=1234)
+    _assert_recovered(spec, alg)
+
+
+# --------------------------------------------------------------------------- #
+# Sampler recovery: the Adaptive_MCMC posterior concentrates at the truth
+# --------------------------------------------------------------------------- #
+AM_BUDGET = dict(population_size=3, max_iterations=600, adaptive=100, burn_in=200,
+                 sample_every=2, step_size=0.2, num_bins=10, hist_bins=10,
+                 credible_intervals=[68, 95], output_hist_every=10 ** 9,
+                 rhat_threshold=0)
+
+
+@pytest.mark.usefixtures('_fakes')
+def test_am_recovers_m01(tmp_path, exp_for):
+    """The ``am`` sampler run through bngsim concentrates its posterior at the
+    true parameter. With zero-noise data the implied posterior is narrow but
+    proper (finite objective curvature), so the pooled posterior mean recovers
+    the truth -- proving the sampler's simulate->score loop works with a real
+    backend (the optimizer counterpart of test_de_recovers)."""
+    spec = MODELS['m01_exp_decay']
+    conf = H.make_config(tmp_path, spec.path, exp_for(spec.name), spec.free, 'am',
+                         random_seed=1234, **AM_BUDGET)
+    alg = H.build(conf, 'am')
+    H.drive(alg)
+
+    samples = H.read_am_samples(conf.config['output_dir'], spec.identifiable)
+    k = samples['k__FREE']
+    assert k.size > 0, 'am produced no samples'
+    mean_k = float(k.mean())
+    assert abs(mean_k - spec.true['k__FREE']) / spec.true['k__FREE'] < 0.2, \
+        'am posterior mean k=%g, expected ~%g' % (mean_k, spec.true['k__FREE'])

@@ -1,0 +1,54 @@
+begin model
+#@model_id: m03_Lotka_Volterra
+#@title: Classic Lotka-Volterra predator-prey (PyBNF recovery fixture)
+#@description: X' = a*X - b*X*Y, Y' = c*X*Y - d*Y, with functional predation /
+#  predator-birth rates.
+#@source: original PyBNF recovery-tier artifact (alias-form free params a/b/c/d;
+#  single ODE action). All four rates are functional so the encoded dynamics are
+#  genuinely Lotka-Volterra (a constant-propensity ``0 -> X() a`` would starve the
+#  predator instead of producing the limit cycle). The hardest recovery target.
+
+begin parameters
+  f        100        # scaling factor (X0 = Y0 = 1*f = 100 molecules)
+  a        a__FREE    # 1/s  prey growth rate (fitted)
+  b        b__FREE    # 1/(s*molecule)  predation rate (fitted; ~0.4/f)
+  c        c__FREE    # 1/(s*molecule)  predator growth from prey (fitted; ~0.1/f)
+  d        d__FREE    # 1/s  predator death rate (fitted)
+  X_init   1*f        # molecules  initial prey count (fixed/known)
+  Y_init   1*f        # molecules  initial predator count (fixed/known)
+end parameters
+
+begin molecule types
+  X()
+  Y()
+end molecule types
+
+begin seed species
+  X()  X_init
+  Y()  Y_init
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_X  X()
+  Molecules  Obs_Tot_Y  Y()
+end observables
+
+begin functions
+  rate_prey_birth() = a*Obs_Tot_X            # propensity a*X  (first-order prey growth)
+  rate_prey_death() = b*Obs_Tot_Y            # propensity b*Y times X = b*X*Y (predation)
+  rate_pred_birth() = c*Obs_Tot_X*Obs_Tot_Y  # propensity c*X*Y (predator growth)
+end functions
+
+begin reaction rules
+  0 -> X()  rate_prey_birth()
+  X() -> 0  rate_prey_death()
+  0 -> Y()  rate_pred_birth()
+  Y() -> 0  d
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>40})
+end actions

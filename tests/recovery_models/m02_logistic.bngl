@@ -1,0 +1,45 @@
+begin model
+#@model_id: m02_logistic
+#@title: Logistic growth (PyBNF recovery fixture)
+#@description: X' = r*X*(1 - X/K), as a functional production term r*X and a
+#  functional consumption term (r/K)*X^2.
+#@source: original PyBNF recovery-tier artifact (alias-form free params r/K;
+#  single ODE action). Production and consumption both use functional rates so
+#  the encoded dynamics are genuinely logistic (a constant-propensity
+#  ``0 -> X() r`` would integrate dX/dt = r - (r/K)X^2 instead).
+
+begin parameters
+  f        100        # scaling factor (X0 = 1*f = 100 molecules)
+  r        r__FREE    # 1/s  intrinsic growth rate (fitted)
+  K        K__FREE    # molecules  carrying capacity (fitted)
+  X_init   1*f        # molecules  initial count of X (fixed/known)
+end parameters
+
+begin molecule types
+  X()
+end molecule types
+
+begin seed species
+  X()  X_init
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_X  X()
+end observables
+
+begin functions
+  rate_production()  = r*Obs_Tot_X       # propensity r*X  (first-order growth)
+  rate_consumption() = (r/K)*Obs_Tot_X   # propensity (r/K)*X^2 once times X
+end functions
+
+begin reaction rules
+  0 -> X()  rate_production()
+  X() -> 0  rate_consumption()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>40})
+end actions

@@ -34,8 +34,8 @@ from pybnf import algorithms, config
 from pybnf.config_schema import _default_bng_command
 from pybnf.pset import PSet
 
-# Reuse the synchronous dask substitutes; only the dask layer is faked here.
-from .integration_harness import FakeClient, FakeAsCompleted
+# Reuse the synchronous dask substitutes + the folder-free run_job stand-in.
+from .integration_harness import FakeClient, FakeAsCompleted, slim_run_job
 
 
 RECOVERY_MODELS_DIR = Path(__file__).resolve().parent / 'recovery_models'
@@ -63,29 +63,39 @@ def require_bng2pl():
         pytest.skip('BNG2.pl not resolvable (set BNGPATH) -- required for rules->.net generation')
 
 
-def install(monkeypatch):
-    """Fake ONLY the dask layer so the fit runs inline. ``run_job`` stays REAL so
-    the bngsim simulation and per-evaluation folder I/O are genuinely exercised."""
+def install(monkeypatch, *, real_run_job=False):
+    """Fake the dask layer so the fit runs inline.
+
+    The bngsim **simulation** is always real. By default ``run_job`` is also faked
+    with the folder-free ``slim_run_job`` (bngsim runs in-process, so per-evaluation
+    folders add only I/O the production path already covers in ``test_run_loop`` /
+    ``test_job_execution``) -- this keeps the tier fast. Pass ``real_run_job=True``
+    for a smoke test that exercises the genuine ``run_job`` + folder path end to end
+    with the bngsim backend.
+    """
     monkeypatch.setattr(algorithms.core, 'as_completed', FakeAsCompleted)
+    if not real_run_job:
+        monkeypatch.setattr(algorithms.core, 'run_job', slim_run_job)
 
 
 # --------------------------------------------------------------------------- #
 # Config / algorithm construction
 # --------------------------------------------------------------------------- #
 def make_config(tmp_path, model_bngl, exp_path, free_specs, fit_type, *,
-                objfunc='sos', var_type='uniform_var', **overrides):
+                objfunc='sos', **overrides):
     """Build a real bngsim ``Configuration`` for a recovery fit.
 
-    :param free_specs: ``{param_name: (low, high)}`` -- each becomes a
-        ``<var_type> = name low high`` line. The param name must match a ``__FREE``
-        symbol used in the model (so it survives network generation as a settable
-        ``.net`` parameter).
+    :param free_specs: ``{param_name: (var_type, low, high)}`` -- each becomes a
+        ``<var_type> = name low high`` line (e.g. ``uniform_var`` or
+        ``loguniform_var`` for rates spanning orders of magnitude). The param name
+        must match a ``__FREE`` symbol used in the model (so it survives network
+        generation as a settable ``.net`` parameter).
     :param objfunc: defaults to ``sos`` (plain sum of squares -- no normalization,
         so exact-zero data points don't divide by zero).
     """
     model_path = str(model_bngl)
     exp_path = str(exp_path)
-    var_spec = {(var_type, name): [lo, hi] for name, (lo, hi) in free_specs.items()}
+    var_spec = {(vt, name): [lo, hi] for name, (vt, lo, hi) in free_specs.items()}
     base = {
         'models': {model_path}, model_path: [exp_path], 'exp_data': {exp_path},
         'output_dir': str(Path(tmp_path) / 'out'),
@@ -127,6 +137,29 @@ def drive(alg):
         alg.run(FakeClient())
     finally:
         os.chdir(home)
+
+
+def refine(alg, conf):
+    """Polish ``alg``'s best fit with the configured start-point refiner (default
+    Simplex), mirroring ``pybnf._refine_best_fit``: seed the refiner at the best
+    fit and reuse the already-generated networks + trajectory.
+
+    This is how PyBNF fits are actually finished, and it tightens convergence on
+    shallow valleys (e.g. logistic ``r``) so a zero-noise fit reaches the true
+    optimum -- while exercising the refine->Simplex path with the bngsim backend.
+    """
+    from pybnf.registry import FIT_TYPE_REGISTRY
+    refiner_cls = FIT_TYPE_REGISTRY[conf.config.get('refine_method', 'sim')].cls
+    conf.config[refiner_cls.START_POINT_KEY] = alg.trajectory.best_fit()
+    home = os.getcwd()
+    try:
+        refiner = refiner_cls(conf, refine=True)
+        refiner.model_list = alg.model_list   # reuse generated networks (no re-netgen needed at use)
+        refiner.trajectory = alg.trajectory   # continue the existing trajectory
+        refiner.run(FakeClient())
+    finally:
+        os.chdir(home)
+    return refiner
 
 
 # --------------------------------------------------------------------------- #
@@ -204,3 +237,23 @@ def best_params(alg, names):
     """Best-fit values for ``names`` (a list of free-parameter names)."""
     bp = alg.trajectory.best_fit()
     return {name: bp[name] for name in names}
+
+
+def read_am_samples(output_dir, names):
+    """Pooled Adaptive_MCMC post-burn-in samples as ``{name: 1-D array}``.
+
+    Reads ``Results/A_MCMC/Runs/params_*.txt`` (the per-chain sample files) and
+    concatenates the requested named columns across chains.
+    """
+    runs = os.path.join(output_dir, 'Results', 'A_MCMC', 'Runs')
+    cols = {n: [] for n in names}
+    if os.path.isdir(runs):
+        for fn in sorted(os.listdir(runs)):
+            if fn.startswith('params_') and fn.endswith('.txt'):
+                d = np.genfromtxt(os.path.join(runs, fn), names=True)
+                if d.size == 0:
+                    continue
+                d = np.atleast_1d(d)
+                for n in names:
+                    cols[n].append(d[n])
+    return {n: (np.concatenate(cols[n]) if cols[n] else np.array([])) for n in names}
