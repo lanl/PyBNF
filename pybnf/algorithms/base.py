@@ -283,7 +283,7 @@ class Algorithm(ABC):
         logger.debug('Copying list of models')
         init_model_list = copy.deepcopy(list(self.config.models.values()))  # keeps Configuration object unchanged
         final_model_list = []
-        init_dir = os.getcwd() + '/Initialize'
+        init_dir = str(Path(os.getcwd()) / 'Initialize')
         bngl_backend = self.config.config.get('bngl_backend', BNGL_BACKEND_AUTO)
         auto_bngsim = bngl_backend == BNGL_BACKEND_AUTO
         explicit_bngsim = bngl_backend == BNGL_BACKEND_BNGSIM
@@ -359,7 +359,7 @@ class Algorithm(ABC):
                     os.chdir(home_dir)
 
                 logger.info(f'Output for network generation of model {m.name} logged in {init_dir}/{gnm_name}.log')
-                net_path = init_dir + '/' + gnm_name + '.net'
+                net_path = str(Path(init_dir) / f'{gnm_name}.net')
                 use_bngsim = allow_bngsim and bngsim_available and bridge_backend == BNGSIM_BACKEND_NET
                 use_hybrid = (
                     allow_bngsim
@@ -435,7 +435,7 @@ class Algorithm(ABC):
                     finally:
                         os.chdir(home_dir)
 
-                    xml_path = init_dir + '/' + hybrid_name + '.xml'
+                    xml_path = str(Path(init_dir) / f'{hybrid_name}.xml')
                     if not os.path.isfile(xml_path):
                         if explicit_bngsim:
                             raise PybnfError(
@@ -618,7 +618,7 @@ class Algorithm(ABC):
                 finally:
                     os.chdir(home_dir)
 
-                xml_path = init_dir + '/' + gnm_name + '.xml'
+                xml_path = str(Path(init_dir) / f'{gnm_name}.xml')
                 if not os.path.isfile(xml_path):
                     if explicit_bngsim:
                         raise PybnfError(
