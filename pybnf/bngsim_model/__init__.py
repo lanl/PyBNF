@@ -4,7 +4,6 @@
 import copy
 import concurrent.futures
 import logging
-import math
 import os
 import re
 import shutil
@@ -28,8 +27,43 @@ from ._runtime import (
     BNGSIM_VERSION as BNGSIM_VERSION,
 )
 from ..data import Data
-from ..pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
+from ..pset import Model, NetModel, _stage_and_rewrite_tfun_files
 from .._seed import resolve_action_seed
+# Pure BNGL action-line parsing lives in parsing.py (CI-testable, bngsim-free).
+# Re-exported here so the model classes / classification resolve the bare names
+# and the package facade (and tests) keep resolving pybnf.bngsim_model.<name>.
+from .parsing import (
+    _collapse_action_line_continuations as _collapse_action_line_continuations,
+    _extract_action_body as _extract_action_body,
+    _split_top_level_commas as _split_top_level_commas,
+    _parse_action_value as _parse_action_value,
+    _parse_action_dict as _parse_action_dict,
+    _parse_simulate_action as _parse_simulate_action,
+    _parse_parameter_scan_action as _parse_parameter_scan_action,
+    _parse_bifurcate_action as _parse_bifurcate_action,
+    _parse_set_parameter as _parse_set_parameter,
+    _parse_set_concentration as _parse_set_concentration,
+    _parse_set_concentration_expr as _parse_set_concentration_expr,
+    _parse_set_concentration_nf as _parse_set_concentration_nf,
+    _parse_add_concentration as _parse_add_concentration,
+    _is_reset_concentrations as _is_reset_concentrations,
+    _is_reset_parameters as _is_reset_parameters,
+    _is_save_concentrations as _is_save_concentrations,
+    _is_save_parameters as _is_save_parameters,
+)
+# Pure expression / parameter evaluation lives in expressions.py (CI-testable,
+# bngsim-free). Re-exported here so the model classes resolve the bare names and
+# the facade (and tests) keep resolving pybnf.bngsim_model.<name>.
+from .expressions import (
+    _build_safe_eval_namespace as _build_safe_eval_namespace,
+    _eval_numeric as _eval_numeric,
+    _eval_model_expression as _eval_model_expression,
+    _model_param_values as _model_param_values,
+    _build_mutant_param_set as _build_mutant_param_set,
+    _parse_bngl_param_block as _parse_bngl_param_block,
+    _evaluate_bngl_params as _evaluate_bngl_params,
+    _parse_net_species_initializers as _parse_net_species_initializers,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -45,15 +79,6 @@ _BNGSIM_ACTION_BACKENDS = frozenset((BNGSIM_BACKEND_NET, BNGSIM_BACKEND_NF))
 # Canonical NF tokens returned by bngsim.normalize_method() — anything outside
 # this pair is non-NF (ode/ssa/psa) for our purposes.
 _BNGSIM_NF_CANONICAL_METHODS = frozenset(('nf_reject', 'nf_exact'))
-
-
-_PARAMETER_SCAN_KEY_ALIASES = {
-    'param': 'parameter',
-    'time': 't_end',
-    'min': 'par_min',
-    'max': 'par_max',
-    'logspace': 'log_scale',
-}
 
 # ss_method values for steady-state parameter_scan/bifurcate actions.
 # 'parity' = BNG2.pl run_network -c integrate-to-||f||2/n early-stop (default);
@@ -193,266 +218,6 @@ def _normalize_session_timeout(timeout, session_backend):
     if session_backend not in (BNGSIM_NF_BACKEND_NFSIM, BNGSIM_NF_BACKEND_RULEMONKEY):
         return None
     return _coerce_positive_timeout(timeout)
-
-
-def _collapse_action_line_continuations(action_line):
-    """Collapse BNGL trailing-backslash line continuations into one action."""
-    return re.sub(r'\\\s*\n\s*', '', action_line)
-
-
-def _extract_action_body(action_line, action_name):
-    """Return the body inside action_name({...}) or None if it doesn't match."""
-    collapsed = _collapse_action_line_continuations(action_line).strip()
-    pattern = rf'\s*{re.escape(action_name)}\s*\(\s*\{{(.*)\}}\s*\)\s*$'
-    match = re.match(pattern, collapsed, re.DOTALL)
-    if not match:
-        return None
-    return match.group(1)
-
-
-def _split_top_level_commas(text):
-    """Split an action body on commas while ignoring nested lists and quotes."""
-    items = []
-    start = 0
-    depth = 0
-    quote = None
-    escaped = False
-
-    for i, ch in enumerate(text):
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif ch == '\\':
-                escaped = True
-            elif ch == quote:
-                quote = None
-            continue
-
-        if ch in ('"', "'"):
-            quote = ch
-        elif ch in '([{':
-            depth += 1
-        elif ch in ')]}':
-            depth = max(depth - 1, 0)
-        elif ch == ',' and depth == 0:
-            item = text[start:i].strip()
-            if item:
-                items.append(item)
-            start = i + 1
-
-    tail = text[start:].strip()
-    if tail:
-        items.append(tail)
-    return items
-
-
-def _parse_action_value(value_text):
-    """Parse a BNGL action value, preserving scalars as strings and lists as lists."""
-    value = value_text.strip()
-    if not value:
-        return value
-
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-        return value[1:-1]
-
-    if value.startswith('[') and value.endswith(']'):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        return [_parse_action_value(item) for item in _split_top_level_commas(inner)]
-
-    return value
-
-
-def _parse_action_dict(action_line, action_name, key_aliases=None):
-    """Parse action_name({...}) into a dict, honoring top-level commas only."""
-    body = _extract_action_body(action_line, action_name)
-    if body is None:
-        return None
-
-    params = {}
-    aliases = key_aliases or {}
-    for item in _split_top_level_commas(body):
-        if '=>' not in item:
-            logger.debug(
-                "BngsimModel: skipping malformed %s item %r",
-                action_name,
-                item,
-            )
-            continue
-        key_text, value_text = item.split('=>', 1)
-        key = aliases.get(key_text.strip(), key_text.strip())
-        params[key] = _parse_action_value(value_text)
-    return params
-
-
-def _parse_simulate_action(action_line):
-    return _parse_action_dict(action_line, 'simulate')
-
-
-def _parse_parameter_scan_action(action_line):
-    return _parse_action_dict(
-        action_line,
-        'parameter_scan',
-        key_aliases=_PARAMETER_SCAN_KEY_ALIASES,
-    )
-
-
-def _parse_bifurcate_action(action_line):
-    return _parse_action_dict(
-        action_line,
-        'bifurcate',
-        key_aliases=_PARAMETER_SCAN_KEY_ALIASES,
-    )
-
-
-def _eval_numeric(expr_str, extra_ns=None):
-    """Safely evaluate a numeric expression from BNGL action args.
-
-    Handles plain numbers, arithmetic expressions, and standard math functions.
-    """
-    text = expr_str.strip().strip('"').strip("'")
-    try:
-        return float(text)
-    except (ValueError, TypeError):
-        pass
-    ns = _build_safe_eval_namespace(extra_ns)
-    return float(eval(text, ns))  # noqa: S307
-
-
-def _parse_set_parameter(action_line):
-    """Parse setParameter("name", value) -> (name, value) or None."""
-    match = re.match(
-        r'\s*setParameter\s*\(\s*["\'](\w+)["\']\s*,\s*(.+)\s*\)',
-        action_line,
-    )
-    if match:
-        try:
-            return match.group(1), _eval_numeric(match.group(2))
-        except Exception:
-            return None
-    return None
-
-
-def _parse_set_concentration(action_line):
-    """Parse setConcentration("species_name", value) -> (name, value) or None.
-
-    Returns None for NF-style string expressions (e.g. ``"EGF_copy_number"``),
-    which are handled by ``_parse_set_concentration_nf`` instead.
-    """
-    match = re.match(
-        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.+)\s*\)',
-        action_line,
-    )
-    if match:
-        try:
-            return match.group(1), _eval_numeric(match.group(2))
-        except Exception:
-            return None
-    return None
-
-
-def _parse_set_concentration_expr(action_line):
-    """Parse setConcentration("species_name", value_expr) -> (name, expr) or None.
-
-    The expression is returned as text so it can be evaluated against the
-    model parameter namespace at the moment the action runs — important
-    when the value references a parameter that is being swept by a later
-    ``parameter_scan(...)`` action (issue #46).
-    """
-    match = re.match(
-        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.+?)\s*\)\s*;?\s*$',
-        action_line,
-    )
-    if not match:
-        return None
-    species = match.group(1)
-    expr = match.group(2).strip()
-    if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in ('"', "'"):
-        expr = expr[1:-1]
-    return species, expr
-
-
-def _model_param_values(model):
-    """Return current model parameter values keyed by name."""
-    values = {}
-    for pname in model.param_names:
-        try:
-            values[pname] = model.get_param(pname)
-        except Exception:
-            pass
-    return values
-
-
-def _eval_model_expression(expr, model):
-    """Evaluate a BNGL action expression against current model parameters."""
-    ns = _build_safe_eval_namespace(_model_param_values(model))
-    return float(eval(expr, ns))  # noqa: S307
-
-
-def _build_mutant_param_set(param_set, mut):
-    """Apply a MutationSet to a copy of param_set's values and return a new PSet.
-
-    Shared by the net (:class:`BngsimModel`) and network-free
-    (:class:`BngsimNfModel`) mutant builders, which differ only in whether they
-    also clone an engine model.
-    """
-    params = {p.name: p.value for p in param_set}
-    for mi in mut:
-        params[mi.name] = mi.mutate(params[mi.name])
-    mut_param_list = [
-        FreeParameter(
-            pname,
-            'uniform_var',
-            -np.inf,
-            np.inf,
-            value=params[pname],
-            bounded=True,
-        )
-        for pname in params
-    ]
-    return PSet(mut_param_list)
-
-
-def _parse_add_concentration(action_line):
-    """Parse addConcentration("species_name", value) -> (name, value) or None."""
-    match = re.match(
-        r'\s*addConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.+)\s*\)',
-        action_line,
-    )
-    if match:
-        try:
-            return match.group(1), _eval_numeric(match.group(2))
-        except Exception:
-            return None
-    return None
-
-
-def _is_reset_concentrations(action_line):
-    return bool(re.match(r'\s*resetConcentrations\s*\(', action_line))
-
-
-def _is_reset_parameters(action_line):
-    return bool(re.match(r'\s*resetParameters\s*\(', action_line))
-
-
-def _is_save_concentrations(action_line):
-    return bool(re.match(r'\s*saveConcentrations\s*\(', action_line))
-
-
-def _is_save_parameters(action_line):
-    return bool(re.match(r'\s*saveParameters\s*\(', action_line))
-
-
-def _parse_set_concentration_nf(action_line):
-    """Parse NF-style setConcentration("species", "expr") -> (pattern, expr) or None."""
-    match = re.match(
-        r'\s*setConcentration\s*\(\s*["\']([^"\']+)["\']\s*,\s*["\']?([^"\')\s]+)["\']?\s*\)',
-        action_line,
-    )
-    if match:
-        return match.group(1), match.group(2)
-    return None
 
 
 def _normalize_action_method(method, poplevel_text=None):
@@ -802,43 +567,6 @@ def _resolve_sample_times(sim_params):
     return sample_times
 
 
-def _build_safe_eval_namespace(seed=None):
-    """Build a safe expression-evaluation namespace for .net math."""
-    # Start from seed so that builtin math names always take precedence.
-    # BNG2.pl reserves these names; no valid model should shadow them.
-    ns = dict(seed) if seed else {}
-    ns.update({
-        'exp': math.exp,
-        'log': math.log,
-        'log10': math.log10,
-        'log2': math.log2,
-        'sqrt': math.sqrt,
-        'abs': abs,
-        'sin': math.sin,
-        'cos': math.cos,
-        'tan': math.tan,
-        'asin': math.asin,
-        'acos': math.acos,
-        'atan': math.atan,
-        'atan2': math.atan2,
-        'pi': math.pi,
-        'e': math.e,
-        'ceil': math.ceil,
-        'floor': math.floor,
-        'min': min,
-        'max': max,
-        'pow': pow,
-        'if': lambda cond, t, f: t if cond else f,
-        # BNG defines rint as floor(x + 0.5) (round half toward +inf; see
-        # BioNetGen Perl2/Expression.pm), NOT Python's round() which is
-        # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
-        # so match BNG to keep PyBNF's expression evaluation faithful.
-        'rint': lambda x: math.floor(x + 0.5),
-        '__builtins__': {},
-    })
-    return ns
-
-
 def _try_prepare_codegen(net_path):
     """Attempt to compile ODE RHS to a shared library for faster simulation.
 
@@ -853,111 +581,6 @@ def _try_prepare_codegen(net_path):
     except Exception as exc:
         logger.warning("Codegen compilation failed (%s); falling back to interpreted ODE RHS (slower)", exc)
         return ""
-
-
-def _parse_net_species_initializers(net_lines):
-    """Extract (species_name, initial_expr) pairs from a BNG .net file."""
-    initializers = []
-    in_block = False
-
-    for raw_line in net_lines:
-        stripped = raw_line.strip()
-        if re.match(r'begin\s+species', stripped):
-            in_block = True
-            continue
-        if re.match(r'end\s+species', stripped):
-            break
-        if not in_block:
-            continue
-
-        line = raw_line.split('#', 1)[0].strip()
-        if not line:
-            continue
-
-        match = re.match(r'\s*\d+\s+(\S+)\s+(.+?)\s*$', line)
-        if match:
-            initializers.append((match.group(1), match.group(2).strip()))
-
-    return initializers
-
-
-def _parse_bngl_param_block(model_lines):
-    """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
-    params = []
-    in_block = False
-
-    for raw_line in model_lines:
-        line = raw_line.strip()
-        comment_idx = line.find('#')
-        if comment_idx >= 0:
-            line = line[:comment_idx].strip()
-        if not line:
-            continue
-
-        if re.match(r'begin\s+parameters', line):
-            in_block = True
-            continue
-        if re.match(r'end\s+parameters', line):
-            break
-        if not in_block:
-            continue
-
-        eq_match = re.match(r'([A-Za-z_]\w*)\s*=\s*(.+)', line)
-        if eq_match:
-            params.append((eq_match.group(1), eq_match.group(2).strip()))
-            continue
-
-        space_match = re.match(r'([A-Za-z_]\w*)\s+(.+)', line)
-        if space_match:
-            params.append((space_match.group(1), space_match.group(2).strip()))
-
-    return params
-
-
-_BUILTIN_EVAL_NAMES = frozenset({
-    'exp', 'log', 'log10', 'log2', 'sqrt', 'abs',
-    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-    'pi', 'e', 'ceil', 'floor', 'min', 'max', 'pow', 'if', 'rint',
-})
-
-
-def _evaluate_bngl_params(param_exprs, input_overrides=None):
-    """Evaluate ordered BNGL parameter expressions top-to-bottom."""
-    if input_overrides is None:
-        input_overrides = {}
-
-    ns = _build_safe_eval_namespace()
-    # Seed the namespace with the input overrides (the PSet, keyed by free-
-    # parameter name) so free-parameter tokens embedded inside arithmetic
-    # expressions -- e.g. `kaf = kaf__FREE/(NA*Vo)` -- resolve correctly.
-    # The two fast-path branches below still short-circuit the whole-RHS and
-    # name-keyed cases, so behavior for `k_o = k_o__FREE` is unchanged.
-    ns.update({k: float(v) for k, v in input_overrides.items()})
-    result = {}
-
-    for name, expr in param_exprs:
-        if expr in input_overrides:
-            value = float(input_overrides[expr])
-        elif name in input_overrides:
-            value = float(input_overrides[name])
-        else:
-            try:
-                value = float(eval(expr, ns))  # noqa: S307
-            except Exception as exc:
-                # With the namespace seeded above, an unresolved name almost
-                # certainly indicates a real model/config error. Silently
-                # substituting 0.0 turns a missing parameter into a wrong
-                # answer (a zeroed rate constant), so fail loudly instead.
-                raise ValueError(
-                    f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
-                ) from exc
-
-        # Don't let parameter values shadow builtin math functions
-        if name not in _BUILTIN_EVAL_NAMES:
-            ns[name] = value
-        result[name] = value
-
-    return result
 
 
 def _ext_for_simtype(simtype):

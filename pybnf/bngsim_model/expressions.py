@@ -1,0 +1,212 @@
+"""Pure expression / parameter evaluation for the bngsim_model package.
+
+Safe numeric/model-expression evaluation (no builtins), BNGL parameter-block and
+.net species-initializer parsing, and mutant param-set construction. No simulator
+dependency, so this module is importable and unit-testable on the bngsim-less CI
+tier (the safe-eval namespace is the ROB-5 rint home).
+"""
+
+
+import math
+import re
+
+import numpy as np
+
+from ..pset import FreeParameter, PSet
+
+
+def _eval_numeric(expr_str, extra_ns=None):
+    """Safely evaluate a numeric expression from BNGL action args.
+
+    Handles plain numbers, arithmetic expressions, and standard math functions.
+    """
+    text = expr_str.strip().strip('"').strip("'")
+    try:
+        return float(text)
+    except (ValueError, TypeError):
+        pass
+    ns = _build_safe_eval_namespace(extra_ns)
+    return float(eval(text, ns))  # noqa: S307
+
+
+def _model_param_values(model):
+    """Return current model parameter values keyed by name."""
+    values = {}
+    for pname in model.param_names:
+        try:
+            values[pname] = model.get_param(pname)
+        except Exception:
+            pass
+    return values
+
+
+def _eval_model_expression(expr, model):
+    """Evaluate a BNGL action expression against current model parameters."""
+    ns = _build_safe_eval_namespace(_model_param_values(model))
+    return float(eval(expr, ns))  # noqa: S307
+
+
+def _build_mutant_param_set(param_set, mut):
+    """Apply a MutationSet to a copy of param_set's values and return a new PSet.
+
+    Shared by the net (:class:`BngsimModel`) and network-free
+    (:class:`BngsimNfModel`) mutant builders, which differ only in whether they
+    also clone an engine model.
+    """
+    params = {p.name: p.value for p in param_set}
+    for mi in mut:
+        params[mi.name] = mi.mutate(params[mi.name])
+    mut_param_list = [
+        FreeParameter(
+            pname,
+            'uniform_var',
+            -np.inf,
+            np.inf,
+            value=params[pname],
+            bounded=True,
+        )
+        for pname in params
+    ]
+    return PSet(mut_param_list)
+
+
+def _build_safe_eval_namespace(seed=None):
+    """Build a safe expression-evaluation namespace for .net math."""
+    # Start from seed so that builtin math names always take precedence.
+    # BNG2.pl reserves these names; no valid model should shadow them.
+    ns = dict(seed) if seed else {}
+    ns.update({
+        'exp': math.exp,
+        'log': math.log,
+        'log10': math.log10,
+        'log2': math.log2,
+        'sqrt': math.sqrt,
+        'abs': abs,
+        'sin': math.sin,
+        'cos': math.cos,
+        'tan': math.tan,
+        'asin': math.asin,
+        'acos': math.acos,
+        'atan': math.atan,
+        'atan2': math.atan2,
+        'pi': math.pi,
+        'e': math.e,
+        'ceil': math.ceil,
+        'floor': math.floor,
+        'min': min,
+        'max': max,
+        'pow': pow,
+        'if': lambda cond, t, f: t if cond else f,
+        # BNG defines rint as floor(x + 0.5) (round half toward +inf; see
+        # BioNetGen Perl2/Expression.pm), NOT Python's round() which is
+        # round-half-to-even. They diverge on every .5 tie (rint(2.5)=3, not 2),
+        # so match BNG to keep PyBNF's expression evaluation faithful.
+        'rint': lambda x: math.floor(x + 0.5),
+        '__builtins__': {},
+    })
+    return ns
+
+
+def _parse_net_species_initializers(net_lines):
+    """Extract (species_name, initial_expr) pairs from a BNG .net file."""
+    initializers = []
+    in_block = False
+
+    for raw_line in net_lines:
+        stripped = raw_line.strip()
+        if re.match(r'begin\s+species', stripped):
+            in_block = True
+            continue
+        if re.match(r'end\s+species', stripped):
+            break
+        if not in_block:
+            continue
+
+        line = raw_line.split('#', 1)[0].strip()
+        if not line:
+            continue
+
+        match = re.match(r'\s*\d+\s+(\S+)\s+(.+?)\s*$', line)
+        if match:
+            initializers.append((match.group(1), match.group(2).strip()))
+
+    return initializers
+
+
+def _parse_bngl_param_block(model_lines):
+    """Extract BNGL parameter definitions as ordered (name, expression) pairs."""
+    params = []
+    in_block = False
+
+    for raw_line in model_lines:
+        line = raw_line.strip()
+        comment_idx = line.find('#')
+        if comment_idx >= 0:
+            line = line[:comment_idx].strip()
+        if not line:
+            continue
+
+        if re.match(r'begin\s+parameters', line):
+            in_block = True
+            continue
+        if re.match(r'end\s+parameters', line):
+            break
+        if not in_block:
+            continue
+
+        eq_match = re.match(r'([A-Za-z_]\w*)\s*=\s*(.+)', line)
+        if eq_match:
+            params.append((eq_match.group(1), eq_match.group(2).strip()))
+            continue
+
+        space_match = re.match(r'([A-Za-z_]\w*)\s+(.+)', line)
+        if space_match:
+            params.append((space_match.group(1), space_match.group(2).strip()))
+
+    return params
+
+
+_BUILTIN_EVAL_NAMES = frozenset({
+    'exp', 'log', 'log10', 'log2', 'sqrt', 'abs',
+    'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+    'pi', 'e', 'ceil', 'floor', 'min', 'max', 'pow', 'if', 'rint',
+})
+
+
+def _evaluate_bngl_params(param_exprs, input_overrides=None):
+    """Evaluate ordered BNGL parameter expressions top-to-bottom."""
+    if input_overrides is None:
+        input_overrides = {}
+
+    ns = _build_safe_eval_namespace()
+    # Seed the namespace with the input overrides (the PSet, keyed by free-
+    # parameter name) so free-parameter tokens embedded inside arithmetic
+    # expressions -- e.g. `kaf = kaf__FREE/(NA*Vo)` -- resolve correctly.
+    # The two fast-path branches below still short-circuit the whole-RHS and
+    # name-keyed cases, so behavior for `k_o = k_o__FREE` is unchanged.
+    ns.update({k: float(v) for k, v in input_overrides.items()})
+    result = {}
+
+    for name, expr in param_exprs:
+        if expr in input_overrides:
+            value = float(input_overrides[expr])
+        elif name in input_overrides:
+            value = float(input_overrides[name])
+        else:
+            try:
+                value = float(eval(expr, ns))  # noqa: S307
+            except Exception as exc:
+                # With the namespace seeded above, an unresolved name almost
+                # certainly indicates a real model/config error. Silently
+                # substituting 0.0 turns a missing parameter into a wrong
+                # answer (a zeroed rate constant), so fail loudly instead.
+                raise ValueError(
+                    f"BngsimNfModel: could not evaluate param {name} = {expr!r}: {exc}"
+                ) from exc
+
+        # Don't let parameter values shadow builtin math functions
+        if name not in _BUILTIN_EVAL_NAMES:
+            ns[name] = value
+        result[name] = value
+
+    return result
