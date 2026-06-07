@@ -1,0 +1,43 @@
+begin model
+#@model_id: m01_exp_decay
+#@title: First-order exponential decay (PyBNF recovery fixture)
+#@description: S' = -k*S. Single species degrades with rate constant k.
+#@source: trimmed from BNGL_library/m01_exp_decay.bngl for the recovery test tier
+#
+# Recovery-tier conventions (see tests/test_recovery_m01.py):
+#   * The fitted rate constant uses PyBNF's canonical alias form ``k k__FREE``:
+#     the model parameter ``k`` references the free parameter ``k__FREE`` (whose
+#     value PyBNF injects per evaluation). BNG2.pl preserves this as a .net
+#     ConstantExpression that bngsim re-evaluates when k__FREE is set, so the
+#     optimizer's changes flow through to the reaction rate. This is a one-line
+#     diff from the library source (``k 0.3`` -> ``k k__FREE``).
+#   * A single ODE simulate action (the ssa/nf actions from the library model
+#     are dropped) keeps the fit deterministic and fast.
+
+begin parameters
+  k        k__FREE   # 1/s  decay rate constant (fitted via free param k__FREE)
+  S_init   10        # molecules  initial count of S (fixed/known)
+end parameters
+
+begin molecule types
+  S()
+end molecule types
+
+begin seed species
+  S()  S_init
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_S  S()
+end observables
+
+begin reaction rules
+  S() -> 0  k
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>20})
+end actions
