@@ -249,9 +249,9 @@ def _install_fake_nfsim(monkeypatch):
     fake_pkg.normalize_method = _make_fake_normalize_method(has_nfsim=True, has_rulemonkey=False)
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_pkg)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_pkg)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_pkg)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True)
     return calls
 
 
@@ -326,10 +326,10 @@ def _install_fake_nf_sessions(monkeypatch, *, has_nfsim=True, has_rulemonkey=Tru
     )
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_pkg)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_pkg)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', has_nfsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', has_rulemonkey)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_pkg)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', has_nfsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_RULEMONKEY', has_rulemonkey)
     return calls
 
 
@@ -435,8 +435,7 @@ def test_normalize_nf_action_method_normalizes_rulemonkey_public_aliases():
 @pytest.mark.bngsim
 @pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
 def test_normalize_nf_action_method_rejects_rulemonkey_when_unavailable(monkeypatch, method):
-    monkeypatch.setattr(
-        bngsim_model.bngsim,
+    monkeypatch.setattr(bngsim_model._runtime.bngsim,
         'normalize_method',
         _stub_normalize_method_without_rulemonkey,
     )
@@ -480,8 +479,7 @@ def test_classify_action_method_backend_maps_methods(method, expected_backend):
 @pytest.mark.bngsim
 @pytest.mark.parametrize('method', ['rm', 'rulemonkey'])
 def test_classify_action_method_backend_returns_none_when_rulemonkey_unavailable(monkeypatch, method):
-    monkeypatch.setattr(
-        bngsim_model.bngsim,
+    monkeypatch.setattr(bngsim_model._runtime.bngsim,
         'normalize_method',
         _stub_normalize_method_without_rulemonkey,
     )
@@ -628,7 +626,7 @@ def test_initialize_models_nf_bionetgen_backend_skips_bngsim(monkeypatch, tmp_pa
     monkeypatch.chdir(tmp_path)
     with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -663,7 +661,7 @@ def test_initialize_models_no_bngsim_env_disables_nf_auto(monkeypatch, tmp_path)
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
     with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -685,7 +683,7 @@ def test_initialize_models_no_bngsim_env_disables_hybrid_auto(monkeypatch, tmp_p
     monkeypatch.setenv('PYBNF_NO_BNGSIM', '1')
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -768,7 +766,7 @@ def test_initialize_models_bngsim_backend_rejects_missing_nfsim(monkeypatch, tmp
     monkeypatch.chdir(tmp_path)
     with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should fail before XML')):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', False):
                 with pytest.raises(printing.PybnfError, match='does not provide NFsim support'):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -833,7 +831,7 @@ def test_initialize_models_uses_bngsim_nf_when_supported(monkeypatch, tmp_path):
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -865,8 +863,8 @@ def test_initialize_models_uses_bngsim_rulemonkey_when_supported(monkeypatch, tm
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
-                    with patch.object(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', False):
+                    with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_RULEMONKEY', True):
                         models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -890,7 +888,7 @@ def test_initialize_models_nf_xml_generation_stages_relative_tfun_files(monkeypa
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     algorithms.Algorithm._initialize_models(algo)
 
     staged_rel = _extract_staged_tfun_path(_fake_xml_generation.last_bngl_text)
@@ -907,7 +905,7 @@ def test_initialize_models_nf_falls_back_when_nfsim_support_missing(monkeypatch,
     monkeypatch.chdir(tmp_path)
     with patch.object(algorithms.base, 'run_subprocess', side_effect=AssertionError('should not generate XML')):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', False):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -928,7 +926,7 @@ def test_initialize_models_nf_falls_back_when_bridge_init_fails(monkeypatch, tmp
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', BrokenBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -936,8 +934,8 @@ def test_initialize_models_nf_falls_back_when_bridge_init_fails(monkeypatch, tmp
 
 
 def test_bngsim_nf_model_recomputes_derived_params_from_pset(monkeypatch):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True)
 
     model = bngsim_model.BngsimNfModel(
         'nf_model',
@@ -971,8 +969,8 @@ def test_bngsim_nf_model_recomputes_derived_params_from_pset(monkeypatch):
 def test_bngsim_nf_model_resolves_free_params_embedded_in_arithmetic(monkeypatch):
     """Regression for #389: free-parameter tokens embedded inside an
     arithmetic expression must resolve, not be silently zeroed."""
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True)
 
     model = bngsim_model.BngsimNfModel(
         'nf_model',
@@ -1022,8 +1020,8 @@ def test_evaluate_bngl_params_raises_on_unresolved_name():
 def test_bngsim_nf_model_save_preserves_protocol_block(monkeypatch, tmp_path):
     """Regression for #383: protocol blocks must round-trip through the saved
     debug .bngl, positioned between the model body and the actions block."""
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True)
 
     protocol_lines = [
         '    equilibrate({duration=>10})\n',
@@ -1073,8 +1071,8 @@ def test_bngsim_nf_model_save_preserves_protocol_block(monkeypatch, tmp_path):
 @pytest.mark.bngsim
 def test_bngsim_nf_model_save_omits_protocol_block_when_absent(monkeypatch, tmp_path):
     """Models constructed without a protocol must not emit empty protocol blocks."""
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True)
 
     model = bngsim_model.BngsimNfModel(
         'nf_model',
@@ -1324,7 +1322,7 @@ def test_initialize_models_propagates_save_files_when_delete_old_files_zero(monk
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     algorithms.Algorithm._initialize_models(algo)
 
     assert captured.get('save_files') is True
@@ -1349,7 +1347,7 @@ def test_initialize_models_save_files_defaults_false_when_delete_old_files_posit
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_xml_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     algorithms.Algorithm._initialize_models(algo)
 
     assert captured.get('save_files') is False
@@ -1393,8 +1391,8 @@ def test_bngsim_model_execute_writes_gdat_when_save_files_true(monkeypatch, tmp_
     fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
     fake_bngsim.StopConditionMet = type('StopConditionMet', (Exception,), {})
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
     obj = object.__new__(bngsim_model.BngsimModel)
     obj.name = 'mname'
@@ -1668,8 +1666,8 @@ class TestContinueFlag:
         fake_bngsim = types.ModuleType('bngsim')
         fake_bngsim.Simulator = FakeSimulator
         fake_bngsim.Model = FakeModel
-        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
         # Build a minimal BngsimModel without going through __init__
         obj = object.__new__(bngsim_model.BngsimModel)
@@ -1788,8 +1786,8 @@ class TestStopIf:
         fake_bngsim = types.ModuleType('bngsim')
         fake_bngsim.Simulator = FakeSimulator
         fake_bngsim.StopConditionMet = FakeStopConditionMet
-        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
         obj = object.__new__(bngsim_model.BngsimModel)
         obj.actions = [
@@ -1928,8 +1926,8 @@ class TestBifurcateExecution(TestContinueFlag):
 
         fake_bngsim = types.ModuleType('bngsim')
         fake_bngsim.Simulator = FakeSimulator
-        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
         obj = object.__new__(bngsim_model.BngsimModel)
         obj.actions = [
@@ -1985,8 +1983,8 @@ class TestBifurcateExecution(TestContinueFlag):
 
         fake_bngsim = types.ModuleType('bngsim')
         fake_bngsim.Simulator = FakeSimulator
-        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
         obj = object.__new__(bngsim_model.BngsimModel)
         obj.actions = [
@@ -2087,8 +2085,8 @@ def _install_ss_fakes(monkeypatch, record):
     FakeSimulator, FakeModel = _SsScanFakes.build(record)
     fake_bngsim = types.ModuleType('bngsim')
     fake_bngsim.Simulator = FakeSimulator
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
     return FakeModel
 
 
@@ -2241,8 +2239,8 @@ class TestAddConcentrationNetBackend(TestContinueFlag):
 
         fake_bngsim = types.ModuleType('bngsim')
         fake_bngsim.Simulator = FakeSimulator
-        monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-        monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+        monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+        monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
         obj = object.__new__(bngsim_model.BngsimModel)
         obj.actions = [
@@ -2284,7 +2282,7 @@ def test_classify_actions_for_bngsim_returns_hybrid_with_nfsim_alias():
 
 @pytest.mark.bngsim
 def test_classify_actions_for_bngsim_returns_hybrid_with_rulemonkey_alias(monkeypatch):
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_RULEMONKEY', True)
     assert bngsim_model.classify_actions_for_bngsim([
         'generate_network({overwrite=>1})',
         'simulate({method=>"rm",t_end=>10,n_steps=>10,suffix=>"tc"})',
@@ -2343,7 +2341,7 @@ def test_initialize_models_hybrid_uses_bngsim_nf(monkeypatch, tmp_path):
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_hybrid_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -2378,7 +2376,7 @@ def test_initialize_models_hybrid_explicit_bngsim_backend_uses_nf_bridge(monkeyp
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_hybrid_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', FakeBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -2408,7 +2406,7 @@ def test_initialize_models_hybrid_explicit_bngsim_backend_errors_on_xml_failure(
     monkeypatch.chdir(tmp_path)
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_net_ok_then_xml_fail):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                 with pytest.raises(printing.PybnfError, match='hybrid XML generation failed'):
                     algorithms.Algorithm._initialize_models(algo)
 
@@ -2440,7 +2438,7 @@ def test_initialize_models_hybrid_falls_back_to_netmodel_when_nfsim_missing(monk
     monkeypatch.chdir(tmp_path)
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_network_generation):
         with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-            with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', False):
+            with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', False):
                 models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -2461,7 +2459,7 @@ def test_initialize_models_hybrid_falls_back_when_bridge_init_fails(monkeypatch,
     with patch.object(algorithms.base, 'run_subprocess', side_effect=_fake_hybrid_generation):
         with patch.object(algorithms.base, 'BngsimNfModel', BrokenBngsimNfModel):
             with patch.object(algorithms.base, 'BNGSIM_AVAILABLE', True):
-                with patch.object(bngsim_model, 'BNGSIM_HAS_NFSIM', True):
+                with patch.object(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM', True):
                     models = algorithms.Algorithm._initialize_models(algo)
 
     assert len(models) == 1
@@ -2746,8 +2744,8 @@ def _install_fake_simulator_raising_timeout(monkeypatch, *, timeout, elapsed):
     fake_bngsim.HAS_RULEMONKEY = False
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
     return fake_bngsim
 
 
@@ -2866,11 +2864,11 @@ def _install_fake_session_raising_timeout(monkeypatch, *, backend, timeout, elap
     )
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_NFSIM',
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_NFSIM',
                         backend == bngsim_model.BNGSIM_NF_BACKEND_NFSIM)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_HAS_RULEMONKEY',
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_HAS_RULEMONKEY',
                         backend == bngsim_model.BNGSIM_NF_BACKEND_RULEMONKEY)
     return teardown_log
 
@@ -2962,8 +2960,8 @@ def test_bngsim_sim_timeout_kwarg_passes_through_on_success(monkeypatch):
     fake_bngsim.SimulationTimeout = _FakeSimulationTimeout
     fake_bngsim.StopConditionMet = type('StopConditionMet', (Exception,), {})
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
     obj = object.__new__(bngsim_model.BngsimModel)
     obj.actions = [
@@ -3008,9 +3006,9 @@ def _install_fake_simulator_raising(monkeypatch, exc):
     fake_bngsim.HAS_RULEMONKEY = False
 
     monkeypatch.setitem(sys.modules, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_VERSION', '9.9.9-test')
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_VERSION', '9.9.9-test')
     return fake_bngsim
 
 
@@ -3070,7 +3068,7 @@ def test_bngsim_nf_model_failure_writes_report(monkeypatch, tmp_path):
         timeout=0.5,
         elapsed=0.71,
     )
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_VERSION', '9.9.9-test')
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_VERSION', '9.9.9-test')
 
     xml_path = tmp_path / 'source.xml'
     xml_path.write_text('<sbml/>\n')

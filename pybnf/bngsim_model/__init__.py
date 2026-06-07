@@ -13,17 +13,23 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ._bngsim_caps import (
-    BNGSIM_AVAILABLE,
-    BNGSIM_ERROR,
-    BNGSIM_HAS_NFSIM,
-    BNGSIM_HAS_RULEMONKEY,
-    BNGSIM_VERSION,
-    bngsim,
+from . import _runtime
+# Re-export the bngsim capability flags so ``pybnf.bngsim_model.<flag>`` keeps
+# resolving for value-importers (``pybnf.algorithms.base``) and read-only test
+# access. Production code in this package reads them as ``_runtime.<flag>`` so a
+# patch on the _runtime seam (ADR-0018) bites every reader; these bindings are
+# snapshots for re-export only, never read by this package's own logic.
+from ._runtime import (
+    bngsim as bngsim,
+    BNGSIM_AVAILABLE as BNGSIM_AVAILABLE,
+    BNGSIM_ERROR as BNGSIM_ERROR,
+    BNGSIM_HAS_NFSIM as BNGSIM_HAS_NFSIM,
+    BNGSIM_HAS_RULEMONKEY as BNGSIM_HAS_RULEMONKEY,
+    BNGSIM_VERSION as BNGSIM_VERSION,
 )
-from .data import Data
-from .pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
-from ._seed import resolve_action_seed
+from ..data import Data
+from ..pset import FreeParameter, Model, NetModel, PSet, _stage_and_rewrite_tfun_files
+from .._seed import resolve_action_seed
 
 
 logger = logging.getLogger(__name__)
@@ -481,11 +487,11 @@ def _normalize_action_method(method, poplevel_text=None):
 
 def _bngsim_normalize_method(method):
     """Delegate to bngsim.normalize_method, raising a uniform ValueError."""
-    if not BNGSIM_AVAILABLE:
+    if not _runtime.BNGSIM_AVAILABLE:
         raise ValueError(
-            f"method=>'{method}' cannot be normalized: {BNGSIM_ERROR}"
+            f"method=>'{method}' cannot be normalized: {_runtime.BNGSIM_ERROR}"
         )
-    return bngsim.normalize_method(method)
+    return _runtime.bngsim.normalize_method(method)
 
 
 def _normalize_nf_action_method(method):
@@ -515,9 +521,9 @@ def _nf_session_backend_for_method(method):
 
 def _bngsim_has_nf_session_backend(session_backend):
     if session_backend == BNGSIM_NF_BACKEND_NFSIM:
-        return BNGSIM_HAS_NFSIM
+        return _runtime.BNGSIM_HAS_NFSIM
     if session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
-        return BNGSIM_HAS_RULEMONKEY
+        return _runtime.BNGSIM_HAS_RULEMONKEY
     return False
 
 
@@ -580,9 +586,9 @@ def missing_bngsim_nf_action_support(actions):
 
 def _get_nf_session_class(session_backend):
     if session_backend == BNGSIM_NF_BACKEND_NFSIM:
-        return bngsim.NfsimSession
+        return _runtime.bngsim.NfsimSession
     if session_backend == BNGSIM_NF_BACKEND_RULEMONKEY:
-        return bngsim.RuleMonkeySession
+        return _runtime.bngsim.RuleMonkeySession
     raise RuntimeError(
         f'bngsim does not provide {_nf_session_backend_label(session_backend)} session support'
     )
@@ -615,10 +621,10 @@ def _classify_action_method_backend(method):
     lower = method.strip().lower()
     if lower in ('ode', 'ssa', 'psa', 'protocol'):
         return BNGSIM_BACKEND_NET
-    if not BNGSIM_AVAILABLE:
+    if not _runtime.BNGSIM_AVAILABLE:
         return None
     try:
-        canonical, _ = bngsim.normalize_method(lower)
+        canonical, _ = _runtime.bngsim.normalize_method(lower)
     except ValueError:
         return None
     if canonical in _BNGSIM_NF_CANONICAL_METHODS:
@@ -991,7 +997,7 @@ class BngsimModel(NetModel):
             nf=nf,
             source_dir=source_dir,
         )
-        if not BNGSIM_AVAILABLE:
+        if not _runtime.BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
         self._protocol = protocol or []
         self.save_files = save_files
@@ -1001,7 +1007,7 @@ class BngsimModel(NetModel):
         )
         if nf is not None:
             self._net_path = nf
-            self._engine_model = bngsim.Model.from_net(nf)
+            self._engine_model = _runtime.bngsim.Model.from_net(nf)
             self._codegen_so = _try_prepare_codegen(nf)
         elif ls is not None:
             raise ValueError('BngsimModel requires nf so the .net path is stable')
@@ -1035,8 +1041,8 @@ class BngsimModel(NetModel):
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
-        from .pset import FailedSimulationError
-        from ._bngsim_failure import write_failure_report
+        from ..pset import FailedSimulationError
+        from .._bngsim_failure import write_failure_report
 
         model = self._engine_model
 
@@ -1065,13 +1071,13 @@ class BngsimModel(NetModel):
             write_failure_report(
                 folder, filename,
                 backend='bngsim-net',
-                bngsim_version=BNGSIM_VERSION,
+                bngsim_version=_runtime.BNGSIM_VERSION,
                 model=self,
                 exception=exc,
                 input_path=getattr(self, '_net_path', None),
                 action_info=getattr(self, '_pybnf_current_action_info', None),
             )
-            if isinstance(exc, bngsim.SimulationTimeout):
+            if isinstance(exc, _runtime.bngsim.SimulationTimeout):
                 logger.warning(
                     "BngsimModel %s: wall_time_sim=%s exceeded at %.3fs",
                     self.name,
@@ -1104,7 +1110,7 @@ class BngsimModel(NetModel):
         """Interpret and execute action lines using bngsim."""
         ds = {}
         state = _SimulateActionState(
-            sim=bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
+            sim=_runtime.bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
 
         base_params = {}
         for pname in model.param_names:
@@ -1248,7 +1254,7 @@ class BngsimModel(NetModel):
         protocol contains no simulate actions.
         """
         state = _SimulateActionState(
-            sim=bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
+            sim=_runtime.bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
         last_result = None
 
         # Baseline saved parameters (used by saveParameters/resetParameters)
@@ -1339,7 +1345,7 @@ class BngsimModel(NetModel):
                     except Exception:
                         logger.debug(
                             "protocol: resetParameters could not restore %s=%s", pname, pval)
-                state.sim = bngsim.Simulator(model, method=state.method, **self._codegen_kwargs(state.method))
+                state.sim = _runtime.bngsim.Simulator(model, method=state.method, **self._codegen_kwargs(state.method))
                 continue
 
             logger.debug("protocol: skipping unrecognized command: %s", line)
@@ -1420,7 +1426,7 @@ class BngsimModel(NetModel):
 
         if method == 'psa':
             if state.method != 'psa' or state.poplevel != poplevel:
-                state.sim = bngsim.Simulator(
+                state.sim = _runtime.bngsim.Simulator(
                     model,
                     method='psa',
                     poplevel=poplevel,
@@ -1428,7 +1434,7 @@ class BngsimModel(NetModel):
                 state.method = 'psa'
                 state.poplevel = poplevel
         elif state.method != method:
-            state.sim = bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
+            state.sim = _runtime.bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
             state.method = method
             state.poplevel = None
 
@@ -1467,7 +1473,7 @@ class BngsimModel(NetModel):
                     **plan.run_kwargs,
                 )
         except Exception as exc:
-            if isinstance(exc, bngsim.StopConditionMet):
+            if isinstance(exc, _runtime.bngsim.StopConditionMet):
                 logger.info("%s: %s", stop_log_label, plan.stop_if)
                 result = exc.result
             else:
@@ -1487,12 +1493,12 @@ class BngsimModel(NetModel):
     def _make_scan_simulator(self, model, method, poplevel):
         """Construct a fresh simulator for one parameter-scan point."""
         if method == 'psa':
-            return bngsim.Simulator(
+            return _runtime.bngsim.Simulator(
                 model,
                 method='psa',
                 poplevel=poplevel,
             )
-        return bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
+        return _runtime.bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
 
     def _sync_species_initial_concentrations(self, model):
         """Re-evaluate .net species initializers using the model's current params."""
@@ -2059,7 +2065,7 @@ class BngsimModel(NetModel):
                     **_with_sim_timeout({}, scan_timeout),
                 )
             except Exception as exc:
-                if isinstance(exc, bngsim.SimulationTimeout):
+                if isinstance(exc, _runtime.bngsim.SimulationTimeout):
                     raise
                 logger.warning(
                     "BngsimModel: run_batch() failed; falling back to "
@@ -2195,7 +2201,7 @@ class BngsimModel(NetModel):
         """Restore from pickle by re-loading the .net file."""
         self.__dict__.update(state)
         if hasattr(self, '_net_path') and self._net_path:
-            self._engine_model = bngsim.Model.from_net(self._net_path)
+            self._engine_model = _runtime.bngsim.Model.from_net(self._net_path)
             self._codegen_so = _try_prepare_codegen(self._net_path)
         else:
             raise RuntimeError("Cannot unpickle BngsimModel: no _net_path")
@@ -2222,7 +2228,7 @@ class BngsimNfModel(Model):
         protocol=(),
         save_files=False,
     ):
-        if not BNGSIM_AVAILABLE:
+        if not _runtime.BNGSIM_AVAILABLE:
             raise RuntimeError('bngsim is not available')
 
         self.name = name
@@ -2628,18 +2634,18 @@ class BngsimNfModel(Model):
         ``FailedSimulationError``; any other exception propagates unchanged. This
         method never returns normally.
         """
-        from .pset import FailedSimulationError
-        from ._bngsim_failure import write_failure_report
+        from ..pset import FailedSimulationError
+        from .._bngsim_failure import write_failure_report
         write_failure_report(
             folder, filename,
             backend='bngsim-nf',
-            bngsim_version=BNGSIM_VERSION,
+            bngsim_version=_runtime.BNGSIM_VERSION,
             model=self,
             exception=exc,
             input_path=getattr(self, '_xml_path', None),
             action_info=getattr(self, '_pybnf_current_action_info', None),
         )
-        if isinstance(exc, bngsim.SimulationTimeout):
+        if isinstance(exc, _runtime.bngsim.SimulationTimeout):
             logger.warning(
                 "BngsimNfModel %s: wall_time_sim=%s exceeded at %.3fs",
                 self.name,

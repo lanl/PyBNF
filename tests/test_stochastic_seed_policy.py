@@ -220,8 +220,8 @@ def _make_fake_bngsim_model(actions, monkeypatch, *, name='fake', param_set=None
     fake_bngsim = types.ModuleType('bngsim')
     fake_bngsim.Simulator = FakeSimulator
     fake_bngsim.Model = FakeModel
-    monkeypatch.setattr(bngsim_model, 'bngsim', fake_bngsim)
-    monkeypatch.setattr(bngsim_model, 'BNGSIM_AVAILABLE', True)
+    monkeypatch.setattr(bngsim_model._runtime, 'bngsim', fake_bngsim)
+    monkeypatch.setattr(bngsim_model._runtime, 'BNGSIM_AVAILABLE', True)
 
     obj = object.__new__(bngsim_model.BngsimModel)
     obj.actions = actions
