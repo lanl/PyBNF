@@ -162,7 +162,7 @@ Where a noise model reads its **Noise Parameter** for one observation — one of
 _Avoid_: sigma source (lowercase ambiguity), error column, noise channel
 
 **Additive-Noise Scale**:
-The scale on which a noise model's noise is additive — linear (Gaussian: `obs ≈ pred + ε`) or logarithmic (lognormal: `log(obs) ≈ log(pred) + ε`). One of the three orthogonal axes defining a per-point noise model. Distinct from a free parameter's **Parameter Scale**: that names the space a parameter is *sampled* in (and owns a `θ↔u` transform for the prior and proposals); this names the space a *measurement's noise* lives on. The two are deliberately separate concepts and separate code, despite both being Linear/Log.
+The scale on which a noise model's noise is additive — `LINEAR` (Gaussian: `obs ≈ pred + ε`), `LOG10` (log10 lognormal: `log10(obs) ≈ log10(pred) + ε`), or `LN` (natural-log lognormal). One of the three orthogonal axes defining a per-point noise model. **One log base across PyBNF: a bare "log" always means log10** (matching `logvar`/`lognormal_var` and the proposal arithmetic); natural log is never implied, only the explicit `LN` (ADR-0022) — so the `lognormal` objfunc is log10 and there is no ambiguous bare `LOG`. Distinct from a free parameter's **Parameter Scale**: that names the space a parameter is *sampled* in (and owns a `θ↔u` transform for the prior and proposals); this names the space a *measurement's noise* lives on. The two are deliberately separate concepts and separate code, but share the one-log10-base convention.
 _Avoid_: noise scale (ambiguous with the Noise Parameter), error scale, link function
 
 ## Algorithms

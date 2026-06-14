@@ -12,10 +12,12 @@ class Gaussian(NoiseModel):
     the scale its noise is **additive on** and the **location interpretation** of
     the prediction. The defaults (``LINEAR``, ``MEAN``) are ordinary additive
     error where the prediction is the mean -- symmetric, so all locations coincide
-    and the axes are trivial. Reconfigured as (``LOG``, ``MEDIAN``) it is lognormal
-    error with the prediction as the median (the ``lognormal`` objfunc); that one
-    reconfiguration -- adding **no** new distribution family -- proves the axes are
-    orthogonal and live (ADR-0011, the analogue of Laplace proving the prior seam).
+    and the axes are trivial. Reconfigured as (``LOG10``, ``MEDIAN``) it is
+    (log10) lognormal error with the prediction as the median (the ``lognormal``
+    objfunc); that one reconfiguration -- adding **no** new distribution family --
+    proves the axes are orthogonal and live (ADR-0011, the analogue of Laplace
+    proving the prior seam). (``LN`` gives the natural-log lognormal density;
+    ADR-0022.)
 
     ``data_fit`` is the squared residual in the additive space,
     ``(mu - forward(obs))^2 / (2 sigma^2)``, where ``mu`` is the additive-space

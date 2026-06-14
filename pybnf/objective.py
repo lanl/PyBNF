@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LOG, MEDIAN, ConstantSigma, DataColumnSigma, FreeParameterSigma,
+from .noise import (LOG10, MEDIAN, ConstantSigma, DataColumnSigma, FreeParameterSigma,
                     Gaussian, Laplace, NegBinomial)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
@@ -299,7 +299,7 @@ class ColumnSummationObjective(ObjectiveFunction):
 _NOISE_FAMILIES = {
     'normal': lambda: Gaussian(),
     'gaussian': lambda: Gaussian(),
-    'lognormal': lambda: Gaussian(additive_on=LOG, location=MEDIAN),
+    'lognormal': lambda: Gaussian(additive_on=LOG10, location=MEDIAN),
     'laplace': lambda: Laplace(),
     'neg_bin': lambda: NegBinomial(),
 }
@@ -468,16 +468,19 @@ class ChiSquareObjective_Dynamic(LikelihoodObjective):
 
 @register_objfunc('lognormal')
 class LogNormalObjective(LikelihoodObjective):
-    """Lognormal observation noise: the Gaussian family additive on the log scale
-    with the prediction interpreted as the median (ADR-0011). sigma (the log-scale
-    standard deviation) comes from the data's ``_SD`` column exactly as in chi_sq --
-    being fixed, the Gaussian normalizer and the lognormal Jacobian are
-    parameter-independent and dropped, leaving the log-space squared residual
-    ``(log sim - log exp)^2 / (2 sigma^2)``. Only the noise family differs from
-    chi_sq -- the seam proof that the scale and location axes compose. Observations
-    and predictions must be positive (the lognormal support)."""
+    """Lognormal observation noise: the Gaussian family additive on the **log10**
+    scale with the prediction interpreted as the median (ADR-0011, ADR-0022). sigma
+    (the log10-scale standard deviation) comes from the data's ``_SD`` column
+    exactly as in chi_sq -- being fixed, the Gaussian normalizer and the lognormal
+    Jacobian are parameter-independent and dropped, leaving the log10-space squared
+    residual ``(log10 sim - log10 exp)^2 / (2 sigma^2)``. log10 (not natural log) so
+    sigma is a log10-scale standard deviation consistently with every other PyBNF
+    ``log`` (ADR-0022); the natural-log lognormal density is ``Gaussian(LN, MEDIAN)``.
+    Only the noise family differs from chi_sq -- the seam proof that the scale and
+    location axes compose. Observations and predictions must be positive (the
+    lognormal support)."""
 
-    noise = Gaussian(additive_on=LOG, location=MEDIAN)
+    noise = Gaussian(additive_on=LOG10, location=MEDIAN)
     sigma_source = DataColumnSigma()
 
 

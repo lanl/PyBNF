@@ -21,12 +21,12 @@ from .gaussian import Gaussian
 from .laplace import Laplace
 from .location import MEAN, MEDIAN, LocationInterpretation
 from .negative_binomial import NegBinomial
-from .scale import LINEAR, LOG, AdditiveNoiseScale
+from .scale import LINEAR, LN, LOG10, AdditiveNoiseScale
 from .source import ConstantSigma, DataColumnSigma, FreeParameterSigma, SigmaSource
 
 __all__ = [
     'NoiseModel', 'Gaussian', 'Laplace', 'NegBinomial',
-    'AdditiveNoiseScale', 'LINEAR', 'LOG',
+    'AdditiveNoiseScale', 'LINEAR', 'LOG10', 'LN',
     'LocationInterpretation', 'MEAN', 'MEDIAN',
     'SigmaSource', 'DataColumnSigma', 'FreeParameterSigma', 'ConstantSigma',
 ]

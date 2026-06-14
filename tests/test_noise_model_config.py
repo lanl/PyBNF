@@ -49,10 +49,10 @@ def test_fix_at_parses_numeric_constant():
     assert src.const == 12.5
 
 
-def test_lognormal_family_is_gaussian_on_log_median():
+def test_lognormal_family_is_gaussian_on_log10_median():
     fam, _src = _build_noise_overrides(ploop(['noise_model o = lognormal, sigma = read_exp_file _SD']))['o']
     assert isinstance(fam, noise.Gaussian)
-    assert fam.additive_on is noise.LOG and fam.location is noise.MEDIAN
+    assert fam.additive_on is noise.LOG10 and fam.location is noise.MEDIAN
 
 
 @pytest.mark.parametrize('value, match', [

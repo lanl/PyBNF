@@ -380,8 +380,9 @@ class TestChiSquareInvariants:
 # ---------------------------------------------------------------------------
 
 class TestLogNormalNoise:
-    """Lognormal observation noise = the Gaussian family reconfigured onto the log
-    scale with the prediction as the median. Oracle: scipy.stats.lognorm."""
+    """Lognormal observation noise = the Gaussian family reconfigured onto the
+    log10 scale with the prediction as the median (ADR-0022). The natural-log
+    density (the scipy.stats.lognorm oracle) is the LN scale."""
 
     def setup_method(self):
         # All-positive sim/exp (the lognormal support); shared x grid.
@@ -389,18 +390,21 @@ class TestLogNormalNoise:
         self.exp_sd = _mkdata(['# x  obs1  obs1_SD\n',
                                ' 0  3  0.5\n', ' 1  5  0.5\n', ' 2  8  0.5\n'])
 
-    def test_objfunc_is_log_space_chi_square(self):
-        """The lognormal objfunc sums (ln sim - ln exp)^2 / (2 sigma^2) -- chi_sq in
-        log space (sigma fixed from _SD, so the normalizer and Jacobian drop)."""
+    def test_objfunc_is_log10_space_chi_square(self):
+        """The lognormal objfunc sums (log10 sim - log10 exp)^2 / (2 sigma^2) --
+        chi_sq in log10 space (sigma a log10-scale std fixed from _SD, so the
+        normalizer and Jacobian drop; ADR-0022)."""
         obj = objective.LogNormalObjective()
-        expected = sum((np.log(s) - np.log(e)) ** 2 / (2 * sd ** 2)
+        expected = sum((np.log10(s) - np.log10(e)) ** 2 / (2 * sd ** 2)
                        for s, e, sd in [(2.0, 3, 0.5), (5.0, 5, 0.5), (9.0, 8, 0.5)])
         npt.assert_almost_equal(obj.evaluate(self.sim, self.exp_sd), expected)
 
     def test_family_nll_matches_scipy_lognorm(self):
-        """Gaussian(LOG, MEDIAN).nll plus the dropped Jacobian + constant equals the
-        full lognormal -logpdf (scipy oracle); median -> scipy scale = prediction."""
-        g = noise.Gaussian(additive_on=noise.LOG, location=noise.MEDIAN)
+        """Gaussian(LN, MEDIAN).nll plus the dropped Jacobian + constant equals the
+        full natural-log lognormal -logpdf (scipy oracle); median -> scipy scale =
+        prediction. scipy.stats.lognorm is defined in natural log, so this exercises
+        the LN scale (ADR-0022)."""
+        g = noise.Gaussian(additive_on=noise.LN, location=noise.MEDIAN)
         pred, obs, sigma = 9.0, 8.0, 0.5
         full_nll = g.nll(pred, obs, sigma) + np.log(obs) + 0.5 * np.log(2 * np.pi)
         npt.assert_almost_equal(full_nll, -stats.lognorm.logpdf(obs, s=sigma, scale=pred))
@@ -424,18 +428,27 @@ class TestNoiseAxes:
         median = noise.Gaussian(additive_on=noise.LINEAR, location=noise.MEDIAN)
         npt.assert_almost_equal(mean.data_fit(3.1, 3.0, 0.5), median.data_fit(3.1, 3.0, 0.5))
 
-    def test_location_diverges_on_the_log_scale(self):
-        """On the log scale the lognormal is asymmetric: prediction-as-mean shifts the
-        location parameter by sigma^2/2 from prediction-as-median, so the data fits
-        differ -- the axis is live."""
+    def test_location_diverges_on_the_log10_scale(self):
+        """On the log10 scale the lognormal is asymmetric: prediction-as-mean shifts
+        the location parameter by ln10*sigma^2/2 from prediction-as-median, so the
+        data fits differ -- the axis is live (ADR-0022)."""
         sigma = 0.5
-        mean = noise.Gaussian(additive_on=noise.LOG, location=noise.MEAN)
-        median = noise.Gaussian(additive_on=noise.LOG, location=noise.MEDIAN)
+        ln10 = np.log(10.0)
+        mean = noise.Gaussian(additive_on=noise.LOG10, location=noise.MEAN)
+        median = noise.Gaussian(additive_on=noise.LOG10, location=noise.MEDIAN)
         mean_fit = mean.data_fit(9.0, 8.0, sigma)
         assert mean_fit != median.data_fit(9.0, 8.0, sigma)
-        # median: mu = ln(pred); mean: mu = ln(pred) - sigma^2/2
-        expected_mean = (np.log(9.0) - sigma ** 2 / 2 - np.log(8.0)) ** 2 / (2 * sigma ** 2)
+        # median: mu = log10(pred); mean: mu = log10(pred) - ln10*sigma^2/2
+        expected_mean = (np.log10(9.0) - ln10 * sigma ** 2 / 2 - np.log10(8.0)) ** 2 / (2 * sigma ** 2)
         npt.assert_almost_equal(mean_fit, expected_mean)
+
+    def test_ln_mean_offset_is_half_sigma_squared(self):
+        """Natural-log (LN) mean interpretation subtracts sigma^2/2 -- the lognormal
+        moment correction in natural-log space (ADR-0022)."""
+        sigma = 0.5
+        mean = noise.Gaussian(additive_on=noise.LN, location=noise.MEAN)
+        expected = (np.log(9.0) - sigma ** 2 / 2 - np.log(8.0)) ** 2 / (2 * sigma ** 2)
+        npt.assert_almost_equal(mean.data_fit(9.0, 8.0, sigma), expected)
 
     def test_gaussian_default_is_linear_mean(self):
         """Gaussian() defaults to additive-on-linear, location-mean -- so chi_sq's
