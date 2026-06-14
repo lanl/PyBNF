@@ -51,6 +51,101 @@ def _write_ia_model(tmp_path):
     return str(xml_path)
 
 
+def _amount_species_sbml(compartment_attrs, extra_rules=""):
+    """SBML with an amount-based catalyst species S2 in compartment c.
+
+    S2 is hasOnlySubstanceUnits (an amount); bngsim stores it as a concentration
+    (amount / size), so setting it in place must divide by the compartment size
+    to match a reload. Used to pin the unit-conversion + variable-volume
+    handling (#415).
+    """
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="amt">
+    <listOfCompartments><compartment id="c" {compartment_attrs}/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S0" compartment="c" initialConcentration="10" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="S1" compartment="c" initialConcentration="0"  hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="S2" compartment="c" initialAmount="4" hasOnlySubstanceUnits="true" boundaryCondition="true" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="kf" value="0.01" constant="true"/>
+      <parameter id="vol" value="2" constant="true"/>
+      <parameter id="k_init" value="3" constant="true"/>
+    </listOfParameters>
+    {extra_rules}
+    <listOfReactions>
+      <reaction id="r1" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S0" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="S1" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>kf</ci><ci>S0</ci><ci>S2</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+# Amount-based species in a constant, non-unit (size 2) compartment.
+_AMOUNT_CONST_VOL_SBML = _amount_species_sbml('size="2" constant="true"')
+
+# Amount-based species S2 (size-2 compartment) whose initial AMOUNT is driven by
+# an initialAssignment S2 = 2*k_init. Exercises unit conversion AND initial
+# recompute together: reload bakes initialAmount=2*k_init -> concentration k_init.
+_AMOUNT_IA_SBML = _amount_species_sbml(
+    'size="2" constant="true"',
+    extra_rules='<listOfInitialAssignments><initialAssignment symbol="S2">'
+    '<math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><cn>2</cn><ci>k_init</ci></apply></math>'
+    '</initialAssignment></listOfInitialAssignments>',
+)
+
+# Same, but the compartment volume is set by an assignmentRule c := vol, so the
+# unit conversion would be parameter-dependent -> must fall back to reload.
+_AMOUNT_VAR_VOL_SBML = _amount_species_sbml(
+    'size="2" constant="false"',
+    extra_rules='<listOfRules><assignmentRule variable="c">'
+    '<math xmlns="http://www.w3.org/1998/Math/MathML"><ci>vol</ci></math>'
+    '</assignmentRule></listOfRules>',
+)
+
+
+# Like _IA_SBML, but S0's initial reads parameter P, which is itself defined by
+# an assignmentRule P := 3*k_init. So S0(0) = 3*k_init only after resolving the
+# rule -- exercises the transitive dependency walk and libSBML's rule-aware
+# initialAssignment evaluation (#415).
+_CHAINED_IA_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="chained_ia">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S0" compartment="c" initialConcentration="1" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="S1" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_init" value="5" constant="true"/>
+      <parameter id="P" value="0" constant="false"/>
+      <parameter id="kf" value="0.1" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="P">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><cn>3</cn><ci>k_init</ci></apply></math>
+      </assignmentRule>
+    </listOfRules>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="S0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>P</ci></math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="r1" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S0" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="S1" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>kf</ci><ci>S0</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
 def _raf_xml_path():
     return str(Path(__file__).resolve().parent / 'bngl_files' / 'raf.xml')
 
@@ -497,6 +592,7 @@ def test_engine_template_loaded_once_across_evaluations(tmp_path, _clear_engine_
     )
     # raf fits only rate constants (K3, K5), which do not feed any species
     # initial, so every evaluation takes the fast cached-clone path.
+    assert base._changes_touch_initials() is False
     assert base._needs_structural_reload() is False
 
     bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text = _counting_loader
@@ -521,10 +617,18 @@ def test_engine_template_loaded_once_across_evaluations(tmp_path, _clear_engine_
     assert last is not None and 'time_course' in last
 
 
+def _force_full_reload(model):
+    """Coerce a model onto the full structural-reload path (the algebraicRule
+    sentinel), to obtain the reference result the fast paths must match."""
+    model._initial_dep_names = None
+    assert model._needs_structural_reload() is True
+    return model
+
+
 @pytest.mark.bngsim_sbml
-def test_fast_path_matches_forced_reload_numerically(tmp_path, _clear_engine_cache):
-    """The in-place cached-clone path is numerically identical to the reload
-    path it replaces (#415)."""
+def test_fast_path_matches_full_reload_numerically(tmp_path, _clear_engine_cache):
+    """The in-place cached-clone path is numerically identical to a full reload
+    when no species initial is affected (#415)."""
     xml_path = _raf_xml_path()
     ps = pset.PSet(_raf_params())
     action = pset.TimeCourse({'time': '1000', 'step': '10'})
@@ -532,49 +636,75 @@ def test_fast_path_matches_forced_reload_numerically(tmp_path, _clear_engine_cac
     fast_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml_path, xml_path, pset=ps, actions=(action,),
     )
+    assert fast_model._changes_touch_initials() is False
     fast = fast_model.execute(str(tmp_path), 'raf_fast', 1000)['time_course']
 
-    # Force the legacy reload path for the same params by spoofing the dependency
-    # set so _needs_structural_reload returns True.
-    reload_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+    reload_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml_path, xml_path, pset=ps, actions=(action,),
-    )
-    reload_model._initial_dep_names = {'K3', 'K5'}
-    assert reload_model._needs_structural_reload() is True
+    ))
     slow = reload_model.execute(str(tmp_path), 'raf_slow', 1000)['time_course']
 
     npt.assert_allclose(fast.data, slow.data, rtol=0, atol=0)
 
 
 @pytest.mark.bngsim_sbml
-def test_param_driven_initial_assignment_falls_back_to_reload(tmp_path, _clear_engine_cache):
-    """Fitting a parameter that sets a species' initial value (via an
-    initialAssignment) must recompute that initial each evaluation. The bridge
-    detects the dependency and uses the reload path so the result stays correct
-    (#415)."""
+def test_param_driven_initial_recomputed_without_reload(tmp_path, _clear_engine_cache):
+    """Fitting a parameter that sets a species' initial via an initialAssignment
+    recomputes that initial *in place* -- reusing the cached engine model (and
+    its Jacobian), not reloading. The recomputed initial must track the
+    parameter and match a full reload exactly (#415)."""
     xml_path = _write_ia_model(tmp_path)
     action = pset.TimeCourse({'time': '5', 'step': '5', 'method': 'ode'})
 
-    # k_init feeds S0's initialAssignment, so it must be flagged as requiring a
-    # structural reload when fitted.
     probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
     )
+    # k_init feeds S0's initialAssignment, so a change to it touches initials,
+    # but this is handled in place (no full reload).
     assert probe._initial_dep_names == {'k_init'}
+    assert probe._initial_expr_species == {'S0'}
+    assert probe._needs_structural_reload() is False
 
+    # The engine model is loaded exactly once across evaluations even though the
+    # initial is parameter-driven (the recompute path does not reload).
+    load_count = {'n': 0}
+    orig_loader = bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text
+
+    def _counting_loader(self, text):
+        load_count['n'] += 1
+        return orig_loader(self, text)
+
+    bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text = _counting_loader
     results = {}
-    for k in (5.0, 10.0):
-        ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 20., k)])
-        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
-            xml_path, xml_path, pset=ps, actions=(action,),
-        )
-        assert model._needs_structural_reload() is True
-        results[k] = model.execute(str(tmp_path), f'ia_{int(k)}', 5)['time_course']
+    try:
+        for k in (5.0, 10.0, 7.0):
+            ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 20., k)])
+            model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+                xml_path, xml_path, pset=ps, actions=(action,),
+            )
+            assert model._changes_touch_initials() is True
+            results[k] = model.execute(str(tmp_path), f'ia_{int(k)}', 5)['time_course']
+    finally:
+        bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text = orig_loader
 
-    # S0(t=0) must track 2*k_init (10 vs 20), proving the initial was recomputed.
+    assert load_count['n'] == 1, (
+        f'engine model was loaded {load_count["n"]} times; the parameter-driven '
+        'initial must be recomputed in place, not by reloading'
+    )
+    # S0(t=0) tracks 2*k_init (10, 20, 14), proving the initial was recomputed.
     s0_at_zero = {k: float(d['S0'][0]) for k, d in results.items()}
     assert abs(s0_at_zero[5.0] - 10.0) < 1e-9, s0_at_zero
     assert abs(s0_at_zero[10.0] - 20.0) < 1e-9, s0_at_zero
+    assert abs(s0_at_zero[7.0] - 14.0) < 1e-9, s0_at_zero
+
+    # Full numerical parity against a forced full reload, per parameter value.
+    for k in (5.0, 10.0, 7.0):
+        ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 20., k)])
+        ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        ))
+        ref = ref_model.execute(str(tmp_path), f'ia_ref_{int(k)}', 5)['time_course']
+        npt.assert_allclose(results[k].data, ref.data, rtol=0, atol=0)
 
 
 @pytest.mark.bngsim_sbml
@@ -588,7 +718,173 @@ def test_initial_assignment_independent_param_uses_fast_path(tmp_path, _clear_en
     model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
         xml_path, xml_path, pset=ps, actions=(action,),
     )
+    assert model._changes_touch_initials() is False
     assert model._needs_structural_reload() is False
     data = model.execute(str(tmp_path), 'ia_fast', 5)['time_course']
     # Base k_init=5 -> S0(0)=10 regardless of kf.
     assert abs(float(data['S0'][0]) - 10.0) < 1e-9
+
+
+@pytest.mark.bngsim_sbml
+def test_chained_assignment_rule_initial_recomputed(tmp_path, _clear_engine_cache):
+    """A species initial that reads a parameter through an assignmentRule chain
+    (S0 = P, P := 3*k_init) is recomputed in place and matches a full reload.
+    Exercises the transitive dependency walk + libSBML's rule resolution (#415).
+    """
+    xml_path = tmp_path / 'chained.xml'
+    xml_path.write_text(_CHAINED_IA_SBML)
+    xml_path = str(xml_path)
+    action = pset.TimeCourse({'time': '5', 'step': '5', 'method': 'ode'})
+
+    probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    # k_init reaches S0's initial through the assignmentRule-defined P.
+    assert 'k_init' in probe._initial_dep_names
+    assert probe._initial_expr_species == {'S0'}
+
+    for k in (5.0, 9.0):
+        ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 20., k)])
+        fast_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        assert fast_model._needs_structural_reload() is False
+        fast = fast_model.execute(str(tmp_path), f'chain_{int(k)}', 5)['time_course']
+        # S0(0) = P = 3*k_init.
+        assert abs(float(fast['S0'][0]) - 3.0 * k) < 1e-9
+
+        ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        ))
+        ref = ref_model.execute(str(tmp_path), f'chain_ref_{int(k)}', 5)['time_course']
+        npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)
+
+
+@pytest.mark.bngsim_sbml
+def test_recompute_falls_back_to_reload_without_libsbml_transform(tmp_path, _clear_engine_cache, monkeypatch):
+    """If libSBML's expandInitialAssignments is unavailable, the parameter-driven
+    initial case falls back to a full reload to stay correct (#415)."""
+    monkeypatch.setattr(bngsim_sbml_model, '_HAS_EXPAND_INITIAL_ASSIGNMENTS', False)
+    xml_path = _write_ia_model(tmp_path)
+    action = pset.TimeCourse({'time': '5', 'step': '5', 'method': 'ode'})
+
+    load_seen = {'n': 0}
+    orig_loader = bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text
+
+    def _counting_loader(self, text):
+        load_seen['n'] += 1
+        return orig_loader(self, text)
+
+    monkeypatch.setattr(
+        bngsim_sbml_model.BngsimSbmlModelNoTimeout,
+        '_load_bngsim_model_from_text', _counting_loader,
+    )
+    last = None
+    for k in (10.0, 15.0, 7.0):
+        ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 20., k)])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        last = model.execute(str(tmp_path), f'ia_noexpand_{int(k)}', 5)['time_course']
+    # Result is still correct (S0(0) = 2*k_init = 14) via the reload fallback...
+    assert abs(float(last['S0'][0]) - 14.0) < 1e-9
+    # ...and the fallback reloads per evaluation (3 reloads, no template caching),
+    # unlike the in-place recompute path which would load exactly once.
+    assert load_seen['n'] == 3
+
+
+@pytest.mark.bngsim_sbml
+def test_amount_species_nonunit_compartment_matches_reload(tmp_path, _clear_engine_cache):
+    """An amount-based species in a constant non-unit compartment is set in
+    place with the right unit conversion (amount / size), matching a full
+    reload (#415)."""
+    xml_path = tmp_path / 'amt_const.xml'
+    xml_path.write_text(_AMOUNT_CONST_VOL_SBML)
+    xml_path = str(xml_path)
+    action = pset.TimeCourse({'time': '3', 'step': '3', 'method': 'ode'})
+
+    probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert probe._unsafe_volume is False
+    assert probe._species_unit_factor['S2'] == 0.5   # 1 / size(=2)
+    assert probe._species_unit_factor['S0'] == 1.0   # concentration-based
+
+    for amt in (4.0, 6.0):
+        # Fit the amount-based species S2 directly (PyBNF value is an amount).
+        ps = pset.PSet([pset.FreeParameter('S2', 'uniform_var', 1., 10., amt)])
+        fast_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        assert fast_model._needs_structural_reload() is False
+        fast = fast_model.execute(str(tmp_path), f'amt_fast_{int(amt)}', 3)['time_course']
+
+        ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        ))
+        ref = ref_model.execute(str(tmp_path), f'amt_ref_{int(amt)}', 3)['time_course']
+        npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)
+
+
+@pytest.mark.bngsim_sbml
+def test_variable_volume_compartment_forces_reload(tmp_path, _clear_engine_cache):
+    """An amount-based species in a non-constant-volume compartment can't be
+    safely unit-converted in place, so the bridge falls back to a full reload --
+    and the result stays correct (#415)."""
+    xml_path = tmp_path / 'amt_var.xml'
+    xml_path.write_text(_AMOUNT_VAR_VOL_SBML)
+    xml_path = str(xml_path)
+    action = pset.TimeCourse({'time': '3', 'step': '3', 'method': 'ode'})
+
+    probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert probe._unsafe_volume is True
+    assert probe._needs_structural_reload() is True
+
+    ps = pset.PSet([pset.FreeParameter('S2', 'uniform_var', 1., 10., 6.0)])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,),
+    )
+    fast = model.execute(str(tmp_path), 'amt_var', 3)['time_course']
+    ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,),
+    ))
+    ref = ref_model.execute(str(tmp_path), 'amt_var_ref', 3)['time_course']
+    npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)
+
+
+@pytest.mark.bngsim_sbml
+def test_amount_species_initial_assignment_recompute_with_units(tmp_path, _clear_engine_cache):
+    """Unit conversion AND initial recompute together: an amount-based species
+    (size-2 compartment) whose initialAmount is set by initialAssignment
+    2*k_init. Recomputed in place, matching a full reload (#415)."""
+    xml_path = tmp_path / 'amt_ia.xml'
+    xml_path.write_text(_AMOUNT_IA_SBML)
+    xml_path = str(xml_path)
+    action = pset.TimeCourse({'time': '3', 'step': '3', 'method': 'ode'})
+
+    probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert probe._initial_expr_species == {'S2'}
+    assert 'k_init' in probe._initial_dep_names
+    assert probe._species_unit_factor['S2'] == 0.5
+    assert probe._unsafe_volume is False
+
+    for k in (3.0, 5.0):
+        ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 10., k)])
+        fast_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        assert fast_model._needs_structural_reload() is False
+        assert fast_model._changes_touch_initials() is True
+        fast = fast_model.execute(str(tmp_path), f'amt_ia_{int(k)}', 3)['time_course']
+        # S2(0) concentration = initialAmount(2*k_init) / size(2) = k_init.
+        assert abs(float(fast['S2'][0]) - k) < 1e-9
+
+        ref_model = _force_full_reload(bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        ))
+        ref = ref_model.execute(str(tmp_path), f'amt_ia_ref_{int(k)}', 3)['time_course']
+        npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)

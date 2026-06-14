@@ -52,6 +52,17 @@ except ImportError:
     libsbml = None
 
 
+# libSBML can evaluate initialAssignments in place (resolving assignmentRule
+# intermediates), letting us recompute parameter-driven species initials
+# without a full model reload. If the transform is unavailable we fall back to
+# reloading from SBML text for the (rare) parameter-driven-initial case (#415).
+_HAS_EXPAND_INITIAL_ASSIGNMENTS = (
+    libsbml is not None
+    and hasattr(libsbml, 'SBMLTransforms')
+    and hasattr(libsbml.SBMLTransforms, 'expandInitialAssignments')
+)
+
+
 def _require_bngsim_sbml_support():
     if not BNGSIM_HAS_SBML:
         raise RuntimeError(BNGSIM_SBML_ERROR)
@@ -158,6 +169,8 @@ class BngsimSbmlModelNoTimeout(Model):
         self.global_param_names = self._global_param_names
         self.param_names = self._species_name_set.union(set(self._global_param_names))
         self._initial_dep_names = self._compute_initial_dependency_names(doc.getModel())
+        self._species_unit_factor, self._unsafe_volume = self._compute_species_unit_factors(
+            doc.getModel())
 
     @staticmethod
     def _collect_ast_names(node, out):
@@ -172,30 +185,42 @@ class BngsimSbmlModelNoTimeout(Model):
             BngsimSbmlModelNoTimeout._collect_ast_names(node.getChild(i), out)
 
     def _compute_initial_dependency_names(self, sbml_model):
-        """Names whose change requires recomputing a species' initial value.
+        """Analyze which species initials depend on which parameters/species.
 
-        Returns the set of parameter/species names that any species' initial
-        concentration depends on (transitively through initialAssignments and
-        assignmentRules), or ``None`` if the model contains an algebraicRule
+        Sets ``self._initial_expr_species`` (the species whose initial value is
+        fixed at load time by an ``initialAssignment``) and returns the set of
+        parameter/species names that those initials depend on -- transitively,
+        following ``assignmentRule``-defined intermediates. When a changed name
+        is in this set, those initials must be recomputed for the evaluation
+        (see :meth:`_recompute_species_initials`); an empty set means parameter
+        values can never change a species initial, so the fast cached-clone
+        path is exact. Returns ``None`` if the model has an ``algebraicRule``
         (whose effect on initials we do not analyze, so we conservatively force
-        a reload). When this set is empty, fitted parameter values can never
-        change a species initial, so the fast cached-clone path is exact. See
-        issue #415.
+        a full reload). See issue #415.
+
+        Only ``initialAssignment``-on-species seed the dependency: a species
+        governed by an ``assignmentRule`` is recomputed *dynamically* by bngsim
+        under ``set_param`` (verified), so it needs no special handling.
         """
+        self._initial_expr_species = set()
         # symbol -> referenced names, for every expression that *defines* a
-        # symbol's value (initialAssignments and assignmentRules). Used both to
-        # seed (species-targeted definitions) and to expand transitively.
+        # symbol's value. assignmentRules are included only so the transitive
+        # walk can resolve a parameter that an initialAssignment reads through.
         expr_refs = {}
+        ia_species = {}  # species symbol -> initialAssignment refs (the seed)
         for i in range(sbml_model.getNumInitialAssignments()):
             ia = sbml_model.getInitialAssignment(i)
             refs = set()
             self._collect_ast_names(ia.getMath(), refs)
-            expr_refs.setdefault(ia.getSymbol(), set()).update(refs)
+            symbol = ia.getSymbol()
+            expr_refs.setdefault(symbol, set()).update(refs)
+            if symbol in self._species_name_set:
+                ia_species[symbol] = refs
         for i in range(sbml_model.getNumRules()):
             rule = sbml_model.getRule(i)
             if rule.isAlgebraic():
-                # An algebraic rule constrains initial values implicitly; we do
-                # not solve it, so force the correctness-preserving reload path.
+                # An algebraic rule constrains values implicitly; we do not
+                # solve it, so force the correctness-preserving reload path.
                 return None
             if rule.isAssignment():
                 refs = set()
@@ -203,15 +228,16 @@ class BngsimSbmlModelNoTimeout(Model):
                 expr_refs.setdefault(rule.getVariable(), set()).update(refs)
             # Rate rules define d/dt, not the initial value -> ignored here.
 
-        # Seed from expressions that determine a *species'* initial value, then
-        # expand through any referenced symbol that is itself expression-defined
-        # (e.g. a species initial that depends on a parameter set by a rule).
+        self._initial_expr_species = set(ia_species)
+
+        # Seed from initialAssignment-on-species, then expand through any
+        # referenced symbol that is itself expression-defined (e.g. a species
+        # initial that reads a parameter set by an assignmentRule).
         dep = set()
         worklist = []
-        for symbol, refs in expr_refs.items():
-            if symbol in self._species_name_set:
-                dep.update(refs)
-                worklist.extend(refs)
+        for refs in ia_species.values():
+            dep.update(refs)
+            worklist.extend(refs)
         seen = set(worklist)
         while worklist:
             name = worklist.pop()
@@ -222,18 +248,57 @@ class BngsimSbmlModelNoTimeout(Model):
                     worklist.append(ref)
         return dep
 
-    def _needs_structural_reload(self, mut=None, scan_param=None):
-        """Whether this evaluation must reload the model from SBML text.
+    def _compute_species_unit_factors(self, sbml_model):
+        """Per-species factor converting a PyBNF species value to a bngsim
+        concentration, plus a flag for volumes we cannot safely convert.
 
-        True only when a parameter/species being changed this evaluation can
-        alter a species' initial value (so the engine model's baked-in initial
-        concentrations would be stale under in-place ``set_param``). Otherwise
-        the fast cached-clone path is exact. See issue #415.
+        bngsim works in concentrations internally. A concentration-based species
+        value is already a concentration (factor 1.0); an amount-based species
+        value is an amount, so its concentration is amount / compartment_size
+        (factor 1/size). The reload path bakes these units on load, so the
+        in-place paths must apply the same conversion to stay numerically
+        identical. When an amount-based species sits in a compartment whose size
+        is not a load-time constant (non-constant, or set by an
+        initialAssignment/rule), the factor would itself be parameter-dependent;
+        we flag that and fall back to a full reload. See issue #415.
         """
-        if self._initial_dep_names is None:
-            return True
-        if not self._initial_dep_names:
-            return False
+        ruled = set()
+        for i in range(sbml_model.getNumInitialAssignments()):
+            ruled.add(sbml_model.getInitialAssignment(i).getSymbol())
+        for i in range(sbml_model.getNumRules()):
+            rule = sbml_model.getRule(i)
+            var = rule.getVariable() if hasattr(rule, 'getVariable') else None
+            if var:
+                ruled.add(var)
+
+        factors = {}
+        unsafe = False
+        for i in range(sbml_model.getNumSpecies()):
+            sp = sbml_model.getSpecies(i)
+            name = sp.getId()
+            amount_based = sp.isSetInitialAmount() or (
+                not sp.isSetInitialConcentration() and sp.getHasOnlySubstanceUnits()
+            )
+            if not amount_based:
+                factors[name] = 1.0
+                continue
+            comp_id = sp.getCompartment()
+            comp = sbml_model.getCompartment(comp_id)
+            vol = comp.getSize() if (comp is not None and comp.isSetSize()) else 1.0
+            comp_constant = comp.getConstant() if comp is not None else True
+            volume_is_constant = (
+                comp_constant and comp_id not in ruled
+                and vol == vol and vol > 0  # finite and positive
+            )
+            if volume_is_constant:
+                factors[name] = 1.0 / float(vol)
+            else:
+                factors[name] = 1.0  # unused: the flag forces a reload
+                unsafe = True
+        return factors, unsafe
+
+    def _changed_names(self, mut=None, scan_param=None):
+        """The parameter/species names this evaluation changes."""
         changed = set()
         if self.param_set is not None:
             changed.update(self.param_set.keys())
@@ -241,7 +306,27 @@ class BngsimSbmlModelNoTimeout(Model):
             changed.update(mi.name for mi in mut)
         if scan_param is not None:
             changed.add(scan_param)
-        return bool(changed & self._initial_dep_names)
+        return changed
+
+    def _changes_touch_initials(self, mut=None, scan_param=None):
+        """Whether this evaluation changes a name that a species initial depends
+        on, so the baked-in initial concentrations must be recomputed (#415)."""
+        if not self._initial_dep_names:
+            return False
+        return bool(self._changed_names(mut=mut, scan_param=scan_param)
+                    & self._initial_dep_names)
+
+    def _needs_structural_reload(self, mut=None, scan_param=None):
+        """Whether this evaluation needs a full reload from SBML text.
+
+        True for models with an ``algebraicRule`` (which we do not analyze) or
+        with an amount-based species in a non-constant-volume compartment (whose
+        unit conversion would be parameter-dependent). Parameter-driven species
+        initials no longer force a reload -- they are recomputed in place via
+        libSBML, reusing the cached engine model and its derived Jacobian (see
+        :meth:`_recompute_species_initials`, issue #415).
+        """
+        return self._initial_dep_names is None or self._unsafe_volume
 
     def _load_engine_model_or_raise(self, parse_error_message):
         """Load the bngsim engine model, letting FileNotFoundError propagate
@@ -376,9 +461,14 @@ class BngsimSbmlModelNoTimeout(Model):
         return template
 
     def _set_engine_value_if_present(self, engine_model, name, value):
-        """Apply a value to the engine model. Returns True iff it is a species."""
+        """Apply a value to the engine model. Returns True iff it is a species.
+
+        Species values are converted from PyBNF units (amount or concentration,
+        per the SBML species) to the concentration bngsim works in, matching the
+        reload path (see :meth:`_compute_species_unit_factors`)."""
         if name in self._species_name_set:
-            engine_model.set_concentration(name, float(value))
+            engine_model.set_concentration(
+                name, float(value) * self._species_unit_factor[name])
             return True
         if name in self._global_param_names:
             engine_model.set_param(name, float(value))
@@ -386,7 +476,7 @@ class BngsimSbmlModelNoTimeout(Model):
 
     def _get_engine_value_if_present(self, engine_model, name):
         if name in self._species_name_set:
-            return float(engine_model.get_concentration(name))
+            return float(engine_model.get_concentration(name)) / self._species_unit_factor[name]
         if name in self._global_param_names:
             return float(engine_model.get_param(name))
         return None
@@ -413,15 +503,17 @@ class BngsimSbmlModelNoTimeout(Model):
                 touched_species = True
         return touched_species
 
-    def _prepare_engine_model(self, mut=None, scan_override=None):
+    def _prepare_engine_model(self, mut=None, scan_override=None, ic_overrides=None):
         """Clone the cached engine template and apply per-evaluation values.
 
         The fast-path analogue of ``_build_sbml_doc`` + reload: param_set,
         mutant deltas, and any scan override are applied in place via
         set_param/set_concentration on a cheap clone of the cached model,
-        skipping the libSBML reparse + Jacobian re-derivation. Used only when
-        the changed names cannot affect a species initial value (see
-        ``_needs_structural_reload``). See issue #415.
+        skipping the libSBML reparse + Jacobian re-derivation. ``ic_overrides``
+        (species name -> initial concentration) sets the recomputed initial
+        values of species whose initials are parameter-driven; it is applied
+        last so those values win over a direct param_set/scan assignment, and
+        is baked in via save_concentrations. See issue #415.
         """
         engine_model = self._get_engine_template().clone()
         touched_species = self._apply_param_set_engine(engine_model)
@@ -431,19 +523,61 @@ class BngsimSbmlModelNoTimeout(Model):
             scan_name, scan_value = scan_override
             if self._set_engine_value_if_present(engine_model, scan_name, scan_value):
                 touched_species = True
+        if ic_overrides:
+            for species_name, ic in ic_overrides.items():
+                self._set_engine_value_if_present(engine_model, species_name, ic)
+            touched_species = True
         if touched_species:
             engine_model.save_concentrations()
         engine_model.reset()
         return engine_model
 
+    def _recompute_species_initials(self, mut=None, scan_override=None):
+        """Recompute the parameter-driven species initials for this evaluation.
+
+        Builds the SBML doc with this evaluation's parameter/species/scan
+        changes applied, evaluates its initialAssignments in place via libSBML
+        (which resolves assignmentRule intermediates), and returns a
+        ``{species: initial_concentration}`` mapping for the species whose
+        initials are fixed at load by an initialAssignment. This reproduces the
+        initials a full reload would bake in, without re-deriving the Jacobian.
+        See issue #415.
+        """
+        doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
+        sbml_model = doc.getModel()
+        libsbml.SBMLTransforms.expandInitialAssignments(sbml_model)
+        overrides = {}
+        for species_name in self._initial_expr_species:
+            ic = self._get_model_value_if_present(sbml_model, species_name)
+            if ic is not None:
+                overrides[species_name] = ic
+        return overrides
+
     def _engine_model_for_action(self, mut=None, scan_override=None):
-        """Build the engine model for one action: fast cached-clone path when
-        safe, else the correctness-preserving reload from SBML text (#415)."""
+        """Build the engine model for one action by reusing the cached engine
+        template (see issue #415).
+
+        Three paths, cheapest first: (1) clone + in-place set_param when no
+        species initial is affected; (2) clone + recomputed initials when a
+        parameter-driven initialAssignment is in play; (3) a full reload from
+        SBML text only for models with an algebraicRule (which we do not
+        analyze). All three avoid re-deriving the analytical Jacobian except
+        the last.
+        """
         scan_param = scan_override[0] if scan_override is not None else None
         if self._needs_structural_reload(mut=mut, scan_param=scan_param):
             doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
             return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
-        return self._prepare_engine_model(mut=mut, scan_override=scan_override)
+        ic_overrides = None
+        if self._changes_touch_initials(mut=mut, scan_param=scan_param):
+            if not _HAS_EXPAND_INITIAL_ASSIGNMENTS:
+                # No in-place initial evaluation available -> reload to stay correct.
+                doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
+                return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+            ic_overrides = self._recompute_species_initials(
+                mut=mut, scan_override=scan_override)
+        return self._prepare_engine_model(
+            mut=mut, scan_override=scan_override, ic_overrides=ic_overrides)
 
     def model_text(self, mut=None):
         logger.info('Generating model text for %s', self.name)
