@@ -1,0 +1,48 @@
+begin model
+
+  begin parameters
+
+# Original values used to generate the data
+# (v1, v2, v3) = 0.5, 1, 3
+
+#Parabola:    y = v1*(x^2)  +  v2*x  +  v3
+
+    v1 v1__FREE
+    v2 v2__FREE
+    v3 v3__FREE
+
+# b_y is the scale of the Laplace observation noise on observable y. It is a
+# fit-time noise parameter (used by the likelihood, not the dynamics), but like
+# every PyBNF free parameter it is declared here so the .conf and model agree.
+    b_y b_y__FREE
+
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)+v3
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>-0,t_end=>20,n_steps=>20,suffix=>"par1",print_functions=>1})
+
+end actions

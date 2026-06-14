@@ -64,6 +64,10 @@ A model if IGF1R interation with IGF, orignally published and fit with BioNetFit
 
 The original study also performed bootstrapping to assess parameter uncertainty. We provide the config igf1r_boot.conf to perform the same analysis in PyBNF. The results are expected to match the bootstrapping figure in [Erickson2019]_.
 
+per_observable_noise
+^^^^^^^^^^^^^^^^^^^^^
+A demonstration of per-observable noise models (issue #410): assigning a different noise model to each observable within a single fit. The simple parabola model outputs two observables, ``x`` and ``y``; using ``noise_model`` keys we score ``x`` with ordinary Gaussian noise (sigma read per point from the data's ``x_SD`` column) and ``y`` with outlier-robust Laplace noise whose scale is estimated as a free parameter. The global ``objfunc`` remains the default for any observable not overridden. See the ``noise_model`` and ``objfunc`` entries in :ref:`config_keys` for the full syntax.
+
 raf_sbml
 ^^^^^^^^
 A SBML model of MST2 and Raf1 crosstalk described in [Romano2014]_ and published on BioModels Database. We include this problem as an example of fitting a typical SBML model found on BioModels Database. We generated synthetic data using the ground truth parameters in the published model, and try to recover the ground truth by fitting. 
@@ -110,7 +114,7 @@ Examples by complexity
 ^^^^^^^^^^^^^^^^^^^^^^
 
  * Trivial (for validating installation): `demo`_, `constraint_demo`_
- * Easy (Can run on a personal computer): `receptor`_, `receptor_nf`_ `constraint_raf`_, `fceri_gamma`_, `egfr_benchmark`_
+ * Easy (Can run on a personal computer): `receptor`_, `receptor_nf`_ `constraint_raf`_, `fceri_gamma`_, `egfr_benchmark`_, `per_observable_noise`_
  * Moderate: `degranulation`_, `igf1r`_, `egfr_ode`_, `egfr_nf`_, `raf_sbml`_
  * Difficult (Recommended on a cluster only): `tcr`_, `tlbr`_, `yeast_cell_cycle`_
 
@@ -134,6 +138,7 @@ Examples by PyBNF feature
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
  * Comparison of all available algorithms: `egfr_benchmark`_
+ * Per-observable noise models: `per_observable_noise`_
  * Bootstrapping: `igf1r`_
  * Calculating Bayesian posterior: `degranulation`_
  * Advanced constraint configuration: `constraint_advanced`_
