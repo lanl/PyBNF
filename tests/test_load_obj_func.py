@@ -20,7 +20,7 @@ import pytest
 
 from pybnf.config import Configuration, UnknownObjectiveFunctionError
 from pybnf.objective import (
-    ChiSquareObjective, ChiSquareObjective_Dynamic, LogNormalObjective,
+    ChiSquareObjective, ChiSquareObjective_Dynamic, LogNormalObjective, LaplaceObjective,
     SumOfSquaresObjective, NormSumOfSquaresObjective, AveNormSumOfSquaresObjective,
     SumOfDiffsObjective, NegBinLikelihood_Dynamic, NegBinLikelihood, KLLikelihood,
     DirectPassObjective,
@@ -33,6 +33,7 @@ _OBJFUNCS = [
     ('chi_sq', ChiSquareObjective),
     ('chi_sq_dynamic', ChiSquareObjective_Dynamic),
     ('lognormal', LogNormalObjective),
+    ('laplace', LaplaceObjective),
     ('sos', SumOfSquaresObjective),
     ('norm_sos', NormSumOfSquaresObjective),
     ('ave_norm_sos', AveNormSumOfSquaresObjective),

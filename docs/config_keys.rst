@@ -48,24 +48,56 @@ Required Keys
 **objfunc**
   Which :ref:`objective function <objective>` to use. 
   
-   - ``chi_sq`` - Chi squared
+   - ``chi_sq`` - Chi squared (Gaussian noise; sigma per point from the data's ``_SD`` column)
    - ``chi_sq_dynamic`` - Chi squared with sigma as a free parameter (Requires sigma__FREE in the model and the configuration file)
+   - ``lognormal`` - Lognormal noise (Gaussian on the log scale; sigma per point from the data's ``_SD`` column)
+   - ``laplace`` - Laplace (double-exponential) noise with the scale b as a free parameter (Requires b__FREE in the model and the configuration file)
    - ``neg_bin`` - Negative Binomial (Requires neg_bin_r set to a number in the configuration file i.e neg_bin_r = 2, Default = 24)
    - ``neg_bin_dynamic`` - Negative Binomial with r as a free parameter (Requires r__FREE in the model and the configuration file)
    - ``kl`` - Kullback-Leibler
    - ``sos`` - Sum of squares
    - ``sod`` - Sum of differences
    - ``norm_sos`` - Sum of squares, normalized by the value at each point,
-   - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable. 
-  
-   
-   
+   - ``ave_norm_sos`` - Sum of squares, normalized by the average value of the variable.
+
+   This sets one noise model for the whole fit. To use a different noise model for
+   particular observables, override them with :ref:`noise_model <noise_model_key>` keys.
+
   Default: chi_sq
-  
+
   Example:
-  
+
     * ``objfunc = chi_sq``
-   
+
+
+.. _noise_model_key:
+
+**noise_model**
+  Override the :ref:`objfunc <objective>` noise model for a single observable
+  (data column), so different observables in one fit can use different noise
+  models. The global ``objfunc`` remains the default for every observable not named
+  by a ``noise_model`` key. Each key names the distribution family and, for each of
+  the family's noise parameters, where its value comes from::
+
+    noise_model <observable> = <family>, <parameter> = <source>[, <parameter> = <source> ...]
+
+  The **family** is one of ``normal``, ``lognormal``, ``laplace``, or ``neg_bin``.
+  Each **parameter** is named by its standard statistical name -- ``sigma`` for
+  ``normal`` / ``lognormal``, ``scale`` for ``laplace``, ``dispersion`` for
+  ``neg_bin``. Each **source** is one of:
+
+   - ``read_exp_file <suffix>`` - read it per point from the experimental data
+     column ``<observable><suffix>`` (conventionally ``_SD``).
+   - ``fit <name>__FREE`` - estimate it as a free parameter, declared the usual way
+     (e.g. ``uniform_var = <name>__FREE <lower> <upper>``).
+   - ``fix_at <number>`` - hold it at a fixed numeric constant.
+
+  Examples:
+
+    * ``noise_model obs2 = laplace, scale = fit b_obs2__FREE``
+    * ``noise_model obs3 = normal, sigma = read_exp_file _SD``
+    * ``noise_model obs4 = neg_bin, dispersion = fix_at 10``
+
 
 **population_size**
   The number parameter sets to maintain in a single iteration of the algorithm. See algorithm descriptions for more

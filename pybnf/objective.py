@@ -1,6 +1,7 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import LOG, MEDIAN, Gaussian, NegBinomial
+from .noise import (LOG, MEDIAN, ConstantSigma, DataColumnSigma, FreeParameterSigma,
+                    Gaussian, Laplace, NegBinomial)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -39,12 +40,6 @@ class ObjectiveFunction:
     The base class includes all the support we need for constraints.
     """
 
-    #: {free-parameter name: the instance attribute its value sets at eval time}.
-    #: Lets an objfunc declaratively own a noise free parameter (ADR-0011) -- e.g.
-    #: chi_sq_dynamic owns ``sigma__FREE`` -> ``self.sigma`` -- instead of the base
-    #: hard-coding the parameter names. Empty unless a subclass overrides it.
-    free_noise_params = {}
-
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -60,15 +55,15 @@ class ObjectiveFunction:
         :type show_warnings: bool
         :return:
         """
+        self._pset_values = {}
         try:
             self.pset = pset
-            # Resolve any free-parameter noise values the objfunc declares (e.g.
-            # chi_sq_dynamic's sigma, neg_bin_dynamic's r) by name from the pset
-            # (ADR-0011). Reading p.name here also disambiguates the legacy calling
-            # convention below: constraint sets lack .name -> AttributeError.
-            for p in self.pset:
-                if p.name in self.free_noise_params:
-                    setattr(self, self.free_noise_params[p.name], p.value)
+            # Resolve the pset into a {name: value} map once; a FreeParameterSigma
+            # noise source (e.g. chi_sq_dynamic's sigma__FREE, neg_bin_dynamic's
+            # r__FREE) reads its value from it by name (ADR-0021). Reading p.name
+            # here also disambiguates the legacy calling convention below:
+            # constraint sets lack .name -> AttributeError.
+            self._pset_values = {p.name: p.value for p in self.pset}
         except AttributeError:
             # Legacy calling convention: constraints passed in the pset position.
             constraints = pset
@@ -116,6 +111,14 @@ class ObjectiveFunction:
         override -- the uniform construction entry point replacing the registry's
         per-objfunc ``config_args`` recipe."""
         return cls()
+
+    def required_free_noise_params(self):
+        """The free-parameter names this objective requires the fit to declare for
+        its estimated noise sources -- empty unless it is a likelihood with a
+        free-parameter noise source (ADR-0021). ``_load_variables`` checks these
+        against the declared free parameters, generalizing the old per-objfunc
+        ``sigma__FREE`` / ``r__FREE`` hard-coded checks."""
+        return set()
 
 
 class SummationObjective(ObjectiveFunction):
@@ -286,65 +289,209 @@ class ColumnSummationObjective(ObjectiveFunction):
                              + str(missed))
 
 
-@register_objfunc('chi_sq')
-class ChiSquareObjective(SummationObjective):
+# --- per-point likelihood objfuncs (ADR-0011, ADR-0021) ----------------------
+#
+# The native ``noise_model`` surface vocabulary: a family token -> its NoiseModel,
+# and a source verb -> its SigmaSource. Deliberately not a registry (ADR-0011): the
+# token sets are small and fixed, and objfunc dispatch is already the registry's
+# job. ``normal``/``gaussian`` are aliases; ``lognormal`` is the Gaussian family
+# reconfigured onto the log scale (median), mirroring the lognormal objfunc.
+_NOISE_FAMILIES = {
+    'normal': lambda: Gaussian(),
+    'gaussian': lambda: Gaussian(),
+    'lognormal': lambda: Gaussian(additive_on=LOG, location=MEDIAN),
+    'laplace': lambda: Laplace(),
+    'neg_bin': lambda: NegBinomial(),
+}
 
-    noise = Gaussian()
+#: The canonical (standard statistical) name of each family's single noise
+#: parameter, used to validate the ``noise_model`` field name. Today every family
+#: has exactly one; a future multi-parameter family lists several (#410/ADR-0021).
+_NOISE_PARAM_NAMES = {
+    'normal': 'sigma', 'gaussian': 'sigma', 'lognormal': 'sigma',
+    'laplace': 'scale', 'neg_bin': 'dispersion',
+}
+
+
+def _build_sigma_source(verb, arg):
+    """One native ``noise_model`` source field (``fit`` / ``read_exp_file`` /
+    ``fix_at``) -> its SigmaSource (ADR-0021)."""
+    if verb == 'fit':
+        return FreeParameterSigma(arg)
+    if verb == 'read_exp_file':
+        return DataColumnSigma(arg)
+    if verb == 'fix_at':
+        return ConstantSigma(float(arg))
+    raise PybnfError(f'Unknown noise parameter source "{verb}"',
+                     f'The noise parameter source "{verb}" is not recognized. Use one of: '
+                     'fit <param__FREE>, read_exp_file <suffix>, or fix_at <number>.')
+
+
+def _build_noise_spec(observable, value):
+    """One parsed ``noise_model`` line -> its (NoiseModel, SigmaSource) pair."""
+    family_token, fields = value
+    family_token = family_token.lower()
+    if family_token not in _NOISE_FAMILIES:
+        raise PybnfError(f'Unknown noise model family "{family_token}"',
+                         f'The noise model family "{family_token}" for observable {observable} is not '
+                         f'recognized. Valid families are: {", ".join(sorted(set(_NOISE_FAMILIES)))}.')
+    if len(fields) != 1:
+        # The grammar already admits several "<param> = <source>" fields, but no
+        # multi-parameter noise family exists yet, so the engine sources exactly one
+        # (ADR-0021); generalize the engine when a 2-parameter family lands.
+        raise PybnfError(f'Noise model for {observable} has {len(fields)} parameters',
+                         f'The {family_token} noise model takes a single noise parameter '
+                         f'({_NOISE_PARAM_NAMES[family_token]}); multi-parameter noise models are not yet supported.')
+    expected = _NOISE_PARAM_NAMES[family_token]
+    (param, (verb, arg)), = fields.items()
+    if param.lower() != expected:
+        raise PybnfError(f'Unknown noise parameter "{param}" for {family_token}',
+                         f'The {family_token} noise model\'s parameter is "{expected}", not "{param}" '
+                         f'(observable {observable}).')
+    return (_NOISE_FAMILIES[family_token](), _build_sigma_source(verb, arg))
+
+
+def _build_noise_overrides(config):
+    """The per-observable ``{observable: (NoiseModel, SigmaSource)}`` override map
+    from the parsed ``noise_model`` table (ADR-0021). Empty when none is declared,
+    so the objfunc applies its single global default to every column."""
+    overrides = {}
+    for k, v in config.items():
+        if isinstance(k, tuple) and k[0] == 'noise_model':
+            overrides[k[1]] = _build_noise_spec(k[1], v)
+    return overrides
+
+
+class LikelihoodObjective(SummationObjective):
+    """A per-point likelihood: a distribution-family NoiseModel scored against the
+    data with its noise parameter drawn from a SigmaSource, summed over points
+    (ADR-0011, ADR-0021). The ``(family, sigma_source)`` pair is selected **per
+    observable** -- the class-level default applies to every column, overridden for
+    named observables by ``self.overrides``. The five legacy likelihood objfuncs are
+    exactly this object with a fixed default pair (chi_sq = Gaussian x the ``_SD``
+    data column, chi_sq_dynamic = Gaussian x a free sigma, neg_bin = NegBinomial x a
+    constant, ...); per-observable selection is the new capability they all inherit.
+
+    The whole family/normalizer choice collapses to one per-point expression: the
+    family's ``data_fit`` always, plus its ``log_normalizer`` iff the source is
+    ``estimated``. That single line reproduces every legacy objfunc -- the
+    data-fit-vs-nll split that used to be hard-coded per subclass now follows from
+    whether the noise parameter is estimated (ADR-0011)."""
+
+    #: The default per-observable noise model (applied to every column without an
+    #: override): a (NoiseModel, SigmaSource) pair. Subclasses set these as class
+    #: attributes; neg_bin sets ``sigma_source`` per instance (its constant is a
+    #: config value).
+    noise = None
+    sigma_source = None
+
+    def __init__(self, ind_var_rounding=0, overrides=None):
+        super().__init__(ind_var_rounding)
+        #: {col_name: (NoiseModel, SigmaSource)} overriding the default per
+        #: observable; empty -> every column uses the default, byte-identical to the
+        #: pre-#410 single global objfunc.
+        self.overrides = dict(overrides) if overrides else {}
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(config['ind_var_rounding'], overrides=_build_noise_overrides(config))
+
+    def _spec_for(self, col_name):
+        """The (NoiseModel, SigmaSource) for one observable -- its override if any,
+        else the class default."""
+        return self.overrides.get(col_name, (self.noise, self.sigma_source))
+
+    def _prediction(self, sim_data, sim_row, col_name):
+        """The simulated prediction for one point. A plain cell read by default;
+        neg_bin_dynamic overrides it for cumulative (``_Cum``) columns (ADR-0021)."""
+        return sim_data.data[sim_row, sim_data.cols[col_name]]
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
-        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        try:
-            # Todo: Check for this and throw the error before all the workers get created.
-            sd_col = exp_data.cols[col_name + '_SD']
-        except KeyError:
-            raise PybnfError(f'Column {col_name}_SD not found',
-                 f"Column {col_name}_SD was not found in the experimental data. When using the chi_sq objective function, your "
-                 "data file must include a _SD column corresponding to each experimental variable, giving the standard "
-                 "deviations of that variable. ")
-        exp_sigma = exp_data.data[exp_row, sd_col]
-        # sigma comes fixed from the data, so the Gaussian normalizer is constant
-        # and dropped: the data-fit term alone (ADR-0011).
-        return self.noise.data_fit(sim_val, exp_val, exp_sigma)
+        family, source = self._spec_for(col_name)
+        prediction = self._prediction(sim_data, sim_row, col_name)
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        noise_param = source.value(self, exp_data, exp_row, col_name)
+        # data_fit always; the normalizer iff the noise parameter is estimated --
+        # the one rule that makes each legacy objfunc its decoupled default (chi_sq
+        # drops +log sigma, chi_sq_dynamic keeps it; ADR-0011/0021).
+        term = family.data_fit(prediction, observation, noise_param)
+        if source.estimated:
+            term += family.log_normalizer(noise_param)
+        return term
+
+    def required_free_noise_params(self):
+        """The free-parameter names this objective's noise sources estimate (default
+        spec + every override) -- what ``_load_variables`` checks have matching
+        FreeParameters (ADR-0021)."""
+        names = set()
+        for _family, source in [(self.noise, self.sigma_source), *self.overrides.values()]:
+            name = source.required_free_param()
+            if name is not None:
+                names.add(name)
+        return names
 
     def _check_columns(self, exp_cols, compare_cols):
-        """
-        Check that all exp_cols are being read in compare_cols; give a warning if not.
-        :param exp_cols: Iterable of all experimental data column names
-        :param compare_cols: Iterable of the names being used
-        :return: None
-        """
-        missed = set(exp_cols).difference(set(compare_cols).union(set([f'{s}_SD' for s in compare_cols])))
+        """Like the base check, but exempt each observable's data-column noise source
+        (e.g. ``obs_SD``): those are noise-scale columns, not unmatched observables
+        (ADR-0021). With the default chi_sq spec this reduces to the historical
+        ``{obs}_SD`` exemption."""
+        exempt = set()
+        for col in compare_cols:
+            _family, source = self._spec_for(col)
+            column = source.exp_column(col)
+            if column is not None:
+                exempt.add(column)
+        missed = set(exp_cols).difference(set(compare_cols).union(exempt))
         if len(missed) > 0:
             raise PybnfError('The following experimental data columns were not found in the simulation output: '
                              + str(missed))
 
-@register_objfunc('chi_sq_dynamic')
-class ChiSquareObjective_Dynamic(SummationObjective):
+
+@register_objfunc('chi_sq')
+class ChiSquareObjective(LikelihoodObjective):
+    """Gaussian observation noise with sigma read per point from the data's ``_SD``
+    column. Being fixed, the Gaussian normalizer is parameter-independent and
+    dropped, leaving the chi-square data fit (ADR-0011/0021)."""
 
     noise = Gaussian()
-    free_noise_params = {'sigma__FREE': 'sigma'}
+    sigma_source = DataColumnSigma()
 
-    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
-        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        # sigma is a free parameter (set on self by evaluate_multiple), so the
-        # Gaussian normalizer is retained: the full nll (ADR-0011).
-        return self.noise.nll(sim_val, exp_val, self.sigma)
+
+@register_objfunc('chi_sq_dynamic')
+class ChiSquareObjective_Dynamic(LikelihoodObjective):
+    """Gaussian observation noise with sigma a free parameter (``sigma__FREE``).
+    Being estimated, the Gaussian normalizer ``+log sigma`` is retained (ADR-0011)."""
+
+    noise = Gaussian()
+    sigma_source = FreeParameterSigma('sigma__FREE')
+
 
 @register_objfunc('lognormal')
-class LogNormalObjective(ChiSquareObjective):
-    """Lognormal observation noise: chi_sq with the Gaussian noise additive on the
-    log scale and the prediction interpreted as the median (ADR-0011). sigma (the
-    log-scale standard deviation) comes from the data's ``_SD`` column exactly as
-    in chi_sq -- being fixed, the Gaussian normalizer and the lognormal Jacobian
-    are parameter-independent and dropped, leaving the log-space squared residual
-    ``(log sim - log exp)^2 / (2 sigma^2)``. Reuses ChiSquareObjective's per-point
-    loop, ``_SD`` lookup, and ``_check_columns``; only the noise family differs --
-    the seam proof that the scale and location axes compose. Observations and
-    predictions must be positive (the lognormal support)."""
+class LogNormalObjective(LikelihoodObjective):
+    """Lognormal observation noise: the Gaussian family additive on the log scale
+    with the prediction interpreted as the median (ADR-0011). sigma (the log-scale
+    standard deviation) comes from the data's ``_SD`` column exactly as in chi_sq --
+    being fixed, the Gaussian normalizer and the lognormal Jacobian are
+    parameter-independent and dropped, leaving the log-space squared residual
+    ``(log sim - log exp)^2 / (2 sigma^2)``. Only the noise family differs from
+    chi_sq -- the seam proof that the scale and location axes compose. Observations
+    and predictions must be positive (the lognormal support)."""
 
     noise = Gaussian(additive_on=LOG, location=MEDIAN)
+    sigma_source = DataColumnSigma()
+
+
+@register_objfunc('laplace')
+class LaplaceObjective(LikelihoodObjective):
+    """Laplace observation noise with the scale ``b`` a free parameter (``b__FREE``)
+    -- the heavy-tailed, outlier-robust likelihood behind least-absolute-deviation
+    fitting (ADR-0021). Being estimated, the ``log(2 b)`` normalizer is retained,
+    which is what keeps the fit from driving ``b -> inf``. PEtab v2's
+    ``noiseDistribution = laplace``; a fixed-scale Laplace is reachable per
+    observable via ``read_exp_file`` / ``fix_at``."""
+
+    noise = Laplace()
+    sigma_source = FreeParameterSigma('b__FREE')
 
 
 @register_objfunc('sos')
@@ -396,50 +543,43 @@ class AveNormSumOfSquaresObjective(SummationObjective):
 
 
 @register_objfunc('neg_bin_dynamic')
-class NegBinLikelihood_Dynamic(SummationObjective):
-    """
-    Negative binomial likelihood with r as a free param
-    """
+class NegBinLikelihood_Dynamic(LikelihoodObjective):
+    """Negative-binomial likelihood with the dispersion ``r`` a free parameter
+    (``r__FREE``). NegBinomial's PMF is self-normalizing, so ``nll == data_fit``;
+    the source is estimated but its normalizer is 0 (ADR-0011)."""
 
     noise = NegBinomial()
-    free_noise_params = {'r__FREE': 'r'}
+    sigma_source = FreeParameterSigma('r__FREE')
 
-    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val_1 = sim_data.data[sim_row -1, sim_data.cols[col_name]]
-        sim_val_2 = sim_data.data[sim_row, sim_data.cols[col_name]]
-        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        if '_Cum' in col_name:
-            sim_val = sim_val_2 - sim_val_1
-        else:
-            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
-        if sim_row == 0:
-            sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
-        # r is a free parameter (set on self by evaluate_multiple); _Cum columns
-        # use the row-to-row increment as the effective prediction (ADR-0011).
-        return self.noise.nll(sim_val, exp_val, self.r)
+    def _prediction(self, sim_data, sim_row, col_name):
+        # A ``_Cum`` column is a cumulative count: the effective prediction is the
+        # row-to-row increment (the raw value at row 0). An ad-hoc COVID-forecasting
+        # feature, welded to NegBinomial only by history; kept byte-exact and
+        # isolated here, with generalization to a family-independent
+        # cumulative->incident transform filed as #418 (ADR-0021).
+        if sim_row != 0 and '_Cum' in col_name:
+            col = sim_data.cols[col_name]
+            return sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col]
+        return sim_data.data[sim_row, sim_data.cols[col_name]]
+
 
 @register_objfunc('neg_bin')
-class NegBinLikelihood(SummationObjective):
-    """
-    Negative binomial likelihood
-    """
+class NegBinLikelihood(LikelihoodObjective):
+    """Negative-binomial likelihood with the dispersion ``r`` a fixed config
+    constant (``neg_bin_r``). Fixed and self-normalizing, so the objective is the
+    NegBinomial data fit (ADR-0011)."""
 
     noise = NegBinomial()
 
-    def __init__(self, r, ind_var_rounding):
-        super().__init__(ind_var_rounding)
+    def __init__(self, r, ind_var_rounding=0, overrides=None):
+        super().__init__(ind_var_rounding, overrides)
         self.r_static = r
+        self.sigma_source = ConstantSigma(r)
 
     @classmethod
     def from_config(cls, config):
-        return cls(config['neg_bin_r'], config['ind_var_rounding'])
-
-    def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
-        exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
-        # r is a fixed config constant, so the (self-normalizing) NegBinomial nll
-        # equals its data-fit term (ADR-0011).
-        return self.noise.data_fit(sim_val, exp_val, self.r_static)
+        return cls(config['neg_bin_r'], config['ind_var_rounding'],
+                   overrides=_build_noise_overrides(config))
 
 @register_objfunc('kl')
 class KLLikelihood(ColumnSummationObjective):

@@ -117,6 +117,20 @@ def parse(s):
     dict_key = _one_of(' '.join(dictkeys), caseless=True)
     dictgram = dict_key - equals - _DelimitedList(dict_entry) - comment
 
+    # per-observable noise model grammar (ADR-0021):
+    #   noise_model <obs> = <family>, <param> = <verb> <arg>[, <param> = <verb> <arg>]...
+    # e.g. ``noise_model obs2 = laplace, scale = fit b_obs2__FREE``. The verbs map to
+    # the three SigmaSource kinds (fit -> free parameter, read_exp_file -> data
+    # column, fix_at -> constant); the arg is permissive (a __FREE name, a column
+    # suffix like _SD, or a number) and is interpreted in objective.py.
+    noise_model_key = pp.CaselessLiteral('noise_model')
+    nm_token = pp.Word(pp.alphas, pp.alphanums + '_')   # observable / family / param name
+    nm_verb = _one_of('fit read_exp_file fix_at', caseless=True)
+    nm_arg = pp.Word(pp.alphanums + '_+-.')
+    nm_field = pp.Group(nm_token - equals - nm_verb - nm_arg)
+    noise_model_gram = noise_model_key - nm_token - equals - nm_token - pp.Suppress(',') - \
+        _DelimitedList(nm_field) - comment
+
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
     mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
@@ -124,7 +138,7 @@ def parse(s):
         pp.Group(colon - (_DelimitedList(exp_file) ^ nonetoken)) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = mdmgram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = mdmgram | noise_model_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -207,6 +221,22 @@ def ploop(ls):  # parse loop
                 else:
                     d['mutant'] = [l[1:]]
                 exp_data.update(l[-1])
+            elif l[0] == 'noise_model':
+                # noise_model <obs> = <family>, <param> = <verb> <arg>, ... (ADR-0021).
+                # Store as a structural ('noise_model', observable) tuple key (like a
+                # free-parameter key) -> (family, {param: (verb, arg)}); objective.py
+                # interprets the family/source tokens into a (NoiseModel, SigmaSource).
+                observable, family = l[1], l[2]
+                fields = {}
+                for param, verb, arg in l[3:]:
+                    if param in fields:
+                        raise PybnfError(f"In noise_model for {observable}, noise parameter '{param}' "
+                                         "is specified multiple times")
+                    fields[param] = (verb, arg)
+                nm_key = ('noise_model', observable)
+                if nm_key in d:
+                    raise PybnfError(f"noise_model for observable '{observable}' is specified multiple times")
+                d[nm_key] = (family, fields)
             elif l[0] == 'postprocess':
                 if len(values) < 2:
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "

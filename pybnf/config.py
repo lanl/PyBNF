@@ -782,7 +782,8 @@ class Configuration:
         if entry is None:
             raise UnknownObjectiveFunctionError(f"Objective function {objfunc} not defined",
                   f"Objective function {objfunc} is not defined. Valid objective function choices are: "
-                  "chi_sq, lognormal, sos, sod, norm_sos, ave_norm_sos, neg_bin, kl, direct_pass")
+                  "chi_sq, chi_sq_dynamic, lognormal, laplace, sos, sod, norm_sos, ave_norm_sos, "
+                  "neg_bin, neg_bin_dynamic, kl, direct_pass")
         # Uniform construction (ADR-0011): every objective builds itself from the
         # config via its from_config classmethod -- no per-objfunc recipe.
         return entry.cls.from_config(self.config)
@@ -792,23 +793,22 @@ class Configuration:
         Loads the variable names from the config dict into FreeParameter instances.
         :return: a list of FreeParameter instances
         """
-        #Compile a list of the varible names to determine if the reqired var is present
-        if self.config['objfunc'] == 'neg_bin_dynamic':
-            r_check = []
-            for k in self.config.keys():
-                r_check.append(k[1])
-            if np.any('r__FREE' in r_check):
-                pass
-            else:
-                raise PybnfError('Using the neg_bin_dynamic objective function requires the r__FREE parameter in the .conf file and the model file')
-        if self.config['objfunc'] == 'chi_sq_dynamic':
-            sigma_check = []
-            for k in self.config.keys():
-                sigma_check.append(k[1])
-            if np.any('sigma__FREE' in sigma_check):
-                pass
-            else:
-                raise PybnfError('Using the chi_sq_dynamic objective function requires the sigma__FREE parameter in the .conf file and the model file')        
+        # Every free-parameter noise source the objective estimates -- the objfunc's
+        # own default (chi_sq_dynamic's sigma__FREE, neg_bin_dynamic's r__FREE,
+        # laplace's b__FREE) plus any per-observable noise_model 'fit' source -- must
+        # be declared as a free parameter. One general check derived from the
+        # objective's sources (ADR-0021) replacing the old per-objfunc magic-name
+        # special cases; self.obj is already built (it precedes _load_variables).
+        declared_params = {k[1] for k in self.config.keys()
+                           if isinstance(k, tuple) and re.search('var$', k[0])}
+        missing = self.obj.required_free_noise_params() - declared_params
+        if missing:
+            names = ', '.join(sorted(missing))
+            raise PybnfError(f'Noise free parameter(s) {names} not declared',
+                             f'Objective function {self.config["objfunc"]} (or a per-observable noise_model) '
+                             f'estimates the noise parameter(s) {names}, but they are not declared as free '
+                             f'parameters in the .conf file (and the model file). Declare each as a variable, '
+                             f'e.g. "uniform_var = {sorted(missing)[0]} <lower> <upper>".')
         fit_type = self.config['fit_type']
         self._check_variable_keyword_combination(fit_type)
         variables = []

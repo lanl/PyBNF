@@ -285,20 +285,20 @@ class TestNegBinLikelihoodDynamic:
     def test_negative_count_contributes_zero(self):
         """A negative experimental count adds nothing (exp_val >= 0 guard)."""
         obj = objective.NegBinLikelihood_Dynamic()
-        obj.r = 10.0
+        obj._pset_values = {'r__FREE': 10.0}  # normally built from the pset by evaluate_multiple
         sim = _mkdata(['# x  obs1\n', ' 0  2.0\n', ' 1  5.0\n', ' 2  10.0\n'])
         exp = _mkdata(['# x  obs1\n', ' 0  3\n', ' 1  -1\n', ' 2  8\n'])
-        expected = _nbin_oracle([3, 8], [2.0, 10.0], obj.r)
+        expected = _nbin_oracle([3, 8], [2.0, 10.0], 10.0)
         npt.assert_almost_equal(obj.evaluate(sim, exp), expected)
 
     def test_cumulative_column_uses_consecutive_difference(self):
         """For a _Cum column the effective sim value is the row-to-row increment (raw at row 0)."""
         obj = objective.NegBinLikelihood_Dynamic()
-        obj.r = 10.0  # normally set from the pset inside evaluate_multiple
+        obj._pset_values = {'r__FREE': 10.0}  # normally built from the pset by evaluate_multiple
         # cumulative sim [2, 7, 15] -> increments [2, 5, 8]; row 0 keeps the raw value.
         sim = _mkdata(['# x  obs1_Cum\n', ' 0  2.0\n', ' 1  7.0\n', ' 2  15.0\n'])
         exp = _mkdata(['# x  obs1_Cum\n', ' 0  3\n', ' 1  5\n', ' 2  8\n'])
-        expected = _nbin_oracle([3, 5, 8], [2.0, 5.0, 8.0], obj.r)
+        expected = _nbin_oracle([3, 5, 8], [2.0, 5.0, 8.0], 10.0)
         npt.assert_almost_equal(obj.evaluate(sim, exp), expected)
 
 
@@ -326,7 +326,7 @@ class TestChiSquareDynamic:
     def test_log_sigma_term_present(self):
         """The +log(sigma) term means a perfect fit is non-zero and grows with #points."""
         obj = objective.ChiSquareObjective_Dynamic()
-        obj.sigma = 3.0
+        obj._pset_values = {'sigma__FREE': 3.0}  # normally built from the pset by evaluate_multiple
         # sim == exp -> all residuals zero, leaving only 6 * log(sigma).
         npt.assert_almost_equal(obj.evaluate(self.exp, self.exp), 6 * np.log(3.0))
 
@@ -442,6 +442,106 @@ class TestNoiseAxes:
         delegation is byte-identical to the pre-refactor squared residual."""
         g = noise.Gaussian()
         npt.assert_almost_equal(g.data_fit(3.1, 3.0, 0.5), (3.1 - 3.0) ** 2 / (2 * 0.5 ** 2))
+
+
+class TestLaplaceNoise:
+    """Laplace observation noise (ADR-0021). Oracle: scipy.stats.laplace."""
+
+    def test_kernel_matches_scipy_laplace(self):
+        """data_fit = |pred - obs| / b, log_normalizer = log(2b); nll = -logpdf."""
+        lap = noise.Laplace()
+        pred, obs, b = 9.0, 8.0, 0.5
+        npt.assert_almost_equal(lap.data_fit(pred, obs, b), abs(pred - obs) / b)
+        npt.assert_almost_equal(lap.log_normalizer(b), np.log(2 * b))
+        npt.assert_almost_equal(lap.nll(pred, obs, b), -stats.laplace.logpdf(obs, loc=pred, scale=b))
+
+    def test_objfunc_sums_full_nll_with_free_scale(self):
+        """The laplace objfunc fits b (b__FREE), so it keeps the log(2b) normalizer:
+        total = sum |sim - exp| / b + log(2b) over points."""
+        obj = objective.LaplaceObjective()
+        sim = _mkdata(['# x  obs1  obs3\n', ' 0  3.1  5.1\n', ' 1  2.0  6.0\n', ' 2  4.2  10.2\n'])
+        exp = _mkdata(['# x  obs1  obs3\n', ' 0  3    5\n', ' 1  2    6\n', ' 2  4    10\n'])
+        b = 2.0
+        deltas = [0.1, 0.1, 0.0, 0.0, 0.2, 0.2]  # obs1 then obs3 residuals across 3 rows
+        expected = sum(abs(d) / b + np.log(2 * b) for d in deltas)
+        result = obj.evaluate_multiple({'m': {'s': sim}}, {'m': {'s': exp}}, [_Param('b__FREE', b)])
+        npt.assert_almost_equal(result, expected)
+
+    def test_free_scale_normalizer_penalizes_large_b(self):
+        """A perfect fit is not zero: it leaves sum log(2b), which grows with b --
+        the term that stops the fit driving b -> inf."""
+        obj = objective.LaplaceObjective()
+        exp = _mkdata(['# x  obs1\n', ' 0  3\n', ' 1  2\n', ' 2  4\n'])
+        for b in (0.5, 2.0):
+            result = obj.evaluate_multiple({'m': {'s': exp}}, {'m': {'s': exp}}, [_Param('b__FREE', b)])
+            npt.assert_almost_equal(result, 3 * np.log(2 * b))
+
+
+class TestDecoupledDefaults:
+    """Each legacy likelihood objfunc == an exact decoupled (family, sigma-source)
+    default, and the sigma-source's estimated-ness governs the normalizer
+    (ADR-0021). This pins the strict-superset backward-compatibility contract."""
+
+    # (objfunc instance, expected family class, expected sigma-source class, estimated)
+    CASES = [
+        (objective.ChiSquareObjective(), noise.Gaussian, noise.DataColumnSigma, False),
+        (objective.LogNormalObjective(), noise.Gaussian, noise.DataColumnSigma, False),
+        (objective.ChiSquareObjective_Dynamic(), noise.Gaussian, noise.FreeParameterSigma, True),
+        (objective.LaplaceObjective(), noise.Laplace, noise.FreeParameterSigma, True),
+        (objective.NegBinLikelihood(10.0, 0), noise.NegBinomial, noise.ConstantSigma, False),
+        (objective.NegBinLikelihood_Dynamic(), noise.NegBinomial, noise.FreeParameterSigma, True),
+    ]
+
+    @pytest.mark.parametrize('obj,family,source,estimated', CASES)
+    def test_default_spec(self, obj, family, source, estimated):
+        assert isinstance(obj.noise, family)
+        assert isinstance(obj.sigma_source, source)
+        assert obj.sigma_source.estimated is estimated
+
+    def test_estimated_source_keeps_normalizer_fixed_drops_it(self):
+        """Same Gaussian family, only the source differs: a free sigma (estimated)
+        adds exactly sum(log sigma) over the fixed-sigma chi_sq data fit."""
+        sim = _mkdata(['# x  obs1\n', ' 0  3.1\n', ' 1  2.0\n', ' 2  4.2\n'])
+        exp_sd = _mkdata(['# x  obs1  obs1_SD\n', ' 0  3  2.0\n', ' 1  2  2.0\n', ' 2  4  2.0\n'])
+        exp = _mkdata(['# x  obs1\n', ' 0  3\n', ' 1  2\n', ' 2  4\n'])
+        fixed = objective.ChiSquareObjective().evaluate(sim, exp_sd)             # data_fit only
+        free = objective.ChiSquareObjective_Dynamic().evaluate_multiple(
+            {'m': {'s': sim}}, {'m': {'s': exp}}, [_Param('sigma__FREE', 2.0)])   # + normalizer
+        npt.assert_almost_equal(free - fixed, 3 * np.log(2.0))
+
+
+class TestPerObservableNoise:
+    """A likelihood objective carries a per-observable {col: (family, source)}
+    override map, defaulting to the global objfunc's spec (ADR-0021)."""
+
+    def setup_method(self):
+        self.sim = _mkdata(['# x  obs1  obs3\n', ' 0  3.1  5.1\n', ' 1  2.0  6.0\n', ' 2  4.2  10.2\n'])
+        # obs1 carries an _SD column (Gaussian default); obs3 is overridden to Laplace.
+        self.exp = _mkdata(['# x  obs1  obs1_SD  obs3\n',
+                            ' 0  3  0.1  5\n', ' 1  2  0.1  6\n', ' 2  4  0.3  10\n'])
+
+    def test_override_mixes_families_per_column(self):
+        """chi_sq on obs1 (Gaussian x _SD), Laplace x free b on obs3 -- the total is
+        the sum of the two columns' own specs."""
+        overrides = {'obs3': (noise.Laplace(), noise.FreeParameterSigma('b__FREE'))}
+        obj = objective.ChiSquareObjective(overrides=overrides)
+        result = obj.evaluate_multiple({'m': {'s': self.sim}}, {'m': {'s': self.exp}}, [_Param('b__FREE', 2.0)])
+        obs1 = sum((s - e) ** 2 / (2 * sd ** 2) for s, e, sd in [(3.1, 3, 0.1), (2.0, 2, 0.1), (4.2, 4, 0.3)])
+        obs3 = sum(abs(s - e) / 2.0 + np.log(2 * 2.0) for s, e in [(5.1, 5), (6.0, 6), (10.2, 10)])
+        npt.assert_almost_equal(result, obs1 + obs3)
+
+    def test_empty_override_is_byte_identical_to_default(self):
+        """An empty override map reproduces the plain objfunc exactly."""
+        sim = _mkdata(['# x  obs1\n', ' 0  3.1\n', ' 1  2.0\n', ' 2  4.2\n'])
+        exp_sd = _mkdata(['# x  obs1  obs1_SD\n', ' 0  3  0.1\n', ' 1  2  0.1\n', ' 2  4  0.3\n'])
+        plain = objective.ChiSquareObjective().evaluate(sim, exp_sd)
+        empty = objective.ChiSquareObjective(overrides={}).evaluate(sim, exp_sd)
+        npt.assert_array_equal(plain, empty)
+
+    def test_required_free_noise_params_unions_default_and_overrides(self):
+        overrides = {'obs3': (noise.Laplace(), noise.FreeParameterSigma('b_obs3__FREE'))}
+        obj = objective.ChiSquareObjective_Dynamic(overrides=overrides)
+        assert obj.required_free_noise_params() == {'sigma__FREE', 'b_obs3__FREE'}
 
 
 class TestKLInvariants:

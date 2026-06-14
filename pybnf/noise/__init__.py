@@ -18,12 +18,15 @@ Column-joint likelihoods (``kl``) are NOT per-point noise models and stay plain
 
 from .base import NoiseModel
 from .gaussian import Gaussian
+from .laplace import Laplace
 from .location import MEAN, MEDIAN, LocationInterpretation
 from .negative_binomial import NegBinomial
 from .scale import LINEAR, LOG, AdditiveNoiseScale
+from .source import ConstantSigma, DataColumnSigma, FreeParameterSigma, SigmaSource
 
 __all__ = [
-    'NoiseModel', 'Gaussian', 'NegBinomial',
+    'NoiseModel', 'Gaussian', 'Laplace', 'NegBinomial',
     'AdditiveNoiseScale', 'LINEAR', 'LOG',
     'LocationInterpretation', 'MEAN', 'MEDIAN',
+    'SigmaSource', 'DataColumnSigma', 'FreeParameterSigma', 'ConstantSigma',
 ]

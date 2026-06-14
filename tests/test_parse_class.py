@@ -101,6 +101,23 @@ class TestParse:
         d1 = parse.ploop(['postprocess = only.py sufA'])
         assert d1['postprocess'] == [['only.py', 'sufA']]
 
+    def test_noise_model_grammar(self):
+        # noise_model <obs> = <family>, <param> = <verb> <arg>[, ...] (ADR-0021)
+        assert parse.parse('noise_model obs2 = laplace, scale = fit b_obs2__FREE') == \
+            ['noise_model', 'obs2', 'laplace', ['scale', 'fit', 'b_obs2__FREE']]
+        assert parse.parse('noise_model obs3 = normal, sigma = read_exp_file _SD') == \
+            ['noise_model', 'obs3', 'normal', ['sigma', 'read_exp_file', '_SD']]
+        # forward-compatible: several "<param> = <verb> <arg>" fields on one line
+        assert parse.parse('noise_model obs5 = student_t, scale = fit s__FREE, df = fix_at 4') == \
+            ['noise_model', 'obs5', 'student_t', ['scale', 'fit', 's__FREE'], ['df', 'fix_at', '4']]
+
+    def test_noise_model_ploop(self):
+        d = parse.ploop(['objfunc = chi_sq',
+                         'noise_model obs2 = laplace, scale = fit b_obs2__FREE',
+                         'noise_model obs3 = normal, sigma = read_exp_file _SD'])
+        assert d[('noise_model', 'obs2')] == ('laplace', {'scale': ('fit', 'b_obs2__FREE')})
+        assert d[('noise_model', 'obs3')] == ('normal', {'sigma': ('read_exp_file', '_SD')})
+
     def test_node_parse(self):
         assert parse.parse('worker_nodes = cn196 192.168.1.1') == ['worker_nodes', 'cn196', '192.168.1.1']
         assert parse.parse('scheduler_node = this_machine') == ['scheduler_node', 'this_machine']
