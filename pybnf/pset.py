@@ -921,6 +921,31 @@ class NetModel(BNGLModel):
             wf.write('begin actions\n\n{}\n\nend actions\n'.format('\n'.join(self.actions)))
 
 
+# Process-level cache of compiled RoadRunner instances, keyed by the model's
+# absolute file path. A RoadRunner depends only on the model *structure* (the
+# compiled SBML), not on FreeParameter values -- those are applied per
+# evaluation by SbmlModelNoTimeout._modify_params. Compiling one from XML
+# costs ~3.8 ms on raf.xml; reusing one and re-applying parameters via
+# setattr/init + reset is ~0.01 ms (a ~400x per-evaluation saving on the
+# default SBML backend). The runner is not picklable and the model is
+# unpickled fresh in each dask worker per evaluation, so an instance attribute
+# would rebuild the runner every evaluation; the cache lives at module scope
+# (one per worker process) to amortize across the fit -- mirroring the
+# engine-template cache added for issue #415 in bngsim_sbml_model.py. See
+# SbmlModelNoTimeout._load_runner.
+#
+# WARNING: do NOT introduce any in-process RoadRunner ``loadState`` call while
+# a runner is cached here. RoadRunner 2.9.2's ``loadState`` has a global side
+# effect that silently disables ``setattr``-based global-parameter writes on
+# every *previously built* runner (verified: a fresh ``RoadRunner(xml)`` is
+# unaffected, but a cached one is poisoned). That is why the cached runner is
+# always compiled from XML rather than restored from a saved ``.rr`` state --
+# the per-evaluation reload that state caching used to optimize no longer
+# exists once the runner is reused, so loadState would buy nothing and risk
+# corrupting results.
+_RUNNER_CACHE = {}
+
+
 class SbmlModelNoTimeout(Model):
 
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode'):
@@ -942,7 +967,6 @@ class SbmlModelNoTimeout(Model):
         self.suffixes = [a.suffix for a in actions]
         self.stochastic = True if integrator == 'gillespie' else False
         self.mutants = [MutationSet()]  # Start with one MutationSet containing no mutations (ie the model as is)
-        self._state_file = None
 
         try:
             rr.Logger.enableConsoleLogging()
@@ -962,24 +986,6 @@ class SbmlModelNoTimeout(Model):
         self.global_param_names = tuple(runner.model.getGlobalParameterIds())
         self.param_names = self.species_names.union(set(self.global_param_names))
 
-        # Cache compiled RoadRunner state only when round-tripped runners still honor
-        # PyBNF's global-parameter mutation API. RoadRunner 2.9.2 loads the state file
-        # successfully but ignores later global parameter writes during simulation.
-        state_file = tempfile.NamedTemporaryFile(suffix='.rr', delete=False).name
-        runner.saveState(state_file)
-        if self._state_cache_supports_global_params(state_file):
-            self._state_file = state_file
-        else:
-            logger.warning(
-                'RoadRunner state caching is incompatible with global parameter updates '
-                'for model %s; falling back to fresh XML loads.',
-                self.name,
-            )
-            try:
-                os.unlink(state_file)
-            except OSError:
-                pass
-
         logger.debug(f'Loaded model {self.name} with Roadrunner')
 
     def copy_with_param_set(self, pset):
@@ -988,49 +994,41 @@ class SbmlModelNoTimeout(Model):
         newmodel.param_set = pset
         return newmodel
 
+    def _build_runner(self):
+        """Compile a fresh RoadRunner from the model's XML.
+
+        Always loads from XML (never ``loadState``): the runner is built once
+        per process and reused, so the per-evaluation reload that a saved
+        compiled state would speed up no longer happens, and ``loadState``
+        would poison other cached runners (see the ``_RUNNER_CACHE`` note).
+        ``setattr`` on an XML-loaded runner is PyBNF's long-standing,
+        always-correct parameter-mutation path.
+        """
+        return rr.RoadRunner(self.abs_file_path)
+
     def _load_runner(self):
-        """Load a RoadRunner instance, using cached state only when it is safe."""
-        if self._state_file is None:
-            return rr.RoadRunner(self.abs_file_path)
-        runner = rr.RoadRunner()
-        runner.loadState(self._state_file)
+        """Return a RoadRunner ready for this evaluation, reusing one per process.
+
+        The runner is parameter-independent (FreeParameter values are applied
+        per evaluation by :meth:`_modify_params`), so it is built once per
+        worker process and reused across evaluations via ``_RUNNER_CACHE``.
+        Before each reuse it is restored to its freshly-loaded baseline with
+        ``resetToOrigin()``, which resets global parameters and species initial
+        values to the loaded XML state -- making a reused runner bit-identical
+        to a fresh load (verified on raf.xml) while skipping the ~3.8 ms
+        rebuild. RoadRunner builds that predate ``resetToOrigin()`` are never
+        cached, so they fall back to rebuilding a fresh runner each call
+        (prior behavior).
+        """
+        key = self.abs_file_path
+        runner = _RUNNER_CACHE.get(key)
+        if runner is not None:
+            runner.resetToOrigin()
+            return runner
+        runner = self._build_runner()
+        if hasattr(runner, 'resetToOrigin'):
+            _RUNNER_CACHE[key] = runner
         return runner
-
-    def _state_cache_supports_global_params(self, state_file):
-        """
-        Return True if a loadState() runner reflects global-parameter writes.
-
-        Some RoadRunner versions accept setattr(runner, name, value) after loadState()
-        without actually updating the compiled model used during simulation. In that case
-        PyBNF must reload the XML fresh for correctness.
-        """
-        if len(self.global_param_names) == 0:
-            return True
-
-        probe = rr.RoadRunner()
-        probe.loadState(state_file)
-        checked_any = False
-
-        for name in self.global_param_names:
-            try:
-                original = float(probe.model[name])
-            except Exception:
-                return False
-
-            if not np.isfinite(original):
-                continue
-
-            trial = original + 1.0 if original != 0.0 else 1.0
-            try:
-                setattr(probe, name, trial)
-                if not np.isclose(float(probe.model[name]), trial):
-                    return False
-            except Exception:
-                return False
-
-            checked_any = True
-
-        return checked_any
 
     def model_text(self, mut=None):
         """
