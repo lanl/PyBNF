@@ -46,10 +46,13 @@ axis is trivial there.
   for every family, and keeping the default leaves the native `normal`/`laplace`
   tokens byte-identical.
 
-- **`location` is rejected on a family with no location axis.** `neg_bin` is a
-  count family with no mean/median distinction to set, so `location` on it raises a
-  `PybnfError` rather than silently doing nothing. Only the location-scale families
-  (Gaussian, Laplace) accept the field.
+- **`location` is rejected on a family that is not location-scale.** The location
+  axis is a location-scale concept (the offset to recover the family's location
+  parameter from the transformed prediction), so only Gaussian/Laplace carry it.
+  `neg_bin` is *not* without a mean -- it is parameterized **directly by its mean**
+  (the prediction *is* the mean), so there is no mean-vs-median choice to make;
+  `location` on it raises a `PybnfError` (with that explanation) rather than
+  silently doing nothing.
 
 - **`mean` is only ever the correct Gaussian moment correction on the native
   surface.** The moment offset (`scale.mean_offset`, ADR-0011/0022) is the

@@ -323,16 +323,20 @@ _NOISE_LOCATIONS = {'mean': MEAN, 'median': MEDIAN}
 
 def _apply_location(noise_model, location, family_token, observable):
     """Override a noise model's location interpretation from the native ``location``
-    field (ADR-0024). Only the location-scale families (Gaussian/Laplace) carry the
-    axis; a count family (neg_bin) has no mean/median distinction to set, so it
-    raises rather than silently ignore the field. On the native surface the only log
-    family token is ``lognormal`` (Gaussian), so a ``mean`` correction is only ever
-    applied where it is the correct Gaussian moment correction."""
+    field (ADR-0024). The location axis is a location-scale-family concept -- the
+    offset to recover the family's location parameter from the (transformed)
+    prediction -- so only Gaussian/Laplace carry it. A count family (neg_bin) is
+    parameterized directly by its mean (the prediction *is* the mean), so there is
+    no mean-vs-median choice to make and the field is rejected rather than silently
+    ignored. On the native surface the only log family token is ``lognormal``
+    (Gaussian), so a ``mean`` correction is only ever applied where it is the
+    correct Gaussian moment correction."""
     if not hasattr(noise_model, 'location'):
         raise PybnfError(
-            f'location is not valid for the {family_token} noise model',
-            f"The {family_token} noise model (observable {observable}) has no "
-            f"mean/median location axis; drop the 'location' field.")
+            f'location is not configurable for the {family_token} noise model',
+            f"The {family_token} noise model (observable {observable}) is "
+            f"parameterized directly by its mean -- the prediction is the mean -- so "
+            f"there is no mean/median location choice to set; drop the 'location' field.")
     return type(noise_model)(additive_on=noise_model.additive_on,
                              location=_NOISE_LOCATIONS[location])
 
