@@ -786,7 +786,23 @@ class Configuration:
                   "neg_bin, neg_bin_dynamic, kl, direct_pass")
         # Uniform construction (ADR-0011): every objective builds itself from the
         # config via its from_config classmethod -- no per-objfunc recipe.
-        return entry.cls.from_config(self.config)
+        obj = entry.cls.from_config(self.config)
+        # Global default location (ADR-0024): the whole-fit mean/median interpretation
+        # of the prediction, applied to the objfunc's default noise model. Only a
+        # likelihood objfunc has a noise model whose location can be set; per-observable
+        # noise_model location fields override this default.
+        location = self.config.get('noise_location')
+        if location is not None:
+            if location not in objective._NOISE_LOCATIONS:
+                raise PybnfError(
+                    f"noise_location must be 'mean' or 'median', not {location!r}.")
+            if not isinstance(obj, objective.LikelihoodObjective):
+                raise UnknownObjectiveFunctionError(
+                    f"noise_location is only meaningful for a likelihood objfunc "
+                    f"(normal/lognormal/laplace/neg_bin/...); objfunc={objfunc} has no "
+                    f"noise model whose location can be set.")
+            obj.set_default_location(location)
+        return obj
 
     def _load_variables(self):
         """

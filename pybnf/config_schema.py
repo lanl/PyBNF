@@ -206,6 +206,12 @@ class GlobalConfig(PyBNFConfigModel):
     # neg_bin_r stays here: it is an objfunc/noise param (read when objfunc=neg_bin
     # regardless of fit_type), NOT MCMC-family knowledge.
     neg_bin_r: float = 24.0
+    # noise_location is likewise an objfunc/noise param: the whole-fit default
+    # interpretation of the model prediction -- 'mean' or 'median' -- for the global
+    # objfunc's noise model (ADR-0024). None -> each family's own default (median for
+    # the location-scale families). Per-observable ``noise_model ... location =``
+    # fields override it. Validated + applied in Configuration._load_obj_func.
+    noise_location: Optional[str] = None
 
     # --- simplex ---
     # Migrated to SimplexConfig in algorithms/optimizers/simplex.py (Stage b);

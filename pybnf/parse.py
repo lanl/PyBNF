@@ -53,7 +53,7 @@ var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
-              'outlier_method', 'refine_method']
+              'outlier_method', 'refine_method', 'noise_location']
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)

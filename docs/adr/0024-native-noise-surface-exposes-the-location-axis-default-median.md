@@ -85,13 +85,22 @@ axis is trivial there.
   PEtab and PyBNF's own history. Median-default + opt-in mean gets the capability
   with zero silent change.
 
-- **Expose `location` on the global `objfunc` line too (whole-fit default).**
-  Deferred, not rejected. The per-observable `noise_model` field is the #410 native
-  surface and the natural home; a whole-fit mean-aligned default would mean either
-  objfunc-grammar surgery or a separate global key, with extra handling for the
-  non-likelihood / count objfuncs. Scoped as an immediate follow-up so this change
-  stays focused and byte-safe; until then a whole-fit mean-aligned lognormal is
-  expressed per observable.
+- **Expose the whole-fit default via a standalone `noise_location` key, not inline
+  on `objfunc`.** Done as a follow-up to the per-observable field. A standalone
+  global key (`noise_location = mean|median`, a `GlobalConfig` field beside
+  `neg_bin_r` -- an objfunc/noise param read regardless of fit_type) needs **zero
+  grammar change** and composes cleanly: it sets the default location of the
+  objfunc's noise model, which a per-observable `noise_model ... location =` field
+  overrides -- mirroring how `objfunc` is the global default family×source and
+  `noise_model` overrides per observable. Chosen over inline `objfunc = lognormal,
+  location = mean`, which would need pulling `objfunc` out of the simple-string-key
+  grammar into its own branch (touching the most-referenced config key and every
+  golden). Applied in `Configuration._load_obj_func` via
+  `LikelihoodObjective.set_default_location`; rejected (with a clear error) on a
+  non-likelihood objfunc (`sos`/`kl`/...) that has no noise model, and on `neg_bin +
+  median` (the same unimplemented path as the per-observable field, #419). Default
+  unset -> each family keeps its own default (median), so existing configs are
+  byte-identical (the golden gains only `noise_location: null`).
 
 Relevant ADRs: **0011** (the location axis this exposes, and the Gaussian-only
 moment-correction boundary), **0021** (the native `noise_model` surface and its

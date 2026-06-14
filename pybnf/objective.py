@@ -437,6 +437,16 @@ class LikelihoodObjective(SummationObjective):
     def from_config(cls, config):
         return cls(config['ind_var_rounding'], overrides=_build_noise_overrides(config))
 
+    def set_default_location(self, location):
+        """Apply a whole-fit default location interpretation (the global
+        ``noise_location`` key, ADR-0024) to the class-default noise model -- the one
+        used for every observable without a per-observable ``noise_model`` override
+        (those already carry their own location). Mirrors the per-observable
+        ``location`` field and rejects ``median`` on a mean-parameterized family
+        (neg_bin) the same way (see ``_apply_location``)."""
+        self.noise = _apply_location(self.noise, location,
+                                     type(self.noise).__name__, 'global default')
+
     def _spec_for(self, col_name):
         """The (NoiseModel, SigmaSource) for one observable -- its override if any,
         else the class default."""

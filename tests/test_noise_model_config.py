@@ -161,3 +161,59 @@ def test_objective_with_no_noise_params_needs_no_declaration():
     assert objective.SumOfSquaresObjective().required_free_noise_params() == set()
     declared = set()
     assert objective.SumOfSquaresObjective().required_free_noise_params() - declared == set()
+
+
+# --- global noise_location default (ADR-0024, the whole-fit location key) ---------
+#
+# noise_location sets the default location interpretation for the objfunc's noise
+# model (applied in _load_obj_func), overridden per observable by a noise_model
+# location field. _load_obj_func reads only self.config, so a SimpleNamespace stands
+# in for self (the test_load_obj_func _load idiom).
+
+def _load_obj(config):
+    return Configuration._load_obj_func(types.SimpleNamespace(config=config))
+
+
+def test_global_noise_location_sets_default():
+    obj = _load_obj({'objfunc': 'lognormal', 'noise_location': 'mean', 'ind_var_rounding': 0})
+    fam, _src = obj._spec_for('anycol')
+    assert isinstance(fam, noise.Gaussian)
+    assert fam.additive_on is noise.LOG10 and fam.location is noise.MEAN
+
+
+def test_global_noise_location_none_keeps_family_default():
+    obj = _load_obj({'objfunc': 'lognormal', 'noise_location': None, 'ind_var_rounding': 0})
+    assert obj._spec_for('c')[0].location is noise.MEDIAN  # lognormal's own default
+
+
+def test_global_noise_location_median_on_neg_bin_raises():
+    # neg_bin is mean-parameterized; whole-fit median is the same unimplemented path
+    # as the per-observable field (issue #419).
+    with pytest.raises(PybnfError, match='median'):
+        _load_obj({'objfunc': 'neg_bin', 'noise_location': 'median',
+                   'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+
+
+def test_global_noise_location_mean_on_neg_bin_is_noop():
+    obj = _load_obj({'objfunc': 'neg_bin', 'noise_location': 'mean',
+                     'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+    assert isinstance(obj._spec_for('c')[0], noise.NegBinomial)
+
+
+def test_global_noise_location_on_non_likelihood_raises():
+    with pytest.raises(PybnfError, match='likelihood'):
+        _load_obj({'objfunc': 'sos', 'noise_location': 'mean', 'ind_var_rounding': 0})
+
+
+def test_global_noise_location_bad_value_raises():
+    with pytest.raises(PybnfError, match='must be'):
+        _load_obj({'objfunc': 'lognormal', 'noise_location': 'mode', 'ind_var_rounding': 0})
+
+
+def test_global_noise_location_does_not_touch_per_observable_override():
+    # The global default sets only the fallback noise model; a per-observable override
+    # carries its own location and is unaffected.
+    obj = _load_obj({'objfunc': 'chi_sq', 'noise_location': 'mean', 'ind_var_rounding': 0,
+                     ('noise_model', 'o'): ('laplace', {'scale': ('fit', 'b__FREE')}, None)})
+    assert obj._spec_for('o')[0].location is noise.MEDIAN     # override: Laplace default
+    assert obj._spec_for('other')[0].location is noise.MEAN   # global default applied

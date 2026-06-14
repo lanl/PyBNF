@@ -70,6 +70,25 @@ Required Keys
     * ``objfunc = chi_sq``
 
 
+**noise_location**
+  The whole-fit default for which summary of the noise distribution the model
+  prediction is taken to be -- ``mean`` or ``median`` -- applied to the
+  :ref:`objfunc <objective>`'s noise model (the analog of the per-observable
+  ``location`` field on a :ref:`noise_model <noise_model_key>` key, which overrides
+  it). ``median`` (the default when unset) means the prediction is the
+  distribution's median; ``mean`` means its expected value. The two differ only for
+  a ``lognormal`` observable, where ``mean`` adds the moment correction
+  ``mu = log10(prediction) - sigma**2*ln10/2``. Only valid with a likelihood
+  ``objfunc`` (``chi_sq`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ...);
+  ``neg_bin`` is mean-parameterized, so ``mean`` is redundant and ``median`` is not
+  yet implemented (see issue #419).
+
+  Example:
+
+    * ``objfunc = lognormal``
+    * ``noise_location = mean``
+
+
 .. _noise_model_key:
 
 **noise_model**
