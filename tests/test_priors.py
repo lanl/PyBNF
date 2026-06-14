@@ -17,12 +17,18 @@ from scipy import stats
 
 from .context import priors, pset
 
-from pybnf.priors import LINEAR, LOG10, build_prior
+from pybnf.priors import LINEAR, LOG10, TruncatedPrior, build_prior
 from pybnf.priors.normal import Normal
 from pybnf.priors.uniform import Uniform
 from pybnf.priors.laplace import Laplace
 from pybnf.priors.base import NoPrior
 from pybnf.printing import PybnfError
+
+
+def _trapz(y, x):
+    """Trapezoidal integral, version-agnostic (np.trapz is deprecated in numpy 2)."""
+    y = np.asarray(y)
+    return float(np.sum((y[:-1] + y[1:]) / 2.0 * np.diff(x)))
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +301,82 @@ class TestLaplaceSeam:
         assert not fp.has_bounded_support
         assert not fp.bounded
         assert fp.lower_bound == -np.inf and fp.upper_bound == np.inf
+
+
+# ---------------------------------------------------------------------------
+# TruncatedPrior: an unbounded family confined to a finite box in u (ADR-0020).
+# Normal is oracled against scipy.stats.truncnorm (independent); both families
+# are checked against the defining invariants -- the renormalized density
+# integrates to 1 over the box, the inverse CDF inverts the truncated CDF and
+# spans the box, and sampling lands inside the box.
+# ---------------------------------------------------------------------------
+
+def _truncnorm(loc, sigma, lo, hi):
+    """scipy truncnorm with bounds given in the parameter's own space."""
+    return stats.truncnorm((lo - loc) / sigma, (hi - loc) / sigma, loc=loc, scale=sigma)
+
+
+class TestTruncatedPrior:
+    def test_normal_logpdf_matches_truncnorm(self):
+        tp = TruncatedPrior(Normal(loc=1.0, sigma=2.0), -1.0, 4.0)
+        oracle = _truncnorm(1.0, 2.0, -1.0, 4.0)
+        for u in (-1.0, 0.0, 1.0, 2.5, 4.0):
+            assert tp.logpdf(u) == pytest.approx(oracle.logpdf(u), rel=1e-12)
+
+    def test_normal_ppf_matches_truncnorm(self):
+        tp = TruncatedPrior(Normal(loc=1.0, sigma=2.0), -1.0, 4.0)
+        oracle = _truncnorm(1.0, 2.0, -1.0, 4.0)
+        for q in (0.01, 0.1, 0.5, 0.9, 0.99):
+            assert tp.ppf(q) == pytest.approx(oracle.ppf(q), rel=1e-9)
+
+    def test_logpdf_minus_inf_outside_box(self):
+        tp = TruncatedPrior(Normal(0.0, 1.0), -2.0, 2.0)
+        assert tp.logpdf(-2.0001) == -np.inf
+        assert tp.logpdf(2.0001) == -np.inf
+        assert np.isfinite(tp.logpdf(0.0))
+
+    @pytest.mark.parametrize("inner,lo,hi", [
+        (Normal(1.0, 2.0), -1.0, 4.0),
+        (Laplace(0.0, 1.5), -2.0, 3.0),
+    ])
+    def test_density_integrates_to_one(self, inner, lo, hi):
+        # Correct renormalization <=> the truncated density integrates to 1 over
+        # the box. A direct check of Z, independent of the closed-form Z used.
+        grid = np.linspace(lo, hi, 40001)
+        tp = TruncatedPrior(inner, lo, hi)
+        dens = np.exp(np.array([tp.logpdf(u) for u in grid]))
+        assert _trapz(dens, grid) == pytest.approx(1.0, abs=1e-4)
+
+    @pytest.mark.parametrize("inner,lo,hi", [
+        (Normal(1.0, 2.0), -1.0, 4.0),
+        (Laplace(0.0, 1.5), -2.0, 3.0),
+    ])
+    def test_ppf_spans_box_and_is_monotone(self, inner, lo, hi):
+        tp = TruncatedPrior(inner, lo, hi)
+        assert tp.ppf(0.0) == pytest.approx(lo, abs=1e-9)
+        assert tp.ppf(1.0) == pytest.approx(hi, abs=1e-9)
+        vals = np.array([tp.ppf(q) for q in np.linspace(0.0, 1.0, 21)])
+        assert vals.min() >= lo - 1e-9 and vals.max() <= hi + 1e-9
+        assert np.all(np.diff(vals) > 0)
+
+    def test_rvs_in_box_and_moments_match_truncnorm(self):
+        lo, hi, loc, sigma = 0.0, 6.0, 5.0, 3.0
+        tp = TruncatedPrior(Normal(loc, sigma), lo, hi)
+        oracle = _truncnorm(loc, sigma, lo, hi)
+        rng = np.random.default_rng(0)
+        xs = np.array([tp.rvs(rng) for _ in range(60000)])
+        assert xs.min() >= lo and xs.max() <= hi
+        assert xs.mean() == pytest.approx(oracle.mean(), abs=0.05)
+        assert xs.std() == pytest.approx(oracle.std(), abs=0.05)
+
+    def test_flags_and_support(self):
+        tp = TruncatedPrior(Normal(0.0, 1.0), -2.0, 2.0)
+        assert tp.has_bounded_support and tp.has_prior
+        assert tp.support() == (-2.0, 2.0)
+        assert tp.frozen is not None  # passthrough for FreeParameter._distribution
+
+    def test_rejects_noprior_and_empty_box(self):
+        with pytest.raises(ValueError):
+            TruncatedPrior(NoPrior(), -1.0, 1.0)        # no scipy frozen to truncate
+        with pytest.raises(ValueError):
+            TruncatedPrior(Normal(0.0, 1.0), 2.0, 1.0)  # lo >= hi

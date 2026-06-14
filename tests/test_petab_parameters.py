@@ -85,6 +85,47 @@ class TestEquivalenceToNativeVar:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Two-sided truncation of an unbounded family -> a bounded FreeParameter
+# (ADR-0020, #411). The two-adapter proof: the imported row equals the native
+# constructor call with the same truncation box.
+# ---------------------------------------------------------------------------
+
+class TestTwoSidedTruncation:
+    # bounds valid for both linear and log families (positive, finite).
+    LB, UB = 0.1, 100.0
+
+    @pytest.mark.parametrize("prior,params,keyword,p1,p2", [
+        ('normal',      (5.0, 2.0), 'normal_var',      5.0, 2.0),
+        ('laplace',     (1.0, 0.5), 'laplace_var',     1.0, 0.5),
+        ('log-normal',  (2.0, 0.7), 'lognormal_var',   2.0 / _LN10, 0.7 / _LN10),
+        ('log-laplace', (1.5, 0.4), 'loglaplace_var',  1.5 / _LN10, 0.4 / _LN10),
+    ])
+    def test_row_equals_native_truncated_freeparameter(self, prior, params, keyword, p1, p2):
+        got = free_parameter_from_row(
+            _row(prior=prior, params=params, lb=self.LB, ub=self.UB, nominal=1.0))
+        native = FreeParameter('k__FREE', keyword, p1, p2, value=1.0,
+                               bounded=True, lb=self.LB, ub=self.UB)
+        assert got == native
+        assert got.bounded and got.has_bounded_support
+        assert got.lower_bound == self.LB and got.upper_bound == self.UB
+        assert got.log_space == keyword.startswith('log')
+
+    def test_truncated_normal_samples_inside_box(self):
+        # The mapping actually truncates: sampling stays within [LB, UB].
+        fp = free_parameter_from_row(
+            _row(prior='normal', params=(5.0, 2.0), lb=self.LB, ub=self.UB))
+        rng = np.random.default_rng(0)
+        xs = np.array([fp.sample_value(rng).value for _ in range(20000)])
+        assert xs.min() >= self.LB and xs.max() <= self.UB
+
+    def test_wide_finite_bounds_still_truncate_a_normal(self):
+        # Bounds need not be tight: any two finite bounds truncate the tails.
+        got = free_parameter_from_row(
+            _row(prior='normal', params=(0.0, 1.0), lb=-100.0, ub=100.0))
+        assert got.bounded and got.lower_bound == -100.0 and got.upper_bound == 100.0
+
+
+# ---------------------------------------------------------------------------
 # 2. The log conversion oracle (the distribution over theta is identical)
 # ---------------------------------------------------------------------------
 
@@ -135,15 +176,18 @@ class TestGaps:
         with pytest.raises(NotImplementedError, match='catalog-parity'):
             free_parameter_from_row(_row(prior=dist, params=params, lb=0.0, ub=np.inf))
 
-    @pytest.mark.parametrize("prior,params", [
-        ('normal', (5.0, 2.0)),
-        ('laplace', (1.0, 0.5)),
-        ('log-normal', (2.0, 0.7)),
-        ('log-laplace', (1.5, 0.4)),
+    @pytest.mark.parametrize("prior,params,lb,ub", [
+        ('normal',     (5.0, 2.0), 0.0, np.inf),     # upper bound infinite
+        ('normal',     (5.0, 2.0), -np.inf, 10.0),   # lower bound infinite
+        ('laplace',    (1.0, 0.5), -np.inf, 10.0),
+        ('log-normal', (2.0, 0.7), 0.0, 1000.0),     # log scale, non-positive lower
+        ('log-laplace', (1.5, 0.4), 0.0, 1000.0),
     ])
-    def test_finite_bound_truncating_unbounded_family_raises(self, prior, params):
-        with pytest.raises(NotImplementedError, match='truncat'):
-            free_parameter_from_row(_row(prior=prior, params=params, lb=0.001, ub=1000.0))
+    def test_one_sided_truncation_of_unbounded_family_raises(self, prior, params, lb, ub):
+        # Truncation needs two finite bounds (and a positive lower bound on a log
+        # scale) to form a reflecting box; one-sided still raises (#411/#407).
+        with pytest.raises(NotImplementedError, match='one-sided'):
+            free_parameter_from_row(_row(prior=prior, params=params, lb=lb, ub=ub))
 
     def test_estimate_false_raises(self):
         with pytest.raises(NotImplementedError, match='estimate=false'):

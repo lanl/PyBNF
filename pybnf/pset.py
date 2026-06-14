@@ -11,7 +11,7 @@ import copy
 import signal
 from subprocess import Popen, STDOUT, PIPE, CalledProcessError
 from .data import Data
-from .priors import build_prior
+from .priors import TruncatedPrior, build_prior
 import heapq
 import time
 import traceback
@@ -1430,7 +1430,7 @@ class FreeParameter:
     Class representing a free parameter in a model
     """
 
-    def __init__(self, name, type, p1, p2, value=None, bounded=True):
+    def __init__(self, name, type, p1, p2, value=None, bounded=True, lb=None, ub=None):
         """
         Initializes a FreeParameter object based on information parsed from the configuration file
 
@@ -1446,23 +1446,63 @@ class FreeParameter:
         :type value: float
         :param bounded: Determines whether the parameter should be bounded after initial sampling
          (only relevant if parameter's initial distribution is bounded)
+        :param lb: Optional lower truncation bound (in theta) for an unbounded-support
+         prior (normal/laplace/log-*). With ``ub``, the prior is truncated to a
+         finite reflecting box (ADR-0020, issue #411). Distinct from ``p1``, which
+         is the family's location/scale, not a bound. Ignored for the Uniform
+         families, whose bounds are ``p1``/``p2``.
+        :param ub: Optional upper truncation bound (in theta); see ``lb``.
         """
         self.name = name
         self.type = type
         self.p1 = p1
         self.p2 = p2
+        # The truncation box (in theta) requested for an unbounded-support family,
+        # preserved verbatim so set_value can reconstruct the parameter (ADR-0020).
+        self.trunc_lb = lb
+        self.trunc_ub = ub
 
         # The prior (distribution family in sampling space u) and the scale
         # (theta<->u transform) are resolved from the legacy *_var keyword via the
         # registry-derived map -- a behavior-preserving split (ADR-0010, M2.3).
         self._prior, self._scale = build_prior(type, p1, p2)
 
-        # Reflecting bounds: only a bounded-support family can be box-bounded, and
-        # only if the b/u flag is set (replaces re.search('uniform', type)).
-        self.bounded = bounded if self._prior.has_bounded_support else False
-
-        self.lower_bound = -np.inf if not self.bounded else self.p1
-        self.upper_bound = np.inf if not self.bounded else self.p2
+        if self._prior.has_bounded_support:
+            # Uniform: the bounds are p1/p2 in theta; the reflecting box is gated by
+            # the b/u flag (replaces re.search('uniform', type)). Truncation bounds
+            # do not apply -- the support is the family's own box.
+            self.bounded = bounded
+            self.lower_bound = -np.inf if not self.bounded else self.p1
+            self.upper_bound = np.inf if not self.bounded else self.p2
+        elif lb is None and ub is None:
+            # Unbounded, untruncated -- today's behavior (the default bounded flag
+            # is meaningless for an unbounded-support family without a box).
+            self.bounded = False
+            self.lower_bound = -np.inf
+            self.upper_bound = np.inf
+        else:
+            # Truncated unbounded-support prior (ADR-0020): a finite, two-sided
+            # reflecting box that also truncates the prior density and sampling.
+            # The family-agnostic reflection fold (_reflect) needs two finite
+            # bounds, so one-sided truncation has no box to fold into -- raise
+            # rather than silently drop the bound.
+            if lb is None or ub is None:
+                raise PybnfError(
+                    f"Parameter {self.name}: truncating an unbounded-support prior "
+                    f"needs both lb and ub (got lb={lb}, ub={ub}); one-sided "
+                    f"truncation has no finite reflecting box.")
+            self.lower_bound = float(lb)
+            self.upper_bound = float(ub)
+            if not (np.isfinite(self.lower_bound) and np.isfinite(self.upper_bound)):
+                raise PybnfError(
+                    f"Parameter {self.name}: truncation bounds must both be finite "
+                    f"to form a reflecting box, got [{self.lower_bound}, {self.upper_bound}]")
+            self.bounded = True
+            # Wrap the family in a TruncatedPrior carrying the box in sampling
+            # space u (the scale owns theta<->u; log parameters truncate in log10).
+            self._prior = TruncatedPrior(
+                self._prior, self._scale.forward(self.lower_bound),
+                self._scale.forward(self.upper_bound))
 
         if self.lower_bound > self.upper_bound:
             raise PybnfError(f"Parameter {self.name} has a lower bound that is greater than its upper bound")
@@ -1511,7 +1551,8 @@ class FreeParameter:
             logger.debug(f'Assigned value {new_value:f} is out of defined bounds: [{self.lower_bound}, {self.upper_bound}].  '
                            f'Adjusted to {adj:f}')
             new_value = adj
-        return FreeParameter(self.name, self.type, self.p1, self.p2, new_value, self.bounded)
+        return FreeParameter(self.name, self.type, self.p1, self.p2, new_value,
+                             self.bounded, self.trunc_lb, self.trunc_ub)
 
     def _reflect(self, new):
         """Reflect a proposed value back inside the parameter's bounds.

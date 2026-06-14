@@ -16,6 +16,7 @@ no-prior keywords (Simplex start points), mapped to ``NoPrior``.
 from ..registry import PRIOR_FAMILY_REGISTRY
 from .base import NoPrior, Prior
 from .scale import LINEAR, LOG10, Linear, Log10, Scale
+from .truncated import TruncatedPrior
 
 # Import the family leaves for their @register_prior_family side effects.
 from . import normal  # noqa: F401, E402
@@ -66,6 +67,6 @@ def var_keyword_grammar():
 
 
 __all__ = [
-    'Prior', 'NoPrior', 'Scale', 'Linear', 'Log10', 'LINEAR', 'LOG10',
-    'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
+    'Prior', 'NoPrior', 'TruncatedPrior', 'Scale', 'Linear', 'Log10',
+    'LINEAR', 'LOG10', 'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
 ]

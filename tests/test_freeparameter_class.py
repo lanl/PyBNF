@@ -2,10 +2,17 @@ from .context import pset, raises
 
 import numpy as np
 import pytest
+from scipy import stats
+
+from pybnf.printing import PybnfError
 
 # Shared Generator for the statistical sampling tests (reused across draws).
 _RNG = np.random.default_rng(0)
 from hypothesis import given, strategies as st
+
+
+def _truncnorm(loc, sigma, lo, hi):
+    return stats.truncnorm((lo - loc) / sigma, (hi - loc) / sigma, loc=loc, scale=sigma)
 
 
 def _fold_reference(new, lb, ub):
@@ -148,3 +155,73 @@ class TestReflectFold:
         p = pset.FreeParameter('x__FREE', 'uniform_var', -3, 7)
         v = p.set_value(new).value
         assert -3.0 <= v <= 7.0
+
+
+class TestTruncatedFreeParameter:
+    """Two finite bounds on an unbounded-support prior (normal/laplace/log-*)
+    turn it into a truncated prior with a reflecting box (ADR-0020, #411). The
+    box machinery (reflection, latin-hypercube) was already family-agnostic and
+    only gated off for these families; truncation flips the gate."""
+
+    def test_box_and_flags(self):
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, lb=-1.0, ub=4.0)
+        assert fp.bounded
+        assert fp.has_bounded_support              # now latin-hypercube eligible
+        assert fp.lower_bound == -1.0 and fp.upper_bound == 4.0
+
+    def test_sampling_stays_in_box(self):
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 5.0, 3.0, lb=0.0, ub=6.0)
+        rng = np.random.default_rng(0)
+        xs = np.array([fp.sample_value(rng).value for _ in range(20000)])
+        assert xs.min() >= 0.0 and xs.max() <= 6.0
+
+    def test_prior_logpdf_matches_truncnorm(self):
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, lb=-1.0, ub=4.0)
+        oracle = _truncnorm(1.0, 2.0, -1.0, 4.0)
+        for v in (-1.0, 0.0, 1.0, 3.9):
+            assert fp.prior_logpdf(v) == pytest.approx(oracle.logpdf(v), rel=1e-12)
+
+    def test_value_from_quantile_matches_truncnorm(self):
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, lb=-1.0, ub=4.0)
+        oracle = _truncnorm(1.0, 2.0, -1.0, 4.0)
+        for q in (0.1, 0.5, 0.9):
+            assert fp.value_from_quantile(q).value == pytest.approx(oracle.ppf(q), rel=1e-9)
+
+    def test_reflection_folds_into_box(self):
+        # The triangle-wave fold (gated off for normal_var before #411) is active:
+        # box [0, 10], 11 -> 9, 25 -> 5, matching the uniform_var oracle.
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=0.0, ub=10.0)
+        assert fp.set_value(11).value == pytest.approx(9.0)
+        assert fp.set_value(25).value == pytest.approx(5.0)
+
+    def test_set_value_preserves_truncation_box(self):
+        # Reconstruction must carry the box through, else the rebuilt parameter
+        # would silently re-widen to unbounded.
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, lb=-1.0, ub=4.0)
+        fp2 = fp.set_value(2.0)
+        assert fp2.bounded and fp2.has_bounded_support
+        assert fp2.lower_bound == -1.0 and fp2.upper_bound == 4.0
+
+    def test_log_truncation_reflects_in_log_space(self):
+        # lognormal_var truncated to [0.1, 100] -> box [-1, 2] in log10 u.
+        fp = pset.FreeParameter('x__FREE', 'lognormal_var', 1.0, 0.5, lb=0.1, ub=100.0)
+        assert fp.lower_bound == 0.1 and fp.upper_bound == 100.0
+        rng = np.random.default_rng(0)
+        xs = np.array([fp.sample_value(rng).value for _ in range(20000)])
+        assert xs.min() >= 0.1 and xs.max() <= 100.0
+
+    def test_nominal_value_outside_box_raises(self):
+        with pytest.raises(pset.OutOfBoundsException):
+            pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, value=99.0, lb=-1.0, ub=4.0)
+
+    def test_one_sided_box_raises(self):
+        # An infinite bound -> no finite width to fold into.
+        with pytest.raises(PybnfError):
+            pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=0.0, ub=np.inf)
+
+    def test_only_one_bound_given_raises(self):
+        # Passing exactly one of lb/ub is loud, not a silent unbounded prior.
+        with pytest.raises(PybnfError):
+            pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, ub=5.0)
+        with pytest.raises(PybnfError):
+            pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=-5.0)

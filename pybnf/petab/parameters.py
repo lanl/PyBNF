@@ -32,16 +32,17 @@ PEtab v2 specifics this encodes (current spec, *not* the v1 shape):
   we convert ``(mu, sigma) -> (mu/ln10, sigma/ln10)``. The resulting distribution
   *over theta* is identical -- PyBNF's scale lives in the sampling
   parameterization, so there is no change-of-variables term to add (ADR-0003).
-* Bounds **truncate** the prior. PyBNF carries reflecting bounds only on the
-  finite-support Uniform families, so a Uniform prior truncates exactly (we
-  intersect the box), while a finite bound that would truncate an unbounded family
-  (normal / laplace / log-*) is surfaced as an explicit ``NotImplementedError``
-  rather than silently dropped (#407 truncation follow-up).
+* Bounds **truncate** the prior. A Uniform prior truncates exactly (we intersect
+  the box). For an unbounded family (normal / laplace / log-*), *two-sided* finite
+  bounds map to a truncated prior on a finite reflecting box (ADR-0020,
+  ``TruncatedPrior``); a *one-sided* truncation (one bound infinite, or a
+  non-positive lower bound on a log scale) still raises ``NotImplementedError``,
+  because the reflection fold needs two finite bounds.
 
 Gaps are surfaced as ``NotImplementedError`` with clear messages so the boundary
 is documented in code, not silent: the five PEtab families PyBNF lacks
 (``cauchy``, ``gamma``, ``exponential``, ``chisquare``, ``rayleigh`` -- a
-catalog-parity follow-up), parameter truncation of an unbounded family, and
+catalog-parity follow-up), one-sided truncation of an unbounded family, and
 ``estimate = false`` fixed parameters (those become model constants, handled by a
 later importer chunk, not here).
 """
@@ -111,10 +112,12 @@ class PetabParameterRow:
 def free_parameter_from_row(row):
     """Map one estimated PEtab v2 parameters row to a :class:`FreeParameter`.
 
-    Raises ``NotImplementedError`` at the documented PEtab/PyBNF boundaries
-    (``estimate=false`` fixed parameters; the five unsupported prior families;
-    bound-truncation of an unbounded-support family) and ``PybnfError`` for
-    malformed rows (unknown prior type, wrong parameter count, reversed bounds).
+    Two-sided finite bounds truncating an unbounded family map to a bounded
+    ``FreeParameter`` (ADR-0020). Raises ``NotImplementedError`` at the remaining
+    PEtab/PyBNF boundaries (``estimate=false`` fixed parameters; the five
+    unsupported prior families; *one-sided* truncation of an unbounded family) and
+    ``PybnfError`` for malformed rows (unknown prior type, wrong parameter count,
+    reversed bounds).
     """
     if not row.estimate:
         raise NotImplementedError(
@@ -137,9 +140,9 @@ def free_parameter_from_row(row):
             raise PybnfError(
                 f"Parameter '{row.parameter_id}' has no prior and non-finite bounds "
                 f"[{lb}, {ub}]: a uniform default needs finite bounds.")
-        keyword, p1, p2, bounded = 'uniform_var', lb, ub, True
+        keyword, p1, p2, bounded, tlb, tub = 'uniform_var', lb, ub, True, None, None
     else:
-        keyword, p1, p2, bounded = _resolve_prior(row, lb, ub)
+        keyword, p1, p2, bounded, tlb, tub = _resolve_prior(row, lb, ub)
 
     # Tie the importer to the registry-derived keyword map (ADR-0010): the
     # synthesized keyword must be one the native *_var grammar produces. A miss
@@ -150,11 +153,17 @@ def free_parameter_from_row(row):
             f"{keyword!r} is not a registered prior keyword.")
 
     value = None if row.nominal_value is None else float(row.nominal_value)
-    return FreeParameter(row.parameter_id, keyword, p1, p2, value=value, bounded=bounded)
+    return FreeParameter(row.parameter_id, keyword, p1, p2, value=value,
+                         bounded=bounded, lb=tlb, ub=tub)
 
 
 def _resolve_prior(row, lb, ub):
-    """Resolve an explicit ``priorDistribution`` to ``(keyword, p1, p2, bounded)``."""
+    """Resolve an explicit ``priorDistribution`` to ``(keyword, p1, p2, bounded,
+    trunc_lb, trunc_ub)``.
+
+    ``trunc_lb``/``trunc_ub`` are the truncation box (in theta) for an
+    unbounded-support family that PEtab bounds truncate; ``None`` otherwise.
+    """
     dist = row.prior_distribution
     if dist in _UNSUPPORTED_PETAB_DISTRIBUTIONS:
         raise NotImplementedError(
@@ -179,7 +188,7 @@ def _resolve_prior(row, lb, ub):
             raise PybnfError(
                 f"Parameter '{row.parameter_id}': uniform prior ({a}, {b}) and "
                 f"bounds [{lb}, {ub}] have an empty intersection.")
-        return keyword, p1, p2, True
+        return keyword, p1, p2, True, None, None
 
     # normal / laplace and their log forms: unbounded-support families.
     loc, scale = _expect_n(row.prior_parameters, 2, dist, row)
@@ -190,28 +199,48 @@ def _resolve_prior(row, lb, ub):
         # the sampling parameterization, so there is no Jacobian term (ADR-0003).
         loc, scale = loc / _LN10, scale / _LN10
 
-    _reject_truncation(row, dist, is_log, lb, ub)
-    return keyword, loc, scale, False
+    tlb, tub = _truncation_box(row, dist, is_log, lb, ub)
+    return keyword, loc, scale, tlb is not None, tlb, tub
 
 
-def _reject_truncation(row, dist, is_log, lb, ub):
-    """Surface a finite bound that would truncate an unbounded-support prior.
+def _truncation_box(row, dist, is_log, lb, ub):
+    """Map PEtab bounds on an unbounded-support prior to a truncation box.
 
-    PyBNF cannot carry reflecting bounds on an unbounded family, so it cannot
-    enforce PEtab's bound-truncation there. The prior is untruncated iff the
-    bounds cover the family's natural domain in theta -- ``(-inf, inf)`` for
-    normal/laplace, ``(0, inf)`` for the log forms (theta > 0). Otherwise raise,
-    documenting the boundary rather than silently importing a different prior.
+    PEtab truncates a prior by ``[lb, ub]``. Three cases (ADR-0020, issue #411):
+
+    * **Untruncated** -- the bounds cover the family's natural domain in theta
+      (``(-inf, inf)`` for normal/laplace; ``(0, inf)`` for the log forms,
+      theta > 0). Returns ``(None, None)``: the prior is built unbounded as before.
+    * **Two-sided truncation** -- both bounds finite (and a positive lower bound on
+      a log scale). Returns ``(lb, ub)``: the family is wrapped in a finite
+      reflecting box (a ``TruncatedPrior``).
+    * **One-sided truncation** -- exactly one bound truncates while the other is
+      infinite (or, on a log scale, a non-positive lower bound, whose log10 is
+      ``-inf``). The triangle-wave reflection fold needs *two* finite bounds, so
+      this still raises ``NotImplementedError`` -- the boundary is documented in
+      code rather than silently importing a different prior.
     """
     support_lo = 0.0 if is_log else -np.inf
-    if lb <= support_lo and ub >= np.inf:
-        return
+    covers_lower = lb <= support_lo
+    covers_upper = ub >= np.inf
+    if covers_lower and covers_upper:
+        return None, None  # no truncation: build the prior unbounded
+
+    # A finite reflecting box needs both bounds finite; on a log scale the lower
+    # bound must additionally be strictly positive (log10 of <= 0 is -inf).
+    lower_ok = np.isfinite(lb) and (lb > 0.0 if is_log else True)
+    if lower_ok and np.isfinite(ub):
+        return lb, ub
+
+    domain = "(0, inf)" if is_log else "(-inf, inf)"
     raise NotImplementedError(
-        f"Parameter '{row.parameter_id}': PEtab truncates the '{dist}' prior to "
-        f"[{lb}, {ub}], but PyBNF cannot enforce reflecting bounds on an "
-        f"unbounded-support family (truncation follow-up, #407). Set the bounds to "
-        f"the prior's natural domain (lowerBound {support_lo}, upperBound inf) to "
-        f"import the untruncated prior.")
+        f"Parameter '{row.parameter_id}': PEtab one-sided truncation of the "
+        f"'{dist}' prior to [{lb}, {ub}] is not supported -- PyBNF's reflecting "
+        f"box needs two finite bounds"
+        f"{' (and a positive lower bound on a log scale)' if is_log else ''} "
+        f"(truncation follow-up, #407/#411). Use two finite bounds to truncate, or "
+        f"set the bounds to the prior's natural domain {domain} for the untruncated "
+        f"prior.")
 
 
 def _expect_n(params, n, dist, row):
