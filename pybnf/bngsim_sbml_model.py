@@ -2,6 +2,7 @@
 
 
 import copy
+import hashlib
 import logging
 import os
 import secrets
@@ -26,6 +27,17 @@ _SUPPORTED_INTEGRATORS = ('cvode', 'gillespie')
 
 
 logger = logging.getLogger(__name__)
+
+
+# Process-level cache of loaded bngsim engine models, keyed by a hash of the
+# model's base SBML text. The engine model -- including the analytically
+# derived (SymPy) Jacobian -- depends only on the model *structure*, not on
+# parameter values, so it is loaded once per worker process and cloned for
+# each evaluation rather than re-derived on every objective evaluation. See
+# issue #415. The base model is unpickled fresh in each dask worker, so an
+# instance attribute would re-derive the Jacobian per evaluation; the cache
+# lives at module scope (one per worker process) to amortize across the fit.
+_ENGINE_TEMPLATE_CACHE = {}
 
 
 from ._bngsim_caps import (
@@ -145,6 +157,91 @@ class BngsimSbmlModelNoTimeout(Model):
         )
         self.global_param_names = self._global_param_names
         self.param_names = self._species_name_set.union(set(self._global_param_names))
+        self._initial_dep_names = self._compute_initial_dependency_names(doc.getModel())
+
+    @staticmethod
+    def _collect_ast_names(node, out):
+        """Recursively collect the symbol names referenced by a libSBML AST."""
+        if node is None:
+            return
+        if node.getType() == libsbml.AST_NAME:
+            name = node.getName()
+            if name:
+                out.add(name)
+        for i in range(node.getNumChildren()):
+            BngsimSbmlModelNoTimeout._collect_ast_names(node.getChild(i), out)
+
+    def _compute_initial_dependency_names(self, sbml_model):
+        """Names whose change requires recomputing a species' initial value.
+
+        Returns the set of parameter/species names that any species' initial
+        concentration depends on (transitively through initialAssignments and
+        assignmentRules), or ``None`` if the model contains an algebraicRule
+        (whose effect on initials we do not analyze, so we conservatively force
+        a reload). When this set is empty, fitted parameter values can never
+        change a species initial, so the fast cached-clone path is exact. See
+        issue #415.
+        """
+        # symbol -> referenced names, for every expression that *defines* a
+        # symbol's value (initialAssignments and assignmentRules). Used both to
+        # seed (species-targeted definitions) and to expand transitively.
+        expr_refs = {}
+        for i in range(sbml_model.getNumInitialAssignments()):
+            ia = sbml_model.getInitialAssignment(i)
+            refs = set()
+            self._collect_ast_names(ia.getMath(), refs)
+            expr_refs.setdefault(ia.getSymbol(), set()).update(refs)
+        for i in range(sbml_model.getNumRules()):
+            rule = sbml_model.getRule(i)
+            if rule.isAlgebraic():
+                # An algebraic rule constrains initial values implicitly; we do
+                # not solve it, so force the correctness-preserving reload path.
+                return None
+            if rule.isAssignment():
+                refs = set()
+                self._collect_ast_names(rule.getMath(), refs)
+                expr_refs.setdefault(rule.getVariable(), set()).update(refs)
+            # Rate rules define d/dt, not the initial value -> ignored here.
+
+        # Seed from expressions that determine a *species'* initial value, then
+        # expand through any referenced symbol that is itself expression-defined
+        # (e.g. a species initial that depends on a parameter set by a rule).
+        dep = set()
+        worklist = []
+        for symbol, refs in expr_refs.items():
+            if symbol in self._species_name_set:
+                dep.update(refs)
+                worklist.extend(refs)
+        seen = set(worklist)
+        while worklist:
+            name = worklist.pop()
+            for ref in expr_refs.get(name, ()):
+                dep.add(ref)
+                if ref not in seen:
+                    seen.add(ref)
+                    worklist.append(ref)
+        return dep
+
+    def _needs_structural_reload(self, mut=None, scan_param=None):
+        """Whether this evaluation must reload the model from SBML text.
+
+        True only when a parameter/species being changed this evaluation can
+        alter a species' initial value (so the engine model's baked-in initial
+        concentrations would be stale under in-place ``set_param``). Otherwise
+        the fast cached-clone path is exact. See issue #415.
+        """
+        if self._initial_dep_names is None:
+            return True
+        if not self._initial_dep_names:
+            return False
+        changed = set()
+        if self.param_set is not None:
+            changed.update(self.param_set.keys())
+        if mut:
+            changed.update(mi.name for mi in mut)
+        if scan_param is not None:
+            changed.add(scan_param)
+        return bool(changed & self._initial_dep_names)
 
     def _load_engine_model_or_raise(self, parse_error_message):
         """Load the bngsim engine model, letting FileNotFoundError propagate
@@ -259,6 +356,94 @@ class BngsimSbmlModelNoTimeout(Model):
             scan_name, scan_value = scan_override
             self._set_model_value_if_present(sbml_model, scan_name, scan_value)
         return doc
+
+    def _get_engine_template(self):
+        """Return the process-cached base engine model for this SBML text.
+
+        Loads the bngsim model once per worker process (paying the libSBML
+        parse + analytical-Jacobian derivation) and reuses it for every
+        evaluation, cloning it for each per-evaluation parameter application.
+        See issue #415.
+        """
+        key = getattr(self, '_engine_template_key', None)
+        if key is None:
+            key = hashlib.sha256(self._base_sbml_text.encode('utf-8')).hexdigest()
+            self._engine_template_key = key
+        template = _ENGINE_TEMPLATE_CACHE.get(key)
+        if template is None:
+            template = self._load_bngsim_model_from_text(self._base_sbml_text)
+            _ENGINE_TEMPLATE_CACHE[key] = template
+        return template
+
+    def _set_engine_value_if_present(self, engine_model, name, value):
+        """Apply a value to the engine model. Returns True iff it is a species."""
+        if name in self._species_name_set:
+            engine_model.set_concentration(name, float(value))
+            return True
+        if name in self._global_param_names:
+            engine_model.set_param(name, float(value))
+        return False
+
+    def _get_engine_value_if_present(self, engine_model, name):
+        if name in self._species_name_set:
+            return float(engine_model.get_concentration(name))
+        if name in self._global_param_names:
+            return float(engine_model.get_param(name))
+        return None
+
+    def _apply_param_set_engine(self, engine_model):
+        """Apply self.param_set to the engine model. Returns True iff a species
+        initial value was changed (so the caller must save_concentrations)."""
+        touched_species = False
+        if self.param_set is None:
+            return touched_species
+        for name in self.param_set.keys():
+            if self._set_engine_value_if_present(engine_model, name, self.param_set[name]):
+                touched_species = True
+        return touched_species
+
+    def _apply_mutant_engine(self, mut, engine_model):
+        touched_species = False
+        for mi in mut:
+            current = self._get_engine_value_if_present(engine_model, mi.name)
+            if current is None:
+                continue
+            new_value = _mutate_scalar(current, mi.operation, mi.value)
+            if self._set_engine_value_if_present(engine_model, mi.name, new_value):
+                touched_species = True
+        return touched_species
+
+    def _prepare_engine_model(self, mut=None, scan_override=None):
+        """Clone the cached engine template and apply per-evaluation values.
+
+        The fast-path analogue of ``_build_sbml_doc`` + reload: param_set,
+        mutant deltas, and any scan override are applied in place via
+        set_param/set_concentration on a cheap clone of the cached model,
+        skipping the libSBML reparse + Jacobian re-derivation. Used only when
+        the changed names cannot affect a species initial value (see
+        ``_needs_structural_reload``). See issue #415.
+        """
+        engine_model = self._get_engine_template().clone()
+        touched_species = self._apply_param_set_engine(engine_model)
+        if mut:
+            touched_species |= self._apply_mutant_engine(mut, engine_model)
+        if scan_override is not None:
+            scan_name, scan_value = scan_override
+            if self._set_engine_value_if_present(engine_model, scan_name, scan_value):
+                touched_species = True
+        if touched_species:
+            engine_model.save_concentrations()
+        engine_model.reset()
+        return engine_model
+
+    def _engine_model_for_action(self, mut=None, scan_override=None):
+        """Build the engine model for one action: fast cached-clone path when
+        safe, else the correctness-preserving reload from SBML text (#415)."""
+        scan_param = scan_override[0] if scan_override is not None else None
+        if self._needs_structural_reload(mut=mut, scan_param=scan_param):
+            doc = self._build_sbml_doc(mut=mut, scan_override=scan_override)
+            return self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+        return self._prepare_engine_model(mut=mut, scan_override=scan_override)
 
     def model_text(self, mut=None):
         logger.info('Generating model text for %s', self.name)
@@ -393,8 +578,7 @@ class BngsimSbmlModelNoTimeout(Model):
                         method=method,
                     )
                     if isinstance(act, TimeCourse):
-                        doc = self._build_sbml_doc(mut=mut)
-                        engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+                        engine_model = self._engine_model_for_action(mut=mut)
                         result = self._run_simulation(
                             engine_model, act.time, act.stepnumber + 1,
                             method=method, seed=seed_value, timeout=timeout,
@@ -418,8 +602,8 @@ class BngsimSbmlModelNoTimeout(Model):
                         headers = None
 
                         for x in points:
-                            doc = self._build_sbml_doc(mut=mut, scan_override=(act.param, x))
-                            engine_model = self._load_bngsim_model_from_text(_sbml_doc_to_text(doc))
+                            engine_model = self._engine_model_for_action(
+                                mut=mut, scan_override=(act.param, x))
                             result = self._run_simulation(
                                 engine_model, act.time, 2,
                                 method=method, seed=seed_value, timeout=timeout,

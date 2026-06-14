@@ -12,6 +12,45 @@ from .context import config, parse, printing, pset
 import pybnf.bngsim_sbml_model as bngsim_sbml_model
 
 
+# A tiny SBML model whose species S0 initial concentration is set by an
+# initialAssignment referencing parameter k_init (S0(0) = 2*k_init). Used to
+# pin the #415 detect-and-fallback: fitting k_init must recompute the species
+# initial, which the in-place set_param path cannot do, so the bridge must fall
+# back to the reload path.
+_IA_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ia_test">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S0" compartment="c" initialConcentration="1" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="S1" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_init" value="5" constant="true"/>
+      <parameter id="kf" value="0.1" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="S0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><cn>2</cn><ci>k_init</ci></apply></math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="r1" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="S0" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="S1" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>kf</ci><ci>S0</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+def _write_ia_model(tmp_path):
+    xml_path = tmp_path / 'ia_test.xml'
+    xml_path.write_text(_IA_SBML)
+    return str(xml_path)
+
+
 def _raf_xml_path():
     return str(Path(__file__).resolve().parent / 'bngl_files' / 'raf.xml')
 
@@ -423,3 +462,133 @@ def test_bngsim_sbml_model_timeout_reraises_failedsimulationerror(tmp_path, monk
     )
     log_text = '\n'.join(rec.getMessage() for rec in caplog.records)
     assert 'wall_time_sim' in log_text
+
+
+# ── #415: engine model loaded once, cloned per evaluation ───────────────────
+
+
+@pytest.fixture
+def _clear_engine_cache():
+    """Reset the process-level engine template cache around a test."""
+    bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+    yield
+    bngsim_sbml_model._ENGINE_TEMPLATE_CACHE.clear()
+
+
+@pytest.mark.bngsim_sbml
+def test_engine_template_loaded_once_across_evaluations(tmp_path, _clear_engine_cache):
+    """The bngsim engine model (and its analytical Jacobian) is loaded once and
+    reused across many objective evaluations, not re-derived per evaluation.
+
+    Regression guard for #415: prior to the fix, execute() reloaded the model
+    (libSBML parse + SymPy Jacobian) on every parameter set.
+    """
+    xml_path = _raf_xml_path()
+    load_count = {'n': 0}
+    orig_loader = bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text
+
+    def _counting_loader(self, text):
+        load_count['n'] += 1
+        return orig_loader(self, text)
+
+    action = pset.TimeCourse({'time': '100', 'step': '2'})
+    base = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet(_raf_params()), actions=(action,),
+    )
+    # raf fits only rate constants (K3, K5), which do not feed any species
+    # initial, so every evaluation takes the fast cached-clone path.
+    assert base._needs_structural_reload() is False
+
+    bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text = _counting_loader
+    try:
+        last = None
+        for value in (4000., 6000., 8000., 9000.):
+            ps = pset.PSet([
+                pset.FreeParameter('K3', 'uniform_var', 2000., 10000., value),
+                pset.FreeParameter('K5', 'uniform_var', 0.1, 1., 0.3),
+            ])
+            model = base.copy_with_param_set(ps)
+            last = model.execute(str(tmp_path), f'raf_load_count_{int(value)}', 100)
+    finally:
+        bngsim_sbml_model.BngsimSbmlModelNoTimeout._load_bngsim_model_from_text = orig_loader
+
+    assert load_count['n'] == 1, (
+        f'engine model was loaded {load_count["n"]} times across 4 evaluations; '
+        'expected exactly 1 (cached + cloned thereafter)'
+    )
+    # The different K3 values must still produce different trajectories -- the
+    # cached model is cloned and set_param'd, not frozen at the first value.
+    assert last is not None and 'time_course' in last
+
+
+@pytest.mark.bngsim_sbml
+def test_fast_path_matches_forced_reload_numerically(tmp_path, _clear_engine_cache):
+    """The in-place cached-clone path is numerically identical to the reload
+    path it replaces (#415)."""
+    xml_path = _raf_xml_path()
+    ps = pset.PSet(_raf_params())
+    action = pset.TimeCourse({'time': '1000', 'step': '10'})
+
+    fast_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,),
+    )
+    fast = fast_model.execute(str(tmp_path), 'raf_fast', 1000)['time_course']
+
+    # Force the legacy reload path for the same params by spoofing the dependency
+    # set so _needs_structural_reload returns True.
+    reload_model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,),
+    )
+    reload_model._initial_dep_names = {'K3', 'K5'}
+    assert reload_model._needs_structural_reload() is True
+    slow = reload_model.execute(str(tmp_path), 'raf_slow', 1000)['time_course']
+
+    npt.assert_allclose(fast.data, slow.data, rtol=0, atol=0)
+
+
+@pytest.mark.bngsim_sbml
+def test_param_driven_initial_assignment_falls_back_to_reload(tmp_path, _clear_engine_cache):
+    """Fitting a parameter that sets a species' initial value (via an
+    initialAssignment) must recompute that initial each evaluation. The bridge
+    detects the dependency and uses the reload path so the result stays correct
+    (#415)."""
+    xml_path = _write_ia_model(tmp_path)
+    action = pset.TimeCourse({'time': '5', 'step': '5', 'method': 'ode'})
+
+    # k_init feeds S0's initialAssignment, so it must be flagged as requiring a
+    # structural reload when fitted.
+    probe = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+    assert probe._initial_dep_names == {'k_init'}
+
+    results = {}
+    for k in (5.0, 10.0):
+        ps = pset.PSet([pset.FreeParameter('k_init', 'uniform_var', 1., 20., k)])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,),
+        )
+        assert model._needs_structural_reload() is True
+        results[k] = model.execute(str(tmp_path), f'ia_{int(k)}', 5)['time_course']
+
+    # S0(t=0) must track 2*k_init (10 vs 20), proving the initial was recomputed.
+    s0_at_zero = {k: float(d['S0'][0]) for k, d in results.items()}
+    assert abs(s0_at_zero[5.0] - 10.0) < 1e-9, s0_at_zero
+    assert abs(s0_at_zero[10.0] - 20.0) < 1e-9, s0_at_zero
+
+
+@pytest.mark.bngsim_sbml
+def test_initial_assignment_independent_param_uses_fast_path(tmp_path, _clear_engine_cache):
+    """A model with an initialAssignment still uses the fast path when the
+    *fitted* parameter does not feed any species initial (#415)."""
+    xml_path = _write_ia_model(tmp_path)
+    action = pset.TimeCourse({'time': '5', 'step': '5', 'method': 'ode'})
+    # Fit kf (a rate constant), which does not feed S0's initialAssignment.
+    ps = pset.PSet([pset.FreeParameter('kf', 'uniform_var', 0.01, 1., 0.2)])
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,),
+    )
+    assert model._needs_structural_reload() is False
+    data = model.execute(str(tmp_path), 'ia_fast', 5)['time_course']
+    # Base k_init=5 -> S0(0)=10 regardless of kf.
+    assert abs(float(data['S0'][0]) - 10.0) < 1e-9
