@@ -345,8 +345,8 @@ def _apply_location(noise_model, location, family_token, observable):
         f'median-centering is not implemented for the {family_token} noise model',
         f"The {family_token} noise model interprets the prediction as the mean (it is "
         f"parameterized by its mean); centering it on the median is a coherent model "
-        f"but is not implemented (observable {observable}). Use 'location = mean', or "
-        f"omit location.")
+        f"but is not yet implemented (observable {observable}; see issue #419). Use "
+        f"'location = mean', or omit location.")
 
 
 def _build_sigma_source(verb, arg):

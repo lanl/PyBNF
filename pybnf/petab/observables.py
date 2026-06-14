@@ -4,10 +4,9 @@
 The observables chunk of the PEtab v2 importer. It mirrors
 :mod:`pybnf.petab.parameters` exactly -- the same two-adapter proof (ADR-0019): a
 native ``noise_model`` ``.conf`` line and a PEtab observables row land on the
-*same* internal ``(NoiseModel, SigmaSource)`` pair. Where they coincide the
-abstraction is right; the PEtab table *is* the decoupled ``(family x sigma-source)``
-model #410 chose (ADR-0021's Option (A)), so the mapping is a direct, column-for-
-column translation rather than reverse-engineering a bundled code.
+*same* internal ``(NoiseModel, SigmaSource)`` pair where the native surface can
+express it. PyBNF's noise engine (ADR-0021) is richer than PEtab v2's noise
+vocabulary, so PEtab maps onto a subset of it.
 
 Two deliberately separated layers (the "neutral seam", as in ``parameters.py``):
 
@@ -18,67 +17,86 @@ Two deliberately separated layers (the "neutral seam", as in ``parameters.py``):
   reader with no change below.
 * **The mapping** (``noise_model_from_row``) -- the *asset*: a
   :class:`PetabObservableRow` -> ``(NoiseModel, SigmaSource)``, built through the
-  ordinary ``Gaussian`` / ``Laplace`` constructors so the importer lands on a pair
-  bit-identical to the native ``noise_model`` surface (``objective._build_noise_spec``).
+  ordinary ``Gaussian`` / ``Laplace`` constructors.
 
-**Scope: the noise half only.** An observables row has two orthogonal noise
-columns that line up one-to-one with the two axes #410 decoupled:
+**Scope: the noise half only.** The PEtab v2 spec (verified against the current
+spec, not the v1 shape -- see the note below) gives the noise model through two
+columns:
 
-* ``noiseDistribution`` (``normal`` / ``laplace``) -> the distribution **family**.
-* ``observableTransformation`` (``lin`` / ``log`` / ``log10``) -> the scale the
-  noise is **additive on** (``additive_on``). PEtab's ``log`` is the **natural**
-  log, so it maps to ``LN``, not ``LOG10`` (ADR-0022, translated at this seam).
-* ``noiseFormula`` -> the **sigma-source**: a number -> ``ConstantSigma``, a bare
-  noise-parameter id -> ``FreeParameterSigma``.
+* ``noiseDistribution`` -- a single column carrying **both** the distribution
+  family **and** the scale its noise is additive on. PEtab v2 allows exactly
+  ``normal`` / ``log-normal`` / ``laplace`` / ``log-laplace`` (default ``normal``).
+  PEtab's log is the **natural** log, so the log forms map to ``LN`` (ADR-0022),
+  not ``LOG10``.
+* ``noiseFormula`` -- the **sigma-source** (the noise distribution's scale
+  parameter): a number -> ``ConstantSigma``, a bare noise-parameter id ->
+  ``FreeParameterSigma``.
 
-The deterministic prediction is taken as the distribution's **median** (PEtab v2
-hardcodes this; the location axis, ADR-0011) -- trivial on ``LINEAR`` (offset 0),
-and on the log scales exactly the native ``lognormal`` interpretation.
+The mapping (all with the prediction taken as the distribution's **median** --
+PEtab v2 specifies this for every noise distribution; the location axis, ADR-0011):
 
-The noise-half vocabulary is **fully covered**: PEtab's ``noiseDistribution`` enum
-is exactly ``{normal, laplace}`` and PyBNF maps both (the Laplace kernel landed in
-#410); its ``observableTransformation`` enum is exactly ``{lin, log, log10}`` and
-PyBNF maps all three (ADR-0022's ``LN`` closed the natural-log gap). So unlike the
-parameters chunk (five catalog-parity prior families PyBNF lacks), there is **no**
-unsupported-family boundary here. The only deferred capability is a non-trivial
+===============  ====================================
+noiseDistribution  PyBNF (NoiseModel)
+===============  ====================================
+``normal``         ``Gaussian(LINEAR, MEDIAN)``
+``log-normal``     ``Gaussian(LN, MEDIAN)``   (natural log)
+``laplace``        ``Laplace(LINEAR, MEDIAN)``
+``log-laplace``    ``Laplace(LN, MEDIAN)``    (natural log)
+===============  ====================================
+
+**Spec note (PEtab v2 vs v1).** PEtab v2 *removed* the separate
+``observableTransformation`` column (``lin`` / ``log`` / ``log10``) and folded it
+into ``noiseDistribution`` as the ``log-`` prefixes above; and v2's log is natural
+(base e), with no ``log10`` form. (An earlier draft of this adapter encoded the v1
+shape; this is the corrected v2 mapping.)
+
+**The two-adapter equivalence is exact for the linear families and ``laplace``,
+structural for the natural-log families.** ``laplace`` matches the native
+``laplace`` token exactly (``Laplace(LINEAR, MEDIAN)``), and ``normal`` matches the
+native ``normal`` token's *evaluation* (native ``normal`` defaults to ``MEAN``,
+which coincides with ``MEDIAN`` on the linear scale). The natural-log families have
+**no native ``.conf`` token** -- the native ``lognormal`` token is log10, and the
+native surface has no natural-log family -- so ``log-normal`` / ``log-laplace`` are
+validated structurally and against the kernels' analytic NLL rather than a native
+config line. That PyBNF can represent natural-log noise the native surface does not
+expose is fine: the engine is the superset, the native grammar a convenience.
+
+The noise mapping is **complete** for PEtab v2: every one of the four
+``noiseDistribution`` values maps with no gaps (the Laplace kernel landed in #410,
+the ``LN`` scale in ADR-0022). The only deferred capability is a non-trivial
 ``noiseFormula`` *expression* -- the sympy layer where the ``petab`` library earns
-its keep -- surfaced as an explicit ``NotImplementedError`` so the boundary is in
-code, not silent. Malformed rows (unknown ``noiseDistribution`` /
-``observableTransformation`` spelling -- e.g. a future PEtab version's new value,
-a missing ``noiseFormula``, a blank ``observableId``) raise ``PybnfError``.
+its keep -- surfaced as an explicit ``NotImplementedError``. Malformed rows (an
+unknown ``noiseDistribution`` spelling -- e.g. a future PEtab value -- a missing
+``noiseFormula``, a blank ``observableId``) raise ``PybnfError``.
 
-The ``observableFormula`` (the model-output expression) is the **deferred sibling
-half** -- a separate, later chunk that adopts the ``petab`` sympy layer. It is
-recorded on :class:`PetabObservableRow` so that chunk reuses this reader, but the
-noise asset neither reads nor validates it (real ``observableFormula``s are
-non-trivial expressions, so coupling that boundary here would make the noise asset
-raise on nearly every real PEtab problem).
+The ``observableFormula`` (the model-output expression) and the
+``observablePlaceholders`` / ``noisePlaceholders`` columns are the **deferred
+sibling half** -- a separate, later chunk that adopts the ``petab`` sympy layer.
+``observable_formula`` is recorded on :class:`PetabObservableRow` so that chunk
+reuses this reader, but the noise asset neither reads nor validates it (real
+``observableFormula``s are non-trivial expressions, so coupling that boundary here
+would make the noise asset raise on nearly every real PEtab problem).
 """
 
 import csv
 import re
 from dataclasses import dataclass
 
-from ..noise import (LINEAR, LN, LOG10, MEDIAN, ConstantSigma, FreeParameterSigma,
+from ..noise import (LINEAR, LN, MEDIAN, ConstantSigma, FreeParameterSigma,
                      Gaussian, Laplace)
 from ..printing import PybnfError
 
-# PEtab v2 noiseDistribution -> the PyBNF NoiseModel family class. Both are
-# supported (the Laplace kernel landed in #410, ADR-0021), so there is no
-# "known-PEtab-but-PyBNF-lacks" set the way parameters.py has for prior families.
-_PETAB_DISTRIBUTION_TO_FAMILY = {
-    'normal': Gaussian,
-    'laplace': Laplace,
-}
-
-# PEtab v2 observableTransformation -> the additive-noise scale (ADR-0022). PEtab's
-# ``log`` is the NATURAL log (-> LN); ``log10`` is base-10 (-> LOG10). This is the
-# vocabulary translation at the seam, exactly like parameters.py converting PEtab's
-# natural-log priors to PyBNF's log10.
-_PETAB_TRANSFORMATION_TO_SCALE = {
-    'lin': LINEAR,
-    'log': LN,
-    'log10': LOG10,
+# PEtab v2 noiseDistribution -> (PyBNF NoiseModel family class, additive-noise
+# scale). The single PEtab column carries both axes: the family (Gaussian/Laplace)
+# and whether the noise is additive on the linear or the natural-log scale. PEtab's
+# log is natural (base e) -> LN (ADR-0022), never log10. Both families are supported
+# (the Laplace kernel landed in #410), so every value maps -- there is no
+# "known-PEtab-but-PyBNF-lacks" gap the way parameters.py has for prior families.
+_PETAB_NOISE_DISTRIBUTION = {
+    'normal':      (Gaussian, LINEAR),
+    'log-normal':  (Gaussian, LN),
+    'laplace':     (Laplace,  LINEAR),
+    'log-laplace': (Laplace,  LN),
 }
 
 # A single bare identifier (a noise-parameter id) -- anything else with operators,
@@ -95,16 +113,14 @@ class PetabObservableRow:
     ``petab``-library adoption feeds it by constructing these from
     ``Problem.observable_df`` records.
 
-    ``observable_transformation`` / ``noise_distribution`` are ``None`` when the
-    column is absent or blank; the mapping applies the PEtab v2 defaults (``lin`` /
-    ``normal``). ``observable_formula`` -- the model-output expression -- is
-    recorded for the deferred ``observableFormula`` chunk but is **not** consumed by
-    the noise mapping (this is the noise half only).
+    ``noise_distribution`` is ``None`` when the column is absent or blank; the
+    mapping applies the PEtab v2 default (``normal``). ``observable_formula`` -- the
+    model-output expression -- is recorded for the deferred ``observableFormula``
+    chunk but is **not** consumed by the noise mapping (this is the noise half only).
     """
 
     observable_id: str
     observable_formula: str | None = None
-    observable_transformation: str | None = None
     noise_formula: str | None = None
     noise_distribution: str | None = None
 
@@ -115,42 +131,34 @@ class PetabObservableRow:
 
 def noise_model_from_row(row):
     """Map one PEtab v2 observables row's **noise half** to an
-    ``(NoiseModel, SigmaSource)`` pair, bit-identical to the native ``noise_model``
-    ``.conf`` surface (ADR-0021, ADR-0023).
+    ``(NoiseModel, SigmaSource)`` pair (ADR-0021, ADR-0023).
 
-    ``noiseDistribution`` selects the family (``normal`` -> ``Gaussian``,
-    ``laplace`` -> ``Laplace``); ``observableTransformation`` selects the scale the
-    noise is additive on (``lin`` -> ``LINEAR``, ``log`` -> ``LN``, ``log10`` ->
-    ``LOG10``); the prediction is the median (PEtab default). ``noiseFormula``
-    becomes the sigma-source: a number -> ``ConstantSigma``, a bare noise-parameter
-    id -> ``FreeParameterSigma``.
+    ``noiseDistribution`` selects the family and the additive scale together
+    (``normal`` -> ``Gaussian(LINEAR)``, ``log-normal`` -> ``Gaussian(LN)``,
+    ``laplace`` -> ``Laplace(LINEAR)``, ``log-laplace`` -> ``Laplace(LN)``); the
+    prediction is the median (PEtab default). ``noiseFormula`` becomes the
+    sigma-source: a number -> ``ConstantSigma``, a bare noise-parameter id ->
+    ``FreeParameterSigma``.
 
     Raises ``NotImplementedError`` for a non-trivial ``noiseFormula`` expression
     (the deferred sympy layer) and ``PybnfError`` for a malformed row (unknown
-    ``noiseDistribution`` / ``observableTransformation`` spelling, missing
-    ``noiseFormula``).
+    ``noiseDistribution`` spelling, missing ``noiseFormula``).
     """
     dist = row.noise_distribution or 'normal'
-    transform = row.observable_transformation or 'lin'
-
-    if dist not in _PETAB_DISTRIBUTION_TO_FAMILY:
+    if dist not in _PETAB_NOISE_DISTRIBUTION:
         raise PybnfError(
             f"Observable '{row.observable_id}': unknown PEtab noiseDistribution "
-            f"{dist!r} (expected one of {sorted(_PETAB_DISTRIBUTION_TO_FAMILY)}).")
-    if transform not in _PETAB_TRANSFORMATION_TO_SCALE:
-        raise PybnfError(
-            f"Observable '{row.observable_id}': unknown PEtab observableTransformation "
-            f"{transform!r} (expected one of {sorted(_PETAB_TRANSFORMATION_TO_SCALE)}).")
+            f"{dist!r} (expected one of {sorted(_PETAB_NOISE_DISTRIBUTION)}).")
 
-    family_cls = _PETAB_DISTRIBUTION_TO_FAMILY[dist]
-    scale = _PETAB_TRANSFORMATION_TO_SCALE[transform]
+    family_cls, scale = _PETAB_NOISE_DISTRIBUTION[dist]
     noise = family_cls(additive_on=scale, location=MEDIAN)
     source = _sigma_source_from_noise_formula(row.noise_formula, row.observable_id)
     return noise, source
 
 
 def _sigma_source_from_noise_formula(formula, observable_id):
-    """Map a PEtab ``noiseFormula`` to its ``SigmaSource``.
+    """Map a PEtab ``noiseFormula`` (the noise distribution's scale parameter) to its
+    ``SigmaSource``.
 
     A numeric literal -> ``ConstantSigma`` (the native ``fix_at`` source); a single
     bare identifier (the noise-parameter id) -> ``FreeParameterSigma`` (the native
@@ -206,7 +214,8 @@ def read_observable_table(path):
     """Read a PEtab v2 ``observables.tsv`` into :class:`PetabObservableRow` records.
 
     Dependency-free (stdlib ``csv``). Unknown extra columns (e.g.
-    ``observableName``) are tolerated and ignored.
+    ``observableName``, ``observablePlaceholders``, ``noisePlaceholders`` -- the
+    deferred formula layer) are tolerated and ignored.
     """
     with open(path, newline='') as fh:
         reader = csv.DictReader(fh, delimiter='\t')
@@ -220,7 +229,6 @@ def _row_from_record(rec):
     return PetabObservableRow(
         observable_id=oid.strip(),
         observable_formula=_parse_str(rec.get('observableFormula')),
-        observable_transformation=_parse_str(rec.get('observableTransformation')),
         noise_formula=_parse_str(rec.get('noiseFormula')),
         noise_distribution=_parse_str(rec.get('noiseDistribution')),
     )

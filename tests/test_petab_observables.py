@@ -3,23 +3,32 @@ Step 2; ADR-0023).
 
 The contract is the **two-adapter proof** (ADR-0004): a PEtab v2 observables row
 and the equivalent native ``noise_model`` config line must produce the *same*
-``(NoiseModel, SigmaSource)`` pair. Layers tested:
+``(NoiseModel, SigmaSource)`` pair -- where the native surface can express it.
 
-1. **Equivalence to the native surface** -- the importer's pair ``==`` the one
-   ``objective._build_noise_overrides`` builds from the equivalent
-   ``noise_model = ...`` ``.conf`` line, parsed through ``ploop`` (proving the
-   adapter and the native grammar land on the same objects).
-2. **The full mapping** -- all six ``family x scale`` combinations and both
-   sigma-source kinds, structurally; plus the numeric coincidence that
-   ``(normal, lin)`` evaluates bit-identically to the native ``normal`` default
-   (which is ``MEAN``, trivial on the linear scale).
+PEtab v2's ``noiseDistribution`` carries both the family and the additive scale in
+one column: ``normal`` / ``log-normal`` / ``laplace`` / ``log-laplace`` (PEtab's
+log is natural -> ``LN``; there is no separate observableTransformation column and
+no log10 in v2). The prediction is the median for all.
+
+Layers tested:
+
+1. **Equivalence to the native surface** -- for the families with a native token
+   (``normal`` linear, ``laplace`` linear), the importer's pair matches the one
+   ``objective._build_noise_overrides`` builds from the equivalent ``noise_model``
+   ``.conf`` line (``laplace`` exactly; ``normal`` by evaluation, since native
+   ``normal`` defaults to ``MEAN`` which coincides with ``MEDIAN`` on linear).
+2. **The full mapping** -- all four ``noiseDistribution`` values, structurally;
+   the natural-log families (no native token) checked against the kernels' analytic
+   NLL; both sigma-source kinds.
 3. **The documented boundaries** -- ``NotImplementedError`` for a non-trivial
    ``noiseFormula`` expression (the deferred sympy layer); ``PybnfError`` for a
    malformed row.
 4. **The table helpers + the TSV reader.**
 
-Dependency-free (stdlib + numpy/scipy already required), bngsim-less CI tier.
+Dependency-free, bngsim-less CI tier.
 """
+
+import math
 
 import pytest
 
@@ -35,11 +44,10 @@ from pybnf.petab.observables import (
 from pybnf.printing import PybnfError
 
 
-def _row(noise_formula='sigma_o', dist=None, transform=None, formula=None, oid='o'):
+def _row(noise_formula='sigma_o', dist=None, formula=None, oid='o'):
     return PetabObservableRow(
         observable_id=oid, observable_formula=formula,
-        observable_transformation=transform, noise_formula=noise_formula,
-        noise_distribution=dist)
+        noise_formula=noise_formula, noise_distribution=dist)
 
 
 def _assert_same_pair(got, expected):
@@ -58,54 +66,73 @@ def _assert_same_pair(got, expected):
 
 
 # ---------------------------------------------------------------------------
-# 1. Two-adapter equivalence: PEtab row == the native noise_model pair
+# 1. Two-adapter equivalence (the linear families have an exact native token)
 # ---------------------------------------------------------------------------
 
 class TestEquivalenceToNativeNoiseModel:
-    """For every PEtab combination with an exact native ``noise_model`` token, the
-    imported pair equals the one the native grammar builds."""
+    def test_laplace_equals_native_pair_exactly(self):
+        # laplace -> Laplace(LINEAR, MEDIAN), identical to the native ``laplace`` token.
+        for noise_formula, native_line in [
+            ('0.3', 'noise_model o = laplace, scale = fix_at 0.3'),
+            ('b_o', 'noise_model o = laplace, scale = fit b_o'),
+        ]:
+            got = noise_model_from_row(_row(noise_formula=noise_formula, dist='laplace'))
+            native = _build_noise_overrides(ploop([native_line]))['o']
+            _assert_same_pair(got, native)
 
-    # (petab dist, transform, noiseFormula) -> the equivalent native noise_model line.
-    @pytest.mark.parametrize("dist,transform,noise_formula,native_line", [
-        # log10 + normal == native ``lognormal`` (Gaussian on LOG10/MEDIAN).
-        ('normal', 'log10', '0.5',
-         'noise_model o = lognormal, sigma = fix_at 0.5'),
-        ('normal', 'log10', 'sigma_o',
-         'noise_model o = lognormal, sigma = fit sigma_o'),
-        # laplace + lin == native ``laplace`` (Laplace on LINEAR/MEDIAN).
-        ('laplace', 'lin', '0.3',
-         'noise_model o = laplace, scale = fix_at 0.3'),
-        ('laplace', 'lin', 'b_o',
-         'noise_model o = laplace, scale = fit b_o'),
-    ])
-    def test_row_equals_native_pair(self, dist, transform, noise_formula, native_line):
-        got = noise_model_from_row(_row(noise_formula=noise_formula, dist=dist,
-                                        transform=transform))
-        native = _build_noise_overrides(ploop([native_line]))['o']
-        _assert_same_pair(got, native)
+    def test_normal_matches_native_normal_numerically(self):
+        # normal -> Gaussian(LINEAR, MEDIAN); native ``normal`` defaults to MEAN. The
+        # location axis is trivial on LINEAR (offset 0), so they evaluate identically
+        # -- the adapter's median choice is a faithful import of native ``normal``.
+        adapter_fam, adapter_src = noise_model_from_row(
+            _row(dist='normal', noise_formula='0.5'))
+        native_fam, native_src = _build_noise_overrides(
+            ploop(['noise_model o = normal, sigma = fix_at 0.5']))['o']
+        assert adapter_fam.location is noise.MEDIAN and native_fam.location is noise.MEAN
+        assert type(adapter_src) is type(native_src) and vars(adapter_src) == vars(native_src)
+        for pred, obs, sigma in [(1.0, 1.2, 0.5), (3.0, 2.0, 0.8), (0.4, 0.4, 0.2)]:
+            assert (adapter_fam.data_fit(pred, obs, sigma)
+                    == pytest.approx(native_fam.data_fit(pred, obs, sigma)))
 
 
 # ---------------------------------------------------------------------------
-# 2. The full mapping: every family x scale, both sigma-source kinds
+# 2. The full mapping: all four noiseDistribution values + sigma-source kinds
 # ---------------------------------------------------------------------------
 
 class TestMapping:
-    @pytest.mark.parametrize("dist,family_cls", [
-        ('normal', noise.Gaussian), ('laplace', noise.Laplace),
+    @pytest.mark.parametrize("dist,family_cls,scale", [
+        ('normal',      noise.Gaussian, noise.LINEAR),
+        ('log-normal',  noise.Gaussian, noise.LN),
+        ('laplace',     noise.Laplace,  noise.LINEAR),
+        ('log-laplace', noise.Laplace,  noise.LN),
+        (None,          noise.Gaussian, noise.LINEAR),  # PEtab default is normal
     ])
-    @pytest.mark.parametrize("transform,scale", [
-        ('lin', noise.LINEAR), ('log', noise.LN), ('log10', noise.LOG10),
-        (None, noise.LINEAR),   # PEtab default observableTransformation is lin
-    ])
-    def test_family_and_scale(self, dist, family_cls, transform, scale):
-        fam, _src = noise_model_from_row(_row(dist=dist, transform=transform))
+    def test_family_and_scale(self, dist, family_cls, scale):
+        fam, _src = noise_model_from_row(_row(dist=dist))
         assert isinstance(fam, family_cls)
         assert fam.additive_on is scale
-        assert fam.location is noise.MEDIAN  # PEtab hardcodes the median
+        assert fam.location is noise.MEDIAN  # PEtab specifies the median for all
 
-    def test_default_distribution_is_normal(self):
-        fam, _src = noise_model_from_row(_row(dist=None, transform='lin'))
-        assert isinstance(fam, noise.Gaussian)
+    def test_petab_log_is_natural_not_log10(self):
+        # PEtab v2's log forms are natural log (LN), never log10 -- the native
+        # ``lognormal`` token (LOG10) is a different convention with no PEtab spelling.
+        fam, _ = noise_model_from_row(_row(dist='log-normal'))
+        assert fam.additive_on is noise.LN and fam.additive_on is not noise.LOG10
+
+    def test_log_normal_nll_matches_natural_log_oracle(self):
+        # log-normal has no native token; validate the produced kernel directly:
+        # data_fit = (ln(pred) - ln(obs))^2 / (2 sigma^2).
+        fam, _ = noise_model_from_row(_row(dist='log-normal'))
+        pred, obs, sigma = 10.0, 8.0, 0.3
+        expected = (math.log(pred) - math.log(obs)) ** 2 / (2. * sigma ** 2)
+        assert fam.data_fit(pred, obs, sigma) == pytest.approx(expected)
+
+    def test_log_laplace_nll_matches_natural_log_oracle(self):
+        # log-laplace likewise: data_fit = |ln(pred) - ln(obs)| / b.
+        fam, _ = noise_model_from_row(_row(dist='log-laplace'))
+        pred, obs, b = 10.0, 8.0, 0.3
+        expected = abs(math.log(pred) - math.log(obs)) / b
+        assert fam.data_fit(pred, obs, b) == pytest.approx(expected)
 
     @pytest.mark.parametrize("noise_formula,src_cls,attr,value", [
         ('0.5', noise.ConstantSigma, 'const', 0.5),
@@ -125,21 +152,6 @@ class TestMapping:
         assert noise_model_from_row(_row(noise_formula='0.5'))[1].estimated is False
         assert noise_model_from_row(_row(noise_formula='sigma_o'))[1].estimated is True
 
-    def test_linear_normal_matches_native_normal_numerically(self):
-        # The one combination with no exact native object: PEtab's (normal, lin) is
-        # Gaussian(LINEAR, MEDIAN), while native ``normal`` defaults to MEAN. The
-        # location axis is trivial on LINEAR (offset 0), so they evaluate
-        # identically -- the adapter's median choice is a faithful import.
-        adapter_fam, _ = noise_model_from_row(_row(dist='normal', transform='lin',
-                                                   noise_formula='0.5'))
-        native_fam, _ = _build_noise_overrides(
-            ploop(['noise_model o = normal, sigma = fix_at 0.5']))['o']
-        assert adapter_fam.location is noise.MEDIAN
-        assert native_fam.location is noise.MEAN
-        for pred, obs, sigma in [(1.0, 1.2, 0.5), (3.0, 2.0, 0.8), (0.4, 0.4, 0.2)]:
-            assert (adapter_fam.data_fit(pred, obs, sigma)
-                    == pytest.approx(native_fam.data_fit(pred, obs, sigma)))
-
 
 # ---------------------------------------------------------------------------
 # 3. Documented boundaries -> explicit errors
@@ -157,16 +169,12 @@ class TestBoundaries:
         with pytest.raises(NotImplementedError, match='sympy'):
             noise_model_from_row(_row(noise_formula=formula))
 
-    @pytest.mark.parametrize("dist", ['studentt', 'cauchy', 'negbinomial', 'normal2'])
+    @pytest.mark.parametrize("dist", ['studentt', 'neg_bin', 'normal2', 'lognormal'])
     def test_unknown_distribution_raises(self, dist):
-        # A typo or a future PEtab value we do not map -> a clear error, not a crash.
+        # A typo, a non-PEtab family (neg_bin), or the native log10 spelling
+        # (``lognormal``, not PEtab's ``log-normal``) -> a clear error, not a crash.
         with pytest.raises(PybnfError, match='noiseDistribution'):
             noise_model_from_row(_row(dist=dist))
-
-    @pytest.mark.parametrize("transform", ['sqrt', 'logit', 'ln', 'log2'])
-    def test_unknown_transformation_raises(self, transform):
-        with pytest.raises(PybnfError, match='observableTransformation'):
-            noise_model_from_row(_row(transform=transform))
 
     @pytest.mark.parametrize("formula", [None, '', '   '])
     def test_missing_noise_formula_raises(self, formula):
@@ -181,14 +189,14 @@ class TestBoundaries:
 class TestTableLevel:
     def test_noise_models_from_table_keys_by_observable(self):
         rows = [
-            _row(oid='obs1', dist='normal', transform='lin', noise_formula='0.5'),
-            _row(oid='obs2', dist='laplace', transform='log10', noise_formula='b_obs2'),
+            _row(oid='obs1', dist='normal', noise_formula='0.5'),
+            _row(oid='obs2', dist='log-laplace', noise_formula='b_obs2'),
         ]
         m = noise_models_from_table(rows)
         assert set(m) == {'obs1', 'obs2'}
         assert isinstance(m['obs1'][0], noise.Gaussian)
         assert isinstance(m['obs2'][0], noise.Laplace)
-        assert m['obs2'][0].additive_on is noise.LOG10
+        assert m['obs2'][0].additive_on is noise.LN
 
     def test_table_map_is_a_usable_likelihood_override_map(self):
         # The two-adapter proof at the table level: the importer's dict IS the
@@ -196,7 +204,7 @@ class TestTableLevel:
         # selected per observable.
         from pybnf.objective import ChiSquareObjective
         overrides = noise_models_from_table([
-            _row(oid='obs2', dist='laplace', transform='lin', noise_formula='b_obs2')])
+            _row(oid='obs2', dist='laplace', noise_formula='b_obs2')])
         obj = ChiSquareObjective(overrides=overrides)
         assert isinstance(obj._spec_for('obs2')[0], noise.Laplace)
         # an unlisted observable falls back to the chi_sq default (Gaussian x _SD).
@@ -205,37 +213,39 @@ class TestTableLevel:
         assert isinstance(default_src, noise.DataColumnSigma)
 
     def test_read_observable_table_parses_columns(self, tmp_path):
+        # Note: no observableTransformation column (removed in v2); the extra
+        # observablePlaceholders column is tolerated and ignored.
         tsv = tmp_path / 'observables.tsv'
         tsv.write_text(
-            'observableId\tobservableFormula\tobservableTransformation\t'
-            'noiseFormula\tnoiseDistribution\n'
-            'obs1\tscale * A\tlog10\tsigma_obs1\tnormal\n'
-            'obs2\tB\t\t0.5\t\n'
+            'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\t'
+            'observablePlaceholders\n'
+            'obs1\tscale * A\tsigma_obs1\tlog-normal\tscale\n'
+            'obs2\tB\t0.5\t\t\n'
         )
         rows = read_observable_table(str(tsv))
         assert rows[0] == PetabObservableRow(
             observable_id='obs1', observable_formula='scale * A',
-            observable_transformation='log10', noise_formula='sigma_obs1',
-            noise_distribution='normal')
-        # blank optional columns -> None (the mapping applies the PEtab defaults).
-        assert rows[1].observable_transformation is None
+            noise_formula='sigma_obs1', noise_distribution='log-normal')
+        # blank optional noiseDistribution -> None (the mapping applies the default).
         assert rows[1].noise_distribution is None
         assert rows[1].noise_formula == '0.5'
 
     def test_read_then_map_end_to_end(self, tmp_path):
         tsv = tmp_path / 'observables.tsv'
         tsv.write_text(
-            'observableId\tobservableFormula\tobservableTransformation\t'
-            'noiseFormula\tnoiseDistribution\n'
-            'obs1\tA\tlog10\t0.5\tnormal\n'
-            'obs2\tB\tlin\tb_obs2\tlaplace\n'
+            'observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n'
+            'obs1\tA\t0.5\tnormal\n'
+            'obs2\tB\tb_obs2\tlaplace\n'
         )
         from pybnf.petab.observables import noise_models_from_file
         m = noise_models_from_file(str(tsv))
-        _assert_same_pair(m['obs1'],
-                          _build_noise_overrides(ploop(['noise_model o = lognormal, sigma = fix_at 0.5']))['o'])
+        # obs2 (laplace, linear) has an exact native equivalent.
         _assert_same_pair(m['obs2'],
                           _build_noise_overrides(ploop(['noise_model o = laplace, scale = fit b_obs2']))['o'])
+        # obs1 (normal) is Gaussian(LINEAR, MEDIAN) with a constant sigma.
+        fam, src = m['obs1']
+        assert isinstance(fam, noise.Gaussian) and fam.additive_on is noise.LINEAR
+        assert isinstance(src, noise.ConstantSigma) and src.const == 0.5
 
     def test_missing_observable_id_raises(self, tmp_path):
         tsv = tmp_path / 'observables.tsv'
