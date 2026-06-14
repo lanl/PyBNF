@@ -79,7 +79,7 @@ Required Keys
   by a ``noise_model`` key. Each key names the distribution family and, for each of
   the family's noise parameters, where its value comes from::
 
-    noise_model <observable> = <family>, <parameter> = <source>[, <parameter> = <source> ...]
+    noise_model <observable> = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median]
 
   The **family** is one of ``normal``, ``lognormal``, ``laplace``, or ``neg_bin``.
   Each **parameter** is named by its standard statistical name -- ``sigma`` for
@@ -92,11 +92,20 @@ Required Keys
      (e.g. ``uniform_var = <name>__FREE <lower> <upper>``).
    - ``fix_at <number>`` - hold it at a fixed numeric constant.
 
+  The optional **location** field sets which summary of the noise distribution the
+  model prediction is taken to be: ``median`` (the default -- the prediction is the
+  distribution's median, matching PEtab) or ``mean`` (the prediction is its
+  expected value). The two differ only for a ``lognormal`` observable, where
+  ``mean`` adds the moment correction ``mu = log10(prediction) - sigma**2*ln10/2``
+  (the symmetric families are unaffected, and ``neg_bin`` has no location axis, so
+  it rejects the field).
+
   Examples:
 
     * ``noise_model obs2 = laplace, scale = fit b_obs2__FREE``
     * ``noise_model obs3 = normal, sigma = read_exp_file _SD``
     * ``noise_model obs4 = neg_bin, dispersion = fix_at 10``
+    * ``noise_model obs5 = lognormal, sigma = read_exp_file _SD, location = mean``
 
 
 **population_size**

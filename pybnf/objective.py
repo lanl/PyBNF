@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LOG10, MEDIAN, ConstantSigma, DataColumnSigma, FreeParameterSigma,
+from .noise import (LOG10, MEAN, MEDIAN, ConstantSigma, DataColumnSigma, FreeParameterSigma,
                     Gaussian, Laplace, NegBinomial)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
@@ -313,6 +313,30 @@ _NOISE_PARAM_NAMES = {
 }
 
 
+#: The native ``location = mean|median`` field -> the prediction's interpretation
+#: (ADR-0024, the location axis of ADR-0011). Median (the prediction is the
+#: distribution's median) is the no-correction default, consistent with PEtab v2 and
+#: the legacy lognormal objfunc; mean adds the family's moment correction on a log
+#: scale (e.g. mean-aligned lognormal: ``mu = log10(pred) - sigma**2*ln10/2``).
+_NOISE_LOCATIONS = {'mean': MEAN, 'median': MEDIAN}
+
+
+def _apply_location(noise_model, location, family_token, observable):
+    """Override a noise model's location interpretation from the native ``location``
+    field (ADR-0024). Only the location-scale families (Gaussian/Laplace) carry the
+    axis; a count family (neg_bin) has no mean/median distinction to set, so it
+    raises rather than silently ignore the field. On the native surface the only log
+    family token is ``lognormal`` (Gaussian), so a ``mean`` correction is only ever
+    applied where it is the correct Gaussian moment correction."""
+    if not hasattr(noise_model, 'location'):
+        raise PybnfError(
+            f'location is not valid for the {family_token} noise model',
+            f"The {family_token} noise model (observable {observable}) has no "
+            f"mean/median location axis; drop the 'location' field.")
+    return type(noise_model)(additive_on=noise_model.additive_on,
+                             location=_NOISE_LOCATIONS[location])
+
+
 def _build_sigma_source(verb, arg):
     """One native ``noise_model`` source field (``fit`` / ``read_exp_file`` /
     ``fix_at``) -> its SigmaSource (ADR-0021)."""
@@ -329,7 +353,7 @@ def _build_sigma_source(verb, arg):
 
 def _build_noise_spec(observable, value):
     """One parsed ``noise_model`` line -> its (NoiseModel, SigmaSource) pair."""
-    family_token, fields = value
+    family_token, fields, location = value
     family_token = family_token.lower()
     if family_token not in _NOISE_FAMILIES:
         raise PybnfError(f'Unknown noise model family "{family_token}"',
@@ -348,7 +372,12 @@ def _build_noise_spec(observable, value):
         raise PybnfError(f'Unknown noise parameter "{param}" for {family_token}',
                          f'The {family_token} noise model\'s parameter is "{expected}", not "{param}" '
                          f'(observable {observable}).')
-    return (_NOISE_FAMILIES[family_token](), _build_sigma_source(verb, arg))
+    noise_model = _NOISE_FAMILIES[family_token]()
+    if location is not None:
+        # An omitted location keeps the family's default (median for lognormal -- the
+        # no-correction default; the symmetric families are unaffected). ADR-0024.
+        noise_model = _apply_location(noise_model, location, family_token, observable)
+    return (noise_model, _build_sigma_source(verb, arg))
 
 
 def _build_noise_overrides(config):

@@ -22,7 +22,7 @@ from pybnf.printing import PybnfError
 
 def test_ploop_builds_noise_model_tuple_key():
     d = ploop(['noise_model obs2 = laplace, scale = fit b_obs2__FREE'])
-    assert d[('noise_model', 'obs2')] == ('laplace', {'scale': ('fit', 'b_obs2__FREE')})
+    assert d[('noise_model', 'obs2')] == ('laplace', {'scale': ('fit', 'b_obs2__FREE')}, None)
 
 
 @pytest.mark.parametrize('line, family, src_type, estimated', [
@@ -56,14 +56,58 @@ def test_lognormal_family_is_gaussian_on_log10_median():
 
 
 @pytest.mark.parametrize('value, match', [
-    (('bogus', {'sigma': ('fit', 'x__FREE')}), 'family'),                                 # unknown family
-    (('neg_bin', {'sigma': ('fix_at', '10')}), 'parameter'),                              # neg_bin's param is dispersion
-    (('normal', {'sigma': ('bogus', 'x')}), 'source'),                                    # unknown source verb
-    (('normal', {'sigma': ('fit', 'x__FREE'), 'extra': ('fix_at', '1')}), 'parameter'),   # multi-parameter (engine is 1-param)
+    (('bogus', {'sigma': ('fit', 'x__FREE')}, None), 'family'),                                 # unknown family
+    (('neg_bin', {'sigma': ('fix_at', '10')}, None), 'parameter'),                              # neg_bin's param is dispersion
+    (('normal', {'sigma': ('bogus', 'x')}, None), 'source'),                                    # unknown source verb
+    (('normal', {'sigma': ('fit', 'x__FREE'), 'extra': ('fix_at', '1')}, None), 'parameter'),   # multi-parameter (engine is 1-param)
+    (('neg_bin', {'dispersion': ('fix_at', '10')}, 'mean'), 'location'),                        # neg_bin has no location axis
 ])
 def test_invalid_noise_model_raises(value, match):
     with pytest.raises(PybnfError, match=match):
         _build_noise_spec('obs', value)
+
+
+# --- the location (mean/median) axis (ADR-0024) -------------------------------
+
+def test_ploop_captures_location_field():
+    d = ploop(['noise_model o = lognormal, sigma = read_exp_file _SD, location = mean'])
+    assert d[('noise_model', 'o')] == ('lognormal', {'sigma': ('read_exp_file', '_SD')}, 'mean')
+
+
+@pytest.mark.parametrize('line, expected_location', [
+    ('noise_model o = lognormal, sigma = fix_at 0.5', noise.MEDIAN),               # omitted -> family default (median)
+    ('noise_model o = lognormal, sigma = fix_at 0.5, location = median', noise.MEDIAN),
+    ('noise_model o = lognormal, sigma = fix_at 0.5, location = mean', noise.MEAN),
+])
+def test_location_field_sets_interpretation(line, expected_location):
+    fam, _src = _build_noise_overrides(ploop([line]))['o']
+    assert isinstance(fam, noise.Gaussian)
+    assert fam.additive_on is noise.LOG10
+    assert fam.location is expected_location
+
+
+def test_location_mean_applies_lognormal_moment_correction():
+    # location=mean is the principled mean-alignment: mu = log10(pred) - sigma^2*ln10/2,
+    # so a mean-aligned lognormal differs from the (default) median one by exactly that
+    # offset -- and matches the hand-computed Gaussian-on-log10 residual.
+    import numpy as np
+    mean_fam, _ = _build_noise_overrides(
+        ploop(['noise_model o = lognormal, sigma = read_exp_file _SD, location = mean']))['o']
+    med_fam, _ = _build_noise_overrides(
+        ploop(['noise_model o = lognormal, sigma = read_exp_file _SD']))['o']
+    pred, obs, sigma = 10.0, 8.0, 0.3
+    ln10 = np.log(10.0)
+    mu = np.log10(pred) - sigma ** 2 * ln10 / 2.
+    expected = (mu - np.log10(obs)) ** 2 / (2. * sigma ** 2)
+    assert mean_fam.data_fit(pred, obs, sigma) == pytest.approx(expected)
+    assert mean_fam.data_fit(pred, obs, sigma) != pytest.approx(med_fam.data_fit(pred, obs, sigma))
+
+
+def test_location_caseless_and_bad_value_rejected():
+    fam, _ = _build_noise_overrides(ploop(['noise_model o = lognormal, sigma = fix_at 1, location = MEAN']))['o']
+    assert fam.location is noise.MEAN
+    with pytest.raises(PybnfError):  # 'location = mode' is not a parseable value
+        ploop(['noise_model o = lognormal, sigma = fix_at 1, location = mode'])
 
 
 # --- generalized free-noise-parameter validation (_load_variables) ------------

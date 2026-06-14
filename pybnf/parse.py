@@ -127,7 +127,14 @@ def parse(s):
     nm_token = pp.Word(pp.alphas, pp.alphanums + '_')   # observable / family / param name
     nm_verb = _one_of('fit read_exp_file fix_at', caseless=True)
     nm_arg = pp.Word(pp.alphanums + '_+-.')
-    nm_field = pp.Group(nm_token - equals - nm_verb - nm_arg)
+    # An optional ``location = mean|median`` field (the prediction's interpretation,
+    # ADR-0024) rides alongside the ``<param> = <source>`` fields. MatchFirst tries
+    # the ``location`` literal first, so a real noise-parameter name falls through to
+    # a source field (and an invalid ``location = <x>`` errors rather than silently
+    # parsing as a source, since the literal has committed).
+    nm_location_field = pp.Group(pp.CaselessLiteral('location') - equals - _one_of('mean median', caseless=True))
+    nm_source_field = pp.Group(nm_token - equals - nm_verb - nm_arg)
+    nm_field = nm_location_field | nm_source_field
     noise_model_gram = noise_model_key - nm_token - equals - nm_token - pp.Suppress(',') - \
         _DelimitedList(nm_field) - comment
 
@@ -222,13 +229,22 @@ def ploop(ls):  # parse loop
                     d['mutant'] = [l[1:]]
                 exp_data.update(l[-1])
             elif l[0] == 'noise_model':
-                # noise_model <obs> = <family>, <param> = <verb> <arg>, ... (ADR-0021).
-                # Store as a structural ('noise_model', observable) tuple key (like a
-                # free-parameter key) -> (family, {param: (verb, arg)}); objective.py
-                # interprets the family/source tokens into a (NoiseModel, SigmaSource).
+                # noise_model <obs> = <family>, <param> = <verb> <arg>[, location = mean|median]
+                # (ADR-0021, ADR-0024). Store as a structural ('noise_model', observable)
+                # tuple key (like a free-parameter key) -> (family, {param: (verb, arg)},
+                # location); objective.py interprets the family/source/location tokens into
+                # a (NoiseModel, SigmaSource).
                 observable, family = l[1], l[2]
                 fields = {}
-                for param, verb, arg in l[3:]:
+                location = None
+                for field in l[3:]:
+                    if field[0].lower() == 'location':
+                        if location is not None:
+                            raise PybnfError(f"In noise_model for {observable}, location "
+                                             "is specified multiple times")
+                        location = field[1].lower()
+                        continue
+                    param, verb, arg = field
                     if param in fields:
                         raise PybnfError(f"In noise_model for {observable}, noise parameter '{param}' "
                                          "is specified multiple times")
@@ -236,7 +252,7 @@ def ploop(ls):  # parse loop
                 nm_key = ('noise_model', observable)
                 if nm_key in d:
                     raise PybnfError(f"noise_model for observable '{observable}' is specified multiple times")
-                d[nm_key] = (family, fields)
+                d[nm_key] = (family, fields, location)
             elif l[0] == 'postprocess':
                 if len(values) < 2:
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "
