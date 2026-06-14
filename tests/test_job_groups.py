@@ -467,3 +467,91 @@ class TestMakeJob:
 
         # Should get sequential IDs
         assert jobs1[0].job_id != jobs2[0].job_id
+
+
+class _FakeFuture:
+    """Stand-in for the scattered model_list Future: .result() returns it."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def result(self):
+        return self._value
+
+
+class TestMakeJobScatteredModels:
+    """When run() has scattered the model_list, make_job hands each Job the
+    Future (not a re-pickled list) plus slice bounds; the Job resolves and
+    slices it worker-side to the same partition the concrete path produced
+    (issue #416)."""
+
+    @classmethod
+    def setup_class(cls):
+        _cleanup()
+
+    @classmethod
+    def teardown_class(cls):
+        _cleanup()
+
+    @staticmethod
+    def _scatter(algo):
+        # Mimic the client.scatter([model_list], broadcast=True) done in run().
+        algo.models_future = _FakeFuture(algo.model_list)
+
+    def test_default_single_job_carries_future_whole_list(self):
+        algo = _make_algo({'population_size': 2, 'max_iterations': 5,
+                           'fit_type': 'pso', 'output_dir': 'test_jg_default'})
+        algo.model_list = ['m1', 'm2', 'm3']
+        self._scatter(algo)
+
+        p = algo.random_pset(); p.name = 'sim_1'
+        [job] = algo.make_job(p)
+
+        assert job.models is algo.models_future     # Future, not a copied list
+        assert job.model_slice is None              # whole list
+        assert job._get_models() == ['m1', 'm2', 'm3']
+
+    def test_parallelize_models_slices_worker_side(self):
+        algo = _make_algo({'population_size': 2, 'max_iterations': 5,
+                           'fit_type': 'pso', 'output_dir': 'test_jg_par'})
+        algo.config.config['parallelize_models'] = 3
+        algo.model_list = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6']
+        self._scatter(algo)
+
+        p = algo.random_pset(); p.name = 'sim_1'
+        jobs = algo.make_job(p)
+
+        assert len(jobs) == 3
+        assert all(j.models is algo.models_future for j in jobs)
+        assert [j.model_slice for j in jobs] == [(0, 2), (2, 4), (4, 6)]
+        # Worker-side resolution matches the concrete-path partitioning.
+        assert [j._get_models() for j in jobs] == [['m1', 'm2'], ['m3', 'm4'], ['m5', 'm6']]
+
+    def test_smoothing_replicates_get_full_list(self):
+        algo = _make_algo({'population_size': 2, 'max_iterations': 5,
+                           'smoothing': 2, 'fit_type': 'pso', 'output_dir': 'test_jg_smooth'})
+        algo.model_list = ['model_A', 'model_B', 'model_C']
+        self._scatter(algo)
+
+        p = algo.random_pset(); p.name = 'sim_1'
+        jobs = algo.make_job(p)
+
+        assert all(j.models is algo.models_future and j.model_slice is None for j in jobs)
+        assert all(j._get_models() == ['model_A', 'model_B', 'model_C'] for j in jobs)
+
+    def test_hybrid_smoothing_and_parallelize(self):
+        algo = _make_algo({'population_size': 2, 'max_iterations': 5,
+                           'smoothing': 2, 'fit_type': 'pso', 'output_dir': 'test_jg_hybrid'})
+        algo.config.config['parallelize_models'] = 3
+        algo.model_list = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6']
+        self._scatter(algo)
+
+        p = algo.random_pset(); p.name = 'sim_1'
+        jobs = algo.make_job(p)
+
+        assert len(jobs) == 6
+        assert all(j.models is algo.models_future for j in jobs)
+        # Each replicate is partitioned identically across the model list.
+        assert [j._get_models() for j in jobs] == [
+            ['m1', 'm2'], ['m3', 'm4'], ['m5', 'm6'],
+            ['m1', 'm2'], ['m3', 'm4'], ['m5', 'm6']]

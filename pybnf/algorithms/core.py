@@ -171,12 +171,21 @@ class Job:
     jlogger = logging.getLogger('pybnf.algorithms.job')
 
     def __init__(self, models, params, job_id, output_dir, timeout, calc_future, norm_settings, postproc_settings,
-                 delete_folder=False, replicate_index=0, stochastic_seed_policy='auto'):
+                 delete_folder=False, replicate_index=0, stochastic_seed_policy='auto', model_slice=None):
         """
         Instantiates a Job
 
-        :param models: The models to evaluate
-        :type models: list of Model instances
+        :param models: The models to evaluate, as either a concrete list of Model
+        instances or a dask Future wrapping the whole model_list scattered once
+        per fit (see Algorithm.run / make_job). A Future is resolved worker-side
+        and sliced by ``model_slice``; this avoids re-serializing the
+        parameter-independent model graph on every evaluation (issue #416).
+        :type models: list of Model instances, or distributed.Future
+        :param model_slice: ``(start, stop)`` applied to the resolved model_list
+        when ``models`` is a Future (parallelize_models hands each Job a slice);
+        ``None`` means use the whole list. Ignored when ``models`` is a concrete
+        list.
+        :type model_slice: tuple or None
         :param params: The parameter set with which to evaluate the model
         :type params: PSet
         :param job_id: Job identification; also the folder name that the job gets saved to
@@ -201,6 +210,8 @@ class Job:
         :type stochastic_seed_policy: str
         """
         self.models = models
+        self.model_slice = model_slice
+        self._resolved_models = None  # cache for _get_models() (worker-side)
         self.params = params
         self.job_id = job_id
         self.calc_future = calc_future
@@ -226,10 +237,29 @@ class Job:
     def _name_with_id(self, model):
         return f'{model.name}_{self.job_id}'
 
+    def _get_models(self):
+        """Resolve ``self.models`` to a concrete list of Model instances.
+
+        ``self.models`` is either a plain list (tests / a Job built outside the
+        run loop) or a dask Future for the model_list scattered once per fit
+        (see Algorithm.make_job). A Future is resolved here, worker-side, and
+        sliced by ``self.model_slice`` -- mirroring how ``calc_future`` is
+        resolved via ``.result()``. The resolved list is cached so a job that
+        dask happens to run twice does not re-fetch it.
+        """
+        if self._resolved_models is None:
+            models = self.models
+            if hasattr(models, 'result'):  # a scattered Future, not a list
+                models = models.result()
+                if self.model_slice is not None:
+                    models = models[self.model_slice[0]:self.model_slice[1]]
+            self._resolved_models = list(models)
+        return self._resolved_models
+
     def _run_models(self):
         ds = {}
 
-        for model in self.models:
+        for model in self._get_models():
             model_file_prefix = self._name_with_id(model)
             model_with_params = model.copy_with_param_set(self.params)
             # Stamp seed-policy context onto the per-evaluation copy so model
@@ -245,7 +275,7 @@ class Job:
         if failed_logs_dir == '':
             self.jlogger.error('Cannot save log files without specified directory')
             return
-        for m in self.models:
+        for m in self._get_models():
             lf = f'{self.folder}/{self._name_with_id(m)}.log'
             if os.path.isfile(lf):
                 self.jlogger.debug(f'Copying log file {lf}')

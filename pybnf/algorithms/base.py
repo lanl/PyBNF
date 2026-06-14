@@ -136,6 +136,7 @@ class Algorithm(ABC):
         self.bootstrap_number = None
         self.best_fit_obj = None
         self.calc_future = None  # Created during Algorithm.run()
+        self.models_future = None  # Scattered model_list Future; created during Algorithm.run()
         self.refine = False
 
         # Random number generation. Every algorithm owns its own
@@ -253,7 +254,7 @@ class Algorithm(ABC):
         :param k:
         :return:
         """
-        return k not in set(['trajectory', 'calc_future'])
+        return k not in set(['trajectory', 'calc_future', 'models_future'])
 
     def __getstate__(self):
         return {k: v for k, v in self.__dict__.items() if self.should_pickle(k)}
@@ -767,6 +768,22 @@ class Algorithm(ABC):
             psets.append(PSet(pset_vars))
         return psets
 
+    def _job_models(self, model_slice=None):
+        """Return the ``(models, model_slice)`` pair to hand a Job.
+
+        Prefer the model_list Future scattered once per fit in :meth:`run` (so a
+        submit re-pickles only a lightweight Future, not the whole model graph);
+        the Job resolves and slices it worker-side. Fall back to a concrete
+        (already-sliced) list when no scatter is available -- e.g. make_job
+        called outside run() (some tests). ``model_slice`` is ``(start, stop)``
+        or ``None`` for the whole list. See issue #416.
+        """
+        if self.models_future is not None:
+            return self.models_future, model_slice
+        if model_slice is None:
+            return self.model_list, None
+        return self.model_list[model_slice[0]:model_slice[1]], None
+
     def make_job(self, params):
         """
         Creates a new Job using the specified params, and additional specifications that are already saved in the
@@ -795,13 +812,15 @@ class Algorithm(ABC):
                 for part in range(rep_count):
                     thisname = '%s_part%i' % (replica_id, part)
                     newnames.append(thisname)
-                    model_slice = self.model_list[model_count*part//rep_count:model_count*(part+1)//rep_count]
-                    newjobs.append(core.Job(model_slice,
+                    models, mslice = self._job_models(
+                        (model_count*part//rep_count, model_count*(part+1)//rep_count))
+                    newjobs.append(core.Job(models,
                                        params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
                                        self.calc_future, self.config.config['normalization'], dict(),
                                        bool(self.config.config['delete_old_files']),
                                        replicate_index=rep,
-                                       stochastic_seed_policy=self.config.config['stochastic_seed']))
+                                       stochastic_seed_policy=self.config.config['stochastic_seed'],
+                                       model_slice=mslice))
                 replica_subjob_ids.append((replica_id, newnames))
             new_group = HybridJobGroup(job_id, replica_subjob_ids)
             for n in new_group.subjob_ids:
@@ -816,12 +835,14 @@ class Algorithm(ABC):
                 newnames.append(thisname)
                 # calc_future is supposed to be None here - the workers don't have enough info to calculate the
                 # objective on their own
-                newjobs.append(core.Job(self.model_list, params, thisname,
+                models, mslice = self._job_models()
+                newjobs.append(core.Job(models, params, thisname,
                                    self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                                    self.config.config['normalization'], dict(),
                                    bool(self.config.config['delete_old_files']),
                                    replicate_index=i,
-                                   stochastic_seed_policy=self.config.config['stochastic_seed']))
+                                   stochastic_seed_policy=self.config.config['stochastic_seed'],
+                                   model_slice=mslice))
             new_group = JobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
@@ -837,22 +858,27 @@ class Algorithm(ABC):
                 newnames.append(thisname)
                 # calc_future is supposed to be None here - the workers don't have enough info to calculate the
                 # objective on their own
-                newjobs.append(core.Job(self.model_list[model_count*i//rep_count:model_count*(i+1)//rep_count],
+                models, mslice = self._job_models(
+                    (model_count*i//rep_count, model_count*(i+1)//rep_count))
+                newjobs.append(core.Job(models,
                                    params, thisname, self.sim_dir, self.config.config['wall_time_sim'],
                                    self.calc_future, self.config.config['normalization'], dict(),
                                    bool(self.config.config['delete_old_files']),
-                                   stochastic_seed_policy=self.config.config['stochastic_seed']))
+                                   stochastic_seed_policy=self.config.config['stochastic_seed'],
+                                   model_slice=mslice))
             new_group = MultimodelJobGroup(job_id, newnames)
             for n in newnames:
                 self.job_group_dir[n] = new_group
             return newjobs
         else:
             # Create a single job
-            return [core.Job(self.model_list, params, job_id,
+            models, mslice = self._job_models()
+            return [core.Job(models, params, job_id,
                     self.sim_dir, self.config.config['wall_time_sim'], self.calc_future,
                     self.config.config['normalization'], self.config.postprocessing,
                     bool(self.config.config['delete_old_files']),
-                    stochastic_seed_policy=self.config.config['stochastic_seed'])]
+                    stochastic_seed_policy=self.config.config['stochastic_seed'],
+                    model_slice=mslice)]
 
 
     def output_results(self, name='', no_move=False):
@@ -1014,6 +1040,14 @@ class Algorithm(ABC):
             [self.calc_future] = client.scatter([calculator], broadcast=True)
         else:
             self.calc_future = None
+
+        # Scatter the parameter-independent model_list once and broadcast it to
+        # every worker, so each job submission carries a lightweight Future
+        # instead of re-serializing the whole model graph on every evaluation
+        # (parameters live in the separate PSet). Jobs resolve and slice it
+        # worker-side; see make_job and core.Job._get_models. Mirrors the
+        # calc_future scatter above (issue #416).
+        [self.models_future] = client.scatter([self.model_list], broadcast=True)
 
         jobs = []
         pending = dict()  # Maps pending futures to tuple (PSet, job_id).
