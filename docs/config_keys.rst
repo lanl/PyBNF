@@ -97,8 +97,9 @@ Required Keys
   distribution's median, matching PEtab) or ``mean`` (the prediction is its
   expected value). The two differ only for a ``lognormal`` observable, where
   ``mean`` adds the moment correction ``mu = log10(prediction) - sigma**2*ln10/2``
-  (the symmetric families are unaffected, and ``neg_bin`` has no location axis, so
-  it rejects the field).
+  (the symmetric families are unaffected). ``neg_bin`` is parameterized directly by
+  its mean, so ``location = mean`` is redundant (accepted) and ``location = median``
+  is rejected -- median-centering of the count family is not implemented.
 
   Examples:
 

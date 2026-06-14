@@ -60,11 +60,22 @@ def test_lognormal_family_is_gaussian_on_log10_median():
     (('neg_bin', {'sigma': ('fix_at', '10')}, None), 'parameter'),                              # neg_bin's param is dispersion
     (('normal', {'sigma': ('bogus', 'x')}, None), 'source'),                                    # unknown source verb
     (('normal', {'sigma': ('fit', 'x__FREE'), 'extra': ('fix_at', '1')}, None), 'parameter'),   # multi-parameter (engine is 1-param)
-    (('neg_bin', {'dispersion': ('fix_at', '10')}, 'mean'), 'location'),                        # neg_bin has no location axis
 ])
 def test_invalid_noise_model_raises(value, match):
     with pytest.raises(PybnfError, match=match):
         _build_noise_spec('obs', value)
+
+
+def test_neg_bin_accepts_redundant_mean_rejects_unimplemented_median():
+    # neg_bin is parameterized directly by its mean: location=mean is the current
+    # (redundant but true) interpretation -> accepted; location=median is a coherent
+    # but unimplemented model (no closed-form neg_bin median) -> rejected as such.
+    fam, _src = _build_noise_overrides(
+        ploop(['noise_model o = neg_bin, dispersion = fix_at 10, location = mean']))['o']
+    assert isinstance(fam, noise.NegBinomial)
+    with pytest.raises(PybnfError, match='median'):
+        _build_noise_overrides(
+            ploop(['noise_model o = neg_bin, dispersion = fix_at 10, location = median']))
 
 
 # --- the location (mean/median) axis (ADR-0024) -------------------------------

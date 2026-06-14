@@ -46,13 +46,16 @@ axis is trivial there.
   for every family, and keeping the default leaves the native `normal`/`laplace`
   tokens byte-identical.
 
-- **`location` is rejected on a family that is not location-scale.** The location
-  axis is a location-scale concept (the offset to recover the family's location
-  parameter from the transformed prediction), so only Gaussian/Laplace carry it.
-  `neg_bin` is *not* without a mean -- it is parameterized **directly by its mean**
-  (the prediction *is* the mean), so there is no mean-vs-median choice to make;
-  `location` on it raises a `PybnfError` (with that explanation) rather than
-  silently doing nothing.
+- **`neg_bin` accepts `mean` (redundant) and rejects `median` as unimplemented --
+  not as impossible.** A negative binomial has both a mean and a median; centering
+  the prediction on either is a coherent model. PyBNF parameterizes `neg_bin`
+  **directly by its mean** (the prediction *is* the mean), so `location = mean` is
+  the current interpretation and is accepted as a no-op. `location = median` is a
+  coherent model that PyBNF does **not implement** (the neg_bin median has no closed
+  form; placing the prediction at it would need a numeric CDF inversion), so it
+  raises a `PybnfError` characterized as *not implemented*, leaving room for it as a
+  future feature. The location-scale families (Gaussian/Laplace) implement both via
+  the offset machinery.
 
 - **`mean` is only ever the correct Gaussian moment correction on the native
   surface.** The moment offset (`scale.mean_offset`, ADR-0011/0022) is the

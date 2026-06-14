@@ -322,23 +322,31 @@ _NOISE_LOCATIONS = {'mean': MEAN, 'median': MEDIAN}
 
 
 def _apply_location(noise_model, location, family_token, observable):
-    """Override a noise model's location interpretation from the native ``location``
-    field (ADR-0024). The location axis is a location-scale-family concept -- the
-    offset to recover the family's location parameter from the (transformed)
-    prediction -- so only Gaussian/Laplace carry it. A count family (neg_bin) is
-    parameterized directly by its mean (the prediction *is* the mean), so there is
-    no mean-vs-median choice to make and the field is rejected rather than silently
-    ignored. On the native surface the only log family token is ``lognormal``
-    (Gaussian), so a ``mean`` correction is only ever applied where it is the
-    correct Gaussian moment correction."""
-    if not hasattr(noise_model, 'location'):
-        raise PybnfError(
-            f'location is not configurable for the {family_token} noise model',
-            f"The {family_token} noise model (observable {observable}) is "
-            f"parameterized directly by its mean -- the prediction is the mean -- so "
-            f"there is no mean/median location choice to set; drop the 'location' field.")
-    return type(noise_model)(additive_on=noise_model.additive_on,
-                             location=_NOISE_LOCATIONS[location])
+    """Set a noise model's location interpretation -- which distributional summary
+    the prediction represents -- from the native ``location`` field (ADR-0024).
+
+    For a **location-scale family** (Gaussian/Laplace) both ``mean`` and ``median``
+    are implemented, via the offset machinery (ADR-0011). On the native surface the
+    only log family token is ``lognormal`` (Gaussian), so a ``mean`` correction is
+    only ever applied where it is the correct Gaussian moment correction.
+
+    A count family (**neg_bin**) is parameterized directly by its mean -- the
+    prediction *is* the mean -- so ``mean`` is the (redundant but true) current
+    interpretation and is accepted as a no-op. ``median`` centering is a coherent
+    model but is **not implemented** (the neg_bin median has no closed form; placing
+    the prediction at it would need a numeric CDF inversion), so it is rejected as
+    unimplemented rather than silently treated as the mean."""
+    loc = _NOISE_LOCATIONS[location]
+    if hasattr(noise_model, 'location'):
+        return type(noise_model)(additive_on=noise_model.additive_on, location=loc)
+    if loc is MEAN:
+        return noise_model  # neg_bin is already mean-centered; the field is redundant
+    raise PybnfError(
+        f'median-centering is not implemented for the {family_token} noise model',
+        f"The {family_token} noise model interprets the prediction as the mean (it is "
+        f"parameterized by its mean); centering it on the median is a coherent model "
+        f"but is not implemented (observable {observable}). Use 'location = mean', or "
+        f"omit location.")
 
 
 def _build_sigma_source(verb, arg):
