@@ -31,13 +31,13 @@ tests; see ADR-0025.
 """
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 from ..data import Data
 from ..parse import ploop
 from ..printing import PybnfError
 from ..pset import FreeParameter
+from ._bngl import parse_model
 from ._tsv import num
 from .measurements import measurement_rows_from_data, write_measurement_table
 from .observables import petab_observable_row, write_observable_table
@@ -51,18 +51,6 @@ _OBJFUNC_TO_NOISE_DISTRIBUTION = {'chi_sq': 'normal'}
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
 # emits). Only ``uniform_var`` exports in chunk 1; the rest raise.
 _VAR_DECL = re.compile(r'(_var$|^var$|^logvar$)')
-
-_FREE_TOKEN = re.compile(r'\w+__FREE')
-
-
-@dataclass(frozen=True)
-class _BnglModel:
-    """The bits of a BNGL model the exporter reads (a focused, dependency-free parse)."""
-
-    text: str
-    free_to_param: dict          # 'v1__FREE' -> 'v1' (the model parameter it drives)
-    observable_names: frozenset  # {'x'}
-    function_names: frozenset    # {'y'}
 
 
 # ---------------------------------------------------------------------------
@@ -228,49 +216,9 @@ def _free_parameters_from_conf(conf):
 
 
 def _read_bngl(path):
-    """Read a BNGL model's parameters/observables/functions (focused, dependency-free)."""
+    """Read a BNGL model's named entities (delegates to the shared stdlib parser)."""
     text = Path(path).read_text(encoding='utf-8', errors='replace')
-    free_to_param = {}
-    for line in _block_lines(text, 'parameters'):
-        tokens = line.split()
-        if len(tokens) >= 2 and _FREE_TOKEN.fullmatch(tokens[1]):
-            free_to_param[tokens[1]] = tokens[0]
-    observable_names = frozenset(
-        n for n in (_observable_name(line) for line in _block_lines(text, 'observables'))
-        if n)
-    function_names = frozenset(
-        n for n in (_function_name(line) for line in _block_lines(text, 'functions'))
-        if n)
-    return _BnglModel(text, free_to_param, observable_names, function_names)
-
-
-def _block_lines(text, block_name):
-    """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``."""
-    begin = re.compile(rf'^begin\s+{block_name}\b', re.I)
-    end = re.compile(rf'^end\s+{block_name}\b', re.I)
-    lines = []
-    in_block = False
-    for raw in text.splitlines():
-        line = raw.split('#', 1)[0].strip()
-        if begin.match(line):
-            in_block = True
-        elif end.match(line):
-            in_block = False
-        elif in_block and line:
-            lines.append(line)
-    return lines
-
-
-def _observable_name(line):
-    """The observable name in a ``Molecules <name> ...`` / ``Species <name> ...`` line."""
-    tokens = line.split()
-    return tokens[1] if len(tokens) >= 2 else None
-
-
-def _function_name(line):
-    """The function name in a ``<name>() = ...`` (or ``<name> = ...``) functions line."""
-    m = re.match(r'(\w+)\s*\(', line) or re.match(r'(\w+)\s*=', line)
-    return m.group(1) if m else None
+    return parse_model(text)
 
 
 # ---------------------------------------------------------------------------

@@ -53,9 +53,11 @@ runs:
         # a uv-managed one.
         uv venv --python "${{ steps.python.outputs.python-path }}"
         # Mirror pyproject.toml's runtime deps MINUS bngsim (private, mac-only
-        # wheel, not on PyPI), plus the test stack and pytest-xdist. Keep these
-        # version bounds in sync with pyproject.toml; bngsim is the only
-        # intentional omission.
+        # wheel, not on PyPI), plus the test stack (pytest, hypothesis,
+        # pytest-xdist) and petab (the PEtab v2 export/BnglModel oracle, ADR-0025/
+        # 0026 -- BNG2.pl is already installed above, so the model-level validation
+        # runs here too). Keep these version bounds in sync with pyproject.toml;
+        # bngsim is the only intentional omission.
         uv pip install \
           'dask>=2024.1.0' \
           'distributed>=2024.1.0' \
@@ -69,7 +71,8 @@ runs:
           'tornado>=6.1' \
           'pytest>=7,<10' \
           'hypothesis>=6,<7' \
-          'pytest-xdist'
+          'pytest-xdist' \
+          'petab>=0.8,<1'
         # Install pybnf itself without re-resolving deps (which would pull
         # bngsim and fail).
         uv pip install --no-deps .

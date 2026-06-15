@@ -3,10 +3,11 @@
 The exporter reads a working PyBNF/BNGL job and serializes it to a PEtab v2 problem.
 Its contracts, by strength of oracle:
 
-1. **The external table oracle.** petab's own validation, run on a *model-less*
-   ``petab.v2.Problem`` built from the emitted tables (``petablint`` cannot load a
-   BNGL model in petab 0.8.2, so we run the ~13 table-level tasks and skip the ~5
-   model-cross ones). The exported ``demo`` tables must validate with **no errors**.
+1. **The external oracle, at model level.** petab's own validation, run on the whole
+   problem loaded via ``Problem.from_yaml`` after ``register_bngl()`` installs the
+   ``BnglModel`` loader (ADR-0026). The exported ``demo`` problem must pass **every**
+   ``default_validation_task`` -- including the model-cross checks (``CheckModel`` et
+   al.) ADR-0025 had to exclude -- with no errors.
 2. **The measurement pivot is exact.** Every long measurement cell equals the source
    wide ``.exp`` ``Data`` cell -- the wide<->long round trip.
 3. **Reverse-asset round trip.** A uniform ``PetabParameterRow`` -> ``FreeParameter``
@@ -40,14 +41,6 @@ from pybnf.pset import FreeParameter
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
 DEMO_CONF = DEMO_DIR / 'demo_bng.conf'
-
-# Validation tasks that need a loaded model; excluded because petab 0.8.2 has no BNGL
-# loader. Their job (formula/parameter names are model entities) is checked by the
-# model-correspondence tests instead (ADR-0025).
-_MODEL_TASKS = {
-    'CheckModel', 'CheckObservablesDoNotShadowModelEntities',
-    'CheckAllParametersPresentInParameterTable', 'CheckInitialChangeSymbols',
-    'CheckValidConditionTargets'}
 
 
 def _tsv_rows(path):
@@ -181,27 +174,22 @@ class TestExportDemo:
         assert 'language: bngl' in text
         assert 'location: parabola.bngl' in text
 
-    def test_table_level_petab_validation_is_clean(self, exported):
-        # 1. The external oracle: model-less Problem + the table-level validation tasks.
-        pytest.importorskip('petab.v2')  # the v2 typed-table API the oracle needs (ADR-0025)
+    def test_full_petab_validation_is_clean(self, exported):
+        # 1. The external oracle, now at MODEL level: register the BNGL loader, load the
+        # whole problem via Problem.from_yaml (the real petablint path -- exercises
+        # model_factory -> BnglModel.from_file -> BNG2.pl --check), run ALL tasks.
+        pytest.importorskip('petab.v2')  # the v2 typed-table API the oracle needs
         from petab.v2 import Problem
-        from petab.v2.core import (
-            MeasurementTable,
-            ObservableTable,
-            ParameterTable,
-        )
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
-        problem = Problem(
-            models=[],
-            observable_tables=[ObservableTable.from_tsv(str(exported / 'observables.tsv'))],
-            measurement_tables=[MeasurementTable.from_tsv(str(exported / 'measurements.tsv'))],
-            parameter_tables=[ParameterTable.from_tsv(str(exported / 'parameters.tsv'))],
-        )
+        from pybnf.petab.bngl_model import register_bngl
+        register_bngl()
+
+        problem = Problem.from_yaml(str(exported / 'problem.yaml'))
+        assert type(problem.model).__name__ == 'BnglModel'  # the BNGL loader ran
+
         errors = []
         for task in default_validation_tasks:
-            if type(task).__name__ in _MODEL_TASKS:
-                continue
             issue = task.run(problem)
             if issue is not None and getattr(issue, 'level', None) == \
                     ValidationIssueSeverity.ERROR:
@@ -242,3 +230,83 @@ class TestCleanModelUnit:
         assert '__FREE' not in out
         assert 'begin actions' not in out and 'simulate' not in out
         assert 'begin model' in out                     # the model body is untouched
+
+
+# ---------------------------------------------------------------------------
+# 4'. The BnglModel adapter ABC, unit-tested directly (ADR-0026 -- the model-level
+#     guarantees the table oracle now checks externally, asserted method by method).
+# ---------------------------------------------------------------------------
+
+class TestBnglModel:
+
+    @pytest.fixture
+    def model(self, tmp_path):
+        # A BnglModel parsed from the exported (cleaned, numeric-nominal) demo model --
+        # the same file Problem.from_yaml loads.
+        pytest.importorskip('petab')
+        from pybnf.petab.bngl_model import BnglModel
+        from pybnf.petab.export import export_job
+        out = tmp_path / 'p'
+        export_job(DEMO_CONF, out)
+        return BnglModel.from_file(out / 'parabola.bngl')
+
+    def test_parameter_ids_and_values(self, model):
+        assert set(model.get_parameter_ids()) == {'v1', 'v2', 'v3'}
+        assert model.get_parameter_value('v1') == 5.0
+        assert dict(model.get_free_parameter_ids_with_values()) == \
+            {'v1': 5.0, 'v2': 5.0, 'v3': 5.0}
+
+    def test_get_parameter_value_unknown_raises_valueerror(self, model):
+        with pytest.raises(ValueError):
+            model.get_parameter_value('nope')
+
+    def test_has_entity_spans_full_declared_namespace(self, model):
+        # parameter, observable, global function, molecule type -- all model entities.
+        for ent in ('v1', 'x', 'y', 'counter'):
+            assert model.has_entity_with_id(ent)
+        # prefixed PEtab ids + an unknown are NOT model entities (no shadow).
+        for non in ('obs_x', 'func_y', 'nope'):
+            assert not model.has_entity_with_id(non)
+
+    def test_symbol_allowed_is_the_paramlist_only(self, model):
+        # parameters u observables u global functions (verified vs BNG2.pl).
+        for sym in ('x', 'y', 'v1'):
+            assert model.symbol_allowed_in_observable_formula(sym)
+        # a molecule type is an entity but NOT a formula symbol; prefixed ids aren't either.
+        for non in ('counter', 'obs_x', 'func_y', 'nope'):
+            assert not model.symbol_allowed_in_observable_formula(non)
+
+    def test_is_state_variable_is_seed_species_only(self, model):
+        assert model.is_state_variable('counter()')   # the concrete seed species
+        assert not model.is_state_variable('v1')       # a parameter is not a species
+        assert not model.is_state_variable('x')        # nor is an observable
+
+    def test_expression_valued_parameter_is_not_evaluated(self):
+        pytest.importorskip('petab')
+        from pybnf.petab._bngl import parse_model
+        from pybnf.petab.bngl_model import BnglModel
+        ent = parse_model(
+            "begin parameters\n base 2\n k_on 2*base\nend parameters\n")
+        model = BnglModel(ent, model_id='m')
+        assert model.get_parameter_value('base') == 2.0   # numeric RHS -> float
+        with pytest.raises(NotImplementedError):           # expression RHS -> confined
+            model.get_parameter_value('k_on')
+
+
+class TestRegisterBngl:
+
+    def test_idempotent_guarded_rebind(self):
+        pytest.importorskip('petab.v2')
+        import petab.v1.models as models
+        import petab.v2.core as v2core
+        from pybnf.petab.bngl_model import register_bngl
+
+        register_bngl()
+        wrapper = v2core.model_factory
+        captured = v2core._pybnf_orig_model_factory
+        assert wrapper is not captured            # wrapper installed, original captured
+        assert 'bngl' in models.known_model_types
+
+        register_bngl()                            # second call must not re-wrap
+        assert v2core._pybnf_orig_model_factory is captured
+        assert v2core.model_factory is not captured
