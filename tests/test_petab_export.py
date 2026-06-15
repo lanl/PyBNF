@@ -175,18 +175,29 @@ class TestExportDemo:
         assert 'location: parabola.bngl' in text
 
     def test_full_petab_validation_is_clean(self, exported):
-        # 1. The external oracle, now at MODEL level: register the BNGL loader, load the
-        # whole problem via Problem.from_yaml (the real petablint path -- exercises
-        # model_factory -> BnglModel.from_file -> BNG2.pl --check), run ALL tasks.
+        # 1. The external oracle, now at MODEL level: load the whole problem via
+        # Problem.from_yaml (the real petablint path -- exercises model_factory ->
+        # BnglModel.from_file -> BNG2.pl --check), run ALL tasks.
         pytest.importorskip('petab.v2')  # the v2 typed-table API the oracle needs
+        import petab.v1.models as models
+        import petab.v2.core as v2core
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
 
+        # register_bngl() teaches a stock petab about BNGL, and is a no-op on a
+        # petab that ships it natively (#420 Step B) -- so this same path validates
+        # against both. We dogfood the fork: when petab is native (bngl known and
+        # our wrapper never installed), the loaded model must be petab's OWN
+        # BnglModel, not our local stand-in.
+        native = ('bngl' in models.known_model_types
+                  and not hasattr(v2core, '_pybnf_orig_model_factory'))
         from pybnf.petab.bngl_model import register_bngl
         register_bngl()
 
         problem = Problem.from_yaml(str(exported / 'problem.yaml'))
         assert type(problem.model).__name__ == 'BnglModel'  # the BNGL loader ran
+        if native:
+            assert type(problem.model).__module__.startswith('petab.')
 
         errors = []
         for task in default_validation_tasks:
@@ -295,11 +306,41 @@ class TestBnglModel:
 
 class TestRegisterBngl:
 
+    @staticmethod
+    def _petab_is_native():
+        """True iff petab already supports BNGL (the #420 Step B fork) and we
+        have not installed our own wrapper -- i.e. register_bngl is a no-op."""
+        import petab.v1.models as models
+        import petab.v2.core as v2core
+        return ('bngl' in models.known_model_types
+                and not hasattr(v2core, '_pybnf_orig_model_factory'))
+
+    def test_native_support_makes_register_a_noop(self):
+        # Against a petab that ships BNGL natively (the dogfooded fork branch),
+        # register_bngl must leave model_factory untouched so the native loader
+        # wins -- the collapse-to-no-op of ADR-0026.
+        pytest.importorskip('petab.v2')
+        import petab.v2.core as v2core
+        from pybnf.petab.bngl_model import register_bngl
+
+        if not self._petab_is_native():
+            pytest.skip("petab does not support BNGL natively in this env")
+
+        before = v2core.model_factory
+        register_bngl()
+        assert v2core.model_factory is before                 # not rebound
+        assert not hasattr(v2core, '_pybnf_orig_model_factory')  # no sentinel
+
     def test_idempotent_guarded_rebind(self):
+        # Against a stock petab without native BNGL, register_bngl installs an
+        # idempotent wrapper that routes 'bngl' and delegates everything else.
         pytest.importorskip('petab.v2')
         import petab.v1.models as models
         import petab.v2.core as v2core
         from pybnf.petab.bngl_model import register_bngl
+
+        if self._petab_is_native():
+            pytest.skip("petab supports BNGL natively; register_bngl is a no-op")
 
         register_bngl()
         wrapper = v2core.model_factory

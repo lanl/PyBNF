@@ -162,6 +162,17 @@ def register_bngl():
     import petab.v1.models as _models
     import petab.v2.core as _v2core
 
+    # If petab already supports BNGL natively (a libpetab-python build that
+    # shipped the upstream loader -- #420 Step B), do nothing: its model_factory
+    # already routes 'bngl' to a native BnglModel that supersedes this local
+    # stand-in. This is the "collapse to a no-op" ADR-0026 anticipated; it is
+    # what lets the exporter tests dogfood the native loader. We distinguish
+    # native support (bngl present, our wrapper never installed) from our own
+    # prior registration (the sentinel below) so re-entry stays idempotent.
+    already_registered = hasattr(_v2core, '_pybnf_orig_model_factory')
+    if MODEL_TYPE_BNGL in _models.known_model_types and not already_registered:
+        return
+
     _models.known_model_types.add(MODEL_TYPE_BNGL)
 
     original = getattr(_v2core, '_pybnf_orig_model_factory', None)

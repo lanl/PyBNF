@@ -54,12 +54,16 @@ tests = [
     # pre-push hook mirrors CI, so xdist is a declared test dependency (the CI
     # composite action installs it directly too).
     "pytest-xdist",
-    # PEtab v2 export oracle (ADR-0025): the exporter tests validate emitted tables
-    # against petab's own table-level checks. Test-only -- core stays dependency-free;
-    # `petablint` cannot load a BNGL model in petab 0.8.x, so we run its table tasks on
-    # a model-less Problem. `pytest.importorskip('petab')` skips the oracle test when
-    # absent, so this is not a hard test requirement.
-    "petab>=0.8,<1",
+    # PEtab v2 export oracle (ADR-0025/0026): the exporter tests validate emitted
+    # problems against petab's own checks. Test-only -- core stays dependency-free.
+    # We dogfood the #420 Step B fork branch, which teaches libpetab-python to load
+    # `language: bngl` problems natively, so the exporter tests validate at MODEL
+    # level (all 18 tasks) through petab's own loader rather than the register_bngl()
+    # monkeypatch. TEMPORARY pin to an unmerged branch: revert to a released
+    # `petab>=0.8,<1` once upstream ships native BNGL (PEtab-dev/PEtab#436).
+    # register_bngl() stays a working fallback for any stock petab. The oracle test
+    # `pytest.importorskip('petab')`s, so this is not a hard test requirement.
+    "petab @ git+https://github.com/wshlavacek/libpetab-python.git@bngl_model_support",
 ]
 
 [project.scripts]
