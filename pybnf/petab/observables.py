@@ -85,6 +85,7 @@ from dataclasses import dataclass
 from ..noise import (LINEAR, LN, MEDIAN, ConstantSigma, FreeParameterSigma,
                      Gaussian, Laplace)
 from ..printing import PybnfError
+from ._tsv import write_tsv
 
 # PEtab v2 noiseDistribution -> (PyBNF NoiseModel family class, additive-noise
 # scale). The single PEtab column carries both axes: the family (Gaussian/Laplace)
@@ -123,6 +124,12 @@ class PetabObservableRow:
     observable_formula: str | None = None
     noise_formula: str | None = None
     noise_distribution: str | None = None
+    # The semicolon-delimited placeholder ids (PEtab v2 ``observablePlaceholders`` /
+    # ``noisePlaceholders``). The importer does not yet consume them (the deferred
+    # formula half, ADR-0023); the exporter sets ``noise_placeholders`` to declare the
+    # per-point ``_SD`` noise slot a ``noiseParameters`` override binds to (ADR-0025).
+    observable_placeholders: str | None = None
+    noise_placeholders: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +211,75 @@ def noise_models_from_table(rows):
 def noise_models_from_file(path):
     """Read ``observables.tsv`` at ``path`` and map it to the noise override map."""
     return noise_models_from_table(read_observable_table(path))
+
+
+# ---------------------------------------------------------------------------
+# Export: a fitted model column -> PetabObservableRow (the reverse asset; ADR-0025)
+# ---------------------------------------------------------------------------
+
+# A fitted ``.exp`` column is a BNGL observable or a BNGL function; the PEtab
+# observableId wraps it with a prefix that keeps the PEtab-id namespace disjoint from
+# the model-entity namespace, so ``observableFormula`` can reference the bare model
+# name without ever colliding with a PEtab observableId (ADR-0025).
+_PETAB_OBSERVABLE_PREFIX = {'observable': 'obs_', 'function': 'func_'}
+
+_OBSERVABLE_COLUMNS = [
+    'observableId', 'observableFormula', 'noiseFormula', 'noiseDistribution',
+    'noisePlaceholders']
+
+
+def petab_observable_row(model_name, kind, noise_distribution, sd_from_data):
+    """Map one fitted BNGL column to a :class:`PetabObservableRow` (ADR-0025).
+
+    ``model_name`` is the BNGL observable/function name (an ``.exp`` column header);
+    ``kind`` is ``'observable'`` or ``'function'``. The ``observableId`` is the
+    prefixed name (``obs_<name>`` / ``func_<name>``) and ``observableFormula`` is the
+    **bare model name** -- never the function body: a BNGL function (including a
+    function of a function) is carried verbatim in the model file and evaluated there,
+    so the table only references it by name and the exporter needs no formula
+    translator.
+
+    ``noise_distribution`` is the PEtab family the job's objective maps to (``chi_sq``
+    -> ``normal``). ``sd_from_data`` says the column has a per-point ``_SD`` companion;
+    that exports to a declared noise **placeholder** (``noiseFormula`` =
+    ``noisePlaceholders`` = ``noiseParameter1_<id>``) whose per-point value the
+    measurements' ``noiseParameters`` column supplies. A column with no ``_SD`` raises
+    ``NotImplementedError`` (chunk 1 exports only ``_SD``-sourced noise; a global,
+    constant, or free-parameter sigma source is a later chunk).
+    """
+    try:
+        prefix = _PETAB_OBSERVABLE_PREFIX[kind]
+    except KeyError:
+        raise PybnfError(
+            f"Column '{model_name}': unknown kind {kind!r} (expected 'observable' or "
+            f"'function').")
+    observable_id = prefix + model_name
+
+    if not sd_from_data:
+        raise NotImplementedError(
+            f"Observable '{observable_id}': the column has no '_SD' companion, so its "
+            f"noise comes from the global objective (a constant or free-parameter "
+            f"sigma), which chunk 1 does not export yet (ADR-0025, #407). Chunk 1 "
+            f"exports per-point '_SD'-column noise as a PEtab noiseParameters "
+            f"placeholder.")
+
+    placeholder = f'noiseParameter1_{observable_id}'
+    return PetabObservableRow(
+        observable_id=observable_id,
+        observable_formula=model_name,
+        noise_formula=placeholder,
+        noise_distribution=noise_distribution,
+        noise_placeholders=placeholder,
+    )
+
+
+def write_observable_table(rows, path):
+    """Write observable ``rows`` to ``path`` as a PEtab v2 ``observables.tsv``."""
+    records = [
+        [r.observable_id, r.observable_formula, r.noise_formula or '',
+         r.noise_distribution or '', r.noise_placeholders or '']
+        for r in rows]
+    write_tsv(path, _OBSERVABLE_COLUMNS, records)
 
 
 # ---------------------------------------------------------------------------

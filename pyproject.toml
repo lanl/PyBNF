@@ -50,6 +50,12 @@ antimony = [
 tests = [
     "pytest>=7,<10",
     "hypothesis>=6,<7",
+    # PEtab v2 export oracle (ADR-0025): the exporter tests validate emitted tables
+    # against petab's own table-level checks. Test-only -- core stays dependency-free;
+    # `petablint` cannot load a BNGL model in petab 0.8.x, so we run its table tasks on
+    # a model-less Problem. `pytest.importorskip('petab')` skips the oracle test when
+    # absent, so this is not a hard test requirement.
+    "petab>=0.8,<1",
 ]
 
 [project.scripts]

@@ -49,6 +49,7 @@ later importer chunk, not here).
 
 import csv
 import math
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -56,8 +57,14 @@ import numpy as np
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
 from ..pset import FreeParameter
+from ._tsv import num, write_tsv
 
 _LN10 = math.log(10.0)
+
+# PyBNF's standardized "this parameter is fit" marker: the free-parameter name is the
+# model parameter name with a ``__FREE`` suffix, so the model parameter (the PEtab
+# ``parameterId``) is recovered by stripping it (Bill's convention, ADR-0025).
+_FREE_SUFFIX = re.compile(r'__FREE$')
 
 # PEtab v2 priorDistribution spelling -> (PyBNF prior-family stem, is_log). The
 # stem must be a registered prior family (PRIOR_FAMILY_REGISTRY, ADR-0010): the
@@ -268,6 +275,67 @@ def free_parameters_from_table(rows):
 def free_parameters_from_file(path):
     """Read ``parameters.tsv`` at ``path`` and map it to ``FreeParameter`` objects."""
     return free_parameters_from_table(read_parameter_table(path))
+
+
+# ---------------------------------------------------------------------------
+# Export: FreeParameter -> PetabParameterRow (the reverse asset; ADR-0025)
+# ---------------------------------------------------------------------------
+
+def petab_parameter_row(free_parameter, parameter_id=None):
+    """Map a PyBNF :class:`FreeParameter` back to a :class:`PetabParameterRow`.
+
+    The exact reverse of :func:`free_parameter_from_row`: a native ``.conf`` free
+    parameter and a PEtab row land on the same object, so this read backwards is the
+    two-adapter proof in the export direction. ``parameter_id`` defaults to the free
+    parameter's name with the ``__FREE`` marker stripped (the model parameter the fit
+    drives); a caller that has resolved the model parameter name authoritatively (the
+    exporter, from the BNGL ``parameters`` block) passes it explicitly.
+
+    **Scope (chunk 1):** a bounded ``uniform_var`` -- a uniform prior over
+    ``[p1, p2]`` -- maps to an estimated parameter with those bounds and **no**
+    explicit ``priorDistribution`` (PEtab v2 defaults an estimated parameter without a
+    prior to uniform-over-bounds, so the row round-trips exactly through
+    ``free_parameter_from_row``). Every other prior family raises
+    ``NotImplementedError`` -- a later export chunk (the prior-catalog reverse of
+    ADR-0019), surfaced in code rather than mis-exported.
+    """
+    if parameter_id is None:
+        parameter_id = _FREE_SUFFIX.sub('', free_parameter.name)
+
+    if free_parameter.type != 'uniform_var':
+        raise NotImplementedError(
+            f"Parameter '{free_parameter.name}': exporting a '{free_parameter.type}' "
+            f"prior to PEtab is a later chunk (ADR-0025, #407); chunk 1 exports only a "
+            f"bounded 'uniform_var' (estimate=true with bounds). The prior-family export "
+            f"is the reverse of ADR-0019's import catalog.")
+
+    return PetabParameterRow(
+        parameter_id=parameter_id,
+        estimate=True,
+        lower_bound=float(free_parameter.p1),
+        upper_bound=float(free_parameter.p2),
+        nominal_value=(None if free_parameter.value is None
+                       else float(free_parameter.value)),
+        prior_distribution=None,
+        prior_parameters=(),
+    )
+
+
+_PARAMETER_COLUMNS = ['parameterId', 'estimate', 'lowerBound', 'upperBound']
+
+
+def write_parameter_table(rows, path):
+    """Write parameter ``rows`` to ``path`` as a PEtab v2 ``parameters.tsv``.
+
+    Chunk 1 writes the four columns the estimated-uniform case needs
+    (``parameterId``/``estimate``/``lowerBound``/``upperBound``); ``nominalValue`` and
+    the prior columns are optional in PEtab v2 and omitted while unused.
+    """
+    records = [
+        [r.parameter_id, 'true' if r.estimate else 'false',
+         num(r.lower_bound), num(r.upper_bound)]
+        for r in rows]
+    write_tsv(path, _PARAMETER_COLUMNS, records)
 
 
 # ---------------------------------------------------------------------------
