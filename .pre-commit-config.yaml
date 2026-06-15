@@ -1,11 +1,21 @@
-# Local-CI substitute (no GitHub Actions budget this month).
+# Pre-push hooks: catch CI failures before they reach GitHub.
 #
 # After cloning, run once:
 #   pre-commit install --hook-type pre-push
 #
-# The pre-push hook runs the bngsim test subset before any `git push`.
+# Two complementary hooks run before every `git push`:
+#   1. pytest-bngsim    -- the bngsim (mac-only) tests CI *cannot* run, since the
+#      private bngsim wheel is absent on hosted runners.
+#   2. pytest-ci-mirror -- the *exact* command CI runs (`PYBNF_NO_BNGSIM=1 pytest
+#      -m "not slow" -n auto`), so any bngsim-less regression CI would flag is
+#      caught locally first. (A bngsim-*included* full run is deliberately NOT
+#      used: it distributes more tests per xdist worker than CI ever does and
+#      trips a latent cwd/relative-output-dir isolation bug in some seed tests --
+#      tracked separately; the literal CI mirror sidesteps it and is what we
+#      actually need to gate.)
+#
 # `uv run --no-sync` uses the project's interpreter without touching the
-# environment — the .venv is already populated and uv.lock isn't fully
+# environment -- the .venv is already populated and uv.lock isn't fully
 # resolved in this repo, so syncing would fail.
 
 repos:
@@ -13,10 +23,8 @@ repos:
     hooks:
       - id: pytest-bngsim
         name: pytest (bngsim test suite)
-        # Scoped to bngsim-area tests only: the rest of the suite
-        # (test_job_class, test_particle_swarm, …) requires BNGPATH /
-        # bng_command to be set, which isn't the bar we want at push
-        # time. Add files here as the bngsim coverage expands.
+        # Scoped to bngsim-area tests only: bngsim is mac-only and absent in CI,
+        # so these run nowhere else. Add files here as bngsim coverage expands.
         entry: >-
           uv run --no-sync pytest -m "not bionetgen"
           tests/test_bngsim_bridge.py
@@ -29,6 +37,24 @@ repos:
           tests/test_stochastic_seed_policy.py
           tests/test_packaging_metadata.py
           tests/test_failed_sim_handling.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: pytest-ci-mirror
+        name: pytest (CI mirror -- bngsim-less)
+        # Reproduce CI's tests.yml command: PYBNF_NO_BNGSIM=1 makes conftest
+        # auto-skip bngsim/nfsim/sbml tests, so this is the same ~1539-test
+        # bngsim-less suite the hosted runners execute. Green here => green in CI.
+        #
+        # `-n 4` matches the GitHub hosted runner's core count, NOT local `-n auto`.
+        # A few tests (test_job_class, test_simplex, test_seed_determinism) share
+        # the relative default `pybnf_output/` dir and race under high parallelism;
+        # at 6 local workers that flaked, at CI's 4 it does not. Capping at CI's
+        # worker count keeps the mirror in CI's empirically-green regime. The proper
+        # fix is per-test unique output dirs (lanl/PyBNF#421 -- the suite is not
+        # xdist-safe at high worker counts); until then this is the faithful mirror.
+        entry: bash -c 'PYBNF_NO_BNGSIM=1 uv run --no-sync pytest -m "not slow" -n 4'
         language: system
         pass_filenames: false
         always_run: true

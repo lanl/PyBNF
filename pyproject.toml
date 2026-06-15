@@ -50,6 +50,10 @@ antimony = [
 tests = [
     "pytest>=7,<10",
     "hypothesis>=6,<7",
+    # Parallel test execution. CI runs `pytest -m "not slow" -n auto`; the local
+    # pre-push hook mirrors CI, so xdist is a declared test dependency (the CI
+    # composite action installs it directly too).
+    "pytest-xdist",
     # PEtab v2 export oracle (ADR-0025): the exporter tests validate emitted tables
     # against petab's own table-level checks. Test-only -- core stays dependency-free;
     # `petablint` cannot load a BNGL model in petab 0.8.x, so we run its table tasks on
