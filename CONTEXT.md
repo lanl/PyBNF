@@ -87,6 +87,10 @@ _Avoid_: compilation, build
 A model output (e.g. a molecule count or concentration) recorded during simulation and matched by name to a column of experimental data.
 _Avoid_: output, readout, variable
 
+**Global Function**:
+A derived scalar expression declared in a BNGL `begin functions` block, named with a trailing `()` (`y()`, `kcat_eff()`) — any legal BNGL name followed by `()`. Evaluated at each simulation output and, with `print_functions=>1` (which PyBNF always sets), written as an output column alongside observables; so a fitted `.exp` column matches an Observable *or* a Global Function. Nothing *declares* a global function to be a **measurement model**: it *becomes* one implicitly when its name appears in both a simulation-output header (`.gdat`/scan) and an `.exp` header — the usual home of scaling, offset, ratios, sums of observables. References parameters, observables, and other global functions by name. The PySB-`Expression` analog, and the model entity a PEtab `observableFormula` names by its bare BNGL name.
+_Avoid_: function (ambiguous with Objective Function), measurement function, derived variable, local function (an in-rate-law `f(x)` form, not a global function)
+
 **Action**:
 A simulation directive attached to a model telling PyBNF what to simulate; the two kinds are a Time Course and a Parameter Scan.
 _Avoid_: command, task, run
