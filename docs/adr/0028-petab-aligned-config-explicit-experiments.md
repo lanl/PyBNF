@@ -1,4 +1,4 @@
-# A PEtab-aligned PyBNF config: explicit `experiment`/`condition`/`data`, simulation times derived from the data (issue TBD)
+# A PEtab-aligned PyBNF config: explicit `experiment`/`condition`/`data`, simulation times derived from the data (issue #423)
 
 **Status: Proposed (tentative spec, under active design — NOT yet accepted).**
 **Separate from ADR-0027** (the PEtab v2 *exporter* chunk; that ships now and reads the
@@ -155,5 +155,5 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   user stays file-level (`data: a.exp, b.exp`); the row-level tagging is the exporter's job.
 
 Relevant: ADR-0027 (the exporter this feeds), ADR-0025/0026 (exporter-first; BnglModel
-oracle), ADR-0019/0021 (parameters/noise neutral seams). Issue: TBD (config-language
+oracle), ADR-0019/0021 (parameters/noise neutral seams). Issue: **#423** (config-language
 redesign; sibling of #407/#422).
