@@ -90,6 +90,34 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
     return rows
 
 
+def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids,
+                                   scan_time, sd_suffix='_SD'):
+    """Pivot a dose-response (swept-axis) wide :class:`~pybnf.data.Data` to long rows.
+
+    The dual of :func:`measurement_rows_from_data` for a Parameter Scan ``.exp`` whose
+    independent axis (column 0) is the swept parameter, not time. Each data *row* is one
+    measured dose mapped to its own experiment (``experiment_ids[i]``, aligned with the
+    ``data`` row order), and the measurement ``time`` is the scan's fixed ``scan_time`` (a
+    scalar from the ``param_scan`` action -- not a data column). ``column_to_observable_id``
+    and the ``<col><sd_suffix>`` noise companion behave as in the time-course pivot; the
+    swept-parameter column 0 is not in the map, so it is never emitted as a measurement.
+    """
+    rows = []
+    for col, observable_id in column_to_observable_id.items():
+        ci = data.cols[col]
+        sd_ci = data.cols.get(col + sd_suffix)
+        for i in range(data.data.shape[0]):
+            value = data.data[i, ci]
+            if np.isnan(value):
+                continue
+            noise = None if sd_ci is None else float(data.data[i, sd_ci])
+            rows.append(PetabMeasurementRow(
+                observable_id=observable_id, time=float(scan_time),
+                measurement=float(value), experiment_id=experiment_ids[i],
+                noise_parameters=noise))
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Writer (the disposable half of the seam)
 # ---------------------------------------------------------------------------

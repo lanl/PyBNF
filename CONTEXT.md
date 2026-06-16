@@ -107,6 +107,14 @@ _Avoid_: sweep, bare "scan"
 The label that pairs a model action's simulated output with the experimental data file it is compared to.
 _Avoid_: tag, key
 
+**Mutant** (`mutant`):
+A model variant declared in the config as a set of parameter overrides applied to a base model, with its own experimental data bound via the Suffix (data file `<base_suffix><name>.exp`). The internal objects are a `Mutation` (one `var op val` override, `op` ∈ `= * / + -`) and a named `MutationSet`. An absolute set (`=`) replaces the base value; the relative ops (`* / + -`) scale/shift it — so a Mutant of a *fit* parameter overrides the value the search is currently trying. Exports to a PEtab **Condition**.
+_Avoid_: variant, perturbation, knockout (only one operator-and-target shape)
+
+**Surrogate-base parameter** (`<p>__REF`):
+The PEtab-export rename of a *fit* parameter `p` that some Mutant also overrides. PEtab forbids one id from being both an estimated parameter and a condition target, so the estimated quantity is moved to `p__REF` (the only thing in the parameter table) while the model name `p` becomes a pure condition target set in every experiment — `p = p__REF` at baseline, `p = p__REF * 2` where a Mutant scales it. The `__REF` marker mirrors PyBNF's own `__FREE` is-fit marker (a double-underscore suffix), so it cannot clash with a user-defined model name (ADR-0027).
+_Avoid_: shadow parameter, alias, proxy
+
 **Simulation Method** (`method`):
 How an action is simulated: `ode` (deterministic, CVODE), `ssa` (stochastic Gillespie), `pla` (partitioned leaping), or `nf` (network-free, via NFsim).
 _Avoid_: solver, integrator (the integrator is one detail of the `ode` method), engine
