@@ -110,31 +110,35 @@ def _make_algo(seed, algo_class, extra_config):
     return algo, psets
 
 
+def _output_dir(name):
+    return f"test_seed_{os.environ.get('PYTEST_XDIST_WORKER', 'local')}_{name}"
+
+
 def _make_pso(seed):
     return _make_algo(seed, algorithms.ParticleSwarm, {
         'population_size': 6, 'max_iterations': 20,
         'cognitive': 1.5, 'social': 1.5,
-        'fit_type': 'pso', 'output_dir': 'test_seed_pso'})
+        'fit_type': 'pso', 'output_dir': _output_dir('pso')})
 
 
 def _make_de(seed):
     return _make_algo(seed, algorithms.DifferentialEvolution, {
         'population_size': 6, 'max_iterations': 20,
         'islands': 1, 'mutation_rate': 1.0,
-        'fit_type': 'de', 'output_dir': 'test_seed_de'})
+        'fit_type': 'de', 'output_dir': _output_dir('de')})
 
 
 def _make_ade(seed):
     return _make_algo(seed, algorithms.AsynchronousDifferentialEvolution, {
         'population_size': 6, 'max_iterations': 20, 'mutation_rate': 1.0,
-        'fit_type': 'ade', 'output_dir': 'test_seed_ade'})
+        'fit_type': 'ade', 'output_dir': _output_dir('ade')})
 
 
 def _make_ss(seed):
     return _make_algo(seed, algorithms.ScatterSearch, {
         'population_size': 5, 'max_iterations': 20,
         'output_every': 1000,
-        'fit_type': 'ss', 'output_dir': 'test_seed_ss'})
+        'fit_type': 'ss', 'output_dir': _output_dir('ss')})
 
 
 def _make_dream(seed):
@@ -142,7 +146,7 @@ def _make_dream(seed):
         'population_size': 6, 'max_iterations': 20, 'step_size': 0.2,
         'output_hist_every': 100, 'sample_every': 2, 'burn_in': 100,
         'credible_intervals': [68, 95], 'num_bins': 10,
-        'fit_type': 'dream', 'output_dir': 'test_seed_dream'})
+        'fit_type': 'dream', 'output_dir': _output_dir('dream')})
 
 
 def _make_mh(seed):
@@ -150,7 +154,7 @@ def _make_mh(seed):
         'population_size': 4, 'max_iterations': 20, 'step_size': 0.2,
         'output_hist_every': 100, 'sample_every': 2, 'burn_in': 3,
         'credible_intervals': [68, 95], 'num_bins': 10,
-        'fit_type': 'mh', 'output_dir': 'test_seed_mh'})
+        'fit_type': 'mh', 'output_dir': _output_dir('mh')})
 
 
 def _make_pt(seed):
@@ -159,7 +163,7 @@ def _make_pt(seed):
         'output_hist_every': 100, 'sample_every': 2, 'burn_in': 3,
         'credible_intervals': [68, 95], 'num_bins': 10,
         'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7],
-        'fit_type': 'pt', 'output_dir': 'test_seed_pt'})
+        'fit_type': 'pt', 'output_dir': _output_dir('pt')})
 
 
 def _make_p_dream(seed):
@@ -167,7 +171,7 @@ def _make_p_dream(seed):
         'population_size': 6, 'max_iterations': 20, 'step_size': 0.2,
         'output_hist_every': 100, 'sample_every': 2, 'burn_in': 100,
         'credible_intervals': [68, 95], 'num_bins': 10,
-        'fit_type': 'p_dream', 'output_dir': 'test_seed_p_dream'})
+        'fit_type': 'p_dream', 'output_dir': _output_dir('p_dream')})
 
 
 def _make_am(seed):
@@ -180,8 +184,8 @@ def _make_am(seed):
         'adaptive': 5,
         'credible_intervals': [68, 95], 'num_bins': 10,
         'random_seed': seed,
-        'fit_type': 'am', 'output_dir': 'test_seed_am'})
-    out_dir = 'test_seed_am'
+        'fit_type': 'am', 'output_dir': _output_dir('am')})
+    out_dir = cfg_dict['output_dir']
     os.makedirs(os.path.join(out_dir, 'Results'), exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'Results/A_MCMC/Runs'), exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'Results/Histograms'), exist_ok=True)
@@ -204,8 +208,8 @@ def _make_simplex(seed):
     cfg_dict.update({
         'population_size': 3, 'max_iterations': 20,
         'random_seed': seed,
-        'fit_type': 'sim', 'output_dir': 'test_seed_simplex'})
-    os.makedirs(os.path.join('test_seed_simplex', 'Results'), exist_ok=True)
+        'fit_type': 'sim', 'output_dir': _output_dir('simplex')})
+    os.makedirs(os.path.join(cfg_dict['output_dir'], 'Results'), exist_ok=True)
     with _no_bng, _no_init:
         cfg = config.Configuration(cfg_dict)
         algo = algorithms.SimplexAlgorithm(cfg)
@@ -217,17 +221,14 @@ def _make_simplex(seed):
 # Output directory cleanup
 # ---------------------------------------------------------------------------
 
-OUTPUT_DIRS = [
-    'test_seed_pso', 'test_seed_de', 'test_seed_ade', 'test_seed_ss',
-    'test_seed_dream', 'test_seed_mh', 'test_seed_pt',
-    'test_seed_p_dream', 'test_seed_am', 'test_seed_simplex',
+OUTPUT_DIR_NAMES = [
+    'pso', 'de', 'ade', 'ss', 'dream', 'mh', 'pt', 'p_dream', 'am', 'simplex',
 ]
 
 
 def _cleanup():
-    for d in OUTPUT_DIRS:
-        if os.path.isdir(d):
-            shutil.rmtree(d)
+    for name in OUTPUT_DIR_NAMES:
+        shutil.rmtree(_output_dir(name), ignore_errors=True)
 
 
 # ===========================================================================

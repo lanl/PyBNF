@@ -1,6 +1,8 @@
 from .context import pset, raises
-from os import remove
+from os import environ
+from os import mkdir
 from os.path import exists
+from shutil import rmtree
 from pybnf.printing import PybnfError
 
 import pytest
@@ -11,6 +13,9 @@ class TestModel:
     @classmethod
     def setup_class(cls):
         """Define constants to be used in tests"""
+        cls.output_root = f"test_model_class_{environ.get('PYTEST_XDIST_WORKER', 'local')}"
+        rmtree(cls.output_root, ignore_errors=True)
+        mkdir(cls.output_root)
         cls.file1 = 'bngl_files/Simple.bngl'
         cls.file2 = 'bngl_files/ParamsEverywhere.bngl'
         cls.file3 = 'bngl_files/Tricky.bngl'
@@ -23,11 +28,11 @@ class TestModel:
         cls.file1b = 'bngl_files/Simple_GenOnly.bngl'
         cls.file1c = 'bngl_files/Simple_AddActions.bngl'
 
-        cls.savefile_prefix = 'bngl_files/NoseTest_Save'
-        cls.savefile2_prefix = 'bngl_files/NoseTest_Save2'
-        cls.savefile3_prefix = 'bngl_files/NoseTest_Save3'
-        cls.savefile4_prefix = 'bngl_files/NoseTest_Save4'
-        cls.savefile5_prefix = 'bngl_files/NoseTest_Save5'
+        cls.savefile_prefix = f'{cls.output_root}/NoseTest_Save'
+        cls.savefile2_prefix = f'{cls.output_root}/NoseTest_Save2'
+        cls.savefile3_prefix = f'{cls.output_root}/NoseTest_Save3'
+        cls.savefile4_prefix = f'{cls.output_root}/NoseTest_Save4'
+        cls.savefile5_prefix = f'{cls.output_root}/NoseTest_Save5'
 
         cls.params1 = [
             pset.FreeParameter('kase__FREE', 'normal_var', 0, 1, value=3.8),
@@ -42,13 +47,7 @@ class TestModel:
 
     @classmethod
     def teardown_class(cls):
-        remove(cls.savefile_prefix + '.bngl')
-        remove(cls.savefile2_prefix + '.bngl')
-        remove(cls.savefile3_prefix + '.bngl')
-        remove(cls.savefile3_prefix + '.net')
-        remove(cls.savefile4_prefix + '.bngl')
-        remove(cls.savefile4_prefix + '.net')
-        remove(cls.savefile5_prefix + '.bngl')
+        rmtree(cls.output_root, ignore_errors=True)
 
     def test_no_gen_command(self):
         model = pset.BNGLModel(self.file6)
@@ -247,7 +246,7 @@ end actions
                 continue
             else:
                 assert new_netmodel.netfile_lines[i] == netmodel.netfile_lines[i]
-        new_netmodel.save('bngl_files/NoseTest_Save3')
+        new_netmodel.save(self.savefile3_prefix)
         assert exists(self.savefile3_prefix + '.net')
         assert exists(self.savefile3_prefix + '.bngl')
 
@@ -265,4 +264,3 @@ end actions
             m.copy_with_param_set(None)
         with pytest.raises(NotImplementedError):
             m.save('some_prefix')
-

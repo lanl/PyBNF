@@ -29,6 +29,9 @@ class _ConcreteAlgorithm(algorithms.Algorithm):
 class TestJob(object):
     @classmethod
     def setup_class(cls):
+        cls.output_root = f"test_job_class_{environ.get('PYTEST_XDIST_WORKER', 'local')}"
+        rmtree(cls.output_root, ignore_errors=True)
+        mkdir(cls.output_root)
         cls.model = pset.BNGLModel('bngl_files/Tricky.bngl')
         d = [
             pset.FreeParameter('koff__FREE', 'normal_var', 0, 1, value=0.1),
@@ -39,34 +42,33 @@ class TestJob(object):
         cls.pset = pset.PSet(d)
         cls.bng_command = environ['BNGPATH'] + '/BNG2.pl'
         cls.model.bng_command = cls.bng_command
-        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', '.', calc_future=None, norm_settings=None,
+        cls.job = algorithms.Job([cls.model], cls.pset, 'sim_1', cls.output_root, calc_future=None, norm_settings=None,
                                  timeout=None, postproc_settings=dict())
-        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', '.', calc_future=None, norm_settings=None,
+        cls.job_to = algorithms.Job([cls.model], cls.pset, 'sim_to', cls.output_root, calc_future=None, norm_settings=None,
                                     timeout=0, postproc_settings=dict())
 
     @classmethod
     def teardown_class(cls):
-        # These dirs are created by individual tests in this class, relative to
-        # the cwd. ignore_errors keeps teardown from raising FileNotFoundError
-        # when a dir was never created -- e.g. under pytest-xdist, where the
-        # worker running this class need not have produced every dir, or when
-        # only a subset of the class is run.
-        for d in ('pybnf_output', 'sim_net', 'sim_x', 'sim_1', 'sim_to', 'sim_to_rerun1'):
-            rmtree(d, ignore_errors=True)
+        rmtree(cls.output_root, ignore_errors=True)
+
+    def _folder(self, name):
+        return f'{self.output_root}/{name}'
 
     def test_job_components(self):
-        mkdir('sim_x')
-        self.job.folder = getcwd() + '/sim_x'
+        folder = self._folder('sim_x')
+        mkdir(folder)
+        self.job.folder = getcwd() + '/' + folder
         sim_data = self.job._run_models()
         assert len(sim_data.keys()) == 1
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
         assert isinstance(list(sim_data['Tricky'].values())[0], data.Data)
-        assert isfile('sim_x/Tricky_sim_1.bngl')
-        assert isdir('sim_x/Tricky_sim_1_thing')
+        assert isfile(f'{folder}/Tricky_sim_1.bngl')
+        assert isdir(f'{folder}/Tricky_sim_1_thing')
 
     def test_job_run(self):
-        self.job.folder = getcwd() + '/sim_1'
+        folder = self._folder('sim_1')
+        self.job.folder = getcwd() + '/' + folder
         res = self.job.run_simulation()
         assert isinstance(res, algorithms.Result)
         sim_data = res.simdata
@@ -74,22 +76,23 @@ class TestJob(object):
         assert 'Tricky' in sim_data.keys()
         assert sim_data['Tricky'].keys() == set(['p1_5', 'thing'])
         assert isinstance(list(sim_data['Tricky'].values())[0], data.Data)
-        assert isfile('sim_1/Tricky_sim_1.bngl')
-        assert isdir('sim_1/Tricky_sim_1_thing')
+        assert isfile(f'{folder}/Tricky_sim_1.bngl')
+        assert isdir(f'{folder}/Tricky_sim_1_thing')
 
     def test_net_job(self):
         netmodel = pset.NetModel('TrickyWP_p1_5', ['simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>10})'], [], [], nf='bngl_files/TrickyWP_p1_5.net')
         netmodel.bng_command = self.bng_command
-        mkdir('sim_net')
-        job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', '.', calc_future=None, norm_settings=None, timeout=None, postproc_settings=dict())
+        folder = self._folder('sim_net')
+        mkdir(folder)
+        job = algorithms.Job([netmodel], pset.PSet([pset.FreeParameter('f', 'normal_var', 0, 1, value=0.5)]), 'test', self.output_root, calc_future=None, norm_settings=None, timeout=None, postproc_settings=dict())
 
-        job.folder = getcwd() + '/sim_net'
+        job.folder = getcwd() + '/' + folder
         job._run_models()
-        assert isfile('sim_net/TrickyWP_p1_5_test.net')
-        assert isfile('sim_net/TrickyWP_p1_5_test.bngl')
-        assert isfile('sim_net/TrickyWP_p1_5_test.cdat')
-        assert isfile('sim_net/TrickyWP_p1_5_test.gdat')
-        assert isfile('sim_net/TrickyWP_p1_5_test.log')
+        assert isfile(f'{folder}/TrickyWP_p1_5_test.net')
+        assert isfile(f'{folder}/TrickyWP_p1_5_test.bngl')
+        assert isfile(f'{folder}/TrickyWP_p1_5_test.cdat')
+        assert isfile(f'{folder}/TrickyWP_p1_5_test.gdat')
+        assert isfile(f'{folder}/TrickyWP_p1_5_test.log')
 
     def test_timeout(self):
         res = self.job_to.run_simulation()
@@ -101,7 +104,8 @@ class TestJob(object):
                                   'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'max_iterations': 10,
                                   'population_size': 10,
                                   ('uniform_var', 'v1__FREE'): [0., 10.], ('uniform_var', 'v2__FREE'): [0., 10.],
-                                  ('uniform_var', 'v3__FREE'): [0., 10.]}))
+                                  ('uniform_var', 'v3__FREE'): [0., 10.],
+                                  'output_dir': self._folder('pybnf_output')}))
         res = self.job_to.run_simulation()
         assert res.fail_type == 0
         a.add_to_trajectory(res)

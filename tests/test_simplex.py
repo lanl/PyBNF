@@ -1,6 +1,7 @@
 from .context import data, algorithms, config
 import numpy as np
 from copy import deepcopy
+from os import environ
 
 from shutil import rmtree
 
@@ -8,6 +9,8 @@ from shutil import rmtree
 class TestSimplex:
     @classmethod
     def setup_class(cls):
+        cls.output_dir = f"test_simplex_{environ.get('PYTEST_XDIST_WORKER', 'local')}"
+        rmtree(cls.output_dir, ignore_errors=True)
         cls.data1s = [
             '# time    v1_result    v2_result    v3_result\n',
             ' 1 2.1   3.1   6.1\n',
@@ -20,18 +23,18 @@ class TestSimplex:
             'simplex_reflection': 1., 'simplex_expansion': 1., 'simplex_contraction': 0.5, 'simplex_shrink': 0.5,
             ('var', 'v1__FREE'): [2.], ('var', 'v2__FREE'): [3.], ('var', 'v3__FREE'): [4.],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': cls.output_dir})
 
         cls.logconfig = config.Configuration({
             'population_size': 2, 'max_iterations': 20, 'fit_type': 'sim', 'simplex_start_step': 1.0,
             'simplex_reflection': 1., 'simplex_expansion': 1., 'simplex_contraction': 0.5, 'simplex_shrink': 0.5,
             ('logvar', 'v1__FREE'): [2.], ('logvar', 'v2__FREE'): [3.], ('logvar', 'v3__FREE'): [4.],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': cls.output_dir})
 
     @classmethod
     def teardown_class(cls):
-        rmtree('pybnf_output')
+        rmtree(cls.output_dir, ignore_errors=True)
 
     def test_start(self):
         sim = algorithms.SimplexAlgorithm(deepcopy(self.config))

@@ -1,5 +1,6 @@
 from .context import data, algorithms, pset, config, printing, raises
 from types import SimpleNamespace
+from os import environ
 from os import mkdir
 from shutil import rmtree
 from copy import deepcopy
@@ -8,6 +9,11 @@ from copy import deepcopy
 class TestScatter:
     @classmethod
     def setup_class(cls):
+        worker = environ.get('PYTEST_XDIST_WORKER', 'local')
+        cls.output_dir = f'test_ss_output_{worker}'
+        cls.bnf_out = f'bnf_out_{worker}'
+        rmtree(cls.output_dir, ignore_errors=True)
+        rmtree(cls.bnf_out, ignore_errors=True)
         cls.data1s = [
             '# time    v1_result    v2_result    v3_result\n',
             ' 1 2.1   3.1   6.1\n',
@@ -21,18 +27,18 @@ class TestScatter:
             'population_size': 7, 'max_iterations': 20, 'fit_type': 'ss',
             ('uniform_var', 'v1__FREE'): [0, 10], ('uniform_var', 'v2__FREE'): [0, 10], ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
-            'bngl_files/parabola.bngl': ['bngl_files/par1.exp']})
+            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'output_dir': cls.output_dir})
 
         cls.config_path = 'bngl_files/parabola.conf'
-        mkdir('test_ss_output')
-        mkdir('test_ss_output/Simulations')
-        mkdir('test_ss_output/Results')
-        mkdir('bnf_out')
+        mkdir(cls.output_dir)
+        mkdir(f'{cls.output_dir}/Simulations')
+        mkdir(f'{cls.output_dir}/Results')
+        mkdir(cls.bnf_out)
 
     @classmethod
     def teardown_class(cls):
-        rmtree('bnf_out')
-        rmtree('test_ss_output')
+        rmtree(cls.bnf_out, ignore_errors=True)
+        rmtree(cls.output_dir, ignore_errors=True)
 
     def test_start(self):
         ss = algorithms.ScatterSearch(deepcopy(self.config))
