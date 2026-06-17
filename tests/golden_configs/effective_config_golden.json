@@ -127,6 +127,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -491,6 +495,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "lambda",
@@ -871,6 +879,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -1231,6 +1243,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -1709,6 +1725,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "lambda",
@@ -2201,6 +2221,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -2669,6 +2693,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -3033,6 +3061,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "lambda",
@@ -3413,6 +3445,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -3714,6 +3750,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -4036,6 +4076,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -4309,6 +4353,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -4520,6 +4568,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -4755,6 +4807,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -5011,6 +5067,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -5262,6 +5322,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "islands",
@@ -5539,6 +5603,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "islands",
@@ -5850,6 +5918,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "islands",
     1
    ],
@@ -6125,6 +6197,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "islands",
@@ -6467,6 +6543,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -6738,6 +6818,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "islands",
@@ -7017,6 +7101,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "islands",
     1
    ],
@@ -7292,6 +7380,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "islands",
@@ -7571,6 +7663,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "islands",
     1
    ],
@@ -7842,6 +7938,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -8123,6 +8223,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -8437,6 +8541,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -8755,6 +8863,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -9038,6 +9150,10 @@
     "lh"
    ],
    [
+    "initialization_distribution",
+    "prior"
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -9289,6 +9405,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_objective_eval",
@@ -9559,6 +9679,10 @@
    [
     "initialization",
     "lh"
+   ],
+   [
+    "initialization_distribution",
+    "prior"
    ],
    [
     "local_min_limit",
