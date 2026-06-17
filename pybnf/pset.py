@@ -1530,6 +1530,29 @@ class FreeParameter:
         owns the math (ADR-0010), but load_priors and the tests still read this."""
         return self._prior.frozen
 
+    def to_sampling_space(self, theta):
+        """Map a stored value ``theta`` into the sampling space ``u`` the prior and
+        the proposal arithmetic operate in -- ``log10(theta)`` for a log parameter,
+        identity otherwise.
+
+        The **public** peer of the private ``_scale.forward`` (ADR-0010), added so
+        the algorithm layer asks the parameter for the transform instead of
+        inlining ``np.log10(x) if v.log_space else x`` at a dozen sites (#412).
+        Accepts a scalar or a numpy array (the histogram path passes a column)."""
+        return self._scale.forward(theta)
+
+    def from_sampling_space(self, u):
+        """Map a sampling-space value ``u`` back to a stored value -- ``10**u`` for a
+        log parameter, identity otherwise. The inverse of :meth:`to_sampling_space`
+        and the public peer of ``_scale.inverse``.
+
+        Unguarded, bit-for-bit ``10.0 ** u`` (matching the inline ``10**`` the
+        proposal arithmetic already used); an out-of-range result is handled by the
+        box clamp / reflection at the call site. The *guarded* inverse for
+        user-supplied ``logvar`` / ``lognormal`` start values is the separate
+        ``exp10`` helper, which raises a configuration hint on overflow (#412)."""
+        return self._scale.inverse(u)
+
     def set_value(self, new_value, reflect=True):
         """
         Creates a copy of the parameter with the given value

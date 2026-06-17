@@ -105,8 +105,10 @@ class PowellAlgorithm(StartPointOptimizer):
         lower, upper = [], []
         for v in self.variables:
             if v.bounded:
-                lo = np.log10(v.lower_bound) if v.log_space else v.lower_bound
-                hi = np.log10(v.upper_bound) if v.log_space else v.upper_bound
+                # Box bounds in sampling space u; the parameter applies log10 for a
+                # log variable, identity otherwise (#412).
+                lo = v.to_sampling_space(v.lower_bound)
+                hi = v.to_sampling_space(v.upper_bound)
             else:
                 lo, hi = -np.inf, np.inf
             lower.append(lo)

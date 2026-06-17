@@ -126,14 +126,13 @@ class DreamAlgorithm(BayesianAlgorithm):
         differ only in how ``xp_vec`` is built and in their Hastings/return
         bookkeeping (kept in each method, per ADR-0009).
         """
-        new_vars = []
-        for i, v in enumerate(self.variables):
-            try:
-                value = 10 ** xp_vec[i] if v.log_space else xp_vec[i]
-                new_vars.append(v.set_value(value, reflect=False))
-            except OutOfBoundsException:
-                return None
-        return PSet(new_vars)
+        try:
+            # The shared inverse bridge maps each coordinate back via its scale
+            # (FreeParameter.from_sampling_space); reflect=False makes an
+            # out-of-box coordinate raise, which we turn into a rejected proposal.
+            return self._pset_from_u(xp_vec, reflect=False)
+        except OutOfBoundsException:
+            return None
 
     def calculate_snooker_pset(self, idx):
         """

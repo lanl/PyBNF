@@ -157,6 +157,47 @@ class TestReflectFold:
         assert -3.0 <= v <= 7.0
 
 
+class TestSamplingSpaceTransform:
+    """The public θ↔u transform pair (FreeParameter.to_sampling_space /
+    from_sampling_space) the algorithm layer asks for instead of inlining
+    np.log10 / 10** (#412). Linear is the identity; Log10 is base-10 log, and the
+    inverse is the unguarded 10.0**u that matches the proposal arithmetic."""
+
+    def setup_method(self):
+        self.lin = pset.FreeParameter('x__FREE', 'normal_var', 0, 1)            # Linear
+        self.log = pset.FreeParameter('x__FREE', 'loguniform_var', 0.01, 100)   # Log10
+
+    def test_linear_is_identity(self):
+        assert self.lin.to_sampling_space(3.7) == 3.7
+        assert self.lin.from_sampling_space(3.7) == 3.7
+
+    def test_log10_forward_and_inverse(self):
+        assert self.log.to_sampling_space(100.0) == 2.0
+        # Unguarded, bit-for-bit 10.0**u (the contract the proposal arithmetic relied on).
+        assert self.log.from_sampling_space(2.0) == 10.0 ** 2.0
+
+    @pytest.mark.parametrize("theta", [0.001, 0.5, 1.0, 42.0, 1e5])
+    def test_round_trip(self, theta):
+        for p in (self.lin, self.log):
+            np.testing.assert_allclose(
+                p.from_sampling_space(p.to_sampling_space(theta)), theta, rtol=1e-12)
+
+    def test_forward_accepts_arrays(self):
+        """The histogram path passes a whole data column through the forward map."""
+        col = np.array([1.0, 10.0, 100.0])
+        np.testing.assert_allclose(self.log.to_sampling_space(col), [0.0, 1.0, 2.0])
+        np.testing.assert_array_equal(self.lin.to_sampling_space(col), col)
+
+    def test_inverse_is_unguarded(self):
+        """Unlike the guarded exp10 (which re-raises overflow as a PybnfError
+        configuration hint), from_sampling_space is the bare scale inverse: a
+        numpy-float overflow -- the type the proposal arithmetic produces, since
+        to_sampling_space returns np.float64 -- yields inf, which the box clamp /
+        reflection at the call site handles, never a mid-fit error."""
+        with np.errstate(over='ignore'):
+            assert np.isinf(self.log.from_sampling_space(np.float64(1000.0)))
+
+
 class TestTruncatedFreeParameter:
     """Two finite bounds on an unbounded-support prior (normal/laplace/log-*)
     turn it into a truncated prior with a reflecting box (ADR-0020, #411). The

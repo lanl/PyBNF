@@ -232,11 +232,33 @@ class Algorithm(ABC):
         and proposal arithmetic, the start-point optimizers for their search
         coordinate (where it is also exposed under the name ``_u_from_pset``).
         Hoisted here from ``BayesianAlgorithm`` once the start-point optimizers
-        grew the identical transform (the ≥2-user event, ADR-0009).
+        grew the identical transform (the ≥2-user event, ADR-0009). Asks each
+        parameter for its θ→u transform rather than inlining ``log10`` (#412).
         """
         return np.array(
-            [np.log10(pset[v.name]) if v.log_space else pset[v.name]
-             for v in self.variables], dtype=float)
+            [v.to_sampling_space(pset[v.name]) for v in self.variables], dtype=float)
+
+    def _pset_from_u(self, u, name=None, reflect=True):
+        """Materialize a sampling-space vector ``u`` (ordered by ``self.variables``)
+        into a PSet -- the inverse peer of :meth:`_param_vec`.
+
+        Each coordinate is mapped back to a stored value by its parameter
+        (``FreeParameter.from_sampling_space``) and assigned with ``set_value``,
+        which folds it into the box when ``reflect`` is True. ``reflect=False``
+        lets a caller reject an out-of-bounds proposal instead of folding it: the
+        offending ``set_value`` raises ``OutOfBoundsException`` (DREAM relies on
+        this to discard a proposal rather than reflect it).
+
+        Hoisted here next to the forward bridge so the u-vector↔PSet conversion
+        lives in one place (#412); the start-point optimizers reach it through the
+        ``_u_from_pset`` / ``_pset_from_u`` alias pair in ``local_base``.
+        """
+        fps = [v.set_value(v.from_sampling_space(u[i]), reflect)
+               for i, v in enumerate(self.variables)]
+        ps = PSet(fps)
+        if name is not None:
+            ps.name = name
+        return ps
 
     @staticmethod
     def _chain_index_from_name(name):

@@ -86,23 +86,14 @@ class StartPointOptimizer(Algorithm):
         ``p1`` / ``p2`` so it is independent of the reflecting-bound (``b`` / ``u``)
         flag -- the same box the center is taken from."""
         return np.array(
-            [(np.log10(v.p2) - np.log10(v.p1)) if v.log_space else (v.p2 - v.p1)
+            [v.to_sampling_space(v.p2) - v.to_sampling_space(v.p1)
              for v in self.variables], dtype=float)
 
     def _u_from_pset(self, pset):
         """The parameter vector of ``pset`` in sampling space ``u`` (the inverse
-        of :meth:`_pset_from_u`). Delegates to the shared PSet→u bridge
+        of :meth:`Algorithm._pset_from_u`). Delegates to the shared PSet→u bridge
         :meth:`Algorithm._param_vec`; kept as a named alias because it pairs with
-        ``_pset_from_u`` in this module's ``u`` <-> PSet vocabulary."""
+        ``_pset_from_u`` in this module's ``u`` <-> PSet vocabulary. The inverse
+        bridge ``_pset_from_u`` itself now lives on ``Algorithm``, next to
+        ``_param_vec``, so the u-vector↔PSet conversion is centralized (#412)."""
         return self._param_vec(pset)
-
-    def _pset_from_u(self, u, name=None):
-        """Build a PSet from a sampling-space vector ``u`` (ordered by
-        ``self.variables``), mapping each coordinate back to a stored value and
-        reflecting it into the box if needed (``FreeParameter.set_value``)."""
-        fps = [v.set_value(10.0 ** u[i] if v.log_space else u[i])
-               for i, v in enumerate(self.variables)]
-        ps = PSet(fps)
-        if name is not None:
-            ps.name = name
-        return ps

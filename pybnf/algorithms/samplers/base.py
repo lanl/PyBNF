@@ -353,12 +353,12 @@ class BayesianAlgorithm(Algorithm):
         for i in range(len(self.variables)):
             v = self.variables[i]
             fname = self.config.config['output_dir']+f'/Results/Histograms/{v.name}{file_ext}.txt'
-            # For log-space variables, we want the histogram in log space
+            # Bin in the parameter's sampling space u -- log10 for a log variable,
+            # identity otherwise; ask the parameter for the transform (#412).
+            histdata = v.to_sampling_space(dat_array[:, i])
             if v.log_space:
-                histdata = np.log10(dat_array[:, i])
                 header = 'log10_lower_bound\tlog10_upper_bound\tcount'
             else:
-                histdata = dat_array[:, i]
                 header = 'lower_bound\tupper_bound\tcount'
             hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
             result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)

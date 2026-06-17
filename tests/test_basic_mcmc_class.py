@@ -251,3 +251,47 @@ class TestDrivenMcmcRun:
         assert stopped
         assert min(algo.iteration) >= algo.max_iterations
         assert 0 <= algo.accepted <= algo.attempts
+
+
+# --------------------------------------------------------------------------- #
+# _pset_from_u: the inverse PSet bridge, hoisted onto Algorithm (#412)
+# --------------------------------------------------------------------------- #
+class TestPsetFromUBridge:
+    """``_pset_from_u`` is the inverse peer of ``_param_vec``, hoisted onto
+    ``Algorithm`` so the u-vector↔PSet conversion lives in one place (#412).
+    Round-trips a PSet through u and back (linear and log10 parameters), and
+    rejects an out-of-box coordinate when ``reflect=False`` (the DREAM path)."""
+
+    _NAMES = ('v1__FREE', 'v2__FREE', 'v3__FREE')
+
+    def test_round_trips_linear_params(self, tmp_path):
+        cfg = _make_config(tmp_path, NORMAL_VARS)            # unbounded -> no reflect
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        ps = _normal_pset((5.0, -2.0, 1.3))
+        back = algo._pset_from_u(algo._param_vec(ps))
+        for name in self._NAMES:
+            np.testing.assert_allclose(back[name], ps[name], rtol=1e-12)
+
+    def test_round_trips_log10_params(self, tmp_path):
+        """loguniform parameters live in log10 space, so the bridge must invert
+        the forward log10 with 10**u, bit-for-bit."""
+        spec = {('loguniform_var', n): [0.01, 100.0] for n in self._NAMES}
+        cfg = _make_config(tmp_path, spec)
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        ps = pset.PSet([pset.FreeParameter(n, 'loguniform_var', 0.01, 100.0, val)
+                        for n, val in zip(self._NAMES, (0.05, 3.0, 42.0))])
+        back = algo._pset_from_u(algo._param_vec(ps))
+        for name in self._NAMES:
+            np.testing.assert_allclose(back[name], ps[name], rtol=1e-12)
+
+    def test_reflect_false_rejects_out_of_box(self, tmp_path):
+        cfg = _make_config(tmp_path, UNIFORM_VARS)           # box [0, 10]
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        with pytest.raises(pset.OutOfBoundsException):
+            algo._pset_from_u(np.array([20.0, 5.0, 5.0]), reflect=False)
+
+    def test_name_is_applied(self, tmp_path):
+        cfg = _make_config(tmp_path, NORMAL_VARS)
+        algo = algorithms.BasicBayesMCMCAlgorithm(cfg)
+        ps = algo._pset_from_u(np.zeros(3), name='probe')
+        assert ps.name == 'probe'

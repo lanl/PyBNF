@@ -311,11 +311,12 @@ class SimplexAlgorithm(Algorithm):
                 new_vars = []
                 this_centroid = dict()
                 for v in self.variables:
-                    if v.log_space:
-                        # Calc centroid in regular space.
-                        centroid = exp10((sums[v.name] - np.log10(a[v.name])) / (len(self.simplex) - 1))
-                    else:
-                        centroid = (sums[v.name] - a[v.name]) / (len(self.simplex) - 1)
+                    # Centroid of the other simplex points in sampling space u,
+                    # mapped back to a stored value (clamped by the reflection
+                    # arithmetic below). For a log variable this is the geometric
+                    # mean; the parameter owns the θ↔u transform (#412).
+                    centroid = v.from_sampling_space(
+                        (sums[v.name] - v.to_sampling_space(a[v.name])) / (len(self.simplex) - 1))
                     this_centroid[v.name] = centroid
                     # new_dict[v] = centroid + self.alpha * (centroid - a[v])
                     new_var = v.set_value(self.a_plus_b_times_c_minus_d(centroid, self.alpha, centroid, a[v.name], v))
@@ -351,10 +352,9 @@ class SimplexAlgorithm(Algorithm):
         # return {p: sum(point[1][p] for point in self.simplex) for p in self.simplex[0][1].keys()}
         sums = dict()
         for p in self.simplex[0][1]:
-            if not p.log_space:
-                sums[p.name] = sum(point[1][p.name] for point in self.simplex)
-            else:
-                sums[p.name] = sum(np.log10(point[1][p.name]) for point in self.simplex)
+            # Sum in sampling space u -- the parameter applies log10 for a log
+            # variable, identity otherwise (#412).
+            sums[p.name] = sum(p.to_sampling_space(point[1][p.name]) for point in self.simplex)
         return sums
 
     def _check_degeneracy(self):
@@ -370,10 +370,10 @@ class SimplexAlgorithm(Algorithm):
         edge_matrix = np.zeros((len(self.simplex) - 1, n))
         for i in range(1, len(self.simplex)):
             for j, v in enumerate(self.variables):
-                if v.log_space:
-                    edge_matrix[i - 1, j] = np.log10(self.simplex[i][1][v.name]) - np.log10(v0[v.name])
-                else:
-                    edge_matrix[i - 1, j] = self.simplex[i][1][v.name] - v0[v.name]
+                # Edge length in sampling space u (the parameter applies log10 for
+                # a log variable), so volume is measured where the simplex moves (#412).
+                edge_matrix[i - 1, j] = (v.to_sampling_space(self.simplex[i][1][v.name])
+                                         - v.to_sampling_space(v0[v.name]))
 
         # Compute a scale factor from the edge lengths to make the threshold relative
         edge_norms = np.linalg.norm(edge_matrix, axis=1)
@@ -395,11 +395,10 @@ class SimplexAlgorithm(Algorithm):
                 old_pset = self.simplex[i][1]
                 new_vars = []
                 for v in self.variables:
-                    if v.log_space:
-                        log_val = np.log10(old_pset[v.name])
-                        perturbed = 10 ** (log_val + self.rng.normal(0, 0.01 * scale))
-                    else:
-                        perturbed = old_pset[v.name] + self.rng.normal(0, 0.01 * scale)
+                    # Perturb in sampling space u (one Gaussian draw per variable),
+                    # then map back via the parameter's scale (#412).
+                    perturbed = v.from_sampling_space(
+                        v.to_sampling_space(old_pset[v.name]) + self.rng.normal(0, 0.01 * scale))
                     perturbed = max(v.lower_bound, min(v.upper_bound, perturbed))
                     new_vars.append(v.set_value(perturbed))
                 new_pset = PSet(new_vars)
@@ -420,10 +419,10 @@ class SimplexAlgorithm(Algorithm):
         :return:
         """
 
-        if v.log_space:
-            result = 10 ** (np.log10(a) + b*(np.log10(c) - np.log10(d)))
-        else:
-            result = a + b*(c-d)
+        # Evaluate a + b*(c-d) in sampling space u, then map back via the
+        # parameter's scale (#412); the result is clamped to the box.
+        result = v.from_sampling_space(
+            v.to_sampling_space(a) + b * (v.to_sampling_space(c) - v.to_sampling_space(d)))
         return max(v.lower_bound, min(v.upper_bound, result))
 
     def ab_plus_cd(self, a, b, c, d, v):
@@ -438,8 +437,8 @@ class SimplexAlgorithm(Algorithm):
         :type v: FreeParameter
         :return:
         """
-        if v.log_space:
-            result = 10 ** (a * np.log10(b) + c*np.log10(d))
-        else:
-            result = a * b + c * d
+        # Evaluate ab + cd in sampling space u, then map back via the parameter's
+        # scale (#412); the result is clamped to the box.
+        result = v.from_sampling_space(
+            a * v.to_sampling_space(b) + c * v.to_sampling_space(d))
         return max(v.lower_bound, min(v.upper_bound, result))
