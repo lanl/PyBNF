@@ -26,6 +26,13 @@ rr.Logger.disableLogging()
 
 logger = logging.getLogger(__name__)
 
+INITIALIZATION_PRIOR = 'prior'
+INITIALIZATION_BOUNDS = 'bounds'
+INITIALIZATION_DISTRIBUTIONS = frozenset({
+    INITIALIZATION_PRIOR,
+    INITIALIZATION_BOUNDS,
+})
+
 
 _TFUN_FILE_REF_RE = re.compile(
     r'(?P<prefix>\btfun\s*\(\s*)(?P<quote>[\'"])(?P<path>[^\'"]+)(?P=quote)'
@@ -1430,7 +1437,9 @@ class FreeParameter:
     Class representing a free parameter in a model
     """
 
-    def __init__(self, name, type, p1, p2, value=None, bounded=True, lb=None, ub=None):
+    def __init__(self, name, type, p1, p2, value=None, bounded=True, lb=None, ub=None,
+                 initialization_distribution=INITIALIZATION_PRIOR,
+                 initialization_lb=None, initialization_ub=None):
         """
         Initializes a FreeParameter object based on information parsed from the configuration file
 
@@ -1452,6 +1461,11 @@ class FreeParameter:
          is the family's location/scale, not a bound. Ignored for the Uniform
          families, whose bounds are ``p1``/``p2``.
         :param ub: Optional upper truncation bound (in theta); see ``lb``.
+        :param initialization_distribution: Which distribution should generate
+         algorithm start points: ``prior`` (backward-compatible) or ``bounds``.
+        :param initialization_lb: Optional lower initialization bound in theta,
+         used when ``initialization_distribution`` is ``bounds``.
+        :param initialization_ub: Optional upper initialization bound in theta.
         """
         self.name = name
         self.type = type
@@ -1461,6 +1475,18 @@ class FreeParameter:
         # preserved verbatim so set_value can reconstruct the parameter (ADR-0020).
         self.trunc_lb = lb
         self.trunc_ub = ub
+        self.initialization_distribution = initialization_distribution or INITIALIZATION_PRIOR
+        self.initialization_lb = initialization_lb
+        self.initialization_ub = initialization_ub
+        if self.initialization_distribution not in INITIALIZATION_DISTRIBUTIONS:
+            valid = ', '.join(sorted(INITIALIZATION_DISTRIBUTIONS))
+            raise PybnfError(
+                f"Parameter {self.name}: unknown initialization_distribution "
+                f"{self.initialization_distribution!r}; expected one of {valid}.")
+        if (self.initialization_lb is None) != (self.initialization_ub is None):
+            raise PybnfError(
+                f"Parameter {self.name}: initialization bounds need both lb and ub "
+                f"(got lb={self.initialization_lb}, ub={self.initialization_ub}).")
 
         # The prior (distribution family in sampling space u) and the scale
         # (theta<->u transform) are resolved from the legacy *_var keyword via the
@@ -1506,6 +1532,8 @@ class FreeParameter:
 
         if self.lower_bound > self.upper_bound:
             raise PybnfError(f"Parameter {self.name} has a lower bound that is greater than its upper bound")
+        if self.initialization_distribution == INITIALIZATION_BOUNDS:
+            self._initialization_bounds_u()
 
         # Determine a positive value that can serve as the default for network generation
         self.default_value = None
@@ -1575,7 +1603,10 @@ class FreeParameter:
                            f'Adjusted to {adj:f}')
             new_value = adj
         return FreeParameter(self.name, self.type, self.p1, self.p2, new_value,
-                             self.bounded, self.trunc_lb, self.trunc_ub)
+                             bounded=self.bounded, lb=self.trunc_lb, ub=self.trunc_ub,
+                             initialization_distribution=self.initialization_distribution,
+                             initialization_lb=self.initialization_lb,
+                             initialization_ub=self.initialization_ub)
 
     def _reflect(self, new):
         """Reflect a proposed value back inside the parameter's bounds.
@@ -1609,7 +1640,7 @@ class FreeParameter:
 
     def sample_value(self, rng):
         """
-        Samples a value for this parameter based on its defined initial distribution
+        Samples a value from this parameter's objective prior distribution.
 
         :param rng: the caller's np.random.Generator, passed through to the prior
         :return: new FreeParameter instance or None
@@ -1618,6 +1649,47 @@ class FreeParameter:
             raise PybnfError(f"Parameter {self.name} does not have a sampling distribution")
 
         return self.set_value(self._scale.inverse(self._prior.rvs(rng)))
+
+    def _initialization_bounds_u(self):
+        """Finite initialization box in sampling space ``u``.
+
+        ``bounds`` initialization spans the parameter's reflecting box when one
+        exists (including PEtab-truncated normal/laplace priors) and otherwise
+        falls back to a finite prior support (plain uniform/loguniform). The
+        algorithms also operate in ``u``, so log parameters initialize uniformly
+        over log-bounds.
+        """
+        if self.initialization_lb is not None:
+            lo_u = self._scale.forward(float(self.initialization_lb))
+            hi_u = self._scale.forward(float(self.initialization_ub))
+        elif np.isfinite(self.lower_bound) and np.isfinite(self.upper_bound):
+            lo_u = self._scale.forward(self.lower_bound)
+            hi_u = self._scale.forward(self.upper_bound)
+        elif self._prior.has_bounded_support:
+            lo_u, hi_u = self._prior.support()
+        else:
+            raise PybnfError(
+                f"Parameter {self.name}: initialization_distribution='bounds' "
+                f"requires finite parameter bounds or a finite-support prior.")
+
+        if not (np.isfinite(lo_u) and np.isfinite(hi_u)) or lo_u >= hi_u:
+            raise PybnfError(
+                f"Parameter {self.name}: initialization bounds must be finite and "
+                f"increasing in sampling space, got [{lo_u}, {hi_u}].")
+        return lo_u, hi_u
+
+    @property
+    def has_bounded_initialization(self):
+        """Whether this parameter can participate in Latin-hypercube seeding."""
+        if self.initialization_distribution == INITIALIZATION_BOUNDS:
+            return True
+        return self._prior.has_bounded_support
+
+    def sample_initial_value(self, rng):
+        """Draw a start-point value from the configured initialization distribution."""
+        if self.initialization_distribution == INITIALIZATION_PRIOR:
+            return self.sample_value(rng)
+        return self.initial_value_from_quantile(rng.random())
 
     def prior_logpdf(self, value):
         """
@@ -1654,6 +1726,13 @@ class FreeParameter:
         scale.inverse(lo + q*(hi - lo)) -- equal bit-for-bit to the historical
         p1 + q*(p2 - p1) (linear) / exp10(log10(p1) + q*...) (log10)."""
         return self.set_value(self._scale.inverse(self._prior.ppf(q)))
+
+    def initial_value_from_quantile(self, q):
+        """Map a [0, 1] quantile through the initialization distribution."""
+        if self.initialization_distribution == INITIALIZATION_PRIOR:
+            return self.value_from_quantile(q)
+        lo_u, hi_u = self._initialization_bounds_u()
+        return self.set_value(self._scale.inverse(lo_u + q * (hi_u - lo_u)))
 
     def add(self, summand, reflect=True):
         """

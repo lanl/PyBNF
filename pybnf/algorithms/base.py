@@ -755,22 +755,21 @@ class Algorithm(ABC):
         logger.debug("Generating a randomly distributed PSet")
         pset_vars = []
         for var in self.variables:
-            pset_vars.append(var.sample_value(self.rng))
+            pset_vars.append(var.sample_initial_value(self.rng))
         return PSet(pset_vars)
 
     def random_latin_hypercube_psets(self, n):
         """
-        Generates n random PSets with a latin hypercube distribution
-        More specifically, the bounded-support (uniform/loguniform) variables follow the latin hypercube
-        distribution, while the others are randomized from their prior.
+        Generates n random PSets with a latin hypercube distribution. Variables
+        with bounded initialization distributions follow the Latin hypercube;
+        the others are randomized independently from their initializer.
 
         :param n: Number of psets to generate
         :return:
         """
         logger.debug("Generating PSets using Latin hypercube sampling")
-        # Only the bounded-support families (Uniform) are stratified; the prior's
-        # inverse CDF (value_from_quantile) handles the per-scale rescale.
-        num_uniform_vars = sum(1 for var in self.variables if var.has_bounded_support)
+        num_uniform_vars = sum(1 for var in self.variables
+                               if var.has_bounded_initialization)
 
         # Generate latin hypercube of dimension = number of uniformly distributed variables.
         rands = latin_hypercube(n, num_uniform_vars, self.rng)
@@ -782,11 +781,11 @@ class Algorithm(ABC):
             pset_vars = []
             rowindex = 0
             for var in self.variables:
-                if var.has_bounded_support:
-                    pset_vars.append(var.value_from_quantile(row[rowindex]))
+                if var.has_bounded_initialization:
+                    pset_vars.append(var.initial_value_from_quantile(row[rowindex]))
                     rowindex += 1
                 else:
-                    pset_vars.append(var.sample_value(self.rng))
+                    pset_vars.append(var.sample_initial_value(self.rng))
             psets.append(PSet(pset_vars))
         return psets
 

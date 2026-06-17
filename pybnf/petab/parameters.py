@@ -56,7 +56,7 @@ import numpy as np
 
 from ..printing import PybnfError
 from ..priors import PRIOR_KEYWORD_MAP
-from ..pset import FreeParameter
+from ..pset import FreeParameter, INITIALIZATION_BOUNDS
 from ._tsv import num, write_tsv
 
 _LN10 = math.log(10.0)
@@ -160,8 +160,29 @@ def free_parameter_from_row(row):
             f"{keyword!r} is not a registered prior keyword.")
 
     value = None if row.nominal_value is None else float(row.nominal_value)
+    init_kwargs = {}
+    if _can_initialize_from_bounds(keyword, lb, ub):
+        init_kwargs = {
+            'initialization_distribution': INITIALIZATION_BOUNDS,
+            'initialization_lb': lb,
+            'initialization_ub': ub,
+        }
     return FreeParameter(row.parameter_id, keyword, p1, p2, value=value,
-                         bounded=bounded, lb=tlb, ub=tub)
+                         bounded=bounded, lb=tlb, ub=tub, **init_kwargs)
+
+
+def _can_initialize_from_bounds(keyword, lb, ub):
+    """True when the PEtab row has a finite two-sided initialization box.
+
+    The bounds are row-level PEtab parameter bounds, deliberately separate from
+    the objective prior support. Log-scale PyBNF parameters need a strictly
+    positive lower bound so the box is finite in sampling space.
+    """
+    if not (np.isfinite(lb) and np.isfinite(ub)):
+        return False
+    if keyword.startswith('log') and lb <= 0.0:
+        return False
+    return lb < ub
 
 
 def _resolve_prior(row, lb, ub):

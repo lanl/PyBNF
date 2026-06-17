@@ -123,6 +123,22 @@ class TestParticleSwarm:
             # Latin hypercube should distribute starting values evenly (one in each bin) in each dimension.
             assert len([x for x in ps.swarm if i < x[0]['v1__FREE'] < i+1]) == 1
 
+    def test_latin_hypercube_uses_initialization_distribution(self):
+        # Regression for #413 at the shared Algorithm startup path: a tight
+        # objective prior no longer concentrates LH start points near the mean
+        # when the parameter's initializer is bounds-uniform.
+        alg = SimpleNamespace(
+            variables=[pset.FreeParameter(
+                'x__FREE', 'normal_var', 0.0, 0.01, lb=-10.0, ub=10.0,
+                initialization_distribution=pset.INITIALIZATION_BOUNDS)],
+            rng=np.random.default_rng(1),
+        )
+        starts = algorithms.Algorithm.random_latin_hypercube_psets(alg, 10)
+        vals = [p['x__FREE'] for p in starts]
+        assert all(-10.0 <= v <= 10.0 for v in vals)
+        assert min(vals) < -8.0
+        assert max(vals) > 8.0
+
 
 # --------------------------------------------------------------------------- #
 # The deterministic decision logic of got_result: the velocity/position update,
@@ -325,4 +341,3 @@ class TestParticleSwarmUpdate:
         assert len(out) == 6 and len(ps.swarm) == 6
         for p in out:
             assert 0. <= p['v1__FREE'] <= 10.
-

@@ -51,6 +51,7 @@ multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'c
 b_var_def_keys, var_def_keys = var_keyword_grammar()
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
+              'initialization_distribution',
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
               'outlier_method', 'refine_method', 'noise_location']

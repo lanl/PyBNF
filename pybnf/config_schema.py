@@ -58,7 +58,7 @@ here: ``Configuration`` carries them through as "extras" alongside the dumped
 schema. They gain typed validation as method schemas land in Stage (b).
 """
 
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar, Literal, Optional
 
 import os
 from pathlib import Path
@@ -155,6 +155,7 @@ class GlobalConfig(PyBNFConfigModel):
     num_to_output: int = 5000
     output_every: int = 20
     initialization: str = 'lh'
+    initialization_distribution: Literal['prior', 'bounds'] = 'prior'
     refine: int = 0
     # Which local optimizer polishes the best fit when refine == 1 (#403). One of
     # the start-point optimizer fit_type codes -- 'sim' (Nelder-Mead Simplex,

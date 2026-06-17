@@ -266,3 +266,48 @@ class TestTruncatedFreeParameter:
             pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, ub=5.0)
         with pytest.raises(PybnfError):
             pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=-5.0)
+
+
+class TestInitializationDistribution:
+    """Start-point sampling is a separate distribution from the objective prior
+    (#413). ``sample_value`` stays the prior draw; algorithms use
+    ``sample_initial_value`` / ``initial_value_from_quantile``."""
+
+    def test_default_initialization_is_prior(self):
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0)
+        assert not fp.has_bounded_initialization
+        assert fp.initialization_distribution == pset.INITIALIZATION_PRIOR
+
+    def test_bounds_initialization_uses_box_not_prior_quantile(self):
+        fp = pset.FreeParameter(
+            'x__FREE', 'normal_var', 0.0, 0.01, lb=-10.0, ub=10.0,
+            initialization_distribution=pset.INITIALIZATION_BOUNDS)
+        assert fp.has_bounded_initialization
+        assert fp.initial_value_from_quantile(0.25).value == pytest.approx(-5.0)
+        assert fp.initial_value_from_quantile(0.75).value == pytest.approx(5.0)
+        assert abs(fp.value_from_quantile(0.75).value) < 0.01
+
+    def test_explicit_initialization_bounds_are_independent(self):
+        fp = pset.FreeParameter(
+            'x__FREE', 'normal_var', 0.0, 0.01, lb=-10.0, ub=10.0,
+            initialization_distribution=pset.INITIALIZATION_BOUNDS,
+            initialization_lb=-5.0, initialization_ub=5.0)
+        assert fp.initial_value_from_quantile(0.0).value == pytest.approx(-5.0)
+        assert fp.initial_value_from_quantile(1.0).value == pytest.approx(5.0)
+        assert abs(fp.value_from_quantile(0.75).value) < 0.1
+
+    def test_set_value_preserves_initialization_distribution(self):
+        fp = pset.FreeParameter(
+            'x__FREE', 'normal_var', 0.0, 1.0, lb=-2.0, ub=2.0,
+            initialization_distribution=pset.INITIALIZATION_BOUNDS,
+            initialization_lb=-10.0, initialization_ub=10.0)
+        got = fp.set_value(1.0)
+        assert got.initialization_distribution == pset.INITIALIZATION_BOUNDS
+        assert got.initialization_lb == -10.0
+        assert got.initialization_ub == 10.0
+
+    def test_bounds_initialization_requires_finite_box(self):
+        with pytest.raises(PybnfError, match='requires finite'):
+            pset.FreeParameter(
+                'x__FREE', 'normal_var', 0.0, 1.0,
+                initialization_distribution=pset.INITIALIZATION_BOUNDS)

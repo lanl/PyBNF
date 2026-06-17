@@ -29,7 +29,7 @@ from pybnf.petab.parameters import (
     free_parameters_from_table,
     read_parameter_table,
 )
-from pybnf.pset import FreeParameter
+from pybnf.pset import FreeParameter, INITIALIZATION_BOUNDS, INITIALIZATION_PRIOR
 from pybnf.printing import PybnfError
 
 _LN10 = math.log(10.0)
@@ -76,12 +76,20 @@ class TestEquivalenceToNativeVar:
         # PEtab v2: an estimated parameter with no prior -> uniform(lb, ub).
         got = free_parameter_from_row(_row(prior=None, lb=0.5, ub=4.0, nominal=2.0))
         assert got == FreeParameter('k__FREE', 'uniform_var', 0.5, 4.0, value=2.0, bounded=True)
+        assert got.initialization_distribution == INITIALIZATION_BOUNDS
+        assert got.initialization_lb == 0.5 and got.initialization_ub == 4.0
 
     def test_uniform_prior_truncated_by_tighter_bounds_intersects(self):
         # Uniform prior (0.1, 100) truncated by bounds [1, 10] -> uniform(1, 10).
         got = free_parameter_from_row(
             _row(prior='uniform', params=(0.1, 100.0), lb=1.0, ub=10.0, nominal=5.0))
         assert got == FreeParameter('k__FREE', 'uniform_var', 1.0, 10.0, value=5.0, bounded=True)
+        assert got.initialization_distribution == INITIALIZATION_BOUNDS
+
+    def test_unbounded_row_stays_prior_initialized(self):
+        got = free_parameter_from_row(
+            _row(prior='normal', params=(5.0, 2.0), lb=-np.inf, ub=np.inf))
+        assert got.initialization_distribution == INITIALIZATION_PRIOR
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +131,17 @@ class TestTwoSidedTruncation:
         got = free_parameter_from_row(
             _row(prior='normal', params=(0.0, 1.0), lb=-100.0, ub=100.0))
         assert got.bounded and got.lower_bound == -100.0 and got.upper_bound == 100.0
+        assert got.initialization_distribution == INITIALIZATION_BOUNDS
+        assert got.initialization_lb == -100.0 and got.initialization_ub == 100.0
+
+    def test_petab_start_points_use_bounds_not_objective_prior(self):
+        # Regression for #413: a tight normal objective prior should not also
+        # concentrate the PEtab importer's start-point distribution near its mean.
+        fp = free_parameter_from_row(
+            _row(prior='normal', params=(0.0, 0.01), lb=-10.0, ub=10.0))
+        assert fp.initial_value_from_quantile(0.25).value == pytest.approx(-5.0)
+        assert fp.initial_value_from_quantile(0.75).value == pytest.approx(5.0)
+        assert abs(fp.value_from_quantile(0.75).value) < 0.01
 
 
 # ---------------------------------------------------------------------------

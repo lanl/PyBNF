@@ -537,16 +537,28 @@ Algorithm Options
     * ``ind_var_rounding = 1``
     
 **initialization**
-  How to initialize parameters. 
+  How to arrange the initial parameter sets.
   
-   - ``rand`` - initialize params randomly according to the distributions. 
-   - ``lh`` - For ``random_var``\ s and ``loguniform_var``\ s, initialize with a latin hypercube distribution, to more uniformly cover the search space.
+   - ``rand`` - initialize parameters with independent random draws.
+   - ``lh`` - initialize bounded parameters with a latin hypercube distribution, to more uniformly cover the search space.
    
   Default: lh
   
   Example: 
   
     * ``initialization = rand``
+
+**initialization_distribution**
+  Which distribution to draw start points from. This is separate from the objective prior.
+
+   - ``prior`` - draw start points from each parameter's prior distribution. This is the backward-compatible default.
+   - ``bounds`` - draw start points uniformly over each parameter's finite bounds in PyBNF's sampling space. Linear parameters use linear bounds; log parameters use log10 bounds.
+
+  Default: prior
+
+  Example:
+
+    * ``initialization_distribution = bounds``
 
 **random_seed**
   Seed for PyBNF's NumPy random number generator. If specified, the same seed will reproduce PyBNF-side random draws

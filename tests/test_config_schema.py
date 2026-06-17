@@ -52,6 +52,7 @@ class TestGlobalSchemaDefaults:
         assert d['exchange_every'] == 20
         assert d['random_seed'] is None
         assert d['bngl_backend'] == 'auto'
+        assert d['initialization_distribution'] == 'prior'
 
     def test_lambda_keyword_is_emitted_by_alias(self):
         d = config_schema.default_config_dict()
@@ -144,6 +145,10 @@ class TestConfigurationBuildConfig:
     def test_validation_error_becomes_pybnferror(self):
         with pytest.raises(printing.PybnfError):
             config.Configuration._build_config({'random_seed': 'not-an-int'})
+
+    def test_invalid_initialization_distribution_raises(self):
+        with pytest.raises(printing.PybnfError):
+            config.Configuration._build_config({'initialization_distribution': 'posterior'})
 
     def test_extras_never_clobber_validated_schema(self):
         # The split is disjoint, so a schema key is only ever validated, never

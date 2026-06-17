@@ -828,6 +828,7 @@ class Configuration:
         fit_type = self.config['fit_type']
         self._check_variable_keyword_combination(fit_type)
         variables = []
+        initialization_distribution = self.config.get('initialization_distribution', 'prior')
         for k in self.config.keys():
             if isinstance(k, tuple) and re.search('var$', k[0]):
                 if k[0] in ('var', 'logvar'):
@@ -840,9 +841,11 @@ class Configuration:
                 else:
                     if len(self.config[k]) == 3:
                         free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
-                                                       bounded=self.config[k][2])
+                                                       bounded=self.config[k][2],
+                                                       initialization_distribution=initialization_distribution)
                     else:
-                        free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1])
+                        free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
+                                                   initialization_distribution=initialization_distribution)
 
                 logger.debug(f'Adding parameter {free_param.name} with bounds [{free_param.lower_bound}, {free_param.upper_bound}]')
                 variables.append(free_param)
