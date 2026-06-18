@@ -95,6 +95,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -459,6 +463,10 @@
    [
     "diagnostics_every",
     0
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exchange_every",
@@ -843,6 +851,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -1205,6 +1217,10 @@
    [
     "diagnostics_every",
     0
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exchange_every",
@@ -1683,6 +1699,10 @@
    [
     "diagnostics_every",
     0
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exchange_every",
@@ -2179,6 +2199,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -2661,6 +2685,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -3025,6 +3053,10 @@
    [
     "diagnostics_every",
     0
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exchange_every",
@@ -3409,6 +3441,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -3725,6 +3761,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -4038,6 +4078,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -4326,6 +4370,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -4541,6 +4589,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -4780,6 +4832,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -5040,6 +5096,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -5295,6 +5355,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -5576,6 +5640,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -5891,6 +5959,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -6170,6 +6242,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -6505,6 +6581,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -6793,6 +6873,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -7072,6 +7156,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -7355,6 +7443,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -7636,6 +7728,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -7911,6 +8007,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -8196,6 +8296,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -8506,6 +8610,10 @@
    [
     "diagnostics_every",
     0
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exchange_every",
@@ -8828,6 +8936,10 @@
     0
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exchange_every",
     20
    ],
@@ -9123,6 +9235,10 @@
     1
    ],
    [
+    "edition",
+    null
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -9378,6 +9494,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",
@@ -9652,6 +9772,10 @@
    [
     "delete_old_files",
     1
+   ],
+   [
+    "edition",
+    null
    ],
    [
     "exp_data",

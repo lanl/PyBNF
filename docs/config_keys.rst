@@ -128,6 +128,34 @@ Required Keys
     * ``noise_model obs5 = lognormal, sigma = read_exp_file _SD, location = mean``
 
 
+.. _edition:
+
+**edition**
+  An optional integer that opts the .conf into a frozen set of modernized PyBNF
+  conventions. Editions are *select-and-freeze*: a conf written for ``edition = 2``
+  is interpreted under edition-2 conventions forever, even as later PyBNF releases
+  change other defaults under higher editions, so upgrading PyBNF never silently
+  reinterprets your existing config. Omitting the key selects *legacy* behavior
+  (the implicit edition 1), byte-identical to PyBNF's historical defaults; the
+  newest syntax requires opting in with an explicit ``edition``. The value is a
+  plain integer, decoupled from PyBNF release numbers -- editions change only when
+  a convention changes.
+
+  Under a modern edition (``edition >= 2``) the universal default for prediction
+  centering is the **median** (consistent with PEtab v2). This is byte-identical
+  for the location-scale noise models (``chi_sq`` / ``lognormal`` / ``laplace``),
+  which already default to the median. The one place it differs is ``neg_bin``,
+  whose legacy default was the mean and whose median has no closed form (see issue
+  #419): under a modern edition a ``neg_bin`` fit must set
+  :ref:`noise_location <objective>` (``= mean``) explicitly.
+
+  Default: unset (legacy, edition 1)
+
+  Example:
+
+    * ``edition = 2``
+
+
 **population_size**
   The number parameter sets to maintain in a single iteration of the algorithm. See algorithm descriptions for more
   information.

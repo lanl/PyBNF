@@ -148,6 +148,15 @@ class GlobalConfig(PyBNFConfigModel):
     is the truly run-level surface plus not-yet-migrated method blocks.
     """
 
+    # --- edition (ADR-0031): the select-and-freeze conventions marker ---
+    # An optional integer opting the .conf into a frozen set of modernized
+    # conventions (``pybnf/edition.py``). ``None`` == absent == legacy (implicit
+    # edition 1, byte-identical to historical behavior). Validated and resolved in
+    # ``Configuration._check_edition``; the modern-syntax guard and the neg_bin
+    # median-centering default key off it. Kept raw (None / int) in the effective
+    # config -- the resolution to the legacy edition happens at each read site.
+    edition: Optional[int] = None
+
     # --- global / run-level ---
     objfunc: str = 'chi_sq'
     output_dir: str = 'pybnf_output'

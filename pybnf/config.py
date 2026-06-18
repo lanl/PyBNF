@@ -7,6 +7,7 @@ from . import algorithms  # noqa: F401 -- imported for its side effect: running 
 from .registry import OBJFUNC_REGISTRY, FIT_TYPE_REGISTRY
 from .priors import PRIOR_KEYWORD_MAP
 from . import config_schema
+from . import edition
 
 from pydantic import ValidationError
 
@@ -186,6 +187,7 @@ class Configuration:
         # uniformly there; non-MCMC methods inherit a no-op.
         self.config = self._build_config(d)
         self._check_random_seed()
+        self._check_edition()
 
         self._data_map = dict()  # Internal structure to help get both regular and mutant data to the right place
         self.models = self._load_models()
@@ -344,6 +346,16 @@ class Configuration:
             raise PybnfError(f'Invalid random_seed {seed}',
                              "Config key 'random_seed' must be an integer from 0 to %i." % (2**32 - 1))
         self.config['random_seed'] = int(seed)
+
+    def _check_edition(self):
+        """Validate the optional ``edition`` marker (ADR-0031) before any
+        edition-gated logic reads it. Absent (``None``) is legacy and always valid;
+        an explicit value must be a supported integer edition. Translation to the
+        legacy edition is left to each read site via ``edition.resolve_edition`` so
+        the effective config keeps the raw value."""
+        value = self.config['edition']
+        if value is not None:
+            edition.validate_edition(value)
 
     @staticmethod
     def _valid_config_keys(conf_dict):
@@ -802,6 +814,28 @@ class Configuration:
                     f"(normal/lognormal/laplace/neg_bin/...); objfunc={objfunc} has no "
                     f"noise model whose location can be set.")
             obj.set_default_location(location)
+        else:
+            # No explicit whole-fit location: under a modern edition (ADR-0031) the
+            # universal default centering is the median. For the location-scale
+            # families (Gaussian/Laplace) median is already the class default, so
+            # this is byte-identical; the one family whose legacy default was the
+            # mean is neg_bin (mean-parameterized, no location axis), whose median is
+            # the unimplemented #419 capability -- so a modern-edition neg_bin with
+            # no explicit location raises here, directing the user to set it
+            # explicitly (which is what a modern neg_bin user wants anyway). A legacy
+            # conf (no edition) is untouched and stays frozen-mean.
+            ed = edition.resolve_edition(self.config.get('edition'))
+            if (edition.is_modern(ed)
+                    and isinstance(obj, objective.LikelihoodObjective)
+                    and obj.noise is not None
+                    and not hasattr(obj.noise, 'location')):
+                raise PybnfError(
+                    f'{objfunc} centering defaults to median under edition {ed}, which is unimplemented',
+                    f"Under edition {ed} the universal default prediction centering is the "
+                    f"median (ADR-0031), but the {objfunc} (negative-binomial) noise model is "
+                    f"parameterized by its mean and has no closed-form median (issue #419); its "
+                    f"legacy default was the mean. Set 'noise_location = mean' explicitly to keep "
+                    f"mean centering.")
         return obj
 
     def _load_variables(self):

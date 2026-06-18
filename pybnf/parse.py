@@ -33,7 +33,7 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'exchange_every', 'backup_every', 'bootstrap', 'crossover_number', 'ind_var_rounding',
                'local_objective_eval', 'reps_per_beta', 'save_best_data', 'parallelize_models', 'adaptive', 'continue_run',
                'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size', 'powell_max_iterations',
-               'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every']
+               'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every', 'edition']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
