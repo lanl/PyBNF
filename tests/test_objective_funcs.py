@@ -450,9 +450,10 @@ class TestNoiseAxes:
         expected = (np.log(9.0) - sigma ** 2 / 2 - np.log(8.0)) ** 2 / (2 * sigma ** 2)
         npt.assert_almost_equal(mean.data_fit(9.0, 8.0, sigma), expected)
 
-    def test_gaussian_default_is_linear_mean(self):
-        """Gaussian() defaults to additive-on-linear, location-mean -- so chi_sq's
-        delegation is byte-identical to the pre-refactor squared residual."""
+    def test_gaussian_default_is_linear_median(self):
+        """Gaussian() defaults to additive-on-linear, location-median (ADR-0031) --
+        and since location is trivial on the linear scale, chi_sq's delegation is
+        still byte-identical to the pre-refactor squared residual."""
         g = noise.Gaussian()
         npt.assert_almost_equal(g.data_fit(3.1, 3.0, 0.5), (3.1 - 3.0) ** 2 / (2 * 0.5 ** 2))
 

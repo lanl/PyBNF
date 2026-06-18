@@ -15,8 +15,8 @@ Layers tested:
 1. **Equivalence to the native surface** -- for the families with a native token
    (``normal`` linear, ``laplace`` linear), the importer's pair matches the one
    ``objective._build_noise_overrides`` builds from the equivalent ``noise_model``
-   ``.conf`` line (``laplace`` exactly; ``normal`` by evaluation, since native
-   ``normal`` defaults to ``MEAN`` which coincides with ``MEDIAN`` on linear).
+   ``.conf`` line (both exactly: native ``normal`` and ``laplace`` now also default
+   to ``MEDIAN`` -- ADR-0031).
 2. **The full mapping** -- all four ``noiseDistribution`` values, structurally;
    the natural-log families (no native token) checked against the kernels' analytic
    NLL; both sigma-source kinds.
@@ -81,14 +81,14 @@ class TestEquivalenceToNativeNoiseModel:
             _assert_same_pair(got, native)
 
     def test_normal_matches_native_normal_numerically(self):
-        # normal -> Gaussian(LINEAR, MEDIAN); native ``normal`` defaults to MEAN. The
-        # location axis is trivial on LINEAR (offset 0), so they evaluate identically
-        # -- the adapter's median choice is a faithful import of native ``normal``.
+        # normal -> Gaussian(LINEAR, MEDIAN); native ``normal`` now also defaults to
+        # MEDIAN (ADR-0031), so the adapter and native pairs are identical -- the
+        # adapter's median choice is a faithful import of native ``normal``.
         adapter_fam, adapter_src = noise_model_from_row(
             _row(dist='normal', noise_formula='0.5'))
         native_fam, native_src = _build_noise_overrides(
             ploop(['noise_model o = normal, sigma = fix_at 0.5']))['o']
-        assert adapter_fam.location is noise.MEDIAN and native_fam.location is noise.MEAN
+        assert adapter_fam.location is noise.MEDIAN and native_fam.location is noise.MEDIAN
         assert type(adapter_src) is type(native_src) and vars(adapter_src) == vars(native_src)
         for pred, obs, sigma in [(1.0, 1.2, 0.5), (3.0, 2.0, 0.8), (0.4, 0.4, 0.2)]:
             assert (adapter_fam.data_fit(pred, obs, sigma)

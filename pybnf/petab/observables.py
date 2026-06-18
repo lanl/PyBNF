@@ -53,8 +53,8 @@ shape; this is the corrected v2 mapping.)
 **The two-adapter equivalence is exact for the linear families and ``laplace``,
 structural for the natural-log families.** ``laplace`` matches the native
 ``laplace`` token exactly (``Laplace(LINEAR, MEDIAN)``), and ``normal`` matches the
-native ``normal`` token's *evaluation* (native ``normal`` defaults to ``MEAN``,
-which coincides with ``MEDIAN`` on the linear scale). The natural-log families have
+native ``normal`` token exactly too (``Gaussian(LINEAR, MEDIAN)``): native ``normal``
+now also defaults to ``MEDIAN`` (ADR-0031). The natural-log families have
 **no native ``.conf`` token** -- the native ``lognormal`` token is log10, and the
 native surface has no natural-log family -- so ``log-normal`` / ``log-laplace`` are
 validated structurally and against the kernels' analytic NLL rather than a native

@@ -3,16 +3,16 @@
 import numpy as np
 
 from .base import NoiseModel
-from .location import MEAN
+from .location import MEDIAN
 from .scale import LINEAR
 
 
 class Gaussian(NoiseModel):
     """Gaussian (normal) observation noise, configured by two of the three axes:
     the scale its noise is **additive on** and the **location interpretation** of
-    the prediction. The defaults (``LINEAR``, ``MEAN``) are ordinary additive
-    error where the prediction is the mean -- symmetric, so all locations coincide
-    and the axes are trivial. Reconfigured as (``LOG10``, ``MEDIAN``) it is
+    the prediction. The defaults (``LINEAR``, ``MEDIAN``) are ordinary additive
+    error where the prediction is the median -- symmetric, so all locations
+    coincide and the axes are trivial. Reconfigured as (``LOG10``, ``MEDIAN``) it is
     (log10) lognormal error with the prediction as the median (the ``lognormal``
     objfunc); that one reconfiguration -- adding **no** new distribution family --
     proves the axes are orthogonal and live (ADR-0011, the analogue of Laplace
@@ -27,7 +27,7 @@ class Gaussian(NoiseModel):
     sigma keeps the full ``nll`` (``chi_sq_dynamic``).
     """
 
-    def __init__(self, additive_on=LINEAR, location=MEAN):
+    def __init__(self, additive_on=LINEAR, location=MEDIAN):
         self.additive_on = additive_on
         self.location = location
 
