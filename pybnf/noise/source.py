@@ -21,6 +21,8 @@ off the source rather than hard-coded per objfunc.
 
 from abc import ABC, abstractmethod
 
+import numpy as np
+
 from ..printing import PybnfError
 
 
@@ -114,3 +116,45 @@ class ConstantSigma(SigmaSource):
 
     def value(self, owner, exp_data, exp_row, col_name):
         return self.const
+
+
+class RelativeSigma(SigmaSource):
+    """The noise parameter proportional to the measurement: constant-coefficient-of-
+    variation noise, ``sigma = cv * |observation|`` (the native ``relative`` source,
+    ADR-0031). This is the honest heteroscedastic noise model the legacy ``norm_sos``
+    objfunc fits -- a Gaussian whose standard deviation scales with the data, so the
+    squared residual is normalized per point by the measurement (``cv = 1`` reproduces
+    ``((sim - exp) / exp)**2`` up to the proper ``1/2``). The ``cv`` is a fixed
+    constant, so this source is *fixed* and the caller drops the likelihood
+    normalizer."""
+
+    estimated = False
+
+    def __init__(self, cv=1.0):
+        self.cv = cv
+
+    def value(self, owner, exp_data, exp_row, col_name):
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        # abs() keeps sigma positive for a negative measurement; the Gaussian uses
+        # sigma**2, so the sign never mattered (norm_sos squared the raw ratio).
+        return self.cv * abs(observation)
+
+
+class ColumnMeanSigma(SigmaSource):
+    """The noise parameter set to the observable's experimental column mean -- one
+    scalar shared by every point of the column (the native ``column_mean`` source,
+    ADR-0031). This is the heteroscedastic-across-observables model the legacy
+    ``ave_norm_sos`` objfunc fits -- each variable's residuals are normalized by that
+    variable's own scale (its mean), so a large-magnitude observable does not dominate
+    a small one (``sigma = ybar`` reproduces ``((sim - exp) / ybar)**2`` up to the
+    proper ``1/2``). Fixed (it is data, not estimated), so the caller drops the
+    likelihood normalizer."""
+
+    estimated = False
+
+    def value(self, owner, exp_data, exp_row, col_name):
+        # The mean is a per-column constant; recomputing it per point is O(1) amortized
+        # over the small data PyBNF fits and keeps the source stateless (no per-exp_data
+        # cache to invalidate across models/suffixes). The legacy ave_norm_sos
+        # precomputes it once in evaluate(); the result is identical.
+        return np.average(exp_data[col_name])

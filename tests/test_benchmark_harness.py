@@ -41,13 +41,15 @@ import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness 
 # always defaults to 'sim', a no-op for these non-refining sampler benchmarks),
 # noise_location (ADR-0024; defaults to None, the whole-fit noise-location default),
 # initialization_distribution (#413/ADR-0030; defaults to prior, the legacy
-# startup behavior), and edition (#424/ADR-0031; defaults to None == legacy edition 1,
-# byte-identical to pre-migration behavior). These always carry no-op defaults here,
-# so excluding them keeps the oracle an independent *pre-migration* witness without
-# regenerating it for keys the original confs could not have carried.
+# startup behavior), edition (#424/ADR-0031; defaults to None == legacy edition 1,
+# byte-identical to pre-migration behavior), and objective / profile_objective
+# (#424/ADR-0031; the modern objective-surface keys, both defaulting to None == the
+# legacy objfunc surface). These always carry no-op defaults here, so excluding them
+# keeps the oracle an independent *pre-migration* witness without regenerating it for
+# keys the original confs could not have carried.
 _EXCLUDE = frozenset({
     'bng_command', 'output_dir', 'refine_method', 'noise_location',
-    'initialization_distribution', 'edition',
+    'initialization_distribution', 'edition', 'objective', 'profile_objective',
 })
 
 

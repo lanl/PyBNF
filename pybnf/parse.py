@@ -50,7 +50,8 @@ multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'c
 # the no-prior Simplex start-point keywords (one or two numbers, no family).
 b_var_def_keys, var_def_keys = var_keyword_grammar()
 var_def_keys_1or2nums = ['var', 'logvar']
-strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'initialization',
+strkeylist = ['bng_command', 'output_dir', 'fit_type', 'objfunc', 'objective',
+              'profile_objective', 'initialization',
               'initialization_distribution',
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
@@ -118,15 +119,18 @@ def parse(s):
     dict_key = _one_of(' '.join(dictkeys), caseless=True)
     dictgram = dict_key - equals - _DelimitedList(dict_entry) - comment
 
-    # per-observable noise model grammar (ADR-0021):
-    #   noise_model <obs> = <family>, <param> = <verb> <arg>[, <param> = <verb> <arg>]...
-    # e.g. ``noise_model obs2 = laplace, scale = fit b_obs2__FREE``. The verbs map to
-    # the three SigmaSource kinds (fit -> free parameter, read_exp_file -> data
-    # column, fix_at -> constant); the arg is permissive (a __FREE name, a column
-    # suffix like _SD, or a number) and is interpreted in objective.py.
+    # native noise model grammar (ADR-0021, ADR-0031):
+    #   noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, <param> = <verb> [<arg>]]...
+    # e.g. ``noise_model obs2 = laplace, scale = fit b_obs2__FREE`` (per-observable) or
+    # ``noise_model = gaussian, sigma = fix_at 1`` (the whole-fit default, no
+    # observable). The verbs map to the SigmaSource kinds (fit -> free parameter,
+    # read_exp_file -> data column, fix_at -> constant, relative -> constant-CV,
+    # column_mean -> the column's mean); the arg is permissive (a __FREE name, a column
+    # suffix like _SD, a number) and is interpreted in objective.py. ``relative`` takes
+    # an optional CV and ``column_mean`` takes none, so the source arg is optional.
     noise_model_key = pp.CaselessLiteral('noise_model')
     nm_token = pp.Word(pp.alphas, pp.alphanums + '_')   # observable / family / param name
-    nm_verb = _one_of('fit read_exp_file fix_at', caseless=True)
+    nm_verb = _one_of('fit read_exp_file fix_at relative column_mean', caseless=True)
     nm_arg = pp.Word(pp.alphanums + '_+-.')
     # An optional ``location = mean|median`` field (the prediction's interpretation,
     # ADR-0024) rides alongside the ``<param> = <source>`` fields. MatchFirst tries
@@ -134,9 +138,12 @@ def parse(s):
     # a source field (and an invalid ``location = <x>`` errors rather than silently
     # parsing as a source, since the literal has committed).
     nm_location_field = pp.Group(pp.CaselessLiteral('location') - equals - _one_of('mean median', caseless=True))
-    nm_source_field = pp.Group(nm_token - equals - nm_verb - nm_arg)
+    nm_source_field = pp.Group(nm_token - equals - nm_verb - pp.Optional(nm_arg))
     nm_field = nm_location_field | nm_source_field
-    noise_model_gram = noise_model_key - nm_token - equals - nm_token - pp.Suppress(',') - \
+    # The observable is optional: present -> a per-observable override; absent
+    # (``noise_model = <family>``) -> the whole-fit default (ADR-0031). pyparsing
+    # distinguishes them by whether a bare token precedes the ``=``.
+    noise_model_gram = noise_model_key - pp.Optional(nm_token) - equals - nm_token - pp.Suppress(',') - \
         _DelimitedList(nm_field) - comment
 
     # mutant model grammar
@@ -230,29 +237,37 @@ def ploop(ls):  # parse loop
                     d['mutant'] = [l[1:]]
                 exp_data.update(l[-1])
             elif l[0] == 'noise_model':
-                # noise_model <obs> = <family>, <param> = <verb> <arg>[, location = mean|median]
-                # (ADR-0021, ADR-0024). Store as a structural ('noise_model', observable)
-                # tuple key (like a free-parameter key) -> (family, {param: (verb, arg)},
-                # location); objective.py interprets the family/source/location tokens into
-                # a (NoiseModel, SigmaSource).
-                observable, family = l[1], l[2]
+                # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
+                # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
+                # observable) tuple key (like a free-parameter key) -> (family,
+                # {param: (verb, arg)}, location); objective.py interprets the tokens into
+                # a (NoiseModel, SigmaSource). The observable is None for the whole-fit
+                # default line ``noise_model = <family>, ...``. The observable is present
+                # iff a bare token precedes the family (l[2] is then the family string;
+                # otherwise l[1] is the family and l[2] is the first field group).
+                if isinstance(l[2], str):
+                    observable, family, raw_fields = l[1], l[2], l[3:]
+                else:
+                    observable, family, raw_fields = None, l[1], l[2:]
+                where = "the whole-fit noise_model" if observable is None else f"noise_model for {observable}"
                 fields = {}
                 location = None
-                for field in l[3:]:
+                for field in raw_fields:
                     if field[0].lower() == 'location':
                         if location is not None:
-                            raise PybnfError(f"In noise_model for {observable}, location "
-                                             "is specified multiple times")
+                            raise PybnfError(f"In {where}, location is specified multiple times")
                         location = field[1].lower()
                         continue
-                    param, verb, arg = field
+                    param, verb = field[0], field[1]
+                    arg = field[2] if len(field) > 2 else None   # relative/column_mean may omit it
                     if param in fields:
-                        raise PybnfError(f"In noise_model for {observable}, noise parameter '{param}' "
+                        raise PybnfError(f"In {where}, noise parameter '{param}' "
                                          "is specified multiple times")
                     fields[param] = (verb, arg)
                 nm_key = ('noise_model', observable)
                 if nm_key in d:
-                    raise PybnfError(f"noise_model for observable '{observable}' is specified multiple times")
+                    target = "The whole-fit noise_model" if observable is None else f"noise_model for observable '{observable}'"
+                    raise PybnfError(f"{target} is specified multiple times")
                 d[nm_key] = (family, fields, location)
             elif l[0] == 'postprocess':
                 if len(values) < 2:

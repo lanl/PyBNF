@@ -46,8 +46,12 @@ Required Keys
     * ``fit_type = de``
 
 **objfunc**
-  Which :ref:`objective function <objective>` to use. 
-  
+  The **legacy** (:ref:`edition <edition>` 1) objective-function key. It still works
+  exactly as before when no modern ``edition`` is declared, but under a modern edition
+  (``edition >= 2``) it is an error -- name the objective with the modern three-key
+  surface instead (:ref:`objective <objective_key>` / :ref:`noise_model <noise_model_key>`
+  / :ref:`profile_objective <profile_objective_key>`).
+
    - ``chi_sq`` - Chi squared (Gaussian noise; sigma per point from the data's ``_SD`` column)
    - ``chi_sq_dynamic`` - Chi squared with sigma as a free parameter (Requires sigma__FREE in the model and the configuration file)
    - ``lognormal`` - Lognormal noise (Gaussian on the log scale; sigma per point from the data's ``_SD`` column)
@@ -68,6 +72,55 @@ Required Keys
   Example:
 
     * ``objfunc = chi_sq``
+
+
+.. _objective_key:
+
+**objective**
+  The modern named objective key (requires :ref:`edition <edition>` ``>= 2``). It
+  accepts the same per-point token vocabulary as the legacy ``objfunc``
+  (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``sos`` / ``sod`` /
+  ``norm_sos`` / ``ave_norm_sos`` / ``neg_bin`` / ``neg_bin_dynamic``), plus ``score``
+  (pass a single ``score`` value straight through, ignoring the data). Each token
+  **desugars** to the equivalent per-point noise model on the
+  :ref:`noise_model <noise_model_key>` engine -- e.g. ``objective = sos`` is
+  ``noise_model = gaussian, sigma = fix_at 1``, ``objective = chi_sq`` is
+  ``noise_model = gaussian, sigma = read_exp_file _SD``. The recommended modern form is
+  a ``noise_model`` line directly; the tokens are kept as familiar synonyms. The
+  desugared least-squares forms restore the statistically-proper ``1/2`` the legacy
+  ``sos`` / ``norm_sos`` / ``ave_norm_sos`` drop -- the located best fit is identical,
+  only the reported objective value is halved. Column-joint objectives (``kl`` /
+  ``wasserstein``) go under :ref:`profile_objective <profile_objective_key>` instead.
+
+  Per-observable :ref:`noise_model <noise_model_key>` overrides may accompany an
+  ``objective``. Specify exactly one of ``objective`` / a whole-fit ``noise_model`` /
+  ``profile_objective`` per fit (there is no implicit default under a modern edition).
+
+  Example:
+
+    * ``edition = 2``
+    * ``objective = sos``
+
+
+.. _profile_objective_key:
+
+**profile_objective**
+  A modern **column-joint** objective key (requires :ref:`edition <edition>` ``>= 2``):
+  it compares the *shape* of a whole observable column at once, rather than scoring
+  each point independently.
+
+   - ``kl`` - Kullback-Leibler (the multinomial cross-entropy of the normalized profile)
+   - ``wasserstein`` - the 1-Wasserstein (earth-mover) distance between the normalized
+     simulated and experimental profiles, over the row index (unit spacing)
+
+  Specify exactly one of ``objective`` / a whole-fit ``noise_model`` /
+  ``profile_objective`` per fit; a column-joint objective does not take per-observable
+  ``noise_model`` overrides.
+
+  Example:
+
+    * ``edition = 2``
+    * ``profile_objective = wasserstein``
 
 
 **noise_location**
@@ -92,13 +145,15 @@ Required Keys
 .. _noise_model_key:
 
 **noise_model**
-  Override the :ref:`objfunc <objective>` noise model for a single observable
-  (data column), so different observables in one fit can use different noise
-  models. The global ``objfunc`` remains the default for every observable not named
-  by a ``noise_model`` key. Each key names the distribution family and, for each of
-  the family's noise parameters, where its value comes from::
+  A per-point noise model, either for the **whole fit** (no observable -- the modern
+  replacement for ``objfunc``, requires :ref:`edition <edition>` ``>= 2``) or as an
+  **override for a single observable** (with an observable name), so different
+  observables in one fit can use different noise models. The whole-fit line (or the
+  legacy ``objfunc``) is the default for every observable not named by a per-observable
+  ``noise_model``. Each key names the distribution family and, for each of the family's
+  noise parameters, where its value comes from::
 
-    noise_model <observable> = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median]
+    noise_model [<observable>] = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median]
 
   The **family** is one of ``normal``, ``lognormal``, ``laplace``, or ``neg_bin``.
   Each **parameter** is named by its standard statistical name -- ``sigma`` for
@@ -110,6 +165,11 @@ Required Keys
    - ``fit <name>__FREE`` - estimate it as a free parameter, declared the usual way
      (e.g. ``uniform_var = <name>__FREE <lower> <upper>``).
    - ``fix_at <number>`` - hold it at a fixed numeric constant.
+   - ``relative [<cv>]`` - constant coefficient of variation: ``sigma = cv * |value|``,
+     so the noise scales with the measurement (``cv`` defaults to 1). This is the
+     heteroscedastic model the legacy ``norm_sos`` fits.
+   - ``column_mean`` - ``sigma`` is the observable's experimental column mean (one
+     scale per column). This is the model the legacy ``ave_norm_sos`` fits.
 
   The optional **location** field sets which summary of the noise distribution the
   model prediction is taken to be: ``median`` (the default -- the prediction is the
@@ -122,6 +182,7 @@ Required Keys
 
   Examples:
 
+    * ``noise_model = gaussian, sigma = fix_at 1`` (whole-fit default; ``edition = 2``)
     * ``noise_model obs2 = laplace, scale = fit b_obs2__FREE``
     * ``noise_model obs3 = normal, sigma = read_exp_file _SD``
     * ``noise_model obs4 = neg_bin, dispersion = fix_at 10``
@@ -141,13 +202,19 @@ Required Keys
   plain integer, decoupled from PyBNF release numbers -- editions change only when
   a convention changes.
 
-  Under a modern edition (``edition >= 2``) the universal default for prediction
-  centering is the **median** (consistent with PEtab v2). This is byte-identical
-  for the location-scale noise models (``chi_sq`` / ``lognormal`` / ``laplace``),
-  which already default to the median. The one place it differs is ``neg_bin``,
-  whose legacy default was the mean and whose median has no closed form (see issue
-  #419): under a modern edition a ``neg_bin`` fit must set
-  :ref:`noise_location <objective>` (``= mean``) explicitly.
+  Under a modern edition (``edition >= 2``) the objective is named through the modern
+  three-key surface -- :ref:`objective <objective_key>` (or a whole-fit
+  :ref:`noise_model <noise_model_key>` line) for per-point noise models, or
+  :ref:`profile_objective <profile_objective_key>` for column-joint ones -- and the
+  legacy :ref:`objfunc <objective>` key is rejected. Exactly one objective must be
+  named; there is no implicit default.
+
+  Also under a modern edition the universal default for prediction centering is the
+  **median** (consistent with PEtab v2). This is byte-identical for the location-scale
+  noise models (``chi_sq`` / ``lognormal`` / ``laplace``), which already default to the
+  median. The one place it differs is ``neg_bin``, whose legacy default was the mean
+  and whose median has no closed form (see issue #419): under a modern edition a
+  ``neg_bin`` fit must set :ref:`noise_location <objective>` (``= mean``) explicitly.
 
   Default: unset (legacy, edition 1)
 

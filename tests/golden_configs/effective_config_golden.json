@@ -179,6 +179,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -220,6 +224,10 @@
    [
     "population_size",
     20
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -557,6 +565,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -602,6 +614,10 @@
    [
     "population_size",
     20
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -943,6 +959,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -991,6 +1011,10 @@
    ],
    [
     "precondition_adapt",
+    null
+   ],
+   [
+    "profile_objective",
     null
    ],
    [
@@ -1309,6 +1333,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -1350,6 +1378,10 @@
    [
     "population_size",
     20
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -1799,6 +1831,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -1844,6 +1880,10 @@
    [
     "population_size",
     20
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -2297,6 +2337,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -2345,6 +2389,10 @@
    ],
    [
     "precondition_adapt",
+    null
+   ],
+   [
+    "profile_objective",
     null
    ],
    [
@@ -2775,6 +2823,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -2816,6 +2868,10 @@
    [
     "population_size",
     20
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -3153,6 +3209,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -3198,6 +3258,10 @@
    [
     "population_size",
     20
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -3539,6 +3603,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -3587,6 +3655,10 @@
    ],
    [
     "precondition_adapt",
+    null
+   ],
+   [
+    "profile_objective",
     null
    ],
    [
@@ -3848,6 +3920,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -3885,6 +3961,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -4168,6 +4248,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -4209,6 +4293,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -4445,6 +4533,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -4478,6 +4570,10 @@
      "$tuple",
      []
     ]
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -4666,6 +4762,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -4699,6 +4799,10 @@
      "$tuple",
      []
     ]
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -4913,6 +5017,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -4950,6 +5058,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -5175,6 +5287,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -5212,6 +5328,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -5456,6 +5576,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -5493,6 +5617,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -5741,6 +5869,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -5778,6 +5910,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -6058,6 +6194,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -6095,6 +6235,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -6343,6 +6487,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -6392,6 +6540,10 @@
    [
     "powell_stop_tol",
     1e-05
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -6671,6 +6823,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -6712,6 +6868,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -6972,6 +7132,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "kl"
    ],
@@ -7009,6 +7173,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -7257,6 +7425,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "neg_bin"
    ],
@@ -7294,6 +7466,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -7542,6 +7718,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "norm_sos"
    ],
@@ -7579,6 +7759,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -7827,6 +8011,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "sos"
    ],
@@ -7864,6 +8052,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -8088,6 +8280,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -8137,6 +8333,10 @@
    [
     "powell_stop_tol",
     1e-05
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -8377,6 +8577,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -8418,6 +8622,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -8699,6 +8907,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -8740,6 +8952,10 @@
    [
     "population_size",
     4
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -9023,6 +9239,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -9064,6 +9284,10 @@
    [
     "population_size",
     3
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -9314,6 +9538,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -9351,6 +9579,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -9575,6 +9807,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -9612,6 +9848,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",
@@ -9857,6 +10097,10 @@
     5000
    ],
    [
+    "objective",
+    null
+   ],
+   [
     "objfunc",
     "direct_pass"
    ],
@@ -9894,6 +10138,10 @@
    [
     "population_size",
     10
+   ],
+   [
+    "profile_objective",
+    null
    ],
    [
     "random_seed",

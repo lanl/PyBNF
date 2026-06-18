@@ -1,7 +1,7 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LOG10, MEAN, MEDIAN, ConstantSigma, DataColumnSigma, FreeParameterSigma,
-                    Gaussian, Laplace, NegBinomial)
+from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
+                    FreeParameterSigma, Gaussian, Laplace, NegBinomial, RelativeSigma)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -350,17 +350,42 @@ def _apply_location(noise_model, location, family_token, observable):
 
 
 def _build_sigma_source(verb, arg):
-    """One native ``noise_model`` source field (``fit`` / ``read_exp_file`` /
-    ``fix_at``) -> its SigmaSource (ADR-0021)."""
+    """One native ``noise_model`` source field -> its SigmaSource (ADR-0021, ADR-0031).
+
+    ``fit`` / ``read_exp_file`` / ``fix_at`` each require their argument; ``relative``
+    takes an optional coefficient of variation (default 1); ``column_mean`` takes no
+    argument (the scale is the observable's own column mean)."""
+    verb = verb.lower()
     if verb == 'fit':
+        _require_arg(verb, arg)
         return FreeParameterSigma(arg)
     if verb == 'read_exp_file':
+        _require_arg(verb, arg)
         return DataColumnSigma(arg)
     if verb == 'fix_at':
+        _require_arg(verb, arg)
         return ConstantSigma(float(arg))
+    if verb == 'relative':
+        # The argument is the constant coefficient of variation; omitted means 1
+        # (sigma = the measurement), which folds norm_sos in (ADR-0031).
+        return RelativeSigma(float(arg) if arg is not None else 1.0)
+    if verb == 'column_mean':
+        if arg is not None:
+            raise PybnfError('Noise source "column_mean" takes no argument',
+                             f'The "column_mean" noise source takes no argument (sigma is the '
+                             f'observable\'s experimental column mean); got "{arg}".')
+        return ColumnMeanSigma()
     raise PybnfError(f'Unknown noise parameter source "{verb}"',
                      f'The noise parameter source "{verb}" is not recognized. Use one of: '
-                     'fit <param__FREE>, read_exp_file <suffix>, or fix_at <number>.')
+                     'fit <param__FREE>, read_exp_file <suffix>, fix_at <number>, '
+                     'relative [<cv>], or column_mean.')
+
+
+def _require_arg(verb, arg):
+    if arg is None:
+        raise PybnfError(f'Noise source "{verb}" needs an argument',
+                         f'The "{verb}" noise source requires an argument '
+                         f'(fit <param__FREE>, read_exp_file <suffix>, or fix_at <number>).')
 
 
 def _build_noise_spec(observable, value):
@@ -395,10 +420,12 @@ def _build_noise_spec(observable, value):
 def _build_noise_overrides(config):
     """The per-observable ``{observable: (NoiseModel, SigmaSource)}`` override map
     from the parsed ``noise_model`` table (ADR-0021). Empty when none is declared,
-    so the objfunc applies its single global default to every column."""
+    so the objfunc applies its single global default to every column. The
+    ``('noise_model', None)`` whole-fit-default line (ADR-0031) is *not* an override
+    -- it sets the class default, handled by the caller -- so it is skipped here."""
     overrides = {}
     for k, v in config.items():
-        if isinstance(k, tuple) and k[0] == 'noise_model':
+        if isinstance(k, tuple) and k[0] == 'noise_model' and k[1] is not None:
             overrides[k[1]] = _build_noise_spec(k[1], v)
     return overrides
 
@@ -426,12 +453,22 @@ class LikelihoodObjective(SummationObjective):
     noise = None
     sigma_source = None
 
-    def __init__(self, ind_var_rounding=0, overrides=None):
+    def __init__(self, ind_var_rounding=0, overrides=None, noise=None, sigma_source=None):
         super().__init__(ind_var_rounding)
         #: {col_name: (NoiseModel, SigmaSource)} overriding the default per
         #: observable; empty -> every column uses the default, byte-identical to the
         #: pre-#410 single global objfunc.
         self.overrides = dict(overrides) if overrides else {}
+        # An explicit (noise, sigma_source) overrides the class default -- the seam the
+        # modern ``objective`` / whole-fit ``noise_model`` surface builds on (ADR-0031):
+        # a desugared legacy token, or a no-observable noise_model line, is just this
+        # base class with a runtime-chosen default spec instead of a registered
+        # subclass's class attributes. The legacy objfunc subclasses pass neither and
+        # keep their class-level noise/sigma_source.
+        if noise is not None:
+            self.noise = noise
+        if sigma_source is not None:
+            self.sigma_source = sigma_source
 
     @classmethod
     def from_config(cls, config):
@@ -662,6 +699,39 @@ class KLLikelihood(ColumnSummationObjective):
         return -np.sum(exp_column * np.log(sim_norm))
 
 
+class WassersteinObjective(ColumnSummationObjective):
+    """The 1-Wasserstein (earth-mover) distance between the simulated and experimental
+    profiles, summed over observables (ADR-0031). Like ``kl`` it is a **column-joint**
+    objective -- it compares the *shape* of a whole column at once, not point by point
+    -- but where ``kl`` is the multinomial cross-entropy (a likelihood), this is a
+    geometric distance: the minimal total mass-displacement to morph one normalized
+    profile into the other. The two span the ``profile_objective`` family's ends
+    (statistical vs geometric), which is why the family is an *objective*, not a
+    *model* (ADR-0031).
+
+    Each column is normalized to a probability distribution over its row index, and
+    the 1-Wasserstein distance on the (unit-spaced) index line is
+    ``sum_i |CDF_sim_i - CDF_exp_i|`` -- the integral of the absolute CDF gap, which is
+    the closed form of the 1-D earth-mover distance. The configurable *support* and
+    *spacing* (placing the profile on real coordinates rather than the index) are the
+    deferred ``profile_objective`` value grammar (ADR-0031); the default here is unit
+    index spacing. A non-positive or negative simulated column cannot be normalized, so
+    it scores ``inf`` (the worst fit), mirroring ``kl``'s degenerate-profile guard.
+    Oracle: ``scipy.stats.wasserstein_distance`` over the index with the normalized
+    columns as weights."""
+
+    def eval_column(self, sim_data, exp_data, col_name):
+        sim_column = sim_data[col_name]
+        exp_column = exp_data[col_name]
+        sim_total = np.sum(sim_column)
+        if sim_total <= 0 or np.any(sim_column < 0):
+            return np.inf
+        exp_total = np.sum(exp_column)
+        sim_cdf = np.cumsum(sim_column / sim_total)
+        exp_cdf = np.cumsum(exp_column / exp_total)
+        return np.sum(np.abs(sim_cdf - exp_cdf))
+
+
 class ConstraintCounter(ObjectiveFunction):
     """
     An objective function that just counts the numbered of failed constraints
@@ -695,3 +765,104 @@ class DirectPassObjective(ObjectiveFunction):
         if 'score' not in sim_data.cols:
             raise PybnfError("DirectPassObjective requires simulated data to have a 'score' column")
         return float(sim_data.data[0, sim_data.cols['score']])
+
+
+# --- the modern objective surface: desugaring + dispatch (ADR-0031) -----------
+#
+# The three-key surface (``noise_model`` / ``profile_objective`` / ``objective``)
+# is edition-gated in config.py; here are the value-level builders it dispatches to.
+# The legacy least-squares family folds into the per-point engine: each legacy token
+# desugars to the equivalent whole-fit ``noise_model`` value tuple -- the SAME
+# (family, {param: (verb, arg)}, location) shape ploop produces for a noise_model line
+# -- so one engine (``_build_noise_spec`` -> LikelihoodObjective) serves both. The
+# fold also restores the statistically-proper ``1/2`` that legacy ``sos`` /
+# ``norm_sos`` / ``ave_norm_sos`` drop (Gaussian's ``1/(2 sigma**2)``): argmin-
+# identical, so the located optimum is unchanged, but the modern form is the honest
+# likelihood. ``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``sod``
+# / ``neg_bin`` / ``neg_bin_dynamic`` are value-identical to their legacy objfuncs.
+
+#: ``objective = <token>`` -> the whole-fit ``noise_model`` value tuple it desugars to
+#: (a callable of the config, since ``neg_bin`` reads ``neg_bin_r``). ``kl`` /
+#: ``wasserstein`` are deliberately absent -- they are profile objectives, redirected
+#: by ``build_named_objective`` -- and ``score`` is handled before this table.
+_OBJECTIVE_DESUGAR = {
+    'sos':             lambda c: ('gaussian', {'sigma': ('fix_at', '1')}, None),
+    'chi_sq':          lambda c: ('gaussian', {'sigma': ('read_exp_file', '_SD')}, None),
+    'chi_sq_dynamic':  lambda c: ('gaussian', {'sigma': ('fit', 'sigma__FREE')}, None),
+    'lognormal':       lambda c: ('lognormal', {'sigma': ('read_exp_file', '_SD')}, None),
+    'laplace':         lambda c: ('laplace', {'scale': ('fit', 'b__FREE')}, None),
+    'sod':             lambda c: ('laplace', {'scale': ('fix_at', '1')}, None),
+    'norm_sos':        lambda c: ('gaussian', {'sigma': ('relative', None)}, None),
+    'ave_norm_sos':    lambda c: ('gaussian', {'sigma': ('column_mean', None)}, None),
+    'neg_bin':         lambda c: ('neg_bin', {'dispersion': ('fix_at', str(c.get('neg_bin_r', 24.0)))}, None),
+    'neg_bin_dynamic': lambda c: ('neg_bin', {'dispersion': ('fit', 'r__FREE')}, None),
+}
+
+#: ``profile_objective = <token>`` -> its column-joint objective class (ADR-0031).
+#: Two members (the multinomial-likelihood ``kl`` and the geometric ``wasserstein``)
+#: span the family, clearing ADR-0011's "abstract on the 2nd member" bar.
+_PROFILE_OBJECTIVES = {
+    'kl': KLLikelihood,
+    'wasserstein': WassersteinObjective,
+}
+
+
+def _likelihood_from_noise_spec(config, spec, label):
+    """A LikelihoodObjective whose class default is the (family, source) of one
+    noise_model value tuple ``spec``, with the per-observable overrides layered on --
+    the shared construction for a desugared ``objective`` token and a whole-fit
+    ``noise_model`` line (ADR-0031)."""
+    noise_model, source = _build_noise_spec(label, spec)
+    return LikelihoodObjective(config['ind_var_rounding'],
+                               overrides=_build_noise_overrides(config),
+                               noise=noise_model, sigma_source=source)
+
+
+def build_named_objective(config, token):
+    """Build the objective for a modern ``objective = <token>`` key (ADR-0031): the
+    bare ``score`` passthrough, or a legacy token desugared to the per-point engine.
+    A profile-objective token (``kl`` / ``wasserstein``) is redirected to its own key
+    rather than silently desugared, keeping one home per objective."""
+    token = token.lower()
+    if token == 'score':
+        # The bare passthrough (the DirectPass successor's user-facing spelling): read
+        # a single 'score' cell, ignore the data. The first-class analytical/user
+        # objective surface is #425; 'score' is its minimal seed.
+        return DirectPassObjective()
+    if token in _PROFILE_OBJECTIVES:
+        raise PybnfError(f'{token} is a profile objective, not a named noise model',
+                         f"'{token}' is a column-joint (profile) objective; select it with "
+                         f"'profile_objective = {token}', not 'objective = {token}'.")
+    desugar = _OBJECTIVE_DESUGAR.get(token)
+    if desugar is None:
+        raise PybnfError(f'Unknown objective "{token}"',
+                         f'The objective "{token}" is not recognized. Valid "objective" values are: '
+                         f'{", ".join(sorted(_OBJECTIVE_DESUGAR))}, score. (Column-joint objectives '
+                         f'go under "profile_objective"; a custom per-point model under "noise_model".)')
+    return _likelihood_from_noise_spec(config, desugar(config), token)
+
+
+def build_whole_fit_noise_objective(config):
+    """Build the objective for a whole-fit ``noise_model = <family>, ...`` line -- the
+    no-observable ``('noise_model', None)`` key (ADR-0031). The named per-point noise
+    model becomes the fit-wide default, with per-observable ``noise_model`` lines
+    overriding it."""
+    return _likelihood_from_noise_spec(config, config[('noise_model', None)],
+                                       'noise_model (whole-fit default)')
+
+
+def build_profile_objective(config, token):
+    """Build the objective for a modern ``profile_objective = <token>`` key -- a
+    column-joint (shape-comparison) objective (ADR-0031). A per-point token is
+    redirected to ``objective`` / ``noise_model``."""
+    token = token.lower()
+    if token in _OBJECTIVE_DESUGAR or token == 'score':
+        raise PybnfError(f'{token} is a per-point objective, not a profile objective',
+                         f"'{token}' is a per-point noise model; select it with 'objective = {token}' "
+                         f"or a 'noise_model' line, not 'profile_objective = {token}'.")
+    cls = _PROFILE_OBJECTIVES.get(token)
+    if cls is None:
+        raise PybnfError(f'Unknown profile objective "{token}"',
+                         f'The profile objective "{token}" is not recognized. Valid '
+                         f'"profile_objective" values are: {", ".join(sorted(_PROFILE_OBJECTIVES))}.')
+    return cls.from_config(config)

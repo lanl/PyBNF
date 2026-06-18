@@ -2,17 +2,19 @@
 
 Covers the edition machinery -- parsing the integer key, resolving absence to the
 legacy edition, validating supported / unsupported / malformed values, the
-modern-syntax ``require_edition`` guard, version derivation, and the one behavioral
-gate the edition currently drives: a modern-edition ``neg_bin`` defaulting to
-median (the unimplemented #419 capability) raises, while legacy stays frozen-mean
-and the location-scale objfuncs are byte-identical across editions.
+modern-syntax ``require_edition`` guard, version derivation -- and the behavioral
+gates the edition drives on the objective surface: ``objfunc`` is legacy-only
+(forbidden under a modern edition), the modern keys require opting in, exactly one
+objective must be named with no implicit default, and a modern-edition ``neg_bin``
+defaulting to median (the unimplemented #419 capability) raises, while legacy stays
+frozen-mean and the location-scale families are byte-identical across editions.
 """
 
 import types
 
 import pytest
 
-from pybnf import edition, noise
+from pybnf import edition, noise, objective
 from pybnf.config import Configuration
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
@@ -95,14 +97,57 @@ def test_require_edition_blocks_legacy_naming_key_and_fix():
     assert 'profile_objective' in str(exc.value)
 
 
-# --- the neg_bin centering gate (the one behavioral edition difference) ----------
+# --- the edition-gated objective surface (ADR-0031) -----------------------------
 #
-# _load_obj_func reads only self.config, so a SimpleNamespace stands in for self
-# (the test_noise_model_config _load idiom).
+# _load_obj_func reads only self.config (and _user_objfunc via a getattr fallback to
+# 'objfunc' in config), so a SimpleNamespace stands in for self (the
+# test_noise_model_config _load idiom). A hand-built config naming 'objfunc' thus
+# exercises the objfunc-forbidden path exactly when it would in a real conf.
 
 def _load_obj(config):
     return Configuration._load_obj_func(types.SimpleNamespace(config=config))
 
+
+# objfunc is legacy-only: works in the legacy edition, forbidden under a modern one.
+
+def test_legacy_objfunc_builds_under_legacy_edition():
+    obj = _load_obj({'objfunc': 'sos', 'ind_var_rounding': 0})
+    assert isinstance(obj, objective.SumOfSquaresObjective)
+
+
+def test_objfunc_forbidden_under_modern_edition():
+    with pytest.raises(PybnfError, match='legacy'):
+        _load_obj({'objfunc': 'sos', 'edition': 2, 'ind_var_rounding': 0})
+
+
+# Under a modern edition exactly one modern objective key must be named (no default).
+
+def test_modern_edition_requires_an_objective_key():
+    with pytest.raises(PybnfError, match='No objective|named explicitly'):
+        _load_obj({'edition': 2, 'ind_var_rounding': 0})
+
+
+def test_modern_edition_rejects_multiple_objective_keys():
+    with pytest.raises(PybnfError, match='exactly one'):
+        _load_obj({'edition': 2, 'objective': 'sos', 'profile_objective': 'kl',
+                   'ind_var_rounding': 0})
+
+
+# The modern keys require opting into the edition; in the legacy edition they error
+# naming the edition (require_edition), so an old conf can never use them by accident.
+
+@pytest.mark.parametrize('selection', [
+    {'objective': 'sos'},
+    {'profile_objective': 'kl'},
+    {('noise_model', None): ('gaussian', {'sigma': ('fix_at', '1')}, None)},
+])
+def test_modern_keys_require_edition_in_legacy(selection):
+    with pytest.raises(PybnfError, match='edition 2'):
+        _load_obj({**selection, 'ind_var_rounding': 0})
+
+
+# neg_bin centering: the one number that differs between eras, reached now through the
+# modern surface (objective = neg_bin or a neg_bin noise_model), not objfunc.
 
 def test_legacy_neg_bin_stays_frozen_mean():
     # No edition (legacy): neg_bin builds with its mean parameterization, no raise.
@@ -115,31 +160,37 @@ def test_explicit_legacy_edition_neg_bin_stays_frozen_mean():
     assert isinstance(obj._spec_for('c')[0], noise.NegBinomial)
 
 
-def test_modern_edition_neg_bin_without_location_raises():
+def test_modern_neg_bin_without_location_raises():
     with pytest.raises(PybnfError, match='median'):
-        _load_obj({'objfunc': 'neg_bin', 'edition': 2, 'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+        _load_obj({'objective': 'neg_bin', 'edition': 2, 'ind_var_rounding': 0, 'neg_bin_r': 10.0})
 
 
-def test_modern_edition_neg_bin_dynamic_without_location_raises():
+def test_modern_neg_bin_noise_model_without_location_raises():
     with pytest.raises(PybnfError, match='median'):
-        _load_obj({'objfunc': 'neg_bin_dynamic', 'edition': 2, 'ind_var_rounding': 0})
+        _load_obj({'edition': 2, 'ind_var_rounding': 0,
+                   ('noise_model', None): ('neg_bin', {'dispersion': ('fix_at', '10')}, None)})
 
 
-def test_modern_edition_neg_bin_with_explicit_mean_runs():
-    obj = _load_obj({'objfunc': 'neg_bin', 'edition': 2, 'noise_location': 'mean',
+def test_modern_neg_bin_dynamic_without_location_raises():
+    with pytest.raises(PybnfError, match='median'):
+        _load_obj({'objective': 'neg_bin_dynamic', 'edition': 2, 'ind_var_rounding': 0})
+
+
+def test_modern_neg_bin_with_explicit_mean_runs():
+    obj = _load_obj({'objective': 'neg_bin', 'edition': 2, 'noise_location': 'mean',
                      'ind_var_rounding': 0, 'neg_bin_r': 10.0})
     assert isinstance(obj._spec_for('c')[0], noise.NegBinomial)
 
 
-@pytest.mark.parametrize('objfunc', ['chi_sq', 'lognormal', 'laplace'])
-def test_modern_edition_location_scale_objfuncs_unchanged(objfunc):
+@pytest.mark.parametrize('token', ['chi_sq', 'lognormal', 'laplace'])
+def test_modern_location_scale_objectives_default_median(token):
     # The location-scale families already default to median, so a modern edition is
     # byte-identical: no raise, location still MEDIAN.
-    obj = _load_obj({'objfunc': objfunc, 'edition': 2, 'ind_var_rounding': 0})
+    obj = _load_obj({'objective': token, 'edition': 2, 'ind_var_rounding': 0})
     assert obj._spec_for('c')[0].location is noise.MEDIAN
 
 
-def test_modern_edition_non_likelihood_objfunc_unaffected():
-    # sos is a heuristic objective with no noise model; the gate skips it.
-    obj = _load_obj({'objfunc': 'sos', 'edition': 2, 'ind_var_rounding': 0})
-    assert obj is not None
+def test_modern_score_objective_is_direct_pass():
+    # 'score' is the bare passthrough (a non-likelihood objective); the median gate skips it.
+    obj = _load_obj({'objective': 'score', 'edition': 2, 'ind_var_rounding': 0})
+    assert isinstance(obj, objective.DirectPassObjective)

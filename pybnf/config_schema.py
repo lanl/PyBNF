@@ -158,7 +158,23 @@ class GlobalConfig(PyBNFConfigModel):
     edition: Optional[int] = None
 
     # --- global / run-level ---
+    # objfunc is the LEGACY (edition-1) objective key; the modern surface (ADR-0031)
+    # is the three keys below. Under a modern edition (`edition >= 2`) naming `objfunc`
+    # is an error; in the legacy edition it works as it always has. Its 'chi_sq'
+    # default is only consulted on the legacy path (the modern surface has no implicit
+    # default -- an objective must be named).
     objfunc: str = 'chi_sq'
+    # The modern objective surface (ADR-0031), each gated to `edition >= 2`:
+    #   * objective -- the named per-point catch-all: a legacy token that desugars to a
+    #     noise model (sos / chi_sq / laplace / ...), or the bare `score` passthrough.
+    #   * profile_objective -- a column-joint (shape-comparison) objective: kl or
+    #     wasserstein.
+    # The whole-fit per-point `noise_model = <family>, ...` line is the third key; it
+    # rides the structural ('noise_model', None) tuple, not a typed field. None == the
+    # key was not named (each defaults None so presence == user intent at the read site
+    # in _load_obj_func, which enforces "exactly one objective key").
+    objective: Optional[str] = None
+    profile_objective: Optional[str] = None
     output_dir: str = 'pybnf_output'
     delete_old_files: int = 1
     num_to_output: int = 5000

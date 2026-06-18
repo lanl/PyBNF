@@ -162,7 +162,17 @@ class Configuration:
             print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
         if d['fit_type'] == 'bmc':
             d['fit_type'] = 'mh'  # 'bmc' option was renamed to 'mh'. Preserve backwards compatibility.
-        if 'objfunc' not in d:
+        # Whether the user named the legacy ``objfunc`` key (raw presence, before the
+        # schema injects its 'chi_sq' default): the modern objective surface forbids it
+        # (ADR-0031), and _load_obj_func reads this to tell "user wrote objfunc" from
+        # "schema defaulted it". A modern conf names an objective through the new keys,
+        # so the legacy "defaulting to chi_sq" warning would mislead -- suppress it
+        # there (the edition int is already parse-coerced; full validation is later in
+        # _check_edition).
+        self._user_objfunc = 'objfunc' in d
+        _ed = d.get('edition')
+        _modern_hint = isinstance(_ed, int) and not isinstance(_ed, bool) and _ed >= 2
+        if not self._user_objfunc and not _modern_hint:
             print1('Warning: objfunc was not specified. Defaulting to chi_sq.')
         if not self._req_user_params() <= d.keys() and d['fit_type'] != 'check':
             unspecified_keys = []
@@ -783,26 +793,94 @@ class Configuration:
         return mapping
 
     def _load_obj_func(self):
-        objfunc = self.config['objfunc']
-        # Cross-config requirement check stays in config (not in the registry,
-        # which holds only the construction recipe): neg_bin cannot be built
-        # without its r parameter, so guard before pulling config['neg_bin_r'].
-        if objfunc == 'neg_bin' and 'neg_bin_r' not in self.config:
-            raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined without "
-                                                "configuration neg_bin_r defined")
-        entry = OBJFUNC_REGISTRY.get(objfunc)
-        if entry is None:
-            raise UnknownObjectiveFunctionError(f"Objective function {objfunc} not defined",
-                  f"Objective function {objfunc} is not defined. Valid objective function choices are: "
-                  "chi_sq, chi_sq_dynamic, lognormal, laplace, sos, sod, norm_sos, ave_norm_sos, "
-                  "neg_bin, neg_bin_dynamic, kl, direct_pass")
-        # Uniform construction (ADR-0011): every objective builds itself from the
-        # config via its from_config classmethod -- no per-objfunc recipe.
-        obj = entry.cls.from_config(self.config)
-        # Global default location (ADR-0024): the whole-fit mean/median interpretation
-        # of the prediction, applied to the objfunc's default noise model. Only a
-        # likelihood objfunc has a noise model whose location can be set; per-observable
-        # noise_model location fields override this default.
+        """Build the objective function, honoring the edition-gated objective surface
+        (ADR-0031).
+
+        * **Legacy edition** (no ``edition`` / implicit edition 1): the historical
+          ``objfunc`` key selects a registered objective, byte-identical to before; a
+          modern key, if named, errors with the edition it needs (``require_edition``).
+        * **Modern edition** (``edition >= 2``): ``objfunc`` is rejected as legacy
+          syntax, and the objective is named through exactly one of the three modern
+          keys -- ``objective`` (a per-point named token desugaring to a noise model, or
+          the bare ``score`` passthrough), a whole-fit ``noise_model`` line, or
+          ``profile_objective`` (column-joint) -- with **no implicit default**.
+
+        A shared tail applies the whole-fit ``noise_location`` default and the median
+        gate to whichever objective was built.
+        """
+        ed = edition.resolve_edition(self.config.get('edition'))
+        user_objfunc = getattr(self, '_user_objfunc', 'objfunc' in self.config)
+        has_objective = self.config.get('objective') is not None
+        has_profile = self.config.get('profile_objective') is not None
+        has_whole_noise = ('noise_model', None) in self.config
+        has_per_obs_noise = any(isinstance(k, tuple) and k[0] == 'noise_model' and k[1] is not None
+                                for k in self.config)
+
+        if edition.is_modern(ed):
+            if user_objfunc:
+                raise UnknownObjectiveFunctionError(
+                    'objfunc is legacy syntax',
+                    f"Config key 'objfunc' is legacy (edition 1) syntax and is not available under "
+                    f"edition {ed}. Name the objective with the modern surface instead: "
+                    f"'objective = <name>' (a per-point noise model, or 'score'), "
+                    f"'noise_model = <family>, ...' (whole-fit per-point), or "
+                    f"'profile_objective = <name>' (column-joint).")
+            selected = [name for name, present in
+                        (('objective', has_objective), ('noise_model', has_whole_noise),
+                         ('profile_objective', has_profile)) if present]
+            if not selected:
+                raise UnknownObjectiveFunctionError(
+                    'No objective specified',
+                    f"Under edition {ed} the objective must be named explicitly (there is no "
+                    f"implicit default). Set exactly one of: 'objective = <name>', "
+                    f"'noise_model = <family>, ...', or 'profile_objective = <name>'.")
+            if len(selected) > 1:
+                raise UnknownObjectiveFunctionError(
+                    'Multiple objective keys specified',
+                    f"Specify exactly one global objective; got {', '.join(selected)}. "
+                    f"(Per-observable 'noise_model <obs> = ...' overrides are separate and may "
+                    f"accompany 'objective' or a whole-fit 'noise_model'.)")
+            if has_profile:
+                if has_per_obs_noise:
+                    raise UnknownObjectiveFunctionError(
+                        'profile_objective cannot take per-observable noise_model overrides',
+                        f"profile_objective = {self.config['profile_objective']} is a column-joint "
+                        f"objective; per-observable 'noise_model <obs> = ...' overrides apply only to "
+                        f"a per-point objective ('objective' or a whole-fit 'noise_model').")
+                obj = objective.build_profile_objective(self.config, self.config['profile_objective'])
+            elif has_objective:
+                obj = objective.build_named_objective(self.config, self.config['objective'])
+            else:
+                obj = objective.build_whole_fit_noise_objective(self.config)
+        else:
+            # Legacy edition: a modern key, if named, must opt into the edition first
+            # (require_edition raises at edition 1, naming the key and the fix).
+            if has_objective:
+                edition.require_edition(ed, 2, "the 'objective' key")
+            if has_profile:
+                edition.require_edition(ed, 2, "the 'profile_objective' key")
+            if has_whole_noise:
+                edition.require_edition(ed, 2, "a whole-fit 'noise_model = <family>, ...' line")
+            # The historical objfunc path. Cross-config requirement check stays in
+            # config (not the registry, which holds only the construction recipe):
+            # neg_bin cannot be built without its r parameter.
+            objfunc = self.config['objfunc']
+            if objfunc == 'neg_bin' and 'neg_bin_r' not in self.config:
+                raise UnknownObjectiveFunctionError("Objective function neg_bin cannot be defined "
+                                                    "without configuration neg_bin_r defined")
+            entry = OBJFUNC_REGISTRY.get(objfunc)
+            if entry is None:
+                raise UnknownObjectiveFunctionError(f"Objective function {objfunc} not defined",
+                      f"Objective function {objfunc} is not defined. Valid objective function choices "
+                      "are: chi_sq, chi_sq_dynamic, lognormal, laplace, sos, sod, norm_sos, "
+                      "ave_norm_sos, neg_bin, neg_bin_dynamic, kl, direct_pass")
+            # Uniform construction (ADR-0011): every objective builds itself from the
+            # config via its from_config classmethod -- no per-objfunc recipe.
+            obj = entry.cls.from_config(self.config)
+
+        # Whole-fit default location (ADR-0024): the mean/median interpretation of the
+        # prediction, applied to a per-point objective's default noise model
+        # (per-observable noise_model location fields override it).
         location = self.config.get('noise_location')
         if location is not None:
             if location not in objective._NOISE_LOCATIONS:
@@ -810,32 +888,27 @@ class Configuration:
                     f"noise_location must be 'mean' or 'median', not {location!r}.")
             if not isinstance(obj, objective.LikelihoodObjective):
                 raise UnknownObjectiveFunctionError(
-                    f"noise_location is only meaningful for a likelihood objfunc "
-                    f"(normal/lognormal/laplace/neg_bin/...); objfunc={objfunc} has no "
-                    f"noise model whose location can be set.")
+                    "noise_location is only meaningful for a likelihood (per-point noise-model) "
+                    "objective (normal/lognormal/laplace/neg_bin/...); the selected objective has "
+                    "no noise model whose location can be set.")
             obj.set_default_location(location)
-        else:
-            # No explicit whole-fit location: under a modern edition (ADR-0031) the
-            # universal default centering is the median. For the location-scale
-            # families (Gaussian/Laplace) median is already the class default, so
-            # this is byte-identical; the one family whose legacy default was the
-            # mean is neg_bin (mean-parameterized, no location axis), whose median is
-            # the unimplemented #419 capability -- so a modern-edition neg_bin with
-            # no explicit location raises here, directing the user to set it
-            # explicitly (which is what a modern neg_bin user wants anyway). A legacy
-            # conf (no edition) is untouched and stays frozen-mean.
-            ed = edition.resolve_edition(self.config.get('edition'))
-            if (edition.is_modern(ed)
-                    and isinstance(obj, objective.LikelihoodObjective)
-                    and obj.noise is not None
-                    and not hasattr(obj.noise, 'location')):
-                raise PybnfError(
-                    f'{objfunc} centering defaults to median under edition {ed}, which is unimplemented',
-                    f"Under edition {ed} the universal default prediction centering is the "
-                    f"median (ADR-0031), but the {objfunc} (negative-binomial) noise model is "
-                    f"parameterized by its mean and has no closed-form median (issue #419); its "
-                    f"legacy default was the mean. Set 'noise_location = mean' explicitly to keep "
-                    f"mean centering.")
+        elif (edition.is_modern(ed)
+                and isinstance(obj, objective.LikelihoodObjective)
+                and obj.noise is not None
+                and not hasattr(obj.noise, 'location')):
+            # No explicit location under a modern edition: the universal default is the
+            # median. Byte-identical for the location-scale families (already median);
+            # the one family whose legacy default was the mean is neg_bin (mean-
+            # parameterized, no location axis), whose median is the unimplemented #419
+            # capability -- so it raises here, directing the user to set it explicitly
+            # (what a modern neg_bin user wants anyway).
+            raise PybnfError(
+                f'neg_bin centering defaults to median under edition {ed}, which is unimplemented',
+                f"Under edition {ed} the universal default prediction centering is the median "
+                f"(ADR-0031), but the negative-binomial noise model is parameterized by its mean "
+                f"and has no closed-form median (issue #419); its legacy default was the mean. Set "
+                f"'noise_location = mean' (or 'location = mean' on the noise_model) to keep mean "
+                f"centering.")
         return obj
 
     def _load_variables(self):

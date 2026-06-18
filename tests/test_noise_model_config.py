@@ -37,6 +37,50 @@ def test_overrides_map_tokens_to_objects(line, family, src_type, estimated):
     assert src.estimated is estimated
 
 
+# --- the relative + column_mean sigma sources (ADR-0031) ----------------------
+
+def test_relative_source_default_cv_is_one():
+    """``relative`` with no argument is a coefficient of variation of 1 (sigma == the
+    measurement) -- the source the desugared norm_sos uses."""
+    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = relative']))['o']
+    assert isinstance(src, noise.RelativeSigma)
+    assert src.cv == 1.0
+    assert src.estimated is False
+
+
+def test_relative_source_explicit_cv():
+    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = relative 0.2']))['o']
+    assert src.cv == pytest.approx(0.2)
+
+
+def test_column_mean_source_takes_no_arg():
+    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = column_mean']))['o']
+    assert isinstance(src, noise.ColumnMeanSigma)
+    assert src.estimated is False
+    # An argument on column_mean is a user error (the scale is the column's own mean).
+    with pytest.raises(PybnfError, match='no argument'):
+        _build_noise_spec('o', ('normal', {'sigma': ('column_mean', '5')}, None))
+
+
+@pytest.mark.parametrize('verb', ['fit', 'read_exp_file', 'fix_at'])
+def test_arg_taking_sources_require_their_arg(verb):
+    with pytest.raises(PybnfError, match='requires an argument'):
+        _build_noise_spec('o', ('normal', {'sigma': (verb, None)}, None))
+
+
+# --- the whole-fit noise_model line (no observable, ADR-0031) -----------------
+
+def test_ploop_whole_fit_noise_model_uses_none_observable():
+    d = ploop(['noise_model = gaussian, sigma = fix_at 1'])
+    assert d[('noise_model', None)] == ('gaussian', {'sigma': ('fix_at', '1')}, None)
+
+
+def test_whole_fit_line_is_not_a_per_observable_override():
+    """The ('noise_model', None) whole-fit key is the class default, handled by the
+    caller -- it must not leak into the per-observable override map."""
+    assert _build_noise_overrides(ploop(['noise_model = gaussian, sigma = fix_at 1'])) == {}
+
+
 def test_read_exp_file_suffix_is_explicit():
     """read_exp_file names the column suffix, dissolving the hard-coded _SD so a
     non-Gaussian family can read its own column."""
