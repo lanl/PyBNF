@@ -45,6 +45,15 @@ class NoiseModel(ABC):
         ``log sigma``); a self-normalizing PMF (NegBinomial) leaves it at 0."""
         return 0.0
 
+    def with_location(self, location):
+        """Return a copy of this family reinterpreting the prediction as a different
+        distributional summary -- the location axis (ADR-0011/0024/0031). Every noise
+        family implements it ("every means every"): the location-scale families via
+        the additive offset, the count family via a per-point CDF inversion. The base
+        raises for a (hypothetical) family with no location axis."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no location interpretation axis')
+
     def nll(self, prediction, observation, noise):
         """The full per-point negative log-likelihood (data fit + normalizer)."""
         return self.data_fit(prediction, observation, noise) + self.log_normalizer(noise)

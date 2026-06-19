@@ -302,6 +302,68 @@ class TestNegBinLikelihoodDynamic:
         npt.assert_almost_equal(obj.evaluate(sim, exp), expected)
 
 
+class TestNegBinMedianCentering:
+    """The negative-binomial median location (issue #419, ADR-0031): the prediction is
+    the **continuous** 0.5-quantile, realized by solving for the mean whose continuous
+    NB median equals it. Oracle: scipy.stats.nbinom (its CDF is the betainc the solver
+    inverts, at integer arguments)."""
+
+    r = 10.0
+
+    def test_default_location_is_mean(self):
+        """The constructor default is MEAN -- the native parameterization that keeps the
+        legacy neg_bin objfuncs byte-identical."""
+        nb = noise.NegBinomial()
+        assert nb.location is noise.MEAN
+        # MEAN data_fit is the identity: prediction IS the mean (unchanged from legacy).
+        p = np.clip(self.r / (self.r + 4.0), 1e-10, 1 - 1e-10)
+        npt.assert_almost_equal(nb.data_fit(4.0, 5, self.r), -stats.nbinom.logpmf(5, self.r, p))
+
+    def test_with_location_round_trips(self):
+        nb = noise.NegBinomial()
+        assert nb.with_location(noise.MEDIAN).location is noise.MEDIAN
+        assert nb.with_location(noise.MEDIAN).with_location(noise.MEAN).location is noise.MEAN
+
+    @pytest.mark.parametrize('prediction', [0, 1, 3, 8, 25, 100])
+    def test_solved_mean_places_continuous_median_at_prediction(self, prediction):
+        """For an integer prediction the solved mean mu satisfies nbinom.cdf(pred, r, p)
+        == 0.5 with p = r/(r+mu) -- i.e. the continuous median sits exactly on the
+        prediction (scipy.stats.nbinom oracle for the round-trip)."""
+        nb = noise.NegBinomial(location=noise.MEDIAN)
+        mu = nb._mean(float(prediction), self.r)
+        p = self.r / (self.r + mu)
+        npt.assert_almost_equal(stats.nbinom.cdf(prediction, self.r, p), 0.5, decimal=8)
+
+    def test_median_data_fit_matches_scipy_at_solved_mean(self):
+        """data_fit under MEDIAN scores NB(mu, r) at the observation, where mu is the
+        solved mean -- equal to -nbinom.logpmf(obs, r, r/(r+mu))."""
+        nb = noise.NegBinomial(location=noise.MEDIAN)
+        pred, obs = 8.0, 5
+        mu = nb._mean(pred, self.r)
+        p = np.clip(self.r / (self.r + mu), 1e-10, 1 - 1e-10)
+        npt.assert_almost_equal(nb.data_fit(pred, obs, self.r), -stats.nbinom.logpmf(obs, self.r, p))
+
+    def test_median_diverges_from_mean(self):
+        """The location axis is live: at a moderate count median != mean, so the two
+        interpretations give different data fits for the same prediction."""
+        pred, obs = 8.0, 5
+        mean_fit = noise.NegBinomial(location=noise.MEAN).data_fit(pred, obs, self.r)
+        med_fit = noise.NegBinomial(location=noise.MEDIAN).data_fit(pred, obs, self.r)
+        assert mean_fit != pytest.approx(med_fit)
+
+    def test_inversion_is_smooth_and_monotone(self):
+        """The continuous median (unlike the discrete ppf step) is smooth and strictly
+        increasing in the prediction -- what keeps the objective continuous for the
+        optimizers."""
+        nb = noise.NegBinomial(location=noise.MEDIAN)
+        mus = [nb._mean(x, self.r) for x in [3.0, 3.5, 4.0, 4.5, 5.0]]
+        assert all(b > a for a, b in zip(mus, mus[1:]))
+
+    def test_negative_observation_contributes_zero_under_median(self):
+        """The count-domain guard still drops a negative observation (no solve needed)."""
+        assert noise.NegBinomial(location=noise.MEDIAN).data_fit(8.0, -1, self.r) == 0
+
+
 # ---------------------------------------------------------------------------
 # Dynamic chi-square and sum-of-diffs (closed-form values)
 # ---------------------------------------------------------------------------

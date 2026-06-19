@@ -130,11 +130,12 @@ Required Keys
   ``location`` field on a :ref:`noise_model <noise_model_key>` key, which overrides
   it). ``median`` (the default when unset) means the prediction is the
   distribution's median; ``mean`` means its expected value. The two differ only for
-  a ``lognormal`` observable, where ``mean`` adds the moment correction
-  ``mu = log10(prediction) - sigma**2*ln10/2``. Only valid with a likelihood
-  ``objfunc`` (``chi_sq`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ...);
-  ``neg_bin`` is mean-parameterized, so ``mean`` is redundant and ``median`` is not
-  yet implemented (see issue #419).
+  a ``lognormal`` observable (where ``mean`` adds the moment correction
+  ``mu = log10(prediction) - sigma**2*ln10/2``) and a ``neg_bin`` observable. Only
+  valid with a likelihood ``objfunc`` (``chi_sq`` / ``lognormal`` / ``laplace`` /
+  ``neg_bin`` / ...). ``neg_bin`` is parameterized directly by its mean, so ``mean``
+  is redundant; ``median`` interprets the prediction as the count distribution's
+  0.5-quantile, solved for by a per-point CDF inversion (issue #419).
 
   Example:
 
@@ -177,8 +178,9 @@ Required Keys
   expected value). The two differ only for a ``lognormal`` observable, where
   ``mean`` adds the moment correction ``mu = log10(prediction) - sigma**2*ln10/2``
   (the symmetric families are unaffected). ``neg_bin`` is parameterized directly by
-  its mean, so ``location = mean`` is redundant (accepted) and ``location = median``
-  is rejected -- median-centering of the count family is not implemented.
+  its mean, so ``location = mean`` is redundant (accepted); ``location = median``
+  interprets the prediction as the count distribution's 0.5-quantile, solved for by a
+  per-point continuous-CDF inversion (issue #419).
 
   Examples:
 
@@ -212,9 +214,12 @@ Required Keys
   Also under a modern edition the universal default for prediction centering is the
   **median** (consistent with PEtab v2). This is byte-identical for the location-scale
   noise models (``chi_sq`` / ``lognormal`` / ``laplace``), which already default to the
-  median. The one place it differs is ``neg_bin``, whose legacy default was the mean
-  and whose median has no closed form (see issue #419): under a modern edition a
-  ``neg_bin`` fit must set :ref:`noise_location <objective>` (``= mean``) explicitly.
+  median. The one place the number differs is ``neg_bin``, whose legacy default was the
+  mean: under a modern edition a ``neg_bin`` fit with no explicit location resolves to
+  the median (a per-point CDF inversion, issue #419) and **warns**, since the value
+  changes from legacy and median ``neg_bin`` is rarely intended -- set
+  :ref:`noise_location <objective>` (``= mean`` to keep the legacy behavior, or
+  ``= median`` to silence the warning) explicitly.
 
   Default: unset (legacy, edition 1)
 

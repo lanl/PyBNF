@@ -57,6 +57,14 @@ axis is trivial there.
   future feature. The location-scale families (Gaussian/Laplace) implement both via
   the offset machinery.
 
+  **Superseded by ADR-0031 / issue #419:** the `neg_bin` median *is* now implemented.
+  The prediction is interpreted as the count distribution's continuous 0.5-quantile,
+  and the mean placing the median there is recovered by a per-point bounded CDF
+  inversion (`scipy.special.betainc` + `scipy.optimize.brentq`); the count family owns
+  this realization rather than going through the additive-offset machinery. So
+  `location = median` no longer raises -- it runs (and, under a modern edition where it
+  resolves *implicitly*, warns that the value changed from the legacy mean).
+
 - **`mean` is only ever the correct Gaussian moment correction on the native
   surface.** The moment offset (`scale.mean_offset`, ADR-0011/0022) is the
   **Gaussian** correction. On the native surface the only log-scale family token is
@@ -97,10 +105,11 @@ axis is trivial there.
   grammar into its own branch (touching the most-referenced config key and every
   golden). Applied in `Configuration._load_obj_func` via
   `LikelihoodObjective.set_default_location`; rejected (with a clear error) on a
-  non-likelihood objfunc (`sos`/`kl`/...) that has no noise model, and on `neg_bin +
-  median` (the same unimplemented path as the per-observable field, #419). Default
-  unset -> each family keeps its own default (median), so existing configs are
-  byte-identical (the golden gains only `noise_location: null`).
+  non-likelihood objfunc (`sos`/`kl`/...) that has no noise model. (`neg_bin + median`
+  was the same unimplemented path as the per-observable field; ADR-0031 / #419 now
+  implements it, so it runs rather than raising.) Default unset -> each family keeps
+  its own default (median), so existing configs are byte-identical (the golden gains
+  only `noise_location: null`).
 
 Relevant ADRs: **0011** (the location axis this exposes, and the Gaussian-only
 moment-correction boundary), **0021** (the native `noise_model` surface and its

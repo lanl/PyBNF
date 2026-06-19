@@ -315,38 +315,22 @@ _NOISE_PARAM_NAMES = {
 
 #: The native ``location = mean|median`` field -> the prediction's interpretation
 #: (ADR-0024, the location axis of ADR-0011). Median (the prediction is the
-#: distribution's median) is the no-correction default, consistent with PEtab v2 and
-#: the legacy lognormal objfunc; mean adds the family's moment correction on a log
+#: distribution's 0.5-quantile) is the no-correction default, consistent with PEtab v2
+#: and the legacy lognormal objfunc; mean adds the family's moment correction on a log
 #: scale (e.g. mean-aligned lognormal: ``mu = log10(pred) - sigma**2*ln10/2``).
 _NOISE_LOCATIONS = {'mean': MEAN, 'median': MEDIAN}
 
 
-def _apply_location(noise_model, location, family_token, observable):
-    """Set a noise model's location interpretation -- which distributional summary
-    the prediction represents -- from the native ``location`` field (ADR-0024).
+def _apply_location(noise_model, location):
+    """Set a noise model's location interpretation -- which distributional summary the
+    prediction represents -- from the native ``location`` field (ADR-0024, ADR-0031).
 
-    For a **location-scale family** (Gaussian/Laplace) both ``mean`` and ``median``
-    are implemented, via the offset machinery (ADR-0011). On the native surface the
-    only log family token is ``lognormal`` (Gaussian), so a ``mean`` correction is
-    only ever applied where it is the correct Gaussian moment correction.
-
-    A count family (**neg_bin**) is parameterized directly by its mean -- the
-    prediction *is* the mean -- so ``mean`` is the (redundant but true) current
-    interpretation and is accepted as a no-op. ``median`` centering is a coherent
-    model but is **not implemented** (the neg_bin median has no closed form; placing
-    the prediction at it would need a numeric CDF inversion), so it is rejected as
-    unimplemented rather than silently treated as the mean."""
-    loc = _NOISE_LOCATIONS[location]
-    if hasattr(noise_model, 'location'):
-        return type(noise_model)(additive_on=noise_model.additive_on, location=loc)
-    if loc is MEAN:
-        return noise_model  # neg_bin is already mean-centered; the field is redundant
-    raise PybnfError(
-        f'median-centering is not implemented for the {family_token} noise model',
-        f"The {family_token} noise model interprets the prediction as the mean (it is "
-        f"parameterized by its mean); centering it on the median is a coherent model "
-        f"but is not yet implemented (observable {observable}; see issue #419). Use "
-        f"'location = mean', or omit location.")
+    Every family implements both ``mean`` and ``median`` ("every means every",
+    ADR-0031): the location-scale families (Gaussian/Laplace) via the additive offset
+    machinery (ADR-0011), and the count family (neg_bin) via a per-point continuous
+    CDF inversion it owns (issue #419). Each family knows how to rebuild itself with a
+    new location, so this just maps the field value to the interpretation singleton."""
+    return noise_model.with_location(_NOISE_LOCATIONS[location])
 
 
 def _build_sigma_source(verb, arg):
@@ -413,7 +397,7 @@ def _build_noise_spec(observable, value):
     if location is not None:
         # An omitted location keeps the family's default (median for lognormal -- the
         # no-correction default; the symmetric families are unaffected). ADR-0024.
-        noise_model = _apply_location(noise_model, location, family_token, observable)
+        noise_model = _apply_location(noise_model, location)
     return (noise_model, _build_sigma_source(verb, arg))
 
 
@@ -476,13 +460,13 @@ class LikelihoodObjective(SummationObjective):
 
     def set_default_location(self, location):
         """Apply a whole-fit default location interpretation (the global
-        ``noise_location`` key, ADR-0024) to the class-default noise model -- the one
-        used for every observable without a per-observable ``noise_model`` override
-        (those already carry their own location). Mirrors the per-observable
-        ``location`` field and rejects ``median`` on a mean-parameterized family
-        (neg_bin) the same way (see ``_apply_location``)."""
-        self.noise = _apply_location(self.noise, location,
-                                     type(self.noise).__name__, 'global default')
+        ``noise_location`` key, ADR-0024; the modern-edition median default, ADR-0031)
+        to the class-default noise model -- the one used for every observable without a
+        per-observable ``noise_model`` override (those already carry their own
+        location). Mirrors the per-observable ``location`` field via
+        ``_apply_location``; every family supports both mean and median (the neg_bin
+        median is the per-point CDF inversion of issue #419)."""
+        self.noise = _apply_location(self.noise, location)
 
     def _spec_for(self, col_name):
         """The (NoiseModel, SigmaSource) for one observable -- its override if any,

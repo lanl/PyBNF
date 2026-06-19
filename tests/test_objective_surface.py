@@ -95,9 +95,9 @@ def test_chi_sq_desugar_is_value_identical_to_legacy():
     ('chi_sq_dynamic', noise.Gaussian, noise.FreeParameterSigma, noise.LINEAR, {}),
     ('lognormal', noise.Gaussian, noise.DataColumnSigma, noise.LOG10, {}),
     ('laplace', noise.Laplace, noise.FreeParameterSigma, noise.LINEAR, {}),
-    # neg_bin is mean-parameterized, so a modern edition needs an explicit mean
-    # location (its median is the unimplemented #419 path -- see test_edition).
-    ('neg_bin_dynamic', noise.NegBinomial, noise.FreeParameterSigma, None, {'noise_location': 'mean'}),
+    # neg_bin is mean-parameterized, but a modern edition resolves the unspecified
+    # location to the median (the #419 inversion) -- it warns and runs (see test_edition).
+    ('neg_bin_dynamic', noise.NegBinomial, noise.FreeParameterSigma, None, {}),
 ])
 def test_desugar_selects_expected_family_and_source(token, family, source, additive, extra):
     fam, src = _modern({'objective': token, **extra})._spec_for('c')

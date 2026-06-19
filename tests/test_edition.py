@@ -6,7 +6,7 @@ modern-syntax ``require_edition`` guard, version derivation -- and the behaviora
 gates the edition drives on the objective surface: ``objfunc`` is legacy-only
 (forbidden under a modern edition), the modern keys require opting in, exactly one
 objective must be named with no implicit default, and a modern-edition ``neg_bin``
-defaulting to median (the unimplemented #419 capability) raises, while legacy stays
+defaulting to median (the #419 inversion) warns and runs, while legacy stays
 frozen-mean and the location-scale families are byte-identical across editions.
 """
 
@@ -147,39 +147,70 @@ def test_modern_keys_require_edition_in_legacy(selection):
 
 
 # neg_bin centering: the one number that differs between eras, reached now through the
-# modern surface (objective = neg_bin or a neg_bin noise_model), not objfunc.
+# modern surface (objective = neg_bin or a neg_bin noise_model), not objfunc. Under a
+# modern edition the unspecified location resolves to the median (the #419 inversion),
+# which both runs and warns (legacy was mean -- almost always a forgotten location).
 
 def test_legacy_neg_bin_stays_frozen_mean():
     # No edition (legacy): neg_bin builds with its mean parameterization, no raise.
     obj = _load_obj({'objfunc': 'neg_bin', 'ind_var_rounding': 0, 'neg_bin_r': 10.0})
-    assert isinstance(obj._spec_for('c')[0], noise.NegBinomial)
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEAN
 
 
 def test_explicit_legacy_edition_neg_bin_stays_frozen_mean():
     obj = _load_obj({'objfunc': 'neg_bin', 'edition': 1, 'ind_var_rounding': 0, 'neg_bin_r': 10.0})
-    assert isinstance(obj._spec_for('c')[0], noise.NegBinomial)
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEAN
 
 
-def test_modern_neg_bin_without_location_raises():
-    with pytest.raises(PybnfError, match='median'):
-        _load_obj({'objective': 'neg_bin', 'edition': 2, 'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+def test_modern_neg_bin_without_location_warns_and_runs_median(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'objective': 'neg_bin', 'edition': 2, 'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
+    assert 'median' in caplog.text and 'neg_bin' in caplog.text
 
 
-def test_modern_neg_bin_noise_model_without_location_raises():
-    with pytest.raises(PybnfError, match='median'):
-        _load_obj({'edition': 2, 'ind_var_rounding': 0,
-                   ('noise_model', None): ('neg_bin', {'dispersion': ('fix_at', '10')}, None)})
+def test_modern_neg_bin_noise_model_without_location_warns_and_runs_median(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'edition': 2, 'ind_var_rounding': 0,
+                         ('noise_model', None): ('neg_bin', {'dispersion': ('fix_at', '10')}, None)})
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
+    assert 'median' in caplog.text
 
 
-def test_modern_neg_bin_dynamic_without_location_raises():
-    with pytest.raises(PybnfError, match='median'):
-        _load_obj({'objective': 'neg_bin_dynamic', 'edition': 2, 'ind_var_rounding': 0})
+def test_modern_neg_bin_dynamic_without_location_warns_and_runs_median(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'objective': 'neg_bin_dynamic', 'edition': 2, 'ind_var_rounding': 0})
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
+    assert 'median' in caplog.text
 
 
-def test_modern_neg_bin_with_explicit_mean_runs():
-    obj = _load_obj({'objective': 'neg_bin', 'edition': 2, 'noise_location': 'mean',
-                     'ind_var_rounding': 0, 'neg_bin_r': 10.0})
-    assert isinstance(obj._spec_for('c')[0], noise.NegBinomial)
+def test_modern_neg_bin_with_explicit_mean_runs_silently(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'objective': 'neg_bin', 'edition': 2, 'noise_location': 'mean',
+                         'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEAN
+    assert caplog.text == ''  # explicit location -> no warning
+
+
+def test_modern_neg_bin_with_explicit_median_runs_silently(caplog):
+    # An explicit median is the same #419 inversion but is a deliberate choice -> silent.
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'objective': 'neg_bin', 'edition': 2, 'noise_location': 'median',
+                         'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
+    assert caplog.text == ''
 
 
 @pytest.mark.parametrize('token', ['chi_sq', 'lognormal', 'laplace'])

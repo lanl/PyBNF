@@ -805,8 +805,9 @@ class Configuration:
           the bare ``score`` passthrough), a whole-fit ``noise_model`` line, or
           ``profile_objective`` (column-joint) -- with **no implicit default**.
 
-        A shared tail applies the whole-fit ``noise_location`` default and the median
-        gate to whichever objective was built.
+        A shared tail applies the whole-fit ``noise_location`` default and the modern
+        median-centering default (with the neg_bin warning) to whichever objective was
+        built.
         """
         ed = edition.resolve_edition(self.config.get('edition'))
         user_objfunc = getattr(self, '_user_objfunc', 'objfunc' in self.config)
@@ -894,21 +895,25 @@ class Configuration:
             obj.set_default_location(location)
         elif (edition.is_modern(ed)
                 and isinstance(obj, objective.LikelihoodObjective)
-                and obj.noise is not None
-                and not hasattr(obj.noise, 'location')):
-            # No explicit location under a modern edition: the universal default is the
-            # median. Byte-identical for the location-scale families (already median);
-            # the one family whose legacy default was the mean is neg_bin (mean-
-            # parameterized, no location axis), whose median is the unimplemented #419
-            # capability -- so it raises here, directing the user to set it explicitly
-            # (what a modern neg_bin user wants anyway).
-            raise PybnfError(
-                f'neg_bin centering defaults to median under edition {ed}, which is unimplemented',
-                f"Under edition {ed} the universal default prediction centering is the median "
-                f"(ADR-0031), but the negative-binomial noise model is parameterized by its mean "
-                f"and has no closed-form median (issue #419); its legacy default was the mean. Set "
-                f"'noise_location = mean' (or 'location = mean' on the noise_model) to keep mean "
-                f"centering.")
+                and obj.noise is not None):
+            # No explicit global location under a modern edition: the universal default
+            # is the median (ADR-0031). The location-scale families already default to
+            # median, so they are byte-identical and untouched; the one family whose
+            # legacy default was the mean is neg_bin (mean-parameterized), detectable
+            # because its class-default noise comes out MEAN here. Unless the whole-fit
+            # noise_model line set an explicit location, flip it to the median
+            # realization (issue #419) -- and warn, since the number changes from legacy
+            # and almost nobody actually wants median neg_bin (usually a forgotten
+            # location = mean).
+            whole_fit = self.config.get(('noise_model', None))
+            line_set_location = whole_fit is not None and whole_fit[2] is not None
+            if not line_set_location and obj.noise.location is objective.MEAN:
+                logger.warning(
+                    f"neg_bin is defaulting to median centering under edition {ed} "
+                    f"(ADR-0031); its legacy default was the mean. Set 'noise_location = mean' "
+                    f"(or 'location = mean' on the noise_model) to keep mean centering, or "
+                    f"'= median' to silence this warning.")
+                obj.set_default_location('median')
         return obj
 
     def _load_variables(self):

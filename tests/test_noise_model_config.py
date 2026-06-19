@@ -110,16 +110,17 @@ def test_invalid_noise_model_raises(value, match):
         _build_noise_spec('obs', value)
 
 
-def test_neg_bin_accepts_redundant_mean_rejects_unimplemented_median():
-    # neg_bin is parameterized directly by its mean: location=mean is the current
-    # (redundant but true) interpretation -> accepted; location=median is a coherent
-    # but unimplemented model (no closed-form neg_bin median) -> rejected as such.
-    fam, _src = _build_noise_overrides(
+def test_neg_bin_accepts_both_mean_and_median():
+    # neg_bin is parameterized directly by its mean: location=mean is the (redundant
+    # but true) native interpretation; location=median is the #419 inversion. Both are
+    # implemented now ("every means every", ADR-0031) and select the family with the
+    # corresponding location interpretation.
+    mean_fam, _ = _build_noise_overrides(
         ploop(['noise_model o = neg_bin, dispersion = fix_at 10, location = mean']))['o']
-    assert isinstance(fam, noise.NegBinomial)
-    with pytest.raises(PybnfError, match='median'):
-        _build_noise_overrides(
-            ploop(['noise_model o = neg_bin, dispersion = fix_at 10, location = median']))
+    assert isinstance(mean_fam, noise.NegBinomial) and mean_fam.location is noise.MEAN
+    med_fam, _ = _build_noise_overrides(
+        ploop(['noise_model o = neg_bin, dispersion = fix_at 10, location = median']))['o']
+    assert isinstance(med_fam, noise.NegBinomial) and med_fam.location is noise.MEDIAN
 
 
 # --- the location (mean/median) axis (ADR-0024) -------------------------------
@@ -230,12 +231,14 @@ def test_global_noise_location_none_keeps_family_default():
     assert obj._spec_for('c')[0].location is noise.MEDIAN  # lognormal's own default
 
 
-def test_global_noise_location_median_on_neg_bin_raises():
-    # neg_bin is mean-parameterized; whole-fit median is the same unimplemented path
-    # as the per-observable field (issue #419).
-    with pytest.raises(PybnfError, match='median'):
-        _load_obj({'objfunc': 'neg_bin', 'noise_location': 'median',
-                   'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+def test_global_noise_location_median_on_neg_bin_runs():
+    # neg_bin is mean-parameterized; whole-fit median is the same #419 inversion path
+    # as the per-observable field -- now implemented (ADR-0031). An explicit median is
+    # silent (a deliberate choice), regardless of edition.
+    obj = _load_obj({'objfunc': 'neg_bin', 'noise_location': 'median',
+                     'ind_var_rounding': 0, 'neg_bin_r': 10.0})
+    fam = obj._spec_for('c')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
 
 
 def test_global_noise_location_mean_on_neg_bin_is_noop():

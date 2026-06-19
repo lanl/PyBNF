@@ -31,6 +31,9 @@ class Gaussian(NoiseModel):
         self.additive_on = additive_on
         self.location = location
 
+    def with_location(self, location):
+        return type(self)(additive_on=self.additive_on, location=location)
+
     def _mu(self, prediction, noise):
         """The additive-space location parameter for ``prediction``."""
         return self.additive_on.forward(prediction) - self.location.offset(self.additive_on, noise)
