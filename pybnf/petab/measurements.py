@@ -57,9 +57,13 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
     observable/function name, e.g. ``x``) to its PEtab ``observableId`` (e.g.
     ``obs_x``); only those columns become measurements. For each such column its
     ``<col><sd_suffix>`` companion (if present) supplies the per-point
-    ``noiseParameters`` value. ``NaN`` cells are skipped (a ragged long table round
-    trips through PyBNF's ``NaN``-skipping objective). Rows are grouped by observable,
-    then ordered by the independent variable as it appears in ``data``.
+    ``noiseParameters`` value. ``sd_suffix=None`` disables per-point noise entirely
+    (``noiseParameters`` left blank) -- used when the objective's sigma source is not
+    a data column (a fixed or column-mean sigma carried inline in ``noiseFormula``), so
+    a stray ``_SD`` column does not produce a ``noiseParameters`` override with no
+    placeholder to bind to. ``NaN`` cells are skipped (a ragged long table round trips
+    through PyBNF's ``NaN``-skipping objective). Rows are grouped by observable, then
+    ordered by the independent variable as it appears in ``data``.
 
     Raises ``NotImplementedError`` if the independent variable is not ``time`` (a
     dose-response / ``parameter_scan`` ``.exp`` -- a later export chunk).
@@ -77,7 +81,7 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
-        sd_ci = data.cols.get(col + sd_suffix)
+        sd_ci = None if sd_suffix is None else data.cols.get(col + sd_suffix)
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
             if np.isnan(value):
@@ -99,13 +103,14 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
     measured dose mapped to its own experiment (``experiment_ids[i]``, aligned with the
     ``data`` row order), and the measurement ``time`` is the scan's fixed ``scan_time`` (a
     scalar from the ``param_scan`` action -- not a data column). ``column_to_observable_id``
-    and the ``<col><sd_suffix>`` noise companion behave as in the time-course pivot; the
-    swept-parameter column 0 is not in the map, so it is never emitted as a measurement.
+    and the ``<col><sd_suffix>`` noise companion behave as in the time-course pivot
+    (``sd_suffix=None`` disables per-point noise); the swept-parameter column 0 is not in
+    the map, so it is never emitted as a measurement.
     """
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
-        sd_ci = data.cols.get(col + sd_suffix)
+        sd_ci = None if sd_suffix is None else data.cols.get(col + sd_suffix)
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
             if np.isnan(value):

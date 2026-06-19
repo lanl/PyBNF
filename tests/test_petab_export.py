@@ -152,17 +152,20 @@ class TestReverseAssets:
 
     @pytest.mark.parametrize('kind,prefix', [('observable', 'obs_'), ('function', 'func_')])
     def test_observable_row_prefix_formula_and_placeholder(self, kind, prefix):
-        row = petab_observable_row('z', kind, 'normal', sd_from_data=True)
+        # A per-point _SD source -> a declared placeholder bound by noiseParameters.
+        row = petab_observable_row('z', kind, 'normal', ('placeholder', None))
         assert row.observable_id == f'{prefix}z'
         assert row.observable_formula == 'z'          # bare model name, never a body
         assert row.noise_distribution == 'normal'
-        # _SD noise -> a declared placeholder bound by the measurements' noiseParameters
         assert row.noise_formula == f'noiseParameter1_{prefix}z'
         assert row.noise_placeholders == row.noise_formula
 
-    def test_observable_without_sd_not_implemented(self):
-        with pytest.raises(NotImplementedError):
-            petab_observable_row('z', 'observable', 'normal', sd_from_data=False)
+    def test_observable_row_constant_sigma_is_inline_no_placeholder(self):
+        # A fixed/column-mean sigma -> a numeric noiseFormula, no placeholder declared.
+        row = petab_observable_row('z', 'observable', 'laplace', ('constant', 1.0))
+        assert row.noise_formula == '1'               # num() drops the trailing .0
+        assert row.noise_distribution == 'laplace'
+        assert row.noise_placeholders is None
 
     def test_measurement_pivot_values_and_noise(self):
         arr = np.array([[0.0, 1.0, 0.5], [1.0, 2.0, 0.7]])
@@ -317,6 +320,66 @@ class TestExportLogUniform:
 
 
 # ---------------------------------------------------------------------------
+# The objective family: the Gaussian/Laplace likelihoods PEtab v2 can express
+# (#423 finding B/2 -- only chi_sq mapped before; sos/sod/ave_norm_sos now do).
+# ---------------------------------------------------------------------------
+
+class TestExportObjectiveFamily:
+
+    def _export(self, tmp_path_factory, objfunc):
+        import shutil
+        src = tmp_path_factory.mktemp('objfam_src')
+        shutil.copy(DEMO_DIR / 'parabola.bngl', src / 'parabola.bngl')
+        shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
+        (src / 'job.conf').write_text(
+            'model = parabola.bngl : par1.exp\n'
+            f'fit_type = de\nobjfunc = {objfunc}\n'
+            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+            'uniform_var = v3__FREE 0 10\n')
+        out = tmp_path_factory.mktemp('objfam_out')
+        export_job(src / 'job.conf', out)
+        return out
+
+    @pytest.mark.parametrize('objfunc,distribution', [
+        ('sos', 'normal'), ('sod', 'laplace')])
+    def test_fixed_sigma_objfunc_is_constant_noise_formula(
+            self, tmp_path_factory, objfunc, distribution):
+        out = self._export(tmp_path_factory, objfunc)
+        rows = _tsv_rows(out / 'observables.tsv')
+        for r in rows:
+            assert r['noiseDistribution'] == distribution   # gaussian->normal, laplace
+            assert r['noiseFormula'] == '1'                  # fix_at 1, inline
+            assert r['noisePlaceholders'] == ''              # no per-point placeholder
+        # and no dangling noiseParameters override in the measurements
+        meas = _tsv_rows(out / 'measurements.tsv')
+        assert all(m['noiseParameters'] == '' for m in meas)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_ave_norm_sos_is_the_column_mean(self, tmp_path_factory):
+        out = self._export(tmp_path_factory, 'ave_norm_sos')
+        data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+        by_id = {r['observableId']: r for r in _tsv_rows(out / 'observables.tsv')}
+        col_of = {'obs_x': 'x', 'func_y': 'y'}
+        for oid, r in by_id.items():
+            assert r['noiseDistribution'] == 'normal'
+            assert float(r['noiseFormula']) == pytest.approx(np.average(data[col_of[oid]]))
+            assert r['noisePlaceholders'] == ''
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_chi_sq_still_uses_the_sd_placeholder(self, tmp_path_factory):
+        # The existing _SD path is unchanged: per-point placeholder + noiseParameters.
+        out = self._export(tmp_path_factory, 'chi_sq')
+        rows = _tsv_rows(out / 'observables.tsv')
+        for r in rows:
+            assert r['noiseDistribution'] == 'normal'
+            assert r['noiseFormula'] == f"noiseParameter1_{r['observableId']}"
+            assert r['noisePlaceholders'] == r['noiseFormula']
+        meas = _tsv_rows(out / 'measurements.tsv')
+        assert all(m['noiseParameters'] != '' for m in meas)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+
+# ---------------------------------------------------------------------------
 # 5. Chunk-1 boundaries raise (documented in code, not silently mis-exported)
 # ---------------------------------------------------------------------------
 
@@ -327,12 +390,24 @@ class TestBoundaries:
         with pytest.raises(NotImplementedError):
             export_job(DEMO_DIR / 'demo_xml.conf', tmp_path)
 
-    def test_non_chi_sq_objective_not_implemented(self, tmp_path):
+    @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'direct_pass'])
+    def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
+        # neg_bin was removed from PEtab v2; direct_pass is not a likelihood.
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "fit_type = de\n"
-            "objfunc = sos\n"
+            f"fit_type = de\nobjfunc = {objfunc}\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError):
+            export_job(conf, tmp_path / 'out')
+
+    def test_free_parameter_sigma_objective_not_implemented(self, tmp_path):
+        # chi_sq_dynamic's free sigma needs the noise parameter wired into the PEtab
+        # parameter table -- a deferred sigma-source path.
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
+            "fit_type = de\nobjfunc = chi_sq_dynamic\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')

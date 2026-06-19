@@ -24,18 +24,28 @@ disjoint from the model-entity namespace.
 a PyBNF **Mutant** -> a PEtab **Condition**/**Experiment** (a fit-and-mutated parameter
 via a surrogate-base ``<p>__REF`` rename; see :mod:`pybnf.petab.conditions`), and a
 dose-response **Parameter Scan** -> one Condition+Experiment per measured dose. A single
-job is Mutants *xor* dose-response (the surrogate set is problem-wide). Everything else --
-a second model, a non-``chi_sq`` objective, a non-uniform prior, a ``.con``/``.prop``
-Constraint, an SBML model, both feature families in one job -- raises
-``NotImplementedError`` (the boundary is in code, not silent). The oracle is petab's full
-``default_validation_tasks`` via ``Problem.from_yaml`` + the native ``BnglModel`` loader
-(ADR-0026), wired into the tests; see ADR-0025/0027.
+job is Mutants *xor* dose-response (the surrogate set is problem-wide).
+
+The objective and prior surfaces map to PEtab as far as PEtab v2 can express them
+(ADR-0023/0031 reversed): the Gaussian/Laplace likelihoods with a ``_SD``-column,
+fixed, or column-mean sigma (``chi_sq``/``sos``/``sod``/``ave_norm_sos``), and the
+``uniform``/``log-uniform``/``normal``/``laplace`` prior families with their log forms.
+Everything else raises ``NotImplementedError`` (the boundary is in code, not silent): a
+second model; an objective PEtab cannot represent (``neg_bin*`` -- removed from v2;
+``lognormal`` -- log10 vs PEtab natural log; a free-parameter or relative sigma;
+``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a
+``.con``/``.prop`` Constraint; an SBML model; both feature families in one job. The
+oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the
+native ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027.
 """
 
 import re
 from pathlib import Path
 
+import numpy as np
+
 from ..data import Data
+from ..objective import _OBJECTIVE_DESUGAR
 from ..parse import ploop
 from ..printing import PybnfError
 from ..pset import FreeParameter
@@ -60,10 +70,13 @@ from .parameters import (
     write_parameter_table,
 )
 
-# The job objective -> the PEtab v2 noiseDistribution it maps to (ADR-0023 reversed).
-# Chunk 1 supports the global ``chi_sq`` (Gaussian) objective; other objectives and
-# per-observable ``noise_model`` lines are a later export chunk.
-_OBJFUNC_TO_NOISE_DISTRIBUTION = {'chi_sq': 'normal'}
+# A desugared noise-model family token (ADR-0031's ``_OBJECTIVE_DESUGAR``) -> the
+# PEtab v2 noiseDistribution it maps to (ADR-0023 reversed). The LINEAR Gaussian /
+# Laplace likelihoods map; the other two families are explicit boundaries handled in
+# ``_resolve_noise``: ``neg_bin`` was removed from PEtab v2, and PyBNF's ``lognormal``
+# is log10 whereas PEtab's ``log-normal`` is natural log (a deferred sigma
+# scale-conversion).
+_FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {'gaussian': 'normal', 'laplace': 'laplace'}
 
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
 # emits). Only ``uniform_var`` exports in chunk 1; the rest raise.
@@ -89,7 +102,7 @@ def export_job(conf_path, out_dir):
 
     conf = _read_conf_dict(conf_path)
     model_file = _resolve_model(conf)
-    noise_distribution = _resolve_objfunc(conf)
+    noise = _resolve_noise(conf)
     free_params = _free_parameters_from_conf(conf)
     bngl = _read_bngl(conf_path.parent / model_file)
     free_to_model = _resolve_free_to_model(free_params, bngl, model_file)
@@ -110,17 +123,25 @@ def export_job(conf_path, out_dir):
     indvar = _independent_variable(base_data)
 
     observable_rows, column_to_observable_id = _observable_rows(
-        base_data, bngl, noise_distribution, model_file)
+        base_data, bngl, noise, model_file)
+
+    # Per-point noiseParameters are emitted only when the objective's sigma comes from
+    # a data column (the placeholder source); a fixed / column-mean sigma is carried
+    # inline in noiseFormula, so the measurement export must not read _SD (which would
+    # leave a noiseParameters override with no placeholder to bind to).
+    _dist, sigma_verb, sigma_arg = noise
+    sd_suffix = sigma_arg if sigma_verb == 'read_exp_file' else None
 
     if indvar.lower() == 'time':
         measurement_rows, condition_rows, experiment_rows, surrogate_params = \
             _export_time_course(conf, conf_path, model_file, bngl, base_stem, base_data,
-                                column_to_observable_id, fit_model_params, has_mutants)
+                                column_to_observable_id, fit_model_params, has_mutants,
+                                sd_suffix)
     else:
         measurement_rows, condition_rows, experiment_rows, surrogate_params = \
             _export_dose_response(conf, conf_path, model_file, bngl, base_stem, base_data,
                                   indvar, column_to_observable_id, fit_model_params,
-                                  has_scan)
+                                  has_scan, sd_suffix)
 
     parameter_rows, free_to_nominal = _parameter_rows(
         free_params, free_to_model, surrogate_params, bngl, model_file)
@@ -161,15 +182,39 @@ def _resolve_model(conf):
     return model_file
 
 
-def _resolve_objfunc(conf):
-    """Return the noiseDistribution for the job's objective, raising on unsupported ones."""
-    objfunc = conf.get('objfunc', 'chi_sq')
-    if objfunc not in _OBJFUNC_TO_NOISE_DISTRIBUTION:
+def _resolve_noise(conf):
+    """The job's per-point noise model as ``(noiseDistribution, sigma_verb, sigma_arg)``.
+
+    Reverses ADR-0031's ``_OBJECTIVE_DESUGAR`` -- the single source of truth that maps
+    every legacy objfunc / modern ``objective`` token to a ``(family, {param: (verb,
+    arg)}, location)`` noise-model tuple. The exporter reads the family token to a PEtab
+    ``noiseDistribution`` and returns the sigma source's ``(verb, arg)`` for the
+    per-column resolution in :func:`_observable_rows`.
+
+    Raises ``NotImplementedError`` at the PEtab boundaries: an objective with no
+    per-point noise model (``direct_pass``, the column-joint ``kl`` / ``wasserstein``
+    profile objectives, an unknown token), and the two families PEtab v2 cannot express
+    (``neg_bin`` -- removed from v2; ``lognormal`` -- PyBNF's is log10, PEtab's
+    ``log-normal`` is natural log, a deferred sigma scale-conversion).
+    """
+    objfunc = conf.get('objfunc', conf.get('objective', 'chi_sq'))
+    if objfunc not in _OBJECTIVE_DESUGAR:
         raise NotImplementedError(
-            f"This chunk exports the '{', '.join(_OBJFUNC_TO_NOISE_DISTRIBUTION)}' "
-            f"objective; this job uses objfunc='{objfunc}'. Other objectives / "
-            f"per-observable noise_model lines are a later chunk (ADR-0023 reversed).")
-    return _OBJFUNC_TO_NOISE_DISTRIBUTION[objfunc]
+            f"Objective '{objfunc}' has no per-point PEtab noise model: direct_pass "
+            f"(no likelihood), kl / wasserstein (column-joint profile objectives), and "
+            f"any unknown token are not PEtab observable noise. Exportable objectives: "
+            f"{sorted(_OBJECTIVE_DESUGAR)} (ADR-0031, #423). Per-observable noise_model "
+            f"lines are a later export chunk.")
+    family_token, fields, _location = _OBJECTIVE_DESUGAR[objfunc](conf)
+    distribution = _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION.get(family_token)
+    if distribution is None:
+        raise NotImplementedError(
+            f"Objective '{objfunc}' is the '{family_token}' noise family, which PEtab v2 "
+            f"cannot express: neg_bin was removed from PEtab v2, and PyBNF's lognormal "
+            f"is log10 while PEtab's log-normal is natural log (the sigma "
+            f"scale-conversion is a later chunk). ADR-0023/0031, #423.")
+    (_param, (verb, arg)), = fields.items()
+    return distribution, verb, arg
 
 
 def _resolve_base_exp(conf, model_file):
@@ -199,13 +244,13 @@ def _independent_variable(data):
 # ---------------------------------------------------------------------------
 
 def _export_time_course(conf, conf_path, model_file, bngl, base_stem, base_data,
-                        column_to_observable_id, fit_model_params, has_mutants):
+                        column_to_observable_id, fit_model_params, has_mutants, sd_suffix):
     """Build measurements (+ conditions/experiments for Mutants) for a time-course job."""
     mutant_specs = _read_mutants(conf, model_file, bngl) if has_mutants else []
     if not mutant_specs:
         # Plain chunk-1 path: a single base time-course, "model as is" (empty experimentId).
         rows = measurement_rows_from_data(
-            base_data, column_to_observable_id, experiment_id='')
+            base_data, column_to_observable_id, experiment_id='', sd_suffix=sd_suffix)
         return rows, [], [], set()
 
     mutants_for_build = [(name, muts, Path(exp).stem) for name, muts, exp in mutant_specs]
@@ -214,11 +259,13 @@ def _export_time_course(conf, conf_path, model_file, bngl, base_stem, base_data,
                                 lambda v: _numeric_nominal(bngl, v))
 
     measurement_rows = list(measurement_rows_from_data(
-        base_data, column_to_observable_id, experiment_id=base_experiment_id))
+        base_data, column_to_observable_id, experiment_id=base_experiment_id,
+        sd_suffix=sd_suffix))
     for (_name, _muts, exp), (_n, _m, stem) in zip(mutant_specs, mutants_for_build):
         mdata = Data(file_name=str(conf_path.parent / exp))
         cmap = {c: o for c, o in column_to_observable_id.items() if c in mdata.cols}
-        measurement_rows += measurement_rows_from_data(mdata, cmap, experiment_id=stem)
+        measurement_rows += measurement_rows_from_data(
+            mdata, cmap, experiment_id=stem, sd_suffix=sd_suffix)
     return measurement_rows, condition_rows, experiment_rows, surrogate_params
 
 
@@ -263,7 +310,8 @@ def _read_mutants(conf, model_file, bngl):
 # ---------------------------------------------------------------------------
 
 def _export_dose_response(conf, conf_path, model_file, bngl, base_stem, base_data,
-                          swept_param, column_to_observable_id, fit_model_params, has_scan):
+                          swept_param, column_to_observable_id, fit_model_params, has_scan,
+                          sd_suffix):
     """Build conditions/experiments/measurements for a dose-response Parameter Scan job."""
     if not has_scan:
         raise NotImplementedError(
@@ -289,7 +337,7 @@ def _export_dose_response(conf, conf_path, model_file, bngl, base_stem, base_dat
     condition_rows, experiment_rows, experiment_ids = build_dose_response_conditions(
         base_stem, swept_param, dose_values, scan_time)
     measurement_rows = dose_response_measurement_rows(
-        base_data, column_to_observable_id, experiment_ids, scan_time)
+        base_data, column_to_observable_id, experiment_ids, scan_time, sd_suffix=sd_suffix)
     return measurement_rows, condition_rows, experiment_rows, set()
 
 
@@ -311,8 +359,14 @@ def _scan_time_for(conf, stem):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(data, bngl, noise_distribution, model_file):
-    """Classify each fitted ``.exp`` column as a model observable or function and map it."""
+def _observable_rows(data, bngl, noise, model_file):
+    """Classify each fitted ``.exp`` column as a model observable or function and map it.
+
+    ``noise`` is the ``(noiseDistribution, sigma_verb, sigma_arg)`` from
+    :func:`_resolve_noise`; the sigma source is resolved per column (it can depend on
+    the column's data, e.g. a ``column_mean`` sigma).
+    """
+    distribution, verb, arg = noise
     indvar = _independent_variable(data)
     observable_rows = []
     column_to_observable_id = {}
@@ -328,8 +382,8 @@ def _observable_rows(data, bngl, noise_distribution, model_file):
                 f"Exp column '{col}' matches no observable or function in model "
                 f"'{model_file}' (its observables: {sorted(bngl.observable_names)}; "
                 f"functions: {sorted(bngl.function_names)}).")
-        sd_from_data = (col + '_SD') in data.cols
-        row = petab_observable_row(col, kind, noise_distribution, sd_from_data)
+        noise_source = _noise_source_for_column(verb, arg, col, data)
+        row = petab_observable_row(col, kind, distribution, noise_source)
         observable_rows.append(row)
         column_to_observable_id[col] = row.observable_id
     if not observable_rows:
@@ -337,6 +391,40 @@ def _observable_rows(data, bngl, noise_distribution, model_file):
             f"Exp file for model '{model_file}' has no fittable observable/function "
             f"columns (only an independent variable and/or _SD columns).")
     return observable_rows, column_to_observable_id
+
+
+def _noise_source_for_column(verb, arg, col, data):
+    """The PEtab noise representation for one fitted column, from the desugared sigma
+    source verb (ADR-0021 reversed):
+
+    * ``read_exp_file`` (the ``_SD`` data column) -> a per-point placeholder, fed by the
+      measurements' ``noiseParameters``. Requires the ``<col><suffix>`` column.
+    * ``fix_at`` -> a constant noiseFormula (the fixed sigma).
+    * ``column_mean`` -> a constant noiseFormula = the observable's own column mean.
+
+    A free-parameter sigma (``fit``) and a relative sigma (``relative``) are deferred
+    boundaries: the former needs the noise parameter wired into the PEtab parameter
+    table (it is not a model parameter), and the latter is a ``noiseFormula``
+    expression (the sympy layer, mirroring the importer's expression boundary).
+    """
+    if verb == 'read_exp_file':
+        sd_col = col + arg
+        if sd_col not in data.cols:
+            raise NotImplementedError(
+                f"Observable column '{col}': the objective reads its noise from the "
+                f"'{sd_col}' data column, but the .exp has no such column. A constant "
+                f"or free-parameter sigma without per-point data is a separate path "
+                f"(ADR-0023, #423).")
+        return ('placeholder', None)
+    if verb == 'fix_at':
+        return ('constant', float(arg))
+    if verb == 'column_mean':
+        return ('constant', float(np.average(data[col])))
+    raise NotImplementedError(
+        f"Observable column '{col}': the '{verb}' sigma source is a later export chunk "
+        f"-- a free-parameter sigma (fit) needs the noise parameter wired into the "
+        f"PEtab parameter table, and a relative sigma is a noiseFormula expression (the "
+        f"sympy layer, mirroring the importer boundary). ADR-0021/0023, #423.")
 
 
 def _resolve_free_to_model(free_params, bngl, model_file):

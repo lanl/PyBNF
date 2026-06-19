@@ -85,7 +85,7 @@ from dataclasses import dataclass
 from ..noise import (LINEAR, LN, MEDIAN, ConstantSigma, FreeParameterSigma,
                      Gaussian, Laplace)
 from ..printing import PybnfError
-from ._tsv import write_tsv
+from ._tsv import num, write_tsv
 
 # PEtab v2 noiseDistribution -> (PyBNF NoiseModel family class, additive-noise
 # scale). The single PEtab column carries both axes: the family (Gaussian/Laplace)
@@ -228,7 +228,7 @@ _OBSERVABLE_COLUMNS = [
     'noisePlaceholders']
 
 
-def petab_observable_row(model_name, kind, noise_distribution, sd_from_data):
+def petab_observable_row(model_name, kind, noise_distribution, noise_source):
     """Map one fitted BNGL column to a :class:`PetabObservableRow` (ADR-0025).
 
     ``model_name`` is the BNGL observable/function name (an ``.exp`` column header);
@@ -239,13 +239,18 @@ def petab_observable_row(model_name, kind, noise_distribution, sd_from_data):
     so the table only references it by name and the exporter needs no formula
     translator.
 
-    ``noise_distribution`` is the PEtab family the job's objective maps to (``chi_sq``
-    -> ``normal``). ``sd_from_data`` says the column has a per-point ``_SD`` companion;
-    that exports to a declared noise **placeholder** (``noiseFormula`` =
-    ``noisePlaceholders`` = ``noiseParameter1_<id>``) whose per-point value the
-    measurements' ``noiseParameters`` column supplies. A column with no ``_SD`` raises
-    ``NotImplementedError`` (chunk 1 exports only ``_SD``-sourced noise; a global,
-    constant, or free-parameter sigma source is a later chunk).
+    ``noise_distribution`` is the PEtab family the job's objective maps to (ADR-0023
+    reversed: ``gaussian`` -> ``normal``, ``laplace`` -> ``laplace``). ``noise_source``
+    is the PEtab representation of the objective's sigma source (ADR-0021 reversed),
+    one of:
+
+    * ``('placeholder', None)`` -- a per-point ``_SD`` data column: a declared noise
+      **placeholder** (``noiseFormula`` = ``noisePlaceholders`` =
+      ``noiseParameter1_<id>``) whose per-point value the measurements'
+      ``noiseParameters`` column supplies (``chi_sq``).
+    * ``('constant', value)`` -- a fixed sigma written inline as a numeric
+      ``noiseFormula`` with no placeholder: a ``fix_at`` constant (``sos`` -> 1,
+      ``sod`` -> 1) or an observable's column mean (``ave_norm_sos``).
     """
     try:
         prefix = _PETAB_OBSERVABLE_PREFIX[kind]
@@ -255,21 +260,24 @@ def petab_observable_row(model_name, kind, noise_distribution, sd_from_data):
             f"'function').")
     observable_id = prefix + model_name
 
-    if not sd_from_data:
-        raise NotImplementedError(
-            f"Observable '{observable_id}': the column has no '_SD' companion, so its "
-            f"noise comes from the global objective (a constant or free-parameter "
-            f"sigma), which chunk 1 does not export yet (ADR-0025, #407). Chunk 1 "
-            f"exports per-point '_SD'-column noise as a PEtab noiseParameters "
-            f"placeholder.")
+    source_kind, source_value = noise_source
+    if source_kind == 'placeholder':
+        noise_formula = f'noiseParameter1_{observable_id}'
+        noise_placeholders = noise_formula
+    elif source_kind == 'constant':
+        noise_formula = num(source_value)
+        noise_placeholders = None
+    else:
+        raise PybnfError(
+            f"Observable '{observable_id}': unknown noise source kind "
+            f"{source_kind!r} (expected 'placeholder' or 'constant').")
 
-    placeholder = f'noiseParameter1_{observable_id}'
     return PetabObservableRow(
         observable_id=observable_id,
         observable_formula=model_name,
-        noise_formula=placeholder,
+        noise_formula=noise_formula,
         noise_distribution=noise_distribution,
-        noise_placeholders=placeholder,
+        noise_placeholders=noise_placeholders,
     )
 
 
