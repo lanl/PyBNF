@@ -87,6 +87,21 @@ _PETAB_DISTRIBUTION_TO_FAMILY = {
 _UNSUPPORTED_PETAB_DISTRIBUTIONS = frozenset(
     {'cauchy', 'gamma', 'exponential', 'chisquare', 'rayleigh'})
 
+# The reverse of ``_PETAB_DISTRIBUTION_TO_FAMILY`` (the export direction, ADR-0025):
+# a PyBNF prior keyword (a FreeParameter ``type``) -> (PEtab priorDistribution
+# spelling, family stem, is_log). Derived by inverting the import map so the two
+# directions can never drift apart -- the same dictionary read both ways.
+_KEYWORD_TO_PETAB_DISTRIBUTION = {
+    f"{'log' if is_log else ''}{stem}_var": (dist, stem, is_log)
+    for dist, (stem, is_log) in _PETAB_DISTRIBUTION_TO_FAMILY.items()
+}
+
+# The free-parameter keywords the exporter can write as a PEtab prior. Exposed for
+# the exporter's conf-level filter (export.py). The no-prior ``var`` / ``logvar``
+# point-start keywords are deliberately absent: a flat improper prior is not a PEtab
+# probability family, so it has no ``priorDistribution`` to emit (#423).
+EXPORTABLE_PRIOR_KEYWORDS = frozenset(_KEYWORD_TO_PETAB_DISTRIBUTION)
+
 
 @dataclass(frozen=True)
 class PetabParameterRow:
@@ -312,51 +327,108 @@ def petab_parameter_row(free_parameter, parameter_id=None):
     drives); a caller that has resolved the model parameter name authoritatively (the
     exporter, from the BNGL ``parameters`` block) passes it explicitly.
 
-    **Scope (chunk 1):** a bounded ``uniform_var`` -- a uniform prior over
-    ``[p1, p2]`` -- maps to an estimated parameter with those bounds and **no**
-    explicit ``priorDistribution`` (PEtab v2 defaults an estimated parameter without a
-    prior to uniform-over-bounds, so the row round-trips exactly through
-    ``free_parameter_from_row``). Every other prior family raises
-    ``NotImplementedError`` -- a later export chunk (the prior-catalog reverse of
-    ADR-0019), surfaced in code rather than mis-exported.
+    Exports the whole proper-prior catalog -- the reverse of ADR-0019's import map:
+
+    * ``uniform_var`` -- the bounds are ``[p1, p2]`` and **no** ``priorDistribution``
+      is written (PEtab v2 defaults an estimated, prior-less parameter to
+      uniform-over-bounds, so the row round-trips).
+    * ``loguniform_var`` -- the same linear bounds, but ``priorDistribution`` is
+      stated (``log-uniform``; PEtab's default uniform is *linear*) with
+      ``priorParameters = (p1, p2)``.
+    * ``normal_var`` / ``laplace_var`` and their ``log*`` forms -- a location-scale
+      prior: ``priorParameters`` are the ``(loc, scale)``, in **natural** log for the
+      log families (PyBNF parameterizes in log10, so ``(loc, scale)`` are scaled back
+      by ``ln 10``). A truncated parameter (ADR-0020) writes its reflecting box as the
+      truncating bounds; an unbounded one writes blank bounds (PyBNF has no native
+      truncation grammar for these families yet -- #417).
+
+    The no-prior ``var`` / ``logvar`` point-start keywords and the five scipy
+    families PyBNF lacks raise ``NotImplementedError`` -- surfaced in code, not
+    mis-exported.
     """
     if parameter_id is None:
         parameter_id = _FREE_SUFFIX.sub('', free_parameter.name)
 
-    if free_parameter.type != 'uniform_var':
+    keyword = free_parameter.type
+    if keyword not in _KEYWORD_TO_PETAB_DISTRIBUTION:
         raise NotImplementedError(
-            f"Parameter '{free_parameter.name}': exporting a '{free_parameter.type}' "
-            f"prior to PEtab is a later chunk (ADR-0025, #407); chunk 1 exports only a "
-            f"bounded 'uniform_var' (estimate=true with bounds). The prior-family export "
-            f"is the reverse of ADR-0019's import catalog.")
+            f"Parameter '{free_parameter.name}': exporting a '{keyword}' prior to "
+            f"PEtab is not supported. The PEtab v2 prior families are "
+            f"{sorted(EXPORTABLE_PRIOR_KEYWORDS)}; the no-prior 'var'/'logvar' "
+            f"point-start keywords have no PEtab priorDistribution (a flat improper "
+            f"prior is not a PEtab probability family). This is the reverse of "
+            f"ADR-0019's import catalog (#423).")
 
+    dist, stem, is_log = _KEYWORD_TO_PETAB_DISTRIBUTION[keyword]
+    nominal = (None if free_parameter.value is None
+               else float(free_parameter.value))
+    if stem == 'uniform':
+        return _petab_uniform_row(free_parameter, parameter_id, dist, is_log, nominal)
+    return _petab_location_scale_row(free_parameter, parameter_id, dist, is_log, nominal)
+
+
+def _petab_uniform_row(fp, parameter_id, dist, is_log, nominal):
+    """A bounded Uniform family -> a PEtab estimated parameter over ``[p1, p2]``.
+
+    The linear ``uniform_var`` needs no ``priorDistribution`` (it *is* PEtab's
+    default for an estimated, prior-less parameter); ``log-uniform`` is not that
+    default, so it states its family and its ``(a, b)`` = the same linear bounds.
+    """
+    lb, ub = float(fp.p1), float(fp.p2)
+    prior_distribution = dist if is_log else None
+    prior_parameters = (lb, ub) if is_log else ()
     return PetabParameterRow(
-        parameter_id=parameter_id,
-        estimate=True,
-        lower_bound=float(free_parameter.p1),
-        upper_bound=float(free_parameter.p2),
-        nominal_value=(None if free_parameter.value is None
-                       else float(free_parameter.value)),
-        prior_distribution=None,
-        prior_parameters=(),
-    )
+        parameter_id=parameter_id, estimate=True,
+        lower_bound=lb, upper_bound=ub, nominal_value=nominal,
+        prior_distribution=prior_distribution, prior_parameters=prior_parameters)
+
+
+def _petab_location_scale_row(fp, parameter_id, dist, is_log, nominal):
+    """A Normal/Laplace family (or its log form) -> a PEtab location-scale prior.
+
+    ``priorParameters`` are ``(loc, scale)``; for the log families PyBNF stores them
+    in log10 and PEtab expects the **natural**-log parameters, so they are scaled
+    back by ``ln 10`` (the exact reverse of the importer's ``/_LN10``; the
+    distribution over theta is unchanged -- ADR-0003). Truncation bounds, if any
+    (ADR-0020), become the PEtab bounds that truncate the prior; otherwise the
+    parameter is unbounded and the bounds are left blank.
+    """
+    loc, scale = float(fp.p1), float(fp.p2)
+    if is_log:
+        loc, scale = loc * _LN10, scale * _LN10
+    lb = None if fp.trunc_lb is None else float(fp.trunc_lb)
+    ub = None if fp.trunc_ub is None else float(fp.trunc_ub)
+    return PetabParameterRow(
+        parameter_id=parameter_id, estimate=True,
+        lower_bound=lb, upper_bound=ub, nominal_value=nominal,
+        prior_distribution=dist, prior_parameters=(loc, scale))
 
 
 _PARAMETER_COLUMNS = ['parameterId', 'estimate', 'lowerBound', 'upperBound']
+_PRIOR_COLUMNS = ['priorDistribution', 'priorParameters']
 
 
 def write_parameter_table(rows, path):
     """Write parameter ``rows`` to ``path`` as a PEtab v2 ``parameters.tsv``.
 
-    Chunk 1 writes the four columns the estimated-uniform case needs
-    (``parameterId``/``estimate``/``lowerBound``/``upperBound``); ``nominalValue`` and
-    the prior columns are optional in PEtab v2 and omitted while unused.
+    Always writes ``parameterId``/``estimate``/``lowerBound``/``upperBound``. The
+    prior columns (``priorDistribution``/``priorParameters``) are appended only when
+    some row carries an explicit prior, so a plain ``uniform_var`` job keeps the
+    four-column chunk-1 shape (PEtab v2 defaults a prior-less estimated parameter to
+    uniform-over-bounds). An unbounded location-scale family writes blank bounds;
+    ``nominalValue`` is optional in PEtab v2 and omitted while unused.
     """
-    records = [
-        [r.parameter_id, 'true' if r.estimate else 'false',
-         num(r.lower_bound), num(r.upper_bound)]
-        for r in rows]
-    write_tsv(path, _PARAMETER_COLUMNS, records)
+    has_prior = any(r.prior_distribution is not None for r in rows)
+    header = _PARAMETER_COLUMNS + (_PRIOR_COLUMNS if has_prior else [])
+    records = []
+    for r in rows:
+        rec = [r.parameter_id, 'true' if r.estimate else 'false',
+               num(r.lower_bound), num(r.upper_bound)]
+        if has_prior:
+            rec += [r.prior_distribution or '',
+                    ';'.join(num(p) for p in r.prior_parameters)]
+        records.append(rec)
+    write_tsv(path, header, records)
 
 
 # ---------------------------------------------------------------------------

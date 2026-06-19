@@ -59,6 +59,32 @@ def _tsv_rows(path):
         return list(csv.DictReader(fh, delimiter='\t'))
 
 
+def _petab_validation_errors(problem_yaml):
+    """Load a problem via the real petablint path and return its ERROR-level issues.
+
+    The model-level external oracle: ``Problem.from_yaml`` exercises
+    ``model_factory -> BnglModel -> BNG2.pl --check`` (after ``register_bngl()``,
+    which is a no-op on a petab that ships BNGL natively, #420 Step B), then runs
+    **every** ``default_validation_task`` -- the model-cross checks included. Returns
+    ``[(task, message), ...]``; empty means a clean problem.
+    """
+    pytest.importorskip('petab.v2')
+    from petab.v2 import Problem
+    from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
+
+    from pybnf.petab.bngl_model import register_bngl
+    register_bngl()
+    problem = Problem.from_yaml(str(problem_yaml))
+    assert type(problem.model).__name__ == 'BnglModel'   # the BNGL loader ran
+    errors = []
+    for task in default_validation_tasks:
+        issue = task.run(problem)
+        if issue is not None and getattr(issue, 'level', None) == \
+                ValidationIssueSeverity.ERROR:
+            errors.append((type(task).__name__, issue.message))
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # 3. Reverse-asset round trip + unit behavior
 # ---------------------------------------------------------------------------
@@ -82,8 +108,45 @@ class TestReverseAssets:
         fp = FreeParameter('kase__FREE', 'uniform_var', 1.0, 2.0)
         assert petab_parameter_row(fp, parameter_id='kase').parameter_id == 'kase'
 
-    def test_non_uniform_prior_export_not_implemented(self):
-        fp = FreeParameter('k__FREE', 'normal_var', 0.0, 1.0)
+    @pytest.mark.parametrize('lb,ub', [(0.5, 10.0), (1e-3, 1e3), (2.0, 2.5)])
+    def test_loguniform_parameter_round_trips(self, lb, ub):
+        # log-uniform states its family (PEtab's default uniform is *linear*); the
+        # bounds are linear and round-trip exactly -- no ln10 scaling on a uniform.
+        row = PetabParameterRow(parameter_id='k', estimate=True, lower_bound=lb,
+                                upper_bound=ub, prior_distribution='log-uniform',
+                                prior_parameters=(lb, ub))
+        fp = free_parameter_from_row(row)
+        assert fp.type == 'loguniform_var'
+        assert petab_parameter_row(fp) == row
+
+    @pytest.mark.parametrize('dist,keyword', [
+        ('normal', 'normal_var'), ('laplace', 'laplace_var'),
+        ('log-normal', 'lognormal_var'), ('log-laplace', 'loglaplace_var')])
+    def test_location_scale_prior_round_trips(self, dist, keyword):
+        # Two-sided bounds truncate the unbounded family (ADR-0020); the log families
+        # carry their (loc, scale) in natural log, which round-trips through the
+        # ln10 conversion to within floating-point (not bit-exact).
+        row = PetabParameterRow(parameter_id='k', estimate=True, lower_bound=0.5,
+                                upper_bound=20.0, prior_distribution=dist,
+                                prior_parameters=(1.0, 0.5))
+        fp = free_parameter_from_row(row)
+        assert fp.type == keyword
+        out = petab_parameter_row(fp)
+        assert out.parameter_id == 'k' and out.prior_distribution == dist
+        assert (out.lower_bound, out.upper_bound) == (0.5, 20.0)
+        assert out.prior_parameters == pytest.approx((1.0, 0.5))
+
+    def test_unbounded_location_scale_writes_blank_bounds(self):
+        # A conf-built lognormal has no truncation grammar yet (#417) -> unbounded ->
+        # blank PEtab bounds, prior fully carried by priorParameters.
+        fp = FreeParameter('k__FREE', 'lognormal_var', 0.0, 1.0)
+        row = petab_parameter_row(fp)
+        assert row.lower_bound is None and row.upper_bound is None
+        assert row.prior_distribution == 'log-normal'
+
+    def test_no_prior_keyword_export_not_implemented(self):
+        # var / logvar are a flat improper prior -- not a PEtab probability family.
+        fp = FreeParameter('k__FREE', 'logvar', 1.0, 0.1)
         with pytest.raises(NotImplementedError):
             petab_parameter_row(fp)
 
@@ -215,6 +278,42 @@ class TestExportDemo:
                     ValidationIssueSeverity.ERROR:
                 errors.append((type(task).__name__, issue.message))
         assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# The dominant real prior: a log-uniform job exported end-to-end (#423 finding D:
+# loguniform_var is the corpus's most common non-trivial prior, 1327 uses).
+# ---------------------------------------------------------------------------
+
+class TestExportLogUniform:
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        import shutil
+        src = tmp_path_factory.mktemp('loguniform_src')
+        shutil.copy(DEMO_DIR / 'parabola.bngl', src / 'parabola.bngl')
+        shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
+        (src / 'job.conf').write_text(
+            'model = parabola.bngl : par1.exp\n'
+            'fit_type = de\nobjfunc = chi_sq\n'
+            'loguniform_var = v1__FREE 0.1 10\n'
+            'loguniform_var = v2__FREE 0.1 10\n'
+            'loguniform_var = v3__FREE 0.1 10\n')
+        out = tmp_path_factory.mktemp('loguniform_out')
+        export_job(src / 'job.conf', out)
+        return out
+
+    def test_parameters_state_the_log_uniform_prior(self, exported):
+        rows = _tsv_rows(exported / 'parameters.tsv')
+        by_id = {r['parameterId']: r for r in rows}
+        assert set(by_id) == {'v1', 'v2', 'v3'}
+        for r in by_id.values():
+            assert r['priorDistribution'] == 'log-uniform'   # NOT PEtab's default uniform
+            assert r['priorParameters'] == '0.1;10'
+            assert (r['lowerBound'], r['upperBound']) == ('0.1', '10')
+
+    def test_full_petab_validation_is_clean(self, exported):
+        assert _petab_validation_errors(exported / 'problem.yaml') == []
 
 
 # ---------------------------------------------------------------------------

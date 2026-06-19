@@ -54,7 +54,11 @@ from .measurements import (
     write_measurement_table,
 )
 from .observables import petab_observable_row, write_observable_table
-from .parameters import petab_parameter_row, write_parameter_table
+from .parameters import (
+    EXPORTABLE_PRIOR_KEYWORDS,
+    petab_parameter_row,
+    write_parameter_table,
+)
 
 # The job objective -> the PEtab v2 noiseDistribution it maps to (ADR-0023 reversed).
 # Chunk 1 supports the global ``chi_sq`` (Gaussian) objective; other objectives and
@@ -403,15 +407,23 @@ def _free_parameters_from_conf(conf):
         keyword, name = key
         if not _VAR_DECL.search(keyword):
             continue
-        if keyword != 'uniform_var':
+        if keyword not in EXPORTABLE_PRIOR_KEYWORDS:
             raise NotImplementedError(
-                f"Free parameter '{name}' is a '{keyword}'; this chunk exports only "
-                f"'uniform_var' (estimate=true with bounds). Other priors are a later "
-                f"export chunk (ADR-0025).")
-        free_params.append(FreeParameter(name, 'uniform_var', float(value[0]),
+                f"Free parameter '{name}' is a '{keyword}'; the exporter writes the "
+                f"PEtab prior families {sorted(EXPORTABLE_PRIOR_KEYWORDS)}. The "
+                f"no-prior 'var'/'logvar' point-start keywords have no PEtab prior "
+                f"representation (a flat improper prior is not a PEtab probability "
+                f"family; ADR-0025, #423).")
+        # p1/p2 are the family's two governing values (bounds for the Uniform
+        # families, loc/scale for the location-scale ones); a 3rd token is the native
+        # ``bounded`` flag, inert for the location-scale families and left at the
+        # FreeParameter default for the Uniform ones (matching chunk 1).
+        free_params.append(FreeParameter(name, keyword, float(value[0]),
                                          float(value[1])))
     if not free_params:
-        raise PybnfError("No free parameters (uniform_var) found in the config.")
+        raise PybnfError(
+            "No exportable free parameters found in the config (expected one of "
+            f"{sorted(EXPORTABLE_PRIOR_KEYWORDS)}).")
     return free_params
 
 
