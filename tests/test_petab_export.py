@@ -49,10 +49,13 @@ from pybnf.petab.parameters import (
 from pybnf.pset import FreeParameter
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
-# The new-era (edition 2) demo conf: the PEtab v2 exporter requires a modern config
-# (objective named on the ADR-0031 surface, not the legacy objfunc key). demo_bng.conf
-# stays legacy for the fitter / install check; demo_bng_v2.conf is its modern twin.
+# The new-era (edition 2) demo conf: the PEtab v2 exporter requires a modern config and
+# reads the new-era data surface (model: / experiment: / data:), not the legacy linkage
+# (ADR-0028 Chunk 5). demo_bng.conf stays legacy for the fitter / install check;
+# demo_bng_v2.conf is its fully new-era twin (model: parabola_v2.bngl -- parabola.bngl
+# without a begin actions block, since the action is synthesized from the experiment).
 DEMO_CONF = DEMO_DIR / 'demo_bng_v2.conf'
+DEMO_MODEL = 'parabola_v2.bngl'
 
 
 def _tsv_rows(path):
@@ -207,7 +210,7 @@ class TestExportDemo:
 
     def test_writes_all_artifacts(self, exported):
         for name in ('parameters.tsv', 'observables.tsv', 'measurements.tsv',
-                     'problem.yaml', 'parabola.bngl'):
+                     'problem.yaml', DEMO_MODEL):
             assert (exported / name).is_file()
 
     def test_parameters(self, exported):
@@ -240,7 +243,7 @@ class TestExportDemo:
             assert r['experimentId'] == ''              # base time-course, "model as is"
 
     def test_clean_model_drops_free_and_actions_keeps_measurement_model(self, exported):
-        text = (exported / 'parabola.bngl').read_text()
+        text = (exported / DEMO_MODEL).read_text()
         assert '__FREE' not in text                     # PEtab estimates v1/v2/v3 directly
         assert 'begin actions' not in text              # PEtab drives simulation
         assert 'y()=v1*(x^2)+(v2*x)+v3' in text         # the function (measurement model) survives
@@ -250,7 +253,7 @@ class TestExportDemo:
         text = (exported / 'problem.yaml').read_text()
         assert 'format_version: 2.0.0' in text
         assert 'language: bngl' in text
-        assert 'location: parabola.bngl' in text
+        assert f'location: {DEMO_MODEL}' in text
 
     def test_full_petab_validation_is_clean(self, exported):
         # 1. The external oracle, now at MODEL level: load the whole problem via
@@ -402,6 +405,94 @@ class TestExportObjectiveFamily:
 
 
 # ---------------------------------------------------------------------------
+# Chunk 5a: the exporter reads the new-era data surface (model: / experiment: / data: /
+# observable:) as transcription, not the legacy linkage (ADR-0028). The demo twin
+# (TestExportDemo, DEMO_CONF) already exercises a wildtype time course end-to-end through
+# the full oracle; these tests cover the new behaviours: replicates, the observable:
+# override, and the parameter-scan deferral (#426). Conditioned experiments are Chunk 5b.
+# ---------------------------------------------------------------------------
+
+class TestExportNewEra:
+
+    def _src(self, tmp_path_factory, name='newera'):
+        import shutil
+        src = tmp_path_factory.mktemp(name)
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
+        return src
+
+    _HEAD = ('edition = 2\njob_type = de\nobjective = chi_sq\n'
+             f'model: {DEMO_MODEL}\n')
+    _PARAMS = ('uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+               'uniform_var = v3__FREE 0 10\n')
+
+    def test_replicates_become_repeated_measurement_rows(self, tmp_path_factory):
+        src = self._src(tmp_path_factory, 'reps')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: par1, data: par1.exp, par1.exp\n' + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+        rows = _tsv_rows(out / 'measurements.tsv')
+        # Two identical replicate files -> twice the single-file rows (n times x {x, y}).
+        assert len(rows) == data.data.shape[0] * 2 * 2
+        assert all(r['experimentId'] == '' for r in rows)   # wildtype, M empty
+        _assert_petab_clean(out)
+
+    def test_observable_override_remaps_a_renamed_column(self, tmp_path_factory):
+        src = self._src(tmp_path_factory, 'obsoverride')
+        # The data's x column is headed 'x_meas'; observable: x, column: x_meas rewires it
+        # (and its _SD companion) so it classifies as the model observable obs_x.
+        (src / 'renamed.exp').write_text(
+            '# time x_meas y x_meas_SD y_SD\n'
+            '0\t-10\t43\t1\t1\n1\t-9\t34.5\t1\t1\n2\t-8\t27\t1\t1\n')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: par1, data: renamed.exp\n'
+            'observable: x, column: x_meas\n' + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        ids = {r['observableId'] for r in _tsv_rows(out / 'observables.tsv')}
+        assert ids == {'obs_x', 'func_y'}    # x_meas classified as obs_x after the rename
+        _assert_petab_clean(out)
+
+    def test_missing_observable_override_column_raises(self, tmp_path_factory):
+        from pybnf.printing import PybnfError
+        src = self._src(tmp_path_factory, 'obsmiss')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: par1, data: par1.exp\n'
+            'observable: x, column: nope\n' + self._PARAMS)
+        with pytest.raises(PybnfError, match='nope'):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_inferred_parameter_scan_experiment_is_deferred(self, tmp_path_factory):
+        # A non-time independent variable -> parameter_scan, deferred (#426): a fully
+        # new-era conf cannot author the scan endpoint time, so export never sees one.
+        src = self._src(tmp_path_factory, 'pscan')
+        (src / 'dose.exp').write_text('# dose x y\n1\t-10\t43\n2\t-9\t34.5\n')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: dr, data: dose.exp\n' + self._PARAMS)
+        with pytest.raises(NotImplementedError, match='#426'):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_explicit_type_parameter_scan_is_deferred(self, tmp_path_factory):
+        src = self._src(tmp_path_factory, 'pscan2')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: dr, type: parameter_scan, data: par1.exp\n'
+            + self._PARAMS)
+        with pytest.raises(NotImplementedError, match='#426'):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_new_era_condition_is_chunk_5b(self, tmp_path_factory):
+        # A condition: / conditioned experiment under the new surface raises until 5b.
+        src = self._src(tmp_path_factory, 'cond5b')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'condition: lowv3, perturbations: v3 = 1\n'
+            'experiment: par1, condition: lowv3, data: par1.exp\n' + self._PARAMS)
+        with pytest.raises(NotImplementedError):
+            export_job(src / 'job.conf', src / 'out')
+
+
+# ---------------------------------------------------------------------------
 # 5. Chunk-1 boundaries raise (documented in code, not silently mis-exported)
 # ---------------------------------------------------------------------------
 
@@ -521,7 +612,7 @@ class TestBnglModel:
         from pybnf.petab.export import export_job
         out = tmp_path / 'p'
         export_job(DEMO_CONF, out)
-        return BnglModel.from_file(out / 'parabola.bngl')
+        return BnglModel.from_file(out / DEMO_MODEL)
 
     def test_parameter_ids_and_values(self, model):
         assert set(model.get_parameter_ids()) == {'v1', 'v2', 'v3'}

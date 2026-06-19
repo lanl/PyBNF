@@ -118,40 +118,14 @@ def export_job(conf_path, out_dir):
     free_to_model = _resolve_free_to_model(free_params, bngl, model_file)
     fit_model_params = set(free_to_model.values())
 
-    has_mutants = 'mutant' in conf
-    has_scan = 'param_scan' in conf
-    if has_mutants and has_scan:
-        raise NotImplementedError(
-            "This job has BOTH 'mutant' conditions and a 'param_scan' (dose-response). A "
-            "surrogate parameter is removed from the parameter table problem-wide, so "
-            "mixing the two would force the dose-response experiments to re-supply it -- "
-            "export one feature family per job for now (ADR-0027, #422).")
-
-    base_exp = _resolve_base_exp(conf, model_file)
-    base_data = Data(file_name=str(conf_path.parent / base_exp))
-    base_stem = Path(base_exp).stem
-    indvar = _independent_variable(base_data)
-
-    observable_rows, column_to_observable_id = _observable_rows(
-        base_data, bngl, noise, model_file)
-
-    # Per-point noiseParameters are emitted only when the objective's sigma comes from
-    # a data column (the placeholder source); a fixed / column-mean sigma is carried
-    # inline in noiseFormula, so the measurement export must not read _SD (which would
-    # leave a noiseParameters override with no placeholder to bind to).
-    _dist, sigma_verb, sigma_arg = noise
-    sd_suffix = sigma_arg if sigma_verb == 'read_exp_file' else None
-
-    if indvar.lower() == 'time':
-        measurement_rows, condition_rows, experiment_rows, surrogate_params = \
-            _export_time_course(conf, conf_path, model_file, bngl, base_stem, base_data,
-                                column_to_observable_id, fit_model_params, has_mutants,
-                                sd_suffix)
+    if _has_new_era_data(conf):
+        (observable_rows, measurement_rows, condition_rows, experiment_rows,
+         surrogate_params) = _export_new_era(
+            conf, conf_path, model_file, bngl, noise, fit_model_params)
     else:
-        measurement_rows, condition_rows, experiment_rows, surrogate_params = \
-            _export_dose_response(conf, conf_path, model_file, bngl, base_stem, base_data,
-                                  indvar, column_to_observable_id, fit_model_params,
-                                  has_scan, sd_suffix)
+        (observable_rows, measurement_rows, condition_rows, experiment_rows,
+         surrogate_params) = _export_legacy(
+            conf, conf_path, model_file, bngl, noise, fit_model_params)
 
     parameter_rows, free_to_nominal = _parameter_rows(
         free_params, free_to_model, surrogate_params, bngl, model_file)
@@ -171,6 +145,221 @@ def export_job(conf_path, out_dir):
                        has_conditions=bool(condition_rows),
                        has_experiments=bool(experiment_rows))
     return out_dir
+
+
+# ---------------------------------------------------------------------------
+# New-era surface reading (ADR-0028): export becomes transcription
+# ---------------------------------------------------------------------------
+
+def _has_new_era_data(conf):
+    """True iff the job binds data via the new-era ``experiment:`` surface (ADR-0028).
+
+    A fully new-era conf introduces data through ``('experiment', name)`` entries (a PEtab
+    Experiment carrying its ``data:``), never the legacy ``model = X : Y.exp`` linkage.
+    """
+    return any(isinstance(k, tuple) and len(k) == 2 and k[0] == 'experiment'
+               for k in conf)
+
+
+def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params):
+    """Read a job's data/conditions/observables from the **new-era surface** (ADR-0028).
+
+    Export is *transcription*: an ``experiment:`` is a PEtab Experiment (experimentId =
+    the experiment name) carrying its ``data:`` replicates as measurement rows; an
+    ``observable:`` line renames a data column to a model entity before classification.
+    Returns ``(observable_rows, measurement_rows, condition_rows, experiment_rows,
+    surrogate_params)``.
+
+    Chunk 5a exports **wildtype time-course experiments** only: ``condition:`` /
+    conditioned experiments are the next sub-chunk (5b), and a parameter-scan experiment
+    is deferred (#426; raised in :func:`_read_experiments`). With no conditions the set
+    ``M`` of fit-and-mutated parameters is empty, so every experiment is "model as is"
+    (empty experimentId) and no conditions/experiments tables are written -- a single
+    wildtype experiment is byte-identical to the chunk-1 base time-course.
+    """
+    experiments = _read_experiments(conf, conf_path, model_file, bngl)
+    overrides = _read_observable_overrides(conf)
+    all_datas = [d for exp in experiments for d in exp['datas']]
+    _apply_observable_overrides(all_datas, overrides)
+
+    observable_rows, column_to_observable_id = _observable_rows(
+        all_datas, bngl, noise, model_file)
+
+    # 5a boundary: conditions/experiments tables are Chunk 5b. Refuse rather than
+    # silently dropping a condition the fitter would apply.
+    if any(exp['condition'] is not None for exp in experiments) or any(
+            isinstance(k, tuple) and k[0] == 'condition' for k in conf):
+        raise NotImplementedError(
+            "New-era 'condition:' export (conditions/experiments tables) is the next "
+            "export sub-chunk (ADR-0028 Chunk 5b); this build exports wildtype "
+            "time-course experiments only.")
+    condition_rows, experiment_rows, surrogate_params = [], [], set()
+    experiment_to_id = {exp['name']: '' for exp in experiments}
+
+    # Per-point noiseParameters are emitted only when the objective's sigma comes from a
+    # data column (the placeholder source); a fixed / column-mean sigma is carried inline
+    # in noiseFormula, so the measurement export must not read _SD then (it would leave a
+    # noiseParameters override with no placeholder to bind to).
+    _dist, sigma_verb, sigma_arg = noise
+    sd_suffix = sigma_arg if sigma_verb == 'read_exp_file' else None
+
+    measurement_rows = []
+    for exp in experiments:
+        eid = experiment_to_id[exp['name']]
+        # Each replicate Data contributes its own rows under the one experiment (PEtab
+        # models replicates as repeated rows -- no need to pre-stack as config.py does).
+        for data in exp['datas']:
+            cmap = {c: o for c, o in column_to_observable_id.items() if c in data.cols}
+            measurement_rows += measurement_rows_from_data(
+                data, cmap, experiment_id=eid, sd_suffix=sd_suffix)
+    return observable_rows, measurement_rows, condition_rows, experiment_rows, \
+        surrogate_params
+
+
+def _read_experiments(conf, conf_path, model_file, bngl):
+    """Read + resolve the new-era ``experiment:`` entries from the raw ``ploop`` dict.
+
+    Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
+    mf?, 'type': t?, 'method': m?}``. Returns a list (declaration order) of dicts
+    ``{'name', 'condition', 'datas': [Data, ...]}`` -- the ``data:`` files read as
+    individual :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated
+    measurement rows, so they are not pre-stacked). Raises:
+
+    * the parameter-scan deferral for a non-time-course experiment -- the scan's
+      simulation endpoint time has no home in the ``experiment:`` grammar yet, so a fully
+      new-era conf cannot author one (deferred, #426; mirrors
+      ``config.py::_load_experiments``);
+    * a multi-model boundary if an experiment names a different model (a later chunk);
+    * a constraint boundary for non-``.exp`` data (``.con``/``.prop`` is deferred,
+      ADR-0028 Open/deferred).
+    """
+    model_stem = Path(model_file).stem
+    experiments = []
+    for key, fields in conf.items():
+        if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment'):
+            continue
+        name = key[1]
+        ref = fields.get('model')
+        if ref is not None and Path(ref).stem != model_stem:
+            raise PybnfError(
+                f"Experiment '{name}' names model '{ref}', but this job's model is "
+                f"'{model_file}'. Multi-model export is a later chunk.")
+        data_files = fields.get('data', [])
+        if not data_files:
+            raise PybnfError(f"Experiment '{name}' declares no 'data:' files.")
+        non_exp = [f for f in data_files if not f.endswith('.exp')]
+        if non_exp:
+            raise NotImplementedError(
+                f"Experiment '{name}' has non-.exp data ({non_exp}); constraint "
+                f"(.con/.prop) export has no core-PEtab representation -- a later chunk "
+                f"(ADR-0028 Open/deferred).")
+        datas = [Data(file_name=str(conf_path.parent / f)) for f in data_files]
+        if _experiment_type(name, datas[0], fields.get('type')) != 'time_course':
+            raise NotImplementedError(
+                f"Experiment '{name}' is a parameter_scan (independent variable "
+                f"'{_independent_variable(datas[0])}'), not a time course. Parameter-scan "
+                f"/ dose-response experiments are not yet exportable via the new-era "
+                f"'experiment:' surface: the scan's simulation endpoint time has no home "
+                f"in the experiment grammar yet, so a fully new-era conf cannot author "
+                f"one (deferred, #426). Export covers time-course experiments.")
+        experiments.append(
+            {'name': name, 'condition': fields.get('condition'), 'datas': datas})
+    return experiments
+
+
+def _experiment_type(name, data, explicit_type):
+    """Infer ``'time_course'`` vs ``'parameter_scan'`` from a ``Data``'s independent
+    variable (``time`` => time_course; otherwise the indvar names a swept parameter =>
+    parameter_scan), unless ``type:`` states it. Mirrors
+    ``config.py::_infer_experiment_type`` (the caller defers parameter_scan -- #426)."""
+    if explicit_type is not None:
+        t = explicit_type.lower()
+        if t in ('time_course', 'timecourse'):
+            return 'time_course'
+        if t in ('parameter_scan', 'param_scan', 'parameterscan'):
+            return 'parameter_scan'
+        raise PybnfError(
+            f"Experiment '{name}' has unrecognized type '{explicit_type}' (use "
+            f"'time_course').")
+    indvar = data.indvar if data.indvar is not None else _independent_variable(data)
+    return 'time_course' if indvar.lower() == 'time' else 'parameter_scan'
+
+
+def _read_observable_overrides(conf):
+    """The new-era ``observable: <entity>, column: <header>`` overrides as
+    ``{entity: header}`` (ADR-0028 Chunk 4) -- the renames applied before classification."""
+    return {k[1]: v for k, v in conf.items()
+            if isinstance(k, tuple) and len(k) == 2 and k[0] == 'observable'}
+
+
+def _apply_observable_overrides(datas, overrides):
+    """Rename each ``<header>`` data column (and its ``<header>_SD`` companion) to the
+    model ``<entity>`` across all ``datas`` so the column classifies against a model
+    observable/function -- mirroring ``config.py::_load_observables``. Global: a ``Data``
+    lacking a header is skipped (it just does not measure that observable); a header
+    present in **no** ``Data`` is a typo -> ``PybnfError`` (listing the columns present)."""
+    for entity, header in overrides.items():
+        found = False
+        for data in datas:
+            if header in data.cols:
+                data.rename_column(header, entity)
+                found = True
+            sd = f'{header}_SD'
+            if sd in data.cols:
+                data.rename_column(sd, f'{entity}_SD')
+                found = True
+        if not found:
+            present = sorted({c for data in datas for c in data.cols})
+            raise PybnfError(
+                f"Observable override 'observable: {entity}, column: {header}' names data "
+                f"column '{header}', but no experimental data file contains it (columns "
+                f"present: {present}). Check for a typo in the column name.")
+
+
+def _export_legacy(conf, conf_path, model_file, bngl, noise, fit_model_params):
+    """Read a job's data/conditions from the **legacy** linkage (``model = X : Y.exp`` /
+    ``mutant`` / ``param_scan``).
+
+    Retired in Chunk 5c (refused under the edition-2 gate once the new-era surface fully
+    replaces it; ADR-0028); kept here only so Chunks 5a/5b stay green while the existing
+    legacy-binding fixtures migrate. Returns the same 5-tuple as :func:`_export_new_era`.
+    """
+    has_mutants = 'mutant' in conf
+    has_scan = 'param_scan' in conf
+    if has_mutants and has_scan:
+        raise NotImplementedError(
+            "This job has BOTH 'mutant' conditions and a 'param_scan' (dose-response). A "
+            "surrogate parameter is removed from the parameter table problem-wide, so "
+            "mixing the two would force the dose-response experiments to re-supply it -- "
+            "export one feature family per job for now (ADR-0027, #422).")
+
+    base_exp = _resolve_base_exp(conf, model_file)
+    base_data = Data(file_name=str(conf_path.parent / base_exp))
+    base_stem = Path(base_exp).stem
+    indvar = _independent_variable(base_data)
+
+    observable_rows, column_to_observable_id = _observable_rows(
+        [base_data], bngl, noise, model_file)
+
+    # Per-point noiseParameters are emitted only when the objective's sigma comes from
+    # a data column (the placeholder source); a fixed / column-mean sigma is carried
+    # inline in noiseFormula, so the measurement export must not read _SD (which would
+    # leave a noiseParameters override with no placeholder to bind to).
+    _dist, sigma_verb, sigma_arg = noise
+    sd_suffix = sigma_arg if sigma_verb == 'read_exp_file' else None
+
+    if indvar.lower() == 'time':
+        measurement_rows, condition_rows, experiment_rows, surrogate_params = \
+            _export_time_course(conf, conf_path, model_file, bngl, base_stem, base_data,
+                                column_to_observable_id, fit_model_params, has_mutants,
+                                sd_suffix)
+    else:
+        measurement_rows, condition_rows, experiment_rows, surrogate_params = \
+            _export_dose_response(conf, conf_path, model_file, bngl, base_stem, base_data,
+                                  indvar, column_to_observable_id, fit_model_params,
+                                  has_scan, sd_suffix)
+    return observable_rows, measurement_rows, condition_rows, experiment_rows, \
+        surrogate_params
 
 
 # ---------------------------------------------------------------------------
@@ -427,20 +616,28 @@ def _scan_time_for(conf, stem):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(data, bngl, noise, model_file):
-    """Classify each fitted ``.exp`` column as a model observable or function and map it.
+def _observable_rows(datas, bngl, noise, model_file):
+    """Classify each fitted column across all experiments' ``datas`` as a model observable
+    or function and map it to a PEtab observable row.
 
-    ``noise`` is the ``(noiseDistribution, sigma_verb, sigma_arg)`` from
-    :func:`_resolve_noise`; the sigma source is resolved per column (it can depend on
-    the column's data, e.g. a ``column_mean`` sigma).
+    ``datas`` is the list of every experiment's (override-renamed) :class:`~pybnf.data.Data`
+    (one element for the legacy single base time-course); a column is gathered once, in
+    first-appearance order, so the observables table covers the whole job. ``noise`` is the
+    ``(noiseDistribution, sigma_verb, sigma_arg)`` from :func:`_resolve_noise`; the sigma
+    source is resolved per column (it can depend on the column's data, e.g. a
+    ``column_mean`` sigma).
     """
     distribution, verb, arg = noise
-    indvar = _independent_variable(data)
+    columns = []
+    for data in datas:
+        indvar = data.indvar if data.indvar is not None else _independent_variable(data)
+        for col in sorted(data.cols, key=data.cols.get):
+            if col == indvar or col.endswith('_SD') or col in columns:
+                continue
+            columns.append(col)
     observable_rows = []
     column_to_observable_id = {}
-    for col in sorted(data.cols, key=data.cols.get):
-        if col == indvar or col.endswith('_SD'):
-            continue
+    for col in columns:
         if col in bngl.observable_names:
             kind = 'observable'
         elif col in bngl.function_names:
@@ -450,44 +647,47 @@ def _observable_rows(data, bngl, noise, model_file):
                 f"Exp column '{col}' matches no observable or function in model "
                 f"'{model_file}' (its observables: {sorted(bngl.observable_names)}; "
                 f"functions: {sorted(bngl.function_names)}).")
-        noise_source = _noise_source_for_column(verb, arg, col, data)
+        noise_source = _noise_source_for_column(verb, arg, col, datas)
         row = petab_observable_row(col, kind, distribution, noise_source)
         observable_rows.append(row)
         column_to_observable_id[col] = row.observable_id
     if not observable_rows:
         raise PybnfError(
-            f"Exp file for model '{model_file}' has no fittable observable/function "
+            f"Exp data for model '{model_file}' has no fittable observable/function "
             f"columns (only an independent variable and/or _SD columns).")
     return observable_rows, column_to_observable_id
 
 
-def _noise_source_for_column(verb, arg, col, data):
+def _noise_source_for_column(verb, arg, col, datas):
     """The PEtab noise representation for one fitted column, from the desugared sigma
-    source verb (ADR-0021 reversed):
+    source verb (ADR-0021 reversed) -- evaluated across every experiment's ``datas``:
 
     * ``read_exp_file`` (the ``_SD`` data column) -> a per-point placeholder, fed by the
-      measurements' ``noiseParameters``. Requires the ``<col><suffix>`` column.
+      measurements' ``noiseParameters``. Every ``Data`` carrying the column must also
+      carry its ``<col><suffix>`` companion (else a measurement row would lack the noise
+      value its declared placeholder binds to).
     * ``fix_at`` -> a constant noiseFormula (the fixed sigma).
-    * ``column_mean`` -> a constant noiseFormula = the observable's own column mean.
+    * ``column_mean`` -> a constant noiseFormula = the column's mean across all data.
 
     A free-parameter sigma (``fit``) and a relative sigma (``relative``) are deferred
     boundaries: the former needs the noise parameter wired into the PEtab parameter
     table (it is not a model parameter), and the latter is a ``noiseFormula``
     expression (the sympy layer, mirroring the importer's expression boundary).
     """
+    holders = [data for data in datas if col in data.cols]
     if verb == 'read_exp_file':
         sd_col = col + arg
-        if sd_col not in data.cols:
+        if any(sd_col not in data.cols for data in holders):
             raise NotImplementedError(
                 f"Observable column '{col}': the objective reads its noise from the "
-                f"'{sd_col}' data column, but the .exp has no such column. A constant "
-                f"or free-parameter sigma without per-point data is a separate path "
-                f"(ADR-0023, #423).")
+                f"'{sd_col}' data column, but a data file carrying '{col}' has no such "
+                f"column. A constant or free-parameter sigma without per-point data is a "
+                f"separate path (ADR-0023, #423).")
         return ('placeholder', None)
     if verb == 'fix_at':
         return ('constant', float(arg))
     if verb == 'column_mean':
-        return ('constant', float(np.average(data[col])))
+        return ('constant', float(np.average(np.concatenate([d[col] for d in holders]))))
     raise NotImplementedError(
         f"Observable column '{col}': the '{verb}' sigma source is a later export chunk "
         f"-- a free-parameter sigma (fit) needs the noise parameter wired into the "

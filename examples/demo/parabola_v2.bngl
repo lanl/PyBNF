@@ -1,0 +1,41 @@
+begin model
+
+  begin parameters
+
+# Original values used to generate par1.exp
+# (v1, v2, v3) = 0.5, 1, 3
+
+#Parabola A:    Y = v1*(X^2)  +  v2*X   +  v3
+
+    v1 v1__FREE
+    v2 v2__FREE
+    v3 v3__FREE
+
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)+v3
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+# This model carries no actions block: under the new era (edition 2) the simulation is
+# synthesized from the `experiment:` line (its `data:` supplies the output points), so the
+# model file carries no fitting actions. See examples/demo/demo_bng_v2.conf and ADR-0028.
