@@ -157,3 +157,76 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
 Relevant: ADR-0027 (the exporter this feeds), ADR-0025/0026 (exporter-first; BnglModel
 oracle), ADR-0019/0021 (parameters/noise neutral seams). Issue: **#423** (config-language
 redesign; sibling of #407/#422).
+
+## Addendum (2026-06-19): `model:` multiplicity, the syntax style, and `fit_type` → `job_type`
+
+A review pass settled four points that refine — but do not change the direction of —
+the proposal above. They are recorded here so they are not re-litigated.
+
+### 1. The new-era syntax keeps `keyword:` (colons), not `keyword =`
+
+A suggestion surfaced to drop the `keyword:` colon forms (`model:` / `condition:` /
+`experiment:` / `data:`) and write the new era as `keyword = value` instead, on the
+grounds that the `edition` marker (ADR-0031) — not the colon — is now what disambiguates
+new-era from legacy syntax, so the colon's original job is redundant. **Rejected.** It is
+an ad-hoc drift from the proposal for no real gain: the labeled, colon-keyword shape is
+the deliberate authoring surface (it reads as a structured record — `experiment: egf_high,
+condition: dimer_dead, data: a.exp, b.exp`), and reusing `=` would re-overload the colon
+that legacy already spends as the data-binding separator (`model = X : Y.exp`). The colon
+forms stand as written above.
+
+### 2. `model:` is repeatable, and the lines accumulate
+
+Both single (`model: egfr.bngl`) and comma-list (`model: egfr.bngl, mek1.bngl`) forms are
+valid (as the proposal shows). **Multiple `model:` lines are also allowed and union
+together** — `modelId` = filename stem, which must be unique across all of them. The
+reason is consistency: the whole new-era problem block is *repeated labeled lines* — one
+`condition:` per condition, one `experiment:` per experiment — so `model:` follows the
+same shape. A many-model job (e.g. `MEK_Isoforms`: five genetic-variant model files) reads
+as one `model:` line each rather than one long comma-run; the comma-list stays as a
+shorthand for a small number. (This makes the `model:` line purely a *declaration* — data
+never binds to it; data is introduced only through an `experiment:`'s `data:` sub-field,
+where multiple files are replicates, as in the proposal. The retired wart was exactly the
+legacy coupling of data onto the model line.)
+
+### 3. The new era renames `fit_type` → `job_type`
+
+`fit_type` is a **misnomer**, and the new era is the right place to correct it. The key
+selects across **three** families (registry `family` field), not just fitting:
+
+- **optimizer** (point-estimate minimization — actual "fitting"): `sim`, `de`, `ade`,
+  `pso`, `ss`, `powell`, `cmaes`, `sa` *(deprecated)* — 8
+- **sampler** (Bayesian / MCMC posterior sampling — *not* a point fit): `am`, `dream`,
+  `p_dream`, `pt`, `mh` *(deprecated)* — 5
+- **checker** (validates the model / network generation — neither fit nor sample):
+  `check` — 1
+
+So an `am` / `dream` run is a *sampling* job and `check` is not fitting at all; `job_type`
+honestly names what the key selects — the **kind of job** — with the value naming the
+specific procedure. The three `family` values (`optimizer` / `sampler` / `checker`) are
+exactly the vocabulary `job_type` ranges over.
+
+The rename rides the `edition` select-and-freeze marker, which makes it clean and cheap —
+the objection that a rename is "pure churn" does not apply here:
+
+- **Legacy edition keeps `fit_type`; new-era edition uses `job_type`** — both supported
+  forever, no legacy conf touched.
+- It is a **surface-only** rename: the internal `FIT_TYPE_REGISTRY` / `register_fit_type` /
+  the `family` field are unchanged. The config layer maps *both* the new-era `job_type` key
+  and the legacy `fit_type` key onto the same registry lookup; nothing below the config
+  boundary moves. (Renaming the internal registry symbols is explicitly out of scope.)
+
+This is the canonical use of the edition mechanism: an honest name in the new era without
+breaking a single legacy job or any internal code.
+
+### 4. The dividing line the rename illustrates: problem keys vs tool keys
+
+The rename clarifies *which* keys the new era touches. New-era modernization is for the
+keys that describe the **PEtab problem** — `model:` / `condition:` / `experiment:` /
+`data:` / observables / parameters / the objective surface (ADR-0031). The **tool** keys —
+`job_type` (the procedure), its algorithm parameters (`population_size`, `max_iterations`,
+…), `output_dir`, `verbosity`, and `edition` itself — are *not* part of a PEtab problem and
+are carried unchanged (a PEtab problem says nothing about which optimizer/sampler runs it;
+the tool chooses that separately, as pyPESTO does). `fit_type` → `job_type` is the one tool
+key the new era renames, and only because the name was inaccurate — not for PEtab
+alignment.
