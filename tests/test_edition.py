@@ -14,7 +14,9 @@ import types
 
 import pytest
 
-from pybnf import edition, noise, objective
+import numpy as np
+
+from pybnf import data, edition, noise, objective
 from pybnf.config import Configuration
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
@@ -550,6 +552,128 @@ wall_time_sim = 0
 """
     with pytest.raises(PybnfError, match='parameter_scan experiments are not yet supported'):
         Configuration(ploop(conf.splitlines(keepends=True)))
+
+
+# --- the edition-gated observable: overrides (ADR-0028, Chunk 4) ----------------
+#
+# _load_observables reads self.config (edition + the ('observable', entity) tuple keys)
+# and mutates self.exp_data's Data column maps in place; the edition gate fires before
+# the data is touched, so a SimpleNamespace stands in for self on the gate / no-op paths,
+# and a hand-built exp_data of Data.from_columns objects exercises the rename directly.
+
+def _load_observables(config, exp_data=None):
+    Configuration._load_observables(
+        types.SimpleNamespace(config=config, exp_data=exp_data or {}))
+
+
+def _exp_data_with(headers, model='m', key='e'):
+    arr = np.arange(2 * len(headers), dtype=float).reshape(2, len(headers))
+    return {model: {key: data.Data.from_columns(arr, headers)}}
+
+
+def test_observable_requires_edition_legacy():
+    # An `observable:` in a legacy conf errors, naming the edition it needs (the gate
+    # fires before any data column is touched).
+    with pytest.raises(PybnfError, match='edition 2') as exc:
+        _load_observables({('observable', 'pErk'): 'pErk_measured', 'edition': None})
+    assert "observable:" in str(exc.value)
+
+
+def test_no_observable_is_a_noop():
+    _load_observables({'edition': 2})   # no ('observable', …) keys -> nothing happens
+
+
+def test_observable_renames_header_and_sd_companion():
+    # The override renames the data column <header> -> <entity> AND its <header>_SD
+    # per-point noise companion (ADR-0021) -> <entity>_SD, so both the observable match
+    # and the noise source find the renamed columns.
+    exp_data = _exp_data_with(['time', 'pErk_measured', 'pErk_measured_SD', 'B'])
+    d = exp_data['m']['e']
+    _load_observables({('observable', 'pErk'): 'pErk_measured', 'edition': 2}, exp_data)
+    assert 'pErk' in d.cols and 'pErk_SD' in d.cols
+    assert 'pErk_measured' not in d.cols and 'pErk_measured_SD' not in d.cols
+    assert d.cols['pErk'] == 1 and d.cols['pErk_SD'] == 2     # indices unchanged
+    assert d.cols['B'] == 3 and d.indvar == 'time'           # untouched columns intact
+
+
+def test_observable_skips_data_files_without_the_header():
+    # The override is global; a data file that does not measure the observable (no
+    # <header> column) is simply left unchanged, while one that does is renamed.
+    exp_data = {'m': {'has': data.Data.from_columns(
+                          np.array([[0., 1.], [1., 2.]]), ['time', 'pErk_measured']),
+                      'lacks': data.Data.from_columns(
+                          np.array([[0., 9.], [1., 8.]]), ['time', 'other'])}}
+    _load_observables({('observable', 'pErk'): 'pErk_measured', 'edition': 2}, exp_data)
+    assert 'pErk' in exp_data['m']['has'].cols
+    assert exp_data['m']['lacks'].cols == {'time': 0, 'other': 1}   # untouched
+
+
+def test_observable_stray_header_raises():
+    # A <header> present in NO data file is almost always a typo -> error listing the
+    # columns actually present.
+    exp_data = _exp_data_with(['time', 'A', 'B'])
+    with pytest.raises(PybnfError, match='no experimental data file contains'):
+        _load_observables({('observable', 'pErk'): 'pErk_typo', 'edition': 2}, exp_data)
+
+
+def test_observable_clobbering_existing_column_raises():
+    # Remapping onto a column that already exists would silently merge two columns.
+    exp_data = _exp_data_with(['time', 'A_measured', 'A'])
+    with pytest.raises(PybnfError, match="a column named 'A' already exists"):
+        _load_observables({('observable', 'A'): 'A_measured', 'edition': 2}, exp_data)
+
+
+def test_observable_rename_makes_objective_score():
+    """The load-bearing proof (handoff): a differently-named exp column has no matching
+    simulation column and the objective RAISES; the observable: override's rename makes
+    the by-name match succeed and the objective scores. Simulator-light -- a plain
+    SumOfSquares objective over hand-built sim/exp Data."""
+    sim = data.Data.from_columns(np.array([[0., 1.1], [1., 1.9]]), ['time', 'A'])
+    exp = data.Data.from_columns(np.array([[0., 1.0], [1., 2.0]]), ['time', 'A_measured'])
+    obj = objective.SumOfSquaresObjective()
+    with pytest.raises(PybnfError, match='not found in the simulation output'):
+        obj.evaluate(sim, exp, show_warnings=True)
+    exp.rename_column('A_measured', 'A')           # what _load_observables does
+    score = obj.evaluate(sim, exp, show_warnings=True)
+    assert score == pytest.approx((1.1 - 1.0) ** 2 + (1.9 - 2.0) ** 2)
+
+
+@pytest.mark.roadrunner
+def test_observable_override_yields_same_exp_data_as_correctly_named(tmp_path):
+    """Config-level two-front-ends-same-objects proof: a modern conf whose .exp has a
+    renamed column header (A -> A_measured) plus an `observable: A, column: A_measured`
+    line yields the same exp_data column names AND data as the equivalent conf whose .exp
+    is already correctly named -- the override is a pure header transform on the loaded
+    Data. Uses the SBML abc model (loads via RoadRunner, no BNG2.pl)."""
+    renamed = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: abc_data, data: tests/bngl_files/abc/abc_data_renamed.exp
+observable: A, column: A_measured
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    named = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: abc_data, data: tests/bngl_files/abc/abc_data.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    r = Configuration(ploop(renamed.splitlines(keepends=True)))
+    n = Configuration(ploop(named.splitlines(keepends=True)))
+    rd = r.exp_data['abc']['abc_data']
+    nd = n.exp_data['abc']['abc_data']
+    assert rd.cols == nd.cols == {'time': 0, 'A': 1, 'B': 2, 'C': 3}
+    assert np.array_equal(rd.data, nd.data)
 
 
 # --- the edition-gated objective surface (ADR-0031) -----------------------------

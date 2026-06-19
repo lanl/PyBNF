@@ -253,6 +253,14 @@ class Configuration:
         # wart is bypassed: a new-era model carries no data on its model line).
         self._load_experiments()
         logger.debug('Loaded experiments')
+        # New-era observable: column-header overrides (ADR-0028, Chunk 4). Runs after every
+        # experimental Data exists (so it can rename columns across all of them) and before
+        # the objective is built (so the objective's by-name column match + per-observable
+        # noise see the final names): renames each data column <header> -> <entity> (and
+        # <header>_SD -> <entity>_SD) so a differently-named data column matches its model
+        # observable. Edition-gated (>= 2); a legacy/same-named conf is untouched.
+        self._load_observables()
+        logger.debug('Loaded observable overrides')
         self.obj = self._load_obj_func()
         logger.debug('Loaded objective function')
         self.variables = self._load_variables()
@@ -985,6 +993,66 @@ class Configuration:
         if data.indvar is not None and data.indvar.lower() == 'time':
             return 'time_course'
         return 'parameter_scan'
+
+    def _load_observables(self):
+        """Apply new-era ``observable:`` column-header overrides (ADR-0028, Chunk 4).
+
+        By default a ``.exp`` column header IS the model observable/function name, and the
+        objective matches an experimental column to a simulation column **by name** (so the
+        default needs no override). An ``observable: <entity>, column: <header>`` line is
+        the opt-in override for the common case where the measured data column is named
+        something other than the model entity: it renames the ``<header>`` column to
+        ``<entity>`` -- and its ``<header>_SD`` per-point noise companion (ADR-0021) to
+        ``<entity>_SD`` -- in every experimental ``Data``, so the by-name match succeeds and
+        the fit scores the column. Without it a differently-named data column has no
+        matching simulation column and the objective **raises** at eval time
+        (``_check_columns``); the rename is therefore load-bearing, not cosmetic.
+
+        The override is global -- a top-level line, not per-experiment -- so it applies
+        across all experimental data; a data file that does not contain ``<header>`` is
+        left unchanged (an experiment that simply does not measure that observable). A
+        ``<header>`` present in **no** data file is almost always a typo and errors,
+        listing the columns actually present. The independent-variable column cannot be
+        remapped and an ``<entity>`` that would clobber an existing column errors -- both
+        enforced by ``Data.rename_column``.
+
+        Edition-gated (``>= 2``): the parser accepts ``observable:`` regardless, so the
+        error is an explanatory ``require_edition`` rather than a parse failure. Runs after
+        ``_load_experiments`` (so every experimental ``Data`` -- experiment-sourced or
+        legacy ``model = X : Y.exp`` -- already exists in ``self.exp_data``) and before
+        ``_load_obj_func`` (so the objective's per-observable noise / column logic sees the
+        final names).
+        """
+        overrides = [(k[1], v) for k, v in self.config.items()
+                     if isinstance(k, tuple) and k[0] == 'observable']
+        if not overrides:
+            return
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(ed, 2, "the 'observable:' syntax")
+        all_data = [d for model_data in self.exp_data.values() for d in model_data.values()]
+        for entity, header in overrides:
+            found = False
+            for d in all_data:
+                # The observable column and its _SD noise companion are renamed
+                # independently: each is present iff the data file measures (the noise of)
+                # this observable, and finding either marks the override applied so a
+                # genuine typo (present nowhere) still errors below.
+                if header in d.cols:
+                    d.rename_column(header, entity)
+                    found = True
+                sd = f'{header}_SD'
+                if sd in d.cols:
+                    d.rename_column(sd, f'{entity}_SD')
+                    found = True
+            if not found:
+                present = sorted({c for d in all_data for c in d.cols})
+                raise PybnfError(
+                    f"Observable override 'observable: {entity}, column: {header}' names "
+                    f"data column '{header}', but no experimental data file contains a "
+                    f"column with that name (columns present: {present}). Check for a typo "
+                    "in the column name.")
+            logger.debug(f"Observable override: data column '{header}' -> model entity "
+                         f"'{entity}' (with its _SD companion, where present)")
 
     def _load_simulators(self):
 

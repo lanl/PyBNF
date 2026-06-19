@@ -58,6 +58,41 @@ class Data:
         obj.indvar = headers[0] if indvar is None else indvar
         return obj
 
+    def rename_column(self, old, new):
+        """Rename a data column header from ``old`` to ``new`` in place.
+
+        Rewires both the header->index (``cols``) and index->header (``headers``)
+        maps; the underlying data array is untouched (a column is the same numbers
+        under a different name). Used by the new-era ``observable:`` override
+        (ADR-0028) to remap a data-file column header to a model observable/function
+        name, so the objective's by-name exp<->sim column match succeeds.
+
+        Guards (each a clear ``PybnfError`` rather than a silent corruption):
+
+        * ``old`` must be a present column (a missing header is almost always a typo);
+        * ``new`` must not already name a *different* column (which would silently
+          merge two columns / clobber existing data);
+        * ``old`` must not be the independent variable (column 0) -- remapping the
+          time / scanned-parameter axis is a mistake, not a rename.
+
+        Renaming a column to its own name is a no-op.
+        """
+        if old == new:
+            return
+        if old not in self.cols:
+            raise PybnfError(f"Cannot rename data column '{old}': there is no column with "
+                             f"that name (columns are {sorted(self.cols)}).")
+        if new in self.cols:
+            raise PybnfError(f"Cannot rename data column '{old}' to '{new}': a column named "
+                             f"'{new}' already exists.")
+        if old == self.indvar:
+            raise PybnfError(f"Cannot rename the independent-variable column '{old}'; "
+                             "remapping the independent variable (the time or scanned-"
+                             "parameter axis) is not allowed.")
+        idx = self.cols.pop(old)
+        self.cols[new] = idx
+        self.headers[idx] = new
+
     @property
     def data(self):
         return self._data

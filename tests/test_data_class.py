@@ -246,6 +246,39 @@ class TestData:
         d = data.Data.from_columns(arr, ['kf', 'A'], indvar='kf')
         assert d.indvar == 'kf'
 
+    def test_rename_column(self):
+        # ADR-0028 Chunk 4: rename a data column header in place, rewiring both
+        # cols (header->idx) and headers (idx->header); the array is untouched, so
+        # the renamed column reads the same numbers.
+        d = data.Data.from_columns(np.array([[0., 3., 5.], [1., 2., 6.]]),
+                                   ['time', 'obs1', 'obs3'])
+        d.rename_column('obs1', 'pErk')
+        assert d.cols == {'time': 0, 'pErk': 1, 'obs3': 2}
+        assert d.headers == {0: 'time', 1: 'pErk', 2: 'obs3'}
+        npt.assert_array_equal(d['pErk'], np.array([3., 2.]))
+
+    def test_rename_column_to_same_name_is_noop(self):
+        d = data.Data.from_columns(np.array([[0., 3.]]), ['time', 'obs1'])
+        d.rename_column('obs1', 'obs1')
+        assert d.cols == {'time': 0, 'obs1': 1}
+
+    @raises(printing.PybnfError)
+    def test_rename_missing_column_raises(self):
+        d = data.Data.from_columns(np.array([[0., 3.]]), ['time', 'obs1'])
+        d.rename_column('nope', 'pErk')
+
+    @raises(printing.PybnfError)
+    def test_rename_to_existing_column_raises(self):
+        # Renaming onto an existing different column would silently merge two columns.
+        d = data.Data.from_columns(np.array([[0., 3., 5.]]), ['time', 'obs1', 'obs3'])
+        d.rename_column('obs1', 'obs3')
+
+    @raises(printing.PybnfError)
+    def test_rename_indvar_raises(self):
+        # Remapping the independent variable (column 0) would corrupt the time/scan axis.
+        d = data.Data.from_columns(np.array([[0., 3.]]), ['time', 'obs1'])
+        d.rename_column('time', 't')
+
     def test_whitespace(self):
         d = data.Data()
         d.data = d._read_file_lines(self.data2, r'\s+')
