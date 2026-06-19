@@ -175,3 +175,37 @@ class TestParse:
     def test_condition_duplicate_name_raises(self):
         with pytest.raises(PybnfError, match="Condition 'c' is specified multiple times"):
             parse.ploop(['condition: c, perturbations: a = 1', 'condition: c, perturbations: b = 2'])
+
+    def test_experiment_grammar(self):
+        # New-era `experiment:` (ADR-0028): a name + a required `data:` list, plus the
+        # optional condition/model/type/method labeled sub-fields, each a pp.Group.
+        assert parse.parse('experiment: egf_high, data: hi_r1.exp, hi_r2.exp') == \
+            ['experiment', 'egf_high', ['data', 'hi_r1.exp', 'hi_r2.exp']]
+        assert parse.parse('experiment: egf_dd, condition: dimer_dead, data: dd.exp') == \
+            ['experiment', 'egf_dd', ['condition', 'dimer_dead'], ['data', 'dd.exp']]
+
+    def test_experiment_fields_order_independent(self):
+        # pp.Each lets the labeled fields appear in any order after the name; only data
+        # is required. ploop reads them by label, so order never matters.
+        d = parse.ploop(['experiment: full, type: time_course, data: a.exp, b.exp, '
+                         'condition: c1, model: m.xml, method: ssa'])
+        assert d[('experiment', 'full')] == {
+            'type': 'time_course', 'data': ['a.exp', 'b.exp'],
+            'condition': 'c1', 'model': 'm.xml', 'method': 'ssa'}
+
+    def test_experiment_ploop_stages_data_files(self):
+        # Replicate data files are also staged into the exp_data set so the
+        # normalization key can validate against them (as model/mutant lines do).
+        d = parse.ploop(['experiment: e, data: r1.exp, r2.exp'])
+        assert d[('experiment', 'e')] == {'data': ['r1.exp', 'r2.exp']}
+        assert {'r1.exp', 'r2.exp'} <= d['exp_data']
+
+    def test_experiment_requires_data(self):
+        # data: is the one required field -- a bare experiment errors (with the
+        # experiment-specific format hint).
+        with pytest.raises(PybnfError, match='experiment:'):
+            parse.ploop(['experiment: e, condition: c'])
+
+    def test_experiment_duplicate_name_raises(self):
+        with pytest.raises(PybnfError, match="Experiment 'x' is specified multiple times"):
+            parse.ploop(['experiment: x, data: a.exp', 'experiment: x, data: b.exp'])

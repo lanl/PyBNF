@@ -186,8 +186,32 @@ def parse(s):
     condition_gram = condition_key + colon - cond_name + pp.Optional(cond_model_ref) + \
         pp.Suppress(',') + perturbations_key + colon - cond_perts - comment
 
+    # new-era experiment grammar (ADR-0028) -- a PEtab Experiment carrying its data:
+    #   experiment: <name>[, condition: <c>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...]
+    # A named simulation bound to its measurement files. The experiment NAME replaces the
+    # legacy BNGL Suffix as the simulation's identity (it becomes both the action suffix and
+    # the exp_data key); ``data:`` is a comma list whose multiple files are REPLICATES (all
+    # measurements under the one experiment). The optional ``condition:`` names the Condition
+    # to apply (omitted => wildtype), ``model:`` resolves the base model (omittable when one
+    # model), ``type:`` overrides the data-driven type inference, and ``method:`` the
+    # simulator. Each labeled sub-field is a single pp.Group, combined with pp.Each (``&``)
+    # so they may appear in ANY order after the name; only ``data:`` is required. ploop reads
+    # the groups by their label, so order does not matter. Output:
+    # ``['experiment', <name>, <field group>, ...]``. Edition-gated (>= 2) in config.py.
+    experiment_key = pp.CaselessLiteral('experiment')
+    exp_name = pp.Word(pp.alphas, pp.alphanums + '_')
+    exp_field_token = pp.Word(pp.alphas, pp.alphanums + '_')
+    exp_condition_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('condition') + colon + cond_name)
+    exp_model_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('model') + colon + model_file)
+    exp_data_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('data') + colon + _DelimitedList(exp_file))
+    exp_type_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('type') + colon + exp_field_token)
+    exp_method_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('method') + colon + exp_field_token)
+    experiment_gram = experiment_key + colon - exp_name + \
+        (pp.Optional(exp_condition_field) & pp.Optional(exp_model_field) & exp_data_field
+         & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)) - comment
+
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -298,6 +322,29 @@ def ploop(ls):  # parse loop
                 if cond_key in d:
                     raise PybnfError(f"Condition '{name}' is specified multiple times")
                 d[cond_key] = (model_ref, perts)
+            elif l[0] == 'experiment':
+                # New-era `experiment:` (ADR-0028) -- a named simulation bound to its data:
+                # files. Store as a structural ('experiment', name) tuple key (like a
+                # condition / noise_model key) -> a dict of the labeled sub-fields. Each
+                # field group is ['<label>', <value>...] (data carries a list, the rest a
+                # single value); reading by label means the grammar's any-order pp.Each is
+                # handled here without depending on group order. config.py edition-gates
+                # these and synthesizes the TimeCourse/ParamScan action + exp_data entry.
+                # The data files are also staged into the exp_data set so the normalization
+                # key can validate against them (as legacy model/mutant lines do).
+                name = l[1]
+                fields = {}
+                for grp in l[2:]:
+                    label = grp[0].lower()
+                    if label == 'data':
+                        fields['data'] = list(grp[1:])
+                    else:
+                        fields[label] = grp[1]
+                exp_key = ('experiment', name)
+                if exp_key in d:
+                    raise PybnfError(f"Experiment '{name}' is specified multiple times")
+                d[exp_key] = fields
+                exp_data.update(fields.get('data', []))
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
@@ -419,6 +466,10 @@ def ploop(ls):  # parse loop
             elif key == 'condition':
                 fmt = "'condition: name, perturbations: var1 op val1, var2 op val2, ...' where op is one of " \
                       "= * / + - , optionally with 'model: modelfile' before perturbations (requires edition >= 2)"
+            elif key == 'experiment':
+                fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' optionally with 'condition: c', " \
+                      "'model: modelfile', 'type: time_course' (parameter_scan is not yet supported via this " \
+                      "surface), or 'method: ode|ssa|pla|nf' in any order (requires edition >= 2)"
 
             message = f"Parsing configuration key '{key}' on line {i}.\n"
             if fmt == '':
