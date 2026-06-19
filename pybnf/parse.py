@@ -210,8 +210,27 @@ def parse(s):
         (pp.Optional(exp_condition_field) & pp.Optional(exp_model_field) & exp_data_field
          & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)) - comment
 
+    # new-era observable grammar (ADR-0028) -- a column-header override:
+    #   observable: <entity>, column: <header>
+    # By default a .exp column header IS the model observable/function name, and the
+    # objective matches an experimental column to a simulation column BY NAME. This line is
+    # the opt-in override for the common case where the measured data column is named
+    # something other than the model entity: it maps the model <entity> to the data
+    # <header>, so config.py can rename the data column <header> -> <entity> (and its
+    # <header>_SD per-point noise companion, ADR-0021) and the by-name match succeeds --
+    # without it a differently-named data column has no matching sim column and the
+    # objective raises. One required ``column:`` field, no optionals. The key is the model
+    # entity, the value the data header. Output: ['observable', <entity>, <header>].
+    # Edition-gated (>= 2) in config.py.
+    observable_key = pp.CaselessLiteral('observable')
+    obs_entity = pp.Word(pp.alphas, pp.alphanums + '_')
+    obs_column_key = pp.Suppress(pp.CaselessLiteral('column'))
+    obs_column = pp.Word(pp.alphas, pp.alphanums + '_')
+    observable_gram = observable_key + colon - obs_entity + pp.Suppress(',') + \
+        obs_column_key + colon - obs_column - comment
+
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -345,6 +364,20 @@ def ploop(ls):  # parse loop
                     raise PybnfError(f"Experiment '{name}' is specified multiple times")
                 d[exp_key] = fields
                 exp_data.update(fields.get('data', []))
+            elif l[0] == 'observable':
+                # New-era `observable:` (ADR-0028, Chunk 4) -- a column-header override.
+                # Store as a structural ('observable', entity) tuple key (like a
+                # condition / noise_model key) -> the data column header it maps to.
+                # config.py edition-gates these and renames the data column <header> ->
+                # <entity> (and <header>_SD -> <entity>_SD) in every experimental Data, so
+                # the objective's by-name exp<->sim column match succeeds. The model entity
+                # is the key (the default is that the data header IS the entity name; this
+                # line overrides that for a differently-named column), the header the value.
+                entity, header = l[1], l[2]
+                obs_key = ('observable', entity)
+                if obs_key in d:
+                    raise PybnfError(f"Observable '{entity}' is specified multiple times")
+                d[obs_key] = header
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
@@ -470,6 +503,9 @@ def ploop(ls):  # parse loop
                 fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' optionally with 'condition: c', " \
                       "'model: modelfile', 'type: time_course' (parameter_scan is not yet supported via this " \
                       "surface), or 'method: ode|ssa|pla|nf' in any order (requires edition >= 2)"
+            elif key == 'observable':
+                fmt = "'observable: entity, column: header' mapping a model observable/function name to a " \
+                      "differently-named data column header (requires edition >= 2)"
 
             message = f"Parsing configuration key '{key}' on line {i}.\n"
             if fmt == '':

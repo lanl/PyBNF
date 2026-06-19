@@ -209,3 +209,28 @@ class TestParse:
     def test_experiment_duplicate_name_raises(self):
         with pytest.raises(PybnfError, match="Experiment 'x' is specified multiple times"):
             parse.ploop(['experiment: x, data: a.exp', 'experiment: x, data: b.exp'])
+
+    def test_observable_grammar(self):
+        # New-era `observable:` (ADR-0028, Chunk 4): a column-header override mapping a
+        # model entity (the key) to a differently-named data column header (the value).
+        assert parse.parse('observable: pErk, column: pErk_measured') == \
+            ['observable', 'pErk', 'pErk_measured']
+
+    def test_observable_ploop_tuple_key(self):
+        # The override becomes a structural ('observable', entity) tuple key -> header
+        # (like a condition / noise_model key), so config.py edition-gates it and the
+        # golden config tests pass it through silently (a non-string key is never unused).
+        d = parse.ploop(['observable: pErk, column: pErk_measured',
+                         'observable: pAkt, column: pAkt_obs'])
+        assert d[('observable', 'pErk')] == 'pErk_measured'
+        assert d[('observable', 'pAkt')] == 'pAkt_obs'
+
+    def test_observable_duplicate_entity_raises(self):
+        with pytest.raises(PybnfError, match="Observable 'pErk' is specified multiple times"):
+            parse.ploop(['observable: pErk, column: a', 'observable: pErk, column: b'])
+
+    def test_observable_missing_column_errors(self):
+        # column: is the one required field -- a bare observable line errors with the
+        # observable-specific format hint.
+        with pytest.raises(PybnfError, match='observable:'):
+            parse.ploop(['observable: pErk'])
