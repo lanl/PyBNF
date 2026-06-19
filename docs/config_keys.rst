@@ -104,6 +104,34 @@ Required Keys
     * ``experiment: egf_high_dd, condition: dimer_dead, data: high_dd.exp``
     * ``experiment: egf_high, model: egfr.bngl, data: high.exp`` (multi-model)
 
+.. _observable:
+
+**observable** (new-era, ``observable: …``)
+  Under a modern :ref:`edition <edition>` (``edition >= 2``) an **observable** line remaps
+  a data-file **column header** to a model observable/function **name** when the two
+  differ. By default a ``.exp`` column header *is* the model observable name, and the
+  objective matches experimental columns to simulation columns by that name — so this line
+  is needed only when the measured column is named something else (common with real data).
+  Without it, a differently-named data column has no matching simulation column and the fit
+  raises.
+
+  The line is ``observable: <entity>, column: <header>`` — the model **entity** first, the
+  data column **header** second. It renames the ``<header>`` column to ``<entity>`` (and
+  its ``<header>_SD`` per-point :ref:`noise <noise_model_key>` companion, where present, to
+  ``<entity>_SD``) in every experimental data file, so the by-name match succeeds.
+
+  The override is **global** (a top-level line, not per-experiment): it applies across all
+  experimental data. A data file that does not contain ``<header>`` (an experiment that
+  doesn't measure that observable) is left unchanged; a ``<header>`` present in *no* data
+  file is treated as a typo and raises, listing the columns actually present. The
+  independent-variable column cannot be remapped, and a remap that would collide with an
+  existing column raises. Requires ``edition >= 2``.
+
+  Example:
+
+    * ``observable: pErk, column: pErk_measured`` (the model observable ``pErk`` is
+      measured by the data column named ``pErk_measured``)
+
 .. _fit_type:
 
 **fit_type**
