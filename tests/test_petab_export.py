@@ -378,6 +378,25 @@ class TestExportObjectiveFamily:
         assert all(m['noiseParameters'] != '' for m in meas)
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
+    def test_modern_whole_fit_noise_model_line_exports(self, tmp_path_factory):
+        # The modern ADR-0031 surface (not legacy objfunc): a whole-fit noise_model line.
+        import shutil
+        src = tmp_path_factory.mktemp('nm_src')
+        shutil.copy(DEMO_DIR / 'parabola.bngl', src / 'parabola.bngl')
+        shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
+        (src / 'job.conf').write_text(
+            'model = parabola.bngl : par1.exp\n'
+            'fit_type = de\nedition = 2\n'
+            'noise_model = laplace, scale = fix_at 1\n'
+            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+            'uniform_var = v3__FREE 0 10\n')
+        out = tmp_path_factory.mktemp('nm_out')
+        export_job(src / 'job.conf', out)
+        rows = _tsv_rows(out / 'observables.tsv')
+        assert all(r['noiseDistribution'] == 'laplace' for r in rows)
+        assert all(r['noiseFormula'] == '1' for r in rows)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
 
 # ---------------------------------------------------------------------------
 # 5. Chunk-1 boundaries raise (documented in code, not silently mis-exported)
@@ -408,6 +427,41 @@ class TestBoundaries:
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
             "fit_type = de\nobjfunc = chi_sq_dynamic\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError):
+            export_job(conf, tmp_path / 'out')
+
+    @pytest.mark.parametrize('token', ['kl', 'wasserstein'])
+    def test_profile_objective_not_implemented(self, tmp_path, token):
+        # Column-joint profile objectives have no per-observable PEtab noise -- they must
+        # raise, NOT silently fall through to the legacy chi_sq default.
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
+            f"fit_type = de\nedition = 2\nprofile_objective = {token}\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError):
+            export_job(conf, tmp_path / 'out')
+
+    def test_per_observable_noise_model_override_not_implemented(self, tmp_path):
+        # A per-observable noise_model override is a later chunk -- raise, not default.
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
+            "fit_type = de\nedition = 2\n"
+            "noise_model = gaussian, sigma = fix_at 1\n"
+            "noise_model x = gaussian, sigma = fix_at 2\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError):
+            export_job(conf, tmp_path / 'out')
+
+    def test_mean_centered_noise_model_not_implemented(self, tmp_path):
+        # PEtab v2 is median-only; a mean-centered noise model has no representation.
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
+            "fit_type = de\nedition = 2\n"
+            "noise_model = gaussian, sigma = fix_at 1, location = mean\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')

@@ -70,13 +70,14 @@ from .parameters import (
     write_parameter_table,
 )
 
-# A desugared noise-model family token (ADR-0031's ``_OBJECTIVE_DESUGAR``) -> the
-# PEtab v2 noiseDistribution it maps to (ADR-0023 reversed). The LINEAR Gaussian /
-# Laplace likelihoods map; the other two families are explicit boundaries handled in
-# ``_resolve_noise``: ``neg_bin`` was removed from PEtab v2, and PyBNF's ``lognormal``
-# is log10 whereas PEtab's ``log-normal`` is natural log (a deferred sigma
-# scale-conversion).
-_FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {'gaussian': 'normal', 'laplace': 'laplace'}
+# A noise-model family token (ADR-0031's noise_model grammar / ``_OBJECTIVE_DESUGAR``)
+# -> the PEtab v2 noiseDistribution it maps to (ADR-0023 reversed). The LINEAR Gaussian
+# / Laplace likelihoods map (``normal`` is the Gaussian alias); the other families are
+# explicit boundaries handled in ``_resolve_noise``: ``neg_bin`` was removed from PEtab
+# v2, and PyBNF's ``lognormal`` is log10 whereas PEtab's ``log-normal`` is natural log (a
+# deferred sigma scale-conversion).
+_FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {
+    'gaussian': 'normal', 'normal': 'normal', 'laplace': 'laplace'}
 
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
 # emits). Only ``uniform_var`` exports in chunk 1; the rest raise.
@@ -183,36 +184,70 @@ def _resolve_model(conf):
 
 
 def _resolve_noise(conf):
-    """The job's per-point noise model as ``(noiseDistribution, sigma_verb, sigma_arg)``.
+    """The job's whole-fit noise model as ``(noiseDistribution, sigma_verb, sigma_arg)``.
 
-    Reverses ADR-0031's ``_OBJECTIVE_DESUGAR`` -- the single source of truth that maps
-    every legacy objfunc / modern ``objective`` token to a ``(family, {param: (verb,
-    arg)}, location)`` noise-model tuple. The exporter reads the family token to a PEtab
-    ``noiseDistribution`` and returns the sigma source's ``(verb, arg)`` for the
-    per-column resolution in :func:`_observable_rows`.
+    Reads the objective off the ADR-0031 surface and reduces it to a single
+    ``(family, {param: (verb, arg)}, location)`` noise-model tuple, then reverses that
+    to PEtab. The objective is named, in precedence order, by a modern whole-fit
+    ``noise_model = <family>, ...`` line, the modern named ``objective`` token, or the
+    **legacy** ``objfunc`` token (legacy edition only -- but the survey corpus is all
+    legacy, so it is the common case). The modern keys are inspected *first* so a modern
+    job is never silently exported under the legacy ``chi_sq`` default.
 
-    Raises ``NotImplementedError`` at the PEtab boundaries: an objective with no
-    per-point noise model (``direct_pass``, the column-joint ``kl`` / ``wasserstein``
-    profile objectives, an unknown token), and the two families PEtab v2 cannot express
-    (``neg_bin`` -- removed from v2; ``lognormal`` -- PyBNF's is log10, PEtab's
-    ``log-normal`` is natural log, a deferred sigma scale-conversion).
+    Raises ``NotImplementedError`` at every PEtab boundary, never a silent default:
+
+    * a column-joint ``profile_objective`` (``kl`` / ``wasserstein``) -- it scores the
+      whole column's shape, not a per-observation likelihood, so it has no PEtab
+      observable-noise representation;
+    * per-observable ``noise_model <obs> = ...`` overrides -- a later chunk (they map to
+      per-observable PEtab noise);
+    * a ``mean``-centered noise model -- PEtab takes the prediction as the median for
+      every family;
+    * an objective with no per-point noise model (``score`` / ``direct_pass`` / unknown);
+    * a family PEtab v2 cannot express (``neg_bin`` -- removed; ``lognormal`` -- log10 vs
+      PEtab natural log, a deferred sigma scale-conversion).
     """
-    objfunc = conf.get('objfunc', conf.get('objective', 'chi_sq'))
-    if objfunc not in _OBJECTIVE_DESUGAR:
+    if conf.get('profile_objective') is not None:
         raise NotImplementedError(
-            f"Objective '{objfunc}' has no per-point PEtab noise model: direct_pass "
-            f"(no likelihood), kl / wasserstein (column-joint profile objectives), and "
-            f"any unknown token are not PEtab observable noise. Exportable objectives: "
-            f"{sorted(_OBJECTIVE_DESUGAR)} (ADR-0031, #423). Per-observable noise_model "
-            f"lines are a later export chunk.")
-    family_token, fields, _location = _OBJECTIVE_DESUGAR[objfunc](conf)
-    distribution = _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION.get(family_token)
+            f"profile_objective = {conf['profile_objective']!r} is a column-joint "
+            f"objective (kl / wasserstein): it scores the whole column's shape, not a "
+            f"per-observation likelihood, so it has no PEtab observable-noise "
+            f"representation (ADR-0031, #423).")
+    if any(isinstance(k, tuple) and k[0] == 'noise_model' and k[1] is not None
+           for k in conf):
+        raise NotImplementedError(
+            "Per-observable 'noise_model <obs> = ...' overrides are a later export chunk "
+            "-- they map to per-observable PEtab observable noise; this chunk exports one "
+            "whole-fit noise model (ADR-0021/0023, #423).")
+
+    whole_fit = conf.get(('noise_model', None))
+    if whole_fit is not None:
+        family_token, fields, location = whole_fit          # modern whole-fit line
+    else:
+        # The modern named `objective`, else the legacy `objfunc` spelling; both name a
+        # token in the shared desugar map. `chi_sq` is the legacy no-objective default.
+        token = conf.get('objective') or conf.get('objfunc') or 'chi_sq'
+        if token not in _OBJECTIVE_DESUGAR:
+            raise NotImplementedError(
+                f"Objective {token!r} has no per-point PEtab noise model: 'score' / "
+                f"direct_pass (no likelihood) and any unknown token are not PEtab "
+                f"observable noise. Per-point objectives: {sorted(_OBJECTIVE_DESUGAR)} "
+                f"(ADR-0031, #423).")
+        family_token, fields, location = _OBJECTIVE_DESUGAR[token](conf)
+
+    if location == 'mean':
+        raise NotImplementedError(
+            "This noise model is mean-centered (location = mean); PEtab v2 takes the "
+            "prediction as the distribution median for every noise family, so mean "
+            "centering has no PEtab representation (ADR-0031, #423). Use median.")
+
+    distribution = _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION.get(family_token.lower())
     if distribution is None:
         raise NotImplementedError(
-            f"Objective '{objfunc}' is the '{family_token}' noise family, which PEtab v2 "
-            f"cannot express: neg_bin was removed from PEtab v2, and PyBNF's lognormal "
-            f"is log10 while PEtab's log-normal is natural log (the sigma "
-            f"scale-conversion is a later chunk). ADR-0023/0031, #423.")
+            f"The '{family_token}' noise family cannot be expressed in PEtab v2: neg_bin "
+            f"was removed from v2, and PyBNF's lognormal is log10 while PEtab's "
+            f"log-normal is natural log (the sigma scale-conversion is a later chunk). "
+            f"ADR-0023/0031, #423.")
     (_param, (verb, arg)), = fields.items()
     return distribution, verb, arg
 
