@@ -301,7 +301,7 @@ class TestExportLogUniform:
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
             'model = parabola.bngl : par1.exp\n'
-            'fit_type = de\nedition = 2\nobjective = chi_sq\n'
+            'job_type = de\nedition = 2\nobjective = chi_sq\n'
             'loguniform_var = v1__FREE 0.1 10\n'
             'loguniform_var = v2__FREE 0.1 10\n'
             'loguniform_var = v3__FREE 0.1 10\n')
@@ -336,7 +336,7 @@ class TestExportObjectiveFamily:
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
             'model = parabola.bngl : par1.exp\n'
-            f'fit_type = de\nedition = 2\nobjective = {objfunc}\n'
+            f'job_type = de\nedition = 2\nobjective = {objfunc}\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n')
         out = tmp_path_factory.mktemp('objfam_out')
@@ -389,7 +389,7 @@ class TestExportObjectiveFamily:
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
             'model = parabola.bngl : par1.exp\n'
-            'fit_type = de\nedition = 2\n'
+            'job_type = de\nedition = 2\n'
             'noise_model = laplace, scale = fix_at 1\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n')
@@ -428,7 +428,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "fit_type = de\nedition = 2\n"
+            "job_type = de\nedition = 2\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -440,7 +440,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            f"fit_type = de\nedition = 2\nobjective = {objfunc}\n"
+            f"job_type = de\nedition = 2\nobjective = {objfunc}\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -451,7 +451,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "fit_type = de\nedition = 2\nobjective = chi_sq_dynamic\n"
+            "job_type = de\nedition = 2\nobjective = chi_sq_dynamic\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -463,7 +463,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            f"fit_type = de\nedition = 2\nprofile_objective = {token}\n"
+            f"job_type = de\nedition = 2\nprofile_objective = {token}\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -473,7 +473,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "fit_type = de\nedition = 2\n"
+            "job_type = de\nedition = 2\n"
             "noise_model = gaussian, sigma = fix_at 1\n"
             "noise_model x = gaussian, sigma = fix_at 2\n"
             "uniform_var = v1__FREE 0 10\n")
@@ -485,7 +485,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "fit_type = de\nedition = 2\n"
+            "job_type = de\nedition = 2\n"
             "noise_model = gaussian, sigma = fix_at 1, location = mean\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
@@ -700,7 +700,7 @@ def _write_mutant_fixture(d):
     conf = d / 'mut.conf'
     conf.write_text(
         'model = parabola2.bngl : par1.exp\n'
-        'fit_type = de\nedition = 2\nobjective = chi_sq\n'
+        'job_type = de\nedition = 2\nobjective = chi_sq\n'
         'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
         'uniform_var = v3__FREE 0 10\n'
         'mutant = parabola2 fitmut v1*2 : par1fitmut.exp\n'
@@ -718,7 +718,7 @@ def _write_dose_fixture(d):
     conf = d / 'dose.conf'
     conf.write_text(
         'model = doseresp.bngl : dr.exp\n'
-        'fit_type = de\nedition = 2\nobjective = chi_sq\n'
+        'job_type = de\nedition = 2\nobjective = chi_sq\n'
         'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
         'param_scan = model:doseresp, param:L, min:1, max:5, step:1, time:100, suffix:dr\n')
     return conf
@@ -918,7 +918,7 @@ class TestChunk2Boundaries:
             '# v1 a resp a_SD resp_SD\n1\t0.4\t3.1\t0.1\t0.2\n2\t0.8\t5.2\t0.1\t0.2\n')
         conf = tmp_path / 'dose.conf'
         conf.write_text(
-            'model = doseresp.bngl : dr.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
+            'model = doseresp.bngl : dr.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'param_scan = model:doseresp, param:v1, min:1, max:2, step:1, '
             'time:100, suffix:dr\n')
@@ -930,7 +930,7 @@ class TestChunk2Boundaries:
         # Strip the param_scan: a swept-axis .exp with no action to source its time.
         conf = tmp_path / 'dose.conf'
         conf.write_text(
-            'model = doseresp.bngl : dr.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
+            'model = doseresp.bngl : dr.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n')
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -940,7 +940,7 @@ class TestChunk2Boundaries:
         _write_mutant_fixture(tmp_path)
         conf = tmp_path / 'mut.conf'
         conf.write_text(
-            'model = parabola2.bngl : par1.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
+            'model = parabola2.bngl : par1.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n'
             'mutant = parabola2 m nope=0 : par1fitmut.exp\n')
@@ -957,7 +957,7 @@ class TestChunk2Boundaries:
             '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n')
         conf = tmp_path / 'mut.conf'
         conf.write_text(
-            'model = parabola2.bngl : par1.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
+            'model = parabola2.bngl : par1.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n'
             'mutant = parabola2 fixmut s*5 : par1fixmut.exp\n')

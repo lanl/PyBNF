@@ -211,9 +211,10 @@ class TestWassersteinValue:
 
 _GAUSS_TARGET = '{"type": "gaussian", "mean": [0.0, 0.0], "variance": [1.0, 1.0]}'
 _TARGET_EXP = '# index\tscore\n0\t0\n'
+# No run selector here: the edition gates which key names it (legacy 'fit_type' vs
+# modern 'job_type', ADR-0028), so each test passes the appropriate one in extra_lines.
 _BASE_CONF = """
 model = gaussian.target : target.exp
-fit_type = de
 uniform_var = p1 -10 10
 uniform_var = p2 -10 10
 population_size = 10
@@ -236,11 +237,11 @@ def _full_build(tmp_path, *extra_lines):
 
 class TestFullPipeline:
     def test_legacy_objfunc_still_builds(self, tmp_path):
-        conf = _full_build(tmp_path, 'objfunc = direct_pass')
+        conf = _full_build(tmp_path, 'fit_type = de', 'objfunc = direct_pass')
         assert isinstance(conf.obj, objective.DirectPassObjective)
 
     def test_modern_objective_score_builds(self, tmp_path):
-        conf = _full_build(tmp_path, 'edition = 2', 'objective = score')
+        conf = _full_build(tmp_path, 'edition = 2', 'job_type = de', 'objective = score')
         assert isinstance(conf.obj, objective.DirectPassObjective)
         assert conf.config['edition'] == 2
         # The new global keys narrow into the effective config (default None unless set).
@@ -248,9 +249,11 @@ class TestFullPipeline:
         assert conf.config['profile_objective'] is None
 
     def test_modern_objfunc_forbidden_end_to_end(self, tmp_path):
-        with pytest.raises(PybnfError, match='legacy'):
-            _full_build(tmp_path, 'edition = 2', 'objfunc = direct_pass')
+        # A valid modern run selector (job_type) so the build reaches _load_obj_func and
+        # the objfunc rejection -- not the fit_type rejection -- is what fires.
+        with pytest.raises(PybnfError, match='objfunc'):
+            _full_build(tmp_path, 'edition = 2', 'job_type = de', 'objfunc = direct_pass')
 
     def test_modern_requires_an_objective_key_end_to_end(self, tmp_path):
         with pytest.raises(PybnfError, match='No objective|named explicitly'):
-            _full_build(tmp_path, 'edition = 2')
+            _full_build(tmp_path, 'edition = 2', 'job_type = de')

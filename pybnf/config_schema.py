@@ -158,6 +158,15 @@ class GlobalConfig(PyBNFConfigModel):
     edition: Optional[int] = None
 
     # --- global / run-level ---
+    # job_type is the MODERN (edition >= 2) name for the run selector -- the key that
+    # chooses across optimizers / samplers / the model checker (ADR-0028 addendum).
+    # 'fit_type' was a misnomer (the registry's `family` spans more than fitting), so
+    # the modern era renames it. This is a surface-only rename: Configuration normalizes
+    # whichever key the edition allows into the internal STRUCTURAL_PASSTHROUGH
+    # 'fit_type' slot (see _resolve_run_selector), so the registry lookup and every
+    # downstream config['fit_type'] read are untouched. None == the key was not named
+    # (legacy confs name the run with 'fit_type', which never reaches this field).
+    job_type: Optional[str] = None
     # objfunc is the LEGACY (edition-1) objective key; the modern surface (ADR-0031)
     # is the three keys below. Under a modern edition (`edition >= 2`) naming `objfunc`
     # is an error; in the legacy edition it works as it always has. Its 'chi_sq'

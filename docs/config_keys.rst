@@ -22,9 +22,14 @@ Required Keys
     * ``model = path/to/model2.xml : path/to/data2.prop, path/to/data2.exp``
     * ``model = path/to/model3.xml : none``
 
+.. _fit_type:
+
 **fit_type**
-  The choice of fitting algorithm. Options:
-  
+  The **legacy** (:ref:`edition <edition>` 1) name for the run-selector key. Under a
+  modern edition (``edition >= 2``) it is renamed to :ref:`job_type <job_type>` and
+  naming ``fit_type`` is an error; in the legacy edition it works exactly as before.
+  Selects the procedure to run:
+
     * ``de`` - :ref:`alg-de`
     * ``ade`` - :ref:`Asynchronous Differential Evolution <alg-de>`
     * ``ss`` - :ref:`alg-ss`
@@ -42,8 +47,25 @@ Required Keys
 
 
   Example:
-  
+
     * ``fit_type = de``
+
+.. _job_type:
+
+**job_type**
+  The **modern** (:ref:`edition <edition>` ``>= 2``) name for the run-selector key,
+  taking the same values as :ref:`fit_type <fit_type>` above. It replaces ``fit_type``
+  because that name was a misnomer -- the key selects across point-estimate
+  *optimizers* (``de`` / ``ade`` / ``pso`` / ``ss`` / ``sim`` / ``powell`` / ``cmaes``
+  / ``sa``), Bayesian *samplers* (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``),
+  and the model *checker* (``check``), not just fitting. The value names the specific
+  procedure; the key names the kind of job. Requires :ref:`edition <edition>` ``>= 2``,
+  and like the modern objective surface there is **no implicit default** -- the run
+  must be named. Under a modern edition the legacy ``fit_type`` key is rejected.
+
+  Example:
+
+    * ``job_type = de`` (with ``edition = 2``)
 
 **objfunc**
   The **legacy** (:ref:`edition <edition>` 1) objective-function key. It still works

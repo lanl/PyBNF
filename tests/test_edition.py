@@ -27,6 +27,11 @@ def test_ploop_parses_edition_as_int():
     assert isinstance(ploop(['edition = 2'])['edition'], int)
 
 
+def test_ploop_parses_job_type_as_string_key():
+    # job_type is a scalar string key like fit_type (ADR-0028 addendum).
+    assert ploop(['job_type = am'])['job_type'] == 'am'
+
+
 # --- resolution + predicates ----------------------------------------------------
 
 def test_absent_resolves_to_legacy():
@@ -95,6 +100,116 @@ def test_require_edition_blocks_legacy_naming_key_and_fix():
     # The error names the key and the concrete fix.
     assert "edition = 2" in str(exc.value)
     assert 'profile_objective' in str(exc.value)
+
+
+# --- the edition-gated run selector: fit_type -> job_type (ADR-0028) ------------
+#
+# _resolve_run_selector is a static method that normalizes the run selector into the
+# internal d['fit_type'] slot, gating fit_type (legacy) vs job_type (modern) on the
+# edition exactly as _load_obj_func gates objfunc vs the modern objective keys. It
+# mutates the raw config dict, so a plain dict stands in for the parsed conf.
+
+def test_legacy_fit_type_normalizes_to_internal_slot():
+    d = {'fit_type': 'pso'}
+    Configuration._resolve_run_selector(d)
+    assert d['fit_type'] == 'pso'
+
+
+def test_legacy_default_is_de():
+    d = {}
+    Configuration._resolve_run_selector(d)
+    assert d['fit_type'] == 'de'
+
+
+def test_legacy_bmc_alias_maps_to_mh():
+    d = {'fit_type': 'bmc'}
+    Configuration._resolve_run_selector(d)
+    assert d['fit_type'] == 'mh'
+
+
+def test_legacy_job_type_requires_edition():
+    # A modern job_type in a legacy conf errors, naming the edition it needs.
+    with pytest.raises(PybnfError, match='edition 2') as exc:
+        Configuration._resolve_run_selector({'job_type': 'de'})
+    assert 'job_type' in str(exc.value)
+
+
+def test_modern_job_type_normalizes_to_fit_type_slot():
+    # Under a modern edition job_type names the run; it lands in the internal slot so
+    # the registry lookup and downstream config['fit_type'] reads are untouched.
+    d = {'edition': 2, 'job_type': 'am'}
+    Configuration._resolve_run_selector(d)
+    assert d['fit_type'] == 'am'
+
+
+def test_modern_fit_type_is_rejected_as_legacy():
+    with pytest.raises(PybnfError, match='legacy'):
+        Configuration._resolve_run_selector({'edition': 2, 'fit_type': 'de'})
+
+
+def test_modern_requires_job_type_no_implicit_default():
+    # Mirrors the objective surface: no implicit default under a modern edition.
+    with pytest.raises(PybnfError, match='job_type|named explicitly'):
+        Configuration._resolve_run_selector({'edition': 2})
+
+
+def test_modern_job_type_bmc_alias_not_applied():
+    # The bmc -> mh alias is legacy-only; under a modern edition it is left as-is
+    # (and fails the registry lookup later) rather than silently rewritten.
+    d = {'edition': 2, 'job_type': 'bmc'}
+    Configuration._resolve_run_selector(d)
+    assert d['fit_type'] == 'bmc'
+
+
+def test_modern_job_type_conf_builds_same_internal_objects(tmp_path):
+    """End-to-end: a modern (``edition = 2`` + ``job_type``) conf and the equivalent
+    legacy (``fit_type``) conf produce the same internal Configuration -- the
+    surface-only rename proof (ADR-0028). Built over an AnalyticalModel ``.target`` so
+    it stays simulator-free, like test_config_golden."""
+    import json
+    import os
+    (tmp_path / 'gaussian.target').write_text(
+        json.dumps({'type': 'gaussian', 'mean': [0.0, 0.0], 'variance': [1.0, 1.0]}))
+    (tmp_path / 'target.exp').write_text('# index\tscore\n0\t0\n')
+    legacy = """
+model = gaussian.target : target.exp
+objfunc = direct_pass
+fit_type = de
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+"""
+    # Modern equivalent: edition 2 renames fit_type -> job_type and forbids objfunc;
+    # objfunc = direct_pass <-> objective = score (both the bare passthrough).
+    modern = """
+edition = 2
+model = gaussian.target : target.exp
+objective = score
+job_type = de
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+"""
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        leg = Configuration(ploop(legacy.splitlines(keepends=True)))
+        mod = Configuration(ploop(modern.splitlines(keepends=True)))
+    finally:
+        os.chdir(cwd)
+    # The run selector lands in the same internal slot regardless of which key named it.
+    assert leg.config['fit_type'] == mod.config['fit_type'] == 'de'
+    assert mod.config['job_type'] == 'de'
+    # The new front-end produces the same internal model/data/mapping objects.
+    assert leg.models.keys() == mod.models.keys()
+    assert leg.mapping == mod.mapping
+    assert leg.exp_data.keys() == mod.exp_data.keys()
+    # direct_pass and score both build the bare passthrough objective.
+    assert type(leg.obj) is type(mod.obj) is objective.DirectPassObjective
 
 
 # --- the edition-gated objective surface (ADR-0031) -----------------------------

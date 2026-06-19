@@ -135,6 +135,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -515,6 +519,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "lambda",
@@ -911,6 +919,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -1287,6 +1299,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -1781,6 +1797,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "lambda",
@@ -2289,6 +2309,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -2773,6 +2797,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -3153,6 +3181,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "lambda",
@@ -3549,6 +3581,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "lambda",
     0.1
    ],
@@ -3866,6 +3902,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -4204,6 +4244,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -4493,6 +4537,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -4720,6 +4768,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -4971,6 +5023,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -5241,6 +5297,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -5514,6 +5574,10 @@
    [
     "islands",
     1
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -5807,6 +5871,10 @@
    [
     "islands",
     1
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -6134,6 +6202,10 @@
     1
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -6425,6 +6497,10 @@
    [
     "islands",
     1
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -6779,6 +6855,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -7070,6 +7150,10 @@
    [
     "islands",
     1
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -7365,6 +7449,10 @@
     1
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -7656,6 +7744,10 @@
    [
     "islands",
     1
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -7951,6 +8043,10 @@
     1
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -8234,6 +8330,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -8531,6 +8631,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -8861,6 +8965,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -9195,6 +9303,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -9494,6 +9606,10 @@
     "prior"
    ],
    [
+    "job_type",
+    null
+   ],
+   [
     "local_objective_eval",
     0
    ],
@@ -9761,6 +9877,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_objective_eval",
@@ -10047,6 +10167,10 @@
    [
     "initialization_distribution",
     "prior"
+   ],
+   [
+    "job_type",
+    null
    ],
    [
     "local_min_limit",

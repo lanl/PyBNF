@@ -183,11 +183,12 @@ class Configuration:
             
         if 'models' not in d or len(d['models']) == 0:
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
-        if 'fit_type' not in d:
-            d['fit_type'] = 'de'
-            print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
-        if d['fit_type'] == 'bmc':
-            d['fit_type'] = 'mh'  # 'bmc' option was renamed to 'mh'. Preserve backwards compatibility.
+        # Normalize the run selector across editions into the internal 'fit_type'
+        # slot (ADR-0028): the modern edition names the run with 'job_type', legacy
+        # with 'fit_type'. Surface-only -- downstream reads and the registry are
+        # untouched. Must precede _build_config (line below), which dispatches on
+        # d['fit_type'].
+        self._resolve_run_selector(d)
         # Whether the user named the legacy ``objfunc`` key (raw presence, before the
         # schema injects its 'chi_sq' default): the modern objective surface forbids it
         # (ADR-0031), and _load_obj_func reads this to tell "user wrote objfunc" from
@@ -382,6 +383,54 @@ class Configuration:
             raise PybnfError(f'Invalid random_seed {seed}',
                              "Config key 'random_seed' must be an integer from 0 to %i." % (2**32 - 1))
         self.config['random_seed'] = int(seed)
+
+    @staticmethod
+    def _resolve_run_selector(d):
+        """Normalize the run selector into the internal ``fit_type`` slot, honoring
+        the edition-gated ``fit_type`` -> ``job_type`` rename (ADR-0028 addendum).
+
+        ``fit_type`` is a misnomer: the key selects across optimizers, samplers, and
+        the model checker -- not just *fitting* -- so the modern era renames it to
+        ``job_type`` (the value names the procedure; the key names the *kind of job*).
+        This is a **surface-only** rename: whichever key the edition allows is read
+        here and written into ``d['fit_type']``, so ``FIT_TYPE_REGISTRY`` and the
+        downstream ``config['fit_type']`` reads are untouched. The gate mirrors
+        :meth:`_load_obj_func`'s ``objfunc`` -> ``objective`` gating exactly:
+
+        * **Modern** (``edition >= 2``): ``job_type`` names the run; the legacy
+          ``fit_type`` key is rejected, and -- as with the modern objective surface --
+          there is **no implicit default**, so ``job_type`` must be named.
+        * **Legacy** (no ``edition`` / implicit edition 1): ``fit_type`` names the run
+          (defaulting to ``de``); a modern ``job_type`` is rejected with the edition it
+          needs (``require_edition``). The historical ``bmc`` -> ``mh`` alias is kept
+          (legacy-only).
+
+        Mutates ``d`` so the run selector lives in ``d['fit_type']``. (The edition is
+        already parse-coerced to an int; a malformed value raises here via
+        ``resolve_edition``, the same validation :meth:`_check_edition` repeats later.)
+        """
+        ed = edition.resolve_edition(d.get('edition'))
+        if edition.is_modern(ed):
+            if 'fit_type' in d:
+                raise PybnfError(
+                    'fit_type is legacy syntax',
+                    f"Config key 'fit_type' is legacy (edition 1) syntax and is not "
+                    f"available under edition {ed}. Name the run with 'job_type' instead "
+                    f"(e.g. 'job_type = de').")
+            if 'job_type' not in d:
+                raise UnspecifiedConfigurationKeyError(
+                    f"Under edition {ed} the run must be named explicitly with "
+                    f"'job_type = <name>' (an optimizer, a sampler, or 'check'); there is "
+                    f"no implicit default.")
+            d['fit_type'] = d['job_type']
+        else:
+            if 'job_type' in d:
+                edition.require_edition(ed, 2, "the 'job_type' key")
+            if 'fit_type' not in d:
+                d['fit_type'] = 'de'
+                print1('Warning: fit_type was not specified. Defaulting to de (Differential Evolution).')
+            if d['fit_type'] == 'bmc':
+                d['fit_type'] = 'mh'  # 'bmc' option was renamed to 'mh'. Preserve backwards compatibility.
 
     def _check_edition(self):
         """Validate the optional ``edition`` marker (ADR-0031) before any
