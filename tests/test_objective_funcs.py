@@ -521,6 +521,46 @@ class TestNoiseAxes:
         expected = (np.log(9.0) - sigma ** 2 / 2 - np.log(8.0)) ** 2 / (2 * sigma ** 2)
         npt.assert_almost_equal(mean.data_fit(9.0, 8.0, sigma), expected)
 
+    def test_laplace_log_mean_offset_is_not_gaussian(self):
+        """The Laplace moment correction is its OWN, not Gaussian's (#419 gap 2):
+        before the fix a log-Laplace mean reused ln(base)*sigma^2/2, which is wrong
+        for the heavier tail. The LN Laplace correction is -ln(1 - b^2)."""
+        b = 0.3
+        lap = noise.Laplace(additive_on=noise.LN, location=noise.MEAN)
+        gauss = noise.Gaussian(additive_on=noise.LN, location=noise.MEAN)
+        assert lap.mean_offset(b) != pytest.approx(gauss.mean_offset(b))
+        npt.assert_almost_equal(lap.mean_offset(b), -np.log(1.0 - b ** 2))
+
+    @pytest.mark.parametrize('scale,base', [(noise.LN, np.e), (noise.LOG10, 10.0)])
+    def test_laplace_log_mean_recovers_the_true_mean(self, scale, base):
+        """The strong oracle: the location mu the mean offset produces makes the TRUE
+        distribution mean E[base**L] equal the prediction, where L ~ Laplace(mu, b).
+        E[base**L] is obtained by numerically integrating against scipy.stats.laplace's
+        pdf -- a distributional oracle, independent of the closed-form offset."""
+        from scipy.integrate import quad
+        b, pred = 0.25, 9.0
+        nm = noise.Laplace(additive_on=scale, location=noise.MEAN)
+        mu = scale.forward(pred) - nm.mean_offset(b)
+        mean_x, _ = quad(lambda x: base ** x * stats.laplace.pdf(x, loc=mu, scale=b),
+                         -60, 60)
+        npt.assert_almost_equal(mean_x, pred, decimal=4)
+
+    def test_laplace_linear_mean_equals_median(self):
+        """On the linear scale Laplace is symmetric -- mean and median coincide
+        (offset 0), so the location axis is trivial there (as for Gaussian)."""
+        mean = noise.Laplace(additive_on=noise.LINEAR, location=noise.MEAN)
+        median = noise.Laplace(additive_on=noise.LINEAR, location=noise.MEDIAN)
+        assert mean.mean_offset(0.5) == 0.0
+        npt.assert_almost_equal(mean.data_fit(3.1, 3.0, 0.5),
+                                median.data_fit(3.1, 3.0, 0.5))
+
+    def test_laplace_log_mean_heavy_tail_raises(self):
+        """When b*ln(base) >= 1 the log-Laplace mean does not exist (the tail is too
+        heavy): a clear error, not a silently wrong number."""
+        nm = noise.Laplace(additive_on=noise.LN, location=noise.MEAN)
+        with pytest.raises(printing.PybnfError):
+            nm.mean_offset(1.0)   # b=1, t=1 -> b*t = 1
+
     def test_gaussian_default_is_linear_median(self):
         """Gaussian() defaults to additive-on-linear, location-median (ADR-0031) --
         and since location is trivial on the linear scale, chi_sq's delegation is

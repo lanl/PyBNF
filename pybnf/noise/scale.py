@@ -11,14 +11,14 @@ proposal arithmetic. Natural log is never implied; it exists only as the explici
 there is no ambiguous bare ``LOG``. ``Gaussian`` noise additive on ``LINEAR`` is
 ordinary additive error; additive on ``LOG10`` is (log10) lognormal error.
 
-``mean_offset`` is the correction between the additive-space location parameter
-and the (log-)scale of the observation's *mean*, for a Gaussian additive
-distribution. The mean of ``b**N(mu, sigma)`` (base ``b`` = 10 or e) is
-``b**(mu + ln(b)*sigma**2/2)``, so recovering ``mu`` from a prediction interpreted
-as the mean subtracts ``ln(b)*sigma**2/2`` in the additive (log-base-b) space --
-``sigma**2/2`` for natural log, ``ln10*sigma**2/2`` for log10, and nothing on the
-linear scale. It is the only location-scale family with these axes today;
-generalize when a second arrives (ADR-0009).
+A scale exposes ``ln_base`` -- the natural log of its base (the ``t`` in
+``X = base**L = e**(t*L)``): 0 on the linear scale, ``ln 10`` on log10, 1 on
+natural log. That is all a family's moment-generating function needs to convert an
+additive-space location into the original-space mean. The moment correction itself
+is **family-specific** -- Gaussian's ``t*sigma**2/2`` differs from Laplace's
+``-ln(1 - b**2 t**2)/t`` (#419) -- so it lives on each ``NoiseModel`` family (their
+``mean_offset``), not here. The scale owns only the transform (``forward``) and its
+base (``ln_base``).
 """
 
 import numpy as np
@@ -27,40 +27,38 @@ _LN10 = np.log(10.0)
 
 
 class AdditiveNoiseScale:
-    """Maps a value into the space a noise model's noise is additive on."""
+    """Maps a value into the space a noise model's noise is additive on.
+
+    ``ln_base`` is the natural log of the scale's base -- the only thing a family's
+    moment correction needs from the scale (the family owns the correction itself).
+    """
+
+    ln_base = 0.0
 
     def forward(self, x):
         """Transform an original-space value into the additive space."""
         raise NotImplementedError
 
-    def mean_offset(self, noise):
-        """Additive-space offset when the prediction is the distribution's mean
-        (Gaussian moment correction); 0 unless the scale is logarithmic."""
-        raise NotImplementedError
-
 
 class _Linear(AdditiveNoiseScale):
+    ln_base = 0.0
+
     def forward(self, x):
         return x
 
-    def mean_offset(self, noise):
-        return 0.0
-
 
 class _Log10(AdditiveNoiseScale):
+    ln_base = _LN10
+
     def forward(self, x):
         return np.log10(x)
 
-    def mean_offset(self, noise):
-        return noise ** 2. * _LN10 / 2.
-
 
 class _Ln(AdditiveNoiseScale):
+    ln_base = 1.0
+
     def forward(self, x):
         return np.log(x)
-
-    def mean_offset(self, noise):
-        return noise ** 2. / 2.
 
 
 LINEAR = _Linear()

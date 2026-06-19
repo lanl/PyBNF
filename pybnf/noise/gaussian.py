@@ -34,9 +34,16 @@ class Gaussian(NoiseModel):
     def with_location(self, location):
         return type(self)(additive_on=self.additive_on, location=location)
 
+    def mean_offset(self, noise):
+        """The Gaussian moment correction ``ln(base)*sigma**2/2`` (0 on the linear
+        scale): the mean of ``base**N(mu, sigma)`` is ``base**(mu + ln(base)*sigma**2/2)``,
+        so recovering ``mu`` from a prediction taken to be that mean subtracts this in
+        additive space (ADR-0022)."""
+        return self.additive_on.ln_base * noise ** 2. / 2.
+
     def _mu(self, prediction, noise):
         """The additive-space location parameter for ``prediction``."""
-        return self.additive_on.forward(prediction) - self.location.offset(self.additive_on, noise)
+        return self.additive_on.forward(prediction) - self.location.offset(self, noise)
 
     def data_fit(self, prediction, observation, noise):
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)

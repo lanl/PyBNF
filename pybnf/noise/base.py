@@ -10,10 +10,10 @@ owns the iteration delegates the pure family math to a small object.
 
 A per-point noise model is defined by three orthogonal axes (ADR-0004):
 distribution **family** x the **scale the noise is additive on** x the
-**location interpretation**. Today every family is additive-on-linear with the
-prediction as the mean -- both trivial because the current families are
-symmetric -- so only the family axis is exercised; the ``lognormal`` seam
-(ADR-0011) gives the scale and location axes real behavior.
+**location interpretation**. All three are live: ``lognormal`` is Gaussian
+additive-on-log (the scale axis); ``mean`` vs ``median`` centering picks up each
+family's own moment correction on a log scale (the location axis, ADR-0031/#419) --
+Gaussian's, Laplace's, and the count family's median CDF inversion all differ.
 
 The full NLL splits as ``nll = data_fit(prediction, observation, noise)
 + log_normalizer(noise)``. The data-fit term is the parameter-dependent part; the
@@ -53,6 +53,17 @@ class NoiseModel(ABC):
         raises for a (hypothetical) family with no location axis."""
         raise NotImplementedError(
             f'{type(self).__name__} has no location interpretation axis')
+
+    def mean_offset(self, noise):
+        """The additive-space offset for **mean**-centering -- the family's moment
+        correction, subtracted from ``scale.forward(prediction)`` to recover the
+        location parameter when the prediction is taken to be the distribution mean
+        (``MEAN``, via ``location.py``). It is family-specific (Gaussian's differs
+        from Laplace's, #419), so each location-scale family overrides it; the base
+        raises for a family that has no additive moment correction (e.g. the count
+        family, which realizes its mean centering directly, not through this seam)."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no additive mean offset')
 
     def nll(self, prediction, observation, noise):
         """The full per-point negative log-likelihood (data fit + normalizer)."""
