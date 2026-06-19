@@ -28,6 +28,7 @@ import pytest
 from pybnf.data import Data
 from pybnf.petab.conditions import (
     build_dose_response_conditions,
+    build_experiment_conditions,
     build_mutant_conditions,
     mutation_target_value,
     surrogate_name,
@@ -482,14 +483,195 @@ class TestExportNewEra:
         with pytest.raises(NotImplementedError, match='#426'):
             export_job(src / 'job.conf', src / 'out')
 
-    def test_new_era_condition_is_chunk_5b(self, tmp_path_factory):
-        # A condition: / conditioned experiment under the new surface raises until 5b.
-        src = self._src(tmp_path_factory, 'cond5b')
+    def test_undefined_referenced_condition_raises(self, tmp_path_factory):
+        from pybnf.printing import PybnfError
+        src = self._src(tmp_path_factory, 'undefcond')
         (src / 'job.conf').write_text(
-            self._HEAD + 'condition: lowv3, perturbations: v3 = 1\n'
-            'experiment: par1, condition: lowv3, data: par1.exp\n' + self._PARAMS)
-        with pytest.raises(NotImplementedError):
+            self._HEAD + 'experiment: par1, condition: nope, data: par1.exp\n'
+            + self._PARAMS)
+        with pytest.raises(PybnfError, match='nope'):
             export_job(src / 'job.conf', src / 'out')
+
+
+# ---------------------------------------------------------------------------
+# Chunk 5b: new-era condition: / conditioned experiment: -> conditions/experiments
+# tables (the surrogate-base machinery of ADR-0027 generalized to named conditions +
+# named experiments that reference them; build_experiment_conditions).
+# ---------------------------------------------------------------------------
+
+def _write_newera_condition_fixture(d):
+    """A new-era job: a fit-param condition (v1*2 -> surrogate) and a fixed-param
+    condition (s*5 -> precomputed), a wildtype experiment + two conditioned experiments.
+    Reuses the chunk-2 model (its begin actions block is stripped on export)."""
+    (d / 'parabola2.bngl').write_text(_PARABOLA2_BNGL)
+    (d / 'wt.exp').write_text(
+        '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n2\t-8\t54\t1\t1\n')
+    (d / 'dbl.exp').write_text(
+        '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n2\t-8\t108\t1\t1\n')
+    (d / 'scl.exp').write_text(
+        '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n2\t-8\t270\t1\t1\n')
+    conf = d / 'job.conf'
+    conf.write_text(
+        'edition = 2\njob_type = de\nobjective = chi_sq\n'
+        'model: parabola2.bngl\n'
+        'condition: doubled, perturbations: v1 * 2\n'
+        'condition: scaled, perturbations: s * 5\n'
+        'experiment: wt, data: wt.exp\n'
+        'experiment: dbl, condition: doubled, data: dbl.exp\n'
+        'experiment: scl, condition: scaled, data: scl.exp\n'
+        'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+        'uniform_var = v3__FREE 0 10\n')
+    return conf
+
+
+class TestExportNewEraConditions:
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        src = tmp_path_factory.mktemp('newera_cond')
+        conf = _write_newera_condition_fixture(src)
+        out = src / 'petab'
+        export_job(conf, out)
+        return out
+
+    def test_writes_conditions_and_experiments(self, exported):
+        for name in ('conditions.tsv', 'experiments.tsv'):
+            assert (exported / name).is_file()
+        text = (exported / 'problem.yaml').read_text()
+        assert 'condition_files' in text and 'experiment_files' in text
+
+    def test_fit_perturbed_param_is_renamed_to_surrogate(self, exported):
+        ids = {r['parameterId'] for r in _tsv_rows(exported / 'parameters.tsv')}
+        assert ids == {'v1__REF', 'v2', 'v3'}   # v1 (fit + perturbed) -> v1__REF
+        assert 'v1' not in ids                    # never in both tables
+
+    def test_condition_cells(self, exported):
+        rows = _tsv_rows(exported / 'conditions.tsv')
+        cells = {(r['conditionId'], r['targetId']): r['targetValue'] for r in rows}
+        # relative op on a fit param -> symbolic in the surrogate
+        assert cells[('cond_doubled', 'v1')] == 'v1__REF * 2'
+        # the scaled condition still pins v1 (it doesn't perturb it) ...
+        assert cells[('cond_scaled', 'v1')] == 'v1__REF'
+        # ... and precomputes the relative op on the fixed param (nominal 2 * 5 = 10)
+        assert cells[('cond_scaled', 's')] == '10'
+        # the synthesized wildtype base pins the removed fit param to its base value
+        assert cells[('cond_wildtype', 'v1')] == 'v1__REF'
+
+    def test_experiments_reference_their_conditions(self, exported):
+        by_id = {r['experimentId']: r for r in _tsv_rows(exported / 'experiments.tsv')}
+        assert set(by_id) == {'wt', 'dbl', 'scl'}
+        assert by_id['wt']['conditionId'] == 'cond_wildtype'
+        assert by_id['dbl']['conditionId'] == 'cond_doubled'
+        assert by_id['scl']['conditionId'] == 'cond_scaled'
+        assert all(r['time'] == '0' for r in by_id.values())
+
+    def test_measurements_tagged_by_experiment(self, exported):
+        eids = {r['experimentId'] for r in _tsv_rows(exported / 'measurements.tsv')}
+        # M non-empty, so even the wildtype experiment is named (not '').
+        assert eids == {'wt', 'dbl', 'scl'}
+        assert '' not in eids
+
+    def test_full_petab_validation_is_clean(self, exported):
+        _assert_petab_clean(exported)
+
+    def test_shared_condition_rows_emitted_once(self, tmp_path_factory):
+        # Two experiments referencing the same condition -> its rows emitted once (the new
+        # degree of freedom over legacy, which couldn't share a mutant across datasets).
+        src = tmp_path_factory.mktemp('shared_cond')
+        (src / 'parabola2.bngl').write_text(_PARABOLA2_BNGL)
+        for f in ('a.exp', 'b.exp'):
+            (src / f).write_text(
+                '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n')
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: parabola2.bngl\n'
+            'condition: doubled, perturbations: v1 * 2\n'
+            'experiment: ea, condition: doubled, data: a.exp\n'
+            'experiment: eb, condition: doubled, data: b.exp\n'
+            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+            'uniform_var = v3__FREE 0 10\n')
+        out = src / 'petab'
+        export_job(conf, out)
+        crows = _tsv_rows(out / 'conditions.tsv')
+        # No wildtype experiment here, so no cond_wildtype: just the one shared condition.
+        assert [(r['conditionId'], r['targetId']) for r in crows] == [
+            ('cond_doubled', 'v1')]
+        erows = _tsv_rows(out / 'experiments.tsv')
+        assert {r['experimentId'] for r in erows} == {'ea', 'eb'}
+        assert all(r['conditionId'] == 'cond_doubled' for r in erows)
+        _assert_petab_clean(out)
+
+    def test_condition_target_not_a_model_entity_raises(self, tmp_path_factory):
+        from pybnf.printing import PybnfError
+        src = tmp_path_factory.mktemp('badtarget')
+        (src / 'parabola2.bngl').write_text(_PARABOLA2_BNGL)
+        (src / 'e.exp').write_text('# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n')
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: parabola2.bngl\n'
+            'condition: bad, perturbations: nope = 0\n'
+            'experiment: e, condition: bad, data: e.exp\n'
+            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+            'uniform_var = v3__FREE 0 10\n')
+        with pytest.raises(PybnfError, match='nope'):
+            export_job(conf, src / 'out')
+
+
+class TestBuildExperimentConditions:
+
+    def test_surrogate_set_and_wildtype_base(self):
+        exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
+        conds = {'doubled': [('v1', '*', 2.0)], 'scaled': [('s', '*', 5.0)]}
+        cond, exp, surrogate, eids = build_experiment_conditions(
+            exps, conds, fit_params={'v1', 'v2', 'v3'}, nominal_of=lambda v: 2.0)
+        assert surrogate == {'v1'}                 # only the fit-and-perturbed param
+        cells = {(r.condition_id, r.target_id): r.target_value for r in cond}
+        assert cells[('cond_doubled', 'v1')] == 'v1__REF * 2'   # surrogate op
+        assert cells[('cond_scaled', 'v1')] == 'v1__REF'        # pinned in the other cond
+        assert cells[('cond_scaled', 's')] == '10'              # precomputed fixed op
+        assert cells[('cond_wildtype', 'v1')] == 'v1__REF'      # synthesized base pin
+        assert eids == {'wt': 'wt', 'dbl': 'dbl', 'scl': 'scl'}
+        assert {e.experiment_id: e.condition_id for e in exp} == {
+            'wt': 'cond_wildtype', 'dbl': 'cond_doubled', 'scl': 'cond_scaled'}
+
+    def test_no_surrogate_leaves_wildtype_model_as_is(self):
+        # Only a fixed param perturbed -> empty M -> wildtype experimentId '' (no row).
+        exps = [('wt', None), ('scl', 'scaled')]
+        conds = {'scaled': [('s', '*', 5.0)]}
+        cond, exp, surrogate, eids = build_experiment_conditions(
+            exps, conds, fit_params={'v1'}, nominal_of=lambda v: 2.0)
+        assert surrogate == set()
+        assert eids == {'wt': '', 'scl': 'scl'}
+        assert {e.experiment_id for e in exp} == {'scl'}   # no wildtype experiment row
+        cells = {(r.condition_id, r.target_id): r.target_value for r in cond}
+        assert cells == {('cond_scaled', 's'): '10'}
+
+    def test_shared_condition_rows_emitted_once(self):
+        exps = [('ea', 'doubled'), ('eb', 'doubled')]
+        conds = {'doubled': [('v1', '*', 2.0)]}
+        cond, exp, surrogate, eids = build_experiment_conditions(
+            exps, conds, fit_params={'v1'}, nominal_of=lambda v: 1.0)
+        assert [(r.condition_id, r.target_id) for r in cond] == [('cond_doubled', 'v1')]
+        assert {e.experiment_id for e in exp} == {'ea', 'eb'}
+
+    def test_unused_condition_emits_nothing(self):
+        # A condition referenced by no experiment contributes no rows and no surrogate.
+        exps = [('e', 'used')]
+        conds = {'used': [('s', '=', 0.0)], 'unused': [('v1', '*', 2.0)]}
+        cond, exp, surrogate, eids = build_experiment_conditions(
+            exps, conds, fit_params={'v1'}, nominal_of=lambda v: 1.0)
+        assert surrogate == set()                       # v1 only in the unused condition
+        assert {r.condition_id for r in cond} == {'cond_used'}
+
+    def test_wildtype_named_condition_clashes(self):
+        from pybnf.printing import PybnfError
+        exps = [('wt', None), ('e', 'wildtype')]
+        conds = {'wildtype': [('v1', '*', 2.0)]}
+        with pytest.raises(PybnfError, match='wildtype'):
+            build_experiment_conditions(exps, conds, fit_params={'v1'},
+                                        nominal_of=lambda v: 1.0)
 
 
 # ---------------------------------------------------------------------------

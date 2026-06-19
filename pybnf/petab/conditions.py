@@ -20,6 +20,7 @@ marker, so it can never clash with a user-defined model name.
 
 from dataclasses import dataclass
 
+from ..printing import PybnfError
 from ._tsv import num, write_tsv
 
 _CONDITION_COLUMNS = ['conditionId', 'targetId', 'targetValue']
@@ -154,6 +155,94 @@ def build_mutant_conditions(base_stem, mutants, fit_params, nominal_of):
         experiment_rows.append(PetabExperimentRow(stem, 0.0, cid))
 
     return condition_rows, experiment_rows, surrogate, base_experiment_id
+
+
+def build_experiment_conditions(experiments, conditions, fit_params, nominal_of):
+    """Build conditions/experiments for a new-era job (ADR-0028 Chunk 5b).
+
+    Generalizes :func:`build_mutant_conditions` from "base + mutants each carrying their
+    own data" to "named conditions + named experiments that reference them" -- the new era
+    decouples a Condition from the Experiment that applies it (a ``condition:`` is named
+    once; N ``experiment:``s may reference it, so a shared condition emits its rows once).
+
+    ``experiments`` is a list of ``(experiment_name, condition_name_or_None)`` in
+    declaration order. ``conditions`` maps a condition name to its perturbations
+    ``[(var, op, val), ...]`` (``val`` a float). ``fit_params`` is the set of
+    model-parameter names that are *fit*; ``nominal_of(var)`` returns a fixed parameter's
+    numeric nominal (or ``None`` for an expression/unknown).
+
+    Returns ``(condition_rows, experiment_rows, surrogate_params, experiment_to_id)``:
+
+    * ``surrogate_params`` (the set ``M``) -- fit parameters perturbed by some
+      *referenced* condition (an unused condition contributes nothing). They are renamed
+      to ``<p>__REF`` in the parameter table and pinned in *every* experiment's Condition:
+      ``M`` is problem-global, because the model name ``<p>`` becomes a pure condition
+      target, so every simulation must re-supply it (the surrogate-base machinery,
+      ADR-0027).
+    * ``condition_rows`` -- each referenced condition's targets emitted **once**
+      (conditionId ``cond_<name>``): a fit target's relative op is symbolic in its
+      surrogate (``v1__REF * 2``), a fixed target's relative op is precomputed; plus a
+      base pin ``p = p__REF`` for each ``p in M`` the condition does not itself set. Plus
+      a shared synthesized base condition ``cond_wildtype`` (pinning all of ``M``) when
+      ``M`` is non-empty and some experiment is wildtype.
+    * ``experiment_to_id`` -- ``{experiment_name: experimentId}``: the name for a
+      conditioned experiment, or for a wildtype one when ``M`` is non-empty; ``''``
+      ("model as is") for a wildtype experiment when ``M`` is empty (the chunk-1 base
+      behaviour preserved, so a condition-free job needs no experiments table).
+    """
+    referenced = {c for _name, c in experiments if c is not None}
+    surrogate = {var for c in referenced
+                 for var, _op, _val in conditions[c] if var in fit_params}
+
+    condition_rows = []
+    experiment_rows = []
+
+    # Each referenced condition, emitted once (deterministic order).
+    for c in sorted(referenced):
+        cid = f'cond_{c}'
+        mut_by_var = {var: (op, val) for var, op, val in conditions[c]}
+        # Surrogate (fit) params: this condition's expression where it sets them, else the
+        # base value -- every experiment must re-supply every M param (out of the table).
+        for p in sorted(surrogate):
+            if p in mut_by_var:
+                op, val = mut_by_var[p]
+                condition_rows.append(PetabConditionRow(
+                    cid, p, mutation_target_value(op, val, surrogate=surrogate_name(p))))
+            else:
+                condition_rows.append(PetabConditionRow(cid, p, surrogate_name(p)))
+        # Fixed-param perturbations (targets not in M): precomputed numeric targetValues.
+        for var, op, val in conditions[c]:
+            if var in surrogate:
+                continue
+            condition_rows.append(PetabConditionRow(
+                cid, var, mutation_target_value(op, val, nominal=nominal_of(var))))
+
+    # A shared synthesized base condition for wildtype experiments when M is non-empty
+    # (they too must re-supply every removed fit param at its base value).
+    has_wildtype = any(c is None for _name, c in experiments)
+    wildtype_cid = None
+    if surrogate and has_wildtype:
+        wildtype_cid = 'cond_wildtype'
+        if wildtype_cid in {f'cond_{c}' for c in referenced}:
+            raise PybnfError(
+                "A condition named 'wildtype' clashes with the synthesized base condition "
+                "the exporter uses to pin fit-and-perturbed parameters for wildtype "
+                "experiments. Rename the 'wildtype' condition.")
+        condition_rows.extend(
+            PetabConditionRow(wildtype_cid, p, surrogate_name(p))
+            for p in sorted(surrogate))
+
+    experiment_to_id = {}
+    for name, c in experiments:
+        if c is not None:
+            experiment_to_id[name] = name
+            experiment_rows.append(PetabExperimentRow(name, 0.0, f'cond_{c}'))
+        elif surrogate:
+            experiment_to_id[name] = name
+            experiment_rows.append(PetabExperimentRow(name, 0.0, wildtype_cid))
+        else:
+            experiment_to_id[name] = ''   # model as is -- no experiment row needed
+    return condition_rows, experiment_rows, surrogate, experiment_to_id
 
 
 def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):

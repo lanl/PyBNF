@@ -46,6 +46,7 @@ oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + 
 native ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027.
 """
 
+import logging
 import re
 from pathlib import Path
 
@@ -61,6 +62,7 @@ from ._bngl import parse_model
 from ._tsv import num
 from .conditions import (
     build_dose_response_conditions,
+    build_experiment_conditions,
     build_mutant_conditions,
     surrogate_name,
     write_condition_table,
@@ -77,6 +79,8 @@ from .parameters import (
     petab_parameter_row,
     write_parameter_table,
 )
+
+logger = logging.getLogger(__name__)
 
 # A noise-model family token (ADR-0031's noise_model grammar / ``_OBJECTIVE_DESUGAR``)
 # -> the PEtab v2 noiseDistribution it maps to (ADR-0023 reversed). The LINEAR Gaussian
@@ -170,12 +174,13 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params):
     Returns ``(observable_rows, measurement_rows, condition_rows, experiment_rows,
     surrogate_params)``.
 
-    Chunk 5a exports **wildtype time-course experiments** only: ``condition:`` /
-    conditioned experiments are the next sub-chunk (5b), and a parameter-scan experiment
-    is deferred (#426; raised in :func:`_read_experiments`). With no conditions the set
-    ``M`` of fit-and-mutated parameters is empty, so every experiment is "model as is"
-    (empty experimentId) and no conditions/experiments tables are written -- a single
-    wildtype experiment is byte-identical to the chunk-1 base time-course.
+    A ``condition:`` referenced by an experiment becomes a PEtab Condition (the
+    surrogate-base machinery of ADR-0027, generalized by
+    :func:`~pybnf.petab.conditions.build_experiment_conditions`): a fit-and-perturbed
+    parameter is renamed to ``<p>__REF`` in the parameter table and pinned in every
+    experiment's Condition. A parameter-scan experiment is deferred (#426; raised in
+    :func:`_read_experiments`). With no referenced conditions the surrogate set is empty,
+    so a single wildtype experiment is byte-identical to the chunk-1 base time-course.
     """
     experiments = _read_experiments(conf, conf_path, model_file, bngl)
     overrides = _read_observable_overrides(conf)
@@ -185,16 +190,24 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params):
     observable_rows, column_to_observable_id = _observable_rows(
         all_datas, bngl, noise, model_file)
 
-    # 5a boundary: conditions/experiments tables are Chunk 5b. Refuse rather than
-    # silently dropping a condition the fitter would apply.
-    if any(exp['condition'] is not None for exp in experiments) or any(
-            isinstance(k, tuple) and k[0] == 'condition' for k in conf):
-        raise NotImplementedError(
-            "New-era 'condition:' export (conditions/experiments tables) is the next "
-            "export sub-chunk (ADR-0028 Chunk 5b); this build exports wildtype "
-            "time-course experiments only.")
-    condition_rows, experiment_rows, surrogate_params = [], [], set()
-    experiment_to_id = {exp['name']: '' for exp in experiments}
+    conditions = _read_conditions(conf, model_file, bngl)
+    referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
+    undefined = referenced - set(conditions)
+    if undefined:
+        raise PybnfError(
+            f"Experiment(s) reference undefined condition(s) {sorted(undefined)}; define "
+            f"each with a 'condition:' line.")
+    unused = set(conditions) - referenced
+    if unused:
+        # An unused condition emits no PEtab rows (the fitter would not apply it either);
+        # skip it with a debug log rather than warning (ADR-0028 Chunk 5, decision 4).
+        logger.debug("Conditions defined but referenced by no experiment (skipped): %s",
+                     sorted(unused))
+
+    condition_rows, experiment_rows, surrogate_params, experiment_to_id = \
+        build_experiment_conditions(
+            [(exp['name'], exp['condition']) for exp in experiments],
+            conditions, fit_model_params, lambda v: _numeric_nominal(bngl, v))
 
     # Per-point noiseParameters are emitted only when the objective's sigma comes from a
     # data column (the placeholder source); a fixed / column-mean sigma is carried inline
@@ -314,6 +327,38 @@ def _apply_observable_overrides(datas, overrides):
                 f"Observable override 'observable: {entity}, column: {header}' names data "
                 f"column '{header}', but no experimental data file contains it (columns "
                 f"present: {present}). Check for a typo in the column name.")
+
+
+def _read_conditions(conf, model_file, bngl):
+    """Read + validate the new-era ``condition:`` entries from the raw ``ploop`` dict.
+
+    Each ``('condition', name)`` entry is ``(model_ref_or_None, [(var, op, val_str), ...])``
+    (a named set of parameter perturbations -- a PyBNF Mutant = a PEtab Condition). Returns
+    ``{condition_name: [(var, op, float(val)), ...]}``. Validates the model ref
+    (single-model boundary) and that every perturbation target is a model parameter /
+    compartment -- a PEtab condition target must be a model entity (mirrors the legacy
+    :func:`_read_mutants` checks)."""
+    model_stem = Path(model_file).stem
+    conditions = {}
+    for key, value in conf.items():
+        if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'condition'):
+            continue
+        name = key[1]
+        model_ref, perts = value
+        if model_ref is not None and Path(model_ref).stem != model_stem:
+            raise PybnfError(
+                f"Condition '{name}' is declared for model '{model_ref}', but this job's "
+                f"model is '{model_file}'. Multi-model export is a later chunk.")
+        muts = []
+        for var, op, val in perts:
+            if var not in bngl.parameters and var not in bngl.compartment_names:
+                raise PybnfError(
+                    f"Condition '{name}' perturbs '{var}', which is not a parameter or "
+                    f"compartment of model '{model_file}' (a PEtab condition target must "
+                    f"be a model entity).")
+            muts.append((var, op, float(val)))
+        conditions[name] = muts
+    return conditions
 
 
 def _export_legacy(conf, conf_path, model_file, bngl, noise, fit_model_params):
