@@ -21,6 +21,10 @@ decisions so a failure points at the right layer:
   * ``test_de_recovers``    -- the fit reproduces the data (hard gate, relative to
     data magnitude) AND recovers the identifiable parameters (soft gate), across
     two seeds so it can't pass by a lucky one.
+  * ``test_de_recovers_via_experiment_surface`` -- the same m01 recovery driven by a
+    new-era ``experiment:`` / ``data:`` conf (ADR-0028) on a model with NO ``begin
+    actions`` block, proving PyBNF's synthesized ``sample_times`` simulation scores
+    correctly end to end through the real backend.
   * ``test_de_reproducible`` -- a fixed seed gives a bit-identical fit (RNG
     determinism on the real-sim path).
   * ``test_m01_real_run_job_smoke`` -- one fit through the genuine run_job/folders.
@@ -217,6 +221,43 @@ def test_de_recovers(name, seed, tmp_path, exp_for):
     assert best < bound, '%s: best objective %g not < %g' % (spec.name, best, bound)
 
     # Soft gate: the identifiable parameters come back within tolerance.
+    _assert_recovered(spec, alg)
+
+
+# --------------------------------------------------------------------------- #
+# New-era experiment:/data: surface (ADR-0028 Chunk 3d): same recovery, modern conf
+# --------------------------------------------------------------------------- #
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('seed', [1234, 7])
+def test_de_recovers_via_experiment_surface(seed, tmp_path, exp_for):
+    """A new-era ``experiment:`` / ``data:`` conf recovers the parameter through the real
+    bngsim backend, proving the synthesized ``sample_times`` path scores end to end
+    (ADR-0028). The model file carries NO ``begin actions`` block -- PyBNF synthesizes the
+    whole simulation from the experiment's data (the data's ``time`` column becomes the
+    output grid). This is the migrated equivalent of ``test_de_recovers`` for m01.
+    """
+    spec = MODELS['m01_exp_decay']
+    exp_path = exp_for(spec.name)   # zero-noise oracle (generated via the original model)
+    newera_model = H.strip_actions_block(spec.path, tmp_path / 'm01_newera.bngl')
+    conf = H.make_newera_config(tmp_path, newera_model, exp_path, spec.free, 'decay', 'de',
+                                random_seed=seed, refine=1, **spec.de_budget)
+
+    # The simulation is synthesized from the data: the BNGL action carries sample_times
+    # (the data's time points), and the data binds under the experiment name.
+    model = conf.models['m01_newera']
+    assert any('sample_times=>[' in a for a in model.actions), \
+        'expected a synthesized sample_times action, got %r' % model.actions
+    assert conf.exp_data['m01_newera']['decay'].data.shape[0] > 0
+
+    alg = H.build(conf, 'de')
+    H.drive(alg)
+    H.refine(alg, conf)
+
+    # Hard gate (data reproduced) + soft gate (param recovered), same as test_de_recovers.
+    cols, arr = _read_exp(exp_path)
+    bound = spec.hard_rel_tol * _data_ss(cols, arr, spec.obs)
+    assert alg.trajectory.best_score() < bound, \
+        '%s (new-era): best objective %g not < %g' % (spec.name, alg.trajectory.best_score(), bound)
     _assert_recovered(spec, alg)
 
 

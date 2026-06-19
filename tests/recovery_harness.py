@@ -25,6 +25,7 @@ Algorithm construction -- bngsim is a simulation *engine*, it does not expand
 rules. ``require_bng2pl`` skips the test when BNG2.pl is not resolvable.
 """
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +33,7 @@ import pytest
 
 from pybnf import algorithms, config
 from pybnf.config_schema import _default_bng_command
+from pybnf.parse import ploop
 from pybnf.pset import PSet
 
 # Reuse the synchronous dask substitutes + the folder-free run_job stand-in.
@@ -110,6 +112,52 @@ def make_config(tmp_path, model_bngl, exp_path, free_specs, fit_type, *,
     base.update(var_spec)
     base.update(overrides)
     return config.Configuration(base)
+
+
+def strip_actions_block(model_bngl, dest):
+    """Write a copy of a BNGL model with its ``begin actions … end actions`` block
+    removed -- a pure new-era model (ADR-0028) whose simulation is synthesized entirely
+    from an ``experiment:``'s data, not from a hand-written action. Returns ``dest``."""
+    text = Path(model_bngl).read_text()
+    stripped = re.sub(r'(?is)\n?begin actions.*?end actions\s*', '\n', text)
+    Path(dest).write_text(stripped)
+    return str(dest)
+
+
+def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_name,
+                       fit_type, *, objective='sos', condition=None, **overrides):
+    """Build a real bngsim ``Configuration`` for a recovery fit on the NEW-ERA
+    ``experiment:`` / ``data:`` surface (ADR-0028, ``edition >= 2``).
+
+    Mirrors :func:`make_config`, but emits a conf and runs it through the parser
+    (``ploop``) so the ``model:`` declaration, the ``('experiment', name)`` tuple key,
+    and the edition gate are all exercised on the real path (not hand-assembled). The
+    model file is expected to carry NO ``begin actions`` block (see
+    :func:`strip_actions_block`): PyBNF synthesizes the simulation from the data's
+    independent-variable column.
+
+    :param condition: optional ``(name, "var op val[, …]")`` -- emits a ``condition:``
+        line and applies it to the experiment.
+    """
+    scalars = {
+        'edition': 2, 'job_type': fit_type, 'objective': objective,
+        'output_dir': str(Path(tmp_path) / 'out'),
+        'bngl_backend': 'bngsim', 'initialization': 'lh',
+        'delete_old_files': 1, 'verbosity': 0, 'wall_time_sim': 0, 'random_seed': 1234,
+    }
+    scalars.update(overrides)
+    lines = [f'model: {model_bngl}']
+    lines += [f'{k} = {v}' for k, v in scalars.items()]
+    lines += [f'{vt} = {name} {lo} {hi}' for name, (vt, lo, hi) in free_specs.items()]
+    if condition is not None:
+        lines.append(f'condition: {condition[0]}, perturbations: {condition[1]}')
+    exp_line = f'experiment: {experiment_name}'
+    if condition is not None:
+        exp_line += f', condition: {condition[0]}'
+    exp_line += f', data: {exp_path}'
+    lines.append(exp_line)
+    conf_text = '\n'.join(lines) + '\n'
+    return config.Configuration(ploop(conf_text.splitlines(keepends=True)))
 
 
 def build(conf, fit_type):
