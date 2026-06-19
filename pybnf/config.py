@@ -245,6 +245,14 @@ class Configuration:
         logger.debug('Loaded model:exp mapping')
         self.exp_data, self.constraints = self._load_exp_data()
         logger.debug('Loaded data')
+        # New-era experiment: front-end (ADR-0028, Chunk 3). Runs after exp_data and
+        # mapping exist so it can extend them directly: it synthesizes each experiment's
+        # action (suffix = experiment name, output points derived from the data), attaches
+        # it to the resolved model, and adds the stacked-replicate Data + mapping entry --
+        # keyed by the experiment name (the link is stated, so _check_actions' suffix-match
+        # wart is bypassed: a new-era model carries no data on its model line).
+        self._load_experiments()
+        logger.debug('Loaded experiments')
         self.obj = self._load_obj_func()
         logger.debug('Loaded objective function')
         self.variables = self._load_variables()
@@ -594,7 +602,12 @@ class Configuration:
                         step = 1.
                     end_time = float(tc['time'])
                     timeDict[suffix] = int(np.round(end_time / step))
-        return timeDict    
+        # New-era experiments (ADR-0028) synthesize their actions outside both the model
+        # file and the legacy time_course list, so find_t_length / the xml branch above
+        # never see them. _load_experiments recorded each one's output length (n_points-1),
+        # keyed by the bare experiment suffix; merge it in.
+        timeDict.update(getattr(self, '_experiment_time_length', {}))
+        return timeDict
         
                 
 
@@ -803,6 +816,175 @@ class Configuration:
             self.models[base].add_mutant(MutationSet(mut_objects, name))
             logger.debug(f"Condition '{name}' applied to model '{base}' "
                          f"({len(mut_objects)} perturbation(s))")
+
+    def _load_experiments(self):
+        """Map new-era ``experiment:`` lines to synthesized actions + exp_data (ADR-0028).
+
+        An ``experiment:`` is a named simulation bound to its measurement files -- a PEtab
+        v2 Experiment. The experiment NAME replaces the legacy BNGL Suffix as the
+        simulation's identity: it is the synthesized action's suffix AND the ``exp_data``
+        key. Unlike the legacy filename->suffix convention, the data<->simulation link is
+        *stated* here, so the suffix-match wart in ``_check_actions`` does not apply (a
+        new-era model carries no data on its model line, so ``_check_actions`` already
+        passed it with an empty mapping, which this method then extends).
+
+        For each experiment this:
+
+        * resolves the base model (the single declared model when ``model:`` is omitted, or
+          the named model by filename stem otherwise);
+        * reads the ``data:`` files and **stacks replicates** -- multiple files become one
+          ``Data`` whose rows are concatenated, NOT averaged (averaging is *smoothing*, a
+          different axis; the objective sums over every row, so replicate rows simply
+          contribute more measurement terms -- the thing the legacy surface cannot do);
+        * infers the simulation type from the data's independent variable (``time`` =>
+          time_course; anything else names a swept parameter => parameter_scan, which is
+          deferred -- see below) unless ``type:`` states it;
+        * synthesizes the ``TimeCourse`` action with the data's time points as explicit
+          output points (Chunk 3a), so the simulation lands on exactly the data and the
+          objective's by-indvar match always succeeds -- no hand-tuned uniform grid;
+        * attaches the action to the model and registers the stacked ``Data`` under the
+          experiment's data key (the experiment name, or name+condition when a condition
+          is applied -- the conditioned simulation output's suffix) in ``self.exp_data``
+          and ``self.mapping``.
+
+        Edition-gated (``>= 2``): the parser accepts ``experiment:`` regardless, so the
+        error is an explanatory ``require_edition`` rather than a parse failure.
+
+        **Deferred (ADR-0028 Open/deferred):** a parameter_scan experiment is rejected with
+        a clear message -- the scan's simulation endpoint time has no home in the
+        ``experiment:`` grammar yet. The Chunk 3a ``par_scan_vals`` plumbing stands ready
+        for when that surface is designed. ``.con``/``.prop`` (BPSL) data files are likewise
+        not yet routed through ``data:``.
+        """
+        experiments = [(k[1], v) for k, v in self.config.items()
+                       if isinstance(k, tuple) and k[0] == 'experiment']
+        if not experiments:
+            return
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(ed, 2, "the 'experiment:' syntax")
+
+        # Output-row counts (suffix -> n_points - 1) for the synthesized actions, merged
+        # into time_length by _load_t_length (the actions live neither in the model file
+        # nor the legacy time_course list, so find_t_length / the xml branch miss them).
+        self._experiment_time_length = {}
+
+        for name, fields in experiments:
+            base = self._resolve_experiment_model(name, fields.get('model'))
+            model = self.models[base]
+            stacked = self._load_experiment_data(name, fields['data'])
+            action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
+            if action_type != 'time_course':
+                raise PybnfError(
+                    f"Experiment '{name}' is a parameter_scan (independent variable "
+                    f"'{stacked.indvar}'), but parameter_scan experiments are not yet "
+                    "supported via the new 'experiment:' surface: the scan's simulation "
+                    "endpoint time has no home in the experiment grammar yet (ADR-0028, "
+                    "Open/deferred). Use a legacy 'param_scan' action for now.")
+
+            data_key = self._resolve_experiment_data_key(name, model, base, fields.get('condition'))
+
+            method = fields.get('method', 'ode')
+            points = sorted({float(x) for x in stacked[stacked.indvar]})
+            action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+            model.add_action(action)
+
+            self.exp_data.setdefault(base, {})[data_key] = stacked
+            self.mapping.setdefault(base, set()).add(data_key)
+            # time_length is keyed by the bare action suffix (the experiment name); the
+            # condition/mutant combinations are formed downstream (adaptive_mcmc).
+            self._experiment_time_length[name] = len(action.explicit_points) - 1
+            logger.debug(f"Experiment '{name}' on model '{base}': {len(points)} data time "
+                         f"point(s), data key '{data_key}', {len(fields['data'])} replicate file(s)")
+
+    def _resolve_experiment_model(self, name, model_ref):
+        """Resolve an experiment's base model: the single declared model when ``model:`` is
+        omitted, or the named model (by filename stem) otherwise. Mirrors the condition
+        resolution idiom (ADR-0028)."""
+        if model_ref is not None:
+            base = self._file_prefix(model_ref, '(bngl|xml|ant|target)')
+            if base not in self.models:
+                raise PybnfError(
+                    f"Experiment '{name}' references model '{model_ref}', but no model "
+                    f"with id '{base}' was declared.")
+            return base
+        if len(self.models) == 1:
+            return next(iter(self.models))
+        raise PybnfError(
+            f"Experiment '{name}' does not name a model, but the job declares "
+            f"{len(self.models)} models. Add 'model: <file>' to the experiment to say "
+            "which model it simulates.")
+
+    def _resolve_experiment_data_key(self, name, model, base, condition):
+        """The exp_data/sim-output key for an experiment: the experiment name for a
+        wildtype experiment, or name+condition for a conditioned one (the suffix the
+        conditioned simulation output carries -- action suffix + the condition's
+        MutationSet suffix). Validates that the named condition exists on the model."""
+        if condition is None:
+            return name
+        cond_suffixes = {m.suffix for m in model.mutants}
+        if condition not in cond_suffixes:
+            raise PybnfError(
+                f"Experiment '{name}' references condition '{condition}', but no condition "
+                f"with that name is defined on model '{base}'. Define it with a "
+                "'condition:' line.")
+        return name + condition
+
+    def _load_experiment_data(self, name, data_files):
+        """Read an experiment's ``data:`` files into one ``Data``, stacking replicates.
+
+        A single file is returned as-is. Multiple files are **replicates**: their rows are
+        vertically concatenated into one ``Data`` (NOT averaged -- the objective sums over
+        all rows, so duplicate-indvar rows from replicates add measurement terms). All
+        replicates must share the same columns (so ``_SD`` noise columns ride through
+        intact, ADR-0021). Only ``.exp`` files are supported here for now (``.con``/``.prop``
+        constraint data via ``data:`` is deferred -- ADR-0028 Open/deferred)."""
+        datas = []
+        for ef in data_files:
+            if not re.search(r'\.exp$', ef):
+                raise PybnfError(
+                    f"Experiment '{name}' data file '{ef}': only .exp files are supported "
+                    "by the 'experiment:' surface for now (constraint .con/.prop data is "
+                    "not yet routed through 'data:' -- ADR-0028 Open/deferred).")
+            try:
+                datas.append(Data(file_name=ef))
+            except FileNotFoundError:
+                raise PybnfError(f"Experimental data file {ef} for experiment '{name}' was not found.")
+            except DuplicateColumnError as err:
+                raise PybnfError(f"Parsing data file {ef} for experiment '{name}'. {err.args[0]}")
+        if len(datas) == 1:
+            return datas[0]
+        base_cols = datas[0].cols
+        for d, ef in zip(datas[1:], data_files[1:]):
+            if d.cols != base_cols:
+                raise PybnfError(
+                    f"Replicate data files for experiment '{name}' have mismatched columns "
+                    f"({list(base_cols)} vs {list(d.cols)} in '{ef}'). All replicates of an "
+                    "experiment must share the same columns.")
+        stacked = Data()
+        stacked.cols = dict(datas[0].cols)
+        stacked.headers = dict(datas[0].headers)
+        stacked.indvar = datas[0].indvar
+        stacked.data = np.vstack([d.data for d in datas])
+        return stacked
+
+    def _infer_experiment_type(self, name, data, explicit_type):
+        """Infer an experiment's simulation type from the data's independent variable
+        (``time`` => time_course; otherwise the indvar names a swept parameter =>
+        parameter_scan), unless ``type:`` states it. Returns ``'time_course'`` or
+        ``'parameter_scan'`` (the caller defers the latter -- ADR-0028)."""
+        if explicit_type is not None:
+            t = explicit_type.lower()
+            if t in ('time_course', 'timecourse'):
+                return 'time_course'
+            if t in ('parameter_scan', 'param_scan', 'parameterscan'):
+                return 'parameter_scan'
+            raise PybnfError(
+                f"Experiment '{name}' has type '{explicit_type}', which is not recognized. "
+                "Use 'time_course' (parameter_scan via the experiment: surface is deferred; "
+                "bifurcate is not supported).")
+        if data.indvar is not None and data.indvar.lower() == 'time':
+            return 'time_course'
+        return 'parameter_scan'
 
     def _load_simulators(self):
 

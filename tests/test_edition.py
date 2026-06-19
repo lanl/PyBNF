@@ -396,6 +396,162 @@ wall_time_sim = 0
     assert 'c1' in suffixes
 
 
+# --- the edition-gated experiment: syntax (ADR-0028, Chunk 3) --------------------
+#
+# _load_experiments reads self.config (edition + the ('experiment', name) tuple keys)
+# plus self.models / exp_data / mapping; the edition gate fires before the model loop,
+# so a SimpleNamespace stands in for self on the gate / no-op paths. The end-to-end
+# tests use the SBML abc model (loads via RoadRunner, no BNG2.pl).
+
+def test_experiment_requires_edition_legacy():
+    # An `experiment:` in a legacy conf errors, naming the edition it needs.
+    ns = types.SimpleNamespace(
+        config={('experiment', 'e1'): {'data': ['a.exp']}, 'edition': None},
+        models={'m': object()})
+    with pytest.raises(PybnfError, match='edition 2') as exc:
+        Configuration._load_experiments(ns)
+    assert "experiment:" in str(exc.value)
+
+
+def test_no_experiment_is_a_noop():
+    ns = types.SimpleNamespace(config={'edition': 2}, models={'a': object()})
+    Configuration._load_experiments(ns)  # no ('experiment', …) keys -> nothing happens
+
+
+@pytest.mark.roadrunner
+def test_experiment_builds_same_objects_as_legacy():
+    """End-to-end: a new-era experiment:/data: conf and the equivalent legacy
+    `model = X : e.exp` + `time_course` conf produce the same internal simulation
+    identity (action suffix), exp_data, and mapping -- the two-front-ends-same-objects
+    proof. The synthesized action differs BY DESIGN (it carries the data's explicit
+    output points instead of a uniform grid); the data binding is identical."""
+    import numpy as np
+    modern = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: abc_data, data: tests/bngl_files/abc/abc_data.exp
+job_type = de
+objective = sos
+loguniform_var = kAB 0.001 1
+loguniform_var = kBA 0.001 1
+loguniform_var = kBC 0.001 1
+loguniform_var = kCB 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    legacy = """
+model = tests/bngl_files/abc.xml : tests/bngl_files/abc/abc_data.exp
+fit_type = de
+objfunc = sos
+loguniform_var = kAB 0.001 1
+loguniform_var = kBA 0.001 1
+loguniform_var = kBC 0.001 1
+loguniform_var = kCB 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+time_course = model: abc, time: 500, step: 10, suffix: abc_data
+"""
+    mod = Configuration(ploop(modern.splitlines(keepends=True)))
+    leg = Configuration(ploop(legacy.splitlines(keepends=True)))
+    # Same simulation identity: the experiment NAME is the action suffix AND data key.
+    assert mod.models['abc'].suffixes == leg.models['abc'].suffixes == [('simulate', 'abc_data')]
+    assert mod.exp_data['abc'].keys() == leg.exp_data['abc'].keys() == {'abc_data'}
+    assert np.array_equal(mod.exp_data['abc']['abc_data'].data,
+                          leg.exp_data['abc']['abc_data'].data)
+    assert mod.mapping == leg.mapping == {'abc': {'abc_data'}}
+    # The data-derived grid: the new-era action carries explicit output points (incl. the
+    # forced t=0), the legacy one a uniform n_steps grid -- the intended difference.
+    assert mod.models['abc'].actions[0].explicit_points is not None
+    assert leg.models['abc'].actions[0].explicit_points is None
+    # time_length is populated for the synthesized action (the am-sampler trajectory path).
+    assert mod.config['time_length']['abc_data'] == len(mod.models['abc'].actions[0].explicit_points) - 1
+
+
+@pytest.mark.roadrunner
+def test_experiment_replicates_stack_rows():
+    """Multiple data: files are replicates -- their rows STACK (not average). abc_data.exp
+    has 10 rows; listing it twice stacks to 20 measurement rows under the one experiment."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: abc_data, data: tests/bngl_files/abc/abc_data.exp, tests/bngl_files/abc/abc_data.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    c = Configuration(ploop(conf.splitlines(keepends=True)))
+    stacked = c.exp_data['abc']['abc_data']
+    assert stacked.data.shape[0] == 20            # 10 + 10, NOT averaged to 10
+    assert stacked.cols == {'time': 0, 'A': 1, 'B': 2, 'C': 3}
+
+
+@pytest.mark.roadrunner
+def test_experiment_with_condition_keys_by_conditioned_suffix():
+    """An experiment applying a condition keys its data by name+condition -- the suffix the
+    conditioned simulation output carries -- and that suffix appears in get_suffixes
+    alongside the wildtype one."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+condition: fast, perturbations: kAB * 2
+experiment: abc_data, condition: fast, data: tests/bngl_files/abc/abc_data.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    c = Configuration(ploop(conf.splitlines(keepends=True)))
+    assert 'abc_datafast' in c.exp_data['abc']
+    assert c.mapping['abc'] == {'abc_datafast'}
+    suffixes = c.models['abc'].get_suffixes()
+    assert 'abc_datafast' in suffixes   # conditioned sim output (scored against the data)
+    assert 'abc_data' in suffixes       # wildtype sim output (the base MutationSet)
+
+
+@pytest.mark.roadrunner
+def test_experiment_unknown_condition_raises():
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: e, condition: nope, data: tests/bngl_files/abc/abc_data.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    with pytest.raises(PybnfError, match="references condition 'nope'"):
+        Configuration(ploop(conf.splitlines(keepends=True)))
+
+
+@pytest.mark.roadrunner
+def test_experiment_parameter_scan_is_deferred():
+    """A parameter_scan experiment (inferred here from the non-time indvar 'kAB') is
+    rejected with the deferral message -- the scan endpoint time is not yet expressible
+    in the experiment: grammar (ADR-0028 Open/deferred)."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: dose, data: tests/bngl_files/abc/abc_scan.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    with pytest.raises(PybnfError, match='parameter_scan experiments are not yet supported'):
+        Configuration(ploop(conf.splitlines(keepends=True)))
+
+
 # --- the edition-gated objective surface (ADR-0031) -----------------------------
 #
 # _load_obj_func reads only self.config (and _user_objfunc via a getattr fallback to

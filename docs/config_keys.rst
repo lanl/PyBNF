@@ -64,6 +64,46 @@ Required Keys
     * ``condition: overexpr, perturbations: erbb2_tot * 20, kdeg / 2``
     * ``condition: overexpr, model: erbb2.bngl, perturbations: erbb2_tot * 20`` (multi-model)
 
+.. _experiment:
+
+**experiment** (new-era, ``experiment: …``)
+  Under a modern :ref:`edition <edition>` (``edition >= 2``) an **experiment** is a
+  *named* simulation bound to its measurement files — a PEtab v2 Experiment. The
+  experiment **name** replaces the legacy filename→suffix convention as the simulation's
+  identity, so a data file can be named anything and the data↔simulation link is *stated*,
+  not inferred from filenames.
+
+  The line is ``experiment: <name>, data: <file1.exp>[, <file2.exp>…]`` plus the optional
+  labeled fields ``condition: <name>``, ``model: <file>``, ``type: <type>``, and
+  ``method: <ode|ssa|pla|nf>``, which may appear in any order after the name; only
+  ``data:`` is required.
+
+    * **data:** a comma list of ``.exp`` files. **Multiple files are replicates** — all
+      their rows become measurements under the one experiment (stacked, not averaged), the
+      thing the legacy surface cannot express without pre-averaging.
+    * **The simulation outputs at exactly the data's points.** The independent-variable
+      column of the data supplies the simulation's output grid (the BNGL ``begin actions``
+      block is no longer needed for fitting); PyBNF synthesizes the ``simulate`` action
+      from the data, so the scoring grid always lines up with the measurements.
+    * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
+      "model as is").
+    * **model:** names the base model by filename stem; omittable when the job declares a
+      single model, required when it declares more than one.
+    * **type:** is **inferred** from the data's independent-variable header — a ``time``
+      column ⇒ a time course — and stated only when inference can't decide.
+    * **method:** the simulator, default ``ode``.
+
+  Requires ``edition >= 2``. **Currently only time-course experiments are supported**; a
+  parameter scan (a non-``time`` independent variable, or ``type: parameter_scan``) is not
+  yet expressible through this surface and raises a clear error — use a legacy
+  :ref:`param_scan <param_scan_key>` action for now.
+
+  Examples:
+
+    * ``experiment: egf_high, data: high_wt_r1.exp, high_wt_r2.exp`` (two replicates)
+    * ``experiment: egf_high_dd, condition: dimer_dead, data: high_dd.exp``
+    * ``experiment: egf_high, model: egfr.bngl, data: high.exp`` (multi-model)
+
 .. _fit_type:
 
 **fit_type**

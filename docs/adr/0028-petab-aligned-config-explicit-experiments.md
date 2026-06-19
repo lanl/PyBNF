@@ -133,8 +133,27 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
 
 ## Open / deferred (the loose ends to tie up)
 
+- **`parameter_scan` via `experiment:` — the scan's simulation endpoint time.** The swept
+  *values* of a parameter scan come from the data's independent-variable column, but the
+  *simulation end time* (how long to integrate before reading the observable) is a
+  simulation setting, not a data property, and the `experiment:` grammar (condition / model
+  / data / type / method) has no home for it. Decided during Chunk 3 implementation
+  (2026-06-19): **defer.** Chunk 3 ships time-course experiments only; a parameter-scan
+  experiment (inferred from a non-`time` independent variable, or stated as
+  `type: parameter_scan`) raises a clear "not yet supported — use a legacy `param_scan`
+  action" error. The backend plumbing is ready — `ParamScan` already accepts explicit
+  scan values and `add_action` emits `par_scan_vals` (Chunk 3a) — so the remaining work is
+  purely the authoring surface for the endpoint time (and whether a dose-response should
+  instead run to steady state). Tracked for a follow-on chunk.
+- **`.con` / `.prop` (BPSL) data through `data:`.** `data:` parses heterogeneous file
+  extensions, but Chunk 3's `_load_experiments` handles only `.exp`; a constraint/property
+  file under `data:` raises. The #423 survey's #1 gap (`.prop` is PyBNF-native, not
+  PEtab-exportable) — route it through `data:` (carried + marked non-exportable) in a
+  follow-on.
 - **`_SD` / noise.** How per-point noise (`_SD` columns) and the per-observable noise model
   (`noise_model`, ADR-0021) ride along — undecided. Park until the spine is fixed.
+  (Mechanically, Chunk 3's replicate stacking concatenates all columns, so `_SD` columns do
+  ride through the stacked `Data`; the per-observable `noise_model` interaction is untested.)
 - **Smooth output curves.** Data-derived times give a ragged output grid; a future option
   could also emit a fine grid for plotting (mechanism TBD).
 - **Observables as a first-class table** (vs header-inference + `observable:` overrides) —
