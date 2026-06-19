@@ -144,7 +144,17 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   action" error. The backend plumbing is ready — `ParamScan` already accepts explicit
   scan values and `add_action` emits `par_scan_vals` (Chunk 3a) — so the remaining work is
   purely the authoring surface for the endpoint time (and whether a dose-response should
-  instead run to steady state). Tracked for a follow-on chunk.
+  instead run to steady state). **Tracked in #426** (recommended design: steady-state
+  default à la PEtab `time = inf`, with an optional explicit `t_end:`).
+- **Explicit output points unsupported for NFsim / RuleMonkey on the bngsim backend
+  (#427).** The new-era "simulation outputs at the data's points" mechanism (`sample_times`
+  / `simulate(times=)`) is honored by BNG2.pl (all methods), RoadRunner (cvode + gillespie),
+  and bngsim for ode/ssa/psa — but bngsim's network-free path drops `sample_times` (in the
+  PyBNF bridge, anticipating the bngsim NF API), so a `method: nf` (or RuleMonkey) new-era
+  experiment under `bngl_backend = bngsim` falls back to a uniform grid and mis-scores; the
+  same job under BNG2.pl works. Verified 2026-06-19 (bngsim 0.9.40). Tracked in #427
+  (PyBNF re-enable) + the upstream bngsim fix; pla is out of scope (bngsim doesn't support
+  it; impractical method).
 - **`.con` / `.prop` (BPSL) data through `data:`.** `data:` parses heterogeneous file
   extensions, but Chunk 3's `_load_experiments` handles only `.exp`; a constraint/property
   file under `data:` raises. The #423 survey's #1 gap (`.prop` is PyBNF-native, not
