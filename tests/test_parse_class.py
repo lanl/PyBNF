@@ -1,3 +1,7 @@
+import pytest
+
+from pybnf.printing import PybnfError
+
 from .context import parse
 
 
@@ -151,3 +155,23 @@ class TestParse:
         assert d['a.bngl'] == [] and d['b.bngl'] == [] and d['c.target'] == []
         assert d['exp_data'] == set()          # declarations bind no data
         assert d['model'] == ['a.bngl', 'b.bngl', 'c.target']
+
+    def test_condition_grammar(self):
+        # New-era `condition:` (ADR-0028): name + perturbations (var op val), with an
+        # optional `model:` ref. The perturbations are the last group; the model ref
+        # (when present) sits at l[2], making the line len 4 vs 3.
+        assert parse.parse('condition: dimer_dead, perturbations: kdimer = 0') == \
+            ['condition', 'dimer_dead', [['kdimer', '=', '0']]]
+        assert parse.parse('condition: oe, model: erbb2.bngl, perturbations: a * 20, b / 2') == \
+            ['condition', 'oe', ['erbb2.bngl'], [['a', '*', '20'], ['b', '/', '2']]]
+
+    def test_condition_ploop_tuple_key(self):
+        d = parse.ploop(['condition: c1, perturbations: kf = 1e-3, kr - 2',
+                         'condition: c2, model: m.bngl, perturbations: a / 10'])
+        # The num grammar normalizes the exponent marker to uppercase E.
+        assert d[('condition', 'c1')] == (None, [('kf', '=', '1E-3'), ('kr', '-', '2')])
+        assert d[('condition', 'c2')] == ('m.bngl', [('a', '/', '10')])
+
+    def test_condition_duplicate_name_raises(self):
+        with pytest.raises(PybnfError, match="Condition 'c' is specified multiple times"):
+            parse.ploop(['condition: c, perturbations: a = 1', 'condition: c, perturbations: b = 2'])

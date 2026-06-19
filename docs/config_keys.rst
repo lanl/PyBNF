@@ -43,6 +43,27 @@ Required Keys
     * ``model: egfr.bngl, erbb2.bngl`` (comma list)
     * ``model: egfr.bngl`` then ``model: erbb2.bngl`` (multiple lines, union)
 
+.. _condition:
+
+**condition** (new-era, ``condition: …``)
+  Under a modern :ref:`edition <edition>` (``edition >= 2``) a **condition** is a *named*
+  set of parameter perturbations applied to a base model — a PyBNF Mutant, equal to a
+  PEtab v2 Condition. It is the perturbation half of the legacy ``mutant`` line, with
+  **no** data binding (data is introduced separately, through an experiment).
+
+  The line is ``condition: <name>, perturbations: <var op val>[, <var op val>…]``. Each
+  perturbation is a variable, an operator, and a number: ``=`` sets the value absolutely,
+  while ``*`` ``/`` ``+`` ``-`` apply relative to the parameter's nominal value. An
+  optional ``model: <file>`` field (placed before ``perturbations:``) names the base
+  model; it is omittable when the job declares a single model, and required when it
+  declares more than one. Requires ``edition >= 2``.
+
+  Examples:
+
+    * ``condition: dimer_dead, perturbations: kdimer = 0``
+    * ``condition: overexpr, perturbations: erbb2_tot * 20, kdeg / 2``
+    * ``condition: overexpr, model: erbb2.bngl, perturbations: erbb2_tot * 20`` (multi-model)
+
 .. _fit_type:
 
 **fit_type**

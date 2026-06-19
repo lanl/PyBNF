@@ -304,6 +304,98 @@ job_type = check
     assert c.models.keys() == {'a', 'b'}
 
 
+# --- the edition-gated condition: syntax (ADR-0028, Chunk 2) --------------------
+#
+# _load_conditions reads self.config (edition + the ('condition', name) tuple keys)
+# and self.models; the edition gate fires before the model loop, so a SimpleNamespace
+# stands in for self on the gate / ambiguity paths.
+
+def test_condition_requires_edition_legacy():
+    # A `condition:` in a legacy conf errors, naming the edition it needs (the gate
+    # fires before any model is touched).
+    ns = types.SimpleNamespace(
+        config={('condition', 'c1'): (None, [('p1', '=', '0')]), 'edition': None},
+        models={'m': object()})
+    with pytest.raises(PybnfError, match='edition 2') as exc:
+        Configuration._load_conditions(ns)
+    assert "condition:" in str(exc.value)
+
+
+def test_condition_no_model_under_multiple_models_is_ambiguous():
+    ns = types.SimpleNamespace(
+        config={('condition', 'c1'): (None, [('p1', '=', '0')]), 'edition': 2},
+        models={'a': object(), 'b': object()})
+    with pytest.raises(PybnfError, match='does not name a model'):
+        Configuration._load_conditions(ns)
+
+
+def test_condition_unknown_model_ref_raises():
+    ns = types.SimpleNamespace(
+        config={('condition', 'c1'): ('nope.bngl', [('p1', '=', '0')]), 'edition': 2},
+        models={'a': object()},
+        _file_prefix=Configuration._file_prefix)   # the staticmethod the resolver uses
+    with pytest.raises(PybnfError, match="references model 'nope.bngl'"):
+        Configuration._load_conditions(ns)
+
+
+def test_no_condition_is_a_noop():
+    ns = types.SimpleNamespace(config={'edition': 2}, models={'a': object()})
+    Configuration._load_conditions(ns)   # no ('condition', …) keys -> nothing happens
+
+
+def test_modern_condition_builds_same_mutationset_as_legacy_mutant():
+    """End-to-end: a new-era `condition:` and the legacy `mutant … : none` form add the
+    identical MutationSet to the base model. Uses the SBML abc model (loads via
+    RoadRunner, no BNG2.pl), since the analytical .target does not support mutants."""
+    def muts(model):
+        return [(m.suffix, [(x.name, x.operation, x.value) for x in m.mutations])
+                for m in model.mutants]
+    modern = """
+edition = 2
+model: tests/bngl_files/abc.xml
+condition: c1, perturbations: kBC / 10
+job_type = de
+objective = score
+loguniform_var = kAB 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    legacy = """
+model = tests/bngl_files/abc.xml : none
+mutant = abc c1 kBC/10 : none
+fit_type = de
+objfunc = sos
+loguniform_var = kAB 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    mod = Configuration(ploop(modern.splitlines(keepends=True)))
+    leg = Configuration(ploop(legacy.splitlines(keepends=True)))
+    assert muts(mod.models['abc']) == muts(leg.models['abc'])
+    # The named perturbation is present on the model as a MutationSet.
+    assert ('c1', [('kBC', '/', 10.0)]) in muts(mod.models['abc'])
+
+
+def test_modern_condition_resolves_explicit_model_ref():
+    """A `condition:` with an explicit `model:` ref resolves the base by filename stem."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+condition: c1, model: tests/bngl_files/abc.xml, perturbations: kAB * 2
+job_type = de
+objective = score
+loguniform_var = kAB 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    c = Configuration(ploop(conf.splitlines(keepends=True)))
+    suffixes = [m.suffix for m in c.models['abc'].mutants]
+    assert 'c1' in suffixes
+
+
 # --- the edition-gated objective surface (ADR-0031) -----------------------------
 #
 # _load_obj_func reads only self.config (and _user_objfunc via a getattr fallback to

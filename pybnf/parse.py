@@ -166,8 +166,28 @@ def parse(s):
     mutgram = mutkey - equals - string - string - pp.Group(pp.OneOrMore(mut_op)) - \
         pp.Group(colon - (_DelimitedList(exp_file) ^ nonetoken)) - comment
 
+    # new-era condition grammar (ADR-0028) -- a PyBNF Mutant = a PEtab Condition:
+    #   condition: <name>[, model: <file>], perturbations: <var op val>[, <var op val>...]
+    # A named set of parameter perturbations (op in = * / + -; ``=`` absolute, the rest
+    # relative to the nominal value) -- the perturbation half of a legacy ``mutant``,
+    # with NO data binding (data is introduced only by an experiment's ``data:``). The
+    # ``model:`` sub-field is optional (omittable when there is a single model). Output:
+    # ``['condition', <name>, <model-ref group>?, <perturbations group>]`` -- the model
+    # ref (when present) and the perturbations are each a single ``pp.Group``, so their
+    # positions are fixed (perturbations last; the model ref present iff len == 4) and
+    # ploop reads them unambiguously. Edition-gated (>= 2) in config.py.
+    condition_key = pp.CaselessLiteral('condition')
+    cond_name = pp.Word(pp.alphas, pp.alphanums + '_')
+    cond_model_key = pp.Suppress(pp.CaselessLiteral('model'))
+    perturbations_key = pp.Suppress(pp.CaselessLiteral('perturbations'))
+    cond_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
+    cond_model_ref = pp.Group(pp.Suppress(',') + cond_model_key + colon + model_file)
+    cond_perts = pp.Group(_DelimitedList(cond_op))
+    condition_gram = condition_key + colon - cond_name + pp.Optional(cond_model_ref) + \
+        pp.Suppress(',') + perturbations_key + colon - cond_perts - comment
+
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -263,6 +283,21 @@ def ploop(ls):  # parse loop
                 else:
                     d['mutant'] = [l[1:]]
                 exp_data.update(l[-1])
+            elif l[0] == 'condition':
+                # New-era `condition:` (ADR-0028) -- a named set of parameter
+                # perturbations on a base model (a PyBNF Mutant = a PEtab Condition),
+                # with NO data binding. Store as a structural ('condition', name) tuple
+                # key (like a noise_model key) -> (model_ref or None, [(var, op, val),
+                # ...]); config.py edition-gates these and maps each to a MutationSet.
+                # The perturbations are always the last group; the optional model ref is
+                # l[2][0], present iff len(l) == 4 (one optional + one required group).
+                name = l[1]
+                perts = [tuple(op) for op in l[-1]]
+                model_ref = l[2][0] if len(l) == 4 else None
+                cond_key = ('condition', name)
+                if cond_key in d:
+                    raise PybnfError(f"Condition '{name}' is specified multiple times")
+                d[cond_key] = (model_ref, perts)
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
@@ -381,6 +416,9 @@ def ploop(ls):  # parse loop
                 fmt = "'mutant=base model var1=val1 var2*val2 ... : datafile1.exp, datafile2.exp' where mutation " \
                       "operations (var1=val1 etc) have the format [variable_name][operator][number] and other " \
                       "arguments are strings"
+            elif key == 'condition':
+                fmt = "'condition: name, perturbations: var1 op val1, var2 op val2, ...' where op is one of " \
+                      "= * / + - , optionally with 'model: modelfile' before perturbations (requires edition >= 2)"
 
             message = f"Parsing configuration key '{key}' on line {i}.\n"
             if fmt == '':

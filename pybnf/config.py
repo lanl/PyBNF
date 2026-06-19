@@ -239,6 +239,8 @@ class Configuration:
         logger.debug('Loaded simulators')
         self._load_mutants()
         logger.debug('Loaded mutants')
+        self._load_conditions()
+        logger.debug('Loaded conditions')
         self.mapping = self._check_actions()  # dict of model prefix -> set of experimental data prefixes
         logger.debug('Loaded model:exp mapping')
         self.exp_data, self.constraints = self._load_exp_data()
@@ -759,6 +761,48 @@ class Configuration:
                                      f'the model suffix it corresponds to, followed by the mutant name (e.g. {suffix_choices[0]}{name}.exp)')
             # Stages these exp files to get loaded along with regular model ones
             self._data_map[base] += exps
+
+    def _load_conditions(self):
+        """Map new-era ``condition:`` lines to MutationSets on the base model (ADR-0028).
+
+        A ``condition:`` is a named set of parameter perturbations -- a PyBNF Mutant = a
+        PEtab Condition -- i.e. the *perturbation half* of a legacy ``mutant``, with **no
+        data binding** (data is introduced only by an experiment's ``data:``, Chunk 3).
+        So this reuses ``_load_mutants``' asset (``Mutation`` / ``MutationSet`` /
+        ``add_mutant``) but skips the legacy ``: exps`` suffix-matching and ``_data_map``
+        staging that couple a mutant to its data.
+
+        Edition-gated (``>= 2``): the parser accepts ``condition:`` regardless, so the
+        error is an explanatory ``require_edition`` rather than a parse failure. The base
+        model is the single declared model when ``model:`` is omitted, or the named model
+        (resolved by filename stem) otherwise; under multiple models a ``model:`` ref is
+        required (the multi-model end-to-end path is exercised once the multi-model
+        exporter lands -- ADR-0027/0028).
+        """
+        conditions = [(k[1], v) for k, v in self.config.items()
+                      if isinstance(k, tuple) and k[0] == 'condition']
+        if not conditions:
+            return
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(ed, 2, "the 'condition:' syntax")
+        for name, (model_ref, perts) in conditions:
+            if model_ref is not None:
+                base = self._file_prefix(model_ref, '(bngl|xml|ant|target)')
+                if base not in self.models:
+                    raise PybnfError(
+                        f"Condition '{name}' references model '{model_ref}', but no model "
+                        f"with id '{base}' was declared.")
+            elif len(self.models) == 1:
+                base = next(iter(self.models))
+            else:
+                raise PybnfError(
+                    f"Condition '{name}' does not name a model, but the job declares "
+                    f"{len(self.models)} models. Add 'model: <file>' to the condition to "
+                    f"say which model it perturbs.")
+            mut_objects = [Mutation(var, op, float(val)) for var, op, val in perts]
+            self.models[base].add_mutant(MutationSet(mut_objects, name))
+            logger.debug(f"Condition '{name}' applied to model '{base}' "
+                         f"({len(mut_objects)} perturbation(s))")
 
     def _load_simulators(self):
 
