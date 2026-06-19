@@ -212,6 +212,98 @@ wall_time_sim = 0
     assert type(leg.obj) is type(mod.obj) is objective.DirectPassObjective
 
 
+# --- the edition-gated model: declaration syntax (ADR-0028, Chunk 1) ------------
+#
+# _resolve_model_declarations gates the new-era `model:` syntax behind edition >= 2.
+# The parser folds each declared file into the legacy `model = file : none` structures
+# and records them in the 'model' marker; the gate consumes that marker.
+
+def test_legacy_model_declaration_requires_edition():
+    # Using `model:` without opting into edition 2 errors, naming the fix.
+    with pytest.raises(PybnfError, match='edition 2') as exc:
+        Configuration._resolve_model_declarations({'model': ['egfr.bngl'], 'edition': None})
+    assert "model:" in str(exc.value)
+
+
+def test_modern_model_declaration_passes_and_consumes_marker():
+    d = {'model': ['egfr.bngl', 'mek1.bngl'], 'edition': 2}
+    Configuration._resolve_model_declarations(d)
+    assert 'model' not in d   # marker consumed so it never reaches the schema/warning
+
+
+def test_no_model_declaration_is_a_noop():
+    d = {'edition': None}
+    Configuration._resolve_model_declarations(d)   # no 'model' marker -> nothing happens
+    assert d == {'edition': None}
+
+
+def test_modern_model_declaration_builds_same_models_as_legacy_none(tmp_path):
+    """End-to-end: a new-era `model:` declaration and the legacy `model = X : none`
+    form produce the same internal Configuration (same self.models / mapping). Built
+    over an AnalyticalModel .target so it stays simulator-free."""
+    import json
+    import os
+    (tmp_path / 'gaussian.target').write_text(
+        json.dumps({'type': 'gaussian', 'mean': [0.0, 0.0], 'variance': [1.0, 1.0]}))
+    legacy = """
+model = gaussian.target : none
+objfunc = direct_pass
+fit_type = de
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+"""
+    modern = """
+edition = 2
+model: gaussian.target
+objective = score
+job_type = de
+uniform_var = p1 -10 10
+uniform_var = p2 -10 10
+population_size = 10
+max_iterations = 10
+wall_time_sim = 0
+"""
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        leg = Configuration(ploop(legacy.splitlines(keepends=True)))
+        mod = Configuration(ploop(modern.splitlines(keepends=True)))
+    finally:
+        os.chdir(cwd)
+    # modelId = the filename stem; declaration binds no data.
+    assert mod.models.keys() == leg.models.keys() == {'gaussian'}
+    assert mod.mapping == leg.mapping == {'gaussian': set()}
+    assert mod.config['gaussian.target'] == leg.config['gaussian.target'] == []
+    # The consumed 'model' marker never reaches the effective config.
+    assert 'model' not in mod.config
+
+
+def test_modern_multiple_model_lines_accumulate(tmp_path):
+    """Multiple `model:` lines union into self.models; stems must be unique (ADR-0028)."""
+    import json
+    import os
+    for name in ('a', 'b'):
+        (tmp_path / f'{name}.target').write_text(
+            json.dumps({'type': 'gaussian', 'mean': [0.0], 'variance': [1.0]}))
+    conf = """
+edition = 2
+model: a.target
+model: b.target
+objective = score
+job_type = check
+"""
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        c = Configuration(ploop(conf.splitlines(keepends=True)))
+    finally:
+        os.chdir(cwd)
+    assert c.models.keys() == {'a', 'b'}
+
+
 # --- the edition-gated objective surface (ADR-0031) -----------------------------
 #
 # _load_obj_func reads only self.config (and _user_objfunc via a getattr fallback to

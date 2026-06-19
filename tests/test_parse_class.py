@@ -131,3 +131,23 @@ class TestParse:
     def test_no_exp(self):
         assert parse.parse('model=thing.bngl: None') == ['model', 'thing.bngl']
         assert parse.parse('mutant = thing mutant a*2 b=0 : None') == ['mutant', 'thing', 'mutant', [['a', '*', '2'], ['b', '=', '0']], []]
+
+    def test_model_declaration_grammar(self):
+        # New-era `model:` declaration (ADR-0028): tagged 'model_decl' so it is
+        # distinguishable from the legacy `model = file : exp` form, whose tokens are
+        # otherwise shaped identically.
+        assert parse.parse('model: egfr.bngl') == ['model_decl', 'egfr.bngl']
+        assert parse.parse('model: egfr.bngl, mek1.xml, g.target') == \
+            ['model_decl', 'egfr.bngl', 'mek1.xml', 'g.target']
+        # The legacy `model = ...` form backtracks cleanly past the declaration grammar.
+        assert parse.parse('model = egfr.bngl : d.exp') == ['model', 'egfr.bngl', 'd.exp']
+
+    def test_model_declaration_ploop_accumulates(self):
+        # Multiple `model:` lines union; each file folds like `model = file : none`
+        # (added to the models set with an empty exp list); the declared files are
+        # recorded in the structural 'model' marker for the config-layer edition gate.
+        d = parse.ploop(['model: a.bngl', 'model: b.bngl, c.target'])
+        assert d['models'] == {'a.bngl', 'b.bngl', 'c.target'}
+        assert d['a.bngl'] == [] and d['b.bngl'] == [] and d['c.target'] == []
+        assert d['exp_data'] == set()          # declarations bind no data
+        assert d['model'] == ['a.bngl', 'b.bngl', 'c.target']

@@ -106,6 +106,20 @@ def parse(s):
     exp_file = pp.Regex(r".*?\.(exp|con|prop)")
     mdmgram = mdmkey - equals - model_file - colon - (_DelimitedList(exp_file) ^ nonetoken) - comment
 
+    # new-era model declaration grammar (ADR-0028):
+    #   model: <file>[, <file>...]
+    # A pure model *declaration* -- data never binds here (it is introduced only by an
+    # experiment's `data:` sub-field). Repeatable/accumulating across lines; modelId =
+    # filename stem (uniqueness enforced when models load). It shares the ``model``
+    # keyword with the legacy ``model = file : exp`` form, so it is tried first and
+    # ``mdmkey + colon`` (a non-error-stop ``+``) lets a legacy ``model =`` line
+    # backtrack cleanly to ``mdmgram``; once the colon commits, the file list is
+    # error-stopped (``-``). A parse action tags it ``model_decl`` so ploop can route
+    # the colon form -- whose tokens are otherwise shaped like ``mdmgram``'s -- to the
+    # declaration handler. Edition-gated (>= 2) in config.py.
+    model_decl_gram = mdmkey + colon - _DelimitedList(model_file) - comment
+    model_decl_gram.set_parse_action(lambda t: ['model_decl'] + list(t)[1:])
+
     # normalization mapping grammar
     normkey = pp.CaselessLiteral("normalization")
     anything = pp.Word(pp.alphanums+punctuation+' ')
@@ -153,7 +167,7 @@ def parse(s):
         pp.Group(colon - (_DelimitedList(exp_file) ^ nonetoken)) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = mdmgram | noise_model_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -207,7 +221,7 @@ def ploop(ls):  # parse loop
             elif l[0] in multstrkeys:
                 key = l[0]
                 values = l[1:]
-            elif l[0] != 'model':
+            elif l[0] not in ('model', 'model_decl'):
                 key = l[0]
                 values = flatten(l[1:])
 
@@ -218,6 +232,19 @@ def ploop(ls):  # parse loop
                 d[key] = values  # individual data files remain in list
                 models.add(key)
                 exp_data.update(values)
+            elif l[0] == 'model_decl':
+                # New-era `model:` declaration (ADR-0028): a pure model declaration with
+                # no data binding (data is introduced only by an experiment's `data:`).
+                # Fold each file exactly like a legacy `model = file : none` line -- add
+                # it to the models set with an empty exp list -- and accumulate the
+                # declared files in the structural 'model' marker so config.py can
+                # edition-gate the new syntax (>= edition 2). modelId = filename stem;
+                # stem-uniqueness is enforced when models load (Model.name).
+                for mf in l[1:]:
+                    if mf not in d:
+                        d[mf] = []
+                    models.add(mf)
+                d.setdefault('model', []).extend(l[1:])
             elif l[0] in dictkeys:
                 # Multiple declarations allowed; config dict entry should contain a list of all the declarations.
                 # Convert the line into a dict of key-value pairs. Keep everything as strings, check later
@@ -320,7 +347,9 @@ def ploop(ls):  # parse loop
                 d[key] = values
 
         except pp.ParseBaseException:
-            key = re.split('[ =]', line)[0].lower()
+            # Split on space, '=', and ':' so a colon-form key (the new-era
+            # ``model:`` / ``experiment:`` / ... syntax) reports the bare keyword.
+            key = re.split('[ =:]', line)[0].lower()
             fmt = ''
             if key in numkeys_int:
                 fmt = f"'{key}=x' where x is an integer"
@@ -339,6 +368,8 @@ def ploop(ls):  # parse loop
                 fmt = f"'{key}=s' where s is a string"
             elif key == 'model':
                 fmt = "'model=modelfile.bngl : datafile.exp' or 'model=modelfile.bngl : datafile1.exp, datafile2.exp'" \
+                      " (legacy), or the new-era declaration 'model: modelfile.bngl' or " \
+                      "'model: modelfile1.bngl, modelfile2.bngl' (requires edition >= 2)." \
                       " Supported modelfile extensions are .bngl, .xml, .ant, and .target"
             elif key == 'normalization':
                 fmt = f"'{key}=s' or '{key}=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \

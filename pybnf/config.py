@@ -183,6 +183,10 @@ class Configuration:
             
         if 'models' not in d or len(d['models']) == 0:
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
+        # Edition-gate the new-era `model:` declaration syntax (ADR-0028) before the
+        # run selector, so a legacy conf that reaches for it gets the model-syntax
+        # error rather than an incidental fit_type default warning.
+        self._resolve_model_declarations(d)
         # Normalize the run selector across editions into the internal 'fit_type'
         # slot (ADR-0028): the modern edition names the run with 'job_type', legacy
         # with 'fit_type'. Surface-only -- downstream reads and the registry are
@@ -383,6 +387,29 @@ class Configuration:
             raise PybnfError(f'Invalid random_seed {seed}',
                              "Config key 'random_seed' must be an integer from 0 to %i." % (2**32 - 1))
         self.config['random_seed'] = int(seed)
+
+    @staticmethod
+    def _resolve_model_declarations(d):
+        """Edition-gate the new-era ``model:`` declaration syntax (ADR-0028, Chunk 1).
+
+        The parser folds each ``model:`` file into the *same* structures a legacy
+        ``model = file : none`` line produces -- the ``models`` set plus an empty exp
+        list -- so the downstream model loader is untouched (a different front-end,
+        the same internal objects). It also accumulates the declared files in the
+        structural ``'model'`` marker. This gate requires ``edition >= 2`` for that
+        syntax (the parser accepts it regardless, so the error is an explanatory
+        ``require_edition`` rather than a bare parse failure), then consumes the marker
+        so it never reaches the schema or the unused-key warning.
+
+        The legacy ``model = file : exp`` form is **unchanged at every edition** -- a
+        modern conf still uses it to bind data until the ``experiment:`` / ``data:``
+        surface lands (Chunk 3); the "refuse legacy everything" pass is Chunk 5.
+        Mutates ``d``.
+        """
+        declared = d.pop('model', None)
+        if declared:
+            ed = edition.resolve_edition(d.get('edition'))
+            edition.require_edition(ed, 2, "the 'model:' declaration syntax")
 
     @staticmethod
     def _resolve_run_selector(d):

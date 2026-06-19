@@ -11,16 +11,37 @@ fitting run.  Each line of the .conf file sets the value of a configuration key 
 
 Required Keys
 -------------
-**model**
-  Specifies the mapping between model files (.bngl or .xml) and data files (.exp or .prop). Model paths and files are 
-  followed by a ':' and then a comma-delimited list of experimental data files or property files corresponding to the 
-  model files. If no experimental files are associated with a model write ``none`` instead of a file path.  
+.. _model_legacy:
+
+**model** (legacy form, ``model = …``)
+  Specifies the mapping between model files (.bngl or .xml) and data files (.exp or .prop). Model paths and files are
+  followed by a ':' and then a comma-delimited list of experimental data files or property files corresponding to the
+  model files. If no experimental files are associated with a model write ``none`` instead of a file path.
 
   Examples:
-  
+
     * ``model = path/to/model1.bngl : path/to/data1.exp``
     * ``model = path/to/model2.xml : path/to/data2.prop, path/to/data2.exp``
     * ``model = path/to/model3.xml : none``
+
+.. _model_decl:
+
+**model** (new-era declaration form, ``model: …``)
+  Under a modern :ref:`edition <edition>` (``edition >= 2``) a model is *declared* with
+  the colon form, which carries **no** data binding — data is introduced separately
+  through an experiment's measurements, not on the model line (this retires the legacy
+  coupling of data onto the model). One or more model files follow the ``:``; the
+  ``modelId`` is the filename **stem**, which must be unique across all declarations.
+
+  ``model:`` lines are repeatable and accumulate, so a many-model job reads as one line
+  per model; a comma list is shorthand for a few. Requires ``edition >= 2``; the legacy
+  ``model = … : …`` form above continues to work at every edition.
+
+  Examples:
+
+    * ``model: egfr.bngl`` (one model; ``modelId`` = ``egfr``)
+    * ``model: egfr.bngl, erbb2.bngl`` (comma list)
+    * ``model: egfr.bngl`` then ``model: erbb2.bngl`` (multiple lines, union)
 
 .. _fit_type:
 
