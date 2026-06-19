@@ -49,7 +49,10 @@ from pybnf.petab.parameters import (
 from pybnf.pset import FreeParameter
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
-DEMO_CONF = DEMO_DIR / 'demo_bng.conf'
+# The new-era (edition 2) demo conf: the PEtab v2 exporter requires a modern config
+# (objective named on the ADR-0031 surface, not the legacy objfunc key). demo_bng.conf
+# stays legacy for the fitter / install check; demo_bng_v2.conf is its modern twin.
+DEMO_CONF = DEMO_DIR / 'demo_bng_v2.conf'
 
 
 def _tsv_rows(path):
@@ -298,7 +301,7 @@ class TestExportLogUniform:
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
             'model = parabola.bngl : par1.exp\n'
-            'fit_type = de\nobjfunc = chi_sq\n'
+            'fit_type = de\nedition = 2\nobjective = chi_sq\n'
             'loguniform_var = v1__FREE 0.1 10\n'
             'loguniform_var = v2__FREE 0.1 10\n'
             'loguniform_var = v3__FREE 0.1 10\n')
@@ -333,7 +336,7 @@ class TestExportObjectiveFamily:
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
             'model = parabola.bngl : par1.exp\n'
-            f'fit_type = de\nobjfunc = {objfunc}\n'
+            f'fit_type = de\nedition = 2\nobjective = {objfunc}\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n')
         out = tmp_path_factory.mktemp('objfam_out')
@@ -409,13 +412,35 @@ class TestBoundaries:
         with pytest.raises(NotImplementedError):
             export_job(DEMO_DIR / 'demo_xml.conf', tmp_path)
 
-    @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'direct_pass'])
-    def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
-        # neg_bin was removed from PEtab v2; direct_pass is not a likelihood.
+    def test_legacy_edition_job_is_refused(self, tmp_path):
+        # PEtab v2 interop is new-era only: a legacy conf (no edition, legacy objfunc)
+        # is refused -- the user must modernize (edition >= 2 + the objective surface).
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            f"fit_type = de\nobjfunc = {objfunc}\n"
+            "fit_type = de\nobjfunc = chi_sq\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError):
+            export_job(conf, tmp_path / 'out')
+
+    def test_modern_edition_without_objective_is_refused(self, tmp_path):
+        # New era has no implicit chi_sq default: an edition-2 job must name its objective.
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
+            "fit_type = de\nedition = 2\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError):
+            export_job(conf, tmp_path / 'out')
+
+    @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
+    def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
+        # neg_bin was removed from PEtab v2; score (the direct_pass successor) is not a
+        # likelihood. All are named on the modern `objective` key.
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
+            f"fit_type = de\nedition = 2\nobjective = {objfunc}\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -426,7 +451,7 @@ class TestBoundaries:
         conf = tmp_path / 'job.conf'
         conf.write_text(
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "fit_type = de\nobjfunc = chi_sq_dynamic\n"
+            "fit_type = de\nedition = 2\nobjective = chi_sq_dynamic\n"
             "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -675,7 +700,7 @@ def _write_mutant_fixture(d):
     conf = d / 'mut.conf'
     conf.write_text(
         'model = parabola2.bngl : par1.exp\n'
-        'fit_type = de\nobjfunc = chi_sq\n'
+        'fit_type = de\nedition = 2\nobjective = chi_sq\n'
         'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
         'uniform_var = v3__FREE 0 10\n'
         'mutant = parabola2 fitmut v1*2 : par1fitmut.exp\n'
@@ -693,7 +718,7 @@ def _write_dose_fixture(d):
     conf = d / 'dose.conf'
     conf.write_text(
         'model = doseresp.bngl : dr.exp\n'
-        'fit_type = de\nobjfunc = chi_sq\n'
+        'fit_type = de\nedition = 2\nobjective = chi_sq\n'
         'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
         'param_scan = model:doseresp, param:L, min:1, max:5, step:1, time:100, suffix:dr\n')
     return conf
@@ -893,7 +918,7 @@ class TestChunk2Boundaries:
             '# v1 a resp a_SD resp_SD\n1\t0.4\t3.1\t0.1\t0.2\n2\t0.8\t5.2\t0.1\t0.2\n')
         conf = tmp_path / 'dose.conf'
         conf.write_text(
-            'model = doseresp.bngl : dr.exp\nfit_type = de\nobjfunc = chi_sq\n'
+            'model = doseresp.bngl : dr.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'param_scan = model:doseresp, param:v1, min:1, max:2, step:1, '
             'time:100, suffix:dr\n')
@@ -905,7 +930,7 @@ class TestChunk2Boundaries:
         # Strip the param_scan: a swept-axis .exp with no action to source its time.
         conf = tmp_path / 'dose.conf'
         conf.write_text(
-            'model = doseresp.bngl : dr.exp\nfit_type = de\nobjfunc = chi_sq\n'
+            'model = doseresp.bngl : dr.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n')
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
@@ -915,7 +940,7 @@ class TestChunk2Boundaries:
         _write_mutant_fixture(tmp_path)
         conf = tmp_path / 'mut.conf'
         conf.write_text(
-            'model = parabola2.bngl : par1.exp\nfit_type = de\nobjfunc = chi_sq\n'
+            'model = parabola2.bngl : par1.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n'
             'mutant = parabola2 m nope=0 : par1fitmut.exp\n')
@@ -932,7 +957,7 @@ class TestChunk2Boundaries:
             '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n')
         conf = tmp_path / 'mut.conf'
         conf.write_text(
-            'model = parabola2.bngl : par1.exp\nfit_type = de\nobjfunc = chi_sq\n'
+            'model = parabola2.bngl : par1.exp\nfit_type = de\nedition = 2\nobjective = chi_sq\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n'
             'mutant = parabola2 fixmut s*5 : par1fixmut.exp\n')

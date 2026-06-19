@@ -20,6 +20,13 @@ the model file (ADR-0025). PEtab ids are prefixed (``obs_``/``func_`` for
 observables, the unprefixed model name for parameters) to keep the PEtab-id namespace
 disjoint from the model-entity namespace.
 
+**New-era only (ADR-0031).** PEtab v2 interop is a new-era feature: ``export_job``
+**refuses a legacy (edition 1) job** and requires ``edition >= 2``, so the exporter reads
+only the modern config surface -- the objective is named with ``objective`` /
+``noise_model`` (never the retired ``objfunc``), with no implicit default -- rather than
+reverse-mapping legacy syntax. The gate is on the exporter alone; the fitter still runs
+legacy confs unchanged.
+
 **Scope (chunk 2, ADR-0027).** Adds the two tables that vary the simulation per dataset:
 a PyBNF **Mutant** -> a PEtab **Condition**/**Experiment** (a fit-and-mutated parameter
 via a surrogate-base ``<p>__REF`` rename; see :mod:`pybnf.petab.conditions`), and a
@@ -44,6 +51,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .. import edition
 from ..data import Data
 from ..objective import _OBJECTIVE_DESUGAR
 from ..parse import ploop
@@ -102,6 +110,7 @@ def export_job(conf_path, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     conf = _read_conf_dict(conf_path)
+    _require_modern_edition(conf)
     model_file = _resolve_model(conf)
     noise = _resolve_noise(conf)
     free_params = _free_parameters_from_conf(conf)
@@ -183,16 +192,32 @@ def _resolve_model(conf):
     return model_file
 
 
+def _require_modern_edition(conf):
+    """Refuse a legacy-edition job: PEtab v2 interop is a new-era (``edition >= 2``)
+    feature (Bill's call, ADR-0031). A legacy conf names its objective with the retired
+    ``objfunc`` key and binds data through the filename->suffix linkage; the exporter
+    reads only the modern surface, so it requires the conf to have opted into the new era
+    rather than reverse-mapping legacy syntax. Gates the *exporter* only -- the fitter
+    still runs legacy confs unchanged."""
+    ed = edition.resolve_edition(conf.get('edition'))
+    if not edition.is_modern(ed):
+        raise NotImplementedError(
+            "The PEtab v2 exporter requires a new-era config (edition >= 2); this job is "
+            f"legacy (edition {ed}). PEtab v2 interop is a new-era feature: add "
+            f"'edition = {edition.CURRENT_EDITION}' and name the objective on the modern "
+            "surface ('objective = <name>' or 'noise_model = <family>, ...') instead of "
+            "the legacy 'objfunc' key (ADR-0031, #423).")
+
+
 def _resolve_noise(conf):
     """The job's whole-fit noise model as ``(noiseDistribution, sigma_verb, sigma_arg)``.
 
-    Reads the objective off the ADR-0031 surface and reduces it to a single
-    ``(family, {param: (verb, arg)}, location)`` noise-model tuple, then reverses that
-    to PEtab. The objective is named, in precedence order, by a modern whole-fit
-    ``noise_model = <family>, ...`` line, the modern named ``objective`` token, or the
-    **legacy** ``objfunc`` token (legacy edition only -- but the survey corpus is all
-    legacy, so it is the common case). The modern keys are inspected *first* so a modern
-    job is never silently exported under the legacy ``chi_sq`` default.
+    Modern-only (``export_job`` has already required ``edition >= 2``): the objective is
+    named on the ADR-0031 surface -- a whole-fit ``noise_model = <family>, ...`` line or
+    the named ``objective`` token -- with **no legacy** ``objfunc`` and **no implicit
+    default**, mirroring ``config.py``'s modern ``_load_obj_func`` branch. The resolved
+    objective is reduced to one ``(family, {param: (verb, arg)}, location)`` tuple and
+    reversed to PEtab.
 
     Raises ``NotImplementedError`` at every PEtab boundary, never a silent default:
 
@@ -201,9 +226,10 @@ def _resolve_noise(conf):
       observable-noise representation;
     * per-observable ``noise_model <obs> = ...`` overrides -- a later chunk (they map to
       per-observable PEtab noise);
+    * no objective, or more than one global objective key (no implicit default);
     * a ``mean``-centered noise model -- PEtab takes the prediction as the median for
       every family;
-    * an objective with no per-point noise model (``score`` / ``direct_pass`` / unknown);
+    * an objective with no per-point noise model (``score`` / unknown token);
     * a family PEtab v2 cannot express (``neg_bin`` -- removed; ``lognormal`` -- log10 vs
       PEtab natural log, a deferred sigma scale-conversion).
     """
@@ -221,19 +247,26 @@ def _resolve_noise(conf):
             "whole-fit noise model (ADR-0021/0023, #423).")
 
     whole_fit = conf.get(('noise_model', None))
+    has_objective = conf.get('objective') is not None
+    if whole_fit is not None and has_objective:
+        raise PybnfError(
+            "Specify exactly one global objective: this job has both a whole-fit "
+            "'noise_model = ...' line and an 'objective = ...' key.")
     if whole_fit is not None:
         family_token, fields, location = whole_fit          # modern whole-fit line
-    else:
-        # The modern named `objective`, else the legacy `objfunc` spelling; both name a
-        # token in the shared desugar map. `chi_sq` is the legacy no-objective default.
-        token = conf.get('objective') or conf.get('objfunc') or 'chi_sq'
+    elif has_objective:
+        token = conf['objective']
         if token not in _OBJECTIVE_DESUGAR:
             raise NotImplementedError(
-                f"Objective {token!r} has no per-point PEtab noise model: 'score' / "
-                f"direct_pass (no likelihood) and any unknown token are not PEtab "
-                f"observable noise. Per-point objectives: {sorted(_OBJECTIVE_DESUGAR)} "
-                f"(ADR-0031, #423).")
+                f"objective = {token!r} has no per-point PEtab noise model: 'score' (no "
+                f"likelihood) and any unknown token are not PEtab observable noise. "
+                f"Per-point objectives: {sorted(_OBJECTIVE_DESUGAR)} (ADR-0031, #423).")
         family_token, fields, location = _OBJECTIVE_DESUGAR[token](conf)
+    else:
+        raise NotImplementedError(
+            "No objective is named. A new-era (edition >= 2) job must name its objective "
+            "explicitly -- there is no implicit default. Set 'objective = <name>' or "
+            "'noise_model = <family>, ...' (ADR-0031, #423).")
 
     if location == 'mean':
         raise NotImplementedError(
