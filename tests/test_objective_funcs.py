@@ -310,14 +310,23 @@ class TestNegBinMedianCentering:
 
     r = 10.0
 
-    def test_default_location_is_mean(self):
-        """The constructor default is MEAN -- the native parameterization that keeps the
-        legacy neg_bin objfuncs byte-identical."""
-        nb = noise.NegBinomial()
-        assert nb.location is noise.MEAN
-        # MEAN data_fit is the identity: prediction IS the mean (unchanged from legacy).
+    def test_default_location_is_median(self):
+        """The constructor default is MEDIAN -- median is the universal centering default
+        for every family (ADR-0031), true in code like Gaussian/Laplace."""
+        assert noise.NegBinomial().location is noise.MEDIAN
+
+    def test_mean_location_is_the_native_identity(self):
+        """MEAN data_fit is the identity: the prediction IS the mean (the frozen legacy
+        behavior the legacy objfuncs pin explicitly)."""
+        nb = noise.NegBinomial(location=noise.MEAN)
         p = np.clip(self.r / (self.r + 4.0), 1e-10, 1 - 1e-10)
         npt.assert_almost_equal(nb.data_fit(4.0, 5, self.r), -stats.nbinom.logpmf(5, self.r, p))
+
+    def test_legacy_objfuncs_pin_mean(self):
+        """The legacy neg_bin / neg_bin_dynamic objfuncs stay frozen-mean by pinning
+        MEAN explicitly, despite the family's modern median default."""
+        assert objective.NegBinLikelihood(self.r).noise.location is noise.MEAN
+        assert objective.NegBinLikelihood_Dynamic().noise.location is noise.MEAN
 
     def test_with_location_round_trips(self):
         nb = noise.NegBinomial()

@@ -110,6 +110,14 @@ def test_invalid_noise_model_raises(value, match):
         _build_noise_spec('obs', value)
 
 
+def test_neg_bin_override_defaults_to_median():
+    # Median is the universal default for every family (ADR-0031), baked into the
+    # constructor -- so a neg_bin override with no location field resolves to median,
+    # just like the location-scale families (not the legacy mean).
+    fam, _ = _build_noise_overrides(ploop(['noise_model o = neg_bin, dispersion = fix_at 10']))['o']
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
+
+
 def test_neg_bin_accepts_both_mean_and_median():
     # neg_bin is parameterized directly by its mean: location=mean is the (redundant
     # but true) native interpretation; location=median is the #419 inversion. Both are

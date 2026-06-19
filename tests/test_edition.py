@@ -213,6 +213,28 @@ def test_modern_neg_bin_with_explicit_median_runs_silently(caplog):
     assert caplog.text == ''
 
 
+def test_modern_per_observable_neg_bin_defaults_median_and_warns(caplog):
+    # A per-observable neg_bin override with no location resolves to the median default
+    # too (not just the whole-fit default), and warns for that observable by name.
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'objective': 'chi_sq', 'edition': 2, 'ind_var_rounding': 0,
+                         ('noise_model', 'o'): ('neg_bin', {'dispersion': ('fix_at', '10')}, None)})
+    fam = obj._spec_for('o')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEDIAN
+    assert "observable 'o'" in caplog.text
+
+
+def test_modern_per_observable_neg_bin_explicit_mean_silent(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        obj = _load_obj({'objective': 'chi_sq', 'edition': 2, 'ind_var_rounding': 0,
+                         ('noise_model', 'o'): ('neg_bin', {'dispersion': ('fix_at', '10')}, 'mean')})
+    fam = obj._spec_for('o')[0]
+    assert isinstance(fam, noise.NegBinomial) and fam.location is noise.MEAN
+    assert caplog.text == ''
+
+
 @pytest.mark.parametrize('token', ['chi_sq', 'lognormal', 'laplace'])
 def test_modern_location_scale_objectives_default_median(token):
     # The location-scale families already default to median, so a modern edition is

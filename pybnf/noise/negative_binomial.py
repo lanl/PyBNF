@@ -5,7 +5,7 @@ from scipy.optimize import brentq
 from scipy.special import betainc, loggamma
 
 from .base import NoiseModel
-from .location import MEAN, MEDIAN
+from .location import MEDIAN
 
 
 def _mean_for_median(prediction, r):
@@ -47,20 +47,23 @@ class NegBinomial(NoiseModel):
     ``neg_bin_dynamic`` from the ``r__FREE`` free parameter).
 
     The **location** axis (ADR-0011/0031) sets which distributional summary the
-    prediction is taken to be. ``NegBinomial`` is parameterized directly by its mean,
-    so ``MEAN`` (the default, and the frozen legacy behavior) is the identity: the
-    prediction *is* the mean. ``MEDIAN`` interprets the prediction as the 0.5-quantile
-    and solves for the mean placing the continuous median there (issue #419). Unlike
-    Gaussian/Laplace, the count family is **not additive on a scale**, so it owns this
-    realization directly rather than going through ``location.py``'s additive-offset
-    abstraction -- it reuses the ``MEAN``/``MEDIAN`` markers, not the ``offset`` math.
+    prediction is taken to be. The default is ``MEDIAN`` -- median is the universal
+    prediction-centering default for *every* noise family (ADR-0031, "every means
+    every"), true in code at the constructor like Gaussian/Laplace. ``MEDIAN``
+    interprets the prediction as the 0.5-quantile and solves for the mean placing the
+    continuous median there (issue #419). ``MEAN`` is the native parameterization (the
+    prediction *is* the mean) -- the legacy ``neg_bin`` objfuncs pin it explicitly to
+    stay frozen-mean. Unlike Gaussian/Laplace, the count family is **not additive on a
+    scale**, so it owns this realization directly rather than going through
+    ``location.py``'s additive-offset abstraction -- it reuses the ``MEAN``/``MEDIAN``
+    markers, not the ``offset`` math.
 
     A negative observed count contributes nothing (the count-domain guard). A PMF is
     self-normalizing, so there is no separable normalizer (``log_normalizer`` stays 0)
     and the full ``-logpmf`` lives in ``data_fit``.
     """
 
-    def __init__(self, location=MEAN):
+    def __init__(self, location=MEDIAN):
         self.location = location
 
     def with_location(self, location):

@@ -143,6 +143,32 @@ STRUCTURAL_PASSTHROUGH = frozenset({
 })
 
 
+def _implicit_median_neg_bin_scopes(config, obj, explicit_global):
+    """The scopes (the whole-fit default and/or named observables) where a ``neg_bin``
+    noise model resolves to the modern median default (ADR-0031) without an explicit
+    location -- the warn-worthy set, since ``neg_bin``'s legacy centering was the mean.
+    The location-scale families are silent (byte-identical at the median). Takes the raw
+    config so it works through the ``_load_obj_func`` test idiom (no ``self``)."""
+    scopes = []
+    # The class default (objective = neg_bin, or a whole-fit noise_model line): warn only
+    # when median was reached implicitly -- not via an explicit global noise_location,
+    # nor an explicit location field on the whole-fit line.
+    whole_fit = config.get(('noise_model', None))
+    line_set_location = whole_fit is not None and whole_fit[2] is not None
+    if (obj.noise is not None and isinstance(obj.noise, objective.NegBinomial)
+            and obj.noise.location is objective.MEDIAN
+            and not explicit_global and not line_set_location):
+        scopes.append('the whole fit')
+    # Per-observable noise_model overrides carry their own location; a neg_bin override
+    # with no location field resolves to the median default implicitly.
+    for k, v in config.items():
+        if isinstance(k, tuple) and k[0] == 'noise_model' and k[1] is not None:
+            family, _fields, loc = v
+            if family.lower() == 'neg_bin' and loc is None:
+                scopes.append(f"observable '{k[1]}'")
+    return scopes
+
+
 class Configuration:
     def __init__(self, d=None):
         """
@@ -805,9 +831,9 @@ class Configuration:
           the bare ``score`` passthrough), a whole-fit ``noise_model`` line, or
           ``profile_objective`` (column-joint) -- with **no implicit default**.
 
-        A shared tail applies the whole-fit ``noise_location`` default and the modern
-        median-centering default (with the neg_bin warning) to whichever objective was
-        built.
+        A shared tail applies the whole-fit ``noise_location`` default and warns when a
+        ``neg_bin`` resolves to the modern median centering implicitly (median is the
+        universal default baked into every family's constructor; ADR-0031).
         """
         ed = edition.resolve_edition(self.config.get('edition'))
         user_objfunc = getattr(self, '_user_objfunc', 'objfunc' in self.config)
@@ -893,27 +919,21 @@ class Configuration:
                     "objective (normal/lognormal/laplace/neg_bin/...); the selected objective has "
                     "no noise model whose location can be set.")
             obj.set_default_location(location)
-        elif (edition.is_modern(ed)
-                and isinstance(obj, objective.LikelihoodObjective)
-                and obj.noise is not None):
-            # No explicit global location under a modern edition: the universal default
-            # is the median (ADR-0031). The location-scale families already default to
-            # median, so they are byte-identical and untouched; the one family whose
-            # legacy default was the mean is neg_bin (mean-parameterized), detectable
-            # because its class-default noise comes out MEAN here. Unless the whole-fit
-            # noise_model line set an explicit location, flip it to the median
-            # realization (issue #419) -- and warn, since the number changes from legacy
-            # and almost nobody actually wants median neg_bin (usually a forgotten
-            # location = mean).
-            whole_fit = self.config.get(('noise_model', None))
-            line_set_location = whole_fit is not None and whole_fit[2] is not None
-            if not line_set_location and obj.noise.location is objective.MEAN:
+        if edition.is_modern(ed) and isinstance(obj, objective.LikelihoodObjective):
+            # The universal default centering is the median (ADR-0031), baked into every
+            # family's constructor -- so no flip is needed here. The location-scale
+            # families are byte-identical at the median; the one family whose legacy
+            # centering was the mean is neg_bin, so a neg_bin that resolves to median
+            # *implicitly* (no explicit location) is a number change from legacy and
+            # almost always a forgotten 'location = mean'. Warn for it (explicit
+            # mean/median is silent).
+            scopes = _implicit_median_neg_bin_scopes(self.config, obj, explicit_global=location is not None)
+            if scopes:
                 logger.warning(
-                    f"neg_bin is defaulting to median centering under edition {ed} "
-                    f"(ADR-0031); its legacy default was the mean. Set 'noise_location = mean' "
-                    f"(or 'location = mean' on the noise_model) to keep mean centering, or "
-                    f"'= median' to silence this warning.")
-                obj.set_default_location('median')
+                    f"neg_bin is defaulting to median centering under edition {ed} for "
+                    f"{', '.join(scopes)} (ADR-0031); its legacy default was the mean. Set "
+                    f"'location = mean' (or 'noise_location = mean' for the whole fit) to keep "
+                    f"mean centering, or '= median' to silence this warning.")
         return obj
 
     def _load_variables(self):

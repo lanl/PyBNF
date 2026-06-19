@@ -623,7 +623,10 @@ class NegBinLikelihood_Dynamic(LikelihoodObjective):
     (``r__FREE``). NegBinomial's PMF is self-normalizing, so ``nll == data_fit``;
     the source is estimated but its normalizer is 0 (ADR-0011)."""
 
-    noise = NegBinomial()
+    # Legacy objfunc: pin MEAN explicitly to stay frozen-mean and byte-identical, even
+    # though NegBinomial's modern default is the median (ADR-0031). The modern surface
+    # (objective = neg_bin / a noise_model line) gets the median default instead.
+    noise = NegBinomial(location=MEAN)
     sigma_source = FreeParameterSigma('r__FREE')
 
     def _prediction(self, sim_data, sim_row, col_name):
@@ -644,7 +647,8 @@ class NegBinLikelihood(LikelihoodObjective):
     constant (``neg_bin_r``). Fixed and self-normalizing, so the objective is the
     NegBinomial data fit (ADR-0011)."""
 
-    noise = NegBinomial()
+    # Legacy objfunc: pin MEAN explicitly to stay frozen-mean (see neg_bin_dynamic).
+    noise = NegBinomial(location=MEAN)
 
     def __init__(self, r, ind_var_rounding=0, overrides=None):
         super().__init__(ind_var_rounding, overrides)
