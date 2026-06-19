@@ -39,6 +39,17 @@ _TFUN_FILE_REF_RE = re.compile(
 )
 
 
+def _format_bngl_number(x):
+    """Format a float for a BNGL ``sample_times`` / ``par_scan_vals`` list (ADR-0028).
+
+    ``repr`` gives the shortest string that round-trips back to the same float, so a
+    data point like ``0.0065`` stays ``0.0065`` (not ``0.006500000000001``) when it is
+    re-parsed by BNG2.pl, bngsim, or ``find_t_length``. BioNetGen and bngsim both accept
+    decimal and scientific notation.
+    """
+    return repr(float(x))
+
+
 def _collapse_line_continuations(text):
     """Collapse BNGL-style trailing backslash continuations."""
     return re.sub(r'\\\s*\n\s*', '', text)
@@ -836,10 +847,35 @@ class BNGLModel(Model):
         write actions in the BNGL file's ``begin actions`` block instead.
         """
         if isinstance(action, TimeCourse):
-            line = f'simulate({{method=>"{action.method}",t_start=>0,t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
+            if action.explicit_points is not None:
+                # New-era explicit output points (ADR-0028): emit BioNetGen sample_times
+                # so the gdat lands on exactly the data's time points. Covers BNG2.pl
+                # (BNGAction.pm) and bngsim (parses the bracket list out of the action
+                # text). BNG requires 3 or more sample times; explicit_points already
+                # includes t=0, so a single positive data time still yields 2 -- guard
+                # for the (rare) too-short grid with a clear message.
+                if len(action.explicit_points) < 3:
+                    raise PybnfError(
+                        f'The time_course action with suffix "{action.suffix}" has only '
+                        f'{len(action.explicit_points)} explicit output time point(s) (including t=0), but '
+                        "BioNetGen's sample_times requires 3 or more. Provide a data set with at least two "
+                        'positive time points.')
+                sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
+                line = f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],suffix=>"{action.suffix}",print_functions=>1}})'
+            else:
+                line = f'simulate({{method=>"{action.method}",t_start=>0,t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
         elif isinstance(action, ParamScan):
-            line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},' \
-                   f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
+            if action.explicit_points is not None:
+                # New-era explicit scan values (ADR-0028): emit par_scan_vals so the scan
+                # samples exactly the data's swept-parameter values. par_min/par_max/
+                # n_scan_pts are deliberately omitted -- when present BioNetGen ignores
+                # par_scan_vals (BNGAction.pm: "defined min/max takes precedence").
+                par_scan_vals = ','.join(_format_bngl_number(p) for p in action.explicit_points)
+                line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},' \
+                       f'par_scan_vals=>[{par_scan_vals}],log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
+            else:
+                line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},' \
+                       f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
         else:
             raise RuntimeError(f'Unknown action type {type(action)}')
         # Config actions are assumed to be independent, so need to reset concentrations before each one.
@@ -1131,7 +1167,15 @@ class SbmlModelNoTimeout(Model):
                         runner.integrator.subdivision_steps = act.subdivisions
                 if isinstance(act, TimeCourse):
                     try:
-                        res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                        if act.explicit_points is not None:
+                            # New-era explicit output points (ADR-0028): output at exactly
+                            # the data's time points. RoadRunner's times= overrides
+                            # start/end/points and integrates from the first listed time --
+                            # explicit_points always includes t=0 (TimeCourse) so this
+                            # starts at the model baseline.
+                            res_array = runner.simulate(times=act.explicit_points, selections=selection)
+                        else:
+                            res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
                     except RuntimeError:
                         # Rethrow simulation errors as something more specific to be caught
                         raise FailedSimulationError
@@ -1150,7 +1194,12 @@ class SbmlModelNoTimeout(Model):
                     else:
                         icscan = False
                         init_val = getattr(runner, act.param)
-                    points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                    # New-era explicit scan values (ADR-0028): sweep exactly the data's
+                    # swept-parameter values instead of a uniform np.linspace grid.
+                    if act.explicit_points is not None:
+                        points = act.explicit_points
+                    else:
+                        points = np.linspace(act.min, act.max, act.stepnumber + 1)
                     res_array = None
                     labels = None
                     for i, x in enumerate(points):
@@ -1232,26 +1281,31 @@ class TimeCourse(Action):
     native action syntax.
     """
 
-    def __init__(self, d):
+    def __init__(self, d, explicit_points=None):
         """
         :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
         of this action.
         Valid dict keys are time:number, step:number, model:str (unused here), suffix: str,
         values: list of numbers (not implemented)
         Raises a PyBNF error if anything is wrong with the dict.
+        :param explicit_points: Optional iterable of independent-variable (time) values
+        at which the simulation should output, derived from an experiment's data (ADR-0028,
+        Chunk 3). When given, the action outputs at exactly these time points instead of a
+        uniform ``n_steps`` grid (BNGL ``sample_times`` / RoadRunner ``simulate(times=...)``).
+        ``t=0`` is always included so integration starts at the model's baseline.
         """
         # Available keys and default values
         num_keys = {'time', 'step'}
         str_keys = {'model', 'suffix', 'method'}
         int_keys = {'subdivisions'}
         # Default values
-        self.time = None  # Required
+        self.time = None  # Required (or derived from explicit_points below)
         self.step = 1.
         self.subdivisions = 1
         self.model = ''
         self.suffix = 'time_course'
         self.method = 'ode'
-    
+
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -1272,6 +1326,29 @@ class TimeCourse(Action):
             else:
                 raise PybnfError(f'"{k}" is not a valid attribute for "time_course".',
                                  '"{}" is not a valid attribute for "time_course". Possible attributes are: {}'.format(k, ','.join(num_keys.union(str_keys))))
+
+        # New-era explicit output points (ADR-0028): when an experiment derives its
+        # output grid from the data's independent-variable column, the time course
+        # outputs at exactly those points rather than a uniform n_steps grid. ``t=0``
+        # is forced in so integration always starts at the model's baseline -- BNG2.pl's
+        # t_start defaults to 0, but RoadRunner's simulate(times=...) and bngsim's
+        # sample_times path both begin integrating at the FIRST listed time (verified:
+        # RoadRunner with times=[10,...] returns the initial condition at t=10, not the
+        # evolved value), so without a leading 0 a data grid that starts at t>0 would
+        # silently produce the wrong trajectory. The extra t=0 output row is harmless to
+        # scoring, which matches by independent-variable value and ignores sim rows with
+        # no corresponding data point (objective.py). Points are sorted and deduplicated:
+        # the simulation outputs one row per distinct time; replicate data with repeated
+        # times stacks extra measurement rows that all match that one sim row.
+        self.explicit_points = None
+        if explicit_points is not None:
+            pts = sorted({float(p) for p in explicit_points} | {0.0})
+            if len(pts) < 2:
+                raise PybnfError('A time_course with explicit output points needs at least one '
+                                 'positive time point.')
+            self.explicit_points = pts
+            if self.time is None:
+                self.time = pts[-1]
 
         if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')
@@ -1295,13 +1372,18 @@ class ParamScan(Action):
     syntax.
     """
 
-    def __init__(self, d):
+    def __init__(self, d, explicit_points=None):
         """
         :param d: A dict with string:string key-value pairs made up of user-entered data, specifying the attributes
         of this action.
         Valid dict keys are min:number, max:number, step:number, time:number, model:str (unused here), suffix: str,
         logspace: 0 or 1, param: str, values: list of numbers (not implemented)
         Raises a PyBNF error if anything is wrong with the dict.
+        :param explicit_points: Optional iterable of scanned-parameter values at which the
+        scan should output, derived from an experiment's data (ADR-0028, Chunk 3). When
+        given, the scan outputs at exactly these values (BNGL ``par_scan_vals`` / a
+        RoadRunner simulate loop over the values) instead of a uniform ``par_min..par_max``
+        grid, and ``min``/``max``/``step`` become optional (derived from the values).
         """
         # Available keys and default values
         num_keys = {'min', 'max', 'step', 'time'}
@@ -1339,6 +1421,26 @@ class ParamScan(Action):
             else:
                 raise PybnfError(f'"{k}" is not a valid attribute for "param_scan".',
                                  '"{}" is not a valid attribute for "param_scan". Possible attributes are: {}'.format(k, ','.join(num_keys.union(str_keys))))
+
+        # New-era explicit scan values (ADR-0028): a parameter scan derives its swept
+        # values from the data's independent-variable column (the scanned parameter),
+        # outputting at exactly those values rather than a uniform par_min..par_max grid.
+        # Unlike a time course, no 0 is forced in -- each scan point is an independent
+        # simulation from the baseline, so there is no integration-start point to add and a
+        # spurious 0 dose is not wanted. min/max/step are derived so the legacy required-key
+        # check below is satisfied; explicit_points takes precedence at emit/run time.
+        self.explicit_points = None
+        if explicit_points is not None:
+            pts = sorted({float(p) for p in explicit_points})
+            if len(pts) == 0:
+                raise PybnfError('A param_scan with explicit values needs at least one value.')
+            self.explicit_points = pts
+            if self.min is None:
+                self.min = pts[0]
+            if self.max is None:
+                self.max = pts[-1]
+            if self.step is None:
+                self.step = (pts[-1] - pts[0]) if pts[-1] != pts[0] else 1.0
 
         for k in required_keys:
             if self.__getattribute__(k) is None:
