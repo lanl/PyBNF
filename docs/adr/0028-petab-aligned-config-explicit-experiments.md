@@ -1,11 +1,15 @@
 # A PEtab-aligned PyBNF config: explicit `experiment`/`condition`/`data`, simulation times derived from the data (issue #423)
 
-**Status: Proposed (tentative spec, under active design — NOT yet accepted).**
-**Separate from ADR-0027** (the PEtab v2 *exporter* chunk; that ships now and reads the
-*current* config). This ADR proposes a redesign of PyBNF's *own* config language so a
-fitting job is natively shaped like a PEtab v2 problem — which turns export into
-transcription and fixes long-standing UX warts. Backward compatible: the current syntax
-keeps working unchanged.
+**Status: Accepted (implemented in Chunks 0–5, 2026-06-19).** The full new-era authoring
+surface (`job_type` + `model:` + `condition:` + `experiment:`/`data:` + `observable:`) is
+built and edition-gated (Chunks 0–4), and the PEtab v2 exporter now reads it directly
+(Chunk 5) — export is transcription, and the exporter is new-era only (it refuses the
+legacy data linkage). Dose-response (parameter-scan) authoring/export remains deferred
+(its simulation endpoint time has no home in the `experiment:` grammar; **#426**).
+**Separate from ADR-0027** (the PEtab v2 *exporter* seam this builds on). This ADR
+redesigns PyBNF's *own* config language so a fitting job is natively shaped like a PEtab v2
+problem — which turns export into transcription and fixes long-standing UX warts. Backward
+compatible: the legacy syntax keeps working unchanged (selected by edition).
 
 ## Why
 
@@ -170,8 +174,11 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   deferred; inference covers the common case.
 - **`condition: model:` semantics under multiple models** — needs the multi-model exporter
   (ADR-0027 defers multi-model) before it's exercised end-to-end.
-- **Exporter support for the new syntax.** ADR-0027's exporter reads the *legacy* config;
-  teaching it the new (transcription-easy) syntax is a follow-on.
+- **Exporter support for the new syntax.** *Done (Chunk 5, 2026-06-19).* The PEtab v2
+  exporter reads the new-era surface directly (`pybnf/petab/export.py::_export_new_era` +
+  `conditions.build_experiment_conditions`) and refuses the legacy data linkage under a
+  modern edition — export is transcription. Dose-response export stays deferred with the
+  parameter-scan authoring surface (#426).
 
 ## Considered / rejected
 

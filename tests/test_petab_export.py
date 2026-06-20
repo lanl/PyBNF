@@ -1,6 +1,7 @@
-"""Unit tests for the PEtab v2 *exporter* (#407, exporter-first; ADR-0025).
+"""Unit tests for the PEtab v2 *exporter* (#407/#423; ADR-0025/0027/0028).
 
-The exporter reads a working PyBNF/BNGL job and serializes it to a PEtab v2 problem.
+The exporter reads a working PyBNF/BNGL job *on the new-era surface* (model: /
+experiment: / data: / condition: / observable:) and serializes it to a PEtab v2 problem.
 Its contracts, by strength of oracle:
 
 1. **The external oracle, at model level.** petab's own validation, run on the whole
@@ -16,8 +17,8 @@ Its contracts, by strength of oracle:
 4. **Model correspondence** (what the table oracle can't check for BNGL): every
    ``observableFormula`` is a model observable/function name; every ``parameterId`` is
    a model parameter; the PEtab-clean model drops ``__FREE`` and ``begin actions``.
-5. **The documented chunk-1 boundaries** raise (dose-response, non-uniform prior,
-   no-``_SD`` noise, SBML model, non-``chi_sq`` objective).
+5. **The documented boundaries** raise (parameter-scan #426 deferral, legacy linkage
+   refused, non-uniform prior, no-``_SD`` noise, SBML model, PEtab-inexpressible objective).
 """
 
 from pathlib import Path
@@ -29,7 +30,6 @@ from pybnf.data import Data
 from pybnf.petab.conditions import (
     build_dose_response_conditions,
     build_experiment_conditions,
-    build_mutant_conditions,
     mutation_target_value,
     surrogate_name,
 )
@@ -301,11 +301,12 @@ class TestExportLogUniform:
     def exported(self, tmp_path_factory):
         import shutil
         src = tmp_path_factory.mktemp('loguniform_src')
-        shutil.copy(DEMO_DIR / 'parabola.bngl', src / 'parabola.bngl')
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
-            'model = parabola.bngl : par1.exp\n'
-            'job_type = de\nedition = 2\nobjective = chi_sq\n'
+            f'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            f'model: {DEMO_MODEL}\n'
+            'experiment: par1, data: par1.exp\n'
             'loguniform_var = v1__FREE 0.1 10\n'
             'loguniform_var = v2__FREE 0.1 10\n'
             'loguniform_var = v3__FREE 0.1 10\n')
@@ -336,11 +337,12 @@ class TestExportObjectiveFamily:
     def _export(self, tmp_path_factory, objfunc):
         import shutil
         src = tmp_path_factory.mktemp('objfam_src')
-        shutil.copy(DEMO_DIR / 'parabola.bngl', src / 'parabola.bngl')
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
-            'model = parabola.bngl : par1.exp\n'
-            f'job_type = de\nedition = 2\nobjective = {objfunc}\n'
+            f'edition = 2\njob_type = de\nobjective = {objfunc}\n'
+            f'model: {DEMO_MODEL}\n'
+            'experiment: par1, data: par1.exp\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n')
         out = tmp_path_factory.mktemp('objfam_out')
@@ -389,11 +391,12 @@ class TestExportObjectiveFamily:
         # The modern ADR-0031 surface (not legacy objfunc): a whole-fit noise_model line.
         import shutil
         src = tmp_path_factory.mktemp('nm_src')
-        shutil.copy(DEMO_DIR / 'parabola.bngl', src / 'parabola.bngl')
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
         shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
         (src / 'job.conf').write_text(
-            'model = parabola.bngl : par1.exp\n'
-            'job_type = de\nedition = 2\n'
+            f'edition = 2\njob_type = de\n'
+            f'model: {DEMO_MODEL}\n'
+            'experiment: par1, data: par1.exp\n'
             'noise_model = laplace, scale = fix_at 1\n'
             'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
             'uniform_var = v3__FREE 0 10\n')
@@ -618,6 +621,24 @@ class TestExportNewEraConditions:
         with pytest.raises(PybnfError, match='nope'):
             export_job(conf, src / 'out')
 
+    def test_relative_op_on_expression_valued_fixed_param_raises(self, tmp_path_factory):
+        # s has an expression RHS, so a relative op (s*5) in a condition can't be
+        # precomputed to a number -> the surrogate mapping raises (NotImplementedError).
+        src = tmp_path_factory.mktemp('exprnom')
+        (src / 'parabola2.bngl').write_text(
+            _PARABOLA2_BNGL.replace('    s 2\n', '    base 1\n    s 2*base\n'))
+        (src / 'e.exp').write_text('# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n')
+        conf = src / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: parabola2.bngl\n'
+            'condition: scaled, perturbations: s * 5\n'
+            'experiment: e, condition: scaled, data: e.exp\n'
+            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
+            'uniform_var = v3__FREE 0 10\n')
+        with pytest.raises(NotImplementedError):
+            export_job(conf, src / 'out')
+
 
 class TestBuildExperimentConditions:
 
@@ -675,13 +696,28 @@ class TestBuildExperimentConditions:
 
 
 # ---------------------------------------------------------------------------
-# 5. Chunk-1 boundaries raise (documented in code, not silently mis-exported)
+# 5. Documented boundaries raise (in code, not silently mis-exported). The confs are
+# all on the new-era surface (model: / experiment: / data:), since the exporter now
+# refuses the legacy linkage (ADR-0028 Chunk 5c).
 # ---------------------------------------------------------------------------
+
+def _boundary_conf(tmp_path, body):
+    """A new-era boundary conf using the absolute DEMO model/data (most boundaries raise
+    before any file is read; the few that reach the data read find real files). ``body`` is
+    the boundary-triggering line(s) -- objective/noise + a free parameter."""
+    conf = tmp_path / 'job.conf'
+    conf.write_text(
+        f"edition = 2\njob_type = de\n"
+        f"model: {DEMO_DIR / DEMO_MODEL}\n"
+        f"experiment: e, data: {DEMO_DIR / 'par1.exp'}\n"
+        + body)
+    return conf
+
 
 class TestBoundaries:
 
     def test_sbml_model_not_implemented(self, tmp_path):
-        # demo_xml.conf references parabola.xml -> BNGL-only chunk raises.
+        # demo_xml.conf references parabola.xml -> BNGL-only chunk (or legacy) raises.
         with pytest.raises(NotImplementedError):
             export_job(DEMO_DIR / 'demo_xml.conf', tmp_path)
 
@@ -696,73 +732,81 @@ class TestBoundaries:
         with pytest.raises(NotImplementedError):
             export_job(conf, tmp_path / 'out')
 
-    def test_modern_edition_without_objective_is_refused(self, tmp_path):
-        # New era has no implicit chi_sq default: an edition-2 job must name its objective.
+    def test_legacy_data_linkage_is_refused(self, tmp_path):
+        # 'Refuse legacy everything' (ADR-0028 Chunk 5c): under edition 2 a legacy data
+        # binding (model = X : Y.exp, no experiment:) is refused -- the exporter reads only
+        # the new-era experiment:/data: surface.
         conf = tmp_path / 'job.conf'
         conf.write_text(
+            f"edition = 2\njob_type = de\nobjective = chi_sq\n"
             f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "job_type = de\nedition = 2\n"
             "uniform_var = v1__FREE 0 10\n")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(NotImplementedError, match='new-era'):
             export_job(conf, tmp_path / 'out')
+
+    def test_mixed_legacy_and_new_era_is_refused(self, tmp_path):
+        # A legacy mutant alongside the new experiment: surface is refused (it would
+        # otherwise be silently ignored on export).
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"edition = 2\njob_type = de\nobjective = chi_sq\n"
+            f"model: {DEMO_DIR / DEMO_MODEL}\n"
+            f"experiment: e, data: {DEMO_DIR / 'par1.exp'}\n"
+            f"mutant = parabola_v2 m v1*2 : {DEMO_DIR / 'par1.exp'}\n"
+            "uniform_var = v1__FREE 0 10\n")
+        with pytest.raises(NotImplementedError, match='mix'):
+            export_job(conf, tmp_path / 'out')
+
+    def test_modern_edition_without_objective_is_refused(self, tmp_path):
+        # New era has no implicit chi_sq default: an edition-2 job must name its objective.
+        with pytest.raises(NotImplementedError):
+            export_job(_boundary_conf(tmp_path, "uniform_var = v1__FREE 0 10\n"),
+                       tmp_path / 'out')
 
     @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
     def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
         # neg_bin was removed from PEtab v2; score (the direct_pass successor) is not a
         # likelihood. All are named on the modern `objective` key.
-        conf = tmp_path / 'job.conf'
-        conf.write_text(
-            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            f"job_type = de\nedition = 2\nobjective = {objfunc}\n"
-            "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
+            export_job(_boundary_conf(
+                tmp_path, f"objective = {objfunc}\nuniform_var = v1__FREE 0 10\n"),
+                tmp_path / 'out')
 
     def test_free_parameter_sigma_objective_not_implemented(self, tmp_path):
         # chi_sq_dynamic's free sigma needs the noise parameter wired into the PEtab
-        # parameter table -- a deferred sigma-source path.
-        conf = tmp_path / 'job.conf'
-        conf.write_text(
-            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "job_type = de\nedition = 2\nobjective = chi_sq_dynamic\n"
-            "uniform_var = v1__FREE 0 10\n")
+        # parameter table -- a deferred sigma-source path (raised at column classification).
         with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
+            export_job(_boundary_conf(
+                tmp_path, "objective = chi_sq_dynamic\nuniform_var = v1__FREE 0 10\n"),
+                tmp_path / 'out')
 
     @pytest.mark.parametrize('token', ['kl', 'wasserstein'])
     def test_profile_objective_not_implemented(self, tmp_path, token):
         # Column-joint profile objectives have no per-observable PEtab noise -- they must
-        # raise, NOT silently fall through to the legacy chi_sq default.
-        conf = tmp_path / 'job.conf'
-        conf.write_text(
-            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            f"job_type = de\nedition = 2\nprofile_objective = {token}\n"
-            "uniform_var = v1__FREE 0 10\n")
+        # raise, NOT silently fall through to a default.
         with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
+            export_job(_boundary_conf(
+                tmp_path, f"profile_objective = {token}\nuniform_var = v1__FREE 0 10\n"),
+                tmp_path / 'out')
 
     def test_per_observable_noise_model_override_not_implemented(self, tmp_path):
         # A per-observable noise_model override is a later chunk -- raise, not default.
-        conf = tmp_path / 'job.conf'
-        conf.write_text(
-            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "job_type = de\nedition = 2\n"
-            "noise_model = gaussian, sigma = fix_at 1\n"
-            "noise_model x = gaussian, sigma = fix_at 2\n"
-            "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
+            export_job(_boundary_conf(
+                tmp_path,
+                "noise_model = gaussian, sigma = fix_at 1\n"
+                "noise_model x = gaussian, sigma = fix_at 2\n"
+                "uniform_var = v1__FREE 0 10\n"),
+                tmp_path / 'out')
 
     def test_mean_centered_noise_model_not_implemented(self, tmp_path):
         # PEtab v2 is median-only; a mean-centered noise model has no representation.
-        conf = tmp_path / 'job.conf'
-        conf.write_text(
-            f"model = {DEMO_DIR / 'parabola.bngl'} : {DEMO_DIR / 'par1.exp'}\n"
-            "job_type = de\nedition = 2\n"
-            "noise_model = gaussian, sigma = fix_at 1, location = mean\n"
-            "uniform_var = v1__FREE 0 10\n")
         with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
+            export_job(_boundary_conf(
+                tmp_path,
+                "noise_model = gaussian, sigma = fix_at 1, location = mean\n"
+                "uniform_var = v1__FREE 0 10\n"),
+                tmp_path / 'out')
 
 
 class TestCleanModelUnit:
@@ -889,14 +933,11 @@ class TestRegisterBngl:
 
 
 # ---------------------------------------------------------------------------
-# 6. Chunk 2: Mutants and dose-response -> conditions/experiments (ADR-0027)
-#
-# Two tests-local synthetic fixtures (a real PyBNF job in tmp_path), each exercising one
-# feature family. The Mutants fixture covers BOTH surrogate paths: a *fit* parameter
-# mutated relatively (v1*2 -> the surrogate v1__REF*2) and a *fixed* parameter mutated
-# relatively (s*5 -> precomputed). The dose-response fixture is one Condition+Experiment
-# per measured dose. Both must pass the FULL petab task set (ADR-0026 oracle), now
-# genuinely exercising the condition/experiment checks.
+# Shared fixtures for the new-era condition tests (above) + the surrogate-mapping unit
+# tests (below). _PARABOLA2_BNGL has a fit parameter (v1) and a fixed one (s) so a
+# condition can perturb each kind; its begin actions block is stripped on export, so it
+# doubles as proof the exporter ignores legacy actions in a new-era job. _assert_petab_clean
+# is the full-task oracle (ADR-0026).
 # ---------------------------------------------------------------------------
 
 _PARABOLA2_BNGL = """\
@@ -930,73 +971,6 @@ begin actions
 end actions
 """
 
-_DOSERESP_BNGL = """\
-begin model
-  begin parameters
-    v1 v1__FREE
-    v2 v2__FREE
-    L 1
-  end parameters
-  begin molecule types
-    A()
-  end molecule types
-  begin seed species
-    A() L
-  end seed species
-  begin observables
-    Molecules a A()
-  end observables
-  begin functions
-    resp()=v1*a+v2
-  end functions
-  begin reaction rules
-    A()->0 1
-  end reaction rules
-end model
-
-begin actions
-  generate_network({overwrite=>1})
-  parameter_scan({parameter=>"L",par_min=>1,par_max=>5,n_scan_pts=>5,t_end=>100,suffix=>"dr"})
-end actions
-"""
-
-
-def _write_mutant_fixture(d):
-    """A parabola job with a fit-param Mutant (v1*2) and a fixed-param Mutant (s*5)."""
-    (d / 'parabola2.bngl').write_text(_PARABOLA2_BNGL)
-    (d / 'par1.exp').write_text(
-        '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n2\t-8\t54\t1\t1\n')
-    (d / 'par1fitmut.exp').write_text(
-        '# time x y x_SD y_SD\n0\t-10\t172\t1\t1\n1\t-9\t138\t1\t1\n2\t-8\t108\t1\t1\n')
-    (d / 'par1fixmut.exp').write_text(
-        '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n2\t-8\t270\t1\t1\n')
-    conf = d / 'mut.conf'
-    conf.write_text(
-        'model = parabola2.bngl : par1.exp\n'
-        'job_type = de\nedition = 2\nobjective = chi_sq\n'
-        'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-        'uniform_var = v3__FREE 0 10\n'
-        'mutant = parabola2 fitmut v1*2 : par1fitmut.exp\n'
-        'mutant = parabola2 fixmut s*5 : par1fixmut.exp\n')
-    return conf
-
-
-def _write_dose_fixture(d):
-    """A dose-response job: a Parameter Scan of the input L, swept-axis .exp."""
-    (d / 'doseresp.bngl').write_text(_DOSERESP_BNGL)
-    (d / 'dr.exp').write_text(
-        '# L a resp a_SD resp_SD\n'
-        '1\t0.4\t3.1\t0.1\t0.2\n2\t0.8\t5.2\t0.1\t0.2\n3\t1.2\t7.0\t0.1\t0.2\n'
-        '4\t1.6\t9.3\t0.1\t0.2\n5\t2.0\t11.1\t0.1\t0.2\n')
-    conf = d / 'dose.conf'
-    conf.write_text(
-        'model = doseresp.bngl : dr.exp\n'
-        'job_type = de\nedition = 2\nobjective = chi_sq\n'
-        'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-        'param_scan = model:doseresp, param:L, min:1, max:5, step:1, time:100, suffix:dr\n')
-    return conf
-
-
 def _assert_petab_clean(exported):
     """The full-task petab oracle: load via Problem.from_yaml, assert zero ERRORs."""
     pytest.importorskip('petab.v2')
@@ -1014,98 +988,6 @@ def _assert_petab_clean(exported):
                 ValidationIssueSeverity.ERROR:
             errors.append((type(task).__name__, issue.message))
     assert errors == []
-
-
-class TestExportMutants:
-
-    @pytest.fixture(scope='class')
-    def exported(self, tmp_path_factory):
-        src = tmp_path_factory.mktemp('mut_job')
-        conf = _write_mutant_fixture(src)
-        out = src / 'petab'
-        export_job(conf, out)
-        return out
-
-    def test_writes_conditions_and_experiments(self, exported):
-        for name in ('conditions.tsv', 'experiments.tsv'):
-            assert (exported / name).is_file()
-        text = (exported / 'problem.yaml').read_text()
-        assert 'condition_files' in text and 'experiment_files' in text
-
-    def test_fit_mutated_parameter_is_renamed_to_surrogate(self, exported):
-        rows = _tsv_rows(exported / 'parameters.tsv')
-        ids = {r['parameterId'] for r in rows}
-        assert ids == {'v1__REF', 'v2', 'v3'}     # v1 (fit + mutated) -> v1__REF
-        assert 'v1' not in ids                     # never in BOTH tables
-
-    def test_conditions_cells(self, exported):
-        rows = _tsv_rows(exported / 'conditions.tsv')
-        cells = {(r['conditionId'], r['targetId']): r['targetValue'] for r in rows}
-        # base experiment pins the removed fit param to its base value
-        assert cells[('cond_par1', 'v1')] == 'v1__REF'
-        # relative op on a fit param -> symbolic in the surrogate
-        assert cells[('cond_par1fitmut', 'v1')] == 'v1__REF * 2'
-        # the fixmut experiment still pins v1 (it doesn't mutate it) ...
-        assert cells[('cond_par1fixmut', 'v1')] == 'v1__REF'
-        # ... and precomputes the relative op on the fixed param (nominal 2 * 5 = 10)
-        assert cells[('cond_par1fixmut', 's')] == '10'
-
-    def test_experiments_one_period_at_zero(self, exported):
-        rows = _tsv_rows(exported / 'experiments.tsv')
-        by_id = {r['experimentId']: r for r in rows}
-        assert set(by_id) == {'par1', 'par1fitmut', 'par1fixmut'}
-        assert all(r['time'] == '0' for r in rows)
-        assert by_id['par1fitmut']['conditionId'] == 'cond_par1fitmut'
-
-    def test_measurements_tagged_by_experiment(self, exported):
-        rows = _tsv_rows(exported / 'measurements.tsv')
-        eids = {r['experimentId'] for r in rows}
-        # M is non-empty, so the base time-course is a named experiment (not '')
-        assert eids == {'par1', 'par1fitmut', 'par1fixmut'}
-        assert all(r['experimentId'] != '' for r in rows)
-
-    def test_full_petab_validation_is_clean(self, exported):
-        _assert_petab_clean(exported)
-
-
-class TestExportDoseResponse:
-
-    @pytest.fixture(scope='class')
-    def exported(self, tmp_path_factory):
-        src = tmp_path_factory.mktemp('dose_job')
-        conf = _write_dose_fixture(src)
-        out = src / 'petab'
-        export_job(conf, out)
-        return out
-
-    def test_one_condition_per_dose(self, exported):
-        rows = _tsv_rows(exported / 'conditions.tsv')
-        assert [(r['conditionId'], r['targetId'], r['targetValue']) for r in rows] == [
-            ('cond_dr_0', 'L', '1'), ('cond_dr_1', 'L', '2'), ('cond_dr_2', 'L', '3'),
-            ('cond_dr_3', 'L', '4'), ('cond_dr_4', 'L', '5')]
-
-    def test_one_experiment_per_dose(self, exported):
-        rows = _tsv_rows(exported / 'experiments.tsv')
-        assert {r['experimentId'] for r in rows} == {f'dr_{i}' for i in range(5)}
-        assert all(r['time'] == '0' for r in rows)
-
-    def test_measurement_time_is_the_scan_time(self, exported):
-        # The independent axis is the swept parameter; the measurement time is the scan's
-        # fixed simulation time (100), not a data column.
-        rows = _tsv_rows(exported / 'measurements.tsv')
-        assert all(r['time'] == '100' for r in rows)
-        # each dose row -> its own experiment, value carried from the .exp cell
-        by = {(r['observableId'], r['experimentId']): r['measurement'] for r in rows}
-        assert by[('obs_a', 'dr_0')] == '0.4'
-        assert by[('func_resp', 'dr_4')] == '11.1'
-
-    def test_swept_parameter_not_renamed(self, exported):
-        # L is fixed (not fit), so no surrogate: the fit params stay as model names.
-        ids = {r['parameterId'] for r in _tsv_rows(exported / 'parameters.tsv')}
-        assert ids == {'v1', 'v2'}
-
-    def test_full_petab_validation_is_clean(self, exported):
-        _assert_petab_clean(exported)
 
 
 class TestConditionMappingUnit:
@@ -1130,30 +1012,6 @@ class TestConditionMappingUnit:
     def test_surrogate_marker_is_double_underscore(self):
         assert surrogate_name('v1') == 'v1__REF'
 
-    def test_build_mutant_conditions_surrogate_set_and_base(self):
-        # v1 is fit + mutated -> surrogate; s is fixed -> precomputed; base gets pinned.
-        muts = [('m1', [('v1', '*', 2.0)], 'b_m1'),
-                ('m2', [('s', '*', 5.0)], 'b_m2')]
-        cond, exp, surrogate, base_id = build_mutant_conditions(
-            'b', muts, fit_params={'v1', 'v2'}, nominal_of=lambda v: 2.0)
-        assert surrogate == {'v1'}            # only the fit-and-mutated param
-        assert base_id == 'b'                  # named base (M non-empty)
-        cells = {(r.condition_id, r.target_id): r.target_value for r in cond}
-        assert cells[('cond_b', 'v1')] == 'v1__REF'        # base pin
-        assert cells[('cond_b_m1', 'v1')] == 'v1__REF * 2'  # surrogate op
-        assert cells[('cond_b_m2', 'v1')] == 'v1__REF'      # pinned in the other mutant
-        assert cells[('cond_b_m2', 's')] == '10'            # precomputed fixed op
-        assert {e.experiment_id for e in exp} == {'b', 'b_m1', 'b_m2'}
-
-    def test_build_mutant_conditions_fixed_only_leaves_base_unnamed(self):
-        # No fit param mutated -> empty M, base stays "model as is" ('').
-        muts = [('m1', [('s', '=', 0.0)], 'b_m1')]
-        cond, exp, surrogate, base_id = build_mutant_conditions(
-            'b', muts, fit_params={'v1'}, nominal_of=lambda v: 1.0)
-        assert surrogate == set()
-        assert base_id == ''
-        assert {e.experiment_id for e in exp} == {'b_m1'}  # no base experiment row
-
     def test_build_dose_response_conditions(self):
         cond, exp, eids = build_dose_response_conditions('dr', 'L', [1.0, 2.0], 100.0)
         assert eids == ['dr_0', 'dr_1']
@@ -1171,68 +1029,3 @@ class TestDoseResponseMeasurementPivot:
             data, {'a': 'obs_a'}, ['dr_0', 'dr_1'], scan_time=100.0)
         assert [(r.experiment_id, r.time, r.measurement) for r in rows] == [
             ('dr_0', 100.0, 0.4), ('dr_1', 100.0, 0.8)]
-
-
-class TestChunk2Boundaries:
-
-    def test_mutants_and_dose_response_together_not_implemented(self, tmp_path):
-        _write_mutant_fixture(tmp_path)
-        conf = tmp_path / 'mut.conf'
-        conf.write_text(conf.read_text() +
-                        'param_scan = model:parabola2, param:s, min:1, max:2, '
-                        'step:1, time:10, suffix:sc\n')
-        with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
-
-    def test_scanning_a_fit_parameter_not_implemented(self, tmp_path):
-        _write_dose_fixture(tmp_path)
-        # Sweep v1, which is a fit parameter -> would overlap parameter table.
-        (tmp_path / 'dr.exp').write_text(
-            '# v1 a resp a_SD resp_SD\n1\t0.4\t3.1\t0.1\t0.2\n2\t0.8\t5.2\t0.1\t0.2\n')
-        conf = tmp_path / 'dose.conf'
-        conf.write_text(
-            'model = doseresp.bngl : dr.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'param_scan = model:doseresp, param:v1, min:1, max:2, step:1, '
-            'time:100, suffix:dr\n')
-        with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
-
-    def test_dose_response_without_param_scan_not_implemented(self, tmp_path):
-        _write_dose_fixture(tmp_path)
-        # Strip the param_scan: a swept-axis .exp with no action to source its time.
-        conf = tmp_path / 'dose.conf'
-        conf.write_text(
-            'model = doseresp.bngl : dr.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n')
-        with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')
-
-    def test_mutant_target_not_a_model_entity_raises(self, tmp_path):
-        from pybnf.printing import PybnfError
-        _write_mutant_fixture(tmp_path)
-        conf = tmp_path / 'mut.conf'
-        conf.write_text(
-            'model = parabola2.bngl : par1.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n'
-            'mutant = parabola2 m nope=0 : par1fitmut.exp\n')
-        with pytest.raises(PybnfError):
-            export_job(conf, tmp_path / 'out')
-
-    def test_relative_op_on_expression_valued_fixed_param_not_implemented(self, tmp_path):
-        # s has an expression RHS, so a relative op on it can't be precomputed.
-        bngl = _PARABOLA2_BNGL.replace('    s 2\n', '    base 1\n    s 2*base\n')
-        (tmp_path / 'parabola2.bngl').write_text(bngl)
-        (tmp_path / 'par1.exp').write_text(
-            '# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n1\t-9\t69\t1\t1\n')
-        (tmp_path / 'par1fixmut.exp').write_text(
-            '# time x y x_SD y_SD\n0\t-10\t430\t1\t1\n1\t-9\t345\t1\t1\n')
-        conf = tmp_path / 'mut.conf'
-        conf.write_text(
-            'model = parabola2.bngl : par1.exp\njob_type = de\nedition = 2\nobjective = chi_sq\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n'
-            'mutant = parabola2 fixmut s*5 : par1fixmut.exp\n')
-        with pytest.raises(NotImplementedError):
-            export_job(conf, tmp_path / 'out')

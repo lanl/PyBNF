@@ -1,21 +1,27 @@
-"""PEtab v2 ``conditions``/``experiments`` tables, export half (#422; ADR-0027).
+"""PEtab v2 ``conditions``/``experiments`` tables, export half (#422/#423; ADR-0027/0028).
 
-Chunk 2 of the PEtab v2 *exporter*: the two tables that make a PyBNF job's simulation
-*vary per dataset*. A PyBNF **Mutant** (a ``MutationSet`` of ``var op val`` overrides)
-and a dose-response **Parameter Scan** (a swept input) both map onto a PEtab
-**Condition** (``targetId``/``targetValue`` overrides) referenced by an **Experiment**
-(a period sequence). This module is the neutral seam, mirroring ``parameters.py`` /
+The two tables that make a PyBNF job's simulation *vary per dataset*. A new-era
+``condition:`` (a named ``MutationSet`` of ``var op val`` perturbations) maps onto a PEtab
+**Condition** (``targetId``/``targetValue`` overrides) referenced by an **Experiment** (a
+period sequence). This module is the neutral seam, mirroring ``parameters.py`` /
 ``observables.py``: the *asset* is the neutral rows + the pure ``op``->``targetValue``
-mapping + the two table builders; the *disposable* half is the TSV writers.
+mapping + the builders; the *disposable* half is the TSV writers.
 
 **The surrogate-base parameter (the crux, ADR-0027).** PEtab forbids one id from
-appearing in *both* the parameter table and a condition target. PyBNF Mutants routinely
-modify a *fit* parameter, and a *relative* op on one (``v1*2``) can't be precomputed (the
-base is the estimated value). So a fit-and-mutated parameter ``v1`` is split: the
-estimated quantity is renamed to a **surrogate** ``v1__REF`` (which lives only in the
-parameter table), while the model name ``v1`` becomes a pure condition target. The
+appearing in *both* the parameter table and a condition target. A PyBNF condition
+routinely perturbs a *fit* parameter, and a *relative* op on one (``v1*2``) can't be
+precomputed (the base is the estimated value). So a fit-and-perturbed parameter ``v1`` is
+split: the estimated quantity is renamed to a **surrogate** ``v1__REF`` (which lives only
+in the parameter table), while the model name ``v1`` becomes a pure condition target. The
 ``__REF`` marker is a double-underscore suffix, mirroring PyBNF's own ``__FREE`` is-fit
 marker, so it can never clash with a user-defined model name.
+
+The exporter reads the **new-era surface** (ADR-0028): :func:`build_experiment_conditions`
+transcribes named ``condition:``/``experiment:`` lines (the live path). The
+dose-response :func:`build_dose_response_conditions` is the era-neutral
+one-Condition-per-dose mapping, kept ready for when the new-era dose-response authoring
+surface lands (its scan endpoint time is deferred, #426); there is no new-era conf that
+exports a dose-response yet, so it has no live caller.
 """
 
 from dataclasses import dataclass
@@ -103,59 +109,8 @@ def mutation_target_value(op, val, *, nominal=None, surrogate=None):
 
 
 # ---------------------------------------------------------------------------
-# Asset: PyBNF Mutants -> conditions + experiments (the surrogate-base machinery)
+# Asset: named conditions + experiments -> conditions/experiments (surrogate-base)
 # ---------------------------------------------------------------------------
-
-def build_mutant_conditions(base_stem, mutants, fit_params, nominal_of):
-    """Build the conditions/experiments for a time-course job with Mutants.
-
-    ``mutants`` is a list of ``(name, mutations, stem)`` where ``mutations`` is a list of
-    ``(var, op, val)`` and ``stem`` is the mutant ``.exp`` file stem (its experimentId).
-    ``fit_params`` is the set of model-parameter names that are *fit*; ``nominal_of(var)``
-    returns a fixed parameter's numeric nominal (or ``None`` for an expression/unknown).
-
-    Returns ``(condition_rows, experiment_rows, surrogate_params, base_experiment_id)``.
-    ``surrogate_params`` (the set ``M``) are the fit parameters some Mutant mutates -- the
-    ones renamed to ``<p>__REF`` in the parameter table and pinned in *every* experiment's
-    Condition. ``base_experiment_id`` is the base time-course's experimentId: the
-    ``base_stem`` when ``M`` is non-empty (the base must re-supply the removed fit params),
-    else ``''`` ("model as is", chunk-1 behaviour preserved when only fixed params mutate).
-    """
-    mutated = {var for _name, muts, _stem in mutants for var, _op, _val in muts}
-    surrogate = {v for v in mutated if v in fit_params}  # the set M
-
-    condition_rows = []
-    experiment_rows = []
-
-    base_experiment_id = base_stem if surrogate else ''
-    if surrogate:
-        base_cid = f'cond_{base_stem}'
-        condition_rows.extend(
-            PetabConditionRow(base_cid, p, surrogate_name(p)) for p in sorted(surrogate))
-        experiment_rows.append(PetabExperimentRow(base_stem, 0.0, base_cid))
-
-    for _name, muts, stem in mutants:
-        mut_by_var = {var: (op, val) for var, op, val in muts}
-        cid = f'cond_{stem}'
-        # Surrogate (fit) params: this mutant's expression where it mutates them, else the
-        # base value -- every experiment must set them (they are out of the parameter table).
-        for p in sorted(surrogate):
-            if p in mut_by_var:
-                op, val = mut_by_var[p]
-                condition_rows.append(PetabConditionRow(
-                    cid, p, mutation_target_value(op, val, surrogate=surrogate_name(p))))
-            else:
-                condition_rows.append(PetabConditionRow(cid, p, surrogate_name(p)))
-        # Fixed-param mutations (targets not in M): precomputed numeric targetValues.
-        for var, op, val in muts:
-            if var in surrogate:
-                continue
-            condition_rows.append(PetabConditionRow(
-                cid, var, mutation_target_value(op, val, nominal=nominal_of(var))))
-        experiment_rows.append(PetabExperimentRow(stem, 0.0, cid))
-
-    return condition_rows, experiment_rows, surrogate, base_experiment_id
-
 
 def build_experiment_conditions(experiments, conditions, fit_params, nominal_of):
     """Build conditions/experiments for a new-era job (ADR-0028 Chunk 5b).

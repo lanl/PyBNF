@@ -132,6 +132,19 @@ Required Keys
     * ``observable: pErk, column: pErk_measured`` (the model observable ``pErk`` is
       measured by the data column named ``pErk_measured``)
 
+.. note::
+
+   **PEtab v2 export.** The new-era problem surface above (``model:`` / ``condition:`` /
+   ``experiment:`` / ``data:`` / ``observable:``, together with the free parameters and the
+   modern objective) is exactly what the PEtab v2 exporter reads, and export is a
+   *transcription*: an ``experiment:`` becomes a PEtab Experiment (its name the
+   ``experimentId``, its ``data:`` replicates the measurement rows), a ``condition:``
+   becomes a PEtab Condition, and an ``observable:`` renames a column before it is
+   classified. The exporter is **new-era only**: it refuses a legacy data linkage
+   (``model = X : Y.exp`` / ``mutant`` / ``param_scan``) under a modern edition, requiring
+   the surface above. Dose-response (parameter-scan) export is deferred together with the
+   parameter-scan authoring surface (#426). (ADR-0028)
+
 .. _fit_type:
 
 **fit_type**
