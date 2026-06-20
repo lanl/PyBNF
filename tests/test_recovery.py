@@ -32,7 +32,9 @@ decisions so a failure points at the right layer:
 Needs bngsim (auto-skipped via the ``bngsim`` marker) and BNG2.pl for the
 one-time network generation (``recovery_harness.require_bng2pl`` skips otherwise).
 """
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -238,9 +240,19 @@ def test_de_recovers_via_experiment_surface(seed, tmp_path, exp_for):
     """
     spec = MODELS['m01_exp_decay']
     exp_path = exp_for(spec.name)   # zero-noise oracle (generated via the original model)
+    # New-era binds free parameters BY ID (ADR-0034): drop the legacy `k k__FREE` alias for
+    # a bare `k <nominal>` and declare the free parameter by its bare id `k` (the
+    # make_config tests above still exercise the legacy __FREE alias). The nominal is
+    # irrelevant to the fit (lh initialization samples from the bounds).
     newera_model = H.strip_actions_block(spec.path, tmp_path / 'm01_newera.bngl')
-    conf = H.make_newera_config(tmp_path, newera_model, exp_path, spec.free, 'decay', 'de',
-                                random_seed=seed, refine=1, **spec.de_budget)
+    text = re.sub(r'(?m)^(\s*k\s+)k__FREE\b', r'\g<1>1.0',
+                  Path(newera_model).read_text())
+    Path(newera_model).write_text(text)
+    newera_spec = replace(spec, free={'k': ('uniform_var', 1e-3, 5.0)},
+                          true={'k': spec.true['k__FREE']}, identifiable=('k',))
+    conf = H.make_newera_config(tmp_path, newera_model, exp_path, newera_spec.free,
+                                'decay', 'de', random_seed=seed, refine=1,
+                                **spec.de_budget)
 
     # The simulation is synthesized from the data: the BNGL action carries sample_times
     # (the data's time points), and the data binds under the experiment name.
@@ -258,7 +270,7 @@ def test_de_recovers_via_experiment_surface(seed, tmp_path, exp_for):
     bound = spec.hard_rel_tol * _data_ss(cols, arr, spec.obs)
     assert alg.trajectory.best_score() < bound, \
         '%s (new-era): best objective %g not < %g' % (spec.name, alg.trajectory.best_score(), bound)
-    _assert_recovered(spec, alg)
+    _assert_recovered(newera_spec, alg)
 
 
 # --------------------------------------------------------------------------- #
