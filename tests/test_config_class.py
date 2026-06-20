@@ -251,6 +251,85 @@ class TestConfig(object):
             ('normal_var', 'kase__FREE'): [28., 5.],
         }))
 
+    # --- new-era (edition >= 2) bind-by-id typo check (ADR-0034) ---
+    # Tricky.bngl's *parameter ids* are f, NA, ..., koff, kase, pase, ... (its
+    # model_param_names); the __FREE tokens live only in RHS expressions. Under
+    # edition >= 2 a free parameter binds to a parameter id directly -- no marker.
+
+    @staticmethod
+    def _modern_corr(var_names, obj=None, model_file='bngl_files/Tricky.bngl'):
+        """A Configuration stub exercising _check_variable_correspondence under a
+        modern edition: a real BNGL model (so model_param_names is populated), the
+        given free parameters as bare ids, and an objective supplying the nuisance
+        set (default: none)."""
+        c = object.__new__(config.Configuration)
+        c.config = {'edition': 2, 'fit_type': 'de'}
+        c.models = {'m': pset.BNGLModel(model_file, suppress_free_param_error=True)}
+        c.variables = [pset.FreeParameter(n, 'uniform_var', 0., 1.) for n in var_names]
+        c.obj = obj if obj is not None else objective.SumOfSquaresObjective()
+        return c
+
+    def test_modern_free_param_binds_to_model_id(self):
+        """A free parameter matching a parameter id binds by id -> no raise (the bare
+        ids koff/kase, never koff__FREE)."""
+        self._modern_corr(['koff', 'kase'])._check_variable_correspondence()  # no raise
+
+    @raises(printing.PybnfError)
+    def test_modern_orphan_free_param_raises(self):
+        """A free parameter matching no parameter id and referenced by no objective /
+        noise surface is almost certainly a typo -> error."""
+        self._modern_corr(['bogus_typo'])._check_variable_correspondence()
+
+    @raises(printing.PybnfError)
+    def test_modern_legacy_free_marker_name_is_now_a_typo(self):
+        """The legacy ``koff__FREE`` spelling matches no parameter id under the new era
+        (the id is ``koff``), and is not a noise nuisance -> it is reported as a typo.
+        This is the bind-by-id contract: declare the parameter id, not the marker."""
+        self._modern_corr(['koff__FREE'])._check_variable_correspondence()
+
+    def test_modern_nuisance_noise_param_is_allowed(self):
+        """A free parameter the model never sees but the objective estimates (a free
+        sigma) is an intended nuisance, bound to no id -> no raise."""
+        obj = objective.ChiSquareObjective_Dynamic()  # requires sigma__FREE
+        assert 'sigma__FREE' in obj.required_free_noise_params()
+        self._modern_corr(['koff', 'sigma__FREE'], obj)._check_variable_correspondence()
+
+    def test_modern_skips_when_a_model_is_param_agnostic(self, tmp_path):
+        """A param-agnostic model (AnalyticalModel) takes its parameters from the conf,
+        so nothing is provably a typo: the whole check is skipped, mirroring legacy --
+        even a bogus free parameter does not raise."""
+        from pybnf.analytical_model import AnalyticalModel
+        target = tmp_path / 'gauss.target'
+        target.write_text('{"type": "gaussian", "mean": [0.0], "variance": [1.0]}')
+        c = self._modern_corr(['bogus_typo'])
+        c.models['analytic'] = AnalyticalModel(str(target))
+        c._check_variable_correspondence()  # no raise
+
+    def test_modern_no_free_marker_model_loads_and_binds_end_to_end(self, tmp_path):
+        """End-to-end: a full edition=2 Configuration over a marker-free BNGL model
+        loads (the no-__FREE guard is suppressed) and binds its bare-id free
+        parameters (k, S0) by id through the modern correspondence check."""
+        import os
+        import shutil
+        from pybnf.parse import load_config
+        shutil.copy('bngl_files/e2e_ode_decay.bngl', tmp_path / 'decay.bngl')
+        (tmp_path / 'tc.exp').write_text('#\ttime\tStot\n0\t100\n5\t22\n10\t5\n')
+        (tmp_path / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = sos\n'
+            'model = decay.bngl : tc.exp\n'
+            'uniform_var = k 0 10\nuniform_var = S0 0 200\n'
+            'population_size = 10\nmax_iterations = 10\nwall_time_sim = 0\n')
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            c = load_config('job.conf')
+        finally:
+            os.chdir(cwd)
+        assert c.config['edition'] == 2
+        assert c.models['decay'].param_names == ()                  # no __FREE markers
+        assert c.models['decay'].model_param_names == ('S0', 'k')   # bound by id
+        assert {v.name for v in c.variables} == {'k', 'S0'}
+
     @raises(printing.PybnfError)
     def test_normalization_err(self):
         c = config.Configuration({'models': {'bngl_files/Tricky.bngl'},

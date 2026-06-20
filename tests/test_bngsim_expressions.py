@@ -94,6 +94,17 @@ def test_evaluate_bngl_params_override_by_name():
     assert out == {'a': 5.0, 'b': 50.0}
 
 
+def test_evaluate_bngl_params_binds_bare_param_id_no_free_marker():
+    """ADR-0034 new-era contract: a free parameter binds to a model parameter *by id*,
+    with no ``__FREE`` marker. Here the free parameter is the bare model id ``k`` (the
+    in-process backend's ``set_param('k', v)`` keyed by name); it overrides the nominal
+    ``k 0.3`` and flows into every dependent expression (``kdeg = k * 2``), exactly as
+    the marker form did -- proving the marker added a token, not a capability."""
+    out = expressions._evaluate_bngl_params(
+        [('S0', '100'), ('k', '0.3'), ('kdeg', 'k * 2')], {'k': 0.5})
+    assert out == {'S0': 100.0, 'k': 0.5, 'kdeg': 1.0}
+
+
 def test_evaluate_bngl_params_param_named_like_builtin_does_not_shadow():
     # 'e' is a reserved math name: its computed value is recorded, but the
     # namespace keeps math.e so a later expression referencing e gets math.e.

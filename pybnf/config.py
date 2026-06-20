@@ -595,10 +595,14 @@ class Configuration:
         return '' if directory == '' else directory if directory[0] == '/' else str(Path(home_dir) / directory)
 
     def _load_t_length(self):
+        # New-era BNGL models carry no ``__FREE`` markers (ADR-0034); suppress the
+        # legacy "no __FREE -> error" guard here too (as ``check`` already does), so
+        # measuring output lengths never trips it.
+        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
         timeDict = {}
         for mf in self.config['models']:
             if re.search(r'\.bngl$', mf):
-                time = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check').find_t_length()
+                time = BNGLModel(mf, suppress_free_param_error=(self.config['fit_type']=='check' or modern)).find_t_length()
                 for i,v in time.items():
                     timeDict[i] = v
             elif re.search(r'\.(xml|ant)$', mf):
@@ -648,12 +652,17 @@ class Configuration:
                     self.config['wall_time_sim'] = 3600
                     break
 
+        # New-era (edition >= 2) BNGL models bind free parameters by id and carry no
+        # ``__FREE`` markers (ADR-0034), so the "no __FREE -> error" guard is legacy-only;
+        # the model checker (``fit_type == 'check'``) suppresses it at every edition.
+        modern = edition.is_modern(edition.resolve_edition(self.config.get('edition')))
+
         md = {}
         for mf in self.config['models']:
             # Initialize model type based on extension
             try:
                 if re.search(r'\.bngl$', mf):
-                    model = BNGLModel(mf, suppress_free_param_error=self.config['fit_type']=='check')
+                    model = BNGLModel(mf, suppress_free_param_error=(self.config['fit_type']=='check' or modern))
                     model.bng_command = self._absolute(self.config['bng_command'])
                     logger.debug(f'Set model {mf} command to {model.bng_command}')
                 elif re.search(r'\.xml$', mf):
@@ -1453,8 +1462,18 @@ class Configuration:
         sets ``param_names``. This is the single config-level correspondence guard;
         do not add a duplicate elsewhere, and keep its regression tests
         (test_config_class) in sync.
+
+        Under a new-era edition (>= 2) this delegates to
+        :meth:`_check_variable_correspondence_modern`: BNGL free parameters bind by
+        id with no ``__FREE`` marker (ADR-0034), so the model -> config "must-fit"
+        direction goes away and the config -> model direction resolves against each
+        model's full parameter namespace. The legacy body below is unchanged.
         """
         from .analytical_model import AnalyticalModel
+
+        if edition.is_modern(edition.resolve_edition(self.config.get('edition'))):
+            self._check_variable_correspondence_modern()
+            return
 
         # Skip if any model is param-agnostic (no enumerable parameter set): its
         # parameters come from the .conf, so nothing here is provably a typo. The
@@ -1483,6 +1502,74 @@ class Configuration:
         if len(extra_in_model) > 0:
             raise PybnfError('The following free parameters are in your model files, but are not declared in your '
                              f'.conf file: {extra_in_model}')
+
+    def _check_variable_correspondence_modern(self):
+        """New-era (edition >= 2) free-parameter typo check (ADR-0034).
+
+        Bind-by-id: a config free parameter whose name matches a model parameter id
+        is bound to that parameter (``set_param``) -- the same contract the SBML and
+        bngsim backends use -- with no ``__FREE`` marker and the model file carried
+        verbatim. The model-file marker used to double as a wiring check; this
+        replaces that with a typo check on the config free parameters:
+
+        * a free parameter matching a model parameter id -> bound (the common case);
+        * a free parameter matching no id but referenced by the objective /
+          ``noise_model`` surface (an intended nuisance, e.g. a free sigma the model
+          never sees) -> fine -- the same source :meth:`_load_variables` validates;
+        * a free parameter matching no id **and** referenced by no such surface ->
+          almost certainly a typo -> error (listing the models' parameter names).
+
+        There is no model -> config direction in the new era: a verbatim model
+        carries no ``__FREE`` markers, so every model parameter is an optional knob,
+        fit only when declared (unlike legacy's must-fit ``__FREE``). Ids are unioned
+        across models, so multi-model fits work (a variable valid in any one model
+        passes), mirroring the legacy union.
+        """
+        from .analytical_model import AnalyticalModel
+
+        # Param-agnostic models (e.g. AnalyticalModel) take their parameters from the
+        # .conf, so nothing can be proven a typo against them: skip the whole check,
+        # exactly as the legacy branch does.
+        for m in self.models.values():
+            if isinstance(m, AnalyticalModel) or not hasattr(m, 'param_names'):
+                return
+
+        model_ids = set()
+        for m in self.models.values():
+            model_ids.update(self._bindable_param_ids(m))
+
+        # Free parameters the objective / per-observable noise_model estimates but no
+        # model ever sees (e.g. chi_sq_dynamic's free sigma): legitimate nuisances,
+        # bound to no model id. Same source _load_variables checks (ADR-0021).
+        nuisance = set(self.obj.required_free_noise_params())
+
+        orphans = sorted(v.name for v in self.variables
+                         if v.name not in model_ids and v.name not in nuisance)
+        if orphans:
+            listed = ', '.join(sorted(model_ids)) if model_ids else '(none)'
+            raise PybnfError(
+                'Free parameter(s) match no model parameter: ' + ', '.join(orphans),
+                f"The free parameter(s) {', '.join(orphans)} are declared in the .conf "
+                f"file but match no parameter id in any model file, and are not "
+                f"referenced by the objective or a noise_model as a nuisance parameter. "
+                f"Under edition >= 2 a free parameter binds to a model parameter by id "
+                f"(there is no '__FREE' marker), so this is almost certainly a typo.\n"
+                f"The model parameter ids are: {listed}")
+
+    @staticmethod
+    def _bindable_param_ids(model):
+        """The model parameter ids a new-era config free parameter may bind to.
+
+        For a BNGL model this is the full ``begin parameters`` namespace
+        (``model_param_names``, ADR-0034), not the legacy ``__FREE`` tokens
+        (``param_names``); for the SBML / bngsim backends it is ``param_names``
+        (species + globals), already the bind-by-id namespace. Returns an empty set
+        for a model exposing neither (the caller has already excluded the
+        param-agnostic models that legitimately take their parameters from the conf).
+        """
+        if isinstance(model, BNGLModel):
+            return set(getattr(model, 'model_param_names', ()))
+        return set(getattr(model, 'param_names', ()))
 
     def _postprocess_normalization(self):
         """

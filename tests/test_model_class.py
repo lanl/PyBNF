@@ -65,6 +65,72 @@ class TestModel:
         model3 = pset.BNGLModel(self.file3)
         assert model3.param_names == ('__koff2__FREE', 'kase__FREE', 'koff__FREE', 'pase__FREE')
 
+    def test_model_param_names_is_the_full_namespace(self):
+        """ADR-0034: ``model_param_names`` is every ``begin parameters`` id (in source
+        order), the new-era bind-by-id namespace -- distinct from ``param_names`` (the
+        legacy ``__FREE`` tokens). Tricky declares its fit knobs through *expressions*
+        (``koff koff__FREE+__koff2__FREE*T``), so the two sets share no member: the
+        parameter ids are ``koff``/``kase``/``pase``..., never the ``*__FREE`` tokens."""
+        model3 = pset.BNGLModel(self.file3)  # Tricky.bngl
+        assert model3.model_param_names == (
+            'f', 'NA', 'T', 'Vchannel', 'Nchannel', 'Vecf', 'Vcyt', 'Ag_conc1',
+            'Ag_tot_1', 'R_tot', 'kon', 'koff', 'kase', 'pase', 'H_tot', 'kdegran')
+        # No __FREE token is a parameter id, and every fit knob's *host* parameter is.
+        assert set(model3.model_param_names).isdisjoint(model3.param_names)
+        assert {'koff', 'kase', 'pase'} <= set(model3.model_param_names)
+
+        # ParamsEverywhere: a __FREE token (t_end__FREE, an action arg) need not be a
+        # parameter id, so param_names and model_param_names are genuinely independent.
+        model2 = pset.BNGLModel(self.file2)
+        assert 't_end__FREE' in model2.param_names
+        assert 't_end' not in model2.model_param_names
+        assert 'kase' in model2.model_param_names
+
+    def test_model_param_names_matches_bngsim_param_block_parser(self):
+        """The advertised namespace must equal what the in-process bngsim NF backend
+        binds: both parse the same ``model_lines`` (ADR-0034 keeps them in step)."""
+        from pybnf.bngsim_model.expressions import _parse_bngl_param_block
+        for f in (self.file1, self.file2, self.file3):
+            model = pset.BNGLModel(f)
+            expected = tuple(name for name, _expr in _parse_bngl_param_block(model.model_lines))
+            assert model.model_param_names == expected
+
+    def test_no_free_marker_required_when_suppressed(self):
+        """A new-era model carries no ``__FREE`` markers (ADR-0034). The legacy load
+        still errors on a marker-free model (the historical contract); passing
+        ``suppress_free_param_error`` -- the seam config flips under edition >= 2 --
+        loads it and still exposes the full bind-by-id namespace."""
+        from pybnf.pset import ModelError
+        with pytest.raises(ModelError):
+            pset.BNGLModel('bngl_files/e2e_ode_decay.bngl')
+        model = pset.BNGLModel('bngl_files/e2e_ode_decay.bngl', suppress_free_param_error=True)
+        assert model.param_names == ()                       # no __FREE tokens
+        assert model.model_param_names == ('S0', 'k')        # full bind-by-id namespace
+
+    def test_model_text_overrides_bare_param_id_in_place(self):
+        """ADR-0034: for the file+subprocess backend, a new-era free parameter (a bare
+        parameter id, no marker) overrides its parameters-block value *in place* with the
+        fit value -- the same value the in-process set_param would apply -- instead of
+        running the model at its nominal value (a silent wrong fit)."""
+        model = pset.BNGLModel('bngl_files/e2e_ode_decay.bngl', suppress_free_param_error=True)
+        ps = pset.PSet([pset.FreeParameter('k', 'uniform_var', 0, 10, value=0.5),
+                        pset.FreeParameter('S0', 'uniform_var', 0, 200, value=42.0)])
+        text = model.copy_with_param_set(ps).model_text()
+        assert '\nk 0.5\n' in text and '\nS0 42.0\n' in text   # fit values applied
+        assert '0.3' not in text and '100' not in text          # nominal values gone
+
+    def test_model_text_legacy_free_injection_unchanged(self):
+        """The legacy __FREE path is byte-for-byte unchanged: marker values are injected
+        and the original parameter lines are carried verbatim (markers are disjoint from
+        the parameter ids, so the new bind-by-id branch never fires)."""
+        model = pset.BNGLModel(self.file1)  # Simple.bngl
+        ps = pset.PSet([pset.FreeParameter('kase__FREE', 'uniform_var', 0, 10, value=3.8),
+                        pset.FreeParameter('koff__FREE', 'uniform_var', 0, 10, value=1.1),
+                        pset.FreeParameter('pase__FREE', 'uniform_var', 0, 10, value=2.2)])
+        text = model.copy_with_param_set(ps).model_text()
+        assert 'kase__FREE 3.8' in text                         # marker injected
+        assert 'kon 1e7*T/(NA*Vecf)' in text                    # model carried verbatim
+
     def test_init_with_pset(self):
         ps1 = pset.PSet(self.params1)
         model1 = pset.BNGLModel(self.file1, ps1)

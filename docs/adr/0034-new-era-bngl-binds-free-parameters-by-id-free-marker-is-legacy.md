@@ -1,7 +1,10 @@
 # New-era BNGL binds free parameters by id (like SBML); `__FREE` is a legacy-edition marker (issue #423)
 
-**Status: Accepted (decision, 2026-06-19; implementation gated on the #423 new-era config
-loader — this is #423 Chunk 6).** In a new-era (`edition >= 2`) job, a BNGL model's
+**Status: Accepted and implemented (decision 2026-06-19; implemented 2026-06-20 as #423
+Chunk 6).** The model-namespace exposure, the edition-gated bind-by-id binding (both
+backends), and the typo check have landed; see the Implementation note below. The #407
+exporter/importer simplification this unlocks is a tracked follow-on, not yet done. In a
+new-era (`edition >= 2`) job, a BNGL model's
 fit/sampled parameters bind to the config's free parameters **by id**, exactly as the SBML /
 roadrunner / bngsim backends already do — no `__FREE` markers in the model file. Legacy
 edition keeps the `__FREE` mechanism unchanged for backward compatibility. PEtab v2 interop
@@ -92,15 +95,42 @@ This is a loader obligation, not a reason to keep the marker.
   importer carries the model verbatim and emits `uniform_var = k1 0 10`; the `k1`↔`k1__FREE`
   round-trip disappears. (The current importer still emits `__FREE` + re-instruments because
   it targets the legacy binding mechanism; it simplifies once this lands.)
-- **Implementation is gated on the #423 new-era config loader.** The fitter has no new-era
-  front-end yet (ADR-0028 is Proposed; only the exporter reads the new surface, from the raw
-  `ploop` dict). So this is **#423 Chunk 6** — buildable as a unit (model namespace exposure +
-  new-era variable→model bind-by-id + the typo check, unit-tested), with the end-to-end
-  new-era fit gated on the rest of #423's front-end (`job_type` + `model:` + `experiment:`/
-  `data:`).
+- **The #423 new-era config loader now exists.** When this ADR was written the fitter had
+  no new-era front-end; by the time Chunk 6 was implemented, #423 Chunks 0–4 had landed
+  (`job_type`, `model:`, `condition:`, `experiment:`/`data:`, `observable:` all parse and
+  build through `config.py`), so a new-era BNGL job loads and binds end to end. The
+  remaining gate is only the `param_scan`/dose-response inference parked in #426.
 - **Legacy is never made PEtab-compatible.** PEtab v2 interop is a new-era feature; legacy
   edition keeps `__FREE` and the filename→suffix linkage for backward compat, and the
   exporter already refuses legacy (`_require_modern_edition`).
+
+## Implementation note (2026-06-20, #423 Chunk 6)
+
+- **Namespace.** `BNGLModel.model_param_names` (`pset.py`) is the full `begin parameters`
+  id list, parsed by `_parse_param_block_names` from the same `model_lines` the in-process
+  bngsim NF backend feeds to `_parse_bngl_param_block` (a test pins the two parsers
+  together). It is *distinct from* `param_names` (still the `__FREE` tokens, untouched).
+- **Binding, both backends.** The in-process backends already bound by id (the net
+  backend's `set_param` over the PSet keys, the NF backend's `_evaluate_bngl_params`
+  name override) — they needed nothing. The file+subprocess backend's `model_text` did
+  *not*: it injected only `__FREE` tokens, so a new-era pset's bare-id values were silently
+  dropped (the model ran at nominal — a confidently-wrong fit). `model_text` now overrides
+  each bare parameter id *in place* in the parameters block (`_override_param_block_values`).
+  Because legacy psets hold only `__FREE` tokens, which are disjoint from the parameter ids,
+  this branch never fires for a legacy job and its output is byte-identical (golden +
+  `test_model_class` pin it).
+- **Edition gates.** `config.py` passes `suppress_free_param_error=True` for `edition >= 2`
+  (the `pset.py` "no `__FREE` → error" guard becomes legacy/`check`-only, in both
+  `_load_models` and `_load_t_length`), and `_check_variable_correspondence` delegates to a
+  modern branch (`_check_variable_correspondence_modern`): a config free parameter matching a
+  parameter id (unioned across models via `_bindable_param_ids`) binds; one referenced by
+  the objective/noise surface (`self.obj.required_free_noise_params()`) is an intended
+  nuisance; anything else is a typo error listing the parameter ids. There is no
+  model → config direction in the new era. The legacy branch is byte-unchanged.
+- **Deferred (the #407 payoff).** The importer's `_reinstrument_free_parameters` and the
+  exporter's `clean_model_for_petab` marker-strip + `free_to_param` lookup still target the
+  legacy mechanism; simplifying them to carry the model verbatim and emit `uniform_var = k1`
+  is a tracked follow-on, deliberately out of this chunk.
 
 ## References
 

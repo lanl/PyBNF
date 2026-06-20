@@ -607,6 +607,17 @@ class BNGLModel(Model):
         if self.generates_network and self.generate_network_line is None:
             self.generate_network_line = 'generate_network({overwrite=>1})'
 
+        # The full ``begin parameters`` namespace: every parameter id, in source
+        # order. Distinct from ``param_names`` (the legacy ``__FREE`` tokens scanned
+        # above): a new-era (edition >= 2) config free parameter binds to a model
+        # parameter *by id* (ADR-0034), the same contract the SBML backend uses
+        # (``param_names`` = species + globals), so bind-by-id and its typo check
+        # resolve against this set rather than the marker tokens. Parsed with the
+        # same rule the in-process bngsim NF backend applies to ``model_lines``
+        # (``_parse_bngl_param_block``) so the exposed namespace is exactly what the
+        # engine binds; a test pins the two together.
+        self.model_param_names = self._parse_param_block_names(self.model_lines)
+
         if len(param_names_set) == 0 and not suppress_free_param_error:
             raise ModelError(f"No free parameters found in model {bngl_file}. Your model file needs to include variable names "
                              "that end in '__FREE' to tell BioNetFit which parameters to fit.")
@@ -622,6 +633,43 @@ class BNGLModel(Model):
                 raise ValueError('Parameter names in the PSet do not match those in the Model')
 
         self.param_set = pset
+
+    @staticmethod
+    def _parse_param_block_names(model_lines):
+        """Every parameter id declared in the ``begin parameters`` block, in order.
+
+        The full bind-by-id namespace exposed as ``model_param_names`` (ADR-0034).
+        Reads the comment-stripped, continuation-joined ``model_lines`` already
+        built by the constructor; the name is the first token of a ``name = expr``
+        or ``name expr`` definition. Kept byte-for-byte in step with the in-process
+        bngsim NF backend's ``_parse_bngl_param_block`` (which parses the same
+        ``model_lines``) so the namespace this advertises is the one the engine
+        actually binds.
+        """
+        names = []
+        in_block = False
+        for raw_line in model_lines:
+            line = raw_line.strip()
+            comment_idx = line.find('#')
+            if comment_idx >= 0:
+                line = line[:comment_idx].strip()
+            if not line:
+                continue
+            if re.match(r'begin\s+parameters', line):
+                in_block = True
+                continue
+            if re.match(r'end\s+parameters', line):
+                break
+            if not in_block:
+                continue
+            eq_match = re.match(r'([A-Za-z_]\w*)\s*=\s*(.+)', line)
+            if eq_match:
+                names.append(eq_match.group(1))
+                continue
+            space_match = re.match(r'([A-Za-z_]\w*)\s+(.+)', line)
+            if space_match:
+                names.append(space_match.group(1))
+        return tuple(names)
 
     @staticmethod
     def _get_action_suffix(line):
@@ -688,7 +736,12 @@ class BNGLModel(Model):
         if not set(pset.keys()) >= set(self.param_names):
             raise PybnfError(f'Parameter names in the PSet do not match those in the Model\n{pset.keys()}\n{self.param_names}')
 
-        if set(pset.keys()) != set(self.param_names):
+        # Legacy must-fit completeness check: every declared __FREE token should be in
+        # the pset (a shared multi-model pset legitimately carries more). A new-era
+        # model (ADR-0034) declares no __FREE markers -- its free parameters bind by id
+        # and come from the conf -- so there is no must-fit set to be missing, and this
+        # warning would fire on every evaluation; gate it on param_names being present.
+        if self.param_names and set(pset.keys()) != set(self.param_names):
             logger.warning(f'Model {self.name} does not contain all defined free parameters')
 
         newmodel = copy.deepcopy(self)
@@ -713,6 +766,19 @@ class BNGLModel(Model):
         # Generate the text associated with defining __FREE parameter values
         param_text_lines = [f'{k} {str(self.param_set[k])}' for k in self.param_names]
 
+        # New-era bind-by-id (ADR-0034): a free parameter named like a real parameter id
+        # (no __FREE marker) overrides that parameter's value *in place* in the
+        # parameters block -- the same value the in-process backend would set via
+        # set_param -- rather than injecting a duplicate definition. A legacy pset holds
+        # only __FREE tokens, which are disjoint from the parameter ids
+        # (model_param_names), so this branch never fires for a legacy job and leaves its
+        # output byte-identical.
+        model_param_names = getattr(self, 'model_param_names', ())
+        bind_by_id = {k: self.param_set[k] for k in self.param_set.keys()
+                      if k in model_param_names and k not in self.param_names}
+        source_lines = (self._override_param_block_values(self.model_lines, bind_by_id)
+                        if bind_by_id else self.model_lines)
+
         # Insert the generated text at the correct point within the text of the model
         if gen_only:
             action_lines = [
@@ -731,13 +797,48 @@ class BNGLModel(Model):
             protocol_lines = ['begin protocol\n'] + self.protocol + ['end protocol\n']
 
         all_lines = \
-            self.model_lines[:self.split_line_index] + \
+            source_lines[:self.split_line_index] + \
             param_text_lines + \
-            self.model_lines[self.split_line_index:] + \
+            source_lines[self.split_line_index:] + \
             protocol_lines + \
             action_lines
 
         return '\n'.join(all_lines) + '\n'
+
+    @staticmethod
+    def _override_param_block_values(model_lines, overrides):
+        """A copy of ``model_lines`` with each ``begin parameters`` definition whose id
+        is in ``overrides`` rewritten to ``<id> <value>`` (new-era bind-by-id, ADR-0034).
+
+        Only the parameters block is touched; every other line passes verbatim. The id
+        is extracted exactly as :meth:`_parse_param_block_names` extracts it, so an
+        override keyed by a ``model_param_names`` id rewrites the one line that defines
+        it (replacing its expression/nominal value, and any trailing comment, with the
+        fit value)."""
+        out = []
+        in_block = False
+        for raw_line in model_lines:
+            body = raw_line.strip()
+            comment_idx = body.find('#')
+            if comment_idx >= 0:
+                body = body[:comment_idx].strip()
+            if re.match(r'begin\s+parameters', body):
+                in_block = True
+                out.append(raw_line)
+                continue
+            if re.match(r'end\s+parameters', body):
+                in_block = False
+                out.append(raw_line)
+                continue
+            if in_block and body:
+                eq_match = re.match(r'([A-Za-z_]\w*)\s*=\s*(.+)', body)
+                space_match = eq_match or re.match(r'([A-Za-z_]\w*)\s+(.+)', body)
+                if space_match and space_match.group(1) in overrides:
+                    name = space_match.group(1)
+                    out.append(f'{name} {str(overrides[name])}')
+                    continue
+            out.append(raw_line)
+        return out
 
     def save(self, file_prefix, gen_only=False, pset=None):
         """
