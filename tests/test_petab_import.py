@@ -60,9 +60,9 @@ BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
 _PARABOLA2_BNGL = """\
 begin model
   begin parameters
-    v1 v1__FREE
-    v2 v2__FREE
-    v3 v3__FREE
+    v1 0.5
+    v2 1
+    v3 3
     s 2
   end parameters
   begin molecule types
@@ -89,8 +89,8 @@ end actions
 """
 
 _HEAD = f'edition = 2\njob_type = de\nobjective = chi_sq\nmodel: {DEMO_MODEL}\n'
-_PARAMS_U = ('uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-             'uniform_var = v3__FREE 0 10\n')
+_PARAMS_U = ('uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+             'uniform_var = v3 0 10\n')
 
 
 def _roundtrip(tmp_path, conf_text, extra_files=None, model_name=DEMO_MODEL):
@@ -149,10 +149,13 @@ class TestImportDemoRoundTrip:
         assert d['objective'] == 'chi_sq'
         assert d['job_type'] == 'de'
 
-    def test_imported_conf_re_adds_the_free_markers(self, imported):
+    def test_imported_conf_declares_bare_free_params(self, imported):
+        # New-era binds by id (ADR-0034): the conf declares the bare model parameter ids
+        # as free parameters -- no '__FREE' marker.
         _, _, _, conf = imported
         text = conf.read_text()
-        for name in ('v1__FREE', 'v2__FREE', 'v3__FREE'):
+        assert '__FREE' not in text
+        for name in ('v1', 'v2', 'v3'):
             assert f'uniform_var = {name} 0 10' in text
 
     def test_imported_exp_matches_the_source_cell_for_cell(self, imported):
@@ -163,12 +166,14 @@ class TestImportDemoRoundTrip:
         for col in ('time', 'x', 'y', 'x_SD', 'y_SD'):
             assert np.allclose(recon[col], source[col]), col
 
-    def test_imported_model_re_instruments_then_round_trips(self, imported):
-        _, imported_dir, _, _ = imported
+    def test_imported_model_is_carried_verbatim(self, imported):
+        petab1, imported_dir, _, _ = imported
         model = (imported_dir / DEMO_MODEL).read_text()
-        # The fit-instrumented copy carries the __FREE markers again (so the conf binds),
-        # and keeps the measurement model -- it is the inverse of clean_model_for_petab.
-        assert 'v1 v1__FREE' in model
+        # New-era binds by id (ADR-0034): the model is carried verbatim from the PEtab
+        # problem -- bare ids, no '__FREE' marker -- and keeps the measurement model.
+        assert model == (petab1 / DEMO_MODEL).read_text()   # byte-identical to the PEtab model
+        assert '__FREE' not in model
+        assert 'v1 0.5' in model                             # the real nominal, carried through
         assert 'y()=v1*(x^2)+(v2*x)+v3' in model
 
     def test_imported_problem_passes_full_petab_validation(self, imported):
@@ -199,10 +204,10 @@ class TestImportExtensionsRoundTrip:
     def test_loguniform_prior_round_trips(self, tmp_path):
         petab1, _, petab2, conf = _roundtrip(
             tmp_path, _HEAD + 'experiment: par1, data: par1.exp\n'
-            'loguniform_var = v1__FREE 0.1 10\nloguniform_var = v2__FREE 0.1 10\n'
-            'loguniform_var = v3__FREE 0.1 10\n')
+            'loguniform_var = v1 0.1 10\nloguniform_var = v2 0.1 10\n'
+            'loguniform_var = v3 0.1 10\n')
         _assert_problem_round_trips(petab1, petab2)
-        assert 'loguniform_var = v1__FREE 0.1 10' in conf.read_text()
+        assert 'loguniform_var = v1 0.1 10' in conf.read_text()
 
     @pytest.mark.parametrize('objective', ['chi_sq', 'sos', 'sod', 'ave_norm_sos'])
     def test_objective_family_round_trips(self, tmp_path, objective):
@@ -250,13 +255,14 @@ class TestImportExtensionsRoundTrip:
 
         out = import_job(petab / 'problem.yaml', tmp_path / 'out')
         text = (out / 'imported.conf').read_text()
-        # The shared sigma id 'noise_sd' connects to its emitted free parameter noise_sd__FREE.
-        assert 'noise_model = gaussian, sigma = fit noise_sd__FREE' in text
-        assert 'uniform_var = noise_sd__FREE 0 10' in text
+        # New-era binds by id (ADR-0034): the shared sigma id 'noise_sd' connects to its
+        # emitted bare free parameter 'noise_sd' (a nuisance -- it matches no model id).
+        assert 'noise_model = gaussian, sigma = fit noise_sd' in text
+        assert 'uniform_var = noise_sd 0 10' in text
         assert 'objective =' not in text
         with open(out / 'imported.conf') as fh:
             d = ploop(fh.readlines())
-        assert ('uniform_var', 'noise_sd__FREE') in d
+        assert ('uniform_var', 'noise_sd') in d
 
     def test_conditions_round_trip(self, tmp_path):
         extra = {

@@ -1,9 +1,9 @@
 # New-era BNGL binds free parameters by id (like SBML); `__FREE` is a legacy-edition marker (issue #423)
 
 **Status: Accepted and implemented (decision 2026-06-19; implemented 2026-06-20 as #423
-Chunk 6).** The model-namespace exposure, the edition-gated bind-by-id binding (both
-backends), and the typo check have landed; see the Implementation note below. The #407
-exporter/importer simplification this unlocks is a tracked follow-on, not yet done. In a
+Chunk 6; the #407 exporter/importer simplification it unlocks landed 2026-06-20, see the
+Implementation note).** The model-namespace exposure, the edition-gated bind-by-id binding
+(both backends), and the typo check have landed; see the Implementation note below. In a
 new-era (`edition >= 2`) job, a BNGL model's
 fit/sampled parameters bind to the config's free parameters **by id**, exactly as the SBML /
 roadrunner / bngsim backends already do — no `__FREE` markers in the model file. Legacy
@@ -93,8 +93,8 @@ This is a loader obligation, not a reason to keep the marker.
   (import) and `clean_model_for_petab`'s marker-strip + `free_to_param` lookup (export) exist
   *only* to bridge PEtab's bind-by-id to the BNGL marker. Once BNGL *is* bind-by-id, the
   importer carries the model verbatim and emits `uniform_var = k1 0 10`; the `k1`↔`k1__FREE`
-  round-trip disappears. (The current importer still emits `__FREE` + re-instruments because
-  it targets the legacy binding mechanism; it simplifies once this lands.)
+  round-trip disappears. (Done 2026-06-20 -- see the Implementation note's "#407 payoff"
+  bullet.)
 - **The #423 new-era config loader now exists.** When this ADR was written the fitter had
   no new-era front-end; by the time Chunk 6 was implemented, #423 Chunks 0–4 had landed
   (`job_type`, `model:`, `condition:`, `experiment:`/`data:`, `observable:` all parse and
@@ -127,10 +127,19 @@ This is a loader obligation, not a reason to keep the marker.
   the objective/noise surface (`self.obj.required_free_noise_params()`) is an intended
   nuisance; anything else is a typo error listing the parameter ids. There is no
   model → config direction in the new era. The legacy branch is byte-unchanged.
-- **Deferred (the #407 payoff).** The importer's `_reinstrument_free_parameters` and the
-  exporter's `clean_model_for_petab` marker-strip + `free_to_param` lookup still target the
-  legacy mechanism; simplifying them to carry the model verbatim and emit `uniform_var = k1`
-  is a tracked follow-on, deliberately out of this chunk.
+- **The #407 payoff (done, 2026-06-20).** The importer's `_reinstrument_free_parameters`
+  is deleted and the model is carried **verbatim**; the exporter's `clean_model_for_petab`
+  drops only `begin actions` (no marker-strip) and the `free_to_param` lookup is gone --
+  `_resolve_free_to_model` now validates each free parameter's id against `bngl.parameters`
+  (its own check, mirroring `_check_variable_correspondence_modern`, since the exporter
+  never builds a `Configuration`) and a non-id free parameter raises the same typo error
+  (with a `*__FREE`-is-legacy hint). The importer emits bare `uniform_var = k1`; the
+  exporter reads it; `export → import → re-export` is byte-equal and the real model (not a
+  synthetic bounds-midpoint copy) is carried both ways. `clean_model_for_petab` gained a
+  guard that rejects a model still carrying a `__FREE` marker. The `_bngl.py` `free_to_param`
+  field/`_FREE_TOKEN` and `parameters.py` `_FREE_SUFFIX` strip (now identity) are removed.
+  The edition-2 fixtures (`parabola_v2.bngl`, `demo_bng_v2.conf`) and the petab tests are
+  migrated to bare ids.
 
 ## References
 

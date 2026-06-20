@@ -16,7 +16,8 @@ Its contracts, by strength of oracle:
    proof in the export direction.
 4. **Model correspondence** (what the table oracle can't check for BNGL): every
    ``observableFormula`` is a model observable/function name; every ``parameterId`` is
-   a model parameter; the PEtab-clean model drops ``__FREE`` and ``begin actions``.
+   a model parameter; the PEtab-clean model carries bare ids (new-era binds by id,
+   ADR-0034) and drops ``begin actions``.
 5. **The documented boundaries** raise (parameter-scan #426 deferral, legacy linkage
    refused, non-uniform prior, no-``_SD`` noise, SBML model, PEtab-inexpressible objective).
 """
@@ -107,13 +108,17 @@ class TestReverseAssets:
         fp = free_parameter_from_row(row)
         assert petab_parameter_row(fp) == row
 
-    def test_parameter_id_strips_free_marker(self):
-        fp = FreeParameter('k1__FREE', 'uniform_var', 1.0, 2.0)
+    def test_parameter_id_defaults_to_the_free_parameter_name(self):
+        # New-era binds by id (ADR-0034): the free parameter's name IS the parameterId,
+        # carried through verbatim -- no marker to strip.
+        fp = FreeParameter('k1', 'uniform_var', 1.0, 2.0)
         assert petab_parameter_row(fp).parameter_id == 'k1'
 
-    def test_explicit_parameter_id_overrides_strip(self):
-        fp = FreeParameter('kase__FREE', 'uniform_var', 1.0, 2.0)
-        assert petab_parameter_row(fp, parameter_id='kase').parameter_id == 'kase'
+    def test_explicit_parameter_id_overrides_the_name(self):
+        # The exporter passes parameter_id explicitly for a fit-and-mutated parameter
+        # (renamed to its <p>__REF surrogate); the explicit id wins over the name.
+        fp = FreeParameter('k', 'uniform_var', 1.0, 2.0)
+        assert petab_parameter_row(fp, parameter_id='k__REF').parameter_id == 'k__REF'
 
     @pytest.mark.parametrize('lb,ub', [(0.5, 10.0), (1e-3, 1e3), (2.0, 2.5)])
     def test_loguniform_parameter_round_trips(self, lb, ub):
@@ -146,14 +151,14 @@ class TestReverseAssets:
     def test_unbounded_location_scale_writes_blank_bounds(self):
         # A conf-built lognormal has no truncation grammar yet (#417) -> unbounded ->
         # blank PEtab bounds, prior fully carried by priorParameters.
-        fp = FreeParameter('k__FREE', 'lognormal_var', 0.0, 1.0)
+        fp = FreeParameter('k', 'lognormal_var', 0.0, 1.0)
         row = petab_parameter_row(fp)
         assert row.lower_bound is None and row.upper_bound is None
         assert row.prior_distribution == 'log-normal'
 
     def test_no_prior_keyword_export_not_implemented(self):
         # var / logvar are a flat improper prior -- not a PEtab probability family.
-        fp = FreeParameter('k__FREE', 'logvar', 1.0, 0.1)
+        fp = FreeParameter('k', 'logvar', 1.0, 0.1)
         with pytest.raises(NotImplementedError):
             petab_parameter_row(fp)
 
@@ -243,9 +248,10 @@ class TestExportDemo:
             assert float(r['noiseParameters']) == data.data[i, data.cols[col + '_SD']]
             assert r['experimentId'] == ''              # base time-course, "model as is"
 
-    def test_clean_model_drops_free_and_actions_keeps_measurement_model(self, exported):
+    def test_clean_model_drops_actions_keeps_measurement_model(self, exported):
         text = (exported / DEMO_MODEL).read_text()
-        assert '__FREE' not in text                     # PEtab estimates v1/v2/v3 directly
+        assert '__FREE' not in text                     # new-era binds by id (trivially true)
+        assert 'v1 0.5' in text                          # the real nominal carried verbatim
         assert 'begin actions' not in text              # PEtab drives simulation
         assert 'y()=v1*(x^2)+(v2*x)+v3' in text         # the function (measurement model) survives
         assert 'Molecules x counter()' in text          # the observable survives
@@ -307,9 +313,9 @@ class TestExportLogUniform:
             f'edition = 2\njob_type = de\nobjective = chi_sq\n'
             f'model: {DEMO_MODEL}\n'
             'experiment: par1, data: par1.exp\n'
-            'loguniform_var = v1__FREE 0.1 10\n'
-            'loguniform_var = v2__FREE 0.1 10\n'
-            'loguniform_var = v3__FREE 0.1 10\n')
+            'loguniform_var = v1 0.1 10\n'
+            'loguniform_var = v2 0.1 10\n'
+            'loguniform_var = v3 0.1 10\n')
         out = tmp_path_factory.mktemp('loguniform_out')
         export_job(src / 'job.conf', out)
         return out
@@ -343,8 +349,8 @@ class TestExportObjectiveFamily:
             f'edition = 2\njob_type = de\nobjective = {objfunc}\n'
             f'model: {DEMO_MODEL}\n'
             'experiment: par1, data: par1.exp\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n')
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\n')
         out = tmp_path_factory.mktemp('objfam_out')
         export_job(src / 'job.conf', out)
         return out
@@ -398,8 +404,8 @@ class TestExportObjectiveFamily:
             f'model: {DEMO_MODEL}\n'
             'experiment: par1, data: par1.exp\n'
             'noise_model = laplace, scale = fix_at 1\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n')
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\n')
         out = tmp_path_factory.mktemp('nm_out')
         export_job(src / 'job.conf', out)
         rows = _tsv_rows(out / 'observables.tsv')
@@ -427,8 +433,8 @@ class TestExportNewEra:
 
     _HEAD = ('edition = 2\njob_type = de\nobjective = chi_sq\n'
              f'model: {DEMO_MODEL}\n')
-    _PARAMS = ('uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-               'uniform_var = v3__FREE 0 10\n')
+    _PARAMS = ('uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+               'uniform_var = v3 0 10\n')
 
     def test_replicates_become_repeated_measurement_rows(self, tmp_path_factory):
         src = self._src(tmp_path_factory, 'reps')
@@ -522,8 +528,8 @@ def _write_newera_condition_fixture(d):
         'experiment: wt, data: wt.exp\n'
         'experiment: dbl, condition: doubled, data: dbl.exp\n'
         'experiment: scl, condition: scaled, data: scl.exp\n'
-        'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-        'uniform_var = v3__FREE 0 10\n')
+        'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+        'uniform_var = v3 0 10\n')
     return conf
 
 
@@ -592,8 +598,8 @@ class TestExportNewEraConditions:
             'condition: doubled, perturbations: v1 * 2\n'
             'experiment: ea, condition: doubled, data: a.exp\n'
             'experiment: eb, condition: doubled, data: b.exp\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n')
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\n')
         out = src / 'petab'
         export_job(conf, out)
         crows = _tsv_rows(out / 'conditions.tsv')
@@ -616,8 +622,8 @@ class TestExportNewEraConditions:
             'model: parabola2.bngl\n'
             'condition: bad, perturbations: nope = 0\n'
             'experiment: e, condition: bad, data: e.exp\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n')
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\n')
         with pytest.raises(PybnfError, match='nope'):
             export_job(conf, src / 'out')
 
@@ -634,8 +640,8 @@ class TestExportNewEraConditions:
             'model: parabola2.bngl\n'
             'condition: scaled, perturbations: s * 5\n'
             'experiment: e, condition: scaled, data: e.exp\n'
-            'uniform_var = v1__FREE 0 10\nuniform_var = v2__FREE 0 10\n'
-            'uniform_var = v3__FREE 0 10\n')
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\n'
+            'uniform_var = v3 0 10\n')
         with pytest.raises(NotImplementedError):
             export_job(conf, src / 'out')
 
@@ -760,7 +766,7 @@ class TestBoundaries:
     def test_modern_edition_without_objective_is_refused(self, tmp_path):
         # New era has no implicit chi_sq default: an edition-2 job must name its objective.
         with pytest.raises(NotImplementedError):
-            export_job(_boundary_conf(tmp_path, "uniform_var = v1__FREE 0 10\n"),
+            export_job(_boundary_conf(tmp_path, "uniform_var = v1 0 10\n"),
                        tmp_path / 'out')
 
     @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
@@ -769,7 +775,7 @@ class TestBoundaries:
         # likelihood. All are named on the modern `objective` key.
         with pytest.raises(NotImplementedError):
             export_job(_boundary_conf(
-                tmp_path, f"objective = {objfunc}\nuniform_var = v1__FREE 0 10\n"),
+                tmp_path, f"objective = {objfunc}\nuniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
     def test_free_parameter_sigma_objective_not_implemented(self, tmp_path):
@@ -777,7 +783,17 @@ class TestBoundaries:
         # parameter table -- a deferred sigma-source path (raised at column classification).
         with pytest.raises(NotImplementedError):
             export_job(_boundary_conf(
-                tmp_path, "objective = chi_sq_dynamic\nuniform_var = v1__FREE 0 10\n"),
+                tmp_path, "objective = chi_sq_dynamic\nuniform_var = v1 0 10\n"),
+                tmp_path / 'out')
+
+    def test_legacy_free_marker_free_parameter_is_rejected(self, tmp_path):
+        # New-era binds by id (ADR-0034): a free parameter must be a model parameter id.
+        # A legacy '*__FREE' name matches no id in the bare model -> the migration error
+        # (mirroring config._check_variable_correspondence_modern), with a bind-by-id hint.
+        from pybnf.printing import PybnfError
+        with pytest.raises(PybnfError, match='__FREE'):
+            export_job(_boundary_conf(
+                tmp_path, "objective = chi_sq\nuniform_var = v1__FREE 0 10\n"),
                 tmp_path / 'out')
 
     @pytest.mark.parametrize('token', ['kl', 'wasserstein'])
@@ -786,7 +802,7 @@ class TestBoundaries:
         # raise, NOT silently fall through to a default.
         with pytest.raises(NotImplementedError):
             export_job(_boundary_conf(
-                tmp_path, f"profile_objective = {token}\nuniform_var = v1__FREE 0 10\n"),
+                tmp_path, f"profile_objective = {token}\nuniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
     def test_per_observable_noise_model_override_not_implemented(self, tmp_path):
@@ -796,7 +812,7 @@ class TestBoundaries:
                 tmp_path,
                 "noise_model = gaussian, sigma = fix_at 1\n"
                 "noise_model x = gaussian, sigma = fix_at 2\n"
-                "uniform_var = v1__FREE 0 10\n"),
+                "uniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
     def test_mean_centered_noise_model_not_implemented(self, tmp_path):
@@ -805,21 +821,31 @@ class TestBoundaries:
             export_job(_boundary_conf(
                 tmp_path,
                 "noise_model = gaussian, sigma = fix_at 1, location = mean\n"
-                "uniform_var = v1__FREE 0 10\n"),
+                "uniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
 
 class TestCleanModelUnit:
 
-    def test_strips_free_marker_and_actions_block(self):
+    def test_drops_actions_block_keeps_bare_model_verbatim(self):
+        # New-era binds by id (ADR-0034): the model already carries bare ids with real
+        # nominals, so clean = strip the actions block and carry the rest verbatim.
         src = (
-            "begin model\n begin parameters\n  k1 k1__FREE\n end parameters\n"
+            "begin model\n begin parameters\n  k1 3\n end parameters\n"
             "end model\n\nbegin actions\n simulate({})\nend actions\n")
-        out = clean_model_for_petab(src, {'k1__FREE': 3.0})
-        assert 'k1 3' in out
+        out = clean_model_for_petab(src)
+        assert 'k1 3' in out                             # the real nominal carried verbatim
         assert '__FREE' not in out
         assert 'begin actions' not in out and 'simulate' not in out
         assert 'begin model' in out                     # the model body is untouched
+
+    def test_legacy_free_marker_is_rejected(self):
+        # A model still carrying a legacy __FREE marker was not modernized; the exporter
+        # refuses it (rather than ship a dangling v1__FREE symbol into PEtab) -- ADR-0034.
+        from pybnf.printing import PybnfError
+        src = "begin model\n begin parameters\n  k1 k1__FREE\n end parameters\nend model\n"
+        with pytest.raises(PybnfError, match='__FREE'):
+            clean_model_for_petab(src)
 
 
 # ---------------------------------------------------------------------------
@@ -841,10 +867,13 @@ class TestBnglModel:
         return BnglModel.from_file(out / DEMO_MODEL)
 
     def test_parameter_ids_and_values(self, model):
+        # The exported model is carried verbatim (ADR-0034), so the parameter values are
+        # the model's real nominals (parabola_v2.bngl: v1 0.5, v2 1, v3 3), not the old
+        # synthetic bounds-midpoint the marker-strip used to substitute.
         assert set(model.get_parameter_ids()) == {'v1', 'v2', 'v3'}
-        assert model.get_parameter_value('v1') == 5.0
+        assert model.get_parameter_value('v1') == 0.5
         assert dict(model.get_free_parameter_ids_with_values()) == \
-            {'v1': 5.0, 'v2': 5.0, 'v3': 5.0}
+            {'v1': 0.5, 'v2': 1.0, 'v3': 3.0}
 
     def test_get_parameter_value_unknown_raises_valueerror(self, model):
         with pytest.raises(ValueError):
@@ -943,9 +972,9 @@ class TestRegisterBngl:
 _PARABOLA2_BNGL = """\
 begin model
   begin parameters
-    v1 v1__FREE
-    v2 v2__FREE
-    v3 v3__FREE
+    v1 0.5
+    v2 1
+    v3 3
     s 2
   end parameters
   begin molecule types

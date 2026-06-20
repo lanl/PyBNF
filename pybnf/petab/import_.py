@@ -3,7 +3,8 @@
 
 The inverse of :func:`pybnf.petab.export.export_job`. Given a ``problem.yaml`` + its TSV
 tables + a BNGL model, :func:`import_job` writes a runnable new-era (edition 2) ``.conf``
-plus the ``.exp`` data files and a fit-instrumented copy of the model -- the form the
+plus the ``.exp`` data files and a verbatim copy of the model (new-era binds free
+parameters by id, ADR-0034, so the model needs no re-instrumentation) -- the form the
 exporter reads. It closes the "two-adapter proof" at the read level for BNGL-native
 problems: the reverse asset mappers (parameters/observables/measurements/conditions) run
 backwards onto the shared neutral rows, and this module is the *disposable orchestrator*
@@ -96,8 +97,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     """Import the BNGL-native PEtab v2 problem at ``problem_yaml_path`` into ``out_dir``.
 
     Reads the problem's tables + model, reconstructs the experiments' data, and writes a
-    new-era PyBNF job: the ``.exp`` data files, a fit-instrumented copy of the BNGL model,
-    and one or more ``.conf`` files. The *problem* (parameters/priors, observables/noise,
+    new-era PyBNF job: the ``.exp`` data files, a verbatim copy of the BNGL model (new-era
+    binds free parameters by id, so the model needs no re-instrumentation -- ADR-0034), and
+    one or more ``.conf`` files. The *problem* (parameters/priors, observables/noise,
     measurements, conditions/experiments) is recovered exactly; the *run-recipe*
     (``job_type``, ``method``, ``settings``) is supplied by the caller (see the module
     docstring). Returns the ``out_dir`` path.
@@ -129,9 +131,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     experiment_rows = (read_experiment_table(base / problem['experiment_files'][0])
                        if problem['experiment_files'] else [])
 
-    # Parameters -> conf free-parameter lines + the surrogate set M + the estimated
-    # model parameters (the ones whose __FREE marker the model copy must re-instrument).
-    free_param_lines, surrogate_params, estimated_to_free = _free_parameters(parameter_rows)
+    # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
+    # + the surrogate set M of fit-and-perturbed model parameters.
+    free_param_lines, surrogate_params = _free_parameters(parameter_rows)
 
     # Observables -> the observableId -> model-column map (the data pivot's column order)
     # and the recovered objective token.
@@ -140,16 +142,17 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # Measurements -> one wide Data per experiment, then assemble the experiment list.
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
     objective_directive = _objective_directive(
-        observable_rows, _column_mean_resolver(datas, observable_id_to_column),
-        estimated_to_free)
+        observable_rows, _column_mean_resolver(datas, observable_id_to_column))
     conditions = conditions_from_rows(condition_rows, surrogate_params)
     experiments = _experiments(datas, experiment_rows, out_dir)
 
-    # The fit-instrumented model copy (re-add the __FREE markers the export stripped).
+    # The model copy: carried verbatim. New-era BNGL binds the conf's bare free-parameter
+    # ids to the model's bare parameter ids (ADR-0034), and the PEtab model is already
+    # actionless (the conf synthesizes actions from experiment:/data:), so the verbatim
+    # PEtab model *is* a valid new-era fit model -- no re-instrumentation.
     model_filename = problem['model_file']
     model_text = (base / model_filename).read_text(encoding='utf-8', errors='replace')
-    (out_dir / model_filename).write_text(
-        _reinstrument_free_parameters(model_text, estimated_to_free))
+    (out_dir / model_filename).write_text(model_text)
 
     merged_settings = {**_DEFAULT_SETTINGS, **(settings or {})}
     job_types = _emit_all_job_types() if job_type == 'all' else [job_type]
@@ -169,35 +172,32 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
 # ---------------------------------------------------------------------------
 
 def _free_parameters(parameter_rows):
-    """Map estimated parameter rows to conf ``*_var`` lines + bookkeeping.
+    """Map estimated parameter rows to conf ``*_var`` lines + the surrogate set.
 
-    Returns ``(free_param_lines, surrogate_params, estimated_to_free)``:
-    ``free_param_lines`` are the conf declarations (in table order); ``surrogate_params``
-    is the set ``M`` of fit-and-perturbed model parameters (a ``<p>__REF`` parameterId
-    recovered to ``p``); ``estimated_to_free`` maps each estimated model parameter to its
-    re-added ``<p>__FREE`` name (the model copy uses it to re-instrument the parameters
-    block). ``free_parameter_from_row`` surfaces the prior boundaries (5 families,
-    one-sided truncation) as ``NotImplementedError``.
+    Returns ``(free_param_lines, surrogate_params)``: ``free_param_lines`` are the conf
+    declarations (**bare ids**, in table order -- new-era binds a free parameter to its
+    model parameter by id, ADR-0034, so the declaration *is* ``<id>``, not ``<id>__FREE``);
+    ``surrogate_params`` is the set ``M`` of fit-and-perturbed model parameters (a
+    ``<p>__REF`` parameterId recovered to ``p`` by :func:`_model_param`).
+    ``free_parameter_from_row`` surfaces the prior boundaries (5 families, one-sided
+    truncation) as ``NotImplementedError``.
     """
     free_param_lines = []
     surrogate_params = set()
-    estimated_to_free = {}
     for row in parameter_rows:
         if not row.estimate:
             continue  # a fixed model constant, not a free parameter (stays in the model)
         model_param, is_surrogate = _model_param(row.parameter_id)
         if is_surrogate:
             surrogate_params.add(model_param)
-        free_name = f'{model_param}__FREE'
-        estimated_to_free[model_param] = free_name
         fp = free_parameter_from_row(row)
         free_param_lines.append(
-            f'{fp.type} = {free_name} {num(fp.p1)} {num(fp.p2)}')
+            f'{fp.type} = {model_param} {num(fp.p1)} {num(fp.p2)}')
     if not free_param_lines:
         raise PybnfError(
             "The PEtab parameters table declares no estimated (estimate=true) parameters, "
             "so there is nothing to fit.")
-    return free_param_lines, surrogate_params, estimated_to_free
+    return free_param_lines, surrogate_params
 
 
 def _model_param(parameter_id):
@@ -268,7 +268,7 @@ _PETAB_DISTRIBUTION_TO_NOISE_MODEL = {
 }
 
 
-def _objective_directive(observable_rows, column_mean_of, estimated_to_free):
+def _objective_directive(observable_rows, column_mean_of):
     """Recover the conf's objective directive (one full line) from the observables' noise.
 
     The inverse of the objective-family / whole-fit ``noise_model`` export. Returns either:
@@ -279,8 +279,8 @@ def _objective_directive(observable_rows, column_mean_of, estimated_to_free):
       broader cases no sugar token names: a uniform **non-unit fixed** sigma
       (``fix_at C``, the symmetric inverse of the exporter's whole-fit ``noise_model``
       line, so it round-trips byte-for-byte) and a single shared **free-parameter** sigma
-      (``fit <id>__FREE``; import-only, since the exporter raises on a ``fit`` sigma -- it
-      is external-problem territory).
+      (``fit <id>``; import-only, since the exporter raises on a ``fit`` sigma -- it is
+      external-problem territory).
 
     A single PyBNF objective is one family + one sigma source across all observables, so a
     mix of families/sources -- or a *per-observable* free or fixed sigma (e.g. Boehm's
@@ -340,7 +340,7 @@ def _objective_directive(observable_rows, column_mean_of, estimated_to_free):
                 f"token (only the Gaussian per-point _SD case, chi_sq, is recovered; #407).")
         return 'objective = chi_sq'
     if kind == 'free':
-        return _free_sigma_directive(sources, petab_family, param, estimated_to_free)
+        return _free_sigma_directive(sources, petab_family, param)
     return _constant_sigma_directive(
         observable_rows, sources, family, petab_family, param, column_mean_of)
 
@@ -368,13 +368,15 @@ def _constant_sigma_directive(observable_rows, sources, family, petab_family, pa
     return f'noise_model = {petab_family}, {param} = fix_at {num(uniq.pop())}'
 
 
-def _free_sigma_directive(sources, petab_family, param, estimated_to_free):
+def _free_sigma_directive(sources, petab_family, param):
     """Map a single shared free-parameter sigma across all observables to a ``fit``
     ``noise_model`` line. The bare-id noiseFormula names an estimated parameter (already
-    emitted as a free parameter by :func:`_free_parameters`), so it connects to that
-    parameter's ``<id>__FREE`` name. A *distinct* free sigma per observable is
-    per-observable noise (later #407); a sigma id that is not an estimated parameter is a
-    malformed problem (no free parameter to fit it as)."""
+    emitted as a bare free parameter by :func:`_free_parameters`), so ``fit <sigma_id>``
+    binds to it as a nuisance -- it matches no model parameter id, the new-era typo
+    check's allowed nuisance path (ADR-0034). A *distinct* free sigma per observable is
+    per-observable noise (later #407). A sigma id that names no estimated parameter yields
+    a conf whose ``fit`` reference has no declared free parameter; the config loader's
+    bind-by-id typo check rejects it at load (one source of truth, ADR-0034)."""
     ids = {sid for _kind, sid in sources}
     if len(ids) != 1:
         raise PybnfError(
@@ -382,13 +384,7 @@ def _free_sigma_directive(sources, petab_family, param, estimated_to_free):
             f"({sorted(ids)}); that is per-observable noise, not one PyBNF objective. "
             f"Per-observable noise import is a later #407 chunk.")
     sigma_id = ids.pop()
-    free_name = estimated_to_free.get(sigma_id)
-    if free_name is None:
-        raise PybnfError(
-            f"The observables' noiseFormula names sigma parameter '{sigma_id}', but it is "
-            f"not an estimated (estimate=true) parameter in the parameters table, so there "
-            f"is no free parameter to fit it as.")
-    return f'noise_model = {petab_family}, {param} = fit {free_name}'
+    return f'noise_model = {petab_family}, {param} = fit {sigma_id}'
 
 
 def _approx(a, b):
@@ -491,39 +487,6 @@ def _emit_all_job_types():
     from ..registry import FIT_TYPE_REGISTRY
     return [code for code, entry in FIT_TYPE_REGISTRY.items()
             if entry.family in _EMIT_ALL_FAMILIES]
-
-
-# ---------------------------------------------------------------------------
-# Model re-instrumentation (the inverse of clean_model_for_petab)
-# ---------------------------------------------------------------------------
-
-def _reinstrument_free_parameters(text, estimated_to_free):
-    """Re-add the ``__FREE`` markers ``clean_model_for_petab`` stripped (its inverse).
-
-    In the ``begin parameters`` block, an estimated parameter's nominal RHS is replaced by
-    its ``<name>__FREE`` marker, so the conf's free parameter binds to it again (the
-    exporter's ``free_to_param`` lookup). The nominal value the export wrote is lossy (the
-    bounds midpoint, not the original marker), so the *estimated set* -- not the value --
-    drives this; fixed parameters keep their model value. A re-export then rewrites
-    ``<name>__FREE`` back to the same midpoint, so the model round-trips byte-for-byte.
-    """
-    begin = re.compile(r'^\s*begin\s+parameters\b', re.I)
-    end = re.compile(r'^\s*end\s+parameters\b', re.I)
-    lines = text.split('\n')
-    in_block = False
-    for i, raw in enumerate(lines):
-        if begin.match(raw):
-            in_block = True
-        elif end.match(raw):
-            in_block = False
-        elif in_block:
-            code = raw.split('#', 1)[0]
-            if code.strip():
-                match = re.match(r'^(\s*)(\w+)(?:\s*=\s*|\s+)(.+?)\s*$', code)
-                if match and match.group(2) in estimated_to_free:
-                    name = match.group(2)
-                    lines[i] = f'{match.group(1)}{name} {estimated_to_free[name]}'
-    return '\n'.join(lines)
 
 
 # ---------------------------------------------------------------------------

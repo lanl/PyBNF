@@ -19,9 +19,6 @@ functions), and compartments are *not* expression symbols (ADR-0026).
 import re
 from dataclasses import dataclass
 
-# A free-parameter marker: PyBNF's standardized "is-fit" suffix on a model name.
-_FREE_TOKEN = re.compile(r'\w+__FREE')
-
 # The three observable keywords that open an observable declaration line.
 _OBS_KEYWORDS = frozenset({'Molecules', 'Species', 'Counter'})
 
@@ -31,21 +28,21 @@ class BnglEntities:
     """The named entities of a BNGL model the PEtab layer reads.
 
     ``parameters`` maps a parameter name to its raw right-hand side (a number
-    like ``'5'``/``'6.02e23'``, a ``__FREE`` marker, or an expression like
-    ``'2*base_rate'`` -- kept verbatim; numeric coercion is the caller's job).
-    ``free_to_param`` is the inverse of the ``__FREE`` markers (``'v1__FREE'`` ->
-    ``'v1'``). The remaining sets are bare entity names, except ``seed_species``,
-    which holds the (often composite) species *pattern* strings verbatim.
+    like ``'5'``/``'6.02e23'`` or an expression like ``'2*base_rate'`` -- kept
+    verbatim; numeric coercion is the caller's job). New-era BNGL binds free
+    parameters by id (ADR-0034), so a parameter id is its own fit knob; there is
+    no ``__FREE`` marker to invert. The remaining sets are bare entity names,
+    except ``seed_species``, which holds the (often composite) species *pattern*
+    strings verbatim.
     """
 
     text: str
-    parameters: dict             # 'v1' -> 'v1__FREE' / '5' / '2*base_rate'
+    parameters: dict             # 'v1' -> '5' / '2*base_rate'
     observable_names: frozenset  # {'x'}
     function_names: frozenset    # {'y'}  (global functions, name without '()')
     molecule_type_names: frozenset  # {'counter'}
     seed_species: frozenset      # {'counter()'}  (concrete species patterns)
     compartment_names: frozenset
-    free_to_param: dict          # 'v1__FREE' -> 'v1'
 
 
 def parse_model(text):
@@ -55,9 +52,6 @@ def parse_model(text):
         nv = _parameter_name_value(line)
         if nv is not None:
             parameters[nv[0]] = nv[1]
-    free_to_param = {
-        rhs: name for name, rhs in parameters.items() if _FREE_TOKEN.fullmatch(rhs)
-    }
     return BnglEntities(
         text=text,
         parameters=parameters,
@@ -66,7 +60,6 @@ def parse_model(text):
         molecule_type_names=_names(text, 'molecule types', _molecule_type_name),
         seed_species=_names(text, 'seed species', _seed_species_pattern),
         compartment_names=_names(text, 'compartments', _compartment_name),
-        free_to_param=free_to_param,
     )
 
 

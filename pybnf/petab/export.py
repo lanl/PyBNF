@@ -66,7 +66,6 @@ from ..parse import ploop
 from ..printing import PybnfError
 from ..pset import FreeParameter
 from ._bngl import parse_model
-from ._tsv import num
 from .conditions import (
     build_experiment_conditions,
     surrogate_name,
@@ -98,6 +97,11 @@ _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION = {
 # Free-parameter declaration keywords (the ``(keyword, name)`` tuple keys ``ploop``
 # emits). Only ``uniform_var`` exports in chunk 1; the rest raise.
 _VAR_DECL = re.compile(r'(_var$|^var$|^logvar$)')
+
+# A legacy ``<name>__FREE`` bind-by-id marker. New-era BNGL binds free parameters by id
+# (ADR-0034), so a model carrying this token was not modernized; the exporter refuses it
+# rather than ship a ``v1__FREE`` symbol into PEtab (where it would dangle).
+_FREE_TOKEN = re.compile(r'\w+__FREE')
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +143,7 @@ def export_job(conf_path, out_dir):
      surrogate_params) = _export_new_era(
         conf, conf_path, model_file, bngl, noise, fit_model_params)
 
-    parameter_rows, free_to_nominal = _parameter_rows(
+    parameter_rows = _parameter_rows(
         free_params, free_to_model, surrogate_params, bngl, model_file)
 
     model_filename = Path(model_file).name
@@ -151,8 +155,7 @@ def export_job(conf_path, out_dir):
         write_condition_table(condition_rows, out_dir / 'conditions.tsv')
     if experiment_rows:
         write_experiment_table(experiment_rows, out_dir / 'experiments.tsv')
-    (out_dir / model_filename).write_text(
-        clean_model_for_petab(bngl.text, free_to_nominal))
+    (out_dir / model_filename).write_text(clean_model_for_petab(bngl.text))
     write_problem_yaml(out_dir / 'problem.yaml', model_filename, model_id,
                        has_conditions=bool(condition_rows),
                        has_experiments=bool(experiment_rows))
@@ -603,23 +606,39 @@ def _noise_source_for_column(verb, arg, col, datas):
 
 
 def _resolve_free_to_model(free_params, bngl, model_file):
-    """Map each free-parameter name (``v1__FREE``) to its model parameter (``v1``)."""
+    """Validate each free parameter binds to a model parameter id; return the identity map.
+
+    New-era BNGL binds free parameters **by id** (ADR-0034): a free parameter's name *is*
+    the model parameter it drives -- no ``__FREE`` marker. This is the exporter's analogue
+    of the new-era config typo check (:meth:`config._check_variable_correspondence_modern`):
+    a free parameter matching a model parameter id binds; one matching none is a typo (or
+    a ``fit`` sigma, which the exporter rejects separately at column classification). The
+    exporter never builds a ``Configuration``, so it validates against ``bngl.parameters``
+    directly rather than calling into ``config``. Returns ``{name: name}`` -- the identity
+    map the rest of the exporter threads as ``free_to_model``.
+    """
+    model_ids = set(bngl.parameters)
     free_to_model = {}
     for fp in free_params:
-        model_param = bngl.free_to_param.get(fp.name)
-        if model_param is None:
+        if fp.name not in model_ids:
+            legacy_hint = ''
+            if fp.name.endswith('__FREE'):
+                legacy_hint = (
+                    f" The '__FREE' marker is legacy-edition only (ADR-0034); declare "
+                    f"the bare parameter id '{fp.name[:-len('__FREE')]}' instead.")
             raise PybnfError(
-                f"Free parameter '{fp.name}' is not assigned to any parameter in model "
-                f"'{model_file}' (expected a line '<param> {fp.name}' in begin "
-                f"parameters).")
-        free_to_model[fp.name] = model_param
+                f"Free parameter '{fp.name}' matches no parameter id in model "
+                f"'{model_file}'.",
+                f"Under edition >= 2 a BNGL free parameter binds to a model parameter by "
+                f"id (the SBML/PEtab convention; ADR-0034), so '{fp.name}' must be one of "
+                f"the model's parameter ids: {sorted(model_ids)}.{legacy_hint}")
+        free_to_model[fp.name] = fp.name
     return free_to_model
 
 
 def _parameter_rows(free_params, free_to_model, surrogate_params, bngl, model_file):
     """Map each free parameter to a row; a fit-and-mutated one renamed to ``<p>__REF``."""
     parameter_rows = []
-    free_to_nominal = {}
     for fp in free_params:
         model_param = free_to_model[fp.name]
         if model_param in surrogate_params:
@@ -633,10 +652,7 @@ def _parameter_rows(free_params, free_to_model, surrogate_params, bngl, model_fi
         else:
             parameter_id = model_param
         parameter_rows.append(petab_parameter_row(fp, parameter_id=parameter_id))
-        # A syntactically valid default for the PEtab-clean model; PEtab overrides it
-        # during estimation. The bounds' midpoint is a reasonable in-range nominal.
-        free_to_nominal[fp.name] = (float(fp.p1) + float(fp.p2)) / 2.0
-    return parameter_rows, free_to_nominal
+    return parameter_rows
 
 
 def _numeric_nominal(bngl, var):
@@ -700,23 +716,31 @@ def _read_bngl(path):
 # Emitting the PEtab-clean model and problem.yaml
 # ---------------------------------------------------------------------------
 
-def clean_model_for_petab(text, free_to_nominal):
-    """Return a PEtab-clean copy of a BNGL model.
+def clean_model_for_petab(text):
+    """Return a PEtab-clean copy of a BNGL model: the ``begin actions`` block stripped.
 
-    PEtab estimates the model parameters directly, so the ``__FREE`` markers are
-    replaced by a plain in-range nominal value (``v1 v1__FREE`` -> ``v1 5``), and the
-    ``begin actions`` block is stripped (PEtab drives simulation via the measurement
-    times / experiments, not the model's own actions). The reaction network and the
-    ``begin functions`` block -- which carry the measurement model -- are left intact.
-    A fit-and-mutated parameter keeps its model name (``v1``) here as a plain
-    nominal-valued parameter (always overridden by its Condition); only the parameter
-    *table* carries the surrogate ``v1__REF`` (ADR-0027).
+    New-era BNGL binds free parameters **by id** (ADR-0034), so the source model already
+    carries bare parameter ids with real nominal values -- exactly what PEtab estimates.
+    "PEtab-clean" therefore collapses to dropping the ``begin actions`` block (PEtab
+    drives simulation via the measurement times / experiments, not the model's own
+    actions); the reaction network and the ``begin functions`` block -- which carry the
+    measurement model -- are carried verbatim. A fit-and-mutated parameter keeps its model
+    name (``v1``) here as a plain nominal-valued parameter (always overridden by its
+    Condition); only the parameter *table* carries the surrogate ``v1__REF`` (ADR-0027).
+
+    A legacy ``<name>__FREE`` marker in the model text is **rejected**: new-era binds by
+    id, so a model still carrying one was not modernized, and shipping it would dangle an
+    undefined ``v1__FREE`` symbol in PEtab. The error names the bind-by-id contract rather
+    than letting the PEtab oracle reject it opaquely.
     """
-    for free_name, nominal in free_to_nominal.items():
-        text = re.sub(rf'\b{re.escape(free_name)}\b', num(nominal), text)
-    text = re.sub(r'^[ \t]*begin\s+actions\b.*?^[ \t]*end\s+actions\b[^\n]*\n?',
+    if _FREE_TOKEN.search(text):
+        raise PybnfError(
+            "This BNGL model carries a legacy '__FREE' marker, but PEtab export is a "
+            "new-era feature where free parameters bind by id (ADR-0034). Declare the "
+            "model's fit parameters as bare ids with nominal values (e.g. 'v1 0.5', not "
+            "'v1 v1__FREE') and list them as free parameters in the .conf.")
+    return re.sub(r'^[ \t]*begin\s+actions\b.*?^[ \t]*end\s+actions\b[^\n]*\n?',
                   '', text, flags=re.S | re.I | re.M)
-    return text
 
 
 def write_problem_yaml(path, model_filename, model_id, has_conditions=False,

@@ -49,7 +49,6 @@ later importer chunk, not here).
 
 import csv
 import math
-import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -60,11 +59,6 @@ from ..pset import FreeParameter, INITIALIZATION_BOUNDS
 from ._tsv import num, write_tsv
 
 _LN10 = math.log(10.0)
-
-# PyBNF's standardized "this parameter is fit" marker: the free-parameter name is the
-# model parameter name with a ``__FREE`` suffix, so the model parameter (the PEtab
-# ``parameterId``) is recovered by stripping it (Bill's convention, ADR-0025).
-_FREE_SUFFIX = re.compile(r'__FREE$')
 
 # PEtab v2 priorDistribution spelling -> (PyBNF prior-family stem, is_log). The
 # stem must be a registered prior family (PRIOR_FAMILY_REGISTRY, ADR-0010): the
@@ -323,9 +317,10 @@ def petab_parameter_row(free_parameter, parameter_id=None):
     The exact reverse of :func:`free_parameter_from_row`: a native ``.conf`` free
     parameter and a PEtab row land on the same object, so this read backwards is the
     two-adapter proof in the export direction. ``parameter_id`` defaults to the free
-    parameter's name with the ``__FREE`` marker stripped (the model parameter the fit
-    drives); a caller that has resolved the model parameter name authoritatively (the
-    exporter, from the BNGL ``parameters`` block) passes it explicitly.
+    parameter's name -- new-era binds a free parameter to its model parameter **by id**
+    (ADR-0034), so the name *is* the ``parameterId``; a caller that has resolved the
+    model parameter name authoritatively (the exporter, which renames a fit-and-mutated
+    parameter to its ``<p>__REF`` surrogate) passes it explicitly.
 
     Exports the whole proper-prior catalog -- the reverse of ADR-0019's import map:
 
@@ -347,7 +342,7 @@ def petab_parameter_row(free_parameter, parameter_id=None):
     mis-exported.
     """
     if parameter_id is None:
-        parameter_id = _FREE_SUFFIX.sub('', free_parameter.name)
+        parameter_id = free_parameter.name
 
     keyword = free_parameter.type
     if keyword not in _KEYWORD_TO_PETAB_DISTRIBUTION:
