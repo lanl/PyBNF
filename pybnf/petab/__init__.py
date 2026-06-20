@@ -17,6 +17,14 @@ chunks (the ``observableFormula`` sympy layer, measurements/conditions -> exp-da
 where it pays for itself; these first chunks deliberately do not.
 """
 
+from .conditions import (
+    PetabConditionRow,
+    PetabExperimentRow,
+    condition_name_from_id,
+    conditions_from_rows,
+    read_condition_table,
+    read_experiment_table,
+)
 from .export import clean_model_for_petab, export_job, write_problem_yaml
 from .measurements import (
     PetabMeasurementRow,
@@ -67,6 +75,13 @@ __all__ = [
     'data_from_measurement_rows',
     'read_measurement_table',
     'write_measurement_table',
+    # conditions / experiments (import + export)
+    'PetabConditionRow',
+    'PetabExperimentRow',
+    'read_condition_table',
+    'read_experiment_table',
+    'conditions_from_rows',
+    'condition_name_from_id',
     # job exporter
     'export_job',
     'clean_model_for_petab',

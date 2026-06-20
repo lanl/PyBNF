@@ -1,11 +1,21 @@
-"""PEtab v2 ``conditions``/``experiments`` tables, export half (#422/#423; ADR-0027/0028).
+"""PEtab v2 ``conditions``/``experiments`` tables, both directions (#422/#423/#407;
+ADR-0027/0028/the importer read path).
 
 The two tables that make a PyBNF job's simulation *vary per dataset*. A new-era
 ``condition:`` (a named ``MutationSet`` of ``var op val`` perturbations) maps onto a PEtab
 **Condition** (``targetId``/``targetValue`` overrides) referenced by an **Experiment** (a
 period sequence). This module is the neutral seam, mirroring ``parameters.py`` /
 ``observables.py``: the *asset* is the neutral rows + the pure ``op``->``targetValue``
-mapping + the builders; the *disposable* half is the TSV writers.
+mapping + the builders; the *disposable* half is the TSV readers/writers.
+
+**The importer reverse** (``conditions_from_rows`` + ``read_condition_table`` /
+``read_experiment_table``) inverts :func:`build_experiment_conditions`, undoing the
+surrogate-base machinery: a ``<p>__REF`` base pin (a row whose ``targetValue`` *is* the
+surrogate name) is dropped, a relative op in the surrogate (``v1__REF * 2``) recovers the
+fit-parameter perturbation (``v1 * 2``), a bare-number target recovers an absolute set
+(a fixed parameter's relative op was lossily precomputed on export, so it round-trips as
+``var = <num>`` -- the same PEtab value either way), and the synthesized ``cond_wildtype``
+maps back to a wildtype experiment (no ``condition:``), not a ``condition:`` line.
 
 **The surrogate-base parameter (the crux, ADR-0027).** PEtab forbids one id from
 appearing in *both* the parameter table and a condition target. A PyBNF condition
@@ -24,6 +34,8 @@ surface lands (its scan endpoint time is deferred, #426); there is no new-era co
 exports a dose-response yet, so it has no live caller.
 """
 
+import csv
+import re
 from dataclasses import dataclass
 
 from ..printing import PybnfError
@@ -34,6 +46,11 @@ _EXPERIMENT_COLUMNS = ['experimentId', 'time', 'conditionId']
 
 #: The surrogate-base marker (a double-underscore suffix, like PyBNF's ``__FREE``).
 REF_MARKER = '__REF'
+
+#: The ``conditionId`` prefix the exporter wraps every condition name in
+#: (``cond_<name>``), and the synthesized base condition for wildtype experiments.
+CONDITION_ID_PREFIX = 'cond_'
+WILDTYPE_CONDITION_ID = 'cond_wildtype'
 
 
 @dataclass(frozen=True)
@@ -219,6 +236,115 @@ def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):
         experiment_rows.append(PetabExperimentRow(eid, 0.0, cid))
         experiment_ids.append(eid)
     return condition_rows, experiment_rows, experiment_ids
+
+
+# ---------------------------------------------------------------------------
+# Import: PEtab conditions -> new-era condition: perturbations (the reverse asset)
+# ---------------------------------------------------------------------------
+
+def condition_name_from_id(condition_id):
+    """The new-era ``condition:`` name for a PEtab ``conditionId``, or ``None``.
+
+    ``None`` for the synthesized :data:`WILDTYPE_CONDITION_ID` (which maps back to a
+    wildtype experiment with no ``condition:``) and for an absent/blank id. Otherwise the
+    ``cond_`` prefix is stripped (an externally-authored id without the prefix passes
+    through unchanged, defensively).
+    """
+    if not condition_id or condition_id == WILDTYPE_CONDITION_ID:
+        return None
+    if condition_id.startswith(CONDITION_ID_PREFIX):
+        return condition_id[len(CONDITION_ID_PREFIX):]
+    return condition_id
+
+
+def conditions_from_rows(condition_rows, surrogate_params):
+    """Invert :func:`build_experiment_conditions`' condition rows to new-era
+    perturbations ``{condition_name: [(var, op, val), ...]}``.
+
+    ``surrogate_params`` is the set of model-parameter names that are fit-and-perturbed
+    (the ``<p>__REF`` surrogates, recovered from the parameter table by the orchestrator).
+    Rows of the synthesized wildtype base are skipped; base pins (a row whose
+    ``targetValue`` is exactly a surrogate name) are dropped as machinery; the rest map to
+    ``(var, op, val)`` perturbations (see :func:`_perturbation_from_row`). Declaration
+    order within a condition is preserved (the wide<->long byte-equal round trip).
+    """
+    conditions = {}
+    for row in condition_rows:
+        name = condition_name_from_id(row.condition_id)
+        if name is None:
+            continue
+        pert = _perturbation_from_row(row, surrogate_params)
+        if pert is not None:
+            conditions.setdefault(name, []).append(pert)
+    return conditions
+
+
+def _perturbation_from_row(row, surrogate_params):
+    """One condition row -> a ``(var, op, val)`` perturbation, or ``None`` for a base pin.
+
+    * ``targetValue == '<var>__REF'`` exactly -> a base pin (machinery re-supplying a
+      removed fit parameter at its estimated value); dropped (``None``).
+    * ``targetValue == '<var>__REF <op> <num>'`` -> a relative op on a *fit* parameter
+      (recover ``op`` + value; the surrogate is the parameter table's stand-in for it).
+    * a bare number -> an absolute set ``var = <num>`` (a relative op on a *fixed* target
+      is lossily precomputed to a number on export, with no PEtab home for the original
+      op, so it round-trips as an absolute set -- the same PEtab value either way).
+    * anything else -> a ``targetValue`` expression for the deferred sympy layer.
+    """
+    var = row.target_id
+    value = row.target_value.strip()
+    if var in surrogate_params:
+        ref = surrogate_name(var)
+        if value == ref:
+            return None  # base pin -- machinery, not a user perturbation
+        match = re.match(rf'^{re.escape(ref)}\s*([*/+-])\s*(.+)$', value)
+        if match:
+            return (var, match.group(1), float(match.group(2)))
+    try:
+        return (var, '=', float(value))   # absolute set (fit or fixed target)
+    except ValueError:
+        raise NotImplementedError(
+            f"Condition targetValue {row.target_value!r} for '{var}' is an expression, "
+            f"not a base pin, a surrogate relative op, or a number. Evaluating PEtab "
+            f"condition formulae needs the sympy layer (the deferred observableFormula "
+            f"chunk, #407), which adopts the petab library.")
+
+
+# ---------------------------------------------------------------------------
+# TSV readers (the disposable half of the seam)
+# ---------------------------------------------------------------------------
+
+def read_condition_table(path):
+    """Read a PEtab v2 ``conditions.tsv`` into :class:`PetabConditionRow` records
+    (stdlib ``csv``; ``targetValue`` kept as the raw string)."""
+    with open(path, newline='') as fh:
+        reader = csv.DictReader(fh, delimiter='\t')
+        rows = []
+        for rec in reader:
+            cid = (rec.get('conditionId') or '').strip()
+            tid = (rec.get('targetId') or '').strip()
+            if not cid or not tid:
+                raise PybnfError(
+                    "PEtab conditions row is missing a conditionId or targetId.")
+            rows.append(PetabConditionRow(cid, tid, (rec.get('targetValue') or '').strip()))
+    return rows
+
+
+def read_experiment_table(path):
+    """Read a PEtab v2 ``experiments.tsv`` into :class:`PetabExperimentRow` records
+    (stdlib ``csv``; ``time`` coerced to float)."""
+    with open(path, newline='') as fh:
+        reader = csv.DictReader(fh, delimiter='\t')
+        rows = []
+        for rec in reader:
+            eid = (rec.get('experimentId') or '').strip()
+            cid = (rec.get('conditionId') or '').strip()
+            if not eid:
+                raise PybnfError("PEtab experiments row is missing an experimentId.")
+            time = rec.get('time')
+            rows.append(PetabExperimentRow(
+                eid, float(time) if time and time.strip() else 0.0, cid))
+    return rows
 
 
 # ---------------------------------------------------------------------------
