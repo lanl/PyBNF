@@ -81,10 +81,26 @@ def _entities(model_text=CRAFTED_MODEL):
 
 
 def _sympy_equal(petab_expr_a, petab_expr_b):
-    """True iff two PEtab math strings denote the same function (sympy-normalized)."""
+    """True iff two PEtab math strings denote the same function.
+
+    By numeric sampling at distinct positive points, not symbolic ``simplify``: petab
+    floatifies literals (a ``sqrt`` parses back with a ``1.0/2.0`` Float exponent, not an
+    exact ``Rational(1/2)``), and sympy treats Float-vs-exact powers as unequal under
+    ``simplify`` -- so a symbolic test false-rejects a correct ``sqrt`` translation.
+    Positive points keep ``sqrt``/``log`` real; multiple points rule out coincidental
+    agreement (the corrupt ``z/2`` and ``sqrt(z)`` collide only at ``z=4``).
+    """
     import sympy as sp
     from petab.v2.math import sympify_petab
-    return sp.simplify(sympify_petab(petab_expr_a) - sympify_petab(petab_expr_b)) == 0
+    ea = sympify_petab(petab_expr_a, evaluate=False)
+    eb = sympify_petab(petab_expr_b, evaluate=False)
+    syms = sorted(ea.free_symbols | eb.free_symbols, key=str)
+    for k in range(1, 6):
+        subs = {s: sp.Rational(3 + 2 * k + 5 * i, 7) for i, s in enumerate(syms)}
+        va, vb = float(sp.N(ea.subs(subs))), float(sp.N(eb.subs(subs)))
+        if abs(va - vb) > 1e-7 * max(1.0, abs(vb)):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +114,10 @@ class TestTranslatorPair:
         '(100*obsA + 200*obsB*kA)/(obsB + kB*obsA + 2*kC*obsB)',   # quotient of sums
         'obsA^2 + 2*obsA - kC',
         'kA*(obsA - obsB)/(kB + kC)',
+        'sqrt(obsA)',                                              # the petab ^1/2 defect
+        'kA*sqrt(obsA) + kB',
+        '(obsA + obsB)/sqrt(kC)',
+        'sqrt(kA*obsA + kB)',
     ])
     def test_bngl_body_round_trips_through_petab_math(self, body):
         pytest.importorskip('petab')
@@ -108,6 +128,31 @@ class TestTranslatorPair:
         # the round-tripped body and assert all three denote the same function.
         again = bngl_body_to_petab_math(back, ent)
         assert _sympy_equal(petab_math, again)
+
+    def test_sqrt_serializes_precedence_safe_not_the_petab_defect(self):
+        # Guards the petab 0.8.x petab_math_str defect (ADR-0035): a sqrt must NOT export as
+        # the unparenthesized `x ^ 1/2` (which re-parses as x/2 and silently corrupts the
+        # measurement model). Our printer parenthesizes the half-power; the emitted string
+        # must denote sqrt, not x/2, and be valid PEtab math the validator re-parses.
+        pytest.importorskip('petab')
+        out = bngl_body_to_petab_math('sqrt(obsA)', _entities())
+        assert ' ^ 1/2' not in out                    # not the defective form
+        assert _sympy_equal(out, 'sqrt(obsA)')         # means sqrt...
+        assert not _sympy_equal(out, 'obsA/2')         # ...not the corruption
+
+    def test_round_trip_guard_refuses_a_corrupt_serialization(self, monkeypatch):
+        # The standing tripwire: if the PEtab serializer ever emits a string that does not
+        # parse back to the same function, refuse it loudly rather than corrupt silently.
+        pytest.importorskip('petab')
+        import pybnf.petab.formula as F
+
+        class _Defective:                              # emits petab's buggy `x ^ 1/2`
+            def doprint(self, expr):
+                return 'obsA ^ 1/2'
+
+        monkeypatch.setattr(F, '_petab_printer_cls', lambda: (lambda: _Defective()))
+        with pytest.raises(PybnfError, match='silently corrupt'):
+            F.bngl_body_to_petab_math('sqrt(obsA)', _entities())
 
     def test_function_reference_uses_bngl_paren_convention(self):
         # A body referencing another global function writes it `f()`; the PEtab side is a

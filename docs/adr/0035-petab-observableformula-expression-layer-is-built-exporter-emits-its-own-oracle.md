@@ -144,21 +144,30 @@ dependency weight off the critical path until it is actually exercised.
 
 ### Implementation notes (confirmed 2026-06-20)
 
-- **Math grammar import path:** `petab.v2.math` (the v2-specific grammar) — both
-  `sympify_petab` (string → sympy tree) and `petab_math_str` (sympy tree → PEtab math
-  string) live there. `petab.math` is a v1 alias of the same symbols; we use the v2 path.
+- **Math grammar import path:** `petab.v2.math` (the v2-specific grammar) — `sympify_petab`
+  (string → sympy tree) and the `PetabStrPrinter` we subclass both live there. `petab.math`
+  is a v1 alias of the same symbols; we use the v2 path.
 - **Both directions parse via `sympify_petab(..., evaluate=False)`** (so the written
-  structure is preserved). The forward (export-inline) direction serializes with petab's
-  own `petab_math_str` so the emitted formula is exactly what petab's validator accepts;
-  the reverse (import-synthesis) direction serializes with a small `sympy.StrPrinter`
-  subclass we own, because BNGL math differs from sympy's default on the `^` power
-  operator, the `ln`/`log10`/`log2`/`sqrt` spellings, and BNGL's zero-arg `func()`
-  reference convention.
-- **Why we own the BNGL printer (not `petab_math_str` reversed):** petab 0.8.2's
-  `petab_math_str` serializes a one-half power as the precedence-unsafe `z ^ 1/2` (which
-  re-parses as `z/2`). The MVP arithmetic surface never hits it, but owning the BNGL
-  printer keeps the reverse direction precedence-safe regardless — exactly the
-  silent-wrongness ADR-0033 warned about, caught and contained here rather than trusted.
+  structure is preserved) and serialize with **printers we own** — a `PetabStrPrinter`
+  subclass for the forward (export-inline) direction and a `sympy.StrPrinter` subclass for
+  the reverse (import-synthesis) direction. BNGL math differs from sympy's default on the
+  `^` power operator, the `ln`/`log10`/`log2`/`sqrt` spellings, and BNGL's zero-arg `func()`
+  reference convention; the PEtab side needs a fix on top of petab's own printer (below).
+- **Why we own *both* printers, not `petab_math_str`:** petab 0.8.x's `petab_math_str`
+  serializes a one-half power (a `sqrt`) as the precedence-unsafe `z ^ 1/2`, which re-parses
+  as `(z^1)/2 = z/2` — a *silent* corruption of the measurement model that petab's own
+  validator still accepts (`z ^ 1/2` is valid PEtab math, it just means the wrong thing).
+  Our forward printer overrides `_print_Pow` to parenthesize a non-integer rational exponent
+  (`z ^ (1/2)`), which petab parses correctly and the validator accepts; the reverse printer
+  is precedence-safe by construction. Only `sqrt` (sympy's `Rational(1/2)` exponent) triggers
+  it — written powers like `z^(1/2)`/`z^0.5` floatify and parenthesize fine.
+- **Standing tripwire (`formula._assert_round_trips`):** the export direction re-parses its
+  own emitted string and refuses (raises) any serialization that does not evaluate equal to
+  the source expression at several distinct positive sample points — numeric, not symbolic,
+  because petab floatifies literals so a correct `sqrt` round trips as a `1.0/2.0` Float
+  exponent that `simplify`/`equals` call undecidable. So even a *future* serializer defect
+  (not just the known `sqrt` one) surfaces as a loud refusal, never a silent wrong formula —
+  what makes "a wrong observableFormula is worse than a refused one" enforceable.
 - **BNGL function references** (`f()` for a global function) are bridged by a bounded,
   anchored rename of the *known* function names (export side strips `f()`→`f`; the BNGL
   printer re-appends `()` for a function-kind symbol) — not a general math tokenizer, which
