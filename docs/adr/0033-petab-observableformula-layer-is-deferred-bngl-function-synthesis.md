@@ -1,6 +1,15 @@
 # The PEtab observableFormula layer: a bare name passes through; an expression is deferred BNGL function synthesis with petab/sympy as an optional extra (issue #407)
 
-**Status: Accepted (boundary drawn; synthesis deferred, 2026-06-19).** The BNGL-native
+**Status: Superseded in part by ADR-0035 (2026-06-20).** The deferral conclusion below is
+overturned — the expression `observableFormula` layer is now *built* (ADR-0035), because the
+"no oracle" objection was self-imposed: the exporter can inline a function body to generate
+its own round-trip oracle. **What still stands:** the bare-name analysis (a bare name needs
+no translator and is dependency-free), the MVP scope, and the deferral of the
+`observableParameters`/`noiseParameters` **per-measurement placeholders** (no PyBNF
+analogue). Read ADR-0035 for the current decision; this ADR remains the record of the
+bare-name boundary and the placeholder frontier.
+
+*(Originally — Accepted, boundary drawn; synthesis deferred, 2026-06-19.)* The BNGL-native
 importer (ADR-0032) reads the **bare-name** observableFormula common case with no formula
 translator and dependency-free. An **expression** observableFormula raises a clear
 `NotImplementedError` at two seams (`import_.py::_observable_id_to_column` for the formula,
@@ -42,8 +51,10 @@ is deferred now behind a clear boundary raise, not shipped speculatively.**
 
 Synthesizing an algebraic BNGL function (not a reaction network) is exactly the bounded BNGL
 *generation* ADR-0025 set aside when it chose exporter-first: reading correct BNGL is easy,
-writing it is the work. The importer already *re-instruments* the model (re-adds `__FREE`
-markers, ADR-0032); adding a `begin functions` entry is the same kind of targeted edit.
+writing it is the work. Adding a `begin functions` entry is a targeted edit to the model
+text — the same *kind* of edit the importer once made to re-add `__FREE` markers (since
+removed: ADR-0034 made new-era BNGL bind free parameters by id, so the model is now carried
+verbatim except for exactly this synthesized-function case, ADR-0035).
 
 ### The MVP scope (when this is built)
 
