@@ -139,6 +139,31 @@ and deferred to their own issues: **fitting** the imported job (gated on the ADR
 loader, #423), SBML model import, the sympy formula layer, prior-catalog parity, replicate
 reconstruction.
 
+## Reader robustness vs real-world v2 tables (2026-06-19 follow-up)
+
+The round trip is a strong oracle for *recovery* but a blind one for *reading*: it only
+ever feeds the importer a problem the exporter itself emitted, so it never exercises the
+table shapes a real, externally-authored v2 problem uses that our writer never emits. The
+PEtab spec repo's lone v2 example (the **Boehm** tutorial, `doc/v2/tutorial/`) is now
+vendored as a read-path regression fixture (`tests/petab_fixtures/boehm_v2/`) to close that
+gap. It is SBML + expression observables, so `import_job` refuses it cleanly and early; what
+it locks is that the dependency-free TSV/yaml readers tolerate real-world shapes:
+sci-notation bounds (`1E-05`/`100000`), a `parameterName` column, a blank `nominalValue`, no
+prior columns, a `noisePlaceholders` column, and **`model_files`-first** yaml ordering (our
+writer emits it last; the hand-parser is order-independent).
+
+Two seams moved to make this honest:
+
+- **`read_problem_yaml` is now a pure reader.** It records the model `language` instead of
+  judging it, so a real (SBML) problem parses for inspection; the BNGL-native policy moved
+  to the importer (`_require_bngl_model`), which raises the same SBML boundary *before* any
+  table is read. The reader's job is to read; the importer's job is to hold scope.
+- **A parameter-id `noiseParameters` is a documented boundary, not a `float()` crash.** Real
+  v2 measurements may carry a *parameter id* in `noiseParameters` (Boehm's `sd_pSTAT5A_rel`)
+  — a placeholder override substituted per measurement — rather than a numeric `_SD`. The
+  measurement reader now raises a clear `NotImplementedError` pointing at the deferred
+  placeholder semantics (ADR-0033) instead of a raw "could not convert string to float".
+
 ## Consequences
 
 - The two-adapter proof is now closed at the **read** level for the PEtab-representable

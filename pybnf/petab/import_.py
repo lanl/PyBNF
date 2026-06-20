@@ -118,6 +118,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     out_dir.mkdir(parents=True, exist_ok=True)
 
     problem = read_problem_yaml(problem_yaml_path)
+    _require_bngl_model(problem, problem_yaml_path)
 
     parameter_rows = read_parameter_table(base / problem['parameter_files'][0])
     observable_rows = read_observable_table(base / problem['observable_files'][0])
@@ -452,11 +453,16 @@ def read_problem_yaml(path):
 
     Returns a dict with the table-file lists (``parameter_files`` / ``observable_files`` /
     ``measurement_files`` / ``condition_files`` / ``experiment_files``) and the single
-    BNGL model (``model_file`` / ``model_id``). Dependency-free (no YAML library): the
-    writer emits a flat ``key:`` + ``  - item`` list shape and a two-level ``model_files``
-    block, which a small indentation-aware scan reads exactly. A non-``bngl`` model
-    ``language`` raises ``NotImplementedError`` (the SBML adapter is separate); a second
-    model raises (multi-model is out of scope).
+    model (``model_file`` / ``model_id`` / ``model_language``). Dependency-free (no YAML
+    library): the writer emits a flat ``key:`` + ``  - item`` list shape and a two-level
+    ``model_files`` block, which a small indentation-aware scan reads exactly. The scan is
+    **order-independent**, so a real v2 ``problem.yaml`` that lists ``model_files`` first
+    (our writer emits it last) reads identically.
+
+    This is a pure *reader*: it records the model ``language`` but does not enforce a
+    policy on it, so a real (SBML) v2 problem still parses for inspection. The
+    BNGL-native scope is enforced by the importer (:func:`_require_bngl_model`), not here.
+    A second model raises ``NotImplementedError`` (multi-model is out of scope).
     """
     file_keys = ('parameter_files', 'observable_files', 'measurement_files',
                  'condition_files', 'experiment_files')
@@ -492,19 +498,33 @@ def read_problem_yaml(path):
                         f"{stripped[:-1]!r}); multi-model import is out of scope (#407).")
                 model_id = stripped[:-1].strip()
 
-    _require_problem(files, model_id, model_location, model_language, path)
-    return {**files, 'model_file': model_location, 'model_id': model_id}
+    _require_problem(files, model_location, path)
+    return {**files, 'model_file': model_location, 'model_id': model_id,
+            'model_language': model_language}
 
 
-def _require_problem(files, model_id, model_location, model_language, path):
+def _require_problem(files, model_location, path):
     for key in ('parameter_files', 'observable_files', 'measurement_files'):
         if not files[key]:
             raise PybnfError(f"problem.yaml at {path} has no {key}.")
     if model_location is None:
         raise PybnfError(f"problem.yaml at {path} declares no model file.")
-    if model_language is not None and model_language != 'bngl':
+
+
+def _require_bngl_model(problem, path):
+    """Enforce the importer's BNGL-native scope on a parsed ``problem.yaml``.
+
+    The reader (:func:`read_problem_yaml`) records the model ``language`` without judging
+    it, so a real (SBML) v2 problem parses for inspection; the importer holds the policy:
+    a non-``bngl`` model language raises ``NotImplementedError`` early (before any table is
+    read), the same boundary the exporter draws on SBML -- it cannot be obtained by
+    inversion, the SBML adapter is separate (#407, ADR-0025/0032). A ``None`` language
+    (the field was absent) is permitted: the writer omits it only for a BNGL model.
+    """
+    language = problem.get('model_language')
+    if language is not None and language != 'bngl':
         raise NotImplementedError(
-            f"problem.yaml model '{model_id}' has language '{model_language}', not 'bngl'. "
-            f"Only BNGL-native PEtab problems are importable: an SBML model is a separate "
-            f"adapter (the exporter raises on SBML too; it cannot be obtained by inversion "
-            f"-- #407, ADR-0025).")
+            f"problem.yaml model '{problem.get('model_id')}' has language '{language}', "
+            f"not 'bngl' (at {path}). Only BNGL-native PEtab problems are importable: an "
+            f"SBML model is a separate adapter (the exporter raises on SBML too; it cannot "
+            f"be obtained by inversion -- #407, ADR-0025).")

@@ -28,16 +28,32 @@ import pytest
 
 from pybnf.data import Data
 from pybnf.parse import ploop
-from pybnf.petab import export_job, import_job, read_problem_yaml
-from pybnf.petab.conditions import build_experiment_conditions, conditions_from_rows
+from pybnf.petab import (
+    export_job,
+    import_job,
+    read_observable_table,
+    read_parameter_table,
+    read_problem_yaml,
+)
+from pybnf.petab.conditions import (
+    build_experiment_conditions,
+    conditions_from_rows,
+    read_condition_table,
+    read_experiment_table,
+)
 from pybnf.petab.measurements import (
     data_from_measurement_rows,
     measurement_rows_from_data,
+    read_measurement_table,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
 DEMO_CONF = DEMO_DIR / 'demo_bng_v2.conf'
 DEMO_MODEL = 'parabola_v2.bngl'
+
+# A real-world (externally authored) PEtab v2 problem -- the regression oracle for the
+# table readers, decoupled from the model (see the fixture's SOURCE.md).
+BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
 
 # A two-parameter-kind model for the conditioned fixture: v1/v2/v3 fit, s fixed (so a
 # condition on v1 exercises the surrogate-base rename and one on s the precomputed path).
@@ -352,3 +368,83 @@ class TestBoundaries:
             'v3\ttrue\t0\t10\t\t\n')
         with pytest.raises(NotImplementedError, match='cauchy'):
             import_job(prob / 'problem.yaml', tmp_path / 'out')
+
+
+# ---------------------------------------------------------------------------
+# Reader robustness vs a REAL-WORLD v2 problem (the Boehm tutorial; #407 chunk 1)
+#
+# The byte-equal round trip only feeds the importer problems it itself emitted. This
+# class feeds the dependency-free table readers a problem we did NOT emit -- the PEtab
+# spec repo's only v2 example -- to prove they tolerate the shapes a real v2 problem uses
+# that our exporter never writes (sci-notation bounds, a parameterName column, a blank
+# nominalValue, no prior columns, a noisePlaceholders column, model_files-first yaml,
+# expression observableFormulas, a parameter-id noiseParameters). It is SBML + expression
+# observables, so import_job refuses it cleanly; the readers below are tested directly.
+# See tests/petab_fixtures/boehm_v2/SOURCE.md for provenance + license.
+# ---------------------------------------------------------------------------
+
+class TestRealWorldBoehmV2:
+
+    YAML = BOEHM_DIR / 'Boehm_JProteomeRes2014.yaml'
+
+    def test_problem_yaml_reads_model_files_first_ordering(self):
+        # Our writer emits model_files LAST; the real v2 yaml lists it FIRST. The
+        # order-independent scan must read both identically (and record language: sbml).
+        problem = read_problem_yaml(self.YAML)
+        assert problem['model_file'] == 'model_Boehm_JProteomeRes2014.xml'
+        assert problem['model_id'] == 'model'
+        assert problem['model_language'] == 'sbml'
+        assert problem['parameter_files'] == ['parameters.tsv']
+        assert problem['observable_files'] == ['observables.tsv']
+        assert problem['measurement_files'] == ['measurement_data.tsv']
+        assert problem['condition_files'] == ['experimental_conditions.tsv']
+        assert problem['experiment_files'] == ['experiments.tsv']
+
+    def test_import_refuses_the_sbml_model_early(self, tmp_path):
+        # The SBML boundary fires before any table is read (read_problem_yaml stays a pure
+        # reader; the importer holds the BNGL-native policy).
+        with pytest.raises(NotImplementedError, match='bngl'):
+            import_job(self.YAML, tmp_path / 'out')
+
+    def test_parameter_table_tolerates_real_v2_shapes(self):
+        rows = {r.parameter_id: r for r in
+                read_parameter_table(BOEHM_DIR / 'parameters.tsv')}
+        # Sci-notation bounds parse; the parameterName column is ignored; a blank
+        # nominalValue is None; with no prior columns the prior is None (uniform default).
+        est = rows['Epo_degradation_BaF3']
+        assert est.estimate is True
+        assert est.lower_bound == 1e-05 and est.upper_bound == 100000.0
+        assert est.nominal_value is None
+        assert est.prior_distribution is None and est.prior_parameters == ()
+        # A fixed parameter: estimate=false, blank bounds -> None, a numeric nominalValue.
+        fixed = rows['ratio']
+        assert fixed.estimate is False
+        assert fixed.lower_bound is None and fixed.upper_bound is None
+        assert fixed.nominal_value == 0.693
+
+    def test_observable_table_records_expression_formula_and_bare_sigma(self):
+        rows = {r.observable_id: r for r in
+                read_observable_table(BOEHM_DIR / 'observables.tsv')}
+        row = rows['pSTAT5A_rel']
+        # The expression observableFormula is recorded verbatim (not evaluated); the
+        # bare-id noiseFormula and the extra noisePlaceholders column are tolerated.
+        assert row.observable_formula.startswith('(100 * pApB')
+        assert '/' in row.observable_formula        # a real expression, not a bare name
+        assert row.noise_formula == 'pSTAT5A_rel_sigma'
+        assert row.noise_distribution == 'normal'
+        assert set(rows) == {'pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'}
+
+    def test_condition_and_experiment_tables_parse(self):
+        conds = read_condition_table(BOEHM_DIR / 'experimental_conditions.tsv')
+        assert [(c.condition_id, c.target_id, c.target_value) for c in conds] == \
+            [('epo_bolus', 'Epo_concentration', '1.25E-07')]
+        exps = read_experiment_table(BOEHM_DIR / 'experiments.tsv')
+        assert [(e.experiment_id, e.time, e.condition_id) for e in exps] == \
+            [('epo_stimulation', 0.0, 'epo_bolus')]
+
+    def test_measurement_table_refuses_parameter_id_noise_parameters(self):
+        # Boehm's noiseParameters column carries a parameter id (a placeholder override),
+        # not a number -- the deferred placeholder semantics, surfaced as a clean boundary
+        # rather than a raw float() ValueError.
+        with pytest.raises(NotImplementedError, match='placeholder'):
+            read_measurement_table(BOEHM_DIR / 'measurement_data.tsv')

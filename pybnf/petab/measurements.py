@@ -239,7 +239,7 @@ def _measurement_row_from_record(rec):
         time=_require_float(rec.get('time'), 'time', oid),
         measurement=_require_float(rec.get('measurement'), 'measurement', oid),
         experiment_id=(rec.get('experimentId') or '').strip(),
-        noise_parameters=_optional_float(rec.get('noiseParameters')),
+        noise_parameters=_noise_parameters(rec.get('noiseParameters'), oid),
     )
 
 
@@ -250,10 +250,28 @@ def _require_float(s, column, oid):
     return float(s)
 
 
-def _optional_float(s):
+def _noise_parameters(s, oid):
+    """The per-point ``noiseParameters`` value: a number (the ``_SD`` cell) or blank.
+
+    This read path treats ``noiseParameters`` as a numeric per-point standard deviation
+    (the source a ``chi_sq`` re-export reads back). A real v2 problem may instead put a
+    **parameter id** here (e.g. Boehm's ``sd_pSTAT5A_rel``) -- a PEtab *placeholder
+    override* substituted into the observable's declared ``noiseParameter`` placeholder
+    per measurement. That is the deferred observable/noise placeholder semantics (out of
+    scope, #407/ADR-0033), surfaced as a clear ``NotImplementedError`` rather than the
+    raw ``float()`` ``ValueError`` it would otherwise produce.
+    """
     if s is None or s.strip() == '':
         return None
-    return float(s)
+    try:
+        return float(s)
+    except ValueError:
+        raise NotImplementedError(
+            f"Measurement for observable '{oid}' has a non-numeric noiseParameters value "
+            f"{s.strip()!r} -- a PEtab placeholder override (a parameter id substituted "
+            f"into the observable's noise placeholder per measurement). Per-measurement "
+            f"noise/observable parameter overrides are the deferred placeholder semantics "
+            f"(#407, ADR-0033); this read path reconstructs a numeric per-point _SD value.")
 
 
 # ---------------------------------------------------------------------------
