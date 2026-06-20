@@ -1,5 +1,14 @@
 # Median is the universal prediction-centering default; the objective surface is `edition`-gated (issue #424)
 
+**Status: Accepted (implemented, 2026-06-19).** Median is the universal
+prediction-centering default, baked into every family's constructor
+(`Gaussian`/`Laplace`/`NegBinomial.__init__` all default `location=MEDIAN`). Legacy
+objfuncs stay frozen at their historical centering by pinning `location=MEAN`
+explicitly (`neg_bin`/`neg_bin_dynamic`); a modern-edition `neg_bin` that resolves
+to median implicitly warns to set `location = mean`. The native per-observable
+`location` field and the whole-fit `noise_location` key (ADR-0024) override it. The
+enabling capability — mean/median for every family — landed in #419.
+
 ADR-0011 made the **location interpretation** (mean / median / mode — which
 summary of the noise distribution the deterministic prediction is taken to be) a
 first-class axis of a `NoiseModel`; ADR-0024 exposed it on the native surface and
