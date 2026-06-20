@@ -14,7 +14,7 @@ no-prior keywords (Simplex start points), mapped to ``NoPrior``.
 """
 
 from ..registry import PRIOR_FAMILY_REGISTRY
-from .base import NoPrior, Prior
+from .base import FrozenPrior, NoPrior, Prior
 from .scale import LINEAR, LOG10, Linear, Log10, Scale
 from .truncated import TruncatedPrior
 
@@ -22,6 +22,11 @@ from .truncated import TruncatedPrior
 from . import normal  # noqa: F401, E402
 from . import uniform  # noqa: F401, E402
 from . import laplace  # noqa: F401, E402
+from . import cauchy  # noqa: F401, E402
+from . import gamma  # noqa: F401, E402
+from . import exponential  # noqa: F401, E402
+from . import chisquare  # noqa: F401, E402
+from . import rayleigh  # noqa: F401, E402
 
 # {keyword: (family_cls, scale)}. NoPrior carries a scale but no distribution.
 PRIOR_KEYWORD_MAP = {
@@ -53,20 +58,24 @@ def build_prior(keyword, p1, p2):
 
 def var_keyword_grammar():
     """Partition the prior families' ``*_var`` keywords for ``parse.py``'s
-    grammar (ADR-0010). Returns ``(bounded_keywords, unbounded_keywords)``:
-    each family ``b`` contributes ``{b}_var`` (linear) and ``log{b}_var``
-    (log10), routed by ``has_bounded_support`` -- bounded-support families take
-    the optional ``b``/``u`` flag, unbounded ones don't. The no-prior
-    ``var``/``logvar`` keywords are handled separately by ``parse.py``."""
-    bounded, unbounded = [], []
+    grammar (ADR-0010). Returns ``(bounded_keywords, unbounded_keywords,
+    one_param_keywords)``: each family ``b`` contributes ``{b}_var`` (linear) and
+    ``log{b}_var`` (log10), routed by ``has_bounded_support`` -- bounded-support
+    families take the optional ``b``/``u`` flag, unbounded ones don't.
+    ``one_param_keywords`` is the subset (of ``unbounded_keywords``) whose family
+    takes a single config number (``n_params == 1``: exponential/chisquare/rayleigh,
+    #417) -- so the grammar requires exactly one number for them and two for the rest.
+    The no-prior ``var``/``logvar`` keywords are handled separately by ``parse.py``."""
+    bounded, unbounded, one_param = [], [], []
     for base, entry in PRIOR_FAMILY_REGISTRY.items():
-        target = bounded if entry.has_bounded_support else unbounded
-        target.append(f'{base}_var')
-        target.append(f'log{base}_var')
-    return bounded, unbounded
+        keywords = (f'{base}_var', f'log{base}_var')
+        (bounded if entry.has_bounded_support else unbounded).extend(keywords)
+        if getattr(entry.cls, 'n_params', 2) == 1:
+            one_param.extend(keywords)
+    return bounded, unbounded, one_param
 
 
 __all__ = [
-    'Prior', 'NoPrior', 'TruncatedPrior', 'Scale', 'Linear', 'Log10',
+    'Prior', 'NoPrior', 'FrozenPrior', 'TruncatedPrior', 'Scale', 'Linear', 'Log10',
     'LINEAR', 'LOG10', 'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
 ]

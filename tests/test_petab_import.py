@@ -46,8 +46,10 @@ from pybnf.petab.conditions import (
     read_experiment_table,
 )
 from pybnf.petab.measurements import (
+    PetabMeasurementRow,
     data_from_measurement_rows,
     measurement_rows_from_data,
+    noise_parameter_ids_by_observable,
     read_measurement_table,
 )
 
@@ -213,6 +215,48 @@ class TestImportExtensionsRoundTrip:
         _assert_problem_round_trips(petab1, petab2)
         assert 'loguniform_var = v1 0.1 10' in conf.read_text()
 
+    @pytest.mark.parametrize('line,dist,params', [
+        ('cauchy_var = {p} 0 1', 'cauchy', '0;1'),
+        ('gamma_var = {p} 2 3', 'gamma', '2;3'),
+        ('exponential_var = {p} 0.5', 'exponential', '0.5'),
+        ('chisquare_var = {p} 4', 'chisquare', '4'),
+        ('rayleigh_var = {p} 1.5', 'rayleigh', '1.5'),
+    ])
+    def test_catalog_prior_family_round_trips(self, tmp_path, line, dist, params):
+        # The five v2 catalog families (#417), each bidirectional: a native *_var line exports
+        # to its PEtab priorDistribution + priorParameters and imports back byte-for-byte. The
+        # one-parameter families (exponential/chisquare/rayleigh) exercise the one-number form.
+        body = '\n'.join(line.format(p=p) for p in ('v1', 'v2', 'v3')) + '\n'
+        petab1, _, petab2, conf = _roundtrip(
+            tmp_path, _HEAD + 'experiment: par1, data: par1.exp\n' + body)
+        _assert_problem_round_trips(petab1, petab2)
+        params_tsv = (petab1 / 'parameters.tsv').read_text()
+        assert dist in params_tsv and params in params_tsv
+        assert line.format(p='v1') in conf.read_text()
+
+    @pytest.mark.parametrize('dist,params,p1,p2', [
+        ('cauchy', (0.0, 2.0), 0.0, 2.0),
+        ('gamma', (2.0, 3.0), 2.0, 3.0),
+        ('exponential', (0.5,), 0.5, None),
+        ('chisquare', (4.0,), 4.0, None),
+        ('rayleigh', (1.5,), 1.5, None),
+    ])
+    def test_bounded_catalog_prior_imports_as_truncated(self, dist, params, p1, p2):
+        # A real PEtab catalog prior carries finite bounds (PEtab requires them on estimated
+        # parameters), so it imports as a *truncated* FreeParameter: the family's parameters
+        # (p1[/p2]) plus the [lb, ub] reflecting box (ADR-0020). This is the import-direction
+        # unit oracle; the native .conf has no truncation grammar for these families, so the
+        # bounded form does not byte-round-trip through a re-export (only the unbounded form
+        # does, above) -- the same pre-existing limitation normal/laplace have.
+        from pybnf.petab.parameters import PetabParameterRow, free_parameter_from_row
+        row = PetabParameterRow(parameter_id='k', estimate=True, lower_bound=0.0,
+                                upper_bound=50.0, prior_distribution=dist,
+                                prior_parameters=params)
+        fp = free_parameter_from_row(row)
+        assert fp.type == f'{dist}_var'
+        assert fp.p1 == p1 and fp.p2 == p2
+        assert fp.bounded and fp.trunc_lb == 0.0 and fp.trunc_ub == 50.0
+
     @pytest.mark.parametrize('objective', ['chi_sq', 'sos', 'sod', 'ave_norm_sos'])
     def test_objective_family_round_trips(self, tmp_path, objective):
         petab1, _, petab2, conf = _roundtrip(
@@ -328,6 +372,64 @@ class TestImportExtensionsRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Per-observable noise import (ADR-0037) -- the Boehm shape, dependency-free
+#
+# A crafted BNGL-native problem (bare-name observables, so no petab extra) where each
+# observable carries a distinct estimated sigma via a named noiseFormula placeholder bound
+# to a constant-per-observable parameter-id noiseParameters. Imports to one per-observable
+# noise_model line per observable, with no _SD columns (the sigma is a fit parameter).
+# ---------------------------------------------------------------------------
+
+class TestPerObservableNoiseImport:
+
+    def _problem(self, tmp_path):
+        prob = tmp_path / 'prob'
+        prob.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, prob / DEMO_MODEL)
+        (prob / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\n'
+            'v1\ttrue\t0\t10\nv2\ttrue\t0\t10\nv3\ttrue\t0\t10\n'
+            'sd_x\ttrue\t1e-3\t100\nsd_y\ttrue\t1e-3\t100\n')
+        # Bare-name observableFormulas (x, y) + a named noiseFormula placeholder per observable.
+        (prob / 'observables.tsv').write_text(
+            'observableId\tobservableFormula\tnoiseFormula\tnoisePlaceholders\tnoiseDistribution\n'
+            'obs_x\tx\tsigma_x\tsigma_x\tnormal\n'
+            'obs_y\ty\tsigma_y\tsigma_y\tlaplace\n')
+        rows = ''.join(
+            f'{oid}\texp1\t{t}\t{v}\t{pid}\n'
+            for oid, pid, vals in (('obs_x', 'sd_x', (1.0, 2.0)), ('obs_y', 'sd_y', (3.0, 4.0)))
+            for t, v in zip((0.0, 1.0), vals))
+        (prob / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\tnoiseParameters\n' + rows)
+        (prob / 'conditions.tsv').write_text('conditionId\n')
+        (prob / 'experiments.tsv').write_text('experimentId\ttime\tconditionId\n')
+        (prob / 'problem.yaml').write_text(
+            'format_version: 2.0.0\n'
+            'parameter_files:\n  - parameters.tsv\n'
+            'observable_files:\n  - observables.tsv\n'
+            'measurement_files:\n  - measurements.tsv\n'
+            'condition_files:\n  - conditions.tsv\n'
+            'experiment_files:\n  - experiments.tsv\n'
+            f'model_files:\n  m:\n    location: {DEMO_MODEL}\n    language: bngl\n')
+        return prob / 'problem.yaml'
+
+    def test_distinct_per_observable_sigmas_import_as_noise_model_lines(self, tmp_path):
+        # Bare-name observables, so the dependency-free tier reaches this (no petab needed).
+        out = import_job(self._problem(tmp_path), tmp_path / 'out')
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text          # the structural base
+        # Each observable's own estimated sigma, by the column it measures and its family.
+        assert 'noise_model x = gaussian, sigma = fit sd_x' in text
+        assert 'noise_model y = laplace, scale = fit sd_y' in text
+        # The sigma is a fit parameter, not per-point data -> no _SD columns in the .exp.
+        exp = Data(file_name=str(out / 'exp1.exp'))
+        assert set(exp.cols) == {'time', 'x', 'y'}
+        # And it parses + binds (the sigma ids are recognized nuisances, ADR-0034).
+        conf = ploop(text.splitlines(keepends=True))
+        assert ('uniform_var', 'sd_x') in conf and ('uniform_var', 'sd_y') in conf
+
+
+# ---------------------------------------------------------------------------
 # Reverse-asset unit tests (the seam, not the orchestrator)
 # ---------------------------------------------------------------------------
 
@@ -355,6 +457,19 @@ class TestReverseAssets:
         rows = measurement_rows_from_data(data, {'x': 'obs_x'})
         with pytest.raises(NotImplementedError, match='replicate'):
             data_from_measurement_rows(rows + rows, {'obs_x': 'x'})
+
+    def test_noise_parameter_ids_per_observable_guards_row_varying(self):
+        # A constant-per-observable parameter id is a per-observable sigma; a row-varying id
+        # (or a mix with numeric per-point values) is the deferred per-measurement frontier.
+        def row(oid, t, pid=None, num=None):
+            return PetabMeasurementRow(observable_id=oid, time=t, measurement=1.0,
+                                       noise_parameter_id=pid, noise_parameters=num)
+        ok = [row('a', 0, pid='sd_a'), row('a', 1, pid='sd_a'), row('b', 0, pid='sd_b')]
+        assert noise_parameter_ids_by_observable(ok) == {'a': 'sd_a', 'b': 'sd_b'}
+        with pytest.raises(NotImplementedError, match='per-measurement'):
+            noise_parameter_ids_by_observable([row('a', 0, pid='sd_a'), row('a', 1, pid='sd_a2')])
+        with pytest.raises(NotImplementedError, match='per-measurement'):
+            noise_parameter_ids_by_observable([row('a', 0, pid='sd_a'), row('a', 1, num=2.0)])
 
     def test_conditions_inverse_recovers_perturbations(self):
         exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
@@ -445,32 +560,47 @@ class TestBoundaries:
                 demo_petab, tmp_path,
                 {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx*observableParameter1_obs_x\t')})
 
-    def test_unsupported_prior_family_is_refused(self, demo_petab, tmp_path):
-        # A PEtab prior family PyBNF has no Prior for (catalog-parity follow-up).
+    def test_unknown_prior_distribution_is_refused(self, demo_petab, tmp_path):
+        # An unrecognized priorDistribution spelling is a malformed problem, not a gap.
         prob = tmp_path / 'prob'
         shutil.copytree(demo_petab, prob)
         (prob / 'parameters.tsv').write_text(
             'parameterId\testimate\tlowerBound\tupperBound\tpriorDistribution\t'
             'priorParameters\n'
-            'v1\ttrue\t0\t10\tcauchy\t0;1\n'
+            'v1\ttrue\t0\t10\tnonesuch\t0;1\n'
             'v2\ttrue\t0\t10\t\t\n'
             'v3\ttrue\t0\t10\t\t\n')
-        with pytest.raises(NotImplementedError, match='cauchy'):
+        with pytest.raises(PybnfError, match='priorDistribution'):
+            import_job(prob / 'problem.yaml', tmp_path / 'out')
+
+    def test_one_sided_truncation_is_refused(self, demo_petab, tmp_path):
+        # A finite bound on one side with an infinite bound on the other has no finite
+        # reflecting box -- the deferred #417 boundary, still raised in code.
+        prob = tmp_path / 'prob'
+        shutil.copytree(demo_petab, prob)
+        (prob / 'parameters.tsv').write_text(
+            'parameterId\testimate\tlowerBound\tupperBound\tpriorDistribution\t'
+            'priorParameters\n'
+            'v1\ttrue\t5\tinf\tgamma\t2;3\n'
+            'v2\ttrue\t0\t10\t\t\n'
+            'v3\ttrue\t0\t10\t\t\n')
+        with pytest.raises(NotImplementedError, match='one-sided'):
             import_job(prob / 'problem.yaml', tmp_path / 'out')
 
 
 # ---------------------------------------------------------------------------
-# Reader robustness vs a REAL-WORLD v2 problem (the Boehm tutorial; #407 chunk 1)
+# A REAL-WORLD v2 problem imported end to end (the Boehm tutorial; #407, ADR-0037)
 #
-# The byte-equal round trip only feeds the importer problems it itself emitted. This
-# class feeds the dependency-free table readers a problem we did NOT emit -- the PEtab
-# spec repo's only v2 example -- to prove they tolerate the shapes a real v2 problem uses
-# that our exporter never writes (sci-notation bounds, a parameterName column, a blank
-# nominalValue, no prior columns, a noisePlaceholders column, model_files-first yaml,
-# expression observableFormulas, a parameter-id noiseParameters). It is SBML + expression
-# observables -- both now importable (ADR-0036) -- but its parameter-id noiseParameters is the
-# deferred placeholder frontier, so import_job still refuses it cleanly (now on that frontier,
-# not the SBML model gate). The readers below are tested directly.
+# Boehm is the headline real-world milestone: the PEtab spec repo's only v2 example,
+# externally authored, now imports end to end. It exercises every shape our own exporter
+# never writes (sci-notation bounds, a parameterName column, a blank nominalValue, no prior
+# columns, a noisePlaceholders column, model_files-first yaml, expression observableFormulas,
+# a fixed parameter the SBML lacks (specC17), and a parameter-id noiseParameters that is
+# constant per observable). SBML import + the measurement-model layer landed in ADR-0036;
+# ADR-0037 closes the last gap -- the constant-per-observable noiseParameters placeholder is
+# imported as a per-observable estimated sigma (noise_model <obs> = gaussian, sigma = fit
+# sd_<obs>), and the fixed specC17 is inlined into the observableFormula. The recovery tier
+# (test_recovery.py) simulates the imported problem at the published optimum.
 # See tests/petab_fixtures/boehm_v2/SOURCE.md for provenance + license.
 # ---------------------------------------------------------------------------
 
@@ -491,13 +621,48 @@ class TestRealWorldBoehmV2:
         assert problem['condition_files'] == ['experimental_conditions.tsv']
         assert problem['experiment_files'] == ['experiments.tsv']
 
-    def test_import_refuses_boehm_on_the_placeholder_frontier(self, tmp_path):
-        # SBML now imports (ADR-0036), so Boehm is no longer refused at the model gate. It is
-        # refused on the *remaining* frontier: its measurements carry a parameter-id
-        # noiseParameters (sd_*), the deferred per-measurement placeholder semantics. So full
-        # Boehm needs the measurement-model layer (built) AND the placeholder layer (deferred).
-        with pytest.raises(NotImplementedError, match='placeholder'):
-            import_job(self.YAML, tmp_path / 'out')
+    def test_imports_boehm_with_per_observable_noise(self, tmp_path):
+        # The full Boehm import (ADR-0037): SBML carried verbatim, each expression
+        # observableFormula a measurement model (with the fixed specC17 inlined), and each
+        # observable's constant-per-observable parameter-id noiseParameters a per-observable
+        # estimated Gaussian sigma.
+        pytest.importorskip('petab')
+        out = import_job(self.YAML, tmp_path / 'out')
+        # The .xml is carried byte-verbatim -- the dynamical model is never edited (ADR-0036).
+        assert ((out / 'model_Boehm_JProteomeRes2014.xml').read_text()
+                == (BOEHM_DIR / 'model_Boehm_JProteomeRes2014.xml').read_text())
+        text = (out / 'imported.conf').read_text()
+        # One per-observable noise_model line per observable, each its own estimated sigma.
+        for obs in ('pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'):
+            assert f'noise_model {obs} = gaussian, sigma = fit sd_{obs}' in text
+        assert 'objective = chi_sq' in text          # the structural whole-fit default
+        # The expression observables became measurement-model lines; the fixed specC17
+        # (absent from the SBML) was inlined as 0.107, leaving only model entities.
+        conf = ploop(text.splitlines(keepends=True))
+        meas = {k[1] for k, v in conf.items()
+                if isinstance(k, tuple) and k[0] == 'measurement'}
+        assert meas == {'pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'}
+        assert 'specC17' not in text and '0.107' in text
+        # The 3 sigma parameters are emitted as free (nuisance) parameters alongside the model.
+        for sd in ('sd_pSTAT5A_rel', 'sd_pSTAT5B_rel', 'sd_rSTAT5A_rel'):
+            assert f'uniform_var = {sd} 1e-05 100000' in text
+
+    def test_imported_boehm_conf_loads_as_a_configuration(self, tmp_path, monkeypatch):
+        # The imported conf is a valid end-to-end PyBNF job: the objective carries a
+        # per-observable noise override for each observable, the 3 sigma parameters are
+        # recognized nuisances (bound to no model id), and the measurement layer builds over
+        # the SBML namespace. Simulator-free (no fit) -- the recovery tier runs it.
+        pytest.importorskip('petab')
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        out = import_job(self.YAML, tmp_path / 'out')
+        monkeypatch.chdir(out)
+        conf = config_mod.Configuration(ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert set(conf.obj.overrides) == {'pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'}
+        assert conf.obj.required_free_noise_params() == {
+            'sd_pSTAT5A_rel', 'sd_pSTAT5B_rel', 'sd_rSTAT5A_rel'}
+        assert {m.observable_id for m in conf.obj.measurement.models} == {
+            'pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'}
 
     def test_parameter_table_tolerates_real_v2_shapes(self):
         rows = {r.parameter_id: r for r in
@@ -535,9 +700,15 @@ class TestRealWorldBoehmV2:
         assert [(e.experiment_id, e.time, e.condition_id) for e in exps] == \
             [('epo_stimulation', 0.0, 'epo_bolus')]
 
-    def test_measurement_table_refuses_parameter_id_noise_parameters(self):
+    def test_measurement_table_records_parameter_id_noise_parameters(self):
         # Boehm's noiseParameters column carries a parameter id (a placeholder override),
-        # not a number -- the deferred placeholder semantics, surfaced as a clean boundary
-        # rather than a raw float() ValueError.
-        with pytest.raises(NotImplementedError, match='placeholder'):
-            read_measurement_table(BOEHM_DIR / 'measurement_data.tsv')
+        # not a number. The reader now records it on noise_parameter_id (numeric stays None),
+        # and the per-observable summary maps each observable to its constant sigma id
+        # (ADR-0037).
+        rows = read_measurement_table(BOEHM_DIR / 'measurement_data.tsv')
+        a = next(r for r in rows if r.observable_id == 'pSTAT5A_rel')
+        assert a.noise_parameter_id == 'sd_pSTAT5A_rel' and a.noise_parameters is None
+        assert noise_parameter_ids_by_observable(rows) == {
+            'pSTAT5A_rel': 'sd_pSTAT5A_rel',
+            'pSTAT5B_rel': 'sd_pSTAT5B_rel',
+            'rSTAT5A_rel': 'sd_rSTAT5A_rel'}

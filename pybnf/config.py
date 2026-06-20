@@ -1435,7 +1435,11 @@ class Configuration:
                                                        bounded=self.config[k][2],
                                                        initialization_distribution=initialization_distribution)
                     else:
-                        free_param = FreeParameter(k[1], k[0], self.config[k][0], self.config[k][1],
+                        # Two numbers (a location/scale family) or one (a one-parameter
+                        # unbounded family: exponential/chisquare/rayleigh -- ADR-0010/#417);
+                        # p2 is absent for the latter.
+                        p2 = self.config[k][1] if len(self.config[k]) >= 2 else None
+                        free_param = FreeParameter(k[1], k[0], self.config[k][0], p2,
                                                    initialization_distribution=initialization_distribution)
 
                 logger.debug(f'Adding parameter {free_param.name} with bounds [{free_param.lower_bound}, {free_param.upper_bound}]')

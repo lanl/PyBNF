@@ -188,12 +188,29 @@ class TestLogNormalConversion:
 # 3. Documented gaps -> explicit NotImplementedError (boundary in code)
 # ---------------------------------------------------------------------------
 
+class TestCatalogFamilies:
+    # The full v2 catalog (#417): the five formerly-missing families now map (untruncated
+    # when bounds cover the support), the imported row equalling the native *_var
+    # FreeParameter -- the two-adapter proof. The one-parameter families carry p2=None.
+    @pytest.mark.parametrize("dist,params,keyword,p1,p2,lb", [
+        ('cauchy',      (0.0, 2.0), 'cauchy_var',      0.0, 2.0,  -np.inf),
+        ('gamma',       (2.0, 3.0), 'gamma_var',       2.0, 3.0,  0.0),
+        ('exponential', (0.5,),     'exponential_var', 0.5, None, 0.0),
+        ('chisquare',   (4.0,),     'chisquare_var',   4.0, None, 0.0),
+        ('rayleigh',    (1.5,),     'rayleigh_var',    1.5, None, 0.0),
+    ])
+    def test_catalog_family_maps_to_native(self, dist, params, keyword, p1, p2, lb):
+        got = free_parameter_from_row(_row(prior=dist, params=params, lb=lb, ub=np.inf))
+        assert got == FreeParameter('k__FREE', keyword, p1, p2, bounded=False)
+        assert got.type == keyword and got.p1 == p1 and got.p2 == p2
+
+    def test_one_parameter_family_wrong_count_raises(self):
+        with pytest.raises(PybnfError, match='priorParameters'):
+            free_parameter_from_row(
+                _row(prior='exponential', params=(0.5, 9.0), lb=0.0, ub=np.inf))
+
+
 class TestGaps:
-    @pytest.mark.parametrize("dist", ['cauchy', 'gamma', 'exponential', 'chisquare', 'rayleigh'])
-    def test_unsupported_family_raises(self, dist):
-        params = (1.0,) if dist in ('exponential', 'chisquare', 'rayleigh') else (1.0, 2.0)
-        with pytest.raises(NotImplementedError, match='catalog-parity'):
-            free_parameter_from_row(_row(prior=dist, params=params, lb=0.0, ub=np.inf))
 
     @pytest.mark.parametrize("prior,params,lb,ub", [
         ('normal',     (5.0, 2.0), 0.0, np.inf),     # upper bound infinite

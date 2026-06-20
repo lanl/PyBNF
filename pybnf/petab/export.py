@@ -753,12 +753,12 @@ def _free_parameters_from_conf(conf):
                 f"no-prior 'var'/'logvar' point-start keywords have no PEtab prior "
                 f"representation (a flat improper prior is not a PEtab probability "
                 f"family; ADR-0025, #423).")
-        # p1/p2 are the family's two governing values (bounds for the Uniform
-        # families, loc/scale for the location-scale ones); a 3rd token is the native
-        # ``bounded`` flag, inert for the location-scale families and left at the
-        # FreeParameter default for the Uniform ones (matching chunk 1).
-        free_params.append(FreeParameter(name, keyword, float(value[0]),
-                                         float(value[1])))
+        # p1/p2 are the family's governing values (bounds for the Uniform families,
+        # loc/scale or shape/scale for the two-parameter location families); a 3rd token
+        # is the native ``bounded`` flag, inert for the location families. A one-parameter
+        # unbounded family (exponential/chisquare/rayleigh, #417) carries only p1.
+        p2 = float(value[1]) if len(value) >= 2 else None
+        free_params.append(FreeParameter(name, keyword, float(value[0]), p2))
     if not free_params:
         raise PybnfError(
             "No exportable free parameters found in the config (expected one of "

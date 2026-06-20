@@ -76,7 +76,11 @@ from .conditions import (
     read_condition_table,
     read_experiment_table,
 )
-from .measurements import data_from_measurement_rows, read_measurement_table
+from .measurements import (
+    data_from_measurement_rows,
+    noise_parameter_ids_by_observable,
+    read_measurement_table,
+)
 from .observables import noise_model_from_row, read_observable_table
 from .parameters import free_parameter_from_row, read_parameter_table
 from ._bngl import parse_model as parse_bngl_model
@@ -151,6 +155,13 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # + the surrogate set M of fit-and-perturbed model parameters.
     free_param_lines, surrogate_params = _free_parameters(parameter_rows)
 
+    # Fixed PEtab parameters carrying a numeric value: the constants a measurement-model
+    # observableFormula may reference that live only in the parameters table, not the
+    # model file (Boehm's specC17 = 0.107 -- ADR-0037). Inlined into the formula below.
+    fixed_params = {row.parameter_id: float(row.nominal_value)
+                    for row in parameter_rows
+                    if not row.estimate and row.nominal_value is not None}
+
     # The model is read now (not just at write time) to validate each expression
     # observableFormula's free symbols against the model's entity namespace (the BNGL
     # ParamList, or SBML species u parameters -- ADR-0026/0036). The model file itself is
@@ -165,12 +176,17 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # plus the measurement models (id, formula) synthesized from expression
     # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
     observable_id_to_column, measurement_models = _observable_id_to_column(
-        observable_rows, namespace, entity_names)
+        observable_rows, namespace, entity_names, fixed_params)
 
     # Measurements -> one wide Data per experiment, then assemble the experiment list.
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
-    objective_directive = _objective_directive(
-        observable_rows, _column_mean_resolver(datas, observable_id_to_column))
+    # A constant-per-observable parameter-id noiseParameters placeholder is a
+    # per-observable estimated sigma (Boehm's sd_*); the map drives the per-observable
+    # noise_model lines (ADR-0037). A row-varying id raises here (deferred frontier).
+    noise_param_ids = noise_parameter_ids_by_observable(measurement_rows)
+    objective_directives = _objective_directives(
+        observable_rows, observable_id_to_column, noise_param_ids,
+        _column_mean_resolver(datas, observable_id_to_column))
     conditions = conditions_from_rows(condition_rows, surrogate_params)
     experiments = _experiments(datas, experiment_rows, out_dir)
 
@@ -184,7 +200,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         conf_name = f'imported_{jt}.conf' if len(job_types) > 1 else 'imported.conf'
         _write_conf(
             out_dir / conf_name, model_filename=model_filename, job_type=jt,
-            objective_directive=objective_directive, free_param_lines=free_param_lines,
+            objective_directives=objective_directives, free_param_lines=free_param_lines,
             conditions=conditions, experiments=experiments,
             measurement_models=measurement_models, method=method,
             method_overrides=method_overrides or {}, settings=merged_settings,
@@ -216,8 +232,9 @@ def _free_parameters(parameter_rows):
         if is_surrogate:
             surrogate_params.add(model_param)
         fp = free_parameter_from_row(row)
-        free_param_lines.append(
-            f'{fp.type} = {model_param} {num(fp.p1)} {num(fp.p2)}')
+        # A one-parameter unbounded family (exponential/chisquare/rayleigh) carries only p1.
+        nums = num(fp.p1) if fp.p2 is None else f'{num(fp.p1)} {num(fp.p2)}'
+        free_param_lines.append(f'{fp.type} = {model_param} {nums}')
     if not free_param_lines:
         raise PybnfError(
             "The PEtab parameters table declares no estimated (estimate=true) parameters, "
@@ -258,7 +275,7 @@ def _model_namespace(model_text, language):
     return namespace, entity_names
 
 
-def _observable_id_to_column(observable_rows, namespace, entity_names):
+def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params):
     """Map each ``observableId`` to the model column it measures, recording a measurement
     model for any expression ``observableFormula`` (ADR-0036). Iteration order = table order,
     which fixes the wide-data column order on the measurement pivot.
@@ -271,15 +288,20 @@ def _observable_id_to_column(observable_rows, namespace, entity_names):
       translator runs and the path stays dependency-free.
     * An **expression** ``observableFormula`` becomes a *measurement model* ``(id, formula)``
       -- a PEtab math expression evaluated post-simulation by the observation layer (ADR-0036).
-      Its free symbols are validated against the model namespace (the optional ``pybnf[petab]``
-      extra), and the ``.exp`` column is named after the ``observableId`` (the column the layer
-      materializes). The model file is **not** edited.
+      A fixed PEtab parameter the formula references but the model file lacks (Boehm's
+      ``specC17``) is inlined as its numeric value first (``fixed_params``, ADR-0037); the
+      remaining free symbols are then validated against the model namespace (the optional
+      ``pybnf[petab]`` extra), and the ``.exp`` column is named after the ``observableId`` (the
+      column the layer materializes). The model file is **not** edited.
 
     A measurement model's id must not shadow an existing model entity (``PybnfError``, so the
     materialized column does not collide with a model output column); an unknown free symbol or
     a per-measurement placeholder in the expression raises in the validator (``PybnfError`` /
     ``NotImplementedError``).
     """
+    # Fixed PEtab parameters that are NOT model entities are inlined as literals; one that
+    # IS a model entity stays a symbol (it resolves as a model constant at eval time).
+    inline = {n: v for n, v in fixed_params.items() if n not in namespace}
     taken = set(entity_names)
     mapping = {}
     measurement_models = []
@@ -295,10 +317,12 @@ def _observable_id_to_column(observable_rows, namespace, entity_names):
                     f"Model namespace: {sorted(namespace)}.")
             mapping[row.observable_id] = formula          # bare-name path (no translator)
             continue
-        # Expression -> a measurement model. Validate its symbols against the namespace now
-        # (fail fast; requires the petab extra). The conf carries it as a formula line and
-        # the observation layer evaluates it post-simulation -- no model-file edit (ADR-0036).
-        from .formula import compile_petab_formula
+        # Expression -> a measurement model. Inline any fixed parameter-table constant the
+        # model file lacks, then validate the remaining symbols against the namespace now
+        # (fail fast; requires the petab extra). The conf carries the (inlined) formula as a
+        # line and the observation layer evaluates it post-simulation -- no model-file edit.
+        from .formula import compile_petab_formula, inline_constants
+        formula = inline_constants(formula, inline)
         compile_petab_formula(
             formula, namespace,
             detail=f"Model namespace (species/parameters/observables/functions): "
@@ -339,69 +363,91 @@ _PETAB_DISTRIBUTION_TO_NOISE_MODEL = {
 }
 
 
-def _objective_directive(observable_rows, column_mean_of):
-    """Recover the conf's objective directive (one full line) from the observables' noise.
+def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
+                          column_mean_of):
+    """Recover the conf's objective directive lines from the observables' noise (ADR-0031/0037).
 
-    The inverse of the objective-family / whole-fit ``noise_model`` export. Returns either:
+    The inverse of the objective-family / whole-fit / per-observable ``noise_model`` export.
+    Returns a **list** of conf lines:
 
-    * ``objective = <token>`` -- one of the four sugar tokens (``chi_sq`` / ``sos`` /
-      ``sod`` / ``ave_norm_sos``), the tidy common case that round-trips byte-for-byte; or
-    * ``noise_model = <family>, <param> = <verb> <arg>`` (the ADR-0031 surface) -- the
-      broader cases no sugar token names: a uniform **non-unit fixed** sigma
-      (``fix_at C``, the symmetric inverse of the exporter's whole-fit ``noise_model``
-      line, so it round-trips byte-for-byte) and a single shared **free-parameter** sigma
-      (``fit <id>``; import-only, since the exporter raises on a ``fit`` sigma -- it is
-      external-problem territory).
+    * **Uniform** (one family + one sigma source across all observables) -- a single line, the
+      tidy common case (:func:`_try_uniform_directive`): one of the four sugar tokens
+      (``objective = chi_sq`` / ``sos`` / ``sod`` / ``ave_norm_sos``, round-trips
+      byte-for-byte), or the ADR-0031 whole-fit ``noise_model = <family>, <param> = <verb>
+      <arg>`` line (a uniform non-unit ``fix_at`` constant, or a single shared ``fit`` sigma).
+    * **Per-observable** -- a structural base objective plus one ``noise_model <obs> = ...``
+      override per observable (:func:`_per_observable_directives`). This is the Boehm shape:
+      each observable carries its own estimated Gaussian sigma (its constant-per-observable
+      ``noiseParameters`` parameter id), so no single whole-fit line names them (ADR-0021/0037).
 
-    A single PyBNF objective is one family + one sigma source across all observables, so a
-    mix of families/sources -- or a *per-observable* free or fixed sigma (e.g. Boehm's
-    distinct ``sd_*`` parameters) -- raises ``PybnfError`` (per-observable noise import is
-    a later #407 chunk). A ``log-normal`` / ``log-laplace`` distribution, an expression
-    ``noiseFormula``, and a per-point laplace placeholder raise ``NotImplementedError`` --
-    the boundary is in code, not a silent mis-recovery.
+    ``noise_param_ids`` is the ``{observable_id: parameter_id}`` map from the measurements'
+    constant-per-observable ``noiseParameters`` placeholder; an observable's declared noise
+    placeholder (a ``noiseParameter*`` token or a named ``noisePlaceholders`` id) takes its
+    sigma source from this map. A ``log-normal`` / ``log-laplace`` distribution, an expression
+    ``noiseFormula``, and a per-point laplace placeholder raise ``NotImplementedError`` -- the
+    boundary is in code, not a silent mis-recovery.
     """
-    families, sources = set(), []
-    for row in observable_rows:
-        dist = (row.noise_distribution or 'normal').lower()
-        if dist not in _PETAB_DISTRIBUTION_TO_NOISE_MODEL:
-            raise NotImplementedError(
-                f"Observable '{row.observable_id}': noiseDistribution {dist!r} maps to a "
-                f"PyBNF noise family on the natural-log scale (log-normal / log-laplace; "
-                f"neg_bin was removed from PEtab v2), which has neither an objective token "
-                f"nor a native noise_model line yet (#407). This chunk recovers the linear "
-                f"normal / laplace families.")
-        families.add(dist)
-        formula = (row.noise_formula or '').strip()
-        if not formula:
-            raise PybnfError(
-                f"Observable '{row.observable_id}' is missing a noiseFormula.")
-        if formula.startswith('noiseParameter'):
-            sources.append(('placeholder', None))
-        else:
-            # Reuse the observables asset for the numeric / bare-id / expression split (it
-            # raises the deferred-expression boundary); we consume only its SigmaSource.
-            _noise_model, source = noise_model_from_row(row)
-            if isinstance(source, ConstantSigma):
-                sources.append(('constant', source.const))
-            elif isinstance(source, FreeParameterSigma):
-                sources.append(('free', source.name))
-            else:  # defensive: a bare row yields only these two sources
-                raise PybnfError(
-                    f"Observable '{row.observable_id}': noiseFormula {formula!r} maps to "
-                    f"an unexpected sigma source {type(source).__name__}.")
+    per_obs = [(row, *_resolve_noise(row, noise_param_ids.get(row.observable_id)))
+               for row in observable_rows]
+    single = _try_uniform_directive(per_obs, column_mean_of)
+    if single is not None:
+        return [single]
+    return _per_observable_directives(per_obs, observable_id_to_column)
 
-    if len(families) != 1:
-        raise PybnfError(
-            f"The observables table mixes noise families across observables "
-            f"(families={sorted(families)}), so it is not a single PyBNF objective. "
-            f"Per-observable noise import is a later #407 chunk.")
-    kinds = {kind for kind, _ in sources}
-    if len(kinds) != 1:
-        raise PybnfError(
-            f"The observables table mixes noise sources across observables "
-            f"(sources={sorted(kinds)}), so it is not a single PyBNF objective. "
-            f"Per-observable noise import is a later #407 chunk.")
-    family, kind = families.pop(), kinds.pop()
+
+def _resolve_noise(row, noise_param_id):
+    """One observables row -> ``(family_token, source)`` where ``source`` is one of
+    ``('placeholder', None)`` (per-point ``_SD``), ``('constant', value)`` (a fixed sigma),
+    or ``('free', parameter_id)`` (an estimated sigma).
+
+    A **declared placeholder** noiseFormula -- a ``noiseParameter*`` token or a bare id listed
+    in the row's ``noisePlaceholders`` -- has its value supplied per measurement: a parameter
+    id constant across the observable (``noise_param_id``) is an estimated sigma
+    (``('free', id)``, Boehm); otherwise it is the per-point ``_SD`` source
+    (``('placeholder', None)``, chi_sq). A non-placeholder noiseFormula is read directly by the
+    observables asset (a number -> ``ConstantSigma``, a bare id -> ``FreeParameterSigma``, an
+    expression -> the deferred ``NotImplementedError``)."""
+    dist = (row.noise_distribution or 'normal').lower()
+    if dist not in _PETAB_DISTRIBUTION_TO_NOISE_MODEL:
+        raise NotImplementedError(
+            f"Observable '{row.observable_id}': noiseDistribution {dist!r} maps to a "
+            f"PyBNF noise family on the natural-log scale (log-normal / log-laplace; "
+            f"neg_bin was removed from PEtab v2), which has neither an objective token "
+            f"nor a native noise_model line yet (#407). This chunk recovers the linear "
+            f"normal / laplace families.")
+    formula = (row.noise_formula or '').strip()
+    if not formula:
+        raise PybnfError(f"Observable '{row.observable_id}' is missing a noiseFormula.")
+    placeholders = {p.strip() for p in (row.noise_placeholders or '').split(';') if p.strip()}
+    if formula.startswith('noiseParameter') or formula in placeholders:
+        if noise_param_id is not None:
+            return dist, ('free', noise_param_id)     # constant-per-observable estimated sigma
+        return dist, ('placeholder', None)            # per-point _SD (chi_sq)
+    # A non-placeholder noiseFormula: reuse the observables asset for the
+    # numeric / bare-id / expression split (it raises the deferred-expression boundary).
+    _noise_model, source = noise_model_from_row(row)
+    if isinstance(source, ConstantSigma):
+        return dist, ('constant', source.const)
+    if isinstance(source, FreeParameterSigma):
+        return dist, ('free', source.name)
+    raise PybnfError(                                  # defensive: a bare row yields only these
+        f"Observable '{row.observable_id}': noiseFormula {formula!r} maps to "
+        f"an unexpected sigma source {type(source).__name__}.")
+
+
+def _try_uniform_directive(per_obs, column_mean_of):
+    """A single whole-fit directive line if the table is one PyBNF objective, else ``None``.
+
+    ``None`` signals a genuinely per-observable table (a mix of families or sigma sources, or
+    a distinct ``fit``/``fix_at`` sigma per observable) -> :func:`_per_observable_directives`.
+    The uniform cases are exactly the objective-family / whole-fit ``noise_model`` export
+    inverse (preserved byte-for-byte)."""
+    families = {dist for _row, dist, _src in per_obs}
+    kinds = {src[0] for _row, _dist, src in per_obs}
+    if len(families) != 1 or len(kinds) != 1:
+        return None     # mixed family or source kind -> per-observable
+    family = families.pop()
+    kind = kinds.pop()
     petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[family]
 
     if kind == 'placeholder':
@@ -411,51 +457,57 @@ def _objective_directive(observable_rows, column_mean_of):
                 f"token (only the Gaussian per-point _SD case, chi_sq, is recovered; #407).")
         return 'objective = chi_sq'
     if kind == 'free':
-        return _free_sigma_directive(sources, petab_family, param)
-    return _constant_sigma_directive(
-        observable_rows, sources, family, petab_family, param, column_mean_of)
-
-
-def _constant_sigma_directive(observable_rows, sources, family, petab_family, param,
-                              column_mean_of):
-    """Map an all-constant sigma to its directive: ``sos``/``sod`` (a unit sigma),
-    ``ave_norm_sos`` (each observable's own column mean), or a ``fix_at`` ``noise_model``
-    line (a uniform non-unit fixed sigma). A *different* fixed sigma per observable that is
-    not the column-mean pattern is per-observable noise -> ``PybnfError`` (later #407)."""
-    constants = [value for _kind, value in sources]
+        ids = {src[1] for _row, _dist, src in per_obs}
+        if len(ids) != 1:
+            return None     # distinct free sigma per observable -> per-observable
+        return f'noise_model = {petab_family}, {param} = fit {ids.pop()}'
+    # All-constant sigma: the sugar tokens (sos/sod unit, ave_norm_sos column-mean) or a
+    # uniform fix_at; a different fixed sigma per observable is per-observable.
+    constants = [src[1] for _row, _dist, src in per_obs]
     if all(c == 1.0 for c in constants):
         return 'objective = sos' if family == 'normal' else 'objective = sod'
     if family == 'normal' and all(
             _approx(c, column_mean_of(row.observable_id))
-            for row, c in zip(observable_rows, constants)):
+            for (row, _dist, _src), c in zip(per_obs, constants)):
         return 'objective = ave_norm_sos'
     uniq = set(constants)
     if len(uniq) != 1:
-        raise PybnfError(
-            f"The observables table has a different fixed sigma per observable "
-            f"({sorted(uniq)}) that is neither all 1 (sos / sod) nor each observable's "
-            f"column mean (ave_norm_sos), so it is per-observable noise, not one PyBNF "
-            f"objective. Per-observable noise import is a later #407 chunk.")
+        return None     # distinct fixed sigma per observable -> per-observable
     return f'noise_model = {petab_family}, {param} = fix_at {num(uniq.pop())}'
 
 
-def _free_sigma_directive(sources, petab_family, param):
-    """Map a single shared free-parameter sigma across all observables to a ``fit``
-    ``noise_model`` line. The bare-id noiseFormula names an estimated parameter (already
-    emitted as a bare free parameter by :func:`_free_parameters`), so ``fit <sigma_id>``
-    binds to it as a nuisance -- it matches no model parameter id, the new-era typo
-    check's allowed nuisance path (ADR-0034). A *distinct* free sigma per observable is
-    per-observable noise (later #407). A sigma id that names no estimated parameter yields
-    a conf whose ``fit`` reference has no declared free parameter; the config loader's
-    bind-by-id typo check rejects it at load (one source of truth, ADR-0034)."""
-    ids = {sid for _kind, sid in sources}
-    if len(ids) != 1:
-        raise PybnfError(
-            f"The observables table names a different free-parameter sigma per observable "
-            f"({sorted(ids)}); that is per-observable noise, not one PyBNF objective. "
-            f"Per-observable noise import is a later #407 chunk.")
-    sigma_id = ids.pop()
-    return f'noise_model = {petab_family}, {param} = fit {sigma_id}'
+def _per_observable_directives(per_obs, observable_id_to_column):
+    """A structural base objective + one ``noise_model <obs> = ...`` override per observable.
+
+    The Boehm shape (ADR-0037): each observable has its own sigma source, so PyBNF expresses
+    it as per-observable ``noise_model`` overrides (ADR-0021) layered over a whole-fit default.
+    Under edition >= 2 a base objective is required (the override surface "accompanies" it,
+    config.py), and since every observable is overridden the base is a structural placeholder
+    -- ``objective = chi_sq`` (Gaussian, no free parameter, no data column required). Each
+    override names the **column** the objective compares (the measurement-model column =
+    ``observableId`` for an expression observable, else the model entity); a ``fit`` sigma binds
+    its estimated parameter as a nuisance (ADR-0034), a ``fix_at`` a constant, a per-point
+    placeholder reads the ``<col>_SD`` companion."""
+    lines = ['objective = chi_sq']   # whole-fit default; every observable overridden below
+    for row, dist, src in per_obs:
+        petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[dist]
+        column = observable_id_to_column[row.observable_id]
+        kind = src[0]
+        if kind == 'free':
+            lines.append(f'noise_model {column} = {petab_family}, {param} = fit {src[1]}')
+        elif kind == 'constant':
+            lines.append(
+                f'noise_model {column} = {petab_family}, {param} = fix_at {num(src[1])}')
+        elif kind == 'placeholder':
+            if dist != 'normal':
+                raise NotImplementedError(
+                    f"Observable '{row.observable_id}': a per-point ({dist}) placeholder "
+                    f"noiseFormula has no native noise_model source yet (#407).")
+            lines.append(f'noise_model {column} = {petab_family}, {param} = read_exp_file _SD')
+        else:  # defensive
+            raise PybnfError(
+                f"Observable '{row.observable_id}': unexpected sigma source kind {kind!r}.")
+    return lines
 
 
 def _approx(a, b):
@@ -507,14 +559,15 @@ def _write_exp(path, data):
 # The .conf writer (the disposable output half)
 # ---------------------------------------------------------------------------
 
-def _write_conf(path, *, model_filename, job_type, objective_directive, free_param_lines,
+def _write_conf(path, *, model_filename, job_type, objective_directives, free_param_lines,
                 conditions, experiments, measurement_models, method, method_overrides,
                 settings, multi):
     """Write one new-era (edition 2) ``.conf``: the recovered problem + the supplied
     run-recipe (``job_type``, per-experiment ``method:``, required settings).
 
-    ``objective_directive`` is the full recovered objective line -- either ``objective =
-    <token>`` or a ``noise_model = <family>, ...`` line (:func:`_objective_directive`).
+    ``objective_directives`` is the list of recovered objective lines -- either a single
+    ``objective = <token>`` / whole-fit ``noise_model = ...`` line, or a base objective plus
+    per-observable ``noise_model <obs> = ...`` overrides (:func:`_objective_directives`).
     ``measurement_models`` is the list of ``(observableId, formula)`` expression observables,
     emitted as ``observable: <id>, formula: <expr>`` measurement-model lines (ADR-0036)."""
     stem = f'imported_{job_type}' if multi else 'imported'
@@ -531,7 +584,7 @@ def _write_conf(path, *, model_filename, job_type, objective_directive, free_par
         '',
         f'model: {model_filename}',
         f'job_type = {job_type}',
-        objective_directive,
+        *objective_directives,
     ]
     # Expression observables: a measurement-model formula evaluated post-simulation (the
     # observation layer, ADR-0036), not a model-file edit. The model is carried verbatim.

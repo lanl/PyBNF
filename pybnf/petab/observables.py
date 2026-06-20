@@ -315,9 +315,10 @@ def write_observable_table(rows, path):
 def read_observable_table(path):
     """Read a PEtab v2 ``observables.tsv`` into :class:`PetabObservableRow` records.
 
-    Dependency-free (stdlib ``csv``). Unknown extra columns (e.g.
-    ``observableName``, ``observablePlaceholders``, ``noisePlaceholders`` -- the
-    deferred formula layer) are tolerated and ignored.
+    Dependency-free (stdlib ``csv``). ``noisePlaceholders`` is recorded (it marks a
+    named noiseFormula placeholder whose value the measurements' ``noiseParameters``
+    column supplies -- a per-observable estimated sigma, ADR-0037). Other unknown extra
+    columns (e.g. ``observableName``, ``observablePlaceholders``) are tolerated and ignored.
     """
     with open(path, newline='') as fh:
         reader = csv.DictReader(fh, delimiter='\t')
@@ -333,6 +334,7 @@ def _row_from_record(rec):
         observable_formula=_parse_str(rec.get('observableFormula')),
         noise_formula=_parse_str(rec.get('noiseFormula')),
         noise_distribution=_parse_str(rec.get('noiseDistribution')),
+        noise_placeholders=_parse_str(rec.get('noisePlaceholders')),
     )
 
 

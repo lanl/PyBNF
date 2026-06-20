@@ -14,11 +14,11 @@ prior density and sampling -- with no other change anywhere in the codebase.
 from scipy import stats
 
 from ..registry import register_prior_family
-from .base import Prior
+from .base import FrozenPrior
 
 
 @register_prior_family('laplace')
-class Laplace(Prior):
+class Laplace(FrozenPrior):
     has_bounded_support = False
 
     def __init__(self, loc, b):
@@ -29,15 +29,3 @@ class Laplace(Prior):
     def build(cls, p1, p2, scale):
         """Build from config ``(location, b)`` -- given in-scale, untransformed."""
         return cls(loc=p1, b=p2)
-
-    def logpdf(self, u):
-        return float(self.frozen.logpdf(u))
-
-    def rvs(self, rng):
-        return self.frozen.rvs(random_state=rng)
-
-    def ppf(self, q):
-        return float(self.frozen.ppf(q))
-
-    def support(self):
-        return tuple(self.frozen.support())

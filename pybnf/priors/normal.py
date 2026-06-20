@@ -11,11 +11,11 @@ applies around this family).
 from scipy import stats
 
 from ..registry import register_prior_family
-from .base import Prior
+from .base import FrozenPrior
 
 
 @register_prior_family('normal')
-class Normal(Prior):
+class Normal(FrozenPrior):
     has_bounded_support = False
 
     def __init__(self, loc, sigma):
@@ -25,15 +25,3 @@ class Normal(Prior):
     def build(cls, p1, p2, scale):
         """Build from config ``(mean, sd)`` -- given in-scale, untransformed."""
         return cls(loc=p1, sigma=p2)
-
-    def logpdf(self, u):
-        return float(self.frozen.logpdf(u))
-
-    def rvs(self, rng):
-        return self.frozen.rvs(random_state=rng)
-
-    def ppf(self, q):
-        return float(self.frozen.ppf(q))
-
-    def support(self):
-        return tuple(self.frozen.support())

@@ -32,19 +32,24 @@ PEtab v2 specifics this encodes (current spec, *not* the v1 shape):
   we convert ``(mu, sigma) -> (mu/ln10, sigma/ln10)``. The resulting distribution
   *over theta* is identical -- PyBNF's scale lives in the sampling
   parameterization, so there is no change-of-variables term to add (ADR-0003).
+* The **full v2 prior catalog** maps (#417): besides uniform / normal / laplace,
+  the five families that were a catalog gap -- ``cauchy`` (loc, scale), ``gamma``
+  (shape, scale), ``exponential`` (scale), ``chisquare`` (dof), ``rayleigh``
+  (scale) -- now each have a registered PyBNF prior family (ADR-0010). The
+  parameterizations are verified against petab's own ``v1.distributions`` classes
+  (gamma is shape+scale, not shape+rate; exponential's parameter is the scale, not
+  the rate). PEtab defines no log- form for these five.
 * Bounds **truncate** the prior. A Uniform prior truncates exactly (we intersect
-  the box). For an unbounded family (normal / laplace / log-*), *two-sided* finite
-  bounds map to a truncated prior on a finite reflecting box (ADR-0020,
-  ``TruncatedPrior``); a *one-sided* truncation (one bound infinite, or a
-  non-positive lower bound on a log scale) still raises ``NotImplementedError``,
-  because the reflection fold needs two finite bounds.
+  the box). For an unbounded-support family, *two-sided* finite bounds map to a
+  truncated prior on a finite reflecting box (ADR-0020, ``TruncatedPrior``); a
+  *one-sided* truncation (one bound infinite, or a non-positive lower bound on a
+  log scale) still raises ``NotImplementedError``, because the reflection fold
+  needs two finite bounds (#417 follow-up).
 
 Gaps are surfaced as ``NotImplementedError`` with clear messages so the boundary
-is documented in code, not silent: the five PEtab families PyBNF lacks
-(``cauchy``, ``gamma``, ``exponential``, ``chisquare``, ``rayleigh`` -- a
-catalog-parity follow-up), one-sided truncation of an unbounded family, and
-``estimate = false`` fixed parameters (those become model constants, handled by a
-later importer chunk, not here).
+is documented in code, not silent: one-sided truncation of an unbounded-support
+family, and ``estimate = false`` fixed parameters (those become model constants,
+handled by a later importer chunk, not here).
 """
 
 import csv
@@ -72,14 +77,33 @@ _PETAB_DISTRIBUTION_TO_FAMILY = {
     'log-normal':  ('normal',  True),
     'laplace':     ('laplace', False),
     'log-laplace': ('laplace', True),
+    # The full v2 catalog (#417). PEtab defines no log- form for these five, so only the
+    # linear keyword maps; their native log{stem}_var keywords exist (the registry generates
+    # them) but have no PEtab priorDistribution, so the exporter refuses them.
+    'cauchy':      ('cauchy',      False),
+    'gamma':       ('gamma',       False),
+    'exponential': ('exponential', False),
+    'chisquare':   ('chisquare',   False),
+    'rayleigh':    ('rayleigh',    False),
 }
 
-# PEtab v2 prior families PyBNF has no Prior family for yet. Named explicitly so
-# the importer raises a precise "catalog-parity follow-up" error instead of a
-# generic "unknown prior". Each is a one-file scipy-backed addition when wanted
-# (the Laplace seam, ADR-0010, proved a new family is ~one registration).
-_UNSUPPORTED_PETAB_DISTRIBUTIONS = frozenset(
-    {'cauchy', 'gamma', 'exponential', 'chisquare', 'rayleigh'})
+# Per location/scale/shape family stem: ``(n_priorParameters, support_lo_in_theta)``. The
+# arity drives both the priorParameters count and the FreeParameter build (a one-parameter
+# family carries only ``p1``); ``support_lo`` is the family's natural lower support in theta
+# (0 for the half-bounded gamma/exponential/chisquare/rayleigh, -inf for the doubly-unbounded
+# normal/laplace/cauchy) -- the edge :func:`_truncation_box` measures bounds against. uniform
+# is absent (it carries bounds, not a location/scale, and is handled on its own path). The
+# PEtab parameterizations are verified against petab's own ``v1.distributions`` classes
+# (gamma is shape+scale, exponential's parameter is the scale = 1/rate).
+_FAMILY_META = {
+    'normal':      (2, -math.inf),
+    'laplace':     (2, -math.inf),
+    'cauchy':      (2, -math.inf),
+    'gamma':       (2, 0.0),
+    'exponential': (1, 0.0),
+    'chisquare':   (1, 0.0),
+    'rayleigh':    (1, 0.0),
+}
 
 # The reverse of ``_PETAB_DISTRIBUTION_TO_FAMILY`` (the export direction, ADR-0025):
 # a PyBNF prior keyword (a FreeParameter ``type``) -> (PEtab priorDistribution
@@ -128,10 +152,11 @@ class PetabParameterRow:
 def free_parameter_from_row(row):
     """Map one estimated PEtab v2 parameters row to a :class:`FreeParameter`.
 
-    Two-sided finite bounds truncating an unbounded family map to a bounded
-    ``FreeParameter`` (ADR-0020). Raises ``NotImplementedError`` at the remaining
-    PEtab/PyBNF boundaries (``estimate=false`` fixed parameters; the five
-    unsupported prior families; *one-sided* truncation of an unbounded family) and
+    Two-sided finite bounds truncating an unbounded-support family map to a bounded
+    ``FreeParameter`` (ADR-0020). The full v2 prior catalog maps (uniform / normal /
+    laplace / cauchy / gamma / exponential / chisquare / rayleigh, #417). Raises
+    ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (``estimate=false``
+    fixed parameters; *one-sided* truncation of an unbounded-support family) and
     ``PybnfError`` for malformed rows (unknown prior type, wrong parameter count,
     reversed bounds).
     """
@@ -202,11 +227,6 @@ def _resolve_prior(row, lb, ub):
     unbounded-support family that PEtab bounds truncate; ``None`` otherwise.
     """
     dist = row.prior_distribution
-    if dist in _UNSUPPORTED_PETAB_DISTRIBUTIONS:
-        raise NotImplementedError(
-            f"Parameter '{row.parameter_id}': PEtab prior '{dist}' has no PyBNF "
-            f"prior family yet (catalog-parity follow-up, #407). Supported PEtab "
-            f"priors: {sorted(_PETAB_DISTRIBUTION_TO_FAMILY)}.")
     if dist not in _PETAB_DISTRIBUTION_TO_FAMILY:
         raise PybnfError(
             f"Parameter '{row.parameter_id}': unknown PEtab priorDistribution "
@@ -227,27 +247,38 @@ def _resolve_prior(row, lb, ub):
                 f"bounds [{lb}, {ub}] have an empty intersection.")
         return keyword, p1, p2, True, None, None
 
-    # normal / laplace and their log forms: unbounded-support families.
-    loc, scale = _expect_n(row.prior_parameters, 2, dist, row)
-    if is_log:
-        # PEtab log-normal/log-laplace parameters are the location/scale of the
-        # NATURAL log of theta; PyBNF's log families parameterize in log10, so
-        # convert. The distribution over theta is identical -- the scale lives in
-        # the sampling parameterization, so there is no Jacobian term (ADR-0003).
-        loc, scale = loc / _LN10, scale / _LN10
+    # The location/scale/shape families (normal / laplace / cauchy: two parameters;
+    # exponential / chisquare / rayleigh: one), each with infinite (possibly half-bounded)
+    # support that PEtab bounds truncate.
+    n_params, family_support_lo = _FAMILY_META[stem]
+    params = _expect_n(row.prior_parameters, n_params, dist, row)
+    if n_params == 2:
+        p1, p2 = params
+        if is_log:
+            # PEtab log-normal/log-laplace parameters are the location/scale of the
+            # NATURAL log of theta; PyBNF's log families parameterize in log10, so
+            # convert. The distribution over theta is identical -- the scale lives in
+            # the sampling parameterization, so there is no Jacobian term (ADR-0003).
+            p1, p2 = p1 / _LN10, p2 / _LN10
+    else:
+        p1, p2 = params[0], None      # a one-parameter family carries only p1
 
-    tlb, tub = _truncation_box(row, dist, is_log, lb, ub)
-    return keyword, loc, scale, tlb is not None, tlb, tub
+    # The family's natural lower support in theta: 0 for a half-bounded family, and 0 for
+    # any log form (theta > 0), else -inf. The upper support is +inf for all of these.
+    support_lo = 0.0 if (is_log or family_support_lo == 0.0) else -np.inf
+    tlb, tub = _truncation_box(row, dist, support_lo, is_log, lb, ub)
+    return keyword, p1, p2, tlb is not None, tlb, tub
 
 
-def _truncation_box(row, dist, is_log, lb, ub):
+def _truncation_box(row, dist, support_lo, is_log, lb, ub):
     """Map PEtab bounds on an unbounded-support prior to a truncation box.
 
-    PEtab truncates a prior by ``[lb, ub]``. Three cases (ADR-0020, issue #411):
+    PEtab truncates a prior by ``[lb, ub]``. ``support_lo`` is the family's natural lower
+    support in theta (0 for a half-bounded family or any log form, -inf otherwise). Three
+    cases (ADR-0020, issue #411):
 
     * **Untruncated** -- the bounds cover the family's natural domain in theta
-      (``(-inf, inf)`` for normal/laplace; ``(0, inf)`` for the log forms,
-      theta > 0). Returns ``(None, None)``: the prior is built unbounded as before.
+      (``[support_lo, inf)``). Returns ``(None, None)``: the prior is built unbounded.
     * **Two-sided truncation** -- both bounds finite (and a positive lower bound on
       a log scale). Returns ``(lb, ub)``: the family is wrapped in a finite
       reflecting box (a ``TruncatedPrior``).
@@ -257,7 +288,6 @@ def _truncation_box(row, dist, is_log, lb, ub):
       this still raises ``NotImplementedError`` -- the boundary is documented in
       code rather than silently importing a different prior.
     """
-    support_lo = 0.0 if is_log else -np.inf
     covers_lower = lb <= support_lo
     covers_upper = ub >= np.inf
     if covers_lower and covers_upper:
@@ -330,16 +360,17 @@ def petab_parameter_row(free_parameter, parameter_id=None):
     * ``loguniform_var`` -- the same linear bounds, but ``priorDistribution`` is
       stated (``log-uniform``; PEtab's default uniform is *linear*) with
       ``priorParameters = (p1, p2)``.
-    * ``normal_var`` / ``laplace_var`` and their ``log*`` forms -- a location-scale
-      prior: ``priorParameters`` are the ``(loc, scale)``, in **natural** log for the
-      log families (PyBNF parameterizes in log10, so ``(loc, scale)`` are scaled back
-      by ``ln 10``). A truncated parameter (ADR-0020) writes its reflecting box as the
-      truncating bounds; an unbounded one writes blank bounds (PyBNF has no native
-      truncation grammar for these families yet -- #417).
+    * ``normal_var`` / ``laplace_var`` / ``cauchy_var`` / ``gamma_var`` and the log
+      forms of normal/laplace -- a two-parameter prior: ``priorParameters`` are
+      ``(p1, p2)`` (``(loc, scale)`` / ``(shape, scale)``), in **natural** log for the
+      log families (PyBNF parameterizes in log10, so they are scaled back by ``ln 10``).
+    * ``exponential_var`` / ``chisquare_var`` / ``rayleigh_var`` -- a one-parameter
+      prior: ``priorParameters`` is a single ``(p1,)`` (the scale, or chisquare's dof).
 
-    The no-prior ``var`` / ``logvar`` point-start keywords and the five scipy
-    families PyBNF lacks raise ``NotImplementedError`` -- surfaced in code, not
-    mis-exported.
+    A truncated parameter (ADR-0020) writes its reflecting box as the truncating bounds;
+    an unbounded one writes blank bounds. The no-prior ``var`` / ``logvar`` point-start
+    keywords and the log forms of the five catalog families (no PEtab ``log-`` spelling)
+    raise ``NotImplementedError`` -- surfaced in code, not mis-exported.
     """
     if parameter_id is None:
         parameter_id = free_parameter.name
@@ -359,7 +390,7 @@ def petab_parameter_row(free_parameter, parameter_id=None):
                else float(free_parameter.value))
     if stem == 'uniform':
         return _petab_uniform_row(free_parameter, parameter_id, dist, is_log, nominal)
-    return _petab_location_scale_row(free_parameter, parameter_id, dist, is_log, nominal)
+    return _petab_prior_row(free_parameter, parameter_id, dist, stem, is_log, nominal)
 
 
 def _petab_uniform_row(fp, parameter_id, dist, is_log, nominal):
@@ -378,25 +409,32 @@ def _petab_uniform_row(fp, parameter_id, dist, is_log, nominal):
         prior_distribution=prior_distribution, prior_parameters=prior_parameters)
 
 
-def _petab_location_scale_row(fp, parameter_id, dist, is_log, nominal):
-    """A Normal/Laplace family (or its log form) -> a PEtab location-scale prior.
+def _petab_prior_row(fp, parameter_id, dist, stem, is_log, nominal):
+    """A location/scale/shape family -> its PEtab prior row (the reverse of ``_resolve_prior``).
 
-    ``priorParameters`` are ``(loc, scale)``; for the log families PyBNF stores them
-    in log10 and PEtab expects the **natural**-log parameters, so they are scaled
-    back by ``ln 10`` (the exact reverse of the importer's ``/_LN10``; the
-    distribution over theta is unchanged -- ADR-0003). Truncation bounds, if any
-    (ADR-0020), become the PEtab bounds that truncate the prior; otherwise the
-    parameter is unbounded and the bounds are left blank.
+    ``priorParameters`` are the family's parameters in PEtab order: ``(p1, p2)`` for a
+    two-parameter family (normal/laplace ``(loc, scale)``, cauchy ``(loc, scale)``, gamma
+    ``(shape, scale)``), or ``(p1,)`` for a one-parameter family (exponential/rayleigh scale,
+    chisquare dof). For the log families (normal/laplace only) PyBNF stores ``(loc, scale)`` in
+    log10 and PEtab expects the **natural**-log parameters, so they are scaled back by ``ln 10``
+    (the exact reverse of the importer's ``/_LN10``; the distribution over theta is unchanged --
+    ADR-0003). Truncation bounds, if any (ADR-0020), become the PEtab bounds that truncate the
+    prior; otherwise the parameter is unbounded and the bounds are left blank.
     """
-    loc, scale = float(fp.p1), float(fp.p2)
-    if is_log:
-        loc, scale = loc * _LN10, scale * _LN10
+    n_params, _support_lo = _FAMILY_META[stem]
+    if n_params == 2:
+        p1, p2 = float(fp.p1), float(fp.p2)
+        if is_log:
+            p1, p2 = p1 * _LN10, p2 * _LN10
+        prior_parameters = (p1, p2)
+    else:
+        prior_parameters = (float(fp.p1),)      # a one-parameter family carries only p1
     lb = None if fp.trunc_lb is None else float(fp.trunc_lb)
     ub = None if fp.trunc_ub is None else float(fp.trunc_ub)
     return PetabParameterRow(
         parameter_id=parameter_id, estimate=True,
         lower_bound=lb, upper_bound=ub, nominal_value=nominal,
-        prior_distribution=dist, prior_parameters=(loc, scale))
+        prior_distribution=dist, prior_parameters=prior_parameters)
 
 
 _PARAMETER_COLUMNS = ['parameterId', 'estimate', 'lowerBound', 'upperBound']

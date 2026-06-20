@@ -27,7 +27,9 @@ RoadRunner is a core dependency, so the RoadRunner legs run in the normal tier; 
 is gated ``-m recovery`` + ``@pytest.mark.bngsim``.
 """
 
+import csv
 import textwrap
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -271,3 +273,86 @@ class TestDualBackendLayer:
         np.testing.assert_allclose(bg['obs_ratio'], _analytic(t), rtol=1e-4)
         # ...and agree with each other -- the backend-agnostic guarantee.
         np.testing.assert_allclose(rr['obs_ratio'], bg['obs_ratio'], rtol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 5. The real-world Boehm problem reproduces its published data (-m recovery)
+#
+# The crafted decay model above isolates the layer with an analytic oracle; this closes
+# the loop on the HEADLINE milestone -- the externally-authored Boehm v2 problem imported
+# end to end (ADR-0037). Simulated at the published optimum (the SBML's embedded parameter
+# values) on RoadRunner, the imported measurement layer's materialized observable columns
+# track the published measurement table (the fit IS the optimum), and agree across
+# RoadRunner and bngsim. Opt-in (-m recovery): a real stiff-ODE simulation of the full
+# model, not a unit-scale crafted one.
+# ---------------------------------------------------------------------------
+
+_BOEHM_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'boehm_v2'
+_BOEHM_OBS = ('pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel')
+# The estimated model parameters (the 3 sd_* sigmas do not enter the trajectory).
+_BOEHM_FREE = ('Epo_degradation_BaF3', 'k_exp_hetero', 'k_exp_homo',
+               'k_imp_hetero', 'k_imp_homo', 'k_phos')
+
+
+def _boehm_measurement_data():
+    rows = list(csv.DictReader(open(_BOEHM_DIR / 'measurement_data.tsv'), delimiter='\t'))
+    return {oid: (np.array([float(r['time']) for r in rows if r['observableId'] == oid]),
+                  np.array([float(r['measurement']) for r in rows if r['observableId'] == oid]))
+            for oid in _BOEHM_OBS}
+
+
+def _simulate_boehm(model_cls, out_dir):
+    """Import Boehm into ``out_dir``, simulate the SBML at the published optimum on
+    ``model_cls``, apply the imported measurement layer, and return the materialized Data.
+
+    The published optimum is the SBML's embedded parameter ``value`` attributes (read via the
+    stdlib ``_sbml`` constants snapshot); the measurement models come from the imported conf's
+    ``observable: <id>, formula: <expr>`` lines (specC17 already inlined, ADR-0037)."""
+    from pybnf.parse import ploop
+    from pybnf.petab import import_job
+    from pybnf.petab._sbml import parse_model as parse_sbml
+    from pybnf.pset import FreeParameter, PSet, TimeCourse
+    out = import_job(_BOEHM_DIR / 'Boehm_JProteomeRes2014.yaml', out_dir)
+    xml = str(out / 'model_Boehm_JProteomeRes2014.xml')
+    ent = parse_sbml(Path(xml).read_text())
+    consts, namespace = ent.constants, set(ent.namespace_symbols)
+    layer_consts = {n: v for n, v in consts.items() if n not in _BOEHM_FREE}
+    conf = ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+    models = [MeasurementModel(k[1], v, namespace, layer_consts)
+              for k, v in conf.items() if isinstance(k, tuple) and k[0] == 'measurement']
+    pset = PSet([FreeParameter(n, 'uniform_var', 1e-6, 1e6, value=consts[n])
+                 for n in _BOEHM_FREE])
+    model = model_cls(xml, xml, pset=pset, actions=(TimeCourse({'time': '240', 'step': '2.5'}),))
+    ds = model.execute(str(out), 'boehm', 0)
+    MeasurementLayer(models).apply({model.name: ds}, {n: consts[n] for n in _BOEHM_FREE})
+    return ds[next(iter(ds))]
+
+
+@pytest.mark.recovery
+class TestBoehmRecovery:
+
+    def test_roadrunner_reproduces_published_data(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.pset import SbmlModelNoTimeout
+        data = _simulate_boehm(SbmlModelNoTimeout, tmp_path / 'out')
+        for oid, (t, y) in _boehm_measurement_data().items():
+            assert oid in data.cols                       # the layer materialized the column
+            pred = np.interp(t, data['time'], data[oid])
+            # The model is the published optimum, so the materialized column tracks the data
+            # (to its fitted noise): a high correlation and a residual small vs the data range.
+            assert np.corrcoef(pred, y)[0, 1] > 0.9
+            assert np.sqrt(np.mean((pred - y) ** 2)) < 0.15 * (y.max() - y.min())
+
+    @pytest.mark.bngsim
+    def test_layer_agrees_across_roadrunner_and_bngsim_on_boehm(self, tmp_path):
+        """Neither backend exposes Boehm's computed observables; the measurement layer
+        materializes them identically over each backend's species trajectory (ADR-0036),
+        even on a real stiff model with assignment/initial-assignment rules."""
+        pytest.importorskip('petab')
+        from pybnf.bngsim_sbml_model import BngsimSbmlModelNoTimeout
+        from pybnf.pset import SbmlModelNoTimeout
+        rr = _simulate_boehm(SbmlModelNoTimeout, tmp_path / 'rr')
+        bg = _simulate_boehm(BngsimSbmlModelNoTimeout, tmp_path / 'bg')
+        for oid in _BOEHM_OBS:
+            on_rr_grid = np.interp(rr['time'], bg['time'], bg[oid])
+            np.testing.assert_allclose(on_rr_grid, rr[oid], rtol=1e-3, atol=1e-3)

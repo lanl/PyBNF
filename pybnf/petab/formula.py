@@ -94,6 +94,45 @@ def bngl_body_to_petab_math(body, entities):
     return petab_math
 
 
+def inline_constants(formula, constants):
+    """Substitute fixed-parameter constants into a PEtab math ``observableFormula``.
+
+    A PEtab ``observableFormula`` may reference a fixed parameter that lives only in the
+    PEtab parameters table, not in the model file (Boehm's ``specC17 = 0.107`` -- a
+    species-activity constant absent from the SBML; ADR-0037). Such a symbol resolves
+    against neither the model namespace nor the simulation trajectory, so the measurement
+    layer cannot evaluate it. Because it is *fixed*, substituting its numeric value is
+    exact: the measurement model then references only model entities + estimated
+    parameters and the model file stays unedited (ADR-0036).
+
+    ``constants`` is the ``{name: value}`` map of fixed PEtab parameters **not** present
+    as model entities (a fixed parameter that *is* a model entity stays a symbol -- it
+    resolves as a model constant). Substitution + serialization go through ``sympy`` (never
+    a string tokenizer -- ADR-0033), guarded by the same numeric round-trip self-check as
+    the exporter. If no constant is a free symbol of ``formula`` the original string is
+    returned **verbatim** (the bare-name / model-only common case never reaches ``sympy``,
+    so the demo round trip is byte-stable).
+
+    Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable formula, or a
+    substitution that fails its round-trip self-check.
+    """
+    if not constants:
+        return formula
+    sympify_petab = _require_petab_math()
+    expr = _parse(sympify_petab, formula, source='observableFormula')
+    import sympy as sp
+    # Match by NAME: petab's parser tags symbols with assumptions (real/positive), so a plain
+    # ``sp.Symbol(name)`` is a different object -- substitute the actual free-symbol objects.
+    by_name = {str(s): s for s in expr.free_symbols}
+    present = {by_name[n]: v for n, v in constants.items() if n in by_name}
+    if not present:
+        return formula      # nothing to inline -> carry the formula verbatim
+    subbed = expr.subs({sym: sp.Float(v) for sym, v in present.items()})
+    petab_math = _petab_printer_cls()().doprint(subbed)
+    _assert_round_trips(sympify_petab, subbed, petab_math, formula)
+    return petab_math
+
+
 def compile_petab_formula(formula, allowed_symbols, *, detail=None):
     """Compile a PEtab math ``observableFormula`` to ``(numpy_callable, ordered_names)``.
 

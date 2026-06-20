@@ -128,6 +128,22 @@ class TestParse:
         assert d[('noise_model', 'obs2')] == ('laplace', {'scale': ('fit', 'b_obs2__FREE')}, None)
         assert d[('noise_model', 'obs3')] == ('normal', {'sigma': ('read_exp_file', '_SD')}, 'mean')
 
+    def test_catalog_var_keyword_arity(self):
+        # The v2 catalog families (#417): the two-parameter families keep the two-number
+        # form, the one-parameter unbounded families (exponential/chisquare/rayleigh) take a
+        # single number, and the arity is enforced at parse time (a clean error, not a
+        # downstream TypeError).
+        assert parse.parse('cauchy_var = k 0 2') == ['cauchy_var', 'k', '0', '2']
+        assert parse.parse('gamma_var = k 2 3') == ['gamma_var', 'k', '2', '3']
+        assert parse.parse('exponential_var = k 0.5') == ['exponential_var', 'k', '0.5']
+        assert parse.parse('chisquare_var = k 4') == ['chisquare_var', 'k', '4']
+        assert parse.parse('rayleigh_var = k 1.5') == ['rayleigh_var', 'k', '1.5']
+        # The arity is enforced at parse time -- ploop surfaces it as a clean PybnfError.
+        with pytest.raises(PybnfError):
+            parse.ploop(['normal_var = k 5'])         # a two-parameter family needs two numbers
+        with pytest.raises(PybnfError):
+            parse.ploop(['exponential_var = k 0.5 9'])  # a one-parameter family takes exactly one
+
     def test_node_parse(self):
         assert parse.parse('worker_nodes = cn196 192.168.1.1') == ['worker_nodes', 'cn196', '192.168.1.1']
         assert parse.parse('scheduler_node = this_machine') == ['scheduler_node', 'this_machine']

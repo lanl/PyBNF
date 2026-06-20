@@ -48,7 +48,10 @@ multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'c
 # families (b_var_def_keys) take the optional b/u flag in the grammar and have
 # their bound read in ploop; unbounded ones (var_def_keys) don't. var/logvar are
 # the no-prior Simplex start-point keywords (one or two numbers, no family).
-b_var_def_keys, var_def_keys = var_keyword_grammar()
+b_var_def_keys, var_def_keys, one_param_var_keys = var_keyword_grammar()
+# The two-number keywords are every var keyword except the one-parameter families.
+two_param_var_keys = [k for k in var_def_keys + b_var_def_keys
+                      if k not in one_param_var_keys]
 var_def_keys_1or2nums = ['var', 'logvar']
 strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'objective',
               'profile_objective', 'initialization',
@@ -81,11 +84,19 @@ def parse(s):
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
     numgram = numkeys - equals - num - comment
 
-    # variable definition grammar
-    strnumkeys = _one_of(' '.join(var_def_keys + b_var_def_keys), caseless=True)
+    # variable definition grammar, split by the family's parameter count so the arity is
+    # enforced at parse time (a clean error, not a downstream TypeError). The two-number
+    # families (location/scale: mean/sd, location/b, shape/scale; and the bounded box) take
+    # ``<p> <num> <num>`` plus the optional reflecting-bounds b/u flag a bounded family
+    # carries; the one-parameter unbounded families (exponential scale, chisquare dof,
+    # rayleigh scale -- ADR-0010/#417) take a single ``<p> <num>``.
     bng_parameter = pp.Word(pp.alphas, pp.alphanums + "_")
-    varnums = bng_parameter - num - num - pp.Optional(pp.Word("ubBU"))
-    strnumgram = strnumkeys - equals - varnums - comment
+    two_param_keys = _one_of(' '.join(two_param_var_keys), caseless=True)
+    two_param_nums = bng_parameter - num - num - pp.Optional(pp.Word("ubBU"))
+    one_param_keys = _one_of(' '.join(one_param_var_keys), caseless=True)
+    one_param_nums = bng_parameter - num
+    strnumgram = ((two_param_keys - equals - two_param_nums)
+                  | (one_param_keys - equals - one_param_nums)) - comment
 
     # multiple string value grammar
     multstrkey = _one_of(' '.join(multstrkeys), caseless=True)

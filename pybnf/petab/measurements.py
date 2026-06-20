@@ -41,9 +41,13 @@ class PetabMeasurementRow:
     """One row of a PEtab v2 measurements table, in PyBNF's neutral vocabulary.
 
     ``experiment_id`` is ``''`` for a base time-course with no condition changes
-    (PEtab's "model as is"); ``noise_parameters`` is the per-point noise value (the
-    ``_SD`` cell) feeding the observable's single declared noise placeholder, or
-    ``None`` when the column carries no ``_SD``.
+    (PEtab's "model as is"); ``noise_parameters`` is the per-point **numeric** noise
+    value (the ``_SD`` cell) feeding the observable's single declared noise
+    placeholder, or ``None`` when the column carries no number. ``noise_parameter_id``
+    is the alternative: a **parameter id** in the ``noiseParameters`` column (Boehm's
+    ``sd_pSTAT5A_rel``) -- a PEtab placeholder override that, when constant across an
+    observable's rows, *is* a per-observable estimated sigma (ADR-0021/0037); exactly
+    one of the two is set (or neither, for a blank cell).
     """
 
     observable_id: str
@@ -51,6 +55,7 @@ class PetabMeasurementRow:
     measurement: float
     experiment_id: str = ''
     noise_parameters: float | None = None
+    noise_parameter_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +239,14 @@ def _measurement_row_from_record(rec):
     if oid is None or oid.strip() == '':
         raise PybnfError("PEtab measurements row is missing an observableId.")
     oid = oid.strip()
+    numeric, param_id = _noise_parameters(rec.get('noiseParameters'))
     return PetabMeasurementRow(
         observable_id=oid,
         time=_require_float(rec.get('time'), 'time', oid),
         measurement=_require_float(rec.get('measurement'), 'measurement', oid),
         experiment_id=(rec.get('experimentId') or '').strip(),
-        noise_parameters=_noise_parameters(rec.get('noiseParameters'), oid),
+        noise_parameters=numeric,
+        noise_parameter_id=param_id,
     )
 
 
@@ -250,28 +257,71 @@ def _require_float(s, column, oid):
     return float(s)
 
 
-def _noise_parameters(s, oid):
-    """The per-point ``noiseParameters`` value: a number (the ``_SD`` cell) or blank.
+def _noise_parameters(s):
+    """Split a ``noiseParameters`` cell into ``(numeric, parameter_id)``.
 
-    This read path treats ``noiseParameters`` as a numeric per-point standard deviation
-    (the source a ``chi_sq`` re-export reads back). A real v2 problem may instead put a
-    **parameter id** here (e.g. Boehm's ``sd_pSTAT5A_rel``) -- a PEtab *placeholder
-    override* substituted into the observable's declared ``noiseParameter`` placeholder
-    per measurement. That is the deferred observable/noise placeholder semantics (out of
-    scope, #407/ADR-0033), surfaced as a clear ``NotImplementedError`` rather than the
-    raw ``float()`` ``ValueError`` it would otherwise produce.
+    Two forms occur in real v2 problems, and this read path now records both (ADR-0037):
+
+    * a **number** -- the per-point standard deviation (the ``_SD`` cell a ``chi_sq``
+      re-export reads back) -> ``(value, None)``;
+    * a **parameter id** -- a PEtab *placeholder override* substituted into the
+      observable's declared noise placeholder per measurement (Boehm's
+      ``sd_pSTAT5A_rel``) -> ``(None, id)``. When that id is constant across the
+      observable's rows it *is* a per-observable estimated sigma
+      (:func:`noise_parameter_ids_by_observable`, ADR-0021/0037); a genuinely
+      per-measurement-varying id has no PyBNF analogue and is rejected downstream.
+
+    A blank cell is ``(None, None)``. The reader only classifies the token here; the
+    constant-per-observable check is cross-row and lives in the importer.
     """
     if s is None or s.strip() == '':
-        return None
+        return None, None
+    s = s.strip()
     try:
-        return float(s)
+        return float(s), None
     except ValueError:
-        raise NotImplementedError(
-            f"Measurement for observable '{oid}' has a non-numeric noiseParameters value "
-            f"{s.strip()!r} -- a PEtab placeholder override (a parameter id substituted "
-            f"into the observable's noise placeholder per measurement). Per-measurement "
-            f"noise/observable parameter overrides are the deferred placeholder semantics "
-            f"(#407, ADR-0033); this read path reconstructs a numeric per-point _SD value.")
+        return None, s
+
+
+def noise_parameter_ids_by_observable(rows):
+    """``{observable_id: parameter_id}`` for observables whose ``noiseParameters`` is a
+    single parameter id constant across all of that observable's rows (ADR-0037).
+
+    A constant-per-observable parameter-id placeholder is exactly PyBNF's native
+    per-observable estimated sigma (``noise_model <obs> = <family>, sigma = fit <id>``,
+    ADR-0021): the importer emits one such line per entry. Observables whose
+    ``noiseParameters`` is numeric (per-point ``_SD``) or blank are simply absent from
+    the map.
+
+    Raises ``NotImplementedError`` -- the documented per-measurement frontier -- when a
+    single observable's rows carry **differing** parameter ids (a genuinely
+    per-measurement-varying noise scale, which per-observable PyBNF noise cannot
+    represent) or **mix** a parameter id with numeric per-point values.
+    """
+    ids, numeric = {}, set()
+    for row in rows:
+        if row.noise_parameter_id is not None:
+            ids.setdefault(row.observable_id, set()).add(row.noise_parameter_id)
+        elif row.noise_parameters is not None:
+            numeric.add(row.observable_id)
+    result = {}
+    for oid, id_set in ids.items():
+        if oid in numeric:
+            raise NotImplementedError(
+                f"Observable '{oid}' mixes a parameter-id noiseParameters placeholder "
+                f"with numeric per-point values across its measurement rows -- a "
+                f"per-measurement-varying noise scale with no per-observable PyBNF "
+                f"analogue (the deferred placeholder frontier, #407/ADR-0037).")
+        if len(id_set) != 1:
+            raise NotImplementedError(
+                f"Observable '{oid}' has more than one noiseParameters parameter id "
+                f"across its measurement rows ({sorted(id_set)}): a genuinely "
+                f"per-measurement-varying noise scale. PyBNF noise is per-observable "
+                f"(a single estimated sigma per observable), so this is the deferred "
+                f"placeholder frontier (#407/ADR-0037). A constant-per-observable id is "
+                f"imported as 'noise_model <obs> = <family>, sigma = fit <id>'.")
+        result[oid] = next(iter(id_set))
+    return result
 
 
 # ---------------------------------------------------------------------------

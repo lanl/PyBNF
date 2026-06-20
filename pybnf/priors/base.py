@@ -34,6 +34,10 @@ class Prior(ABC):
     #: Whether the family's support is finite -- drives reflecting-bounds
     #: eligibility and latin-hypercube participation. ``Uniform`` overrides.
     has_bounded_support = False
+    #: How many config numbers the family's ``*_var`` keyword takes (``p1 p2`` for the
+    #: location/scale/bounds families; the one-parameter exponential/chisquare/rayleigh
+    #: override to 1, so the grammar admits a single number -- ADR-0010/#417).
+    n_params = 2
     #: The underlying scipy frozen distribution, or ``None``.
     frozen = None
 
@@ -57,6 +61,31 @@ class Prior(ABC):
     @abstractmethod
     def support(self):
         """The ``(lo, hi)`` support in sampling space ``u`` (may be infinite)."""
+
+
+class FrozenPrior(Prior):
+    """A :class:`Prior` backed entirely by a ``scipy.stats`` frozen distribution in the
+    sampling space ``u`` (ADR-0010).
+
+    Every location/scale/shape family (Normal, Laplace, Cauchy, Gamma, Exponential,
+    ChiSquare, Rayleigh) has the *same* density/sampling/inverse-CDF/support shape -- a thin
+    delegation to its frozen distribution -- so it lives here once. A subclass sets
+    ``self.frozen`` in ``__init__`` (and ``has_bounded_support`` as a class attribute) and
+    provides the family-specific ``build`` classmethod. ``NoPrior`` (no distribution) and
+    ``Uniform`` (a custom latin-hypercube ``ppf``) do not use this base.
+    """
+
+    def logpdf(self, u):
+        return float(self.frozen.logpdf(u))
+
+    def rvs(self, rng):
+        return self.frozen.rvs(random_state=rng)
+
+    def ppf(self, q):
+        return float(self.frozen.ppf(q))
+
+    def support(self):
+        return tuple(self.frozen.support())
 
 
 class NoPrior(Prior):

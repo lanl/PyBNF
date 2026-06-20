@@ -21,6 +21,11 @@ from pybnf.priors import LINEAR, LOG10, TruncatedPrior, build_prior
 from pybnf.priors.normal import Normal
 from pybnf.priors.uniform import Uniform
 from pybnf.priors.laplace import Laplace
+from pybnf.priors.cauchy import Cauchy
+from pybnf.priors.gamma import Gamma
+from pybnf.priors.exponential import Exponential
+from pybnf.priors.chisquare import ChiSquare
+from pybnf.priors.rayleigh import Rayleigh
 from pybnf.priors.base import NoPrior
 from pybnf.printing import PybnfError
 
@@ -110,6 +115,58 @@ class TestUniformFamily:
         assert lin.support() == (0.01, 100.0)
         log = Uniform.build(0.01, 100.0, LOG10)
         np.testing.assert_allclose(log.support(), (-2.0, 2.0), rtol=1e-12)
+
+
+class TestCatalogFamilies:
+    """The full v2 catalog families (#417), each oracled against its scipy distribution.
+
+    The PEtab parameterizations are verified against petab's own ``v1.distributions``: gamma
+    is shape+scale (not shape+rate), exponential's parameter is the scale (= 1/rate), and the
+    one-parameter families ignore the unused ``p2``.
+    """
+
+    # (family, build-kwargs, scipy reference, sampling-space support)
+    _FAMILIES = [
+        (Cauchy, dict(loc=1.0, scale=2.0), stats.cauchy(loc=1.0, scale=2.0), (-np.inf, np.inf)),
+        (Gamma, dict(shape=2.0, gamma_scale=3.0), stats.gamma(a=2.0, scale=3.0), (0.0, np.inf)),
+        (Exponential, dict(exp_scale=0.5), stats.expon(scale=0.5), (0.0, np.inf)),
+        (ChiSquare, dict(dof=4.0), stats.chi2(df=4.0), (0.0, np.inf)),
+        (Rayleigh, dict(ray_scale=1.5), stats.rayleigh(scale=1.5), (0.0, np.inf)),
+    ]
+
+    @pytest.mark.parametrize("cls,kwargs,ref,support", _FAMILIES)
+    def test_logpdf_ppf_match_scipy(self, cls, kwargs, ref, support):
+        p = cls(**kwargs)
+        for q in (0.05, 0.25, 0.5, 0.75, 0.95):
+            u = float(ref.ppf(q))
+            assert p.logpdf(u) == pytest.approx(float(ref.logpdf(u)))
+            assert p.ppf(q) == pytest.approx(u)
+        assert not p.has_bounded_support and p.has_prior
+        np.testing.assert_allclose(p.support(), support)
+
+    @pytest.mark.parametrize("cls,kwargs,ref,_support", _FAMILIES)
+    def test_rvs_mean_matches_scipy(self, cls, kwargs, ref, _support):
+        rng = np.random.default_rng(0)
+        p = cls(**kwargs)
+        xs = np.array([p.rvs(rng) for _ in range(40000)])
+        # Cauchy has no finite mean; check the median instead (it has one).
+        stat = np.median if cls is Cauchy else np.mean
+        assert stat(xs) == pytest.approx(float(ref.median() if cls is Cauchy else ref.mean()),
+                                         abs=0.1)
+
+    @pytest.mark.parametrize("keyword,p1,p2,cls", [
+        ('cauchy_var', 1.0, 2.0, Cauchy),
+        ('gamma_var', 2.0, 3.0, Gamma),
+        ('exponential_var', 0.5, None, Exponential),
+        ('chisquare_var', 4.0, None, ChiSquare),
+        ('rayleigh_var', 1.5, None, Rayleigh),
+    ])
+    def test_build_prior_resolves_keyword(self, keyword, p1, p2, cls):
+        # The registry-derived keyword map resolves each family (linear), and one-parameter
+        # families build from p1 alone (p2 absent, the ADR-0010/#417 one-number form).
+        prior, scale = build_prior(keyword, p1, p2)
+        assert isinstance(prior, cls)
+        assert scale is LINEAR
 
 
 class TestNoPrior:
