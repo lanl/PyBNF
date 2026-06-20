@@ -215,17 +215,31 @@ def _model_param(parameter_id):
 def _observable_id_to_column(observable_rows):
     """Map each ``observableId`` to the model column it measures (its ``observableFormula``,
     the bare model-entity name -- ADR-0025). Iteration order = table order, which fixes the
-    wide-data column order on the measurement pivot. A non-bare ``observableFormula``
-    raises ``NotImplementedError`` (the deferred sympy layer)."""
+    wide-data column order on the measurement pivot.
+
+    An ``observableFormula`` that is an **expression** (anything but a single model-entity
+    name) raises ``NotImplementedError`` -- the deferred observableFormula layer (ADR-0033).
+    PyBNF matches an ``.exp`` column to a model observable/function *by name* and never
+    evaluates the formula, so importing an expression means *synthesizing* a BNGL ``begin
+    functions`` entry for it (bounded BNGL generation, the optional petab/sympy extra). No
+    upstream BNGL problem exercises it and the exporter never emits one (it keeps functions
+    in the model and references them by name), so there is no round-trip oracle; the
+    boundary is drawn in code rather than mis-synthesizing it silently.
+    """
     mapping = {}
     for row in observable_rows:
         formula = (row.observable_formula or '').strip()
         if not _IDENTIFIER.match(formula):
             raise NotImplementedError(
                 f"Observable '{row.observable_id}' has observableFormula {formula!r}, "
-                f"which is not a bare model-entity name. Evaluating PEtab observable "
-                f"formulae needs the sympy layer (the deferred observableFormula chunk, "
-                f"#407), which adopts the petab library.")
+                f"which is an expression, not a bare model-entity name. Importing it means "
+                f"synthesizing a BNGL function '{row.observable_id}() = <translated expr>' "
+                f"and is the deferred observableFormula layer (ADR-0033, #407): the "
+                f"arithmetic translation adopts the petab/sympy optional extra, and PEtab's "
+                f"observableParameters/noiseParameters placeholders (per-measurement "
+                f"scale/offset) have no direct PyBNF analogue. The bare-name common case "
+                f"(a function carried verbatim in the model, referenced by name) imports "
+                f"with no formula translator.")
         mapping[row.observable_id] = formula
     if not mapping:
         raise PybnfError("The PEtab observables table declares no observables.")

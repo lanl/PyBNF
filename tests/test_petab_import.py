@@ -401,6 +401,13 @@ class TestBoundaries:
             self._import_mutated(demo_petab, tmp_path,
                                  {'observables.tsv': ('normal', distribution)})
 
+    def test_expression_observable_formula_is_refused(self, demo_petab, tmp_path):
+        # A non-bare observableFormula is the deferred formula layer (ADR-0033): importing
+        # it means synthesizing a BNGL function, with no round-trip oracle, so it raises.
+        with pytest.raises(NotImplementedError, match='expression'):
+            self._import_mutated(demo_petab, tmp_path,
+                                 {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx + 1\t')})
+
     def test_unsupported_prior_family_is_refused(self, demo_petab, tmp_path):
         # A PEtab prior family PyBNF has no Prior for (catalog-parity follow-up).
         prob = tmp_path / 'prob'
