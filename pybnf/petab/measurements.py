@@ -1,14 +1,19 @@
-"""PEtab v2 ``measurements`` table, export half (issue #407, exporter-first; ADR-0025).
+"""PEtab v2 ``measurements`` table, both directions (issue #407; ADR-0025/the importer
+read path).
 
-The measurements chunk of the PEtab v2 *exporter*. PyBNF stores a dataset as a
-**wide** :class:`pybnf.data.Data` (column 0 the independent variable, the other
-columns named after model observables/functions, optional ``_SD`` noise columns);
-PEtab stores it **long** (one row per measured point). This module pivots the wide
-``Data`` of a single experiment into long :class:`PetabMeasurementRow` records.
+PyBNF stores a dataset as a **wide** :class:`pybnf.data.Data` (column 0 the
+independent variable, the other columns named after model observables/functions,
+optional ``_SD`` noise columns); PEtab stores it **long** (one row per measured
+point). This module pivots between the two, on the neutral :class:`PetabMeasurementRow`
+seam shared with the other PEtab tables:
 
-Mirrors the importer's neutral seam, reversed: the *asset* is
-``measurement_rows_from_data`` (wide ``Data`` -> neutral rows); the *disposable*
-half is ``write_measurement_table`` (rows -> TSV).
+* **export** -- ``measurement_rows_from_data`` (wide ``Data`` -> neutral rows) +
+  ``write_measurement_table`` (rows -> TSV, the disposable half).
+* **import** -- ``read_measurement_table`` (TSV -> rows, the disposable half) +
+  ``data_from_measurement_rows`` (long rows -> one wide ``Data`` per experiment, the
+  exact inverse of ``measurement_rows_from_data``: it groups rows by ``experimentId``,
+  pivots long->wide, and rebuilds each observable's ``_SD`` companion column from the
+  per-point ``noiseParameters``).
 
 **Scope (chunk 1, ADR-0025):** a single experiment, a **time-course** ``.exp``
 (independent variable ``time``), one value per ``(observable, time)`` cell, the
@@ -18,10 +23,13 @@ per-point ``_SD`` column carried into ``noiseParameters``. A dose-response
 conditions/experiments tables, not the measurement table.
 """
 
+import csv
 from dataclasses import dataclass
 
 import numpy as np
 
+from ..data import Data
+from ..printing import PybnfError
 from ._tsv import num, write_tsv
 
 _MEASUREMENT_COLUMNS = [
@@ -121,6 +129,131 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
                 measurement=float(value), experiment_id=experiment_ids[i],
                 noise_parameters=noise))
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Import: long PetabMeasurementRow records -> wide Data (the reverse asset)
+# ---------------------------------------------------------------------------
+
+def data_from_measurement_rows(rows, observable_id_to_column, sd_suffix='_SD',
+                               indvar='time'):
+    """Pivot long measurement ``rows`` back to one wide :class:`~pybnf.data.Data` per
+    experiment -- the inverse of :func:`measurement_rows_from_data`.
+
+    ``observable_id_to_column`` maps a PEtab ``observableId`` (e.g. ``obs_x``) to the
+    model column header it measures (e.g. ``x``); its *iteration order* fixes the wide
+    column order, so a re-export classifies columns in the same order the original
+    export did (the byte-equal round trip). Rows are grouped by ``experimentId``; within
+    a group the sorted-unique ``time`` values become column 0 and each measured
+    observable becomes a value column, ``NaN``-filled where a ``(time, observable)`` cell
+    is absent (the forward pivot skips ``NaN``, so this restores the ragged grid). When
+    any row in the group carries a ``noiseParameters`` value, each value column gets a
+    ``<col><sd_suffix>`` companion rebuilt from those per-point values (the ``_SD`` source
+    a ``chi_sq`` re-export reads back); a group with no ``noiseParameters`` (a fixed /
+    column-mean sigma objective) gets no ``_SD`` columns.
+
+    Returns ``{experiment_id: Data}`` (``experiment_id`` is ``''`` for the "model as is"
+    base time course). Raises ``PybnfError`` if a row names an ``observableId`` absent
+    from the map, and ``NotImplementedError`` if a ``(experiment, observable, time)``
+    triple repeats -- PEtab models replicates as repeated rows with no replicate index,
+    so the wide pivot cannot separate them (replicate reconstruction is deferred; the
+    forward direction stacks replicate ``Data`` objects the importer cannot recover).
+    """
+    by_experiment = {}
+    for row in rows:
+        by_experiment.setdefault(row.experiment_id, []).append(row)
+    return {eid: _wide_data_from_group(eid, group, observable_id_to_column, sd_suffix,
+                                       indvar)
+            for eid, group in by_experiment.items()}
+
+
+def _wide_data_from_group(eid, group, observable_id_to_column, sd_suffix, indvar):
+    """Pivot one experiment's measurement rows to a wide :class:`~pybnf.data.Data`."""
+    present = {row.observable_id for row in group}
+    unknown = present - set(observable_id_to_column)
+    if unknown:
+        raise PybnfError(
+            f"Measurement rows for experiment '{eid}' reference observable id(s) "
+            f"{sorted(unknown)} that are absent from the observables table.")
+    # Wide columns in observables-table order (so a re-export reproduces the order).
+    columns = [observable_id_to_column[oid] for oid in observable_id_to_column
+               if oid in present]
+    column_of_id = {oid: observable_id_to_column[oid] for oid in present}
+
+    times = sorted({row.time for row in group})
+    time_index = {t: i for i, t in enumerate(times)}
+    has_noise = any(row.noise_parameters is not None for row in group)
+
+    values = {col: [np.nan] * len(times) for col in columns}
+    sds = {col: [np.nan] * len(times) for col in columns} if has_noise else None
+    seen = set()
+    for row in group:
+        col = column_of_id[row.observable_id]
+        i = time_index[row.time]
+        if (row.observable_id, row.time) in seen:
+            raise NotImplementedError(
+                f"Experiment '{eid}' has more than one measurement of "
+                f"'{row.observable_id}' at time {row.time}: PEtab models replicates as "
+                f"repeated rows with no replicate index, so the wide pivot cannot "
+                f"separate them. Replicate reconstruction is a deferred importer chunk "
+                f"(#407); the forward export stacks replicate Data objects this read "
+                f"path cannot recover.")
+        seen.add((row.observable_id, row.time))
+        values[col][i] = row.measurement
+        if has_noise and row.noise_parameters is not None:
+            sds[col][i] = row.noise_parameters
+
+    headers = [indvar] + columns
+    data_columns = [times] + [values[col] for col in columns]
+    if has_noise:
+        headers += [col + sd_suffix for col in columns]
+        data_columns += [sds[col] for col in columns]
+    arr = np.array(data_columns, dtype=float).T
+    return Data.from_columns(arr, headers, indvar=indvar)
+
+
+# ---------------------------------------------------------------------------
+# TSV reader (the disposable half of the seam)
+# ---------------------------------------------------------------------------
+
+def read_measurement_table(path):
+    """Read a PEtab v2 ``measurements.tsv`` into :class:`PetabMeasurementRow` records.
+
+    Dependency-free (stdlib ``csv``), mirroring ``parameters.read_parameter_table``.
+    ``experimentId`` is optional (blank -> ``''``, the base time course); ``time`` and
+    ``measurement`` are required; ``noiseParameters`` is the optional per-point ``_SD``
+    value (blank -> ``None``). Unknown extra columns are tolerated and ignored.
+    """
+    with open(path, newline='') as fh:
+        reader = csv.DictReader(fh, delimiter='\t')
+        return [_measurement_row_from_record(rec) for rec in reader]
+
+
+def _measurement_row_from_record(rec):
+    oid = rec.get('observableId')
+    if oid is None or oid.strip() == '':
+        raise PybnfError("PEtab measurements row is missing an observableId.")
+    oid = oid.strip()
+    return PetabMeasurementRow(
+        observable_id=oid,
+        time=_require_float(rec.get('time'), 'time', oid),
+        measurement=_require_float(rec.get('measurement'), 'measurement', oid),
+        experiment_id=(rec.get('experimentId') or '').strip(),
+        noise_parameters=_optional_float(rec.get('noiseParameters')),
+    )
+
+
+def _require_float(s, column, oid):
+    if s is None or s.strip() == '':
+        raise PybnfError(
+            f"PEtab measurement for observable '{oid}' is missing the '{column}' value.")
+    return float(s)
+
+
+def _optional_float(s):
+    if s is None or s.strip() == '':
+        return None
+    return float(s)
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,9 @@ where it pays for itself; these first chunks deliberately do not.
 from .export import clean_model_for_petab, export_job, write_problem_yaml
 from .measurements import (
     PetabMeasurementRow,
+    data_from_measurement_rows,
     measurement_rows_from_data,
+    read_measurement_table,
     write_measurement_table,
 )
 from .observables import (
@@ -59,9 +61,11 @@ __all__ = [
     'read_observable_table',
     'petab_observable_row',
     'write_observable_table',
-    # measurements (export)
+    # measurements (import + export)
     'PetabMeasurementRow',
     'measurement_rows_from_data',
+    'data_from_measurement_rows',
+    'read_measurement_table',
     'write_measurement_table',
     # job exporter
     'export_job',
