@@ -267,6 +267,12 @@ class Configuration:
         if self.config['fit_type'] != 'check':
             self._check_variable_correspondence()
         logger.debug('Loaded variables')
+        # New-era measurement-model observation layer (ADR-0036). Runs after the objective
+        # (which it attaches to) and the variables (whose free-parameter names it excludes
+        # from the constant snapshot): compiles each `observable: <id>, formula: <expr>`
+        # line into a MeasurementModel evaluated post-simulation. No-op when none declared.
+        self._load_measurement_models()
+        logger.debug('Loaded measurement models')
         self._postprocess_normalization()
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
@@ -1062,6 +1068,80 @@ class Configuration:
                     "in the column name.")
             logger.debug(f"Observable override: data column '{header}' -> model entity "
                          f"'{entity}' (with its _SD companion, where present)")
+
+    def _load_measurement_models(self):
+        """Build the measurement-model observation layer (ADR-0036) and attach it to the
+        objective.
+
+        A new-era ``observable: <id>, formula: <expr>`` line declares a *measurement model*:
+        a PEtab ``observableFormula`` evaluated as a post-simulation transform over the output
+        trajectory + the PSet (the observation layer), never by editing the model file. Each
+        formula is validated against the model's expression namespace (the BNGL ``ParamList``
+        via ``_bngl``; SBML species u parameters via ``_sbml`` -- ADR-0026/0036) and carried
+        as a :class:`~pybnf.measurement.MeasurementModel`; fixed model constants are
+        snapshotted (free parameters resolve from the PSet at eval time). The layer attaches
+        to ``self.obj`` and is applied at the objective's ``evaluate_multiple`` seam before
+        the by-name column match. Edition-gated (>= 2); a job with no formula line leaves
+        ``self.obj.measurement`` as the no-op default.
+        """
+        specs = [(k[1], v) for k, v in self.config.items()
+                 if isinstance(k, tuple) and k[0] == 'measurement']
+        if not specs:
+            return
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(
+            ed, 2, "the 'observable: <id>, formula: <expr>' measurement-model syntax")
+
+        from .measurement import MeasurementLayer, MeasurementModel
+        from .petab.formula import compile_petab_formula
+
+        namespace, constants = self._model_expression_namespace()
+        free_names = {v.name for v in self.variables}
+        # Free parameters resolve from the PSet at eval time, not from the constant snapshot.
+        constants = {n: val for n, val in constants.items() if n not in free_names}
+
+        models = []
+        for obs_id, formula in specs:
+            # Fail fast at load: parse + validate the formula's free symbols against the model
+            # namespace (a pointed PybnfError on an unknown symbol / missing petab extra). The
+            # callable is rebuilt lazily at eval time (dropped across pickling), so this is a
+            # validation pass, not the runtime compile.
+            compile_petab_formula(
+                formula, namespace,
+                detail=(f"Measurement model '{obs_id}': allowed symbols are the model's "
+                        f"species/parameters/observables/functions {sorted(namespace)} "
+                        f"(a free parameter is a model id, already included)."))
+            models.append(MeasurementModel(obs_id, formula, namespace, constants))
+        self.obj.measurement = MeasurementLayer(models)
+        logger.debug("Built measurement-model layer with %d model(s): %s",
+                     len(models), [m.observable_id for m in models])
+
+    def _model_expression_namespace(self):
+        """The union expression namespace + fixed-constant snapshot across the job's models,
+        read from the model files directly (stdlib, simulator-free -- the same source the
+        importer uses): the BNGL ``ParamList`` (parameters u observables u functions) for a
+        ``.bngl`` model, species u parameters u compartments for a ``.xml`` SBML model
+        (ADR-0026/0036). Returns ``(namespace_symbols, constants)``."""
+        from .petab._bngl import parse_model as parse_bngl
+        from .petab._sbml import parse_model as parse_sbml
+        namespace = set()
+        constants = {}
+        for mf in self.config['models']:
+            text = Path(self._absolute(mf)).read_text(encoding='utf-8', errors='replace')
+            if mf.endswith('.xml'):
+                ent = parse_sbml(text)
+                namespace |= ent.namespace_symbols
+                constants.update(ent.constants)
+            else:  # .bngl (the BNGL ParamList; .ant antimony carries no formula observables)
+                ent = parse_bngl(text)
+                namespace |= (set(ent.parameters) | set(ent.observable_names)
+                              | set(ent.function_names))
+                for name, rhs in ent.parameters.items():
+                    try:
+                        constants[name] = float(rhs)
+                    except (TypeError, ValueError):
+                        pass  # an expression-valued parameter is not a numeric constant
+        return namespace, constants
 
     def _load_simulators(self):
 

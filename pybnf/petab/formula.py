@@ -1,33 +1,33 @@
-"""The reversible PEtab-math <-> BNGL-function-body translator (issue #407, ADR-0035).
+"""PEtab-math translation for the ``observableFormula`` layer (issue #407, ADR-0035/0036).
 
-The one mapper the expression ``observableFormula`` layer turns on, as a single
-reversible *pair* (the asset-mapper philosophy of ``pybnf.petab``: the hard part written
-once, run both ways):
+Two production directions, both over ``petab``'s ``sympy``-backed math grammar
+(``petab.v2.math``) -- PEtab math is a *specified* grammar, so we translate via its parsed
+tree rather than a hand-rolled string tokenizer (ADR-0033 warned precisely against the
+string approach -- operator precedence, the ``^`` power operator, and the
+``ln``/``log10``/``sqrt`` spellings are where it would silently go wrong):
 
 * :func:`bngl_body_to_petab_math` -- a BNGL function body -> a PEtab math expression
-  (the exporter's opt-in inlining mode, which generates the round-trip oracle).
-* :func:`petab_math_to_bngl_body` -- a PEtab math expression -> a BNGL function body
-  (the importer's synthesis of a ``begin functions`` entry).
+  (the exporter's opt-in inlining mode, which generates the round-trip oracle). The hard
+  semantic part (precedence, ``^``, ``sqrt``) is written once and guarded by a numeric
+  self-check (:func:`_assert_round_trips`).
+* :func:`compile_petab_formula` -- a PEtab math expression -> a vectorized ``numpy``
+  callable (the **measurement-model observation layer**, ADR-0036): the formula is evaluated
+  *post-simulation* over the output trajectory + the PSet, never by editing a model file.
+  This is the direction SBML import and the retrofitted BNGL-expression path turn on; it
+  superseded ADR-0035's *synthesis into the model file* (the ``PEtab-math -> BNGL function
+  body`` printer the importer once used to inject a ``begin functions`` entry).
 
-Both go through ``petab``'s ``sympy``-backed math grammar (``petab.v2.math``): PEtab math
-is a *specified* grammar, so we translate via its parsed tree rather than a hand-rolled
-string tokenizer (ADR-0033 warned precisely against the string approach -- operator
-precedence, the ``^`` power operator, and the ``ln``/``log10``/``sqrt`` spellings are
-where it would silently go wrong). PEtab math and BNGL function-body math overlap on
-infix arithmetic and ``^`` but differ on a few function spellings and BNGL's zero-arg
-``func()`` reference convention; that difference is the whole reason a translator exists,
-and it lives here.
+``petab``/``sympy`` is the **optional runtime extra** ``pybnf[petab]`` -- imported lazily,
+only on these expression paths. The bare-name ``observableFormula`` common case never
+reaches this module and stays dependency-free + simulator-free (ADR-0019); an expression
+import with ``petab`` absent raises a clear "install ``pybnf[petab]``" error, not an
+``ImportError``.
 
-``petab`` is the **optional runtime extra** ``pybnf[petab]`` -- imported lazily, only on
-this expression path. The bare-name ``observableFormula`` common case never reaches this
-module and stays dependency-free + simulator-free (ADR-0019); an expression import with
-``petab`` absent raises a clear "install ``pybnf[petab]``" error, not an ``ImportError``.
-
-**MVP scope (ADR-0035).** Arithmetic over existing model entities (parameters,
-observables, functions) -- the surface a measurement model needs (Boehm's quotient of
-sums is the worked fixture). A free symbol that is not a model entity is an error; a
-PEtab ``observableParameter*``/``noiseParameter*`` per-measurement placeholder is the
-deferred frontier and raises pointing here.
+**MVP scope (ADR-0035/0036).** Arithmetic over existing model entities (BNGL parameters /
+observables / functions; SBML species / parameters) -- the surface a measurement model needs
+(Boehm's quotient of sums is the worked fixture). A free symbol that is not a model entity is
+an error; a PEtab ``observableParameter*``/``noiseParameter*`` per-measurement placeholder is
+the deferred frontier and raises pointing here.
 """
 
 import re
@@ -47,8 +47,8 @@ def _require_petab_math():
 
     ``petab``/``sympy`` is the optional ``pybnf[petab]`` extra (ADR-0035): only the
     expression path imports it. A missing install surfaces as a ``PybnfError`` naming the
-    extra, never a bare ``ImportError`` from deep in the call stack. Serialization is owned
-    by our own printers (:func:`_petab_printer_cls`, :func:`_bngl_printer_cls`), not
+    extra, never a bare ``ImportError`` from deep in the call stack. The forward (export)
+    serialization is owned by our own printer (:func:`_petab_printer_cls`), not
     ``petab_math_str`` -- see :func:`_petab_printer_cls` for why.
     """
     try:
@@ -94,23 +94,40 @@ def bngl_body_to_petab_math(body, entities):
     return petab_math
 
 
-def petab_math_to_bngl_body(formula, entities):
-    """Translate a PEtab math ``observableFormula`` to a BNGL function body.
+def compile_petab_formula(formula, allowed_symbols, *, detail=None):
+    """Compile a PEtab math ``observableFormula`` to ``(numpy_callable, ordered_names)``.
 
-    The importer's synthesis (ADR-0035): the body is emitted into a ``begin functions``
-    entry whose name is the ``observableId``. The PEtab expression is parsed by ``petab``'s
-    grammar, every free symbol validated against the model namespace, and the tree printed
-    to BNGL-valid math -- the ``^`` power operator, the ``ln``/``log10``/``log2``/``sqrt``
-    spellings, and ``func()`` for a symbol that names a model **function** (BNGL references
-    a global function with empty parens).
+    The third direction of the translator (ADR-0036, the measurement-model observation
+    layer): instead of serializing to a model-language body, the parsed PEtab expression is
+    turned into a vectorized ``numpy`` callable so the layer can evaluate the measurement
+    model *post-simulation* over the output trajectory's columns + the PSet -- no model-file
+    edit, identical for BNGL and SBML and every backend. ``allowed_symbols`` is the model's
+    expression namespace (BNGL ``ParamList``, or SBML species u parameters; ADR-0026/0036);
+    ``detail`` overrides the unknown-symbol error's namespace listing.
 
-    Raises ``PybnfError`` on a missing ``petab`` extra, an unknown free symbol, or an
-    unparseable formula; ``NotImplementedError`` on a per-measurement placeholder symbol.
+    Returns the callable and the **sorted** free-symbol name list it expects positionally
+    (``callable(*[binding[name] for name in ordered_names])``); the caller binds each name to
+    a trajectory column or a scalar. Reuses ``sympify_petab`` + the shared free-symbol
+    validation, then ``lambdify``\\ s with the ``numpy`` backend.
+
+    Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable formula, or an unknown
+    free symbol; ``NotImplementedError`` on a per-measurement placeholder symbol.
     """
     sympify_petab = _require_petab_math()
     expr = _parse(sympify_petab, formula, source='observableFormula')
-    _validate_symbols(expr, entities)
-    return _bngl_printer_cls()(entities.function_names).doprint(expr)
+    allowed = set(allowed_symbols)
+    _check_symbols(
+        expr, allowed,
+        unknown=lambda name: (
+            f"The observableFormula references '{name}', which is not a known model entity "
+            f"(species / parameter / observable / function). A measurement-model expression "
+            f"may only reference existing model entities (ADR-0036); an unknown symbol is an "
+            f"error, not a new free parameter."),
+        detail=detail or f"Known model symbols: {sorted(allowed)}.")
+    import sympy as sp
+    names = sorted(str(s) for s in expr.free_symbols)
+    func = sp.lambdify([sp.Symbol(n) for n in names], expr, modules='numpy')
+    return func, names
 
 
 # ---------------------------------------------------------------------------
@@ -185,16 +202,36 @@ def _namespace(entities):
 
 
 def _validate_symbols(expr, entities):
-    """Assert every free symbol in ``expr`` is a known model entity.
+    """Assert every free symbol in ``expr`` is a known BNGL model entity.
 
     An unknown symbol is an **error**, never a silent free parameter (ADR-0035). A PEtab
     per-measurement placeholder (``observableParameter*`` / ``noiseParameter*``) is the
     deferred frontier and raises ``NotImplementedError`` pointing at it; any other unknown
     symbol raises ``PybnfError`` naming it and the model's entity sets.
     """
-    namespace = _namespace(entities)
+    _check_symbols(
+        expr, _namespace(entities),
+        unknown=lambda name: (
+            f"The observableFormula references '{name}', which is not a parameter, "
+            f"observable, or function of the model. A measurement-model expression may "
+            f"only reference existing model entities (ADR-0035); an unknown symbol is an "
+            f"error, not a new free parameter."),
+        detail=(f"Model entities: parameters={sorted(entities.parameters)}; "
+                f"observables={sorted(entities.observable_names)}; "
+                f"functions={sorted(entities.function_names)}."))
+
+
+def _check_symbols(expr, allowed, *, unknown, detail):
+    """The shared free-symbol validator behind every translator direction (ADR-0035/0036).
+
+    Asserts each free symbol of ``expr`` is in ``allowed``. ``unknown(name)`` supplies the
+    direction-specific ``PybnfError`` summary (the BNGL translator and the numpy compiler
+    word it differently); ``detail`` is the namespace listing. A per-measurement placeholder
+    (``observableParameter*`` / ``noiseParameter*``) always raises the shared deferred-
+    frontier ``NotImplementedError`` -- one home for the placeholder boundary.
+    """
     for name in sorted(str(s) for s in expr.free_symbols):
-        if name in namespace:
+        if name in allowed:
             continue
         if _PLACEHOLDER.match(name):
             raise NotImplementedError(
@@ -203,16 +240,9 @@ def _validate_symbols(expr, entities):
                 f"per-point noise value substituted per measurement row). PyBNF noise is "
                 f"per-observable and has no per-measurement observable scale/offset, so "
                 f"placeholders have no analogue and are the deferred frontier "
-                f"(ADR-0035 / ADR-0033, #407). This chunk translates arithmetic over "
-                f"existing model entities only.")
-        raise PybnfError(
-            f"The observableFormula references '{name}', which is not a parameter, "
-            f"observable, or function of the model. A measurement-model expression may "
-            f"only reference existing model entities (ADR-0035); an unknown symbol is an "
-            f"error, not a new free parameter.",
-            f"Model entities: parameters={sorted(entities.parameters)}; "
-            f"observables={sorted(entities.observable_names)}; "
-            f"functions={sorted(entities.function_names)}.")
+                f"(ADR-0035 / ADR-0033 / ADR-0036, #407). This chunk translates arithmetic "
+                f"over existing model entities only.")
+        raise PybnfError(unknown(name), detail)
 
 
 def _strip_function_calls(body, entities):
@@ -222,8 +252,8 @@ def _strip_function_calls(body, entities):
     BNGL references a global function that way. The function set is closed and known
     (``entities.function_names``), so this is a bounded, anchored rename of known names --
     not a general math tokenizer (ADR-0033's warning is about *parsing* the math, which we
-    still hand to ``sympify_petab``). The inverse -- re-appending ``()`` on the BNGL side --
-    is :meth:`_BnglPrinter._print_Symbol`.
+    still hand to ``sympify_petab``). Used only by the export-inline direction
+    (:func:`bngl_body_to_petab_math`).
     """
     out = body
     for name in sorted(entities.function_names, key=len, reverse=True):
@@ -231,10 +261,9 @@ def _strip_function_calls(body, entities):
     return out
 
 
-# Cached printer classes. Defined lazily (they subclass petab/sympy printers) so this
-# module imports with petab/sympy absent -- only the expression path builds them.
+# Cached printer class. Defined lazily (it subclasses petab's printer) so this module
+# imports with petab/sympy absent -- only the export-inline path builds it.
 _PETAB_PRINTER = None
-_BNGL_PRINTER = None
 
 
 def _petab_printer_cls():
@@ -247,8 +276,8 @@ def _petab_printer_cls():
     re-parses as ``(x^1)/2`` and silently corrupts the measurement model. We parenthesize a
     non-integer rational exponent (``x ^ (1/2)``), which both petab parses correctly and its
     validator accepts. We own this rather than reverse ``petab_math_str`` so the forward
-    direction is as precedence-safe as the BNGL printer (:func:`_bngl_printer_cls`), and
-    :func:`_assert_round_trips` stands behind it as a belt-and-suspenders check.
+    direction is precedence-safe, and :func:`_assert_round_trips` stands behind it as a
+    belt-and-suspenders check.
     """
     global _PETAB_PRINTER
     if _PETAB_PRINTER is not None:
@@ -271,69 +300,3 @@ def _petab_printer_cls():
 
     _PETAB_PRINTER = _PetabPrinter
     return _PETAB_PRINTER
-
-
-def _bngl_printer_cls():
-    """Build (once) and return the sympy-tree -> BNGL-body printer class.
-
-    Subclasses ``sympy``'s ``StrPrinter`` and overrides exactly the points where BNGL math
-    differs from sympy's default string form: the ``^`` power operator (with ``sqrt`` for a
-    one-half exponent and precedence-safe parenthesization of a non-integer exponent), the
-    natural-log/base-log spellings (``ln`` / ``log10`` / ``log2``), ``abs``, and the
-    ``func()`` reference convention for a symbol that names a model function. Everything
-    else (``Add`` / ``Mul`` / ``a/b`` division / floats / the standard trig spellings)
-    matches BNGL under ``StrPrinter``'s defaults.
-    """
-    global _BNGL_PRINTER
-    if _BNGL_PRINTER is not None:
-        return _BNGL_PRINTER
-
-    import sympy as sp
-    from sympy.printing.precedence import precedence
-    from sympy.printing.str import StrPrinter
-
-    class _BnglPrinter(StrPrinter):
-        def __init__(self, function_names):
-            super().__init__()
-            self._functions = set(function_names)
-
-        def _print_Symbol(self, expr):
-            name = expr.name
-            return f'{name}()' if name in self._functions else name
-
-        def _print_Pow(self, expr, rational=False):
-            base, exp = expr.as_base_exp()
-            if exp is sp.S.Half:
-                return f'sqrt({self._print(base)})'
-            if exp == -sp.S.Half:
-                return f'1/sqrt({self._print(base)})'
-            str_base = self.parenthesize(base, precedence(expr))
-            # BNGL's '^' binds tighter than '/', so a compound, rational, or negative
-            # exponent (e.g. x+1, 1/3, -1) must be parenthesized; a single non-negative
-            # number token (3 or 2.0 -- sympify_petab floatifies integer literals) need
-            # not be. sqrt and the -1/2 reciprocal are special-cased above.
-            bare = (exp.is_Integer or exp.is_Float) and exp.is_nonnegative
-            str_exp = self._print(exp) if bare else f'({self._print(exp)})'
-            return f'{str_base}^{str_exp}'
-
-        def _print_Function(self, expr):
-            name = expr.func.__name__
-            if name == 'log':
-                return self._print_log_function(expr)
-            if name == 'Abs':
-                return f'abs({self.stringify(expr.args, ", ")})'
-            return super()._print_Function(expr)
-
-        def _print_log_function(self, expr):
-            arg = self._print(expr.args[0])
-            if len(expr.args) == 1:                     # sympy log is the natural log
-                return f'ln({arg})'
-            base = expr.args[1]
-            if base == sp.Integer(10):
-                return f'log10({arg})'
-            if base == sp.Integer(2):
-                return f'log2({arg})'
-            return f'ln({arg})/ln({self._print(base)})'
-
-    _BNGL_PRINTER = _BnglPrinter
-    return _BNGL_PRINTER

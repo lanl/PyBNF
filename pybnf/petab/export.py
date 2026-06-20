@@ -241,8 +241,9 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params,
     all_datas = [d for exp in experiments for d in exp['datas']]
     _apply_observable_overrides(all_datas, overrides)
 
+    measurement_models = _read_measurement_models(conf)
     observable_rows, column_to_observable_id = _observable_rows(
-        all_datas, bngl, noise, model_file, inline_functions)
+        all_datas, bngl, noise, model_file, inline_functions, measurement_models)
 
     conditions = _read_conditions(conf, model_file, bngl)
     referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
@@ -357,6 +358,17 @@ def _read_observable_overrides(conf):
     ``{entity: header}`` (ADR-0028 Chunk 4) -- the renames applied before classification."""
     return {k[1]: v for k, v in conf.items()
             if isinstance(k, tuple) and len(k) == 2 and k[0] == 'observable'}
+
+
+def _read_measurement_models(conf):
+    """The new-era ``observable: <id>, formula: <expr>`` measurement models as
+    ``{id: formula}`` (ADR-0036). A measurement model is a PEtab observableFormula evaluated
+    post-simulation by the observation layer; on export its ``.exp`` column classifies as the
+    measurement model (not a model entity), and its formula is emitted as the
+    ``observableFormula`` verbatim -- the inverse of the importer's measurement-model line, so
+    an expression observable round-trips export -> import -> re-export."""
+    return {k[1]: v for k, v in conf.items()
+            if isinstance(k, tuple) and len(k) == 2 and k[0] == 'measurement'}
 
 
 def _apply_observable_overrides(datas, overrides):
@@ -536,9 +548,10 @@ def _independent_variable(data):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(datas, bngl, noise, model_file, inline_functions=False):
-    """Classify each fitted column across all experiments' ``datas`` as a model observable
-    or function and map it to a PEtab observable row.
+def _observable_rows(datas, bngl, noise, model_file, inline_functions=False,
+                     measurement_models=None):
+    """Classify each fitted column across all experiments' ``datas`` as a model observable,
+    a model function, or a conf measurement model, and map it to a PEtab observable row.
 
     ``datas`` is the list of every experiment's (override-renamed) :class:`~pybnf.data.Data`
     (one element for the legacy single base time-course); a column is gathered once, in
@@ -550,8 +563,11 @@ def _observable_rows(datas, bngl, noise, model_file, inline_functions=False):
     ``inline_functions`` (ADR-0035) emits a **function** column's body as an
     ``observableFormula`` expression instead of the bare name -- the opt-in path that
     generates the importer's round-trip oracle; the default keeps every column bare.
-    """
+    ``measurement_models`` (``{id: formula}``, ADR-0036) are conf-declared measurement models:
+    a column matching one is emitted with that formula as its ``observableFormula`` and its id
+    verbatim (the inverse of the importer's ``observable: ... formula:`` line)."""
     distribution, verb, arg = noise
+    measurement_models = measurement_models or {}
     columns = []
     for data in datas:
         indvar = data.indvar if data.indvar is not None else _independent_variable(data)
@@ -562,18 +578,23 @@ def _observable_rows(datas, bngl, noise, model_file, inline_functions=False):
     observable_rows = []
     column_to_observable_id = {}
     for col in columns:
-        if col in bngl.observable_names:
+        formula = None
+        if col in measurement_models:
+            kind = 'measurement'
+            formula = measurement_models[col]   # the conf observableFormula, verbatim
+        elif col in bngl.observable_names:
             kind = 'observable'
         elif col in bngl.function_names:
             kind = 'function'
+            formula = _inlined_formula(col, kind, bngl, model_file) if inline_functions \
+                else None
         else:
             raise PybnfError(
-                f"Exp column '{col}' matches no observable or function in model "
-                f"'{model_file}' (its observables: {sorted(bngl.observable_names)}; "
-                f"functions: {sorted(bngl.function_names)}).")
+                f"Exp column '{col}' matches no observable, function, or measurement model "
+                f"in model '{model_file}' (its observables: {sorted(bngl.observable_names)}; "
+                f"functions: {sorted(bngl.function_names)}; measurement models: "
+                f"{sorted(measurement_models)}).")
         noise_source = _noise_source_for_column(verb, arg, col, datas)
-        formula = _inlined_formula(col, kind, bngl, model_file) if inline_functions \
-            else None
         row = petab_observable_row(col, kind, distribution, noise_source,
                                    observable_formula=formula)
         observable_rows.append(row)

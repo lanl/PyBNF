@@ -16,8 +16,10 @@ itself: a PyBNF job exported to a PEtab v2 problem and imported back must reprod
 4. **The external oracle.** The imported-then-re-exported demo problem passes petab's full
    ``default_validation_tasks`` (so the importer emits a genuinely valid PEtab problem,
    not merely one byte-equal to a valid one).
-5. **The documented boundaries raise** (SBML model, a PyBNF-less prior family, a
-   PEtab-inexpressible noise distribution, replicate rows) -- mirroring the export side.
+5. **The documented boundaries raise** (an unsupported model language, a PyBNF-less prior
+   family, a PEtab-inexpressible noise distribution, a per-measurement placeholder, replicate
+   rows) -- mirroring the export side. (SBML now imports, ADR-0036; the expression
+   observableFormula becomes a measurement model evaluated post-simulation.)
 """
 
 import shutil
@@ -398,10 +400,13 @@ class TestBoundaries:
             (prob / name).write_text(text.replace(old, new))
         return import_job(prob / 'problem.yaml', tmp_path / 'out')
 
-    def test_sbml_model_is_refused(self, demo_petab, tmp_path):
-        with pytest.raises(NotImplementedError, match='bngl'):
+    def test_unsupported_model_language_is_refused(self, demo_petab, tmp_path):
+        # BNGL and SBML import (ADR-0036); any other model language is out of scope and
+        # refused before any table is read (read_problem_yaml stays a pure reader; the
+        # importer holds the policy in _require_supported_model).
+        with pytest.raises(NotImplementedError, match="'bngl' or 'sbml'"):
             self._import_mutated(demo_petab, tmp_path,
-                                 {'problem.yaml': ('language: bngl', 'language: sbml')})
+                                 {'problem.yaml': ('language: bngl', 'language: pysb')})
 
     @pytest.mark.parametrize('distribution', ['neg_bin', 'log-normal', 'log-laplace'])
     def test_petab_inexpressible_noise_is_refused(self, demo_petab, tmp_path, distribution):
@@ -409,22 +414,25 @@ class TestBoundaries:
             self._import_mutated(demo_petab, tmp_path,
                                  {'observables.tsv': ('normal', distribution)})
 
-    def test_expression_observable_formula_synthesizes_a_function(self, demo_petab,
-                                                                  tmp_path):
-        # An expression observableFormula is no longer refused (ADR-0035): it is translated
-        # to a BNGL function synthesized into the model and the column maps to it by name.
+    def test_expression_observable_formula_becomes_a_measurement_model(self, demo_petab,
+                                                                       tmp_path):
+        # An expression observableFormula imports as a measurement model evaluated
+        # post-simulation (ADR-0036), NOT a function synthesized into the model: the model is
+        # carried verbatim and the conf gains an `observable: obs_x, formula: x + 1` line.
         pytest.importorskip('petab')
         out = self._import_mutated(
             demo_petab, tmp_path, {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx + 1\t')})
-        model = (out / 'parabola_v2.bngl').read_text()
-        ent = parse_model(model)
-        assert 'obs_x' in ent.function_bodies        # the synthesized measurement function
-        assert ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+        ent = parse_model((out / 'parabola_v2.bngl').read_text())
+        assert 'obs_x' not in ent.function_bodies     # NO synthesis into the model
+        conf = ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+        meas = {k[1]: v for k, v in conf.items()
+                if isinstance(k, tuple) and k[0] == 'measurement'}
+        assert meas == {'obs_x': 'x + 1'}             # the measurement-model formula line
 
     def test_unknown_symbol_in_observable_formula_raises(self, demo_petab, tmp_path):
         # A free symbol that is no model entity is an error, never a silent free parameter.
         pytest.importorskip('petab')
-        with pytest.raises(PybnfError, match='not a parameter, observable, or function'):
+        with pytest.raises(PybnfError, match='not a known model entity'):
             self._import_mutated(demo_petab, tmp_path,
                                  {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx + nope\t')})
 
@@ -451,43 +459,6 @@ class TestBoundaries:
             import_job(prob / 'problem.yaml', tmp_path / 'out')
 
 
-class TestInjectFunctions:
-    """Pure-string injection of synthesized functions into model text (ADR-0035), the
-    only place the importer no longer carries the model verbatim. No petab needed."""
-
-    def test_merges_into_an_existing_functions_block(self):
-        from pybnf.petab.import_ import _inject_functions
-        model = ('begin model\n  begin functions\n    y() = a*2\n  end functions\n'
-                 '  begin reaction rules\n    0 -> A() 1\n  end reaction rules\nend model\n')
-        out = _inject_functions(model, [('obs_z', 'a + 1.0')])
-        # The new function joins the existing block (before its end functions), indented
-        # like the existing line; exactly one functions block remains.
-        assert out.count('begin functions') == 1
-        assert '    y() = a*2\n    obs_z() = a + 1.0\n  end functions' in out
-
-    def test_creates_a_fresh_block_before_reaction_rules(self):
-        from pybnf.petab.import_ import _inject_functions
-        model = ('begin model\n  begin observables\n    Molecules a A()\n  end observables\n'
-                 '  begin reaction rules\n    0 -> A() 1\n  end reaction rules\nend model\n')
-        out = _inject_functions(model, [('obs_z', 'a + 1.0')])
-        # A fresh block lands before reaction rules (after the observables it references).
-        assert out.index('begin functions') < out.index('begin reaction rules')
-        assert 'obs_z() = a + 1.0' in out
-
-    def test_creates_a_fresh_block_before_end_model_when_no_reaction_rules(self):
-        from pybnf.petab.import_ import _inject_functions
-        model = ('begin model\n  begin observables\n    Molecules a A()\n'
-                 '  end observables\nend model\n')
-        out = _inject_functions(model, [('obs_z', 'a')])
-        assert out.index('begin functions') < out.index('end model')
-
-    def test_appends_at_eof_when_no_anchor(self):
-        from pybnf.petab.import_ import _inject_functions
-        model = 'begin observables\n  Molecules a A()\nend observables\n'
-        out = _inject_functions(model, [('obs_z', 'a')])
-        assert out.rstrip().endswith('end functions')
-
-
 # ---------------------------------------------------------------------------
 # Reader robustness vs a REAL-WORLD v2 problem (the Boehm tutorial; #407 chunk 1)
 #
@@ -497,7 +468,9 @@ class TestInjectFunctions:
 # that our exporter never writes (sci-notation bounds, a parameterName column, a blank
 # nominalValue, no prior columns, a noisePlaceholders column, model_files-first yaml,
 # expression observableFormulas, a parameter-id noiseParameters). It is SBML + expression
-# observables, so import_job refuses it cleanly; the readers below are tested directly.
+# observables -- both now importable (ADR-0036) -- but its parameter-id noiseParameters is the
+# deferred placeholder frontier, so import_job still refuses it cleanly (now on that frontier,
+# not the SBML model gate). The readers below are tested directly.
 # See tests/petab_fixtures/boehm_v2/SOURCE.md for provenance + license.
 # ---------------------------------------------------------------------------
 
@@ -518,10 +491,12 @@ class TestRealWorldBoehmV2:
         assert problem['condition_files'] == ['experimental_conditions.tsv']
         assert problem['experiment_files'] == ['experiments.tsv']
 
-    def test_import_refuses_the_sbml_model_early(self, tmp_path):
-        # The SBML boundary fires before any table is read (read_problem_yaml stays a pure
-        # reader; the importer holds the BNGL-native policy).
-        with pytest.raises(NotImplementedError, match='bngl'):
+    def test_import_refuses_boehm_on_the_placeholder_frontier(self, tmp_path):
+        # SBML now imports (ADR-0036), so Boehm is no longer refused at the model gate. It is
+        # refused on the *remaining* frontier: its measurements carry a parameter-id
+        # noiseParameters (sd_*), the deferred per-measurement placeholder semantics. So full
+        # Boehm needs the measurement-model layer (built) AND the placeholder layer (deferred).
+        with pytest.raises(NotImplementedError, match='placeholder'):
             import_job(self.YAML, tmp_path / 'out')
 
     def test_parameter_table_tolerates_real_v2_shapes(self):

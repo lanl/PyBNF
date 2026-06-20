@@ -41,20 +41,25 @@ Concretely, the recipe is supplied through :func:`import_job`'s parameters:
 * ``settings`` -- overrides for the required algorithm/run settings (``population_size`` /
   ``max_iterations`` / ``verbosity``); the per-method schema defaults the rest.
 
-**Dependency-free + simulator-free.** Like the other read-path chunks, the import path
-uses only stdlib + ``pybnf.data.Data`` + the asset mappers, so it runs in the
-bngsim-less CI tier. ``problem.yaml`` is hand-parsed (the exporter emits a fixed, simple
-shape); a non-``bngl`` model language raises (the SBML adapter is separate). The
-``petab`` library stays a test-only oracle.
+**Dependency-free + simulator-free on the bare-name path.** Like the other read-path
+chunks, the import path uses only stdlib + ``pybnf.data.Data`` + the asset mappers, so the
+bare-name common case runs in the bngsim-less CI tier. ``problem.yaml`` is hand-parsed (the
+exporter emits a fixed, simple shape). The ``petab`` library is the test-only oracle for the
+bare-name path, and the optional ``pybnf[petab]`` extra for an expression ``observableFormula``.
 
-**Scope (read path, BNGL-native).** An expression ``observableFormula`` is now in scope:
-it is translated to a synthesized BNGL function (ADR-0035, the optional ``pybnf[petab]``
-extra); the bare-name common case still needs no translator and stays dependency-free.
-Out of scope, each mirroring an export-side boundary: fitting the imported job (gated on
-the ADR-0028 config loader, #423); SBML model import; the ``noiseFormula`` / condition
-sympy layer and per-measurement ``observableParameters``/``noiseParameters`` placeholders
-(bare names / numbers only); the five PEtab prior families PyBNF lacks; one-sided
-truncation; multi-model; parameter-scan / dose-response; replicate reconstruction.
+**Scope (read path: BNGL and SBML).** Both model languages import (ADR-0036): the model file
+is carried **verbatim** for each, and an expression ``observableFormula`` becomes a
+first-class *measurement model* -- a PEtab math expression evaluated as a post-simulation
+transform over the output trajectory (the observation layer), emitted as an
+``observable: <id>, formula: <expr>`` conf line -- **never** by editing the model file (the
+``begin functions`` synthesis of ADR-0035 is superseded). The bare-name common case still
+needs no translator and stays dependency-free. SBML observables are 100% expressions, so SBML
+import pulls in the ``pybnf[petab]`` extra. Out of scope, each mirroring an export-side
+boundary: fitting the imported job (gated on the ADR-0028 config loader, #423); the
+``noiseFormula`` / condition sympy layer and per-measurement
+``observableParameters``/``noiseParameters`` placeholders (bare names / numbers only); the
+five PEtab prior families PyBNF lacks; one-sided truncation; multi-model; parameter-scan /
+dose-response; replicate reconstruction.
 """
 
 import re
@@ -71,11 +76,11 @@ from .conditions import (
     read_condition_table,
     read_experiment_table,
 )
-from .formula import petab_math_to_bngl_body
 from .measurements import data_from_measurement_rows, read_measurement_table
 from .observables import noise_model_from_row, read_observable_table
 from .parameters import free_parameter_from_row, read_parameter_table
-from ._bngl import parse_model
+from ._bngl import parse_model as parse_bngl_model
+from ._sbml import parse_model as parse_sbml_model
 from ._tsv import num
 
 # A bare model-entity name (an observableFormula in the common case). Anything with
@@ -114,14 +119,16 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     ``{experiment_name: method}`` map) sets per-experiment values. ``settings`` overrides
     the required algorithm/run settings.
 
-    An **expression** ``observableFormula`` (e.g. a quotient of sums) is no longer refused:
-    it is translated to a BNGL function synthesized into the model (ADR-0035, the
-    ``pybnf[petab]`` extra). Raises ``NotImplementedError`` at the remaining PEtab/PyBNF
-    boundaries (a non-``bngl`` model language; the five unsupported prior families; a
-    log-normal/log-laplace or expression noise model; a ``noiseFormula``/condition
-    expression; a per-measurement ``observableParameters``/``noiseParameters`` placeholder
-    in a formula; replicate rows) and ``PybnfError`` for a malformed problem (including an
-    ``observableFormula`` symbol that is not a model entity).
+    Both **BNGL and SBML** models import (ADR-0036): the model file is carried verbatim, and
+    an **expression** ``observableFormula`` (e.g. a quotient of sums) becomes a conf
+    measurement model (``observable: <id>, formula: <expr>``) evaluated post-simulation -- the
+    optional ``pybnf[petab]`` extra. Raises ``NotImplementedError`` at the remaining
+    PEtab/PyBNF boundaries (a model language other than ``bngl``/``sbml``; the five
+    unsupported prior families; a log-normal/log-laplace or expression noise model; a
+    ``noiseFormula``/condition expression; a per-measurement
+    ``observableParameters``/``noiseParameters`` placeholder in a formula; replicate rows)
+    and ``PybnfError`` for a malformed problem (including an ``observableFormula`` symbol that
+    is not a model entity).
     """
     problem_yaml_path = Path(problem_yaml_path)
     base = problem_yaml_path.parent
@@ -129,7 +136,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     out_dir.mkdir(parents=True, exist_ok=True)
 
     problem = read_problem_yaml(problem_yaml_path)
-    _require_bngl_model(problem, problem_yaml_path)
+    _require_supported_model(problem, problem_yaml_path)
+    language = (problem.get('model_language') or 'bngl').lower()
 
     parameter_rows = read_parameter_table(base / problem['parameter_files'][0])
     observable_rows = read_observable_table(base / problem['observable_files'][0])
@@ -143,19 +151,21 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # + the surrogate set M of fit-and-perturbed model parameters.
     free_param_lines, surrogate_params = _free_parameters(parameter_rows)
 
-    # The model is read now (not just at write time): an expression observableFormula
-    # validates its free symbols against the model's entity namespace and synthesizes a
-    # function into the model text (ADR-0035), so its entities are needed before the
-    # observable mapping. The bare-name path ignores the entities and carries the model
-    # byte-verbatim (new-era binds free params by id, ADR-0034 -- no re-instrumentation).
+    # The model is read now (not just at write time) to validate each expression
+    # observableFormula's free symbols against the model's entity namespace (the BNGL
+    # ParamList, or SBML species u parameters -- ADR-0026/0036). The model file itself is
+    # carried **byte-verbatim** for every language -- the measurement model is a post-sim
+    # observation layer, never a model-file edit (ADR-0036, superseding the ADR-0035
+    # begin-functions synthesis).
     model_filename = problem['model_file']
     model_text = (base / model_filename).read_text(encoding='utf-8', errors='replace')
-    entities = parse_model(model_text)
+    namespace, entity_names = _model_namespace(model_text, language)
 
     # Observables -> the observableId -> model-column map (the data pivot's column order)
-    # plus any functions synthesized from expression observableFormulas (ADR-0035).
-    observable_id_to_column, synthesized_functions = _observable_id_to_column(
-        observable_rows, entities)
+    # plus the measurement models (id, formula) synthesized from expression
+    # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
+    observable_id_to_column, measurement_models = _observable_id_to_column(
+        observable_rows, namespace, entity_names)
 
     # Measurements -> one wide Data per experiment, then assemble the experiment list.
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
@@ -164,12 +174,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     conditions = conditions_from_rows(condition_rows, surrogate_params)
     experiments = _experiments(datas, experiment_rows, out_dir)
 
-    # The model copy: byte-verbatim on the bare-name path; on the expression path it gains
-    # exactly one targeted edit -- a `begin functions` block carrying the synthesized
-    # measurement-model functions (the same *kind* of edit ADR-0032 once made for __FREE,
-    # the only place the importer no longer carries the model verbatim, ADR-0034/0035).
-    if synthesized_functions:
-        model_text = _inject_functions(model_text, synthesized_functions)
+    # The model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
+    # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
     (out_dir / model_filename).write_text(model_text)
 
     merged_settings = {**_DEFAULT_SETTINGS, **(settings or {})}
@@ -179,7 +185,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         _write_conf(
             out_dir / conf_name, model_filename=model_filename, job_type=jt,
             objective_directive=objective_directive, free_param_lines=free_param_lines,
-            conditions=conditions, experiments=experiments, method=method,
+            conditions=conditions, experiments=experiments,
+            measurement_models=measurement_models, method=method,
             method_overrides=method_overrides or {}, settings=merged_settings,
             multi=len(job_types) > 1)
     return out_dir
@@ -230,88 +237,84 @@ def _model_param(parameter_id):
 # Observables: rows -> column map + objective token
 # ---------------------------------------------------------------------------
 
-def _observable_id_to_column(observable_rows, entities):
-    """Map each ``observableId`` to the model column it measures, synthesizing a function
-    for any expression ``observableFormula`` (ADR-0035). Iteration order = table order,
+def _model_namespace(model_text, language):
+    """The model's expression namespace + the full entity name set, per language (ADR-0036).
+
+    Returns ``(namespace_symbols, entity_names)``: ``namespace_symbols`` are the names an
+    ``observableFormula`` may reference (the BNGL ``ParamList`` -- parameters u observables u
+    functions; or SBML species u parameters u compartments -- ADR-0026/0036);
+    ``entity_names`` is the broader declared-name set used for the shadow check (a measurement
+    model's id must not collide with a model output column). Read from the model text directly
+    with the stdlib scanners (``_bngl`` / ``_sbml``), simulator-free.
+    """
+    if language == 'sbml':
+        ent = parse_sbml_model(model_text)
+        return ent.namespace_symbols, set(ent.namespace_symbols)
+    ent = parse_bngl_model(model_text)
+    namespace = (set(ent.parameters) | set(ent.observable_names)
+                 | set(ent.function_names))
+    entity_names = (namespace | set(ent.molecule_type_names)
+                    | set(ent.compartment_names))
+    return namespace, entity_names
+
+
+def _observable_id_to_column(observable_rows, namespace, entity_names):
+    """Map each ``observableId`` to the model column it measures, recording a measurement
+    model for any expression ``observableFormula`` (ADR-0036). Iteration order = table order,
     which fixes the wide-data column order on the measurement pivot.
 
-    Returns ``(mapping, synthesized_functions)``:
+    Returns ``(mapping, measurement_models)``:
 
-    * A **bare model-entity name** ``observableFormula`` (the common case, ADR-0025) maps
-      its ``observableId`` to that name -- PyBNF matches the ``.exp`` column to the model
-      observable/function by name and evaluates it *in the model*, so no translator runs
-      and the path stays dependency-free.
-    * An **expression** ``observableFormula`` is translated to a BNGL function body
-      (:func:`~pybnf.petab.formula.petab_math_to_bngl_body`, the optional ``pybnf[petab]``
-      extra), recorded as a synthesized function named after the ``observableId``, and the
-      column is mapped to that name. The function is injected into the model text by
-      :func:`_inject_functions`, and PyBNF matches the ``.exp`` column to it by name.
+    * A **bare model-entity name** ``observableFormula`` (the common case, ADR-0025) maps its
+      ``observableId`` to that name -- PyBNF matches the ``.exp`` column to the model
+      observable/function/species by name and the backend already produces it, so no
+      translator runs and the path stays dependency-free.
+    * An **expression** ``observableFormula`` becomes a *measurement model* ``(id, formula)``
+      -- a PEtab math expression evaluated post-simulation by the observation layer (ADR-0036).
+      Its free symbols are validated against the model namespace (the optional ``pybnf[petab]``
+      extra), and the ``.exp`` column is named after the ``observableId`` (the column the layer
+      materializes). The model file is **not** edited.
 
-    The synthesized function name (the ``observableId``) must not shadow an existing model
-    entity (``PybnfError``); an unknown free symbol or a per-measurement placeholder in the
-    expression raises in the translator (``PybnfError`` / ``NotImplementedError``).
+    A measurement model's id must not shadow an existing model entity (``PybnfError``, so the
+    materialized column does not collide with a model output column); an unknown free symbol or
+    a per-measurement placeholder in the expression raises in the validator (``PybnfError`` /
+    ``NotImplementedError``).
     """
-    taken = (set(entities.parameters) | set(entities.observable_names)
-             | set(entities.function_names) | set(entities.molecule_type_names)
-             | set(entities.compartment_names))
+    taken = set(entity_names)
     mapping = {}
-    synthesized = []
+    measurement_models = []
     for row in observable_rows:
         formula = (row.observable_formula or '').strip()
         if _IDENTIFIER.match(formula):
+            if formula not in namespace:
+                raise PybnfError(
+                    f"Observable '{row.observable_id}' has a bare observableFormula "
+                    f"'{formula}', which is not a model entity. A bare-name observableFormula "
+                    f"must name a model observable/function/species the backend outputs; an "
+                    f"unknown name is an error (ADR-0036).",
+                    f"Model namespace: {sorted(namespace)}.")
             mapping[row.observable_id] = formula          # bare-name path (no translator)
             continue
-        body = petab_math_to_bngl_body(formula, entities)
-        func_name = row.observable_id
-        if func_name in taken:
+        # Expression -> a measurement model. Validate its symbols against the namespace now
+        # (fail fast; requires the petab extra). The conf carries it as a formula line and
+        # the observation layer evaluates it post-simulation -- no model-file edit (ADR-0036).
+        from .formula import compile_petab_formula
+        compile_petab_formula(
+            formula, namespace,
+            detail=f"Model namespace (species/parameters/observables/functions): "
+                   f"{sorted(namespace)}.")
+        obs_id = row.observable_id
+        if obs_id in taken:
             raise PybnfError(
-                f"Cannot synthesize a function '{func_name}()' for the expression "
-                f"observableFormula of observable '{row.observable_id}': the name already "
-                f"names a model entity (parameter / observable / function / molecule type / "
-                f"compartment). Rename the observableId so the synthesized measurement "
-                f"function does not shadow a model entity (ADR-0035).")
-        taken.add(func_name)
-        synthesized.append((func_name, body))
-        mapping[row.observable_id] = func_name
+                f"Cannot import the expression observableFormula of observable '{obs_id}': "
+                f"its id already names a model entity, so the measurement-model column would "
+                f"shadow a model output column. Rename the observableId (ADR-0036).")
+        taken.add(obs_id)
+        measurement_models.append((obs_id, formula))
+        mapping[obs_id] = obs_id    # the materialized measurement-model column is named obs_id
     if not mapping:
         raise PybnfError("The PEtab observables table declares no observables.")
-    return mapping, synthesized
-
-
-# The BNGL ``begin/end functions`` anchors + where a fresh block may be inserted (after the
-# observables it references; before reactions/actions / the model close). All multiline,
-# case-insensitive (BNGL keywords are case-insensitive).
-_END_FUNCTIONS = re.compile(r'^[ \t]*end\s+functions\b.*$', re.I | re.M)
-_NEW_BLOCK_ANCHOR = re.compile(
-    r'^([ \t]*)begin\s+reaction\s+rules\b|^([ \t]*)end\s+model\b|^([ \t]*)begin\s+actions\b',
-    re.I | re.M)
-
-
-def _inject_functions(model_text, functions):
-    """Return ``model_text`` with the synthesized ``functions`` (``[(name, body), ...]``)
-    added to a ``begin functions`` block (ADR-0035).
-
-    Merges into an existing ``begin functions ... end functions`` block when present
-    (inserting before its ``end functions``), else creates a fresh block placed where BNGL
-    accepts an output-only global function: before ``begin reaction rules`` if present,
-    else before ``end model`` / ``begin actions``, else at end of file. Indentation follows
-    the anchor so the edit reads like the surrounding model.
-    """
-    func_lines = list(functions)
-    m_end = _END_FUNCTIONS.search(model_text)
-    if m_end:
-        lead = re.match(r'[ \t]*', model_text[m_end.start():]).group()
-        block = ''.join(f'{lead}  {n}() = {b}\n' for n, b in func_lines)
-        return model_text[:m_end.start()] + block + model_text[m_end.start():]
-    anchor = _NEW_BLOCK_ANCHOR.search(model_text)
-    lead = next((g for g in anchor.groups() if g is not None), '') if anchor else ''
-    inner = lead + '  '
-    block = (f'{lead}begin functions\n'
-             + ''.join(f'{inner}{n}() = {b}\n' for n, b in func_lines)
-             + f'{lead}end functions\n')
-    if anchor:
-        return model_text[:anchor.start()] + block + model_text[anchor.start():]
-    return model_text.rstrip('\n') + '\n' + block
+    return mapping, measurement_models
 
 
 def _column_mean_resolver(datas, observable_id_to_column):
@@ -505,12 +508,15 @@ def _write_exp(path, data):
 # ---------------------------------------------------------------------------
 
 def _write_conf(path, *, model_filename, job_type, objective_directive, free_param_lines,
-                conditions, experiments, method, method_overrides, settings, multi):
+                conditions, experiments, measurement_models, method, method_overrides,
+                settings, multi):
     """Write one new-era (edition 2) ``.conf``: the recovered problem + the supplied
     run-recipe (``job_type``, per-experiment ``method:``, required settings).
 
     ``objective_directive`` is the full recovered objective line -- either ``objective =
-    <token>`` or a ``noise_model = <family>, ...`` line (:func:`_objective_directive`)."""
+    <token>`` or a ``noise_model = <family>, ...`` line (:func:`_objective_directive`).
+    ``measurement_models`` is the list of ``(observableId, formula)`` expression observables,
+    emitted as ``observable: <id>, formula: <expr>`` measurement-model lines (ADR-0036)."""
     stem = f'imported_{job_type}' if multi else 'imported'
     lines = [
         '# Imported from a PEtab v2 problem by pybnf.petab.import_job (#407).',
@@ -526,8 +532,12 @@ def _write_conf(path, *, model_filename, job_type, objective_directive, free_par
         f'model: {model_filename}',
         f'job_type = {job_type}',
         objective_directive,
-        '',
     ]
+    # Expression observables: a measurement-model formula evaluated post-simulation (the
+    # observation layer, ADR-0036), not a model-file edit. The model is carried verbatim.
+    for obs_id, formula in measurement_models:
+        lines.append(f'observable: {obs_id}, formula: {formula}')
+    lines.append('')
     for name, perts in conditions.items():
         pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
         lines.append(f'condition: {name}, perturbations: {pert_str}')
@@ -573,9 +583,9 @@ def read_problem_yaml(path):
     (our writer emits it last) reads identically.
 
     This is a pure *reader*: it records the model ``language`` but does not enforce a
-    policy on it, so a real (SBML) v2 problem still parses for inspection. The
-    BNGL-native scope is enforced by the importer (:func:`_require_bngl_model`), not here.
-    A second model raises ``NotImplementedError`` (multi-model is out of scope).
+    policy on it. The supported-language scope (BNGL or SBML, ADR-0036) is enforced by the
+    importer (:func:`_require_supported_model`), not here. A second model raises
+    ``NotImplementedError`` (multi-model is out of scope).
     """
     file_keys = ('parameter_files', 'observable_files', 'measurement_files',
                  'condition_files', 'experiment_files')
@@ -624,20 +634,20 @@ def _require_problem(files, model_location, path):
         raise PybnfError(f"problem.yaml at {path} declares no model file.")
 
 
-def _require_bngl_model(problem, path):
-    """Enforce the importer's BNGL-native scope on a parsed ``problem.yaml``.
+def _require_supported_model(problem, path):
+    """Enforce the importer's supported-language scope on a parsed ``problem.yaml`` (ADR-0036).
 
-    The reader (:func:`read_problem_yaml`) records the model ``language`` without judging
-    it, so a real (SBML) v2 problem parses for inspection; the importer holds the policy:
-    a non-``bngl`` model language raises ``NotImplementedError`` early (before any table is
-    read), the same boundary the exporter draws on SBML -- it cannot be obtained by
-    inversion, the SBML adapter is separate (#407, ADR-0025/0032). A ``None`` language
-    (the field was absent) is permitted: the writer omits it only for a BNGL model.
+    The reader (:func:`read_problem_yaml`) records the model ``language`` without judging it;
+    the importer holds the policy. **BNGL and SBML both import**: the model file is carried
+    verbatim and an expression ``observableFormula`` becomes a post-simulation measurement
+    model (the observation layer), so neither the ``.bngl`` nor the ``.xml`` is ever edited
+    (ADR-0036). Any other model language (e.g. ``pysb``) raises ``NotImplementedError`` early,
+    before any table is read. A ``None`` language (the field was absent) is permitted -- the
+    exporter omits it only for a BNGL model.
     """
     language = problem.get('model_language')
-    if language is not None and language != 'bngl':
+    if language is not None and language.lower() not in ('bngl', 'sbml'):
         raise NotImplementedError(
             f"problem.yaml model '{problem.get('model_id')}' has language '{language}', "
-            f"not 'bngl' (at {path}). Only BNGL-native PEtab problems are importable: an "
-            f"SBML model is a separate adapter (the exporter raises on SBML too; it cannot "
-            f"be obtained by inversion -- #407, ADR-0025).")
+            f"not 'bngl' or 'sbml' (at {path}). Only BNGL and SBML PEtab problems are "
+            f"importable (ADR-0036); other model languages are out of scope (#407).")

@@ -1,39 +1,46 @@
-"""Tests for the PEtab ``observableFormula`` expression layer (#407, ADR-0035).
+"""Tests for the PEtab ``observableFormula`` expression layer (#407, ADR-0035/0036).
 
-The expression layer is graded by three oracles, weakest to strongest:
+ADR-0036 makes a PEtab ``observableFormula`` a **measurement model** -- evaluated as a
+post-simulation transform over the output trajectory (the observation layer in
+:mod:`pybnf.measurement`), never by editing the model file. This supersedes ADR-0035's
+``begin functions`` *synthesis into the model*; the reversible translator's surviving
+production directions are:
 
-1. **Translator unit tests** -- the reversible ``formula.py`` pair on crafted
-   expressions: a BNGL body -> PEtab math -> BNGL body round trip (sympy-normalized),
-   the ``func()`` reference convention, the ``^``/``ln``/``log10``/``sqrt`` spellings,
-   and free-symbol validation.
-2. **Syntactic round trip (fast tier).** A crafted BNGL model whose measurement model
-   is a multi-operator function (a quotient of sums like Boehm's) exports *with
-   inlining* -> imports (synthesizing the function back) -> re-exports with inlining;
-   the ``observableFormula`` and the synthesized body are graded sympy-equal. This is
-   the exporter-first oracle ADR-0035 unlocks (the exporter emits its own expression).
-3. **Semantic round trip (``-m recovery``, bngsim).** The import-synthesized model is
-   simulated through the real bngsim backend and the synthesized measurement function
-   reproduces the original one's trace -- catching a self-consistent-but-wrong
-   translator pair a purely syntactic oracle would miss.
+* :func:`~pybnf.petab.formula.bngl_body_to_petab_math` -- the exporter's inlining mode (a BNGL
+  function body -> a PEtab math ``observableFormula``), which still generates the round-trip
+  oracle; its precedence/spelling logic is graded here.
+* :func:`~pybnf.petab.formula.compile_petab_formula` -- the layer's compiler (PEtab math -> a
+  numpy callable), graded by numeric hand-computation in ``tests/test_measurement_layer.py``.
+
+The oracles, weakest to strongest:
+
+1. **Export-inline translator unit tests** -- ``bngl_body_to_petab_math`` on crafted bodies:
+   the ``^``/``ln``/``log10``/``sqrt`` spellings, the ``sqrt`` precedence defect, the ``func()``
+   reference convention, the standing round-trip self-check, and free-symbol validation.
+2. **Syntactic round trip (fast tier).** A crafted BNGL model whose measurement model is a
+   multi-operator function exports *with inlining* -> imports (to a conf measurement-model
+   line, carrying the model verbatim) -> re-exports; the ``observableFormula`` is graded
+   sympy-equal across the hop, and the imported job carries a measurement model (not a
+   synthesized function).
+3. **Semantic round trip (``-m recovery``, bngsim).** The imported job is simulated through the
+   real bngsim backend and the measurement layer's computed column reproduces the original
+   model function's trace -- catching a self-consistent-but-wrong translation a syntactic
+   oracle would miss.
 
 ``petab``/``sympy`` is the optional ``pybnf[petab]`` extra; the expression-path tests
-``importorskip('petab')``. The petab-absent contract (a pointed "install pybnf[petab]"
-error, not an ``ImportError``) is tested *without* skipping -- it is the bare-name path's
-dependency-free guarantee.
+``importorskip('petab')``. The petab-absent contract (a pointed "install pybnf[petab]" error,
+not an ``ImportError``) is tested *without* skipping -- the bare-name path's dependency-free
+guarantee.
 """
 
 import builtins
 import sys
-from pathlib import Path
 
 import pytest
 
 from pybnf.petab import export_job, import_job
 from pybnf.petab._bngl import parse_model
-from pybnf.petab.formula import (
-    bngl_body_to_petab_math,
-    petab_math_to_bngl_body,
-)
+from pybnf.petab.formula import bngl_body_to_petab_math
 from pybnf.printing import PybnfError
 
 # A crafted BNGL model whose measurement model is a Boehm-style quotient of sums over
@@ -104,10 +111,10 @@ def _sympy_equal(petab_expr_a, petab_expr_b):
 
 
 # ---------------------------------------------------------------------------
-# 1. Translator unit tests (the reversible pair)
+# 1. Export-inline translator (BNGL function body -> PEtab math observableFormula)
 # ---------------------------------------------------------------------------
 
-class TestTranslatorPair:
+class TestExportInlineTranslator:
 
     @pytest.mark.parametrize('body', [
         'kA*obsA + kB',
@@ -119,15 +126,14 @@ class TestTranslatorPair:
         '(obsA + obsB)/sqrt(kC)',
         'sqrt(kA*obsA + kB)',
     ])
-    def test_bngl_body_round_trips_through_petab_math(self, body):
+    def test_inlined_formula_is_equivalent_to_the_body(self, body):
+        # The emitted observableFormula denotes the same function as the BNGL body. The
+        # forward translator's own _assert_round_trips guards this internally (it re-parses
+        # its output); here we confirm it externally against the body too. All these bodies
+        # are already valid PEtab math, so _sympy_equal can parse both sides.
         pytest.importorskip('petab')
-        ent = _entities()
-        petab_math = bngl_body_to_petab_math(body, ent)
-        back = petab_math_to_bngl_body(petab_math, ent)
-        # The pair is mutually inverse up to sympy normalization (not bytes): re-translate
-        # the round-tripped body and assert all three denote the same function.
-        again = bngl_body_to_petab_math(back, ent)
-        assert _sympy_equal(petab_math, again)
+        out = bngl_body_to_petab_math(body, _entities())
+        assert _sympy_equal(out, body)
 
     def test_sqrt_serializes_precedence_safe_not_the_petab_defect(self):
         # Guards the petab 0.8.x petab_math_str defect (ADR-0035): a sqrt must NOT export as
@@ -154,37 +160,26 @@ class TestTranslatorPair:
         with pytest.raises(PybnfError, match='silently corrupt'):
             F.bngl_body_to_petab_math('sqrt(obsA)', _entities())
 
-    def test_function_reference_uses_bngl_paren_convention(self):
-        # A body referencing another global function writes it `f()`; the PEtab side is a
-        # bare symbol; the BNGL side re-appends the parens. (pRel is a function here.)
+    def test_function_reference_strips_parens_on_the_petab_side(self):
+        # A body referencing another global function writes it `f()`; PEtab math has no
+        # zero-arg user function, so the inlined formula references it as a bare symbol.
         pytest.importorskip('petab')
         ent = parse_model(
             'begin observables\n Molecules obsA A()\nend observables\n'
             'begin functions\n g() = obsA*2\n h() = g()^2 + obsA\nend functions\n')
         petab_math = bngl_body_to_petab_math('g()^2 + obsA', ent)
         assert 'g(' not in petab_math            # PEtab has no zero-arg user function
-        back = petab_math_to_bngl_body(petab_math, ent)
-        assert 'g()' in back                     # BNGL references the function with parens
-
-    @pytest.mark.parametrize('petab_in,needle', [
-        ('sqrt(obsA)', 'sqrt(obsA)'),
-        ('ln(obsA)', 'ln(obsA)'),
-        ('log10(obsA)', 'log10(obsA)'),
-        ('obsA^2', 'obsA^2'),
-    ])
-    def test_bngl_spellings(self, petab_in, needle):
-        pytest.importorskip('petab')
-        assert needle in petab_math_to_bngl_body(petab_in, _entities())
+        assert _sympy_equal(petab_math, 'g^2 + obsA')
 
     def test_unknown_symbol_is_an_error_not_a_free_parameter(self):
         pytest.importorskip('petab')
         with pytest.raises(PybnfError, match='not a parameter, observable, or function'):
-            petab_math_to_bngl_body('obsA + nope', _entities())
+            bngl_body_to_petab_math('obsA + nope', _entities())
 
     def test_per_measurement_placeholder_is_deferred(self):
         pytest.importorskip('petab')
         with pytest.raises(NotImplementedError, match='placeholder'):
-            petab_math_to_bngl_body('obsA * observableParameter1_x', _entities())
+            bngl_body_to_petab_math('obsA * observableParameter1_x', _entities())
 
     def test_expression_without_petab_raises_pointed_error(self, monkeypatch):
         # The dependency-free guarantee: with petab absent the expression path raises a
@@ -201,11 +196,11 @@ class TestTranslatorPair:
             monkeypatch.delitem(sys.modules, mod, raising=False)
         monkeypatch.setattr(builtins, '__import__', _block)
         with pytest.raises(PybnfError, match=r'pybnf\[petab\]'):
-            petab_math_to_bngl_body('obsA + 1', _entities())
+            bngl_body_to_petab_math('obsA + 1', _entities())
 
 
 # ---------------------------------------------------------------------------
-# 2. Syntactic round trip (fast tier) -- the exporter-first oracle (ADR-0035)
+# 2. Syntactic round trip (fast tier) -- export -> import -> re-export (ADR-0036)
 # ---------------------------------------------------------------------------
 
 def _write_crafted_src(tmp_path):
@@ -218,13 +213,23 @@ def _write_crafted_src(tmp_path):
 
 
 def _func_observable_formula(petab_dir):
-    """The synthesized/inlined function row's observableFormula (the single func_ row)."""
+    """The inlined/measurement function row's observableFormula (the single func_ row)."""
     import csv
     with open(petab_dir / 'observables.tsv') as fh:
         rows = [r for r in csv.DictReader(fh, delimiter='\t')
                 if r['observableId'].startswith('func_')]
     assert len(rows) == 1, rows
     return rows[0]['observableFormula']
+
+
+def _imported_measurement_formula(imported_dir):
+    """The ``observable: <id>, formula: <expr>`` measurement-model formula in the conf."""
+    from pybnf.parse import ploop
+    conf = ploop((imported_dir / 'imported.conf').read_text().splitlines(keepends=True))
+    meas = {k[1]: v for k, v in conf.items()
+            if isinstance(k, tuple) and k[0] == 'measurement'}
+    assert len(meas) == 1, meas
+    return next(iter(meas.values()))
 
 
 class TestSyntacticRoundTrip:
@@ -237,29 +242,33 @@ class TestSyntacticRoundTrip:
         import_job(p1 / 'problem.yaml', imported)
         export_job(imported / 'imported.conf', p2, inline_functions=True)
 
-        # The observableFormula survives export -> import(synthesize) -> re-export, equal
-        # up to sympy normalization (the translators are mutually inverse, not byte-exact).
+        # The observableFormula survives export -> import(measurement model) -> re-export,
+        # equal up to sympy normalization (the importer carries it verbatim; the exporter
+        # re-emits it, so this is byte-stable, but graded structurally to be safe).
         assert _sympy_equal(_func_observable_formula(p1), _func_observable_formula(p2))
 
-    def test_synthesized_body_matches_the_original_function(self, tmp_path):
+    def test_import_carries_a_measurement_model_not_a_synthesized_function(self, tmp_path):
+        # ADR-0036: no begin-functions synthesis. The imported model is carried verbatim
+        # (original `pRel`, no synthesized `func_pRel`), and the measurement model lives in
+        # the conf as an `observable: func_pRel, formula:` line whose formula denotes the
+        # same function as the original pRel inlined.
         pytest.importorskip('petab')
         src = _write_crafted_src(tmp_path)
         p1, imported = tmp_path / 'p1', tmp_path / 'imp'
         export_job(src / 'job.conf', p1, inline_functions=True)
         import_job(p1 / 'problem.yaml', imported)
 
-        # The imported model carries the original `pRel` and the synthesized `func_pRel`;
-        # both denote the same measurement model (sympy-normalized over the petab grammar).
         ent = parse_model((imported / 'crafted.bngl').read_text())
-        assert 'pRel' in ent.function_bodies and 'func_pRel' in ent.function_bodies
+        assert 'pRel' in ent.function_bodies          # original model carried verbatim
+        assert 'func_pRel' not in ent.function_bodies  # NO synthesis into the model
         orig = bngl_body_to_petab_math(ent.function_bodies['pRel'], ent)
-        synth = bngl_body_to_petab_math(ent.function_bodies['func_pRel'], ent)
-        assert _sympy_equal(orig, synth)
+        assert _sympy_equal(orig, _imported_measurement_formula(imported))
 
     def test_imported_expression_problem_passes_petab_validation(self, tmp_path):
-        # The external oracle: the synthesized model + inlined formula load through petab's
-        # BnglModel and pass every default validation task (so the emitted problem is
-        # genuinely valid PEtab, not merely self-consistent).
+        # The external oracle: the re-exported problem (verbatim model + the measurement
+        # model's formula) loads through petab's BnglModel and passes every default
+        # validation task (so the emitted problem is genuinely valid PEtab, not merely
+        # self-consistent).
         pytest.importorskip('petab.v2')
         from petab.v2 import Problem
         from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
@@ -290,43 +299,47 @@ class TestSyntacticRoundTrip:
 @pytest.mark.bngsim
 class TestSemanticRoundTrip:
 
-    def test_synthesized_function_reproduces_the_original_trace(self, tmp_path):
-        """Simulate the import-synthesized model: the synthesized `func_pRel` must match
-        the original `pRel` trace cell-for-cell. A self-consistent-but-wrong translator
-        pair (the failure a syntactic oracle misses) would diverge here."""
+    def test_measurement_layer_reproduces_the_original_function_trace(self, tmp_path):
+        """Simulate the imported job through the real bngsim backend and apply the
+        measurement layer: the layer's computed ``func_pRel`` column must match the original
+        BNGL function ``pRel`` the verbatim model still carries, cell-for-cell. A
+        self-consistent-but-wrong translation (the failure a syntactic oracle misses) would
+        diverge here -- and this exercises the real config -> layer wiring, not a stub."""
         pytest.importorskip('petab')
+        import os
+
         import numpy as np
 
-        from .recovery_harness import build, make_newera_config, require_bng2pl
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
         from pybnf.pset import PSet
+        from .recovery_harness import build, require_bng2pl
         require_bng2pl()
 
-        # Build the import-synthesized model (original pRel + synthesized func_pRel).
         src = _write_crafted_src(tmp_path)
         p1, imported = tmp_path / 'p1', tmp_path / 'imp'
         export_job(src / 'job.conf', p1, inline_functions=True)
         import_job(p1 / 'problem.yaml', imported)
-        model_path = imported / 'crafted.bngl'
-        exp_path = next(imported.glob('*.exp'))
 
-        # Simulate it once (network gen via BNG2.pl, then in-process bngsim ODE) at the
-        # model's nominal kA; print_functions is forced, so both functions are output.
-        conf = make_newera_config(
-            tmp_path / 'sim', str(model_path), str(exp_path),
-            {'kA': ('uniform_var', 0, 10)}, 'meas', 'de',
-            population_size=4, max_iterations=1)
-        alg = build(conf, 'de')
-        pset = PSet([v.set_value(2.0) for v in alg.variables])   # kA at its nominal
-        model = alg.model_list[0].copy_with_param_set(pset)
-        folder = str(tmp_path / 'run')
-        Path(folder).mkdir(parents=True, exist_ok=True)
-        home = Path.cwd()
+        # Build a real bngsim config from the imported conf (its `observable: func_pRel,
+        # formula:` line builds the measurement layer) and run the verbatim model.
+        conf_text = (imported / 'imported.conf').read_text() + '\nbngl_backend = bngsim\n'
+        home = os.getcwd()
+        os.chdir(imported)
         try:
-            ds = model.execute(folder, 'meas', 0)
+            conf = config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
+            assert conf.obj.measurement and len(conf.obj.measurement) == 1
+            alg = build(conf, 'de')
+            values = {v.name: 2.0 for v in alg.variables}    # nominal kA/kB/kC
+            pset = PSet([v.set_value(values[v.name]) for v in alg.variables])
+            model = alg.model_list[0].copy_with_param_set(pset)
+            os.makedirs(alg.sim_dir, exist_ok=True)
+            ds = model.execute(alg.sim_dir, 'meas', 0)
         finally:
-            import os
             os.chdir(home)
-        data = ds[next(iter(ds))]
 
+        # Apply the measurement layer post-simulation, exactly as the objective does.
+        conf.obj.measurement.apply({model.name: ds}, values)
+        data = ds[next(iter(ds))]
         assert 'pRel' in data.cols and 'func_pRel' in data.cols
         np.testing.assert_allclose(data['pRel'], data['func_pRel'], rtol=1e-9, atol=1e-12)

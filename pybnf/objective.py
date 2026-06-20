@@ -40,6 +40,14 @@ class ObjectiveFunction:
     The base class includes all the support we need for constraints.
     """
 
+    #: The measurement-model observation layer (ADR-0036): a ``MeasurementLayer`` that
+    #: materializes each expression ``observableFormula``'s column into the simulated data
+    #: (using the PSet) before the by-name objective match below. ``None`` (the default for
+    #: every job without an expression measurement model) is an exact no-op, so the objective
+    #: is byte-identical to its pre-#407 behavior. New-era PEtab/SBML (and the retrofitted
+    #: new-era BNGL-expression) path attaches a populated layer in ``config.py``.
+    measurement = None
+
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -77,6 +85,12 @@ class ObjectiveFunction:
             if not sim_data_dict:
                 return np.inf
             else:
+                # The measurement-model observation layer (ADR-0036): materialize each
+                # expression observableFormula's column into the simulated data using the
+                # PSet, *before* the by-name match below finds it. A no-op when no layer is
+                # attached (the default), so every non-PEtab job is byte-identical.
+                if self.measurement:
+                    self.measurement.apply(sim_data_dict, self._pset_values)
                 for model in sim_data_dict:
                     for suffix in sim_data_dict[model]:
                         # Suffixes might exist in sim_data_dict that do not have experimental data.

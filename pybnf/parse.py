@@ -226,8 +226,19 @@ def parse(s):
     obs_entity = pp.Word(pp.alphas, pp.alphanums + '_')
     obs_column_key = pp.Suppress(pp.CaselessLiteral('column'))
     obs_column = pp.Word(pp.alphas, pp.alphanums + '_')
+    # New-era measurement-model alternative (ADR-0036): ``observable: <id>, formula: <expr>``
+    # declares a *measurement model* -- a PEtab observableFormula evaluated post-simulation
+    # over the output trajectory (the observation layer), not a column rename. The ``formula``
+    # keyword is *kept* in the output (not suppressed) so ``ploop`` distinguishes the two
+    # forms by length; the formula is the rest of the line (a PEtab math expression -- internal
+    # commas/spaces/parens allowed) up to an optional ``#`` comment. Output:
+    # ``['observable', <id>, 'formula', <expr>]`` vs the column form's ``['observable', <entity>,
+    # <header>]``.
+    obs_formula_kw = pp.CaselessLiteral('formula')
+    obs_formula = pp.Regex(r'[^#\n]+')
     observable_gram = observable_key + colon - obs_entity + pp.Suppress(',') + \
-        obs_column_key + colon - obs_column - comment
+        ((obs_column_key + colon - obs_column)
+         | (obs_formula_kw + colon - obs_formula)) - comment
 
     # check each grammar and output somewhat legible error message
     parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
@@ -365,19 +376,29 @@ def ploop(ls):  # parse loop
                 d[exp_key] = fields
                 exp_data.update(fields.get('data', []))
             elif l[0] == 'observable':
-                # New-era `observable:` (ADR-0028, Chunk 4) -- a column-header override.
-                # Store as a structural ('observable', entity) tuple key (like a
-                # condition / noise_model key) -> the data column header it maps to.
-                # config.py edition-gates these and renames the data column <header> ->
-                # <entity> (and <header>_SD -> <entity>_SD) in every experimental Data, so
-                # the objective's by-name exp<->sim column match succeeds. The model entity
-                # is the key (the default is that the data header IS the entity name; this
-                # line overrides that for a differently-named column), the header the value.
-                entity, header = l[1], l[2]
-                obs_key = ('observable', entity)
-                if obs_key in d:
-                    raise PybnfError(f"Observable '{entity}' is specified multiple times")
-                d[obs_key] = header
+                # New-era `observable:` -- either a column-header override (ADR-0028, Chunk 4)
+                # or a measurement-model formula (ADR-0036). The grammar keeps the 'formula'
+                # keyword in the output so the two forms are distinguished here by length:
+                #   column form  -> ['observable', <entity>, <header>]        (len 3)
+                #   formula form -> ['observable', <id>, 'formula', <expr>]   (len 4)
+                # The column form stores a structural ('observable', entity) tuple key ->
+                # the data column header (config.py renames the data column <header> ->
+                # <entity>, and <header>_SD -> <entity>_SD, so the objective's by-name match
+                # succeeds). The formula form stores a ('measurement', id) tuple key -> the
+                # PEtab observableFormula string; config.py compiles it into the measurement-
+                # model observation layer (evaluated post-simulation, ADR-0036).
+                if len(l) == 4 and str(l[2]).lower() == 'formula':
+                    obs_id, expr = l[1], l[3].strip()
+                    meas_key = ('measurement', obs_id)
+                    if meas_key in d:
+                        raise PybnfError(f"Observable '{obs_id}' is specified multiple times")
+                    d[meas_key] = expr
+                else:
+                    entity, header = l[1], l[2]
+                    obs_key = ('observable', entity)
+                    if obs_key in d:
+                        raise PybnfError(f"Observable '{entity}' is specified multiple times")
+                    d[obs_key] = header
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',

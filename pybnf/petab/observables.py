@@ -220,8 +220,11 @@ def noise_models_from_file(path):
 # A fitted ``.exp`` column is a BNGL observable or a BNGL function; the PEtab
 # observableId wraps it with a prefix that keeps the PEtab-id namespace disjoint from
 # the model-entity namespace, so ``observableFormula`` can reference the bare model
-# name without ever colliding with a PEtab observableId (ADR-0025).
-_PETAB_OBSERVABLE_PREFIX = {'observable': 'obs_', 'function': 'func_'}
+# name without ever colliding with a PEtab observableId (ADR-0025). A ``measurement``
+# column is a conf-declared measurement model (ADR-0036): its id is already a PEtab
+# observableId (the conf carries it from an earlier import), so it takes no prefix and
+# its ``observableFormula`` is the conf formula verbatim.
+_PETAB_OBSERVABLE_PREFIX = {'observable': 'obs_', 'function': 'func_', 'measurement': ''}
 
 _OBSERVABLE_COLUMNS = [
     'observableId', 'observableFormula', 'noiseFormula', 'noiseDistribution',
@@ -234,7 +237,10 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
 
     ``model_name`` is the BNGL observable/function name (an ``.exp`` column header);
     ``kind`` is ``'observable'`` or ``'function'``. The ``observableId`` is the
-    prefixed name (``obs_<name>`` / ``func_<name>``).
+    prefixed name (``obs_<name>`` / ``func_<name>``). ``kind == 'measurement'`` is a
+    conf-declared measurement model (ADR-0036): the ``observableId`` is ``model_name``
+    verbatim (no prefix -- it is already a PEtab id) and ``observable_formula`` (the conf
+    formula) is required.
 
     ``observableFormula`` is the **bare model name** by default: a BNGL function
     (including a function of a function) is carried verbatim in the model file and
@@ -263,8 +269,12 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
         prefix = _PETAB_OBSERVABLE_PREFIX[kind]
     except KeyError:
         raise PybnfError(
-            f"Column '{model_name}': unknown kind {kind!r} (expected 'observable' or "
-            f"'function').")
+            f"Column '{model_name}': unknown kind {kind!r} (expected 'observable', "
+            f"'function', or 'measurement').")
+    if kind == 'measurement' and observable_formula is None:
+        raise PybnfError(
+            f"Measurement-model column '{model_name}' requires an observableFormula "
+            f"(the conf measurement-model formula, ADR-0036).")
     observable_id = prefix + model_name
 
     source_kind, source_value = noise_source
