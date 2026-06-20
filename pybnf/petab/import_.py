@@ -59,6 +59,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..noise import ConstantSigma, FreeParameterSigma
 from ..printing import PybnfError
 from .conditions import (
     REF_MARKER,
@@ -68,7 +69,7 @@ from .conditions import (
     read_experiment_table,
 )
 from .measurements import data_from_measurement_rows, read_measurement_table
-from .observables import read_observable_table
+from .observables import noise_model_from_row, read_observable_table
 from .parameters import free_parameter_from_row, read_parameter_table
 from ._tsv import num
 
@@ -138,8 +139,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
 
     # Measurements -> one wide Data per experiment, then assemble the experiment list.
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
-    objective_token = _objective_token(
-        observable_rows, _column_mean_resolver(datas, observable_id_to_column))
+    objective_directive = _objective_directive(
+        observable_rows, _column_mean_resolver(datas, observable_id_to_column),
+        estimated_to_free)
     conditions = conditions_from_rows(condition_rows, surrogate_params)
     experiments = _experiments(datas, experiment_rows, out_dir)
 
@@ -155,7 +157,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         conf_name = f'imported_{jt}.conf' if len(job_types) > 1 else 'imported.conf'
         _write_conf(
             out_dir / conf_name, model_filename=model_filename, job_type=jt,
-            objective_token=objective_token, free_param_lines=free_param_lines,
+            objective_directive=objective_directive, free_param_lines=free_param_lines,
             conditions=conditions, experiments=experiments, method=method,
             method_overrides=method_overrides or {}, settings=merged_settings,
             multi=len(job_types) > 1)
@@ -240,81 +242,144 @@ def _column_mean_resolver(datas, observable_id_to_column):
     return column_mean_of
 
 
-def _objective_token(observable_rows, column_mean_of):
-    """Recover the PyBNF ``objective`` token from the observables' noise columns -- the
-    inverse of the objective-family export (``_OBJECTIVE_DESUGAR`` reversed):
+# PEtab noiseDistribution -> (PyBNF noise_model family token, its scale-parameter field).
+# The reverse of export.py's _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION for the two families a
+# PyBNF objective can carry: the noise_model line names the family and its single noise
+# parameter (gaussian/sigma, laplace/scale; ADR-0031, objective._NOISE_PARAM_NAMES). The
+# four-token path is preferred where it applies (a tidier 'objective =' line that
+# round-trips); this is the fallback for the cases no token names.
+_PETAB_DISTRIBUTION_TO_NOISE_MODEL = {
+    'normal':  ('gaussian', 'sigma'),
+    'laplace': ('laplace',  'scale'),
+}
 
-    * ``normal`` + a per-point placeholder ``noiseFormula`` -> ``chi_sq``;
-    * ``normal`` + a constant ``1`` (every observable) -> ``sos``;
-    * ``normal`` + a constant equal to each observable's column mean -> ``ave_norm_sos``;
-    * ``laplace`` + a constant ``1`` -> ``sod``.
+
+def _objective_directive(observable_rows, column_mean_of, estimated_to_free):
+    """Recover the conf's objective directive (one full line) from the observables' noise.
+
+    The inverse of the objective-family / whole-fit ``noise_model`` export. Returns either:
+
+    * ``objective = <token>`` -- one of the four sugar tokens (``chi_sq`` / ``sos`` /
+      ``sod`` / ``ave_norm_sos``), the tidy common case that round-trips byte-for-byte; or
+    * ``noise_model = <family>, <param> = <verb> <arg>`` (the ADR-0031 surface) -- the
+      broader cases no sugar token names: a uniform **non-unit fixed** sigma
+      (``fix_at C``, the symmetric inverse of the exporter's whole-fit ``noise_model``
+      line, so it round-trips byte-for-byte) and a single shared **free-parameter** sigma
+      (``fit <id>__FREE``; import-only, since the exporter raises on a ``fit`` sigma -- it
+      is external-problem territory).
 
     A single PyBNF objective is one family + one sigma source across all observables, so a
-    mix raises ``PybnfError``. ``log-normal`` / ``log-laplace`` families, an expression
-    ``noiseFormula``, a per-point laplace placeholder, and a uniform non-unit fixed sigma
-    (a ``noise_model`` line, not a token) raise ``NotImplementedError`` -- the boundary is
-    in code, not a silent mis-recovery.
+    mix of families/sources -- or a *per-observable* free or fixed sigma (e.g. Boehm's
+    distinct ``sd_*`` parameters) -- raises ``PybnfError`` (per-observable noise import is
+    a later #407 chunk). A ``log-normal`` / ``log-laplace`` distribution, an expression
+    ``noiseFormula``, and a per-point laplace placeholder raise ``NotImplementedError`` --
+    the boundary is in code, not a silent mis-recovery.
     """
-    families, kinds, constants = set(), set(), {}
+    families, sources = set(), []
     for row in observable_rows:
         dist = (row.noise_distribution or 'normal').lower()
-        if dist not in ('normal', 'laplace'):
+        if dist not in _PETAB_DISTRIBUTION_TO_NOISE_MODEL:
             raise NotImplementedError(
                 f"Observable '{row.observable_id}': noiseDistribution {dist!r} maps to a "
-                f"PyBNF noise family with no objective token (log-normal / log-laplace are "
-                f"natural-log families; neg_bin was removed from PEtab v2). Importing it "
-                f"as a noise_model line is a later #407 chunk; this chunk recovers the "
-                f"objective tokens chi_sq / sos / sod / ave_norm_sos.")
+                f"PyBNF noise family on the natural-log scale (log-normal / log-laplace; "
+                f"neg_bin was removed from PEtab v2), which has neither an objective token "
+                f"nor a native noise_model line yet (#407). This chunk recovers the linear "
+                f"normal / laplace families.")
         families.add(dist)
         formula = (row.noise_formula or '').strip()
         if not formula:
             raise PybnfError(
                 f"Observable '{row.observable_id}' is missing a noiseFormula.")
         if formula.startswith('noiseParameter'):
-            kinds.add('placeholder')
+            sources.append(('placeholder', None))
         else:
-            try:
-                constants[row.observable_id] = float(formula)
-            except ValueError:
-                raise NotImplementedError(
-                    f"Observable '{row.observable_id}': noiseFormula {formula!r} is an "
-                    f"expression, not a number or a per-point placeholder. PEtab noise "
-                    f"formulae need the sympy layer (deferred, #407).")
-            kinds.add('constant')
+            # Reuse the observables asset for the numeric / bare-id / expression split (it
+            # raises the deferred-expression boundary); we consume only its SigmaSource.
+            _noise_model, source = noise_model_from_row(row)
+            if isinstance(source, ConstantSigma):
+                sources.append(('constant', source.const))
+            elif isinstance(source, FreeParameterSigma):
+                sources.append(('free', source.name))
+            else:  # defensive: a bare row yields only these two sources
+                raise PybnfError(
+                    f"Observable '{row.observable_id}': noiseFormula {formula!r} maps to "
+                    f"an unexpected sigma source {type(source).__name__}.")
 
-    if len(families) != 1 or len(kinds) != 1:
+    if len(families) != 1:
         raise PybnfError(
-            "The observables table mixes noise families/sources across observables, so it "
-            f"is not a single PyBNF objective (families={sorted(families)}, "
-            f"sources={sorted(kinds)}). Per-observable noise import is a later #407 chunk.")
+            f"The observables table mixes noise families across observables "
+            f"(families={sorted(families)}), so it is not a single PyBNF objective. "
+            f"Per-observable noise import is a later #407 chunk.")
+    kinds = {kind for kind, _ in sources}
+    if len(kinds) != 1:
+        raise PybnfError(
+            f"The observables table mixes noise sources across observables "
+            f"(sources={sorted(kinds)}), so it is not a single PyBNF objective. "
+            f"Per-observable noise import is a later #407 chunk.")
     family, kind = families.pop(), kinds.pop()
+    petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[family]
 
     if kind == 'placeholder':
         if family != 'normal':
             raise NotImplementedError(
                 f"A per-point ({family}) placeholder noiseFormula has no PyBNF objective "
                 f"token (only the Gaussian per-point _SD case, chi_sq, is recovered; #407).")
-        return 'chi_sq'
-    if family == 'laplace':
-        if all(c == 1.0 for c in constants.values()):
-            return 'sod'
-        raise NotImplementedError(
-            "A Laplace likelihood with a non-unit fixed scale maps to a 'noise_model = "
-            "laplace, scale = fix_at <v>' line, not an objective token (later #407 chunk).")
-    if all(c == 1.0 for c in constants.values()):
-        return 'sos'
-    # Otherwise it must be ave_norm_sos (each observable's fixed sigma is its own column
-    # mean). Verify against the data so a uniform non-unit fixed sigma (a noise_model
-    # fix_at line, out of scope for token recovery) raises loudly, not silently.
-    for oid, c in constants.items():
-        mean = column_mean_of(oid)
-        if abs(c - mean) > 1e-9 * max(1.0, abs(mean)):
-            raise NotImplementedError(
-                f"Observable '{oid}' has a fixed Gaussian sigma {c} that is neither 1 "
-                f"(sos) nor its column mean {mean} (ave_norm_sos): a uniform fixed sigma "
-                f"maps to a 'noise_model = normal, sigma = fix_at {c}' line, not an "
-                f"objective token (later #407 chunk).")
-    return 'ave_norm_sos'
+        return 'objective = chi_sq'
+    if kind == 'free':
+        return _free_sigma_directive(sources, petab_family, param, estimated_to_free)
+    return _constant_sigma_directive(
+        observable_rows, sources, family, petab_family, param, column_mean_of)
+
+
+def _constant_sigma_directive(observable_rows, sources, family, petab_family, param,
+                              column_mean_of):
+    """Map an all-constant sigma to its directive: ``sos``/``sod`` (a unit sigma),
+    ``ave_norm_sos`` (each observable's own column mean), or a ``fix_at`` ``noise_model``
+    line (a uniform non-unit fixed sigma). A *different* fixed sigma per observable that is
+    not the column-mean pattern is per-observable noise -> ``PybnfError`` (later #407)."""
+    constants = [value for _kind, value in sources]
+    if all(c == 1.0 for c in constants):
+        return 'objective = sos' if family == 'normal' else 'objective = sod'
+    if family == 'normal' and all(
+            _approx(c, column_mean_of(row.observable_id))
+            for row, c in zip(observable_rows, constants)):
+        return 'objective = ave_norm_sos'
+    uniq = set(constants)
+    if len(uniq) != 1:
+        raise PybnfError(
+            f"The observables table has a different fixed sigma per observable "
+            f"({sorted(uniq)}) that is neither all 1 (sos / sod) nor each observable's "
+            f"column mean (ave_norm_sos), so it is per-observable noise, not one PyBNF "
+            f"objective. Per-observable noise import is a later #407 chunk.")
+    return f'noise_model = {petab_family}, {param} = fix_at {num(uniq.pop())}'
+
+
+def _free_sigma_directive(sources, petab_family, param, estimated_to_free):
+    """Map a single shared free-parameter sigma across all observables to a ``fit``
+    ``noise_model`` line. The bare-id noiseFormula names an estimated parameter (already
+    emitted as a free parameter by :func:`_free_parameters`), so it connects to that
+    parameter's ``<id>__FREE`` name. A *distinct* free sigma per observable is
+    per-observable noise (later #407); a sigma id that is not an estimated parameter is a
+    malformed problem (no free parameter to fit it as)."""
+    ids = {sid for _kind, sid in sources}
+    if len(ids) != 1:
+        raise PybnfError(
+            f"The observables table names a different free-parameter sigma per observable "
+            f"({sorted(ids)}); that is per-observable noise, not one PyBNF objective. "
+            f"Per-observable noise import is a later #407 chunk.")
+    sigma_id = ids.pop()
+    free_name = estimated_to_free.get(sigma_id)
+    if free_name is None:
+        raise PybnfError(
+            f"The observables' noiseFormula names sigma parameter '{sigma_id}', but it is "
+            f"not an estimated (estimate=true) parameter in the parameters table, so there "
+            f"is no free parameter to fit it as.")
+    return f'noise_model = {petab_family}, {param} = fit {free_name}'
+
+
+def _approx(a, b):
+    """Two sigmas are equal up to a relative tolerance (the column-mean comparison)."""
+    return abs(a - b) <= 1e-9 * max(1.0, abs(b))
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +426,13 @@ def _write_exp(path, data):
 # The .conf writer (the disposable output half)
 # ---------------------------------------------------------------------------
 
-def _write_conf(path, *, model_filename, job_type, objective_token, free_param_lines,
+def _write_conf(path, *, model_filename, job_type, objective_directive, free_param_lines,
                 conditions, experiments, method, method_overrides, settings, multi):
     """Write one new-era (edition 2) ``.conf``: the recovered problem + the supplied
-    run-recipe (``job_type``, per-experiment ``method:``, required settings)."""
+    run-recipe (``job_type``, per-experiment ``method:``, required settings).
+
+    ``objective_directive`` is the full recovered objective line -- either ``objective =
+    <token>`` or a ``noise_model = <family>, ...`` line (:func:`_objective_directive`)."""
     stem = f'imported_{job_type}' if multi else 'imported'
     lines = [
         '# Imported from a PEtab v2 problem by pybnf.petab.import_job (#407).',
@@ -379,7 +447,7 @@ def _write_conf(path, *, model_filename, job_type, objective_token, free_param_l
         '',
         f'model: {model_filename}',
         f'job_type = {job_type}',
-        f'objective = {objective_token}',
+        objective_directive,
         '',
     ]
     for name, perts in conditions.items():

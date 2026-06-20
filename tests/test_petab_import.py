@@ -213,6 +213,51 @@ class TestImportExtensionsRoundTrip:
         # The objective token is recovered from the observables' noise columns.
         assert f'objective = {objective}' in conf.read_text()
 
+    @pytest.mark.parametrize('family,param', [('gaussian', 'sigma'), ('laplace', 'scale')])
+    def test_uniform_fixed_sigma_recovers_as_noise_model_line(self, tmp_path, family, param):
+        # A uniform non-unit fixed sigma is named by no sugar token (sos/sod are the unit
+        # case, ave_norm_sos the column-mean case), so it recovers as the symmetric inverse
+        # of the exporter's whole-fit noise_model line -- and round-trips byte-for-byte.
+        petab1, _, petab2, conf = _roundtrip(
+            tmp_path,
+            f'edition = 2\njob_type = de\nmodel: {DEMO_MODEL}\n'
+            f'noise_model = {family}, {param} = fix_at 2.5\n'
+            'experiment: par1, data: par1.exp\n' + _PARAMS_U)
+        _assert_problem_round_trips(petab1, petab2)
+        text = conf.read_text()
+        assert f'noise_model = {family}, {param} = fix_at 2.5' in text
+        assert 'objective =' not in text     # a noise_model line, not an objective token
+
+    def test_free_parameter_sigma_recovers_as_fit_noise_model_line(self, tmp_path):
+        # A bare-id noiseFormula naming an estimated parameter recovers as a 'fit'
+        # noise_model line, connecting observables<->parameters by name. Import-only: the
+        # exporter raises on a fit sigma, so there is no byte-equal round trip -- this is
+        # external-problem territory. Built by pointing a sos export's constant noiseFormula
+        # (no noiseParameters) at one shared estimated sigma parameter.
+        src = tmp_path / 'src'
+        src.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
+        (src / 'job.conf').write_text(
+            f'edition = 2\njob_type = de\nobjective = sos\nmodel: {DEMO_MODEL}\n'
+            'experiment: par1, data: par1.exp\n' + _PARAMS_U)
+        petab = src / 'petab'
+        export_job(src / 'job.conf', petab)
+        obs = (petab / 'observables.tsv').read_text()
+        (petab / 'observables.tsv').write_text(obs.replace('\t1\tnormal', '\tnoise_sd\tnormal'))
+        params = (petab / 'parameters.tsv').read_text()
+        (petab / 'parameters.tsv').write_text(params + 'noise_sd\ttrue\t0\t10\n')
+
+        out = import_job(petab / 'problem.yaml', tmp_path / 'out')
+        text = (out / 'imported.conf').read_text()
+        # The shared sigma id 'noise_sd' connects to its emitted free parameter noise_sd__FREE.
+        assert 'noise_model = gaussian, sigma = fit noise_sd__FREE' in text
+        assert 'uniform_var = noise_sd__FREE 0 10' in text
+        assert 'objective =' not in text
+        with open(out / 'imported.conf') as fh:
+            d = ploop(fh.readlines())
+        assert ('uniform_var', 'noise_sd__FREE') in d
+
     def test_conditions_round_trip(self, tmp_path):
         extra = {
             'parabola2.bngl': _PARABOLA2_BNGL,

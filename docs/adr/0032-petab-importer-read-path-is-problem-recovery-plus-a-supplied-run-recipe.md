@@ -103,12 +103,20 @@ Four inversions carry the semantic weight:
   an **absolute set** (`s = 10`) — the same PEtab `targetValue` either way. The synthesized
   `cond_wildtype` (pins all of M) maps back to a **wildtype** experiment (no `condition:`),
   not a `condition:` line.
-- **Objective-token recovery** (the inverse of the objective-family export /
-  `_OBJECTIVE_DESUGAR`): `normal` + a per-point placeholder → `chi_sq`; `normal` + a constant
-  `1` → `sos`; `normal` + a constant equal to each observable's column mean → `ave_norm_sos`;
-  `laplace` + `1` → `sod`. A single PyBNF objective is one family + one sigma source across
-  all observables, so a mix raises; a uniform non-unit fixed sigma (a `noise_model` line, not
-  a token) raises rather than silently mis-recovering.
+- **Objective directive recovery** (the inverse of the objective-family / whole-fit
+  `noise_model` export). The four sugar tokens recover as the tidy `objective = <token>`
+  line: `normal` + a per-point placeholder → `chi_sq`; `normal` + a constant `1` → `sos`;
+  `normal` + a constant equal to each observable's column mean → `ave_norm_sos`; `laplace` +
+  `1` → `sod`. The broader cases no token names recover as the ADR-0031 `noise_model =
+  <family>, <param> = <verb> <arg>` line (2026-06-19 follow-up, reusing
+  `observables.noise_model_from_row` for the numeric-vs-bare-id split): a **uniform non-unit
+  fixed** sigma → `fix_at C` (the symmetric inverse of the exporter's whole-fit
+  `noise_model` line — round-trips byte-for-byte), and a single shared **free-parameter**
+  sigma → `fit <id>__FREE` (import-only — the exporter raises on a `fit` sigma, so this is
+  external-problem territory; the bare-id noiseFormula connects observables↔parameters by
+  name). A single PyBNF objective is one family + one sigma source across all observables, so
+  a mix — or a *per-observable* free/fixed sigma — raises (per-observable noise import is a
+  later chunk).
 - **Model re-instrumentation.** `clean_model_for_petab` replaced each `__FREE` marker with a
   bounds-midpoint nominal and stripped `begin actions`; the nominal is *lossy* (it is the
   midpoint, not the marker), so the inverse is driven by the **estimated set**, not the
