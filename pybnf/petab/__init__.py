@@ -26,6 +26,7 @@ from .conditions import (
     read_experiment_table,
 )
 from .export import clean_model_for_petab, export_job, write_problem_yaml
+from .import_ import import_job, read_problem_yaml
 from .measurements import (
     PetabMeasurementRow,
     data_from_measurement_rows,
@@ -86,4 +87,7 @@ __all__ = [
     'export_job',
     'clean_model_for_petab',
     'write_problem_yaml',
+    # job importer
+    'import_job',
+    'read_problem_yaml',
 ]
