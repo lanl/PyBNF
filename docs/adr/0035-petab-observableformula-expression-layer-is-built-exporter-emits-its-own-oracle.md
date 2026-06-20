@@ -1,9 +1,12 @@
 # The PEtab observableFormula expression layer is built; the exporter inlines a function body so the synthesizer has a round-trip oracle (issue #407)
 
-**Status: Accepted (decision 2026-06-20); not yet implemented — tracked in
-`dev/petab-407-observableformula-plan.md`.** Supersedes the *deferral* in ADR-0033 (the
-bare-name analysis and the per-measurement placeholder deferral in ADR-0033 still stand;
-only its "defer the expression layer for want of an oracle" conclusion is overturned). The
+**Status: Implemented (decision 2026-06-20; implemented 2026-06-20).** The reversible
+translator (`pybnf/petab/formula.py`), the exporter's `inline_functions` mode, and the
+importer's function synthesis are in place, with both oracle layers green (the syntactic
+round trip in `tests/test_petab_formula.py` and the bngsim semantic round trip under
+`-m recovery`). Supersedes the *deferral* in ADR-0033 (the bare-name analysis and the
+per-measurement placeholder deferral in ADR-0033 still stand; only its "defer the
+expression layer for want of an oracle" conclusion is overturned). The
 expression `observableFormula` is built as a **reversible translator pair** on the existing
 asset seam, and the exporter **generates its own oracle** by inlining a BNGL function body
 into `observableFormula` — so the synthesizer is graded by the same byte-equal
@@ -138,6 +141,28 @@ dependency weight off the critical path until it is actually exercised.
   + synthesizer instead of raising; an unknown symbol or a placeholder still raises here.
 - A new translator module (e.g. `pybnf/petab/formula.py`) — the reversible
   PEtab-math ↔ BNGL-function-body pair, `petab`/`sympy` imported lazily.
+
+### Implementation notes (confirmed 2026-06-20)
+
+- **Math grammar import path:** `petab.v2.math` (the v2-specific grammar) — both
+  `sympify_petab` (string → sympy tree) and `petab_math_str` (sympy tree → PEtab math
+  string) live there. `petab.math` is a v1 alias of the same symbols; we use the v2 path.
+- **Both directions parse via `sympify_petab(..., evaluate=False)`** (so the written
+  structure is preserved). The forward (export-inline) direction serializes with petab's
+  own `petab_math_str` so the emitted formula is exactly what petab's validator accepts;
+  the reverse (import-synthesis) direction serializes with a small `sympy.StrPrinter`
+  subclass we own, because BNGL math differs from sympy's default on the `^` power
+  operator, the `ln`/`log10`/`log2`/`sqrt` spellings, and BNGL's zero-arg `func()`
+  reference convention.
+- **Why we own the BNGL printer (not `petab_math_str` reversed):** petab 0.8.2's
+  `petab_math_str` serializes a one-half power as the precedence-unsafe `z ^ 1/2` (which
+  re-parses as `z/2`). The MVP arithmetic surface never hits it, but owning the BNGL
+  printer keeps the reverse direction precedence-safe regardless — exactly the
+  silent-wrongness ADR-0033 warned about, caught and contained here rather than trusted.
+- **BNGL function references** (`f()` for a global function) are bridged by a bounded,
+  anchored rename of the *known* function names (export side strips `f()`→`f`; the BNGL
+  printer re-appends `()` for a function-kind symbol) — not a general math tokenizer, which
+  stays the job of `sympify_petab`.
 
 ## Consequences
 

@@ -72,6 +72,7 @@ from .conditions import (
     write_condition_table,
     write_experiment_table,
 )
+from .formula import bngl_body_to_petab_math
 from .measurements import (
     measurement_rows_from_data,
     write_measurement_table,
@@ -108,7 +109,7 @@ _FREE_TOKEN = re.compile(r'\w+__FREE')
 # The exporter driver
 # ---------------------------------------------------------------------------
 
-def export_job(conf_path, out_dir):
+def export_job(conf_path, out_dir, inline_functions=False):
     """Export the PyBNF job at ``conf_path`` to a PEtab v2 problem in ``out_dir``.
 
     Reads the job's data/conditions/observables from the **new-era surface** (ADR-0028):
@@ -118,6 +119,13 @@ def export_job(conf_path, out_dir):
     ``parameters.tsv``, ``observables.tsv``, ``measurements.tsv``, a PEtab-clean copy of
     the BNGL model, ``problem.yaml``, and -- when some experiment applies a condition --
     ``conditions.tsv`` / ``experiments.tsv``. Returns the ``out_dir`` path.
+
+    ``inline_functions`` (default ``False``) is the opt-in expression mode (ADR-0035):
+    when set, a fitted **function** column emits its body as an ``observableFormula``
+    expression (translated to PEtab math, requires the ``pybnf[petab]`` extra) instead of
+    the bare model name, producing a model-portable problem and the round-trip oracle the
+    importer's synthesis is graded against. The default stays bare-name, lossless,
+    byte-stable, and ``petab``-free; an observable column is never inlined.
 
     New-era only (ADR-0028 Chunk 5c, "refuse legacy everything"): a job that binds data
     the legacy way (``model = X : Y.exp`` / ``mutant`` / ``param_scan``) is refused, as is
@@ -141,7 +149,7 @@ def export_job(conf_path, out_dir):
 
     (observable_rows, measurement_rows, condition_rows, experiment_rows,
      surrogate_params) = _export_new_era(
-        conf, conf_path, model_file, bngl, noise, fit_model_params)
+        conf, conf_path, model_file, bngl, noise, fit_model_params, inline_functions)
 
     parameter_rows = _parameter_rows(
         free_params, free_to_model, surrogate_params, bngl, model_file)
@@ -209,12 +217,14 @@ def _require_new_era_data(conf, model_file):
             f"legacy line is silently ignored on export (ADR-0028, #423).")
 
 
-def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params):
+def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params,
+                    inline_functions=False):
     """Read a job's data/conditions/observables from the **new-era surface** (ADR-0028).
 
     Export is *transcription*: an ``experiment:`` is a PEtab Experiment (experimentId =
     the experiment name) carrying its ``data:`` replicates as measurement rows; an
     ``observable:`` line renames a data column to a model entity before classification.
+    ``inline_functions`` is threaded to :func:`_observable_rows` (ADR-0035 inlining).
     Returns ``(observable_rows, measurement_rows, condition_rows, experiment_rows,
     surrogate_params)``.
 
@@ -232,7 +242,7 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params):
     _apply_observable_overrides(all_datas, overrides)
 
     observable_rows, column_to_observable_id = _observable_rows(
-        all_datas, bngl, noise, model_file)
+        all_datas, bngl, noise, model_file, inline_functions)
 
     conditions = _read_conditions(conf, model_file, bngl)
     referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
@@ -526,7 +536,7 @@ def _independent_variable(data):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(datas, bngl, noise, model_file):
+def _observable_rows(datas, bngl, noise, model_file, inline_functions=False):
     """Classify each fitted column across all experiments' ``datas`` as a model observable
     or function and map it to a PEtab observable row.
 
@@ -536,6 +546,10 @@ def _observable_rows(datas, bngl, noise, model_file):
     ``(noiseDistribution, sigma_verb, sigma_arg)`` from :func:`_resolve_noise`; the sigma
     source is resolved per column (it can depend on the column's data, e.g. a
     ``column_mean`` sigma).
+
+    ``inline_functions`` (ADR-0035) emits a **function** column's body as an
+    ``observableFormula`` expression instead of the bare name -- the opt-in path that
+    generates the importer's round-trip oracle; the default keeps every column bare.
     """
     distribution, verb, arg = noise
     columns = []
@@ -558,7 +572,10 @@ def _observable_rows(datas, bngl, noise, model_file):
                 f"'{model_file}' (its observables: {sorted(bngl.observable_names)}; "
                 f"functions: {sorted(bngl.function_names)}).")
         noise_source = _noise_source_for_column(verb, arg, col, datas)
-        row = petab_observable_row(col, kind, distribution, noise_source)
+        formula = _inlined_formula(col, kind, bngl, model_file) if inline_functions \
+            else None
+        row = petab_observable_row(col, kind, distribution, noise_source,
+                                   observable_formula=formula)
         observable_rows.append(row)
         column_to_observable_id[col] = row.observable_id
     if not observable_rows:
@@ -566,6 +583,28 @@ def _observable_rows(datas, bngl, noise, model_file):
             f"Exp data for model '{model_file}' has no fittable observable/function "
             f"columns (only an independent variable and/or _SD columns).")
     return observable_rows, column_to_observable_id
+
+
+def _inlined_formula(col, kind, bngl, model_file):
+    """The ``observableFormula`` for a column under inlining mode (ADR-0035), or ``None``.
+
+    Only a **function** column is inlined (an observable is a model species/group, not an
+    algebraic expression, so it stays bare); its captured body is translated to PEtab math
+    by :func:`~pybnf.petab.formula.bngl_body_to_petab_math`. A function with an empty body
+    -- a forward declaration, or a function *of arguments* (only zero-arg global functions
+    are the BNGL measurement-model convention) -- cannot be inlined and raises rather than
+    emitting a bare-name formula that silently contradicts the requested mode.
+    """
+    if kind != 'function':
+        return None
+    body = bngl.function_bodies.get(col, '')
+    if not body:
+        raise NotImplementedError(
+            f"Function '{col}' in model '{model_file}' has no inlinable body (a forward "
+            f"declaration or a function with arguments); only a zero-arg global function "
+            f"'{col}() = <body>' can be inlined as an observableFormula (ADR-0035). Export "
+            f"without inline_functions to reference it by bare name.")
+    return bngl_body_to_petab_math(body, bngl)
 
 
 def _noise_source_for_column(verb, arg, col, datas):

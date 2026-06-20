@@ -179,6 +179,16 @@ class TestReverseAssets:
         assert row.noise_distribution == 'laplace'
         assert row.noise_placeholders is None
 
+    def test_observable_row_inlines_function_body_when_supplied(self):
+        # The inlining override (ADR-0035): a function column may carry its body as the
+        # observableFormula instead of the bare name; without the override it stays bare.
+        row = petab_observable_row('z', 'function', 'normal', ('constant', 1.0),
+                                   observable_formula='(a + b)/c')
+        assert row.observable_id == 'func_z'
+        assert row.observable_formula == '(a + b)/c'
+        bare = petab_observable_row('z', 'function', 'normal', ('constant', 1.0))
+        assert bare.observable_formula == 'z'         # default is still the bare name
+
     def test_measurement_pivot_values_and_noise(self):
         arr = np.array([[0.0, 1.0, 0.5], [1.0, 2.0, 0.7]])
         data = Data.from_columns(arr, ['time', 'a', 'a_SD'])
@@ -234,6 +244,22 @@ class TestExportDemo:
         assert by_id['func_y']['observableFormula'] == 'y'
         assert all(r['noiseDistribution'] == 'normal' for r in rows)
         assert all(r['noisePlaceholders'] == r['noiseFormula'] for r in rows)
+
+    def test_inlining_emits_function_body_observable_stays_bare(self, tmp_path):
+        # inline_functions (ADR-0035): the FUNCTION column emits its body as an expression
+        # observableFormula; the OBSERVABLE column stays bare (not an algebraic expression).
+        pytest.importorskip('petab')
+        import sympy as sp
+        from petab.v2.math import sympify_petab
+        out = tmp_path / 'inl'
+        export_job(DEMO_CONF, out, inline_functions=True)
+        by_id = {r['observableId']: r for r in _tsv_rows(out / 'observables.tsv')}
+        assert by_id['obs_x']['observableFormula'] == 'x'        # observable: still bare
+        # func_y's formula is y()'s body (v1*(x^2)+(v2*x)+v3), sympy-equal but inlined.
+        inlined = by_id['func_y']['observableFormula']
+        assert inlined != 'y'
+        assert sp.simplify(sympify_petab(inlined)
+                           - sympify_petab('v1*x^2 + v2*x + v3')) == 0
 
     def test_measurement_values_match_exp_exactly(self, exported):
         # The strong oracle: every long cell equals the wide .exp Data cell.
@@ -846,6 +872,16 @@ class TestCleanModelUnit:
         src = "begin model\n begin parameters\n  k1 k1__FREE\n end parameters\nend model\n"
         with pytest.raises(PybnfError, match='__FREE'):
             clean_model_for_petab(src)
+
+    def test_parse_model_captures_function_bodies(self):
+        # Phase A (ADR-0035): parse_model records each global function's body verbatim;
+        # function_names is exactly the body keys; a function WITH arguments (not the
+        # inlinable zero-arg convention) is named but yields an empty, non-inlinable body.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin functions\n f() = (a + b)/c\n h = a*2\n g(x) = x^2\nend functions\n')
+        assert ent.function_bodies == {'f': '(a + b)/c', 'h': 'a*2', 'g': ''}
+        assert ent.function_names == frozenset({'f', 'h', 'g'})
 
 
 # ---------------------------------------------------------------------------

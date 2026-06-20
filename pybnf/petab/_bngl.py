@@ -34,12 +34,19 @@ class BnglEntities:
     no ``__FREE`` marker to invert. The remaining sets are bare entity names,
     except ``seed_species``, which holds the (often composite) species *pattern*
     strings verbatim.
+
+    ``function_bodies`` maps each global function's name to its right-hand side
+    verbatim (``'y'`` -> ``'v1*(x^2)+(v2*x)+v3'``); ``function_names`` is exactly
+    its key set. Only the ``observableFormula`` expression layer reads the bodies
+    -- the exporter inlines one as a PEtab math expression and the importer
+    re-synthesizes it (ADR-0035); the bare-name path ignores them.
     """
 
     text: str
     parameters: dict             # 'v1' -> '5' / '2*base_rate'
     observable_names: frozenset  # {'x'}
     function_names: frozenset    # {'y'}  (global functions, name without '()')
+    function_bodies: dict        # 'y' -> 'v1*(x^2)+(v2*x)+v3'  (the RHS, verbatim)
     molecule_type_names: frozenset  # {'counter'}
     seed_species: frozenset      # {'counter()'}  (concrete species patterns)
     compartment_names: frozenset
@@ -52,11 +59,17 @@ def parse_model(text):
         nv = _parameter_name_value(line)
         if nv is not None:
             parameters[nv[0]] = nv[1]
+    function_bodies = {}
+    for line in _block_lines(text, 'functions'):
+        nb = _function_name_body(line)
+        if nb is not None:
+            function_bodies[nb[0]] = nb[1]
     return BnglEntities(
         text=text,
         parameters=parameters,
         observable_names=_names(text, 'observables', _observable_name),
-        function_names=_names(text, 'functions', _function_name),
+        function_names=frozenset(function_bodies),
+        function_bodies=function_bodies,
         molecule_type_names=_names(text, 'molecule types', _molecule_type_name),
         seed_species=_names(text, 'seed species', _seed_species_pattern),
         compartment_names=_names(text, 'compartments', _compartment_name),
@@ -98,10 +111,25 @@ def _observable_name(line):
     return tokens[1] if len(tokens) >= 2 and tokens[0] in _OBS_KEYWORDS else None
 
 
-def _function_name(line):
-    """The name in a ``<name>() = ...`` (or ``<name> = ...``) global-function line."""
-    m = re.match(r'(\w+)\s*\(', line) or re.match(r'(\w+)\s*=', line)
-    return m.group(1) if m else None
+def _function_name_body(line):
+    """``(name, body)`` for a ``<name>([args]) = <body>`` (or ``<name> = <body>``)
+    global-function line; ``None`` if the line declares no function.
+
+    The body is the right-hand side verbatim (whitespace-stripped) -- the inlinable
+    measurement-model expression the ``observableFormula`` layer reads (ADR-0035). A
+    function with arguments is recognised (its name captured) but yields an empty body:
+    only zero-arg global functions (the BNGL measurement-model convention) are inlinable,
+    and the translator raises on a non-empty argument list rather than mis-synthesizing it.
+    """
+    m = re.match(r'(\w+)\s*\(([^)]*)\)\s*=\s*(.+)$', line)
+    if m:
+        return (m.group(1), '' if m.group(2).strip() else m.group(3).strip())
+    m = re.match(r'(\w+)\s*=\s*(.+)$', line)
+    if m:
+        return (m.group(1), m.group(2).strip())
+    # A bare declaration with no '=' (a forward reference); name only, no body.
+    m = re.match(r'(\w+)\s*\(', line) or re.match(r'(\w+)\b', line)
+    return (m.group(1), '') if m else None
 
 
 def _molecule_type_name(line):

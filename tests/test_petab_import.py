@@ -28,6 +28,7 @@ import pytest
 
 from pybnf.data import Data
 from pybnf.parse import ploop
+from pybnf.printing import PybnfError
 from pybnf.petab import (
     export_job,
     import_job,
@@ -35,6 +36,7 @@ from pybnf.petab import (
     read_parameter_table,
     read_problem_yaml,
 )
+from pybnf.petab._bngl import parse_model
 from pybnf.petab.conditions import (
     build_experiment_conditions,
     conditions_from_rows,
@@ -407,12 +409,33 @@ class TestBoundaries:
             self._import_mutated(demo_petab, tmp_path,
                                  {'observables.tsv': ('normal', distribution)})
 
-    def test_expression_observable_formula_is_refused(self, demo_petab, tmp_path):
-        # A non-bare observableFormula is the deferred formula layer (ADR-0033): importing
-        # it means synthesizing a BNGL function, with no round-trip oracle, so it raises.
-        with pytest.raises(NotImplementedError, match='expression'):
+    def test_expression_observable_formula_synthesizes_a_function(self, demo_petab,
+                                                                  tmp_path):
+        # An expression observableFormula is no longer refused (ADR-0035): it is translated
+        # to a BNGL function synthesized into the model and the column maps to it by name.
+        pytest.importorskip('petab')
+        out = self._import_mutated(
+            demo_petab, tmp_path, {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx + 1\t')})
+        model = (out / 'parabola_v2.bngl').read_text()
+        ent = parse_model(model)
+        assert 'obs_x' in ent.function_bodies        # the synthesized measurement function
+        assert ploop((out / 'imported.conf').read_text().splitlines(keepends=True))
+
+    def test_unknown_symbol_in_observable_formula_raises(self, demo_petab, tmp_path):
+        # A free symbol that is no model entity is an error, never a silent free parameter.
+        pytest.importorskip('petab')
+        with pytest.raises(PybnfError, match='not a parameter, observable, or function'):
             self._import_mutated(demo_petab, tmp_path,
-                                 {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx + 1\t')})
+                                 {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx + nope\t')})
+
+    def test_observable_parameter_placeholder_is_deferred(self, demo_petab, tmp_path):
+        # A per-measurement observableParameter* placeholder has no PyBNF analogue (the
+        # frontier ADR-0035 keeps deferred); it raises pointing there, not synthesizes.
+        pytest.importorskip('petab')
+        with pytest.raises(NotImplementedError, match='placeholder'):
+            self._import_mutated(
+                demo_petab, tmp_path,
+                {'observables.tsv': ('obs_x\tx\t', 'obs_x\tx*observableParameter1_obs_x\t')})
 
     def test_unsupported_prior_family_is_refused(self, demo_petab, tmp_path):
         # A PEtab prior family PyBNF has no Prior for (catalog-parity follow-up).
@@ -426,6 +449,43 @@ class TestBoundaries:
             'v3\ttrue\t0\t10\t\t\n')
         with pytest.raises(NotImplementedError, match='cauchy'):
             import_job(prob / 'problem.yaml', tmp_path / 'out')
+
+
+class TestInjectFunctions:
+    """Pure-string injection of synthesized functions into model text (ADR-0035), the
+    only place the importer no longer carries the model verbatim. No petab needed."""
+
+    def test_merges_into_an_existing_functions_block(self):
+        from pybnf.petab.import_ import _inject_functions
+        model = ('begin model\n  begin functions\n    y() = a*2\n  end functions\n'
+                 '  begin reaction rules\n    0 -> A() 1\n  end reaction rules\nend model\n')
+        out = _inject_functions(model, [('obs_z', 'a + 1.0')])
+        # The new function joins the existing block (before its end functions), indented
+        # like the existing line; exactly one functions block remains.
+        assert out.count('begin functions') == 1
+        assert '    y() = a*2\n    obs_z() = a + 1.0\n  end functions' in out
+
+    def test_creates_a_fresh_block_before_reaction_rules(self):
+        from pybnf.petab.import_ import _inject_functions
+        model = ('begin model\n  begin observables\n    Molecules a A()\n  end observables\n'
+                 '  begin reaction rules\n    0 -> A() 1\n  end reaction rules\nend model\n')
+        out = _inject_functions(model, [('obs_z', 'a + 1.0')])
+        # A fresh block lands before reaction rules (after the observables it references).
+        assert out.index('begin functions') < out.index('begin reaction rules')
+        assert 'obs_z() = a + 1.0' in out
+
+    def test_creates_a_fresh_block_before_end_model_when_no_reaction_rules(self):
+        from pybnf.petab.import_ import _inject_functions
+        model = ('begin model\n  begin observables\n    Molecules a A()\n'
+                 '  end observables\nend model\n')
+        out = _inject_functions(model, [('obs_z', 'a')])
+        assert out.index('begin functions') < out.index('end model')
+
+    def test_appends_at_eof_when_no_anchor(self):
+        from pybnf.petab.import_ import _inject_functions
+        model = 'begin observables\n  Molecules a A()\nend observables\n'
+        out = _inject_functions(model, [('obs_z', 'a')])
+        assert out.rstrip().endswith('end functions')
 
 
 # ---------------------------------------------------------------------------

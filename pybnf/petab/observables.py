@@ -228,16 +228,23 @@ _OBSERVABLE_COLUMNS = [
     'noisePlaceholders']
 
 
-def petab_observable_row(model_name, kind, noise_distribution, noise_source):
+def petab_observable_row(model_name, kind, noise_distribution, noise_source,
+                         observable_formula=None):
     """Map one fitted BNGL column to a :class:`PetabObservableRow` (ADR-0025).
 
     ``model_name`` is the BNGL observable/function name (an ``.exp`` column header);
     ``kind`` is ``'observable'`` or ``'function'``. The ``observableId`` is the
-    prefixed name (``obs_<name>`` / ``func_<name>``) and ``observableFormula`` is the
-    **bare model name** -- never the function body: a BNGL function (including a
-    function of a function) is carried verbatim in the model file and evaluated there,
-    so the table only references it by name and the exporter needs no formula
-    translator.
+    prefixed name (``obs_<name>`` / ``func_<name>``).
+
+    ``observableFormula`` is the **bare model name** by default: a BNGL function
+    (including a function of a function) is carried verbatim in the model file and
+    evaluated there, so the table only references it by name and the export is lossless
+    and ``petab``-free. The exporter's opt-in *inlining* mode (ADR-0035) overrides it for
+    a **function** column by passing ``observable_formula`` (the function body translated
+    to PEtab math), so the emitted problem carries its own measurement model and round-trips
+    against the importer's synthesis. An observable column is never inlined (an observable
+    is a model species/group, not an algebraic expression), so callers pass
+    ``observable_formula`` only for ``kind == 'function'``.
 
     ``noise_distribution`` is the PEtab family the job's objective maps to (ADR-0023
     reversed: ``gaussian`` -> ``normal``, ``laplace`` -> ``laplace``). ``noise_source``
@@ -274,7 +281,8 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source):
 
     return PetabObservableRow(
         observable_id=observable_id,
-        observable_formula=model_name,
+        observable_formula=observable_formula if observable_formula is not None
+        else model_name,
         noise_formula=noise_formula,
         noise_distribution=noise_distribution,
         noise_placeholders=noise_placeholders,
