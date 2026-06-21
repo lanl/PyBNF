@@ -36,9 +36,9 @@ it. The gate is on the exporter alone; the fitter still runs legacy confs unchan
 becomes a PEtab Condition/Experiment via the surrogate-base ``<p>__REF`` rename of a
 fit-and-perturbed parameter (see :mod:`pybnf.petab.conditions`,
 :func:`~pybnf.petab.conditions.build_experiment_conditions`); a shared condition emits its
-rows once. Dose-response (a parameter scan) is deferred: a fully new-era conf cannot
-author the scan's simulation endpoint time (#426), so the exporter never sees one (a
-parameter-scan experiment raises that deferral).
+rows once. A dose-response (parameter scan) experiment takes the dual shape (ADR-0046):
+each dose becomes a Condition setting the swept parameter + an Experiment, measured at the
+scan time (``inf`` for the steady-state default => PEtab time=inf, or a finite ``t_end:``).
 
 The objective and prior surfaces map to PEtab as far as PEtab v2 can express them
 (ADR-0023/0031 reversed): the Gaussian/Laplace likelihoods with a ``_SD``-column,
@@ -76,6 +76,7 @@ from ..pset import FreeParameter
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
+    build_dose_response_conditions,
     build_experiment_conditions,
     surrogate_name,
     write_condition_table,
@@ -84,6 +85,7 @@ from .conditions import (
 from ._measurement_params import read_measurement_params
 from .formula import bngl_body_to_petab_math
 from .measurements import (
+    dose_response_measurement_rows,
     measurement_rows_from_data,
     write_measurement_table,
 )
@@ -273,9 +275,14 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     surrogate-base machinery of ADR-0027, generalized by
     :func:`~pybnf.petab.conditions.build_experiment_conditions`): a fit-and-perturbed
     parameter is renamed to ``<p>__REF`` in the parameter table and pinned in every
-    experiment's Condition. A parameter-scan experiment is deferred (#426; raised in
-    :func:`_read_experiments`). With no referenced conditions the surrogate set is empty,
-    so a single wildtype experiment is byte-identical to the chunk-1 base time-course.
+    experiment's Condition. A **parameter-scan** (dose-response) experiment takes the
+    dual shape (ADR-0046): each dose of its swept-axis ``.exp`` becomes a Condition
+    setting the swept parameter + an Experiment, measured at the scan time (``inf`` for the
+    steady-state default => PEtab time=inf, or a finite ``t_end:``), via
+    :func:`~pybnf.petab.conditions.build_dose_response_conditions` +
+    :func:`~pybnf.petab.measurements.dose_response_measurement_rows`. With no referenced
+    conditions the surrogate set is empty, so a single wildtype time course is byte-identical
+    to the chunk-1 base.
     """
     experiments = _read_experiments(conf, conf_path, models)
     overrides = _read_observable_overrides(conf)
@@ -286,8 +293,15 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     observable_rows, column_to_observable_id = _observable_rows(
         experiments, registry, noise, per_obs_noise, inline_functions, measurement_models)
 
+    # Time-course vs dose-response (parameter_scan) experiments take different PEtab shapes
+    # (ADR-0046): a time course is one Experiment over a referenced Condition; a dose-response
+    # is N Conditions (each sets the swept parameter to one dose) + N Experiments measured at
+    # the scan time (inf for steady state). They build independently and concatenate.
+    tc_experiments = [exp for exp in experiments if exp['type'] == 'time_course']
+    dr_experiments = [exp for exp in experiments if exp['type'] == 'parameter_scan']
+
     conditions = _read_conditions(conf, models, registry)
-    referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
+    referenced = {exp['condition'] for exp in tc_experiments if exp['condition'] is not None}
     undefined = referenced - set(conditions)
     if undefined:
         raise PybnfError(
@@ -302,7 +316,7 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
 
     condition_rows, experiment_rows, surrogate_params, experiment_to_id = \
         build_experiment_conditions(
-            [(exp['name'], exp['condition']) for exp in experiments],
+            [(exp['name'], exp['condition']) for exp in tc_experiments],
             conditions, fit_model_params, lambda v: _nominal_of(registry, v))
 
     # Per-point numeric noiseParameters are emitted only when a column's sigma comes from a
@@ -320,7 +334,7 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     # measurement rows. Single-model -> '' (the column is dropped on write, byte-stable).
     multi_model = len(models) > 1
     measurement_rows = []
-    for exp in experiments:
+    for exp in tc_experiments:
         eid = experiment_to_id[exp['name']]
         model_id = Path(exp['model']).stem if multi_model else ''
         # Each replicate Data contributes its own rows under the one experiment (PEtab
@@ -332,6 +346,27 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
             measurement_rows += measurement_rows_from_data(
                 data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id,
                 measurement_params=exp['measurement_params'])
+
+    # Dose-response (ADR-0046): each dose row of the swept-axis .exp becomes its own Condition
+    # (setting the swept parameter) + Experiment, and the observable columns become measurements
+    # at the scan time (inf => steady state). The swept-parameter column (the data's indvar) is
+    # the scan axis, not a measurement, so it is dropped from the column map.
+    for exp in dr_experiments:
+        stem = exp['name']
+        model_id = Path(exp['model']).stem if multi_model else ''
+        scan_time = exp['scan_time']
+        data0 = exp['datas'][0]
+        swept_param = data0.indvar if data0.indvar is not None else _independent_variable(data0)
+        dose_values = [float(v) for v in data0[swept_param]]
+        dr_conditions, dr_experiment_rows, experiment_ids = build_dose_response_conditions(
+            stem, swept_param, dose_values, scan_time)
+        condition_rows += dr_conditions
+        experiment_rows += dr_experiment_rows
+        for data in exp['datas']:
+            cmap = {c: o for c, o in column_to_observable_id.items()
+                    if c in data.cols and c != swept_param}
+            measurement_rows += dose_response_measurement_rows(
+                data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id)
     return observable_rows, measurement_rows, condition_rows, experiment_rows, \
         surrogate_params
 
@@ -340,22 +375,22 @@ def _read_experiments(conf, conf_path, models):
     """Read + resolve the new-era ``experiment:`` entries from the raw ``ploop`` dict.
 
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
-    mf?, 'type': t?, 'method': m?, 'measurement_params': mp?}``. ``models`` is the ordered list
-    of the job's model files. Returns a list (declaration order) of dicts ``{'name',
-    'condition', 'model': model_file, 'datas': [Data, ...], 'measurement_params': table?}`` --
-    the ``data:`` files read as individual :class:`~pybnf.data.Data` replicates (PEtab models
-    replicates as repeated measurement rows, so they are not pre-stacked), each experiment's
-    resolved model (:func:`_resolve_experiment_model`, ADR-0041), and its row-varying
-    per-measurement binding table read from the ``measurement_params:`` sidecar (``{column:
-    {placeholder: {time: token}}}``, or ``None`` when the experiment declares none -- ADR-0045).
-    Raises:
+    mf?, 'type': t?, 'method': m?, 't_end': t?, 'measurement_params': mp?}``. ``models`` is the
+    ordered list of the job's model files. Returns a list (declaration order) of dicts
+    ``{'name', 'condition', 'model': model_file, 'datas': [Data, ...], 'type', 'scan_time',
+    'measurement_params': table?}`` -- the ``data:`` files read as individual
+    :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
+    rows, so they are not pre-stacked), each experiment's resolved model
+    (:func:`_resolve_experiment_model`, ADR-0041), the inferred ``type`` (``'time_course'`` or
+    ``'parameter_scan'``), the dose-response ``scan_time`` (``inf`` for the steady-state
+    default, a finite ``t_end:`` otherwise; ``None`` for a time course -- ADR-0046), and its
+    row-varying per-measurement binding table read from the ``measurement_params:`` sidecar
+    (``{column: {placeholder: {time: token}}}``, or ``None`` when none -- ADR-0045). Raises:
 
-    * the parameter-scan deferral for a non-time-course experiment -- the scan's
-      simulation endpoint time has no home in the ``experiment:`` grammar yet, so a fully
-      new-era conf cannot author one (deferred, #426; mirrors
-      ``config.py::_load_experiments``);
     * the ambiguous-model error if an experiment names no model but the job has more than
       one (mirrors ``config.py::_resolve_experiment_model``);
+    * a not-yet-supported boundary for a parameter_scan that also names a ``condition:``
+      (a dose-response already makes each dose its own condition -- ADR-0046);
     * a constraint boundary for non-``.exp`` data (``.con``/``.prop`` is deferred,
       ADR-0028 Open/deferred).
     """
@@ -377,20 +412,27 @@ def _read_experiments(conf, conf_path, models):
                 f"(.con/.prop) export has no core-PEtab representation -- a later chunk "
                 f"(ADR-0028 Open/deferred).")
         datas = [Data(file_name=str(conf_path.parent / f)) for f in data_files]
-        if _experiment_type(name, datas[0], fields.get('type')) != 'time_course':
-            raise NotImplementedError(
-                f"Experiment '{name}' is a parameter_scan (independent variable "
-                f"'{_independent_variable(datas[0])}'), not a time course. Parameter-scan "
-                f"/ dose-response experiments are not yet exportable via the new-era "
-                f"'experiment:' surface: the scan's simulation endpoint time has no home "
-                f"in the experiment grammar yet, so a fully new-era conf cannot author "
-                f"one (deferred, #426). Export covers time-course experiments.")
+        exp_type = _experiment_type(name, datas[0], fields.get('type'))
+        # A parameter_scan (dose-response) experiment's measurement time is its scan endpoint
+        # (ADR-0046): inf for the steady-state default (PEtab time=inf), or a finite ``t_end:``.
+        # A time course derives its grid from the data, so ``t_end:`` is inert there.
+        scan_time = None
+        if exp_type == 'parameter_scan':
+            t_end = fields.get('t_end')
+            scan_time = float(t_end) if t_end is not None else float('inf')
+            if fields.get('condition') is not None:
+                raise NotImplementedError(
+                    f"Experiment '{name}' is a parameter_scan that also names a condition "
+                    f"('{fields['condition']}'). A dose-response already makes each dose its "
+                    f"own condition (ADR-0046); combining it with a named condition has no "
+                    f"export route yet.")
         measurement_params = None
         mp_file = fields.get('measurement_params')
         if mp_file:
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
         experiments.append({'name': name, 'condition': fields.get('condition'),
-                            'model': model_file, 'datas': datas,
+                            'model': model_file, 'datas': datas, 'type': exp_type,
+                            'scan_time': scan_time,
                             'measurement_params': measurement_params})
     return experiments
 
@@ -424,7 +466,8 @@ def _experiment_type(name, data, explicit_type):
     """Infer ``'time_course'`` vs ``'parameter_scan'`` from a ``Data``'s independent
     variable (``time`` => time_course; otherwise the indvar names a swept parameter =>
     parameter_scan), unless ``type:`` states it. Mirrors
-    ``config.py::_infer_experiment_type`` (the caller defers parameter_scan -- #426)."""
+    ``config.py::_infer_experiment_type`` (a scan exports each dose as a steady-state
+    Condition/Experiment -- ADR-0046)."""
     if explicit_type is not None:
         t = explicit_type.lower()
         if t in ('time_course', 'timecourse'):

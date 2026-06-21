@@ -7,6 +7,7 @@ is the object -> neutral-row mapping in :mod:`pybnf.petab.parameters` /
 """
 
 import csv
+import math
 
 
 def num(x):
@@ -14,11 +15,15 @@ def num(x):
 
     Integral floats are written without a trailing ``.0`` (``43.0`` -> ``43``,
     ``-10.0`` -> ``-10``) so the emitted table reads like the source data; other
-    values keep full ``repr`` precision. ``None`` becomes an empty cell.
+    values keep full ``repr`` precision. A non-finite value serializes as ``repr``
+    (``inf`` / ``-inf`` / ``nan``) -- PEtab v2 uses ``inf`` for a steady-state
+    measurement time (ADR-0046). ``None`` becomes an empty cell.
     """
     if x is None:
         return ''
     x = float(x)
+    if not math.isfinite(x):
+        return repr(x)   # 'inf' / '-inf' / 'nan'
     if x == int(x) and abs(x) < 1e15:
         return str(int(x))
     return repr(x)

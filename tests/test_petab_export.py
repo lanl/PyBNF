@@ -653,24 +653,6 @@ class TestExportNewEra:
         with pytest.raises(PybnfError, match='nope'):
             export_job(src / 'job.conf', src / 'out')
 
-    def test_inferred_parameter_scan_experiment_is_deferred(self, tmp_path_factory):
-        # A non-time independent variable -> parameter_scan, deferred (#426): a fully
-        # new-era conf cannot author the scan endpoint time, so export never sees one.
-        src = self._src(tmp_path_factory, 'pscan')
-        (src / 'dose.exp').write_text('# dose x y\n1\t-10\t43\n2\t-9\t34.5\n')
-        (src / 'job.conf').write_text(
-            self._HEAD + 'experiment: dr, data: dose.exp\n' + self._PARAMS)
-        with pytest.raises(NotImplementedError, match='#426'):
-            export_job(src / 'job.conf', src / 'out')
-
-    def test_explicit_type_parameter_scan_is_deferred(self, tmp_path_factory):
-        src = self._src(tmp_path_factory, 'pscan2')
-        (src / 'job.conf').write_text(
-            self._HEAD + 'experiment: dr, type: parameter_scan, data: par1.exp\n'
-            + self._PARAMS)
-        with pytest.raises(NotImplementedError, match='#426'):
-            export_job(src / 'job.conf', src / 'out')
-
     def test_undefined_referenced_condition_raises(self, tmp_path_factory):
         from pybnf.printing import PybnfError
         src = self._src(tmp_path_factory, 'undefcond')
@@ -678,6 +660,97 @@ class TestExportNewEra:
             self._HEAD + 'experiment: par1, condition: nope, data: par1.exp\n'
             + self._PARAMS)
         with pytest.raises(PybnfError, match='nope'):
+            export_job(src / 'job.conf', src / 'out')
+
+
+# ---------------------------------------------------------------------------
+# ADR-0046: a dose-response (parameter_scan) experiment -> N steady-state Conditions +
+# Experiments measured at time=inf (the dual of the time-course export).
+# ---------------------------------------------------------------------------
+
+# A tiny birth-death model whose swept parameter L (a dose) and fitted parameter kd are
+# both model parameters; the observable resp is a model observable. The export only reads
+# the model's entity surface (params / observables), so the steady-state physics is inert
+# here -- it is the round-trip recovery test that exercises the actual KINSOL scan.
+_DR_MODEL = """begin model
+begin parameters
+  L   1.0
+  kd  5.0
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 0
+end seed species
+begin observables
+  Molecules  resp  A()
+end observables
+begin reaction rules
+  birth: 0 -> A()    L
+  death: A() -> 0    kd
+end reaction rules
+end model
+"""
+
+
+class TestExportDoseResponse:
+
+    def _src(self, tmp_path_factory, name='dr'):
+        src = tmp_path_factory.mktemp(name)
+        (src / 'dr.bngl').write_text(_DR_MODEL)
+        (src / 'dose.exp').write_text('# L resp\n1\t0.5\n2\t1\n5\t2.5\n')
+        return src
+
+    _HEAD = 'edition = 2\njob_type = de\nobjective = sos\nmodel: dr.bngl\n'
+    _PARAMS = 'uniform_var = kd 0.1 10\n'
+
+    def test_steady_state_scan_exports_conditions_and_inf_measurements(self, tmp_path_factory):
+        # No t_end: => steady state. Each dose row -> a Condition setting L + an Experiment;
+        # the observable column -> measurements at time=inf (PEtab's steady-state convention).
+        src = self._src(tmp_path_factory, 'drss')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: dr, data: dose.exp\n' + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+
+        conds = _tsv_rows(out / 'conditions.tsv')
+        assert [(c['conditionId'], c['targetId'], c['targetValue']) for c in conds] == [
+            ('cond_dr_0', 'L', '1'), ('cond_dr_1', 'L', '2'), ('cond_dr_2', 'L', '5')]
+        exps = _tsv_rows(out / 'experiments.tsv')
+        assert [e['experimentId'] for e in exps] == ['dr_0', 'dr_1', 'dr_2']
+        assert [e['conditionId'] for e in exps] == ['cond_dr_0', 'cond_dr_1', 'cond_dr_2']
+
+        meas = _tsv_rows(out / 'measurements.tsv')
+        assert all(m['time'] == 'inf' for m in meas)          # steady state => time=inf
+        assert {m['observableId'] for m in meas} == {'obs_resp'}
+        assert [(m['experimentId'], m['measurement']) for m in meas] == [
+            ('dr_0', '0.5'), ('dr_1', '1'), ('dr_2', '2.5')]
+        # The swept-axis column L is the scan axis -- never a measurement.
+        assert 'obs_L' not in {m['observableId'] for m in meas}
+        _assert_petab_clean(out)
+
+    def test_fixed_endpoint_scan_uses_finite_measurement_time(self, tmp_path_factory):
+        # An explicit t_end: makes it a fixed-endpoint scan -> a finite measurement time.
+        src = self._src(tmp_path_factory, 'drfixed')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'experiment: dr, type: parameter_scan, t_end: 500, data: dose.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        meas = _tsv_rows(out / 'measurements.tsv')
+        assert all(m['time'] == '500' for m in meas)
+        _assert_petab_clean(out)
+
+    def test_scan_with_named_condition_raises(self, tmp_path_factory):
+        # A dose-response already makes each dose its own condition; combining it with a
+        # named condition has no export route (ADR-0046).
+        src = self._src(tmp_path_factory, 'drcond')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'condition: c, perturbations: kd * 2\n'
+            'experiment: dr, type: parameter_scan, condition: c, data: dose.exp\n'
+            + self._PARAMS)
+        with pytest.raises(NotImplementedError, match='dose'):
             export_job(src / 'job.conf', src / 'out')
 
 

@@ -181,22 +181,27 @@ def _token_at_time(by_time, t):
 
 
 def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids,
-                                   scan_time, sd_suffix='_SD'):
+                                   scan_time, sd_suffix='_SD', model_id=''):
     """Pivot a dose-response (swept-axis) wide :class:`~pybnf.data.Data` to long rows.
 
     The dual of :func:`measurement_rows_from_data` for a Parameter Scan ``.exp`` whose
     independent axis (column 0) is the swept parameter, not time. Each data *row* is one
     measured dose mapped to its own experiment (``experiment_ids[i]``, aligned with the
-    ``data`` row order), and the measurement ``time`` is the scan's fixed ``scan_time`` (a
-    scalar from the ``param_scan`` action -- not a data column). ``column_to_observable_id``
-    and the ``<col><sd_suffix>`` noise companion behave as in the time-course pivot
-    (``sd_suffix=None`` disables per-point noise); the swept-parameter column 0 is not in
-    the map, so it is never emitted as a measurement.
+    ``data`` row order), and the measurement ``time`` is the scan's fixed ``scan_time`` -- a
+    scalar, ``inf`` for a steady-state scan (PEtab time=inf) or a finite ``t_end:`` for a
+    fixed-endpoint scan (ADR-0046), not a data column. ``column_to_observable_id`` and the
+    ``<col><sd_suffix>`` noise companion behave as in the time-course pivot (``sd_suffix=None``
+    disables per-point noise); the swept-parameter column 0 is not in the map, so it is never
+    emitted as a measurement. ``model_id`` is the optional model->data link (ADR-0041), stamped
+    on every row (``''`` for a single-model job).
     """
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
-        sd_ci = None if sd_suffix is None else data.cols.get(col + sd_suffix)
+        # sd_suffix is either one suffix for every column or a {column: suffix_or_None} map
+        # (the per-observable-noise form -- ADR-0021/0045), mirroring the time-course pivot.
+        suffix = sd_suffix.get(col) if isinstance(sd_suffix, dict) else sd_suffix
+        sd_ci = None if suffix is None else data.cols.get(col + suffix)
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
             if np.isnan(value):
@@ -205,7 +210,7 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
             rows.append(PetabMeasurementRow(
                 observable_id=observable_id, time=float(scan_time),
                 measurement=float(value), experiment_id=experiment_ids[i],
-                noise_parameters=noise))
+                model_id=model_id, noise_parameters=noise))
     return rows
 
 
