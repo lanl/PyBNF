@@ -62,12 +62,17 @@ per-experiment ``model:`` field; a BNGL + SBML mix is fine). A **constant-per-ob
 ``observableParameters`` scale/offset and an expression ``noiseFormula`` import too (ADR-0044):
 the placeholder is substituted into the observable/noise formula (an id resolves from the PSet,
 a number inlines), an expression ``noiseFormula`` becoming a ``FormulaSigma`` (``noise_model
-<obs> = <family>, <param> = formula <expr>``). Out of scope, each mirroring an export-side
-boundary: a condition-table sympy layer; a **row-varying** per-measurement placeholder (the
-deferred per-measurement frontier, #428 Phase 2); the five PEtab prior families PyBNF lacks;
-one-sided truncation; parameter-scan / dose-response.
+<obs> = <family>, <param> = formula <expr>``). A **dose-response** (parameter_scan) problem
+imports too (ADR-0046): N Conditions each setting one swept parameter at a constant measurement
+time (``inf`` => steady state, or a finite ``t_end``) are reconstructed into a single swept-axis
+``.exp`` (column 0 the swept parameter) + a ``parameter_scan`` ``experiment:`` (the inverse of
+the exporter's dose-response emission -- ``reconstruct_dose_responses``). Out of scope, each
+mirroring an export-side boundary: a condition-table sympy layer; the five PEtab prior families
+PyBNF lacks; one-sided truncation; a dose-response that also carries a named condition or
+row-varying per-measurement placeholders.
 """
 
+import math
 import re
 from pathlib import Path
 
@@ -87,6 +92,7 @@ from .measurements import (
     noise_parameter_ids_by_observable,
     observable_parameters_by_observable,
     read_measurement_table,
+    reconstruct_dose_responses,
     row_varying_noise_ids,
     row_varying_observable_ids,
 )
@@ -181,12 +187,15 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     measurement model (``observable: <id>, formula: <expr>``) evaluated post-simulation -- the
     optional ``pybnf[petab]`` extra. A **constant-per-observable** ``observableParameters``
     scale/offset and an expression ``noiseFormula`` are substituted/reduced and import too
-    (ADR-0044). Raises ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (a model
-    language other than ``bngl``/``sbml``; the five unsupported prior families; a
-    log-normal/log-laplace noise distribution; a condition expression; a **row-varying**
-    per-measurement ``observableParameters``/``noiseParameters`` placeholder; replicate rows)
-    and ``PybnfError`` for a malformed problem (including an ``observableFormula`` symbol that
-    is not a model entity).
+    (ADR-0044). A **dose-response** (parameter_scan) problem -- N conditions each setting one
+    swept parameter at a constant measurement time (``inf`` => steady state, ADR-0046) -- is
+    reconstructed into a single swept-axis ``.exp`` + a ``parameter_scan`` experiment. Raises
+    ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (a model language other than
+    ``bngl``/``sbml``; the five unsupported prior families; a log-normal/log-laplace noise
+    distribution; a condition expression; a **row-varying** per-measurement
+    ``observableParameters``/``noiseParameters`` placeholder; replicate rows) and ``PybnfError``
+    for a malformed problem (an ``observableFormula`` symbol that is not a model entity, or an
+    ambiguous dose-response group).
     """
     problem_yaml_path = Path(problem_yaml_path)
     base = problem_yaml_path.parent
@@ -256,31 +265,55 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
         row_varying_obs_params)
 
-    # Measurements -> the wide Data replicates per (experiment, model), then assemble the
-    # experiment list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039;
+    # Dose-response (parameter_scan) reconstruction (ADR-0046): pull out the experiment groups
+    # whose N conditions each set one swept parameter at a constant measurement time (inf =>
+    # steady state) and rebuild each as a single swept-axis Data; the remaining rows are time
+    # courses. Their conditions/experiments are dropped from the time-course reconstruction (a
+    # dose is the scan axis, not a named condition: line).
+    dose_responses, tc_rows, dr_condition_ids, dr_experiment_ids = reconstruct_dose_responses(
+        measurement_rows, condition_rows, experiment_rows, observable_id_to_column)
+
+    # Time-course measurements -> the wide Data replicates per (experiment, model), then assemble
+    # the experiment list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039;
     # the modelId distinguishes experiments that share an experimentId -- ADR-0041).
-    datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
-    # A constant-per-observable parameter-id noiseParameters placeholder is a
-    # per-observable estimated sigma (Boehm's sd_*); the map drives the per-observable
-    # noise_model lines (ADR-0037). A row-varying id is no longer an error -- it routes to
-    # the per-measurement binding table (ADR-0045): the per-data-point sidecar carrying the
-    # row's estimated noise id, emitted as a 'sigma = formula <placeholder>' line.
+    datas = data_from_measurement_rows(tc_rows, observable_id_to_column)
+    # The objective/noise are GLOBAL across the fit, so they read ALL measurement rows (a
+    # dose-response observable shares the objective). A constant-per-observable parameter-id
+    # noiseParameters placeholder is a per-observable estimated sigma (Boehm's sd_*); the map
+    # drives the per-observable noise_model lines (ADR-0037). A row-varying id routes to the
+    # per-measurement binding table (ADR-0045): the per-data-point sidecar carrying the row's
+    # estimated noise id, emitted as a 'sigma = formula <placeholder>' line.
     noise_param_ids = noise_parameter_ids_by_observable(measurement_rows)
     row_varying_obs = row_varying_noise_ids(measurement_rows)
     # One sidecar carries both row-varying frontiers (ADR-0045): the row-varying noise ids and
-    # the row-varying observableParameters scale/offset tokens, keyed by data column.
+    # the row-varying observableParameters scale/offset tokens, keyed by data column. Keyed to a
+    # time-course experiment's rows (a dose-response carries no per-measurement sidecar).
     param_bindings = measurement_param_bindings(
-        measurement_rows, observable_id_to_column, row_varying_obs, row_varying_obs_params)
+        tc_rows, observable_id_to_column, row_varying_obs, row_varying_obs_params)
+    # The column-mean resolver (sos vs ave_norm_sos) averages over every experiment's data,
+    # time courses and dose-response scans alike.
+    dr_datas = {(dr['name'], dr['model_id']): [dr['data']] for dr in dose_responses}
     objective_directives = _objective_directives(
         observable_rows, observable_id_to_column, noise_param_ids,
-        _column_mean_resolver(datas, observable_id_to_column), obs_params, row_varying_obs)
-    conditions = conditions_from_rows(condition_rows, surrogate_params)
+        _column_mean_resolver({**datas, **dr_datas}, observable_id_to_column),
+        obs_params, row_varying_obs)
+    # Named conditions exclude those absorbed into a dose-response (each dose is the scan axis,
+    # not a condition: line).
+    tc_condition_rows = [r for r in condition_rows if r.condition_id not in dr_condition_ids]
+    conditions = conditions_from_rows(tc_condition_rows, surrogate_params)
     # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
     # a single-model job carries modelId '' and emits no per-experiment model: field. A group
-    # with a row-varying noise binding also writes its per-measurement sidecar (ADR-0045).
+    # with a row-varying noise binding also writes its per-measurement sidecar (ADR-0045). The
+    # time-course experiment rows exclude those absorbed into a dose-response scan.
     model_location_of = {m['model_id']: m['location'] for m in models}
-    experiments = _experiments(datas, experiment_rows, out_dir, model_location_of,
+    tc_experiment_rows = [r for r in experiment_rows
+                          if r.experiment_id not in dr_experiment_ids]
+    experiments = _experiments(datas, tc_experiment_rows, out_dir, model_location_of,
                                param_bindings)
+    # Dose-response scans become parameter_scan experiments: a steady-state scan (scan_time inf)
+    # carries no t_end: (the .exp's swept-axis column 0 infers the type); a finite scan carries
+    # t_end: <t> (ADR-0046). Their .exp files are written here.
+    experiments += _dose_response_experiments(dose_responses, out_dir, model_location_of)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -729,8 +762,9 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
     {time: token}}}}`` per-measurement binding table; a group with an entry also writes a
     ``<name>_measparams.tsv`` sidecar carrying its row-varying noise tokens, emitted as the
     experiment's ``measurement_params:`` field. Returns ``[(name, condition_or_None,
-    [data_file, ...], model_location_or_None, measparams_file_or_None), ...]`` in measurement
-    order.
+    [data_file, ...], model_location_or_None, measparams_file_or_None, t_end_or_None), ...]`` in
+    measurement order; ``t_end`` is ``None`` for a time course (the dose-response scans append
+    their own entries -- :func:`_dose_response_experiments`).
     """
     param_bindings = param_bindings or {}
     condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
@@ -754,7 +788,28 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
         if binding:
             measparams_file = f'{name}_measparams.tsv'
             write_measurement_params(binding, out_dir / measparams_file)
-        experiments.append((name, condition, data_files, model_location, measparams_file))
+        experiments.append((name, condition, data_files, model_location, measparams_file, None))
+    return experiments
+
+
+def _dose_response_experiments(dose_responses, out_dir, model_location_of):
+    """Build the conf experiment entries for the reconstructed dose-response scans (ADR-0046).
+
+    Each scan's swept-axis :class:`~pybnf.data.Data` is written to ``<name>.exp`` (column 0 the
+    swept parameter, so ``config._infer_experiment_type`` reads it as a parameter_scan -- no
+    ``type:`` field needed). A steady-state scan (``scan_time`` inf) carries ``t_end = None`` (it
+    runs to steady state, PEtab time=inf); a finite scan carries that endpoint. Returns the same
+    ``(name, condition, [data_file], model_location, measparams_file, t_end)`` tuple shape as
+    :func:`_experiments` (condition / measparams are always ``None`` -- a dose is the scan axis,
+    not a named condition, and a dose-response carries no per-measurement sidecar)."""
+    experiments = []
+    for dr in dose_responses:
+        name = dr['name']
+        data_file = f'{name}.exp'
+        _write_exp(out_dir / data_file, dr['data'])
+        model_location = model_location_of.get(dr['model_id'])
+        t_end = None if math.isinf(dr['scan_time']) else dr['scan_time']
+        experiments.append((name, None, [data_file], model_location, None, t_end))
     return experiments
 
 
@@ -812,18 +867,21 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
     for name, perts in conditions.items():
         pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
         lines.append(f'condition: {name}, perturbations: {pert_str}')
-    for name, condition, data_files, model_location, measparams_file in experiments:
+    for name, condition, data_files, model_location, measparams_file, t_end in experiments:
         sim_method = method_overrides.get(name, method)
         cond_field = f', condition: {condition}' if condition else ''
         model_field = f', model: {model_location}' if model_location else ''
+        # A fixed-endpoint dose-response scan's endpoint time (ADR-0046); a steady-state scan
+        # and a time course carry none (the scan runs to steady state / the data drives the grid).
+        tend_field = f', t_end: {num(t_end)}' if t_end is not None else ''
         # The row-varying per-measurement binding sidecar (ADR-0045), when this experiment
         # carries one; config.py attaches it to the experiment's exp Data.
         mp_field = f', measurement_params: {measparams_file}' if measparams_file else ''
         data_field = ', '.join(f'data: {f}' if i == 0 else f
                                for i, f in enumerate(data_files))
         lines.append(
-            f'experiment: {name}{cond_field}{model_field}, method: {sim_method}{mp_field}, '
-            f'{data_field}')
+            f'experiment: {name}{cond_field}{model_field}, method: {sim_method}'
+            f'{tend_field}{mp_field}, {data_field}')
     lines.append('')
     lines.extend(free_param_lines)
     lines.append('')

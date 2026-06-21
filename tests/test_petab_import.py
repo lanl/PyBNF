@@ -141,6 +141,13 @@ def _roundtrip(tmp_path, conf_text, extra_files=None, model_name=DEMO_MODEL):
     return petab1, imported, petab2, conf
 
 
+def _tsv_rows(path):
+    """Read a TSV into a list of dict rows (a tiny stdlib reader for assertions)."""
+    import csv
+    with open(path, newline='') as fh:
+        return list(csv.DictReader(fh, delimiter='\t'))
+
+
 def _assert_problem_round_trips(petab1, petab2):
     """Every file in the first PEtab problem is reproduced byte-for-byte by the second."""
     names = sorted(f.name for f in petab1.iterdir())
@@ -216,6 +223,129 @@ class TestImportDemoRoundTrip:
                   if (i := t.run(problem)) is not None
                   and getattr(i, 'level', None) == ValidationIssueSeverity.ERROR]
         assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Dose-response (parameter_scan) round trip (ADR-0046): N steady-state Conditions +
+# Experiments measured at time=inf <-> a single swept-axis .exp + a parameter_scan
+# experiment. The inverse of the exporter's dose-response emission.
+# ---------------------------------------------------------------------------
+
+# A tiny birth-death model whose swept parameter L and fitted parameter kd are both model
+# parameters and observable resp is a model observable (the export only reads the entity
+# surface, so the steady-state physics is inert in the round trip).
+_DR_MODEL = """begin model
+begin parameters
+  L   1.0
+  kd  5.0
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 0
+end seed species
+begin observables
+  Molecules  resp  A()
+end observables
+begin reaction rules
+  birth: 0 -> A()    L
+  death: A() -> 0    kd
+end reaction rules
+end model
+"""
+
+_DR_CONF = (
+    'edition = 2\njob_type = de\nobjective = sos\n'
+    'model: dr.bngl\n'
+    'experiment: dr, data: dose.exp\n'
+    'uniform_var = kd 0.1 10\n')
+
+_DR_DOSE_EXP = '# L resp\n1\t0.5\n2\t1\n5\t2.5\n'
+
+
+class TestImportDoseResponseRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(
+            tmp_path_factory.mktemp('dr'), _DR_CONF,
+            extra_files={'dr.bngl': _DR_MODEL, 'dose.exp': _DR_DOSE_EXP},
+            model_name='dr.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        # The strong oracle: export a dose-response, import (the N time=inf conditions become
+        # one swept-axis .exp + a parameter_scan experiment), re-export byte-for-byte.
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_first_export_is_a_steady_state_dose_response(self, imported):
+        # Sanity on the source PEtab: N conditions setting L + measurements at time=inf.
+        petab1, _, _, _ = imported
+        conds = _tsv_rows(petab1 / 'conditions.tsv')
+        assert all(c['targetId'] == 'L' for c in conds)
+        meas = _tsv_rows(petab1 / 'measurements.tsv')
+        assert all(m['time'] == 'inf' for m in meas)
+
+    def test_reconstructed_exp_is_a_swept_axis_grid(self, imported):
+        # The importer rebuilds a single .exp whose column 0 is the swept parameter L (its
+        # values the doses) and whose observable column carries the per-dose measurements.
+        _, imported_dir, _, _ = imported
+        recon = Data(file_name=str(imported_dir / 'dr.exp'))
+        assert recon.indvar == 'L'
+        assert list(recon['L']) == [1.0, 2.0, 5.0]
+        assert list(recon['resp']) == [0.5, 1.0, 2.5]
+
+    def test_imported_conf_is_a_parameter_scan_with_no_t_end(self, imported):
+        # A steady-state scan: the parameter_scan type is inferred from the .exp's swept axis
+        # (no `type:`), and there is no `t_end:` (it runs to steady state, PEtab time=inf).
+        _, _, _, conf = imported
+        text = conf.read_text()
+        assert 'experiment: dr' in text
+        assert 't_end' not in text
+        assert 'condition:' not in text   # the doses are the scan axis, not condition: lines
+        with open(conf) as fh:
+            d = ploop(fh.readlines())
+        assert ('experiment', 'dr') in d
+
+    def test_imported_conf_loads_as_a_configuration(self, imported, monkeypatch):
+        # The fitter accepts the imported conf: it synthesizes a steady-state ParamScan over
+        # the reconstructed doses (the Phase-1 keystone, end to end from a PEtab problem).
+        from pybnf.config import Configuration
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        c = Configuration(ploop(conf.read_text().splitlines(keepends=True)))
+        scan = next(a for a in c.models['dr'].actions if 'parameter_scan' in a)
+        assert 'steady_state=>1' in scan and 'par_scan_vals=>[1.0,2.0,5.0]' in scan
+        assert c.exp_data['dr']['dr'].indvar == 'L'
+
+    def test_imported_problem_passes_full_petab_validation(self, imported):
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
+
+        from pybnf.petab.bngl_model import register_bngl
+        register_bngl()
+        _, _, petab2, _ = imported
+        problem = Problem.from_yaml(str(petab2 / 'problem.yaml'))
+        errors = [type(t).__name__ for t in default_validation_tasks
+                  if (i := t.run(problem)) is not None
+                  and getattr(i, 'level', None) == ValidationIssueSeverity.ERROR]
+        assert errors == []
+
+    def test_fixed_endpoint_scan_round_trips_with_t_end(self, tmp_path_factory):
+        # A finite t_end: dose-response: measurements at the finite time, the imported conf
+        # carries `t_end:` and the problem round-trips byte-for-byte.
+        conf = _DR_CONF.replace('experiment: dr, data: dose.exp',
+                                'experiment: dr, type: parameter_scan, t_end: 250, data: dose.exp')
+        petab1, imported_dir, petab2, conf_path = _roundtrip(
+            tmp_path_factory.mktemp('drfixed'), conf,
+            extra_files={'dr.bngl': _DR_MODEL, 'dose.exp': _DR_DOSE_EXP},
+            model_name='dr.bngl')
+        meas = _tsv_rows(petab1 / 'measurements.tsv')
+        assert all(m['time'] == '250' for m in meas)
+        assert 't_end: 250' in conf_path.read_text()
+        _assert_problem_round_trips(petab1, petab2)
 
 
 # ---------------------------------------------------------------------------

@@ -16,15 +16,17 @@ seam shared with the other PEtab tables:
   ``(observable, time)`` rows into replicate grids (ADR-0039), pivots long->wide, and
   rebuilds each observable's ``_SD`` companion column from the per-point ``noiseParameters``).
 
-**Scope (chunk 1, ADR-0025):** a single experiment, a **time-course** ``.exp``
-(independent variable ``time``), one value per ``(observable, time)`` cell, the
-per-point ``_SD`` column carried into ``noiseParameters``. A dose-response
-``parameter_scan`` ``.exp`` -- whose independent axis is a swept parameter, not time
--- raises ``NotImplementedError``: that axis lives in the (deferred)
-conditions/experiments tables, not the measurement table.
+**Dose-response (ADR-0046).** A ``parameter_scan`` ``.exp`` -- whose independent axis (column
+0) is a swept parameter, not time -- maps the other way: its swept axis lives in the PEtab
+conditions/experiments tables (each dose a Condition setting the swept parameter + an
+Experiment, measured at a constant time -- ``inf`` for steady state). ``measurement_rows_from_data``
+still refuses such an ``.exp`` (export routes it through ``dose_response_measurement_rows``
+instead), and ``reconstruct_dose_responses`` is the import inverse: it detects those experiment
+groups and rebuilds each as a single swept-axis ``Data``.
 """
 
 import csv
+import math
 import re
 from dataclasses import dataclass
 
@@ -325,6 +327,161 @@ def _wide_data_from_group(eid, group, observable_id_to_column, sd_suffix, indvar
         data_columns += [sds[col] for col in columns]
     arr = np.array(data_columns, dtype=float).T
     return Data.from_columns(arr, headers, indvar=indvar)
+
+
+# ---------------------------------------------------------------------------
+# Import: dose-response reconstruction (the inverse of dose_response_measurement_rows)
+# ---------------------------------------------------------------------------
+
+# A dose-response experimentId stem: '<stem>_<i>' -> the original experiment name + the dose
+# index (the exporter's build_dose_response_conditions naming, build_dose_response_conditions).
+_DOSE_EID = re.compile(r'^(.+)_(\d+)$')
+
+
+def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows,
+                               observable_id_to_column, sd_suffix='_SD'):
+    """Detect + reconstruct dose-response (parameter_scan) groups -- the inverse of the
+    exporter's ``build_dose_response_conditions`` + ``dose_response_measurement_rows`` (ADR-0046).
+
+    A dose-response is represented in PEtab v2 as N Conditions (each setting one swept
+    parameter to a distinct dose) + N Experiments measured at a **constant** time -- ``inf``
+    for the steady-state default (the common case), or a finite ``t_end``. This recovers each
+    such group back to a single swept-axis :class:`~pybnf.data.Data` (column 0 = the swept
+    parameter, its values the doses; the observable columns the per-dose measurements) plus the
+    scan endpoint, the form a new-era ``experiment:`` (its ``.exp`` driving the parameter_scan
+    type inference) re-exports.
+
+    **Detection heuristic.** A PEtab experiment is a dose-response *point* when its condition
+    sets exactly **one** target to a **numeric** value (a dose -- a surrogate ``<p>__REF``
+    expression is not numeric, so a conditioned time course is excluded) **and** all its
+    measurements share **one** time. Points group by their experimentId stem (``<stem>_<i>``
+    -> ``stem``), the swept parameter, the scan time, and the modelId. A steady-state
+    (``time=inf``) point is always a dose-response -- steady state has no other meaning in
+    PyBNF. A **finite**-time point is treated as one only when its experimentId follows the
+    exporter's ``<stem>_<i>`` convention, so a single-timepoint time course (one measured time,
+    a one-target condition, but an ordinary name) is **not** misread. Within a stem group the
+    swept parameter and scan time must agree -- a mixed group raises (ambiguous).
+
+    Returns ``(dose_responses, remaining_rows, consumed_condition_ids, consumed_experiment_ids)``:
+
+    * ``dose_responses`` -- a list of ``{name, model_id, swept_param, scan_time, data}`` (one
+      per reconstructed scan; ``scan_time`` is ``inf`` for steady state);
+    * ``remaining_rows`` -- the measurement rows NOT in any dose-response (the time-course
+      pivot handles them);
+    * ``consumed_condition_ids`` / ``consumed_experiment_ids`` -- the condition/experiment ids
+      absorbed into the scans, so the caller drops them from the time-course reconstruction.
+    """
+    by_cond = {}
+    for row in condition_rows:
+        by_cond.setdefault(row.condition_id, []).append((row.target_id, row.target_value))
+
+    def numeric_dose(cid):
+        """The single numeric ``(target, value)`` a dose condition sets, or ``None``."""
+        targets = by_cond.get(cid, [])
+        if len(targets) != 1:
+            return None
+        target_id, target_value = targets[0]
+        try:
+            return target_id, float(target_value)
+        except (TypeError, ValueError):
+            return None   # a surrogate __REF expression etc -- not a dose
+
+    condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
+
+    by_group = {}
+    for row in measurement_rows:
+        by_group.setdefault((row.experiment_id, row.model_id), []).append(row)
+
+    # Bucket dose-response points by (stem, modelId); record the consumed (eid, modelId) groups.
+    buckets = {}
+    consumed = set()
+    for (eid, mid), rows in by_group.items():
+        times = {r.time for r in rows}
+        if len(times) != 1:
+            continue                       # a time course (more than one measured time)
+        (scan_time,) = times
+        dose = numeric_dose(condition_of.get(eid))
+        if dose is None:
+            continue                       # no single-numeric-target condition -> not a dose
+        swept_param, dose_value = dose
+        m = _DOSE_EID.match(eid)
+        if not math.isinf(scan_time) and m is None:
+            continue                       # a finite single-time, non-<stem>_<i> group = a time course
+        stem = m.group(1) if m else eid
+        index = int(m.group(2)) if m else 0
+        buckets.setdefault((stem, mid), []).append(
+            {'index': index, 'eid': eid, 'swept_param': swept_param,
+             'dose': dose_value, 'scan_time': scan_time, 'rows': rows})
+        consumed.add((eid, mid))
+
+    dose_responses = []
+    consumed_condition_ids = set()
+    consumed_experiment_ids = set()
+    for (stem, mid), points in buckets.items():
+        swept = {p['swept_param'] for p in points}
+        scan_times = {p['scan_time'] for p in points}
+        if len(swept) != 1 or len(scan_times) != 1:
+            raise PybnfError(
+                f"Dose-response experiment group '{stem}' is ambiguous: its experiments set "
+                f"swept parameter(s) {sorted(swept)} at scan time(s) {sorted(scan_times)}. A "
+                f"dose-response sweeps ONE parameter at ONE measurement time (ADR-0046).")
+        swept_param = next(iter(swept))
+        scan_time = next(iter(scan_times))
+        points.sort(key=lambda p: (p['index'], p['dose']))
+        data = _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix)
+        dose_responses.append({'name': stem, 'model_id': mid, 'swept_param': swept_param,
+                               'scan_time': scan_time, 'data': data})
+        for p in points:
+            consumed_experiment_ids.add(p['eid'])
+            cid = condition_of.get(p['eid'])
+            if cid:
+                consumed_condition_ids.add(cid)
+
+    remaining_rows = [row for row in measurement_rows
+                      if (row.experiment_id, row.model_id) not in consumed]
+    return dose_responses, remaining_rows, consumed_condition_ids, consumed_experiment_ids
+
+
+def _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix):
+    """Pivot a dose-response group's per-dose rows to a wide swept-axis :class:`~pybnf.data.Data`.
+
+    Column 0 is the swept parameter (its values the doses, in the points' order); then each
+    measured observable's column in observables-table order (so a re-export reproduces it), with
+    its ``<col><sd_suffix>`` companion when the rows carry ``noiseParameters``. Each point (one
+    dose / one PEtab experiment) contributes one row."""
+    present = set()
+    has_noise = False
+    for p in points:
+        for row in p['rows']:
+            present.add(row.observable_id)
+            if row.noise_parameters is not None:
+                has_noise = True
+    unknown = present - set(observable_id_to_column)
+    if unknown:
+        raise PybnfError(
+            f"Dose-response '{stem}' references observable id(s) {sorted(unknown)} absent "
+            f"from the observables table.")
+    columns = [observable_id_to_column[oid] for oid in observable_id_to_column
+               if oid in present]
+    column_of_id = {oid: observable_id_to_column[oid] for oid in present}
+
+    doses = [p['dose'] for p in points]
+    values = {col: [np.nan] * len(points) for col in columns}
+    sds = {col: [np.nan] * len(points) for col in columns} if has_noise else None
+    for i, p in enumerate(points):
+        for row in p['rows']:
+            col = column_of_id[row.observable_id]
+            values[col][i] = row.measurement
+            if has_noise and row.noise_parameters is not None:
+                sds[col][i] = row.noise_parameters
+
+    headers = [swept_param] + columns
+    data_columns = [doses] + [values[col] for col in columns]
+    if has_noise:
+        headers += [col + sd_suffix for col in columns]
+        data_columns += [sds[col] for col in columns]
+    arr = np.array(data_columns, dtype=float).T
+    return Data.from_columns(arr, headers, indvar=swept_param)
 
 
 # ---------------------------------------------------------------------------
