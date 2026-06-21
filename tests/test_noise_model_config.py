@@ -189,7 +189,11 @@ def test_location_caseless_and_bad_value_rejected():
         overrides={'o': (noise.Laplace(), noise.FreeParameterSigma('b_o__FREE'))}), 'b_o__FREE'),
 ])
 def test_missing_noise_free_param_raises(obj, missing_name):
-    ns = types.SimpleNamespace(config={'objfunc': 'x', 'fit_type': 'de'}, obj=obj)
+    ns = types.SimpleNamespace(config={'objfunc': 'x', 'fit_type': 'de'}, obj=obj,
+                               # _load_variables derives the declared free params via this
+                               # staticmethod (ADR-0043 added the new-era 'parameter' key to
+                               # it); the SimpleNamespace self must carry it.
+                               _is_free_param_key=Configuration._is_free_param_key)
     with pytest.raises(PybnfError, match=missing_name):
         Configuration._load_variables(ns)
 
@@ -202,7 +206,10 @@ def test_declared_noise_free_param_passes_check():
         config={'objfunc': 'chi_sq_dynamic', 'fit_type': 'de',
                 ('uniform_var', 'sigma__FREE'): [0.0, 5.0, True]},
         obj=obj,
-        # stub the downstream keyword-combination check (separate concern); the
+        # the declared-free-param scan (ADR-0043 generalized it to the new-era
+        # 'parameter' key, hence the staticmethod) ...
+        _is_free_param_key=Configuration._is_free_param_key,
+        # ... and stub the downstream keyword-combination check (separate concern); the
         # point here is that the noise-param check does not raise for a declared param.
         _check_variable_keyword_combination=lambda fit_type: None)
     variables = Configuration._load_variables(ns)
