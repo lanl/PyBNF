@@ -178,7 +178,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     observable_id_to_column, measurement_models = _observable_id_to_column(
         observable_rows, namespace, entity_names, fixed_params)
 
-    # Measurements -> one wide Data per experiment, then assemble the experiment list.
+    # Measurements -> the wide Data replicates per experiment, then assemble the experiment
+    # list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039).
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
     # A constant-per-observable parameter-id noiseParameters placeholder is a
     # per-observable estimated sigma (Boehm's sd_*); the map drives the per-observable
@@ -343,10 +344,15 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
 
 def _column_mean_resolver(datas, observable_id_to_column):
     """A ``observableId -> column mean across all experiments`` closure (for distinguishing
-    ``sos`` from ``ave_norm_sos``; mirrors the export's column-mean sigma over all data)."""
+    ``sos`` from ``ave_norm_sos``; mirrors the export's column-mean sigma over all data).
+
+    ``datas`` is ``{experiment_id: [Data, ...]}`` (the replicate grids per experiment), so
+    the mean is taken over every replicate's column -- the same set of values the forward
+    export's column-mean sigma averaged over."""
     def column_mean_of(observable_id):
         col = observable_id_to_column[observable_id]
-        values = [data[col] for data in datas.values() if col in data.cols]
+        values = [data[col] for group in datas.values() for data in group
+                  if col in data.cols]
         return float(np.average(np.concatenate(values)))
     return column_mean_of
 
@@ -520,25 +526,32 @@ def _approx(a, b):
 # ---------------------------------------------------------------------------
 
 def _experiments(datas, experiment_rows, out_dir):
-    """Assemble the conf's experiments and write each one's ``.exp`` file.
+    """Assemble the conf's experiments and write each one's ``.exp`` file(s).
 
-    The set of experiments is the measurement groups (one wide ``Data`` per
-    ``experimentId``); each ``Data`` is written to ``<name>.exp``. The experiment's
-    condition comes from the experiments table (``cond_<c>`` -> ``c``; the synthesized
-    ``cond_wildtype`` and an absent row -> no condition). A ``''`` experimentId is the
-    "model as is" base time course (PEtab erased its name because the job had no
-    fit-and-perturbed parameters); it is synthesized a name, which never reaches the PEtab
-    output (it re-exports to ``''`` again). Returns ``[(name, condition_or_None,
-    [data_file]), ...]`` in measurement order.
+    The set of experiments is the measurement groups (the replicate grids per
+    ``experimentId``); each experiment's replicate ``Data`` objects are written to
+    ``<name>.exp`` (the first / only replicate) and ``<name>_rep<k>.exp`` (k>=2), all bound
+    to the one experiment's ``data:`` list -- the inverse of the forward export, which
+    stacks an experiment's replicate ``Data`` objects into repeated measurement rows
+    (ADR-0039). The single-replicate case keeps the bare ``<name>.exp`` name, so the common
+    round trip is byte-stable. The experiment's condition comes from the experiments table
+    (``cond_<c>`` -> ``c``; the synthesized ``cond_wildtype`` and an absent row -> no
+    condition). A ``''`` experimentId is the "model as is" base time course (PEtab erased
+    its name because the job had no fit-and-perturbed parameters); it is synthesized a name,
+    which never reaches the PEtab output (it re-exports to ``''`` again). Returns
+    ``[(name, condition_or_None, [data_file, ...]), ...]`` in measurement order.
     """
     condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
     experiments = []
-    for eid, data in datas.items():
+    for eid, group in datas.items():
         name = eid if eid else 'experiment1'
         condition = condition_name_from_id(condition_of.get(eid))
-        data_file = f'{name}.exp'
-        _write_exp(out_dir / data_file, data)
-        experiments.append((name, condition, [data_file]))
+        data_files = []
+        for k, data in enumerate(group):
+            data_file = f'{name}.exp' if k == 0 else f'{name}_rep{k + 1}.exp'
+            _write_exp(out_dir / data_file, data)
+            data_files.append(data_file)
+        experiments.append((name, condition, data_files))
     return experiments
 
 

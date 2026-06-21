@@ -10,10 +10,11 @@ seam shared with the other PEtab tables:
 * **export** -- ``measurement_rows_from_data`` (wide ``Data`` -> neutral rows) +
   ``write_measurement_table`` (rows -> TSV, the disposable half).
 * **import** -- ``read_measurement_table`` (TSV -> rows, the disposable half) +
-  ``data_from_measurement_rows`` (long rows -> one wide ``Data`` per experiment, the
-  exact inverse of ``measurement_rows_from_data``: it groups rows by ``experimentId``,
-  pivots long->wide, and rebuilds each observable's ``_SD`` companion column from the
-  per-point ``noiseParameters``).
+  ``data_from_measurement_rows`` (long rows -> the wide ``Data`` replicates per experiment,
+  the exact inverse of ``measurement_rows_from_data``: it groups rows by ``experimentId``,
+  deals repeated ``(observable, time)`` rows into replicate grids (ADR-0039), pivots
+  long->wide, and rebuilds each observable's ``_SD`` companion column from the per-point
+  ``noiseParameters``).
 
 **Scope (chunk 1, ADR-0025):** a single experiment, a **time-course** ``.exp``
 (independent variable ``time``), one value per ``(observable, time)`` cell, the
@@ -142,8 +143,8 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
 
 def data_from_measurement_rows(rows, observable_id_to_column, sd_suffix='_SD',
                                indvar='time'):
-    """Pivot long measurement ``rows`` back to one wide :class:`~pybnf.data.Data` per
-    experiment -- the inverse of :func:`measurement_rows_from_data`.
+    """Pivot long measurement ``rows`` back to the wide :class:`~pybnf.data.Data`
+    replicates per experiment -- the inverse of :func:`measurement_rows_from_data`.
 
     ``observable_id_to_column`` maps a PEtab ``observableId`` (e.g. ``obs_x``) to the
     model column header it measures (e.g. ``x``); its *iteration order* fixes the wide
@@ -157,23 +158,57 @@ def data_from_measurement_rows(rows, observable_id_to_column, sd_suffix='_SD',
     a ``chi_sq`` re-export reads back); a group with no ``noiseParameters`` (a fixed /
     column-mean sigma objective) gets no ``_SD`` columns.
 
-    Returns ``{experiment_id: Data}`` (``experiment_id`` is ``''`` for the "model as is"
-    base time course). Raises ``PybnfError`` if a row names an ``observableId`` absent
-    from the map, and ``NotImplementedError`` if a ``(experiment, observable, time)``
-    triple repeats -- PEtab models replicates as repeated rows with no replicate index,
-    so the wide pivot cannot separate them (replicate reconstruction is deferred; the
-    forward direction stacks replicate ``Data`` objects the importer cannot recover).
+    **Replicates.** PEtab models replicates as repeated ``(experiment, observable, time)``
+    rows with no replicate index. They are *dealt* across grids in first-seen order: the
+    k-th occurrence of a cell goes to the k-th :class:`~pybnf.data.Data` (the first grid is
+    the full one; later grids hold only the cells that repeat). This is the exact inverse
+    of the forward export's ``for data in exp['datas']`` stacking (ADR-0039), so a
+    homogeneous-grid replicate set re-exports to byte-identical long rows; PyBNF's
+    summing objective scores the dealt grids exactly as it scored the source ``.exp``
+    files (the partition PEtab never recorded does not affect the fit).
+
+    Returns ``{experiment_id: [Data, ...]}`` -- a **list** of replicate grids per
+    experiment (length 1 for the common no-replicate case), ``experiment_id`` being ``''``
+    for the "model as is" base time course. Raises ``PybnfError`` if a row names an
+    ``observableId`` absent from the map.
     """
     by_experiment = {}
     for row in rows:
         by_experiment.setdefault(row.experiment_id, []).append(row)
-    return {eid: _wide_data_from_group(eid, group, observable_id_to_column, sd_suffix,
-                                       indvar)
+    return {eid: [_wide_data_from_group(eid, bucket, observable_id_to_column, sd_suffix,
+                                        indvar)
+                  for bucket in _deal_replicates(group)]
             for eid, group in by_experiment.items()}
 
 
+def _deal_replicates(group):
+    """Partition one experiment's rows into replicate buckets (ADR-0039).
+
+    PEtab records replicates as repeated ``(observable, time)`` rows with no replicate
+    index; deal the k-th occurrence of each cell into bucket k, preserving first-seen
+    order. Bucket 0 is the full grid (it sees every cell first); a later bucket holds only
+    the cells that repeat that many times. The inverse of the forward export, which emits
+    one replicate ``Data`` after another, so re-exporting these buckets in order reproduces
+    the source rows for a homogeneous-grid replicate set.
+    """
+    buckets = []
+    seen = {}
+    for row in group:
+        k = seen.get((row.observable_id, row.time), 0)
+        while k >= len(buckets):
+            buckets.append([])
+        buckets[k].append(row)
+        seen[(row.observable_id, row.time)] = k + 1
+    return buckets or [[]]
+
+
 def _wide_data_from_group(eid, group, observable_id_to_column, sd_suffix, indvar):
-    """Pivot one experiment's measurement rows to a wide :class:`~pybnf.data.Data`."""
+    """Pivot one replicate bucket's measurement rows to a wide :class:`~pybnf.data.Data`.
+
+    The bucket is collision-free by construction (:func:`_deal_replicates` puts at most one
+    measurement per ``(observable, time)`` cell in each bucket), so a single value lands in
+    each cell.
+    """
     present = {row.observable_id for row in group}
     unknown = present - set(observable_id_to_column)
     if unknown:
@@ -191,19 +226,9 @@ def _wide_data_from_group(eid, group, observable_id_to_column, sd_suffix, indvar
 
     values = {col: [np.nan] * len(times) for col in columns}
     sds = {col: [np.nan] * len(times) for col in columns} if has_noise else None
-    seen = set()
     for row in group:
         col = column_of_id[row.observable_id]
         i = time_index[row.time]
-        if (row.observable_id, row.time) in seen:
-            raise NotImplementedError(
-                f"Experiment '{eid}' has more than one measurement of "
-                f"'{row.observable_id}' at time {row.time}: PEtab models replicates as "
-                f"repeated rows with no replicate index, so the wide pivot cannot "
-                f"separate them. Replicate reconstruction is a deferred importer chunk "
-                f"(#407); the forward export stacks replicate Data objects this read "
-                f"path cannot recover.")
-        seen.add((row.observable_id, row.time))
         values[col][i] = row.measurement
         if has_noise and row.noise_parameters is not None:
             sds[col][i] = row.noise_parameters

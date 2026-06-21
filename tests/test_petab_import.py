@@ -202,6 +202,83 @@ class TestImportDemoRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Replicates: a PEtab measurements table with repeated (experiment, observable,
+# time) rows imports as one experiment binding N replicate .exp files (ADR-0039).
+# ---------------------------------------------------------------------------
+
+def _replicate_exp_text(delta):
+    """A homogeneous replicate of the demo ``par1.exp``: the same ``(time, x, y)`` grid with
+    the ``x``/``y`` measurements shifted by ``delta`` (the ``_SD`` columns unchanged). Same
+    grid, different values -- exactly what PEtab stacks as repeated measurement rows."""
+    data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+    headers = [data.headers[i] for i in range(len(data.headers))]
+    lines = ['# ' + '\t'.join(headers)]
+    for i in range(data.data.shape[0]):
+        cells = [('%g' % (data.data[i, j] + (delta if h in ('x', 'y') else 0.0)))
+                 for j, h in enumerate(headers)]
+        lines.append('\t'.join(cells))
+    return '\n'.join(lines) + '\n'
+
+
+class TestReplicateRoundTrip:
+
+    REPLICATE_CONF = (
+        'edition = 2\njob_type = de\nobjective = chi_sq\n'
+        f'model: {DEMO_MODEL}\n'
+        'experiment: par1, data: par1.exp, par1b.exp\n'
+        + _PARAMS_U +
+        'population_size = 20\nmax_iterations = 30\nverbosity = 2\n')
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(
+            tmp_path_factory.mktemp('replicate'), self.REPLICATE_CONF,
+            extra_files={'par1b.exp': _replicate_exp_text(0.5)})
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        # The dominant oracle: a two-replicate experiment exports to repeated measurement
+        # rows, imports by dealing them into two grids, and re-exports byte-identically.
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_measurements_carry_both_replicates(self, imported):
+        # Two replicates of a 21-point, two-observable (x, y) grid -> 2 * 21 * 2 data rows.
+        petab1, _, _, _ = imported
+        rows = read_measurement_table(petab1 / 'measurements.tsv')
+        assert len(rows) == 2 * 21 * 2
+
+    def test_imported_experiment_binds_two_exp_files(self, imported):
+        # One experiment, two .exp files (the synthesized base name + its _rep2 sibling),
+        # both on the experiment's data: list -- the inverse of the forward stacking.
+        _, imported_dir, _, conf = imported
+        exps = sorted(p.name for p in imported_dir.glob('*.exp'))
+        assert len(exps) == 2 and any(name.endswith('_rep2.exp') for name in exps)
+        with open(conf) as fh:
+            d = ploop(fh.readlines())
+        (_, name), fields = next(it for it in d.items()
+                                 if isinstance(it[0], tuple) and it[0][0] == 'experiment')
+        assert len(fields['data']) == 2
+
+    def test_reconstructed_replicates_match_the_sources(self, imported):
+        # Dealing keeps each replicate's values in its own grid: the two reconstructed .exp
+        # files reproduce the two source grids cell-for-cell (order-independent: match the
+        # one whose x column aligns with each source's).
+        _, imported_dir, _, _ = imported
+        base = Data(file_name=str(DEMO_DIR / 'par1.exp'))
+        expected = [
+            {c: base[c] for c in ('time', 'x', 'y', 'x_SD', 'y_SD')},          # par1.exp
+            {'time': base['time'], 'x': base['x'] + 0.5, 'y': base['y'] + 0.5,  # par1b.exp
+             'x_SD': base['x_SD'], 'y_SD': base['y_SD']},
+        ]
+        recon = [Data(file_name=str(p)) for p in imported_dir.glob('*.exp')]
+        assert len(recon) == 2
+        for exp in expected:
+            match = next(r for r in recon if np.allclose(r['x'], exp['x']))
+            for col, vals in exp.items():
+                assert np.allclose(match[col], vals), col
+
+
+# ---------------------------------------------------------------------------
 # Extensions: prior catalog, objective family, conditions, emit-all
 # ---------------------------------------------------------------------------
 
@@ -440,8 +517,10 @@ class TestReverseAssets:
         column_to_id = {'x': 'obs_x', 'y': 'func_y'}
         rows = measurement_rows_from_data(data, column_to_id, experiment_id='')
         datas = data_from_measurement_rows(rows, {'obs_x': 'x', 'func_y': 'y'})
-        # re-pivoting the reconstructed Data yields the same rows (the long<->wide inverse).
-        again = measurement_rows_from_data(datas[''], column_to_id, experiment_id='')
+        # No repeats -> a single reconstructed replicate, re-pivoting to the same rows
+        # (the long<->wide inverse).
+        assert len(datas['']) == 1
+        again = measurement_rows_from_data(datas[''][0], column_to_id, experiment_id='')
         assert rows == again
 
     def test_measurement_no_noise_yields_no_sd_columns(self):
@@ -449,14 +528,37 @@ class TestReverseAssets:
         # are reconstructed (mirrors what a sos/ave_norm_sos re-export reads).
         data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
         rows = measurement_rows_from_data(data, {'x': 'obs_x'}, sd_suffix=None)
-        recon = data_from_measurement_rows(rows, {'obs_x': 'x'})['']
+        recon = data_from_measurement_rows(rows, {'obs_x': 'x'})[''][0]
         assert set(recon.cols) == {'time', 'x'}
 
-    def test_repeated_observation_is_a_replicate_boundary(self):
+    def test_repeated_observation_deals_into_replicates(self):
+        # PEtab models replicates as repeated (observable, time) rows with no replicate
+        # index; the importer deals the k-th occurrence into the k-th grid (ADR-0039), the
+        # inverse of the forward export's per-replicate stacking. Two stacked copies of one
+        # grid reconstruct as two identical replicate Data objects, each re-pivoting to the
+        # one grid's rows -- so concatenating them reproduces the doubled long table.
         data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
         rows = measurement_rows_from_data(data, {'x': 'obs_x'})
-        with pytest.raises(NotImplementedError, match='replicate'):
-            data_from_measurement_rows(rows + rows, {'obs_x': 'x'})
+        reps = data_from_measurement_rows(rows + rows, {'obs_x': 'x'})['']
+        assert len(reps) == 2
+        for rep in reps:
+            assert measurement_rows_from_data(rep, {'x': 'obs_x'}) == rows
+        relaid = (measurement_rows_from_data(reps[0], {'x': 'obs_x'})
+                  + measurement_rows_from_data(reps[1], {'x': 'obs_x'}))
+        assert relaid == rows + rows
+
+    def test_ragged_replicates_deal_lower_count_into_first_grid(self):
+        # A cell measured once goes to the first grid only; a cell measured twice spills a
+        # second grid. The first grid is the full one (it sees every cell first).
+        def row(oid, t, m):
+            return PetabMeasurementRow(observable_id=oid, time=t, measurement=m)
+        rows = [row('obs_x', 0.0, 1.0), row('obs_x', 0.0, 2.0),  # x@0 twice
+                row('obs_x', 1.0, 3.0)]                            # x@1 once
+        reps = data_from_measurement_rows(rows, {'obs_x': 'x'})['']
+        assert len(reps) == 2
+        assert np.allclose(reps[0]['x'], [1.0, 3.0])               # full grid, first values
+        assert np.allclose(reps[1]['time'], [0.0])                 # only the repeated cell
+        assert np.allclose(reps[1]['x'], [2.0])
 
     def test_noise_parameter_ids_per_observable_guards_row_varying(self):
         # A constant-per-observable parameter id is a per-observable sigma; a row-varying id
