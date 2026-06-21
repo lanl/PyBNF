@@ -59,6 +59,15 @@ DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
 DEMO_CONF = DEMO_DIR / 'demo_bng_v2.conf'
 DEMO_MODEL = 'parabola_v2.bngl'
 
+# The three row-varying / per-observable round-trip fixtures (ADR-0044/0045, #428): a
+# per-observable FormulaSigma (scaling_v2), a row-varying noise id (rowsigma_v2), and a
+# row-varying observable scale (obsscale_v2). The importer is oracled in test_petab_import.py;
+# here they exercise the closing export half (import -> export -> re-import preserves the fit).
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / 'tests' / 'petab_fixtures'
+SCALING_DIR = FIXTURE_DIR / 'scaling_v2'
+ROWSIGMA_DIR = FIXTURE_DIR / 'rowsigma_v2'
+OBSSCALE_DIR = FIXTURE_DIR / 'obsscale_v2'
+
 
 def _tsv_rows(path):
     """Read a TSV into a list of dict rows (a tiny stdlib reader for assertions)."""
@@ -472,6 +481,109 @@ class TestExportObjectiveFamily:
         out2 = tmp_path_factory.mktemp('formula_out2')
         export_job(imp / 'imported.conf', out2)
         assert (out2 / 'observables.tsv').read_text() == (out1 / 'observables.tsv').read_text()
+
+
+# ---------------------------------------------------------------------------
+# Per-observable + row-varying export round trip (ADR-0044/0045, #428 Milestone 2): the closing
+# half of the per-measurement placeholder frontier. The importer (test_petab_import.py) recovers
+# three crafted problems -- a per-observable FormulaSigma (scaling_v2), a row-varying noise id
+# (rowsigma_v2), and a row-varying observable scale (obsscale_v2); each now RE-EXPORTS to a valid
+# PEtab v2 problem that re-imports to the SAME fit. Export is lossy on naming (a model function y
+# the source named obs_y re-exports as func_y; a no-condition experiment loses its name), so the
+# oracle is the tightest fit-preserving one rather than byte-equality: petablint-clean re-export +
+# re-import scoring identically to the importer's own hand-derived NLL.
+# ---------------------------------------------------------------------------
+
+class TestExportRowVaryingRoundTrip:
+
+    # case -> (fixture_dir, model_id, pset, sim trajectory (time, x, y), expected NLL). The pset,
+    # trajectory, and expected score mirror each fixture's import oracle in test_petab_import.py.
+    CASES = {
+        'scaling': (SCALING_DIR, 'scaling_model',
+                    {'v1': 0.5, 'v2': 1., 'v3': 3., 'scaling': 3., 'slope': 1.},
+                    [[0., -10., 43.], [1., -9., 34.5], [2., -8., 27.]],
+                    490.0 + 3 * float(np.log(0.15))),
+        'rowsigma': (ROWSIGMA_DIR, 'rowsigma_model',
+                     {'v1': 0.5, 'v2': 1., 'v3': 3., 'sd_lo': 0.5, 'sd_hi': 2.},
+                     [[0., -10., 44.], [1., -9., 36.5], [2., -8., 29.]],
+                     10.5 + 2 * float(np.log(0.5)) + float(np.log(2.0))),
+        'obsscale': (OBSSCALE_DIR, 'obsscale_model',
+                     {'v1': 0.5, 'v2': 1., 'v3': 3., 's_lo': 2., 's_hi': 3.},
+                     [[0., -10., 44.], [1., -9., 36.5], [2., -8., 29.]],
+                     28.0),
+    }
+
+    def _round_trip(self, case, tmp_path):
+        """import fixture -> conf1 -> export -> petab2 -> re-import -> conf2; the artifacts."""
+        from pybnf.petab.import_ import import_job
+        fixture_dir = self.CASES[case][0]
+        imp1, pet2, imp2 = tmp_path / 'imp1', tmp_path / 'pet2', tmp_path / 'imp2'
+        import_job(fixture_dir / 'problem.yaml', imp1)
+        export_job(imp1 / 'imported.conf', pet2)
+        import_job(pet2 / 'problem.yaml', imp2)
+        return imp1, pet2, imp2
+
+    @pytest.mark.parametrize('case', list(CASES))
+    def test_reexport_is_petab_valid(self, case, tmp_path):
+        # The re-exported problem passes petab's full default_validation_tasks (the external
+        # oracle): the per-observable noise, the retargeted placeholders, and the per-row
+        # observableParameters / noiseParameters columns are all valid PEtab v2.
+        _imp1, pet2, _imp2 = self._round_trip(case, tmp_path)
+        assert _petab_validation_errors(pet2 / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('case', list(CASES))
+    def test_round_trip_preserves_the_fit(self, case, tmp_path, monkeypatch):
+        # The end-to-end oracle: the re-imported conf scores a known trajectory identically to the
+        # importer's hand-derived NLL, so the row-varying binding (per-row sigma / scale) and the
+        # per-observable sigma sources survive export -> re-import unchanged.
+        import types
+
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
+        _fdir, model, psetd, arr, expected = self.CASES[case]
+        _imp1, _pet2, imp2 = self._round_trip(case, tmp_path)
+        monkeypatch.chdir(imp2)
+        cfg = config_mod.Configuration(
+            ploop((imp2 / 'imported.conf').read_text().splitlines(keepends=True)))
+        (expname,) = cfg.exp_data[model]              # the experiment name was canonicalized
+        sim = Data.from_columns(np.array(arr), ['time', 'x', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in psetd.items()]
+        score = cfg.obj.evaluate_multiple({model: {expname: sim}}, cfg.exp_data, pset)
+        assert score == pytest.approx(expected)
+
+    def test_per_observable_formula_sigma_round_trips(self, tmp_path):
+        # scaling_v2: a per-observable FormulaSigma (the y column) coexisting with a per-observable
+        # constant (the obs_sx measurement-model column) -- the per-observable gate the export
+        # lifts. Each column carries its own noiseFormula; obs_sx's observableParameters scale was
+        # substituted away at import (ADR-0044), so no measurements observableParameters column.
+        _imp1, pet2, _imp2 = self._round_trip('scaling', tmp_path)
+        noise = {r['observableId']: r['noiseFormula']
+                 for r in _tsv_rows(pet2 / 'observables.tsv')}
+        assert noise == {'obs_sx': '0.5', 'func_y': '0.05*slope + 0.1'}
+        assert 'observableParameters' not in _tsv_rows(pet2 / 'measurements.tsv')[0]
+
+    def test_row_varying_noise_emits_per_row_noise_parameters(self, tmp_path):
+        # rowsigma_v2: the per-row sigma id rides the measurements noiseParameters column (the
+        # binding-table sidecar back to PEtab, ADR-0045). y is a model FUNCTION, so its
+        # observableId is func_y and the kept placeholder is retargeted to match it.
+        _imp1, pet2, _imp2 = self._round_trip('rowsigma', tmp_path)
+        obs = {r['observableId']: r for r in _tsv_rows(pet2 / 'observables.tsv')}
+        assert obs['func_y']['noiseFormula'] == 'noiseParameter1_func_y'
+        assert obs['func_y']['noisePlaceholders'] == 'noiseParameter1_func_y'
+        rows = [r for r in _tsv_rows(pet2 / 'measurements.tsv')
+                if r['observableId'] == 'func_y']
+        assert [r['noiseParameters'] for r in rows] == ['sd_lo', 'sd_hi', 'sd_lo']
+
+    def test_row_varying_observable_emits_observable_parameters(self, tmp_path):
+        # obsscale_v2: the per-row scale id rides the measurements observableParameters column;
+        # the measurement-model observableFormula keeps its placeholder verbatim (its id obs_y is
+        # carried through, so no retarget needed).
+        _imp1, pet2, _imp2 = self._round_trip('obsscale', tmp_path)
+        obs = {r['observableId']: r for r in _tsv_rows(pet2 / 'observables.tsv')}
+        assert obs['obs_y']['observableFormula'] == 'observableParameter1_obs_y * y'
+        rows = [r for r in _tsv_rows(pet2 / 'measurements.tsv')
+                if r['observableId'] == 'obs_y']
+        assert [r['observableParameters'] for r in rows] == ['s_lo', 's_hi', 's_lo']
 
 
 # ---------------------------------------------------------------------------
@@ -1080,15 +1192,19 @@ class TestBoundaries:
                 tmp_path, f"profile_objective = {token}\nuniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
-    def test_per_observable_noise_model_override_not_implemented(self, tmp_path):
-        # A per-observable noise_model override is a later chunk -- raise, not default.
-        with pytest.raises(NotImplementedError):
-            export_job(_boundary_conf(
-                tmp_path,
-                "noise_model = gaussian, sigma = fix_at 1\n"
-                "noise_model x = gaussian, sigma = fix_at 2\n"
-                "uniform_var = v1 0 10\n"),
-                tmp_path / 'out')
+    def test_per_observable_noise_model_override_exports_per_column(self, tmp_path):
+        # A per-observable noise_model override now exports (ADR-0045): each column takes its
+        # own sigma source (its override, else the whole-fit base), no longer a deferred raise.
+        out = tmp_path / 'out'
+        export_job(_boundary_conf(
+            tmp_path,
+            "noise_model = gaussian, sigma = fix_at 1\n"     # whole-fit base -> column y
+            "noise_model x = gaussian, sigma = fix_at 2\n"   # override -> column x
+            "uniform_var = v1 0 10\n"),
+            out)
+        noise = {r['observableId']: r['noiseFormula'] for r in _tsv_rows(out / 'observables.tsv')}
+        assert noise == {'obs_x': '2', 'func_y': '1'}        # the override on x, the base on y
+        assert _petab_validation_errors(out / 'problem.yaml') == []
 
     def test_mean_centered_noise_model_not_implemented(self, tmp_path):
         # PEtab v2 is median-only; a mean-centered noise model has no representation.

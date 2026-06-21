@@ -81,6 +81,7 @@ from .conditions import (
     write_condition_table,
     write_experiment_table,
 )
+from ._measurement_params import read_measurement_params
 from .formula import bngl_body_to_petab_math
 from .measurements import (
     measurement_rows_from_data,
@@ -112,6 +113,12 @@ _VAR_DECL = re.compile(r'(_var$|^var$|^logvar$)')
 # (ADR-0034), so a model carrying this token was not modernized; the exporter refuses it
 # rather than ship a ``v1__FREE`` symbol into PEtab (where it would dangle).
 _FREE_TOKEN = re.compile(r'\w+__FREE')
+
+# A per-measurement placeholder in a noiseFormula (``noiseParameter1`` / ``observableParameter2``):
+# its presence marks a row-varying ``PerMeasurementFormulaSigma`` sigma whose per-row value comes
+# from the binding-table sidecar, distinct from a constant ``FormulaSigma`` (ADR-0045). Mirrors
+# ``objective._PLACEHOLDER_IN_FORMULA`` / ``import_._PLACEHOLDER``.
+_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
 
 
 # ---------------------------------------------------------------------------
@@ -152,16 +159,26 @@ def export_job(conf_path, out_dir, inline_functions=False):
     languages = {mf: _model_language(mf) for mf in models}
     _require_new_era_data(conf, models)
     noise = _resolve_noise(conf)
+    per_obs_noise = _resolve_per_observable_noise(conf)
     free_params = _free_parameters_from_conf(conf)
     # A registry of per-language model views (ADR-0040/0041): a job may mix BNGL + SBML,
     # each read once and threaded through the language-agnostic classification below.
     registry = {mf: _read_model(mf, conf_path.parent / mf, languages[mf]) for mf in models}
-    free_to_model = _resolve_free_to_model(free_params, registry, models)
-    fit_model_params = set(free_to_model.values())
+    # Observation-layer nuisance free parameters (ADR-0034/0044/0045): a measurement scale, a
+    # noise coefficient, or a row-varying per-row sigma -- a free parameter referenced by a
+    # measurement-model / noise formula or a binding-table token but NOT a model entity. The
+    # bind-by-id check admits them as unbound estimated parameters (else they read as typos);
+    # the rest must still bind to a model id.
+    model_ids = set().union(*(set(v.parameters) for v in registry.values()))
+    nuisances = (_referenced_nuisance_symbols(conf, conf_path, noise, per_obs_noise)
+                 & {fp.name for fp in free_params}) - model_ids
+    free_to_model = _resolve_free_to_model(free_params, registry, models, nuisances)
+    fit_model_params = set(free_to_model.values()) & model_ids
 
     (observable_rows, measurement_rows, condition_rows, experiment_rows,
      surrogate_params) = _export_new_era(
-        conf, conf_path, models, registry, noise, fit_model_params, inline_functions)
+        conf, conf_path, models, registry, noise, per_obs_noise, fit_model_params,
+        inline_functions)
 
     parameter_rows = _parameter_rows(
         free_params, free_to_model, surrogate_params, registry, models)
@@ -236,8 +253,8 @@ def _require_new_era_data(conf, models):
             f"legacy line is silently ignored on export (ADR-0028, #423).")
 
 
-def _export_new_era(conf, conf_path, models, registry, noise, fit_model_params,
-                    inline_functions=False):
+def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
+                    fit_model_params, inline_functions=False):
     """Read a job's data/conditions/observables from the **new-era surface** (ADR-0028).
 
     Export is *transcription*: an ``experiment:`` is a PEtab Experiment (experimentId =
@@ -246,9 +263,11 @@ def _export_new_era(conf, conf_path, models, registry, noise, fit_model_params,
     ``models`` is the ordered list of model files and ``registry`` their per-language views
     (ADR-0041): each experiment names the model it simulates, that model's id is stamped on
     its measurement rows' ``modelId`` (omitted when the job is single-model), and a column
-    is classified against its experiment's model. ``inline_functions`` is threaded to
-    :func:`_observable_rows` (ADR-0035 inlining). Returns ``(observable_rows,
-    measurement_rows, condition_rows, experiment_rows, surrogate_params)``.
+    is classified against its experiment's model. ``noise`` is the whole-fit base and
+    ``per_obs_noise`` the ``{column: (dist, verb, arg)}`` per-observable overrides
+    (ADR-0021/0045): a column with an override takes its own sigma source, the rest the base.
+    ``inline_functions`` is threaded to :func:`_observable_rows` (ADR-0035 inlining). Returns
+    ``(observable_rows, measurement_rows, condition_rows, experiment_rows, surrogate_params)``.
 
     A ``condition:`` referenced by an experiment becomes a PEtab Condition (the
     surrogate-base machinery of ADR-0027, generalized by
@@ -265,7 +284,7 @@ def _export_new_era(conf, conf_path, models, registry, noise, fit_model_params,
 
     measurement_models = _read_measurement_models(conf)
     observable_rows, column_to_observable_id = _observable_rows(
-        experiments, registry, noise, inline_functions, measurement_models)
+        experiments, registry, noise, per_obs_noise, inline_functions, measurement_models)
 
     conditions = _read_conditions(conf, models, registry)
     referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
@@ -286,12 +305,16 @@ def _export_new_era(conf, conf_path, models, registry, noise, fit_model_params,
             [(exp['name'], exp['condition']) for exp in experiments],
             conditions, fit_model_params, lambda v: _nominal_of(registry, v))
 
-    # Per-point noiseParameters are emitted only when the objective's sigma comes from a
-    # data column (the placeholder source); a fixed / column-mean sigma is carried inline
-    # in noiseFormula, so the measurement export must not read _SD then (it would leave a
-    # noiseParameters override with no placeholder to bind to).
-    _dist, sigma_verb, sigma_arg = noise
-    sd_suffix = sigma_arg if sigma_verb == 'read_exp_file' else None
+    # Per-point numeric noiseParameters are emitted only when a column's sigma comes from a
+    # data column (the read_exp_file placeholder source); a fixed / column-mean / formula sigma
+    # is carried inline in noiseFormula, so the measurement export must not read _SD then (it
+    # would leave a noiseParameters override with no placeholder to bind to). With per-observable
+    # overrides the suffix is **per column** (ADR-0045): each column uses its own sigma source
+    # (its override, else the whole-fit base) to decide whether it reads a _SD companion.
+    def _sd_suffix_for(col):
+        _dist, verb, arg = per_obs_noise.get(col, noise)
+        return arg if verb == 'read_exp_file' else None
+    sd_suffix = {col: _sd_suffix_for(col) for col in column_to_observable_id}
 
     # The modelId link (ADR-0041): each experiment stamps its model's stem onto its
     # measurement rows. Single-model -> '' (the column is dropped on write, byte-stable).
@@ -301,11 +324,14 @@ def _export_new_era(conf, conf_path, models, registry, noise, fit_model_params,
         eid = experiment_to_id[exp['name']]
         model_id = Path(exp['model']).stem if multi_model else ''
         # Each replicate Data contributes its own rows under the one experiment (PEtab
-        # models replicates as repeated rows -- no need to pre-stack as config.py does).
+        # models replicates as repeated rows -- no need to pre-stack as config.py does). A
+        # row-varying placeholder's per-row token comes from the experiment's measurement_params
+        # sidecar (ADR-0045), shared across the replicate Datas (each measures the same cells).
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items() if c in data.cols}
             measurement_rows += measurement_rows_from_data(
-                data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id)
+                data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id,
+                measurement_params=exp['measurement_params'])
     return observable_rows, measurement_rows, condition_rows, experiment_rows, \
         surrogate_params
 
@@ -314,12 +340,15 @@ def _read_experiments(conf, conf_path, models):
     """Read + resolve the new-era ``experiment:`` entries from the raw ``ploop`` dict.
 
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
-    mf?, 'type': t?, 'method': m?}``. ``models`` is the ordered list of the job's model
-    files. Returns a list (declaration order) of dicts ``{'name', 'condition', 'model':
-    model_file, 'datas': [Data, ...]}`` -- the ``data:`` files read as individual
-    :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
-    rows, so they are not pre-stacked), and each experiment's resolved model
-    (:func:`_resolve_experiment_model`, ADR-0041). Raises:
+    mf?, 'type': t?, 'method': m?, 'measurement_params': mp?}``. ``models`` is the ordered list
+    of the job's model files. Returns a list (declaration order) of dicts ``{'name',
+    'condition', 'model': model_file, 'datas': [Data, ...], 'measurement_params': table?}`` --
+    the ``data:`` files read as individual :class:`~pybnf.data.Data` replicates (PEtab models
+    replicates as repeated measurement rows, so they are not pre-stacked), each experiment's
+    resolved model (:func:`_resolve_experiment_model`, ADR-0041), and its row-varying
+    per-measurement binding table read from the ``measurement_params:`` sidecar (``{column:
+    {placeholder: {time: token}}}``, or ``None`` when the experiment declares none -- ADR-0045).
+    Raises:
 
     * the parameter-scan deferral for a non-time-course experiment -- the scan's
       simulation endpoint time has no home in the ``experiment:`` grammar yet, so a fully
@@ -356,8 +385,13 @@ def _read_experiments(conf, conf_path, models):
                 f"'experiment:' surface: the scan's simulation endpoint time has no home "
                 f"in the experiment grammar yet, so a fully new-era conf cannot author "
                 f"one (deferred, #426). Export covers time-course experiments.")
+        measurement_params = None
+        mp_file = fields.get('measurement_params')
+        if mp_file:
+            measurement_params = read_measurement_params(conf_path.parent / mp_file)
         experiments.append({'name': name, 'condition': fields.get('condition'),
-                            'model': model_file, 'datas': datas})
+                            'model': model_file, 'datas': datas,
+                            'measurement_params': measurement_params})
     return experiments
 
 
@@ -542,13 +576,16 @@ def _resolve_noise(conf):
     objective is reduced to one ``(family, {param: (verb, arg)}, location)`` tuple and
     reversed to PEtab.
 
+    The result is the **whole-fit base** applied to every column that has no per-observable
+    ``noise_model <obs> = ...`` override; the overrides are resolved separately by
+    :func:`_resolve_per_observable_noise` (the additive seam, ADR-0021/0045) and a column
+    with one uses its own sigma source instead.
+
     Raises ``NotImplementedError`` at every PEtab boundary, never a silent default:
 
     * a column-joint ``profile_objective`` (``kl`` / ``wasserstein``) -- it scores the
       whole column's shape, not a per-observation likelihood, so it has no PEtab
       observable-noise representation;
-    * per-observable ``noise_model <obs> = ...`` overrides -- a later chunk (they map to
-      per-observable PEtab noise);
     * no objective, or more than one global objective key (no implicit default);
     * a ``mean``-centered noise model -- PEtab takes the prediction as the median for
       every family;
@@ -562,12 +599,6 @@ def _resolve_noise(conf):
             f"objective (kl / wasserstein): it scores the whole column's shape, not a "
             f"per-observation likelihood, so it has no PEtab observable-noise "
             f"representation (ADR-0031, #423).")
-    if any(isinstance(k, tuple) and k[0] == 'noise_model' and k[1] is not None
-           for k in conf):
-        raise NotImplementedError(
-            "Per-observable 'noise_model <obs> = ...' overrides are a later export chunk "
-            "-- they map to per-observable PEtab observable noise; this chunk exports one "
-            "whole-fit noise model (ADR-0021/0023, #423).")
 
     whole_fit = conf.get(('noise_model', None))
     has_objective = conf.get('objective') is not None
@@ -591,17 +622,50 @@ def _resolve_noise(conf):
             "explicitly -- there is no implicit default. Set 'objective = <name>' or "
             "'noise_model = <family>, ...' (ADR-0031, #423).")
 
+    return _reduce_noise_spec(family_token, fields, location, 'the whole-fit noise model')
+
+
+def _resolve_per_observable_noise(conf):
+    """The per-observable ``noise_model <obs> = ...`` overrides as ``{column:
+    (noiseDistribution, sigma_verb, sigma_arg)}`` (ADR-0021/0045) -- the additive companion to
+    :func:`_resolve_noise`'s whole-fit base.
+
+    Each ``('noise_model', <col>)`` key (``<col>`` not ``None``) is the parsed
+    ``(family_token, {param: (verb, arg)}, location)`` spec for one observable **column** (the
+    model entity / measurement-model column the objective scores), reduced through the same
+    :func:`_reduce_noise_spec` boundaries as the whole-fit case (a ``mean`` location or a family
+    PEtab v2 cannot express raises). Empty when the job declares no override -- then every column
+    takes the whole-fit base and the export is byte-identical to the pre-per-observable output.
+    The inverse of the importer's :func:`~pybnf.petab.import_._per_observable_directives`, the
+    config side that consumes these (``objective._build_noise_overrides``)."""
+    overrides = {}
+    for key, value in conf.items():
+        if isinstance(key, tuple) and len(key) == 2 and key[0] == 'noise_model' \
+                and key[1] is not None:
+            column = key[1]
+            family_token, fields, location = value
+            overrides[column] = _reduce_noise_spec(
+                family_token, fields, location, f"the 'noise_model {column}' override")
+    return overrides
+
+
+def _reduce_noise_spec(family_token, fields, location, where):
+    """Reduce one parsed noise spec ``(family_token, {param: (verb, arg)}, location)`` to
+    ``(noiseDistribution, sigma_verb, sigma_arg)``, raising the PEtab boundaries shared by the
+    whole-fit base (:func:`_resolve_noise`) and the per-observable overrides
+    (:func:`_resolve_per_observable_noise`): a ``mean``-centered location (PEtab is median-only)
+    and a family PEtab v2 cannot express (``neg_bin`` removed; ``lognormal`` is log10 vs PEtab's
+    natural ``log-normal``). ``where`` names the spec in the error message."""
     if location == 'mean':
         raise NotImplementedError(
-            "This noise model is mean-centered (location = mean); PEtab v2 takes the "
-            "prediction as the distribution median for every noise family, so mean "
-            "centering has no PEtab representation (ADR-0031, #423). Use median.")
-
+            f"{where} is mean-centered (location = mean); PEtab v2 takes the prediction as "
+            f"the distribution median for every noise family, so mean centering has no PEtab "
+            f"representation (ADR-0031, #423). Use median.")
     distribution = _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION.get(family_token.lower())
     if distribution is None:
         raise NotImplementedError(
-            f"The '{family_token}' noise family cannot be expressed in PEtab v2: neg_bin "
-            f"was removed from v2, and PyBNF's lognormal is log10 while PEtab's "
+            f"{where}: the '{family_token}' noise family cannot be expressed in PEtab v2: "
+            f"neg_bin was removed from v2, and PyBNF's lognormal is log10 while PEtab's "
             f"log-normal is natural log (the sigma scale-conversion is a later chunk). "
             f"ADR-0023/0031, #423.")
     (_param, (verb, arg)), = fields.items()
@@ -617,7 +681,7 @@ def _independent_variable(data):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(experiments, registry, noise, inline_functions=False,
+def _observable_rows(experiments, registry, noise, per_obs_noise, inline_functions=False,
                      measurement_models=None):
     """Classify each fitted column across all experiments as a model observable, a model
     function, or a conf measurement model, and map it to a PEtab observable row.
@@ -628,9 +692,11 @@ def _observable_rows(experiments, registry, noise, inline_functions=False,
     formula) -- a column that is an observable in one model and a function in another is a
     real conflict and raises. A column is gathered once, in first-appearance order across the
     experiments' (override-renamed) ``datas``, so the observables table covers the whole job.
-    ``noise`` is the ``(noiseDistribution, sigma_verb, sigma_arg)`` from
-    :func:`_resolve_noise`; the sigma source is resolved per column across every experiment's
-    data (it can depend on the column's data, e.g. a ``column_mean`` sigma).
+    ``noise`` is the whole-fit base ``(noiseDistribution, sigma_verb, sigma_arg)`` from
+    :func:`_resolve_noise` and ``per_obs_noise`` the ``{column: (dist, verb, arg)}``
+    per-observable overrides (ADR-0021/0045): each column's noise (its family + sigma source)
+    is its override if present, else the base, resolved across every experiment's data (it can
+    depend on the column's data, e.g. a ``column_mean`` sigma).
 
     ``inline_functions`` (ADR-0035) emits a **function** column's body as an
     ``observableFormula`` expression instead of the bare name -- the opt-in path that
@@ -639,7 +705,6 @@ def _observable_rows(experiments, registry, noise, inline_functions=False,
     (model-agnostic): a column matching one is emitted with that formula as its
     ``observableFormula`` and its id verbatim (the inverse of the importer's ``observable: ...
     formula:`` line)."""
-    distribution, verb, arg = noise
     measurement_models = measurement_models or {}
     all_datas = [d for exp in experiments for d in exp['datas']]
 
@@ -676,6 +741,9 @@ def _observable_rows(experiments, registry, noise, inline_functions=False,
                 f"namespace, so a column shared across models must mean the same observable "
                 f"in each (ADR-0041).")
         kind, formula = classes[0][1]
+        # A column's noise is its per-observable override if one is declared, else the
+        # whole-fit base (ADR-0021/0045); the override carries its own family + sigma source.
+        distribution, verb, arg = per_obs_noise.get(col, noise)
         noise_source = _noise_source_for_column(verb, arg, col, all_datas)
         row = petab_observable_row(col, kind, distribution, noise_source,
                                    observable_formula=formula)
@@ -749,7 +817,11 @@ def _noise_source_for_column(verb, arg, col, datas):
       PEtab parameter ids (exported as estimated parameters); a noise nuisance that is not a
       model parameter is still a deferred boundary (it would fail the model-id binding check,
       shared with the ``fit`` sigma), so the whole-fit ``formula`` export covers an expression
-      over model parameters.
+      over model parameters. When the ``formula`` expression still carries a per-measurement
+      **placeholder** (``noiseParameter*``), the sigma is row-varying
+      (``PerMeasurementFormulaSigma``, ADR-0045): it returns ``('per_measurement', expr)``, the
+      noiseFormula emitted verbatim with its placeholder and the per-row token supplied by the
+      measurements' ``noiseParameters`` column (the binding-table sidecar).
 
     A free-parameter sigma (``fit``) and a relative sigma (``relative``) are deferred
     boundaries: the former needs the noise parameter wired into the PEtab parameter
@@ -758,7 +830,7 @@ def _noise_source_for_column(verb, arg, col, datas):
     """
     holders = [data for data in datas if col in data.cols]
     if verb == 'formula':
-        return ('formula', arg)
+        return ('per_measurement', arg) if _PLACEHOLDER.search(arg) else ('formula', arg)
     if verb == 'read_exp_file':
         sd_col = col + arg
         if any(sd_col not in data.cols for data in holders):
@@ -779,8 +851,9 @@ def _noise_source_for_column(verb, arg, col, datas):
         f"sympy layer, mirroring the importer boundary). ADR-0021/0023, #423.")
 
 
-def _resolve_free_to_model(free_params, registry, models):
-    """Validate each free parameter binds to a model parameter id; return the identity map.
+def _resolve_free_to_model(free_params, registry, models, nuisances=()):
+    """Validate each free parameter binds to a model parameter id (or is an admitted
+    observation-layer nuisance); return the identity map.
 
     New-era binds free parameters **by id** (ADR-0034): a free parameter's name *is* the
     model parameter it drives -- no ``__FREE`` marker. The id space is the **union** of every
@@ -790,14 +863,24 @@ def _resolve_free_to_model(free_params, registry, models):
     exporter's analogue of the new-era config typo check
     (:meth:`config._check_variable_correspondence_modern`, which unions the same way): a free
     parameter matching no model parameter id is a typo (or a ``fit`` sigma, which the exporter
-    rejects separately at column classification). The exporter never builds a
-    ``Configuration``, so it validates against the views' ``parameters`` directly. Returns
-    ``{name: name}`` -- the identity map the rest of the exporter threads as ``free_to_model``.
+    rejects separately at column classification).
+
+    ``nuisances`` are free parameters that bind to no model id but are legitimate
+    **observation-layer** nuisances (a measurement scale, a noise coefficient, a row-varying
+    per-row sigma -- ADR-0044/0045), gathered by :func:`_referenced_nuisance_symbols` from the
+    measurement-model / noise formulae and the binding-table tokens. They pass through as
+    estimated parameters with no model binding (the export peer of config widening the
+    measurement-model namespace + the ``_per_measurement_free_params`` orphan union); only a
+    free parameter that is neither a model id nor a referenced nuisance is a typo.
+
+    The exporter never builds a ``Configuration``, so it validates against the views'
+    ``parameters`` directly. Returns ``{name: name}`` -- the identity map the rest of the
+    exporter threads as ``free_to_model``.
     """
     model_ids = set().union(*(set(v.parameters) for v in registry.values()))
     free_to_model = {}
     for fp in free_params:
-        if fp.name not in model_ids:
+        if fp.name not in model_ids and fp.name not in nuisances:
             legacy_hint = ''
             if fp.name.endswith('__FREE'):
                 legacy_hint = (
@@ -812,6 +895,58 @@ def _resolve_free_to_model(free_params, registry, models):
                 f"of the models' parameter ids: {sorted(model_ids)}.{legacy_hint}")
         free_to_model[fp.name] = fp.name
     return free_to_model
+
+
+# A bare identifier in a measurement-model / noise formula: scanned to find which free
+# parameters a formula references (over-matches model entities + placeholders, harmlessly --
+# only the intersection with declared free parameters is used). Dependency-free (no petab).
+_FORMULA_SYMBOL = re.compile(r'[A-Za-z_]\w*')
+
+
+def _referenced_nuisance_symbols(conf, conf_path, noise, per_obs_noise):
+    """The names referenced as observation-layer nuisances by the job's measurement-model and
+    noise surfaces (ADR-0034/0044/0045) -- the candidates :func:`_resolve_free_to_model` admits
+    as model-unbound estimated parameters. The union of:
+
+    * the symbols of every ``observable: <id>, formula: <expr>`` measurement-model formula
+      (an ``observableParameters`` scale/offset substituted in -- ADR-0044 -- reads as a free
+      symbol, e.g. ``scaling`` in ``scaling*x``);
+    * the symbols of every ``formula``-verb ``noiseFormula`` (whole-fit or per-observable),
+      e.g. ``slope`` in ``0.05*slope + 0.1`` (a ``FormulaSigma`` noise coefficient);
+    * the non-numeric (parameter-id) tokens of every experiment's ``measurement_params:``
+      binding-table sidecar, e.g. the per-row ``sd_lo`` / ``s_lo`` (a row-varying estimated
+      sigma / scale -- ADR-0045).
+
+    Over-matches model entities and placeholders, harmlessly: the caller intersects with the
+    declared free parameters, so only a genuine free-parameter nuisance is admitted (an
+    unreferenced free parameter that is not a model id stays a typo)."""
+    referenced = set()
+    for formula in _read_measurement_models(conf).values():
+        referenced |= set(_FORMULA_SYMBOL.findall(formula))
+    for _dist, verb, arg in [noise, *per_obs_noise.values()]:
+        if verb == 'formula':
+            referenced |= set(_FORMULA_SYMBOL.findall(arg))
+    for key, fields in conf.items():
+        if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment'):
+            continue
+        mp_file = fields.get('measurement_params')
+        if not mp_file:
+            continue
+        table = read_measurement_params(conf_path.parent / mp_file)
+        for by_placeholder in table.values():
+            for by_time in by_placeholder.values():
+                referenced |= {tok for tok in by_time.values() if not _is_numeric_token(tok)}
+    return referenced
+
+
+def _is_numeric_token(token):
+    """Whether a binding-table token is a numeric literal (inlined) vs a parameter id (an
+    estimated nuisance -- the export peer of ``config._is_numeric_token``)."""
+    try:
+        float(token)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def _parameter_rows(free_params, free_to_model, surrogate_params, registry, models):

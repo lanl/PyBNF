@@ -87,6 +87,19 @@ from ..noise import (LINEAR, LN, MEDIAN, ConstantSigma, FreeParameterSigma,
 from ..printing import PybnfError
 from ._tsv import num, write_tsv
 
+# A per-measurement placeholder symbol (``noiseParameter1_obs_y`` /
+# ``observableParameter2_obs_y``): the full token a row-varying noiseFormula references,
+# extracted to declare the noisePlaceholders slot the measurements' ``noiseParameters``
+# column binds per row (ADR-0045). Mirrors ``import_._PLACEHOLDER_SYMBOL``.
+_PLACEHOLDER_SYMBOL = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
+
+# The same placeholder split into its ``<kind>Parameter<n>`` head and ``_<observableId>``
+# suffix, so the suffix can be **retargeted** to the regenerated observableId: PEtab requires a
+# placeholder to be ``noiseParameter${n}_${observableId}``, but a conf carries the source
+# problem's suffix (a model function ``y`` is named ``obs_y`` there, ``func_y`` on re-export),
+# so the noiseFormula's placeholder is rewritten to match the row's observableId (ADR-0045).
+_PLACEHOLDER_HEAD = re.compile(r'((?:observable|noise)Parameter\d+)_\w+')
+
 # PEtab v2 noiseDistribution -> (PyBNF NoiseModel family class, additive-noise
 # scale). The single PEtab column carries both axes: the family (Gaussian/Laplace)
 # and whether the noise is additive on the linear or the natural-log scale. PEtab's
@@ -230,6 +243,11 @@ _OBSERVABLE_COLUMNS = [
     'observableId', 'observableFormula', 'noiseFormula', 'noiseDistribution',
     'noisePlaceholders']
 
+# Appended after noisePlaceholders only when some row declares a row-varying observable
+# placeholder (ADR-0045) -- so a job with none stays byte-identical to the pre-row-varying
+# output (the byte-equal export round-trip oracle).
+_OBSERVABLE_PLACEHOLDERS_COLUMN = 'observablePlaceholders'
+
 
 def petab_observable_row(model_name, kind, noise_distribution, noise_source,
                          observable_formula=None):
@@ -268,6 +286,12 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
       PEtab-math ``noiseFormula`` over free-parameter ids + constants, emitted verbatim with
       no placeholder. The inverse of the importer's expression-``noiseFormula`` classification,
       so a whole-fit ``FormulaSigma`` round-trips.
+    * ``('per_measurement', expr)`` -- a **row-varying** placeholder sigma
+      (``PerMeasurementFormulaSigma``, ADR-0045): the ``noiseFormula`` expression carries a
+      per-measurement placeholder (``noiseParameter1_<id>``) whose value differs row to row,
+      supplied by the measurements' ``noiseParameters`` column. The ``noiseFormula`` is emitted
+      verbatim and the placeholder(s) it references declared in ``noisePlaceholders`` -- the
+      inverse of the importer routing a row-varying ``noiseParameters`` id to the binding table.
     """
     try:
         prefix = _PETAB_OBSERVABLE_PREFIX[kind]
@@ -281,6 +305,16 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
             f"(the conf measurement-model formula, ADR-0036).")
     observable_id = prefix + model_name
 
+    # A row-varying observable scale (ADR-0045) keeps an observableParameter placeholder in the
+    # observableFormula (a measurement-model id carries through verbatim, so it already matches
+    # this observableId). Declare it in observablePlaceholders -- the observable-side mirror of
+    # noisePlaceholders -- so PEtab v2 binds the measurements' observableParameters column to it
+    # (without the declaration petab reads the placeholder as a missing free parameter).
+    formula_out = observable_formula if observable_formula is not None else model_name
+    obs_placeholders = [p for p in _PLACEHOLDER_SYMBOL.findall(formula_out)
+                        if p.startswith('observable')]
+    observable_placeholders = ';'.join(obs_placeholders) if obs_placeholders else None
+
     source_kind, source_value = noise_source
     if source_kind == 'placeholder':
         noise_formula = f'noiseParameter1_{observable_id}'
@@ -293,28 +327,47 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
         # expression verbatim, no placeholder slot (its free symbols are PEtab parameter ids).
         noise_formula = source_value
         noise_placeholders = None
+    elif source_kind == 'per_measurement':
+        # A row-varying placeholder sigma (PerMeasurementFormulaSigma, ADR-0045): the
+        # noiseFormula keeps its per-measurement placeholder, retargeted to THIS observableId
+        # (PEtab requires noiseParameter${n}_${observableId}; the conf carries the source
+        # problem's suffix, which the exporter's prefix regenerates). The declared
+        # noisePlaceholders are the retargeted names the measurements' noiseParameters bind to.
+        noise_formula = _PLACEHOLDER_HEAD.sub(rf'\1_{observable_id}', source_value)
+        placeholders = _PLACEHOLDER_SYMBOL.findall(noise_formula)
+        noise_placeholders = ';'.join(placeholders) if placeholders else None
     else:
         raise PybnfError(
-            f"Observable '{observable_id}': unknown noise source kind "
-            f"{source_kind!r} (expected 'placeholder', 'constant', or 'formula').")
+            f"Observable '{observable_id}': unknown noise source kind {source_kind!r} "
+            f"(expected 'placeholder', 'constant', 'formula', or 'per_measurement').")
 
     return PetabObservableRow(
         observable_id=observable_id,
-        observable_formula=observable_formula if observable_formula is not None
-        else model_name,
+        observable_formula=formula_out,
         noise_formula=noise_formula,
         noise_distribution=noise_distribution,
+        observable_placeholders=observable_placeholders,
         noise_placeholders=noise_placeholders,
     )
 
 
 def write_observable_table(rows, path):
-    """Write observable ``rows`` to ``path`` as a PEtab v2 ``observables.tsv``."""
-    records = [
-        [r.observable_id, r.observable_formula, r.noise_formula or '',
-         r.noise_distribution or '', r.noise_placeholders or '']
-        for r in rows]
-    write_tsv(path, _OBSERVABLE_COLUMNS, records)
+    """Write observable ``rows`` to ``path`` as a PEtab v2 ``observables.tsv``.
+
+    The optional ``observablePlaceholders`` column (a row-varying observable scale's declared
+    placeholder, ADR-0045) is appended only when some row carries one, so a job with none stays
+    byte-identical to the pre-row-varying output (the byte-equal export round-trip oracle)."""
+    include_obs_ph = any(r.observable_placeholders for r in rows)
+    columns = _OBSERVABLE_COLUMNS + (
+        [_OBSERVABLE_PLACEHOLDERS_COLUMN] if include_obs_ph else [])
+    records = []
+    for r in rows:
+        rec = [r.observable_id, r.observable_formula, r.noise_formula or '',
+               r.noise_distribution or '', r.noise_placeholders or '']
+        if include_obs_ph:
+            rec.append(r.observable_placeholders or '')
+        records.append(rec)
+    write_tsv(path, columns, records)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 # PEtab row-varying per-measurement placeholders bind per data point through a sidecar table on the experimental data; the noise side lands first, the observable side is the ADR-0036 contract change (issue #428 Phase 2)
 
-**Status: Accepted; noise side + whole-fit export implemented (2026-06-21); observable side
-implemented (2026-06-21, #428 Phase 2b).** Phase 2 of #428, the genuinely **row-varying**
+**Status: Accepted; fully implemented (2026-06-21).** Noise side + whole-fit export, then the
+observable side (#428 Phase 2b), then the closing **export round trip** (Milestone 2:
+per-observable noise export + row-varying export) — #428 is closed. Phase 2 of #428, the genuinely **row-varying**
 remainder ADR-0044 deferred. ADR-0044 (Phase 1) reduced a placeholder *constant across an
 observable's rows* to the existing per-observable engines by substitution; what is left is a
 placeholder that **differs row to row** — a different scale/offset/sigma per timepoint, or per
@@ -182,11 +183,31 @@ ADR-0036 contract change); the importer routing its row-varying *observable* rai
 BNGL fixture (`obsscale_v2`) with a row-varying observable scale, simulator-free, with a
 hand-derived NLL where the per-row scale differs (a broadcast bug is caught).
 
-**Pinned but deferred to the follow-up:** **per-observable** noise export (export.py's
-"per-observable overrides are a later chunk" boundary) and **row-varying** export (the binding table
-back to `observableParameters` / `noiseParameters` columns + a sidecar) — so `scaling_v2`'s
-*per-observable* `FormulaSigma`, `rowsigma_v2`, and `obsscale_v2` do not yet round-trip (only a
-whole-fit `FormulaSigma` does).
+**In (Milestone 2, the export round trip — implemented 2026-06-21).** The closing half: a problem
+the importer recovers now **re-exports** to a valid PEtab v2 problem that re-imports to the same
+fit. **Per-observable noise export** — `_resolve_noise`'s "per-observable overrides are a later
+chunk" raise is lifted and an additive `_resolve_per_observable_noise(conf) → {column: (dist,
+verb, arg)}` resolves each `noise_model <obs> = …` override beside the whole-fit base; each column
+takes its own sigma source (its override, else the base) and its own per-column `sd_suffix`, with
+the whole-fit / no-override path **byte-identical** (asserted by the existing export suite).
+**Row-varying export** — the exporter reads the experiment's `measurement_params:` sidecar (in
+`_read_experiments`) and emits each row-varying placeholder's per-row token into the measurements'
+`observableParameters` / `noiseParameters` columns (`measurement_rows_from_data` reads the sidecar
+by placeholder kind+index; `write_measurement_table` emits the columns only when present, so a
+non-row-varying export stays byte-identical). A row-varying noiseFormula's kept placeholder is
+**retargeted** to the regenerated observableId (a model function `y` the source named `obs_y`
+re-exports as `func_y`, so its `noiseParameter1_obs_y` becomes `noiseParameter1_func_y`), and a
+row-varying observable placeholder is declared in a new **`observablePlaceholders`** column (the
+observable-side mirror of `noisePlaceholders`, so petablint binds it). An observation-layer
+**nuisance** free parameter (a measurement scale / noise coefficient / per-row sigma referenced by
+a formula or a binding token but not a model entity) is admitted by the bind-by-id check
+(`_referenced_nuisance_symbols` + `_resolve_free_to_model`) — the export peer of config's
+measurement-model namespace widening + `_per_measurement_free_params` orphan union. **Oracle:**
+`TestExportRowVaryingRoundTrip` (`test_petab_export.py`) — `scaling_v2`, `rowsigma_v2`, and
+`obsscale_v2` each re-export petablint-clean and re-import to a `Configuration` that scores a fixed
+trajectory **identically** to the importer's hand-derived NLL (the fit survives; export is lossy on
+naming — the observableId is canonicalized and a no-condition experiment loses its name — so the
+oracle is fit-preservation, not byte-equality). #428 closed.
 
 **Out (boundary raised in code):** a `noiseFormula` mixing a per-row placeholder **with a
 simulation-trajectory column** (a per-point σ that is also a function of the sim output — neither a
@@ -218,8 +239,20 @@ ADR-0023/0037/0044 boundaries.
 - `pybnf/petab/import_.py` — `_try_uniform_directive` collapses a *uniform* expression
   `noiseFormula` (every observable the same formula) to a whole-fit `noise_model = <family>,
   sigma = formula <expr>` line, so a whole-fit `FormulaSigma` round-trips (export → import →
-  re-export byte-equal). A *non*-uniform / per-observable formula stays per-observable and is
-  not yet re-exportable (the deferred per-observable export boundary).
+  re-export byte-equal).
+- `pybnf/petab/export.py` (Milestone 2) — `_resolve_per_observable_noise` (the additive
+  per-observable companion to the whole-fit `_resolve_noise`, sharing `_reduce_noise_spec`'s
+  boundaries); `_observable_rows` per-column sigma source; `_noise_source_for_column`'s
+  `formula`-with-placeholder → `('per_measurement', expr)`; `_read_experiments` reads the
+  `measurement_params:` sidecar; the per-column `sd_suffix`; `_referenced_nuisance_symbols` +
+  `_resolve_free_to_model`'s nuisance admission (a measurement scale / noise coefficient /
+  per-row sigma that is not a model entity).
+- `pybnf/petab/measurements.py` (Milestone 2) — `measurement_rows_from_data` reads the sidecar
+  by placeholder kind+index (`_column_placeholder_series`), emitting per-row `noiseParameters` /
+  `observableParameters`; `write_measurement_table` emits the columns only when present.
+- `pybnf/petab/observables.py` (Milestone 2) — `petab_observable_row`'s `per_measurement` noise
+  source (retargets the kept placeholder to the regenerated observableId) + the
+  `observablePlaceholders` declaration for a row-varying observable scale.
 
 ## Consequences
 

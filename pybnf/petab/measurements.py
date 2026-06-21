@@ -25,6 +25,7 @@ conditions/experiments tables, not the measurement table.
 """
 
 import csv
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,10 +34,11 @@ from ..data import Data
 from ..printing import PybnfError
 from ._tsv import num, write_tsv
 
-# The fixed columns; ``modelId`` (the optional model->data link, ADR-0041) is inserted
-# after ``experimentId`` only when the job is multi-model (see ``write_measurement_table``).
-_MEASUREMENT_COLUMNS = [
-    'observableId', 'experimentId', 'time', 'measurement', 'noiseParameters']
+# A binding-table placeholder key (``noiseParameter1_obs_y`` / ``observableParameter2_obs_y``):
+# its kind + 1-based index are what bind it to a measurements column, NOT the observableId
+# suffix -- the importer keyed the sidecar to the source PEtab observableId, which the exporter
+# regenerates with its own ``obs_``/``func_`` prefix, so the suffix can drift (ADR-0045).
+_PLACEHOLDER_KEY = re.compile(r'(observable|noise)Parameter(\d+)_')
 
 
 @dataclass(frozen=True)
@@ -77,22 +79,34 @@ class PetabMeasurementRow:
 # ---------------------------------------------------------------------------
 
 def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
-                               sd_suffix='_SD', model_id=''):
+                               sd_suffix='_SD', model_id='', measurement_params=None):
     """Pivot one experiment's wide :class:`~pybnf.data.Data` to long measurement rows.
 
     ``column_to_observable_id`` maps a ``Data`` column header (a model
     observable/function name, e.g. ``x``) to its PEtab ``observableId`` (e.g.
     ``obs_x``); only those columns become measurements. For each such column its
     ``<col><sd_suffix>`` companion (if present) supplies the per-point
-    ``noiseParameters`` value. ``sd_suffix=None`` disables per-point noise entirely
-    (``noiseParameters`` left blank) -- used when the objective's sigma source is not
-    a data column (a fixed or column-mean sigma carried inline in ``noiseFormula``), so
-    a stray ``_SD`` column does not produce a ``noiseParameters`` override with no
+    ``noiseParameters`` value. ``sd_suffix`` is either a single suffix applied to every
+    column, or a ``{column: suffix_or_None}`` map (the per-column form the per-observable
+    noise export needs -- ADR-0021/0045): each column reads its own ``_SD`` companion (or
+    none). ``None`` (a column's suffix, or the whole argument) disables per-point numeric
+    noise (``noiseParameters`` left blank) -- used when the objective's sigma source is not
+    a data column (a fixed / column-mean / formula sigma carried inline in ``noiseFormula``),
+    so a stray ``_SD`` column does not produce a ``noiseParameters`` override with no
     placeholder to bind to. ``model_id`` is the optional model->data link (ADR-0041): the
     ``modelId`` of the model the experiment simulates, stamped on every row (``''`` for a
     single-model job, where the column is omitted on write). ``NaN`` cells are skipped (a
     ragged long table round trips through PyBNF's ``NaN``-skipping objective). Rows are
     grouped by observable, then ordered by the independent variable as it appears in ``data``.
+
+    ``measurement_params`` (ADR-0045) is this experiment's per-measurement binding table
+    ``{column: {placeholder: {time: token}}}`` (the ``measurement_params:`` sidecar), the
+    source of a **row-varying** placeholder's per-row token. For a column whose sidecar
+    carries ``noiseParameter1_<id>`` the row's token becomes its ``noiseParameters`` id (a
+    :class:`~pybnf.noise.PerMeasurementFormulaSigma` noise source); for ``observableParameter{n}_<id>``
+    the n-th token becomes the row's ``observableParameters`` tuple (a
+    :class:`~pybnf.measurement.PerMeasurementModel` scale/offset). The default (``None`` /
+    absent) leaves both blank, so a non-row-varying export is byte-identical.
 
     Raises ``NotImplementedError`` if the independent variable is not ``time`` (a
     dose-response / ``parameter_scan`` ``.exp`` -- a later export chunk).
@@ -107,20 +121,63 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
             f"table -- a later export chunk (ADR-0025, #407).")
 
     iv = data.cols[indvar]
+    params = measurement_params or {}
     rows = []
     for col, observable_id in column_to_observable_id.items():
         ci = data.cols[col]
-        sd_ci = None if sd_suffix is None else data.cols.get(col + sd_suffix)
+        suffix = sd_suffix.get(col) if isinstance(sd_suffix, dict) else sd_suffix
+        sd_ci = None if suffix is None else data.cols.get(col + suffix)
+        # Row-varying per-measurement tokens (ADR-0045), keyed by the data column: the noise
+        # placeholder (one) and the observable placeholders (index order), each a {time: token}
+        # map read at the row's time. Matched by placeholder kind+index, not the observableId
+        # suffix, so a sidecar the importer keyed to the source PEtab observableId still resolves.
+        noise_by_time, obs_by_time = _column_placeholder_series(params.get(col, {}))
         for i in range(data.data.shape[0]):
             value = data.data[i, ci]
             if np.isnan(value):
                 continue
+            t = float(data.data[i, iv])
             noise = None if sd_ci is None else float(data.data[i, sd_ci])
+            noise_id = _token_at_time(noise_by_time, t) if noise_by_time else None
+            obs_params = tuple(_token_at_time(d, t) for d in obs_by_time)
             rows.append(PetabMeasurementRow(
-                observable_id=observable_id, time=float(data.data[i, iv]),
+                observable_id=observable_id, time=t,
                 measurement=float(value), experiment_id=experiment_id,
-                model_id=model_id, noise_parameters=noise))
+                model_id=model_id, noise_parameters=noise,
+                noise_parameter_id=noise_id, observable_parameters=obs_params))
     return rows
+
+
+def _column_placeholder_series(col_params):
+    """Split one sidecar column's ``{placeholder: {time: token}}`` into ``(noise_series,
+    [obs_series, ...])`` (ADR-0045): the single ``noiseParameter{n}`` ``{time: token}`` map (or
+    ``None``) and the ``observableParameter{n}`` maps in 1-based index order. Matched by the
+    placeholder's **kind + index**, never its observableId suffix, so a sidecar the importer
+    keyed to the source PEtab observableId resolves even after the exporter regenerates the
+    observableId with its own ``obs_``/``func_`` prefix."""
+    noise, obs = None, {}
+    for placeholder, by_time in col_params.items():
+        m = _PLACEHOLDER_KEY.match(placeholder)
+        if m is None:
+            continue
+        if m.group(1) == 'noise':
+            noise = by_time
+        else:
+            obs[int(m.group(2))] = by_time
+    return noise, [obs[i] for i in sorted(obs)]
+
+
+def _token_at_time(by_time, t):
+    """The per-measurement binding token for time ``t``: an exact float-key hit, else the
+    closest key within a tight tolerance (the ``.exp`` and sidecar times share a source, so
+    this only absorbs float-repr noise -- the export mirror of ``config._token_at_time``).
+    Returns ``None`` if no key matches (the column simply carries no token at that row)."""
+    if t in by_time:
+        return by_time[t]
+    for st, token in by_time.items():
+        if np.isclose(st, t, rtol=0, atol=1e-9):
+            return token
+    return None
 
 
 def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids,
@@ -514,22 +571,47 @@ def row_varying_observable_ids(rows):
 def write_measurement_table(rows, path):
     """Write measurement ``rows`` to ``path`` as a PEtab v2 ``measurements.tsv``.
 
-    The optional ``modelId`` column (the model->data link, ADR-0041) is emitted only when
-    some row carries a non-empty ``model_id`` -- i.e. the job is multi-model. A single-model
-    job stamps ``''`` on every row, so the column is dropped and the table stays
-    byte-identical to the pre-multi-model output (the byte-equal round-trip oracle)."""
+    Two columns are emitted only when some row needs them, so a table that needs neither
+    stays byte-identical to the pre-multi-model / pre-row-varying output (the byte-equal
+    round-trip oracle):
+
+    * ``modelId`` (the model->data link, ADR-0041) -- emitted when some row carries a
+      non-empty ``model_id`` (a multi-model job); a single-model job stamps ``''``.
+    * ``observableParameters`` (a row-varying observable scale/offset, ADR-0045) -- emitted
+      when some row carries an ``observable_parameters`` tuple, its tokens semicolon-joined.
+
+    The ``noiseParameters`` cell is the per-row parameter-id token of a row-varying noise
+    placeholder (the sidecar source, ADR-0045) when set, else the numeric ``_SD`` value
+    (``chi_sq``), else blank.
+    """
     include_model = any(r.model_id for r in rows)
+    include_obs_params = any(r.observable_parameters for r in rows)
+
+    columns = ['observableId', 'experimentId']
     if include_model:
-        columns = ['observableId', 'experimentId', 'modelId', 'time', 'measurement',
-                   'noiseParameters']
-        records = [
-            [r.observable_id, r.experiment_id, r.model_id, num(r.time), num(r.measurement),
-             num(r.noise_parameters)]
-            for r in rows]
-    else:
-        columns = _MEASUREMENT_COLUMNS
-        records = [
-            [r.observable_id, r.experiment_id, num(r.time), num(r.measurement),
-             num(r.noise_parameters)]
-            for r in rows]
+        columns.append('modelId')
+    columns += ['time', 'measurement']
+    if include_obs_params:
+        columns.append('observableParameters')
+    columns.append('noiseParameters')
+
+    records = []
+    for r in rows:
+        rec = [r.observable_id, r.experiment_id]
+        if include_model:
+            rec.append(r.model_id)
+        rec += [num(r.time), num(r.measurement)]
+        if include_obs_params:
+            rec.append(';'.join(r.observable_parameters))
+        rec.append(_noise_cell(r))
+        records.append(rec)
     write_tsv(path, columns, records)
+
+
+def _noise_cell(row):
+    """The ``noiseParameters`` cell for one measurement row: a row-varying parameter-id token
+    (the sidecar source, ADR-0045) takes precedence over the numeric ``_SD`` value; blank when
+    neither is set."""
+    if row.noise_parameter_id is not None:
+        return row.noise_parameter_id
+    return num(row.noise_parameters)
