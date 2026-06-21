@@ -52,7 +52,10 @@ half where ADR-0010 already put it:
   whose lower bound is its natural domain `θ > 0`) cannot form a box, so the
   importer continues to raise `NotImplementedError` with a message naming the
   missing finite bound. Two-sided truncation — PEtab's common `normal` prior with
-  finite `[lb, ub]` — is what this ADR delivers.
+  finite `[lb, ub]` — is what this ADR delivers. **(Amended by ADR-0047, issue
+  #432: one-sided/half-bounded truncation is now supported as the `ub → ∞` limit of
+  this fold — a single reflecting wall — with an open side spelled as an explicit
+  `±inf` at the family's natural support endpoint.)**
 
 - **`FreeParameter`'s public surface gains two optional, backward-compatible
   params.** ADR-0010 froze the constructor at `(name, type, p1, p2, value,
