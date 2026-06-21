@@ -343,3 +343,57 @@ class TestSemanticRoundTrip:
         data = ds[next(iter(ds))]
         assert 'pRel' in data.cols and 'func_pRel' in data.cols
         np.testing.assert_allclose(data['pRel'], data['func_pRel'], rtol=1e-9, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Placeholder substitution (ADR-0044): the constant-per-observable reduction primitive
+# ---------------------------------------------------------------------------
+
+class TestPlaceholderSubstitution:
+
+    def test_id_token_becomes_a_free_symbol(self):
+        # A constant-per-observable observableParameter is substituted by its parameter id,
+        # which stays a free symbol (it resolves from the PSet at eval time, ADR-0044).
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import substitute_placeholders
+        out = substitute_placeholders('observableParameter1_obs * x',
+                                      {'observableParameter1_obs': 'scaling'})
+        assert 'observableParameter' not in out
+        assert _sympy_equal(out, 'scaling * x')
+
+    def test_numeric_token_inlines_as_a_constant(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import substitute_placeholders
+        out = substitute_placeholders('0.1 + 0.05*noiseParameter1_obs',
+                                      {'noiseParameter1_obs': '4'})
+        assert 'noiseParameter' not in out
+        assert _sympy_equal(out, '0.1 + 0.05*4')        # == 0.3
+
+    def test_no_substitution_returns_verbatim_without_petab(self, monkeypatch):
+        # An empty substitution map is the bare-name / no-placeholder common case: the formula
+        # is returned byte-verbatim and petab is never imported (the dependency-free guarantee).
+        import builtins
+        from pybnf.petab.formula import substitute_placeholders
+        real_import = builtins.__import__
+
+        def no_petab(name, *a, **k):
+            if name.startswith('petab'):
+                raise AssertionError('petab must not be imported for an empty substitution')
+            return real_import(name, *a, **k)
+        monkeypatch.setattr(builtins, '__import__', no_petab)
+        assert substitute_placeholders('x', {}) == 'x'
+
+    def test_unmatched_placeholder_is_left_in_place(self):
+        # A placeholder not in the map is left untouched (the caller validates it downstream:
+        # the importer raises the deferred-frontier error on a surviving placeholder).
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import substitute_placeholders
+        out = substitute_placeholders('observableParameter1_obs * observableParameter2_obs',
+                                      {'observableParameter1_obs': 'scaling'})
+        assert 'observableParameter2_obs' in out
+
+    def test_formula_free_symbols_lists_sorted_names(self):
+        pytest.importorskip('petab')
+        from pybnf.petab.formula import formula_free_symbols
+        assert formula_free_symbols('0.1 + 0.05*slope + base') == ['base', 'slope']
+        assert formula_free_symbols('0.5') == []        # a pure constant has no free symbols

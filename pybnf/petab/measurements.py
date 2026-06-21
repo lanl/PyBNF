@@ -53,6 +53,13 @@ class PetabMeasurementRow:
     ``sd_pSTAT5A_rel``) -- a PEtab placeholder override that, when constant across an
     observable's rows, *is* a per-observable estimated sigma (ADR-0021/0037); exactly
     one of the two is set (or neither, for a blank cell).
+
+    ``observable_parameters`` is the semicolon-split tokens of the ``observableParameters``
+    column (the n-th token binds ``observableParameter${n}_${observableId}`` in the
+    ``observableFormula`` / ``noiseFormula``). Each token is a number or a parameter id; when
+    the tuple is constant across an observable's rows it reduces to a per-observable
+    scale/offset (substituted into the formula, ADR-0044), else it is the deferred row-varying
+    frontier. ``()`` for a blank/absent cell.
     """
 
     observable_id: str
@@ -62,6 +69,7 @@ class PetabMeasurementRow:
     model_id: str = ''
     noise_parameters: float | None = None
     noise_parameter_id: str | None = None
+    observable_parameters: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +297,19 @@ def _measurement_row_from_record(rec):
         model_id=(rec.get('modelId') or '').strip(),
         noise_parameters=numeric,
         noise_parameter_id=param_id,
+        observable_parameters=_observable_parameters(rec.get('observableParameters')),
     )
+
+
+def _observable_parameters(s):
+    """Split an ``observableParameters`` cell into its semicolon-delimited tokens (ADR-0044).
+
+    The n-th token binds ``observableParameter${n}_${observableId}``; each is a number or a
+    parameter id (classified at substitution time, not here). A blank/absent cell -> ``()``.
+    """
+    if s is None or s.strip() == '':
+        return ()
+    return tuple(tok.strip() for tok in s.split(';') if tok.strip())
 
 
 def _require_float(s, column, oid):
@@ -363,6 +383,43 @@ def noise_parameter_ids_by_observable(rows):
                 f"placeholder frontier (#407/ADR-0037). A constant-per-observable id is "
                 f"imported as 'noise_model <obs> = <family>, sigma = fit <id>'.")
         result[oid] = next(iter(id_set))
+    return result
+
+
+def observable_parameters_by_observable(rows):
+    """``{observable_id: (token, ...)}`` for observables whose ``observableParameters`` tuple
+    is constant across all of that observable's rows (ADR-0044) -- the sibling of
+    :func:`noise_parameter_ids_by_observable`.
+
+    A constant-per-observable ``observableParameters`` is a per-observable scale/offset: the
+    n-th token binds ``observableParameter${n}_${observableId}`` and is substituted into the
+    ``observableFormula`` / ``noiseFormula`` (an id stays a free symbol that resolves from the
+    PSet, a number inlines -- ADR-0044). Observables with a blank ``observableParameters`` are
+    absent from the map.
+
+    Raises ``NotImplementedError`` -- the documented per-measurement frontier -- when a single
+    observable's rows carry **differing** ``observableParameters`` tuples (a genuinely
+    row-varying / per-condition scale, which per-observable PyBNF has no analogue for), or
+    **mix** a specified tuple with a blank cell.
+    """
+    seen, nonblank = {}, set()
+    for row in rows:
+        seen.setdefault(row.observable_id, set()).add(row.observable_parameters)
+        if row.observable_parameters:
+            nonblank.add(row.observable_id)
+    result = {}
+    for oid in nonblank:
+        variants = seen[oid]
+        if len(variants) != 1:
+            raise NotImplementedError(
+                f"Observable '{oid}' has more than one observableParameters value across its "
+                f"measurement rows ({sorted(variants)}): a genuinely row-varying / "
+                f"per-condition observable scale/offset (or a row that mixes a value with a "
+                f"blank cell). PyBNF's observation layer is per-observable (one materialized "
+                f"column per observable), so this is the deferred per-measurement frontier "
+                f"(#428 Phase 2 / ADR-0044). A constant-per-observable observableParameters is "
+                f"substituted into the observableFormula.")
+        result[oid] = next(iter(variants))
     return result
 
 

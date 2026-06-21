@@ -50,12 +50,17 @@ from pybnf.petab.measurements import (
     data_from_measurement_rows,
     measurement_rows_from_data,
     noise_parameter_ids_by_observable,
+    observable_parameters_by_observable,
     read_measurement_table,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
 DEMO_CONF = DEMO_DIR / 'demo_bng_v2.conf'
 DEMO_MODEL = 'parabola_v2.bngl'
+
+# A crafted PEtab v2 problem exercising the ADR-0044 per-measurement placeholder reduction
+# (an observableParameters scale in the observableFormula + an expression noiseFormula).
+SCALING_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'scaling_v2'
 
 # A real-world (externally authored) PEtab v2 problem -- the regression oracle for the
 # table readers, decoupled from the model (see the fixture's SOURCE.md).
@@ -677,6 +682,23 @@ class TestReverseAssets:
         with pytest.raises(NotImplementedError, match='per-measurement'):
             noise_parameter_ids_by_observable([row('a', 0, pid='sd_a'), row('a', 1, num=2.0)])
 
+    def test_observable_parameters_per_observable_guards_row_varying(self):
+        # A constant-per-observable observableParameters tuple reduces to a per-observable
+        # scale/offset (ADR-0044); a row-varying tuple (or a row that mixes a value with a
+        # blank) is the deferred per-measurement frontier (#428 Phase 2).
+        def row(oid, t, op=()):
+            return PetabMeasurementRow(observable_id=oid, time=t, measurement=1.0,
+                                       observable_parameters=op)
+        ok = [row('a', 0, ('scaling',)), row('a', 1, ('scaling',)),
+              row('b', 0, ('s', 'o')), row('c', 0)]   # c blank -> absent from the map
+        assert observable_parameters_by_observable(ok) == {'a': ('scaling',), 'b': ('s', 'o')}
+        with pytest.raises(NotImplementedError, match='row-varying'):
+            observable_parameters_by_observable(
+                [row('a', 0, ('s1',)), row('a', 1, ('s2',))])     # differing per row
+        with pytest.raises(NotImplementedError, match='row-varying'):
+            observable_parameters_by_observable(
+                [row('a', 0, ('s1',)), row('a', 1)])              # value mixed with a blank
+
     def test_conditions_inverse_recovers_perturbations(self):
         exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
         conds = {'doubled': [('v1', '*', 2.0)], 'scaled': [('s', '*', 5.0)]}
@@ -918,3 +940,89 @@ class TestRealWorldBoehmV2:
             'pSTAT5A_rel': 'sd_pSTAT5A_rel',
             'pSTAT5B_rel': 'sd_pSTAT5B_rel',
             'rSTAT5A_rel': 'sd_rSTAT5A_rel'}
+
+
+# ---------------------------------------------------------------------------
+# Per-measurement placeholder reduction (ADR-0044, #428 Phase 1)
+#
+# A crafted PEtab v2 problem (tests/petab_fixtures/scaling_v2/) whose value is constant per
+# observable: an observableParameters scale substituted into the observableFormula
+# (obs_sx = scaling * x), and an expression noiseFormula (obs_y: 0.1 + 0.05*slope) that
+# becomes a FormulaSigma. Import-only (the exporter does not emit these): oracled by import
+# correctness + a simulator-free score against a hand-built trajectory.
+# ---------------------------------------------------------------------------
+
+class TestPlaceholderReductionImport:
+
+    @pytest.fixture(scope='class')
+    def out(self, tmp_path_factory):
+        d = tmp_path_factory.mktemp('scaling')
+        return import_job(SCALING_DIR / 'problem.yaml', d / 'out')
+
+    def test_observable_parameters_substitute_into_observable_formula(self, out):
+        text = (out / 'imported.conf').read_text()
+        # The observableParameter1_obs_sx placeholder is substituted by its constant token
+        # 'scaling' (a free parameter), leaving the measurement model 'scaling*x' (ADR-0044).
+        line = next(l for l in text.splitlines() if l.startswith('observable: obs_sx'))
+        assert line.startswith('observable: obs_sx, formula:')
+        assert 'scaling' in line and 'observableParameter' not in line
+        # obs_y's observableFormula is the bare model function y -> no measurement model line.
+        assert 'observable: obs_y' not in text
+
+    def test_expression_noise_formula_imports_as_a_formula_sigma(self, out):
+        text = (out / 'imported.conf').read_text()
+        assert 'objective = chi_sq' in text                       # the structural base
+        assert 'noise_model obs_sx = gaussian, sigma = fix_at 0.5' in text
+        # The expression noiseFormula (placeholder substituted) -> a 'formula' source over the
+        # 'slope' free parameter, on the column obs_y measures (the bare model function y).
+        nline = next(l for l in text.splitlines()
+                     if l.startswith('noise_model y =') and 'formula' in l)
+        assert 'slope' in nline and 'noiseParameter' not in nline
+
+    def test_exp_columns_have_no_sd(self, out):
+        # The sigmas are a fixed constant / a formula, not per-point data -> no _SD columns.
+        exp = Data(file_name=str(out / 'epo.exp'))
+        assert set(exp.cols) == {'time', 'obs_sx', 'y'}
+
+    def test_imported_conf_loads_and_scores(self, out, monkeypatch):
+        # The imported job is runnable: it loads as a Configuration (the scaling/slope
+        # nuisances are recognized, not flagged as orphan typos), the measurement layer
+        # materializes scaling*x, and the FormulaSigma feeds 0.1+0.05*slope to the y term.
+        # Scored simulator-free against a hand-built trajectory and a hand-derived Gaussian NLL.
+        import types
+        from pybnf import config as config_mod
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 'scaling', 'slope'}
+        assert [m.observable_id for m in cfg.obj.measurement.models] == ['obs_sx']
+        assert cfg.obj.measurement.models[0].formula == 'scaling*x'
+
+        # A trajectory carrying the model columns x (observable) and y (function). With
+        # scaling=3 the layer materializes obs_sx = 3*x = [-30,-27,-24] vs data [-20,-18,-16]
+        # (residuals -10,-9,-8); y matches the data exactly (residual 0).
+        sim = Data.from_columns(
+            np.array([[0., -10., 43.], [1., -9., 34.5], [2., -8., 27.]]),
+            ['time', 'x', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in
+                {'v1': 0.5, 'v2': 1., 'v3': 3., 'scaling': 3., 'slope': 1.}.items()]
+        score = cfg.obj.evaluate_multiple({'scaling_model': {'epo': sim}}, cfg.exp_data, pset)
+        # obs_sx (fixed sigma 0.5, no normalizer): sum (3x-data)^2/(2*0.5^2) = 245/0.5 = 490.
+        # obs_y (FormulaSigma 0.1+0.05*1 = 0.15, estimated): residual 0 + 3*log(0.15) normalizer.
+        assert score == pytest.approx(490.0 + 3 * float(np.log(0.15)))
+        # The materialized scale is live: the layer added obs_sx = scaling * x to the sim data.
+        assert np.allclose(sim['obs_sx'], [-30., -27., -24.])
+
+    def test_row_varying_observable_parameters_is_deferred(self, tmp_path):
+        # A genuinely row-varying observableParameters (a different scale per timepoint) has no
+        # per-observable analogue -> the deferred per-measurement frontier (#428 Phase 2).
+        prob = tmp_path / 'prob'
+        shutil.copytree(SCALING_DIR, prob)
+        (prob / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\tobservableParameters\tnoiseParameters\n'
+            'obs_sx\tepo\t0\t-20\tscaling_a\t\n'
+            'obs_sx\tepo\t1\t-18\tscaling_b\t\n'     # a different scale on the second row
+            'obs_y\tepo\t0\t43\t\tslope\n'
+            'obs_y\tepo\t1\t34.5\t\tslope\n')
+        with pytest.raises(NotImplementedError, match='row-varying'):
+            import_job(prob / 'problem.yaml', tmp_path / 'out')

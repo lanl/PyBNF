@@ -264,15 +264,18 @@ class Configuration:
         self.obj = self._load_obj_func()
         logger.debug('Loaded objective function')
         self.variables = self._load_variables()
-        if self.config['fit_type'] != 'check':
-            self._check_variable_correspondence()
-        logger.debug('Loaded variables')
         # New-era measurement-model observation layer (ADR-0036). Runs after the objective
         # (which it attaches to) and the variables (whose free-parameter names it excludes
         # from the constant snapshot): compiles each `observable: <id>, formula: <expr>`
         # line into a MeasurementModel evaluated post-simulation. No-op when none declared.
+        # Built *before* the free-parameter orphan check below so an observation-layer nuisance
+        # (an observableParameters scale referenced only by a measurement model, ADR-0044) is
+        # recognized as used, not mis-flagged as a typo.
         self._load_measurement_models()
         logger.debug('Loaded measurement models')
+        if self.config['fit_type'] != 'check':
+            self._check_variable_correspondence()
+        logger.debug('Loaded variables')
         self._postprocess_normalization()
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
@@ -1084,6 +1087,10 @@ class Configuration:
         the by-name column match. Edition-gated (>= 2); a job with no formula line leaves
         ``self.obj.measurement`` as the no-op default.
         """
+        # The free parameters any measurement model references but no model entity provides
+        # (an observation-layer nuisance, e.g. an observableParameters scale -- ADR-0044);
+        # surfaced to the orphan check so it is not mis-flagged as a typo. Always defined.
+        self._measurement_free_params = set()
         specs = [(k[1], v) for k, v in self.config.items()
                  if isinstance(k, tuple) and k[0] == 'measurement']
         if not specs:
@@ -1099,19 +1106,27 @@ class Configuration:
         free_names = {v.name for v in self.variables}
         # Free parameters resolve from the PSet at eval time, not from the constant snapshot.
         constants = {n: val for n, val in constants.items() if n not in free_names}
+        # A measurement-model formula may reference any model entity OR any declared free
+        # parameter (resolved from the PSet at eval time, ADR-0036 §4). The model-id case was
+        # always in ``namespace``; widening it to ``free_names`` admits an observation-layer
+        # nuisance -- a free parameter that is *not* a model entity, e.g. an observableParameters
+        # scale/offset substituted into the observableFormula (ADR-0044).
+        allowed = namespace | free_names
 
         models = []
         for obs_id, formula in specs:
-            # Fail fast at load: parse + validate the formula's free symbols against the model
-            # namespace (a pointed PybnfError on an unknown symbol / missing petab extra). The
-            # callable is rebuilt lazily at eval time (dropped across pickling), so this is a
-            # validation pass, not the runtime compile.
-            compile_petab_formula(
-                formula, namespace,
+            # Fail fast at load: parse + validate the formula's free symbols against the allowed
+            # set (a pointed PybnfError on an unknown symbol / missing petab extra). The callable
+            # is rebuilt lazily at eval time (dropped across pickling), so this is a validation
+            # pass, not the runtime compile -- but its free-symbol list records which free
+            # parameters the model reads from the PSet (the nuisances above).
+            _func, names = compile_petab_formula(
+                formula, allowed,
                 detail=(f"Measurement model '{obs_id}': allowed symbols are the model's "
-                        f"species/parameters/observables/functions {sorted(namespace)} "
-                        f"(a free parameter is a model id, already included)."))
-            models.append(MeasurementModel(obs_id, formula, namespace, constants))
+                        f"species/parameters/observables/functions and the fit's free "
+                        f"parameters {sorted(allowed)}."))
+            self._measurement_free_params |= set(names) & free_names
+            models.append(MeasurementModel(obs_id, formula, allowed, constants))
         self.obj.measurement = MeasurementLayer(models)
         logger.debug("Built measurement-model layer with %d model(s): %s",
                      len(models), [m.observable_id for m in models])
@@ -1750,8 +1765,11 @@ class Configuration:
 
         # Free parameters the objective / per-observable noise_model estimates but no
         # model ever sees (e.g. chi_sq_dynamic's free sigma): legitimate nuisances,
-        # bound to no model id. Same source _load_variables checks (ADR-0021).
+        # bound to no model id. Same source _load_variables checks (ADR-0021). The
+        # measurement layer's free symbols join them -- an observableParameters scale
+        # referenced only by a measurement model is an observation-layer nuisance (ADR-0044).
         nuisance = set(self.obj.required_free_noise_params())
+        nuisance |= getattr(self, '_measurement_free_params', set())
 
         orphans = sorted(v.name for v in self.variables
                          if v.name not in model_ids and v.name not in nuisance)

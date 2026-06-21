@@ -1,7 +1,8 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
 from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
-                    FreeParameterSigma, Gaussian, Laplace, NegBinomial, RelativeSigma)
+                    FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
+                    RelativeSigma)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -348,15 +349,23 @@ def _apply_location(noise_model, location):
 
 
 def _build_sigma_source(verb, arg):
-    """One native ``noise_model`` source field -> its SigmaSource (ADR-0021, ADR-0031).
+    """One native ``noise_model`` source field -> its SigmaSource (ADR-0021, ADR-0031, ADR-0044).
 
-    ``fit`` / ``read_exp_file`` / ``fix_at`` each require their argument; ``relative``
-    takes an optional coefficient of variation (default 1); ``column_mean`` takes no
-    argument (the scale is the observable's own column mean)."""
+    ``fit`` / ``read_exp_file`` / ``fix_at`` / ``formula`` each require their argument
+    (``formula``'s is a PEtab math expression over free parameters -> ``FormulaSigma``,
+    ADR-0044); ``relative`` takes an optional coefficient of variation (default 1);
+    ``column_mean`` takes no argument (the scale is the observable's own column mean)."""
     verb = verb.lower()
     if verb == 'fit':
         _require_arg(verb, arg)
         return FreeParameterSigma(arg)
+    if verb == 'formula':
+        # An expression sigma over free parameters (+ constants), evaluated against the
+        # PSet per point (ADR-0044): the PEtab expression-noiseFormula source. The arg is
+        # the (whitespace-stripped) PEtab math expression; FormulaSigma derives the free
+        # parameters it requires and compiles lazily.
+        _require_arg(verb, arg)
+        return FormulaSigma(arg)
     if verb == 'read_exp_file':
         _require_arg(verb, arg)
         return DataColumnSigma(arg)
@@ -376,7 +385,7 @@ def _build_sigma_source(verb, arg):
     raise PybnfError(f'Unknown noise parameter source "{verb}"',
                      f'The noise parameter source "{verb}" is not recognized. Use one of: '
                      'fit <param__FREE>, read_exp_file <suffix>, fix_at <number>, '
-                     'relative [<cv>], or column_mean.')
+                     'formula <expr>, relative [<cv>], or column_mean.')
 
 
 def _require_arg(verb, arg):
@@ -511,9 +520,7 @@ class LikelihoodObjective(SummationObjective):
         FreeParameters (ADR-0021)."""
         names = set()
         for _family, source in [(self.noise, self.sigma_source), *self.overrides.values()]:
-            name = source.required_free_param()
-            if name is not None:
-                names.add(name)
+            names |= source.required_free_params()
         return names
 
     def _check_columns(self, exp_cols, compare_cols):

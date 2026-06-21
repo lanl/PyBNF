@@ -163,8 +163,15 @@ def parse(s):
     # a source field (and an invalid ``location = <x>`` errors rather than silently
     # parsing as a source, since the literal has committed).
     nm_location_field = pp.Group(pp.CaselessLiteral('location') - equals - _one_of('mean median', caseless=True))
+    # The ``formula`` source (ADR-0044): an expression sigma over free parameters, e.g.
+    # ``sigma = formula 0.1 + 0.05*scaling``. Its arg is the rest of the field (a PEtab
+    # math expression: operators / parens / whitespace), captured up to the next comma or
+    # comment so the comma-delimited field grammar is untouched (a noiseFormula carries no
+    # comma). Uses ``+`` (not ``-``) so a non-``formula`` field backtracks to nm_source_field.
+    nm_formula_arg = pp.Regex(r'[^,#\n]+').set_parse_action(lambda t: t[0].strip())
+    nm_formula_field = pp.Group(nm_token + equals + pp.CaselessLiteral('formula') + nm_formula_arg)
     nm_source_field = pp.Group(nm_token - equals - nm_verb - pp.Optional(nm_arg))
-    nm_field = nm_location_field | nm_source_field
+    nm_field = nm_location_field | nm_formula_field | nm_source_field
     # The observable is optional: present -> a per-observable override; absent
     # (``noise_model = <family>``) -> the whole-fit default (ADR-0031). pyparsing
     # distinguishes them by whether a bare token precedes the ``=``.

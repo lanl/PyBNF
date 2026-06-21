@@ -133,6 +133,68 @@ def inline_constants(formula, constants):
     return petab_math
 
 
+def substitute_placeholders(formula, substitutions):
+    """Substitute per-measurement placeholder symbols into a PEtab math ``formula`` (ADR-0044).
+
+    The sibling of :func:`inline_constants`, for the constant-per-observable placeholder
+    reduction: a PEtab ``observableParameter${n}_${id}`` / ``noiseParameter${n}_${id}``
+    placeholder whose measurements-table value is **constant across an observable's rows** is
+    not per-measurement at all -- it is a single scalar for that observable. Substituting it
+    reduces the placeholder to the existing per-observable machinery (the ADR-0036 measurement
+    layer for an ``observableFormula``; a sigma source for a ``noiseFormula``).
+
+    ``substitutions`` maps a placeholder name to its token: a **number** is substituted as a
+    constant (``sp.Float``); a **parameter id** is substituted as a free symbol
+    (``sp.Symbol``), which resolves from the PSet at eval time (a nuisance free parameter,
+    ADR-0034). Substitution + serialization go through ``sympy`` (never a string tokenizer --
+    ADR-0033), guarded by the same numeric round-trip self-check as the exporter. A formula
+    with no substituted placeholder (the bare-name / no-placeholder common case) is returned
+    **verbatim** (it never reaches ``sympy``). A placeholder not in ``substitutions`` is left
+    in place (the caller validates it downstream).
+
+    Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable formula, or a
+    substitution that fails its round-trip self-check.
+    """
+    if not substitutions:
+        return formula
+    sympify_petab = _require_petab_math()
+    expr = _parse(sympify_petab, formula, source='formula')
+    import sympy as sp
+    # Match by NAME (petab tags symbols with assumptions, so a plain sp.Symbol(name) is a
+    # different object -- substitute the actual free-symbol objects), mirroring inline_constants.
+    by_name = {str(s): s for s in expr.free_symbols}
+    present = {by_name[n]: tok for n, tok in substitutions.items() if n in by_name}
+    if not present:
+        return formula      # nothing to substitute -> carry the formula verbatim
+    repl = {}
+    for sym, token in present.items():
+        try:
+            repl[sym] = sp.Float(float(token))   # a numeric placeholder value -> a constant
+        except (TypeError, ValueError):
+            # A parameter id -> a free symbol (resolves from the PSet at eval). Build it through
+            # the petab parser so it carries the SAME assumptions (real/positive) re-parsing
+            # gives it; a plain sp.Symbol(token) would be a distinct object and the round-trip
+            # self-check below would false-reject the (correct) substitution.
+            repl[sym] = _parse(sympify_petab, token, source='observableParameters token')
+    subbed = expr.subs(repl)
+    petab_math = _petab_printer_cls()().doprint(subbed)
+    _assert_round_trips(sympify_petab, subbed, petab_math, formula)
+    return petab_math
+
+
+def formula_free_symbols(formula):
+    """The sorted free-symbol names of a PEtab math ``formula`` -- the parameters a
+    :class:`~pybnf.noise.FormulaSigma` (or a measurement model) reads from the PSet (ADR-0044).
+
+    A parse only (no namespace validation, no ``lambdify``): used to derive the free
+    parameters an expression ``noiseFormula`` requires the fit to declare, before the callable
+    is compiled. Raises ``PybnfError`` on a missing ``petab`` extra or an unparseable formula.
+    """
+    sympify_petab = _require_petab_math()
+    expr = _parse(sympify_petab, formula, source='noiseFormula')
+    return sorted(str(s) for s in expr.free_symbols)
+
+
 def compile_petab_formula(formula, allowed_symbols, *, detail=None):
     """Compile a PEtab math ``observableFormula`` to ``(numpy_callable, ordered_names)``.
 

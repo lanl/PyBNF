@@ -48,6 +48,15 @@ class SigmaSource(ABC):
         validation, ADR-0021)."""
         return None
 
+    def required_free_params(self):
+        """The **set** of free-parameter names this source requires the fit to
+        declare. Defaults to the single :meth:`required_free_param` (or empty);
+        :class:`FormulaSigma` overrides it because an expression sigma references
+        several (ADR-0044). The objective unions these across its sources
+        (``required_free_noise_params``)."""
+        name = self.required_free_param()
+        return {name} if name is not None else set()
+
     def exp_column(self, col_name):
         """The experimental-data column this source consumes, or ``None`` if it
         reads no data column -- so ``_check_columns`` can exempt it from the
@@ -138,6 +147,64 @@ class RelativeSigma(SigmaSource):
         # abs() keeps sigma positive for a negative measurement; the Gaussian uses
         # sigma**2, so the sign never mattered (norm_sos squared the raw ratio).
         return self.cv * abs(observation)
+
+
+class FormulaSigma(SigmaSource):
+    """The noise parameter given by an **expression** over free parameters (+ constants),
+    evaluated against the current PSet at each point (the native ``formula`` source,
+    ADR-0044).
+
+    PEtab lets the ``noiseFormula`` be an arithmetic expression -- e.g. ``0.1 +
+    0.05*scaling`` after a per-observable ``observableParameter`` placeholder is substituted
+    in -- a per-observable sigma that is neither a data column (``DataColumnSigma``) nor a
+    single free parameter (``FreeParameterSigma``). This source closes that gap: it holds a
+    PEtab-math expression string and, lazily on first use, compiles it to a vectorized
+    ``numpy`` callable over its free symbols (the same compile-once-per-worker pattern as
+    :class:`~pybnf.measurement.MeasurementModel`, ADR-0036 -- a ``lambdify``\\ d callable is
+    not picklable, so it is excluded from ``__getstate__`` and rebuilt worker-side).
+
+    It is *estimated* (it reads estimated parameters), so the caller keeps the family's
+    likelihood normalizer (ADR-0011). Its free symbols are the nuisance free parameters the
+    fit must declare (:meth:`required_free_params`); they resolve from ``owner._pset_values``
+    exactly as :class:`FreeParameterSigma`'s single name does."""
+
+    estimated = True
+
+    def __init__(self, formula, names=None):
+        #: The PEtab-math expression (over free-parameter ids + numeric constants).
+        self.formula = formula
+        #: The ordered free-symbol names (PSet keys at eval time); ``None`` until first
+        #: resolved (a parse), then the compiler's canonical sorted order. Picklable.
+        self.names = list(names) if names is not None else None
+        self._func = None  # lambdify callable; not pickled (rebuilt lazily worker-side)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_func'] = None
+        return state
+
+    def _ensure_names(self):
+        if self.names is None:
+            from ..petab.formula import formula_free_symbols
+            self.names = formula_free_symbols(self.formula)
+        return self.names
+
+    def _callable(self):
+        if self._func is None:
+            from ..petab.formula import compile_petab_formula
+            # allowed_symbols = the formula's own free symbols, so validation is a no-op
+            # here (the symbols were validated as declared free parameters at config load);
+            # adopt the compiler's canonical name ordering for positional calling.
+            func, names = compile_petab_formula(self.formula, self._ensure_names())
+            self._func, self.names = func, names
+        return self._func, self.names
+
+    def required_free_params(self):
+        return set(self._ensure_names())
+
+    def value(self, owner, exp_data, exp_row, col_name):
+        func, names = self._callable()
+        return float(func(*[owner._pset_values[n] for n in names]))
 
 
 class ColumnMeanSigma(SigmaSource):

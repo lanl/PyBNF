@@ -58,11 +58,14 @@ SBML import pulls in the ``pybnf[petab]`` extra. A **multi-model** problem impor
 each ``model_files`` entry is carried verbatim and declared with its own ``model:`` line, an
 expression observableFormula validates against the union of every model's namespace, and each
 experiment's model is recovered from the ``modelId`` on its measurement rows (emitted as a
-per-experiment ``model:`` field; a BNGL + SBML mix is fine). Out of scope, each mirroring an
-export-side boundary: fitting the imported job (gated on the ADR-0028 config loader, #423); the
-``noiseFormula`` / condition sympy layer and per-measurement
-``observableParameters``/``noiseParameters`` placeholders (bare names / numbers only); the
-five PEtab prior families PyBNF lacks; one-sided truncation; parameter-scan / dose-response.
+per-experiment ``model:`` field; a BNGL + SBML mix is fine). A **constant-per-observable**
+``observableParameters`` scale/offset and an expression ``noiseFormula`` import too (ADR-0044):
+the placeholder is substituted into the observable/noise formula (an id resolves from the PSet,
+a number inlines), an expression ``noiseFormula`` becoming a ``FormulaSigma`` (``noise_model
+<obs> = <family>, <param> = formula <expr>``). Out of scope, each mirroring an export-side
+boundary: a condition-table sympy layer; a **row-varying** per-measurement placeholder (the
+deferred per-measurement frontier, #428 Phase 2); the five PEtab prior families PyBNF lacks;
+one-sided truncation; parameter-scan / dose-response.
 """
 
 import re
@@ -70,7 +73,6 @@ from pathlib import Path
 
 import numpy as np
 
-from ..noise import ConstantSigma, FreeParameterSigma
 from ..printing import PybnfError
 from .conditions import (
     REF_MARKER,
@@ -82,9 +84,10 @@ from .conditions import (
 from .measurements import (
     data_from_measurement_rows,
     noise_parameter_ids_by_observable,
+    observable_parameters_by_observable,
     read_measurement_table,
 )
-from .observables import noise_model_from_row, read_observable_table
+from .observables import read_observable_table
 from .parameters import free_parameter_from_row, read_parameter_table
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
@@ -93,6 +96,43 @@ from ._tsv import num
 # A bare model-entity name (an observableFormula in the common case). Anything with
 # operators / calls / whitespace is an expression for the deferred sympy layer.
 _IDENTIFIER = re.compile(r'[A-Za-z_]\w*\Z')
+
+# A PEtab per-measurement placeholder anywhere in a formula (``observableParameter1_<id>`` /
+# ``noiseParameter2_<id>``). Phase 1 substitutes a constant-per-observable placeholder away
+# (ADR-0044); a leftover one (no measurements-table value, or row-varying) is the deferred
+# frontier and raises pointing at #428 Phase 2.
+_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
+
+
+def _placeholder_subs(observable_id, obs_params, noise_param_ids=None):
+    """The ``{placeholder_name: token}`` substitution for one observable (ADR-0044).
+
+    Binds ``observableParameter${n}_${observable_id}`` to the n-th constant-per-observable
+    ``observableParameters`` token (``obs_params[observable_id]``), and -- when
+    ``noise_param_ids`` is given (the noiseFormula side) -- ``noiseParameter1_${observable_id}``
+    to that observable's constant ``noiseParameters`` id. An empty map means nothing to
+    substitute (the bare-name / no-placeholder common case stays dependency-free)."""
+    subs = {f'observableParameter{n}_{observable_id}': tok
+            for n, tok in enumerate(obs_params.get(observable_id, ()), start=1)}
+    if noise_param_ids is not None:
+        nid = noise_param_ids.get(observable_id)
+        if nid is not None:
+            subs[f'noiseParameter1_{observable_id}'] = nid
+    return subs
+
+
+def _require_no_placeholder(formula, observable_id):
+    """Raise the deferred-frontier ``NotImplementedError`` if a placeholder survived
+    substitution (a placeholder with no measurements-table value, or a row-varying one --
+    ADR-0044, #428 Phase 2)."""
+    if _PLACEHOLDER.search(formula):
+        raise NotImplementedError(
+            f"Observable '{observable_id}': the formula still references a PEtab "
+            f"per-measurement placeholder after substitution ({formula!r}). Phase 1 "
+            f"substitutes a placeholder whose observableParameters/noiseParameters value is "
+            f"constant across the observable's rows; an unresolved or row-varying placeholder "
+            f"is the deferred per-measurement frontier (#428 Phase 2 / ADR-0044).")
+
 
 # The required user settings the loader has no schema default for (config.py
 # ``_req_user_params`` + the run-level ``verbosity``); supplied with thin defaults so an
@@ -129,11 +169,12 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     Both **BNGL and SBML** models import (ADR-0036): the model file is carried verbatim, and
     an **expression** ``observableFormula`` (e.g. a quotient of sums) becomes a conf
     measurement model (``observable: <id>, formula: <expr>``) evaluated post-simulation -- the
-    optional ``pybnf[petab]`` extra. Raises ``NotImplementedError`` at the remaining
-    PEtab/PyBNF boundaries (a model language other than ``bngl``/``sbml``; the five
-    unsupported prior families; a log-normal/log-laplace or expression noise model; a
-    ``noiseFormula``/condition expression; a per-measurement
-    ``observableParameters``/``noiseParameters`` placeholder in a formula; replicate rows)
+    optional ``pybnf[petab]`` extra. A **constant-per-observable** ``observableParameters``
+    scale/offset and an expression ``noiseFormula`` are substituted/reduced and import too
+    (ADR-0044). Raises ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (a model
+    language other than ``bngl``/``sbml``; the five unsupported prior families; a
+    log-normal/log-laplace noise distribution; a condition expression; a **row-varying**
+    per-measurement ``observableParameters``/``noiseParameters`` placeholder; replicate rows)
     and ``PybnfError`` for a malformed problem (including an ``observableFormula`` symbol that
     is not a model entity).
     """
@@ -165,6 +206,18 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
                     for row in parameter_rows
                     if not row.estimate and row.nominal_value is not None}
 
+    # The conf free-parameter names (a <p>__REF surrogate recovered to p). A measurement-model
+    # observableFormula may reference one as an observation-layer nuisance -- an
+    # observableParameters scale/offset substituted in (ADR-0044) -- so it must validate
+    # against the namespace u these names, not the model namespace alone.
+    free_names = {_model_param(row.parameter_id)[0]
+                  for row in parameter_rows if row.estimate}
+
+    # The constant-per-observable observableParameters tokens (ADR-0044): the n-th token binds
+    # observableParameter${n}_${id}, substituted into the observable/noise formulae below. A
+    # row-varying observableParameters raises here (the deferred per-measurement frontier).
+    obs_params = observable_parameters_by_observable(measurement_rows)
+
     # Each model is read now (not just at write time) to validate each expression
     # observableFormula's free symbols against the models' entity namespace (the BNGL
     # ParamList, or SBML species u parameters -- ADR-0026/0036). A multi-model job (ADR-0041)
@@ -187,7 +240,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # plus the measurement models (id, formula) synthesized from expression
     # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
     observable_id_to_column, measurement_models = _observable_id_to_column(
-        observable_rows, namespace, entity_names, fixed_params)
+        observable_rows, namespace, entity_names, fixed_params, obs_params, free_names)
 
     # Measurements -> the wide Data replicates per (experiment, model), then assemble the
     # experiment list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039;
@@ -199,7 +252,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     noise_param_ids = noise_parameter_ids_by_observable(measurement_rows)
     objective_directives = _objective_directives(
         observable_rows, observable_id_to_column, noise_param_ids,
-        _column_mean_resolver(datas, observable_id_to_column))
+        _column_mean_resolver(datas, observable_id_to_column), obs_params)
     conditions = conditions_from_rows(condition_rows, surrogate_params)
     # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
     # a single-model job carries modelId '' and emits no per-experiment model: field.
@@ -293,7 +346,8 @@ def _model_namespace(model_text, language):
     return namespace, entity_names
 
 
-def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params):
+def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params,
+                             obs_params, free_names):
     """Map each ``observableId`` to the model column it measures, recording a measurement
     model for any expression ``observableFormula`` (ADR-0036). Iteration order = table order,
     which fixes the wide-data column order on the measurement pivot.
@@ -320,12 +374,33 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     # Fixed PEtab parameters that are NOT model entities are inlined as literals; one that
     # IS a model entity stays a symbol (it resolves as a model constant at eval time).
     inline = {n: v for n, v in fixed_params.items() if n not in namespace}
+    # A measurement-model formula may reference a model entity OR a declared free parameter
+    # (an observableParameters nuisance resolves from the PSet -- ADR-0044); validate against
+    # both. An inlined fixed constant is a literal before validation (never a free symbol), so
+    # it needs no place here.
+    allowed = namespace | free_names
     taken = set(entity_names)
     mapping = {}
     measurement_models = []
     for row in observable_rows:
-        formula = (row.observable_formula or '').strip()
-        if _IDENTIFIER.match(formula):
+        raw = (row.observable_formula or '').strip()
+        # Substitute a constant-per-observable observableParameters scale/offset (ADR-0044);
+        # an empty substitution returns the formula verbatim (the bare/expression common case
+        # stays dependency-free). A placeholder that survives substitution is the deferred
+        # frontier.
+        had_placeholder = bool(_PLACEHOLDER.search(raw))
+        subs = _placeholder_subs(row.observable_id, obs_params)
+        if subs:
+            from .formula import substitute_placeholders
+            formula = substitute_placeholders(raw, subs)
+        else:
+            formula = raw
+        if had_placeholder:
+            _require_no_placeholder(formula, row.observable_id)
+        # A bare model-entity name (and no placeholder was substituted) is the dependency-free
+        # common case; a substituted formula is always a measurement model (it references a
+        # PSet nuisance) even if it reduced to a bare symbol.
+        if not had_placeholder and _IDENTIFIER.match(formula):
             if formula not in namespace:
                 raise PybnfError(
                     f"Observable '{row.observable_id}' has a bare observableFormula "
@@ -335,16 +410,17 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
                     f"Model namespace: {sorted(namespace)}.")
             mapping[row.observable_id] = formula          # bare-name path (no translator)
             continue
-        # Expression -> a measurement model. Inline any fixed parameter-table constant the
-        # model file lacks, then validate the remaining symbols against the namespace now
-        # (fail fast; requires the petab extra). The conf carries the (inlined) formula as a
-        # line and the observation layer evaluates it post-simulation -- no model-file edit.
+        # Expression (or substituted) -> a measurement model. Inline any fixed parameter-table
+        # constant the model file lacks, then validate the remaining symbols against the
+        # namespace u free parameters now (fail fast; requires the petab extra). The conf carries
+        # the formula as a line and the observation layer evaluates it post-simulation -- no
+        # model-file edit.
         from .formula import compile_petab_formula, inline_constants
         formula = inline_constants(formula, inline)
         compile_petab_formula(
-            formula, namespace,
-            detail=f"Model namespace (species/parameters/observables/functions): "
-                   f"{sorted(namespace)}.")
+            formula, allowed,
+            detail=f"Model namespace (species/parameters/observables/functions) u fit free "
+                   f"parameters: {sorted(allowed)}.")
         obs_id = row.observable_id
         if obs_id in taken:
             raise PybnfError(
@@ -387,7 +463,7 @@ _PETAB_DISTRIBUTION_TO_NOISE_MODEL = {
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
-                          column_mean_of):
+                          column_mean_of, obs_params):
     """Recover the conf's objective directive lines from the observables' noise (ADR-0031/0037).
 
     The inverse of the objective-family / whole-fit / per-observable ``noise_model`` export.
@@ -410,7 +486,9 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     ``noiseFormula``, and a per-point laplace placeholder raise ``NotImplementedError`` -- the
     boundary is in code, not a silent mis-recovery.
     """
-    per_obs = [(row, *_resolve_noise(row, noise_param_ids.get(row.observable_id)))
+    per_obs = [(row, *_resolve_noise(
+                    row, noise_param_ids.get(row.observable_id),
+                    _placeholder_subs(row.observable_id, obs_params, noise_param_ids)))
                for row in observable_rows]
     single = _try_uniform_directive(per_obs, column_mean_of)
     if single is not None:
@@ -418,18 +496,21 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     return _per_observable_directives(per_obs, observable_id_to_column)
 
 
-def _resolve_noise(row, noise_param_id):
+def _resolve_noise(row, noise_param_id, obs_subs):
     """One observables row -> ``(family_token, source)`` where ``source`` is one of
     ``('placeholder', None)`` (per-point ``_SD``), ``('constant', value)`` (a fixed sigma),
-    or ``('free', parameter_id)`` (an estimated sigma).
+    ``('free', parameter_id)`` (an estimated sigma), or ``('formula', expr)`` (an expression
+    sigma -> ``FormulaSigma``, ADR-0044).
 
     A **declared placeholder** noiseFormula -- a ``noiseParameter*`` token or a bare id listed
     in the row's ``noisePlaceholders`` -- has its value supplied per measurement: a parameter
     id constant across the observable (``noise_param_id``) is an estimated sigma
     (``('free', id)``, Boehm); otherwise it is the per-point ``_SD`` source
-    (``('placeholder', None)``, chi_sq). A non-placeholder noiseFormula is read directly by the
-    observables asset (a number -> ``ConstantSigma``, a bare id -> ``FreeParameterSigma``, an
-    expression -> the deferred ``NotImplementedError``)."""
+    (``('placeholder', None)``, chi_sq). Otherwise (ADR-0044) a constant-per-observable
+    ``observableParameter*`` / ``noiseParameter*`` placeholder is substituted in (``obs_subs``)
+    and the resulting noiseFormula classified: a number -> ``('constant', v)``, a bare id ->
+    ``('free', id)``, an arithmetic expression -> ``('formula', expr)``. A placeholder that
+    survives substitution (row-varying / unresolved) raises the deferred frontier."""
     dist = (row.noise_distribution or 'normal').lower()
     if dist not in _PETAB_DISTRIBUTION_TO_NOISE_MODEL:
         raise NotImplementedError(
@@ -442,20 +523,27 @@ def _resolve_noise(row, noise_param_id):
     if not formula:
         raise PybnfError(f"Observable '{row.observable_id}' is missing a noiseFormula.")
     placeholders = {p.strip() for p in (row.noise_placeholders or '').split(';') if p.strip()}
+    # ADR-0037 declared-placeholder path FIRST (preserved byte-for-byte: Boehm).
     if formula.startswith('noiseParameter') or formula in placeholders:
         if noise_param_id is not None:
             return dist, ('free', noise_param_id)     # constant-per-observable estimated sigma
         return dist, ('placeholder', None)            # per-point _SD (chi_sq)
-    # A non-placeholder noiseFormula: reuse the observables asset for the
-    # numeric / bare-id / expression split (it raises the deferred-expression boundary).
-    _noise_model, source = noise_model_from_row(row)
-    if isinstance(source, ConstantSigma):
-        return dist, ('constant', source.const)
-    if isinstance(source, FreeParameterSigma):
-        return dist, ('free', source.name)
-    raise PybnfError(                                  # defensive: a bare row yields only these
-        f"Observable '{row.observable_id}': noiseFormula {formula!r} maps to "
-        f"an unexpected sigma source {type(source).__name__}.")
+    # ADR-0044: substitute a constant-per-observable placeholder, then classify. A bare number
+    # / id with no placeholder passes through untouched (substitution stays dependency-free).
+    if _PLACEHOLDER.search(formula):
+        from .formula import substitute_placeholders
+        formula = substitute_placeholders(formula, obs_subs)
+        _require_no_placeholder(formula, row.observable_id)
+    try:
+        return dist, ('constant', float(formula))     # a number -> ConstantSigma
+    except ValueError:
+        pass
+    if _IDENTIFIER.match(formula):
+        return dist, ('free', formula)                # a bare id -> FreeParameterSigma
+    # An arithmetic expression -> FormulaSigma; validate it parses (+ the petab extra present).
+    from .formula import formula_free_symbols
+    formula_free_symbols(formula)
+    return dist, ('formula', formula)
 
 
 def _try_uniform_directive(per_obs, column_mean_of):
@@ -473,6 +561,10 @@ def _try_uniform_directive(per_obs, column_mean_of):
     kind = kinds.pop()
     petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[family]
 
+    if kind == 'formula':
+        # An expression sigma (FormulaSigma, ADR-0044) has no whole-fit objective token; emit
+        # it as a per-observable noise_model override even when only one observable carries it.
+        return None
     if kind == 'placeholder':
         if family != 'normal':
             raise NotImplementedError(
@@ -518,6 +610,8 @@ def _per_observable_directives(per_obs, observable_id_to_column):
         kind = src[0]
         if kind == 'free':
             lines.append(f'noise_model {column} = {petab_family}, {param} = fit {src[1]}')
+        elif kind == 'formula':
+            lines.append(f'noise_model {column} = {petab_family}, {param} = formula {src[1]}')
         elif kind == 'constant':
             lines.append(
                 f'noise_model {column} = {petab_family}, {param} = fix_at {num(src[1])}')

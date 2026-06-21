@@ -37,6 +37,44 @@ def test_overrides_map_tokens_to_objects(line, family, src_type, estimated):
     assert src.estimated is estimated
 
 
+# --- the formula sigma source (ADR-0044): an expression sigma over free parameters --------
+
+def test_ploop_captures_formula_source_field():
+    # The grammar captures the whole expression (operators / whitespace) up to the comma as
+    # the formula source's arg; a non-formula field still backtracks to the verb grammar.
+    d = ploop(['noise_model o = gaussian, sigma = formula 0.1 + 0.05*slope'])
+    assert d[('noise_model', 'o')] == ('gaussian', {'sigma': ('formula', '0.1 + 0.05*slope')}, None)
+
+
+def test_formula_source_builds_a_formula_sigma():
+    pytest.importorskip('petab')
+    fam, src = _build_noise_spec('o', ('gaussian', {'sigma': ('formula', '0.1 + 0.05*slope')}, None))
+    assert isinstance(fam, noise.Gaussian)
+    assert isinstance(src, noise.FormulaSigma)
+    assert src.estimated is True                          # an estimated source -> keeps normalizer
+    assert src.required_free_params() == {'slope'}        # the nuisances it requires declared
+
+
+def test_formula_sigma_value_reads_the_pset():
+    pytest.importorskip('petab')
+    src = noise.FormulaSigma('0.1 + 0.05*slope')
+    owner = types.SimpleNamespace(_pset_values={'slope': 4.0})
+    assert src.value(owner, None, 0, 'o') == pytest.approx(0.3)
+
+
+def test_formula_sigma_pickles_and_recompiles_worker_side():
+    # The lambdify callable is dropped on pickling (not picklable) and rebuilt lazily, like a
+    # MeasurementModel (ADR-0036 §5) -- the objective carrying it is scattered to dask workers.
+    pytest.importorskip('petab')
+    import pickle
+    src = noise.FormulaSigma('2*a + b')
+    src.value(types.SimpleNamespace(_pset_values={'a': 1.0, 'b': 1.0}), None, 0, 'o')  # compile
+    revived = pickle.loads(pickle.dumps(src))
+    assert revived._func is None                          # the callable was not pickled
+    owner = types.SimpleNamespace(_pset_values={'a': 3.0, 'b': 1.0})
+    assert revived.value(owner, None, 0, 'o') == pytest.approx(7.0)   # recompiles + evaluates
+
+
 # --- the relative + column_mean sigma sources (ADR-0031) ----------------------
 
 def test_relative_source_default_cv_is_one():
@@ -221,6 +259,19 @@ def test_objective_with_no_noise_params_needs_no_declaration():
     assert objective.SumOfSquaresObjective().required_free_noise_params() == set()
     declared = set()
     assert objective.SumOfSquaresObjective().required_free_noise_params() - declared == set()
+
+
+def test_formula_sigma_nuisances_join_required_free_noise_params():
+    """A FormulaSigma override's free symbols are required free parameters (ADR-0044): the
+    objective unions them with the legacy magic names, so an undeclared one is caught."""
+    pytest.importorskip('petab')
+    obj = objective.ChiSquareObjective(            # default sigma is the _SD data column (fixed)
+        overrides={'o': (noise.Gaussian(), noise.FormulaSigma('0.1 + 0.05*slope_o'))})
+    assert obj.required_free_noise_params() == {'slope_o'}
+    ns = types.SimpleNamespace(config={'objfunc': 'chi_sq', 'fit_type': 'de'}, obj=obj,
+                               _is_free_param_key=Configuration._is_free_param_key)
+    with pytest.raises(PybnfError, match='slope_o'):
+        Configuration._load_variables(ns)
 
 
 # --- global noise_location default (ADR-0024, the whole-fit location key) ---------

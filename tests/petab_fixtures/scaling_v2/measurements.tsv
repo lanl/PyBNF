@@ -1,0 +1,7 @@
+observableId	experimentId	time	measurement	observableParameters	noiseParameters
+obs_sx	epo	0	-20	scaling
+obs_sx	epo	1	-18	scaling
+obs_sx	epo	2	-16	scaling
+obs_y	epo	0	43		slope
+obs_y	epo	1	34.5		slope
+obs_y	epo	2	27		slope
