@@ -524,6 +524,13 @@ class TestExportRowVaryingRoundTrip:
         return imp1, pet2, imp2
 
     @pytest.mark.parametrize('case', list(CASES))
+    def test_source_fixture_is_petab_valid(self, case):
+        # The source fixtures are valid PEtab v2 (they declare their observable/noise
+        # placeholders -- the import path detects placeholders by pattern, but a fixture that
+        # claims to be a PEtab problem must pass petab's own validator too).
+        assert _petab_validation_errors(self.CASES[case][0] / 'problem.yaml') == []
+
+    @pytest.mark.parametrize('case', list(CASES))
     def test_reexport_is_petab_valid(self, case, tmp_path):
         # The re-exported problem passes petab's full default_validation_tasks (the external
         # oracle): the per-observable noise, the retargeted placeholders, and the per-row
