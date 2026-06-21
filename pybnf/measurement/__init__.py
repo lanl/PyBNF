@@ -6,6 +6,6 @@ it -- backend-agnostic, language-agnostic, and carrying the model file verbatim.
 M2 peer to :mod:`pybnf.priors` (ADR-0010) and :mod:`pybnf.noise` (ADR-0011).
 """
 
-from .base import MeasurementLayer, MeasurementModel
+from .base import MeasurementLayer, MeasurementModel, PerMeasurementModel
 
-__all__ = ['MeasurementLayer', 'MeasurementModel']
+__all__ = ['MeasurementLayer', 'MeasurementModel', 'PerMeasurementModel']

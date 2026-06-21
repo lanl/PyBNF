@@ -406,30 +406,75 @@ def row_varying_noise_ids(rows):
     return _classify_noise_ids(rows)[1]
 
 
-def measurement_param_bindings(rows, observable_id_to_column, row_varying_obs):
-    """Per-experiment per-measurement binding tables for the row-varying-noise observables
-    (ADR-0045) -- the source the importer writes to the sidecar TSV.
+def measurement_param_bindings(rows, observable_id_to_column, row_varying_noise=(),
+                               row_varying_obs=()):
+    """Per-experiment per-measurement binding tables for the row-varying observables (ADR-0045)
+    -- the source the importer writes to the sidecar TSV.
 
-    Returns ``{(experiment_id, model_id): {column: {placeholder: {time: token}}}}``: for each
-    measurement row of an observable in ``row_varying_obs``, the row's ``noiseParameters`` id
-    binds ``noiseParameter1_<observable_id>`` at that row's ``time``. The table is keyed by the
-    experimental-data **column** (``observable_id_to_column[oid]`` -- the model entity the
-    objective compares, what :class:`~pybnf.noise.PerMeasurementFormulaSigma` looks up at eval),
-    not the PEtab observableId, and grouped by ``(experiment_id, model_id)`` to match
-    :func:`data_from_measurement_rows` so each experiment gets its own sidecar. Two replicate
-    rows at the same ``(observable, time)`` share the token (last-wins; a per-replicate-varying
-    token is out of scope).
+    Returns ``{(experiment_id, model_id): {column: {placeholder: {time: token}}}}``, collecting
+    **both** row-varying frontiers into the one sidecar shape:
+
+    * **noise** (``row_varying_noise``) -- each measurement row's ``noiseParameters`` id binds
+      ``noiseParameter1_<observable_id>`` at that row's ``time`` (the :class:`~pybnf.noise.\
+PerMeasurementFormulaSigma` source);
+    * **observable** (``row_varying_obs``) -- the n-th ``observableParameters`` token binds
+      ``observableParameter${n}_<observable_id>`` at that row's ``time`` (the
+      :class:`~pybnf.measurement.PerMeasurementModel` scale/offset).
+
+    The table is keyed by the experimental-data **column** (``observable_id_to_column[oid]`` --
+    the model entity / materialized measurement-model column the objective compares, what the
+    per-point evaluator looks up at eval), not the PEtab observableId, and grouped by
+    ``(experiment_id, model_id)`` to match :func:`data_from_measurement_rows` so each experiment
+    gets its own sidecar. Two replicate rows at the same ``(observable, time)`` share the token
+    (last-wins; a per-replicate-varying token is out of scope). The two placeholder families
+    (noise vs observable) coexist under one column with distinct placeholder keys.
     """
     table = {}
     for row in rows:
-        if row.observable_id not in row_varying_obs or row.noise_parameter_id is None:
-            continue
         key = (row.experiment_id, row.model_id)
-        column = observable_id_to_column[row.observable_id]
-        placeholder = f'noiseParameter1_{row.observable_id}'
-        (table.setdefault(key, {}).setdefault(column, {})
-              .setdefault(placeholder, {}))[row.time] = row.noise_parameter_id
+        if row.observable_id in row_varying_noise and row.noise_parameter_id is not None:
+            column = observable_id_to_column[row.observable_id]
+            _bind(table, key, column, f'noiseParameter1_{row.observable_id}', row.time,
+                  row.noise_parameter_id)
+        if row.observable_id in row_varying_obs and row.observable_parameters:
+            column = observable_id_to_column[row.observable_id]
+            for n, token in enumerate(row.observable_parameters, start=1):
+                _bind(table, key, column, f'observableParameter{n}_{row.observable_id}',
+                      row.time, token)
     return table
+
+
+def _bind(table, key, column, placeholder, time, token):
+    """Record one ``(experiment, column, placeholder, time) -> token`` cell in the nested
+    binding table (a small helper so the noise and observable arms share the insertion)."""
+    (table.setdefault(key, {}).setdefault(column, {})
+          .setdefault(placeholder, {}))[time] = token
+
+
+def _classify_observable_params(rows):
+    """Split observables that carry an ``observableParameters`` tuple into ``(constant,
+    row_varying)`` (ADR-0044/0045) -- the observable-side sibling of :func:`_classify_noise_ids`.
+
+    ``constant`` is ``{observable_id: (token, ...)}`` for an observable whose tuple is identical
+    across all of its (non-blank) rows (a per-observable scale/offset substituted into the
+    formula, Phase 1); ``row_varying`` is the set of observable_ids whose tuple **differs**
+    across rows (the per-measurement binding-table frontier bound per data point, Phase 2). A
+    tuple that varies between a value and a blank cell also routes to ``row_varying`` (a partial
+    binding surfaces as a clean missing-token error at config load, not here).
+    """
+    seen, nonblank = {}, set()
+    for row in rows:
+        seen.setdefault(row.observable_id, set()).add(row.observable_parameters)
+        if row.observable_parameters:
+            nonblank.add(row.observable_id)
+    constant, row_varying = {}, set()
+    for oid in nonblank:
+        variants = seen[oid]
+        if len(variants) == 1:
+            constant[oid] = next(iter(variants))
+        else:
+            row_varying.add(oid)
+    return constant, row_varying
 
 
 def observable_parameters_by_observable(rows):
@@ -443,30 +488,23 @@ def observable_parameters_by_observable(rows):
     PSet, a number inlines -- ADR-0044). Observables with a blank ``observableParameters`` are
     absent from the map.
 
-    Raises ``NotImplementedError`` -- the documented per-measurement frontier -- when a single
-    observable's rows carry **differing** ``observableParameters`` tuples (a genuinely
-    row-varying / per-condition scale, which per-observable PyBNF has no analogue for), or
-    **mix** a specified tuple with a blank cell.
+    A **row-varying** ``observableParameters`` (differing across the observable's rows) is no
+    longer an error: it routes to the per-measurement binding table
+    (:func:`row_varying_observable_ids` / :func:`measurement_param_bindings`, ADR-0045) and is
+    excluded here -- the observable side of the Phase-2 frontier that Phase 1 deferred.
     """
-    seen, nonblank = {}, set()
-    for row in rows:
-        seen.setdefault(row.observable_id, set()).add(row.observable_parameters)
-        if row.observable_parameters:
-            nonblank.add(row.observable_id)
-    result = {}
-    for oid in nonblank:
-        variants = seen[oid]
-        if len(variants) != 1:
-            raise NotImplementedError(
-                f"Observable '{oid}' has more than one observableParameters value across its "
-                f"measurement rows ({sorted(variants)}): a genuinely row-varying / "
-                f"per-condition observable scale/offset (or a row that mixes a value with a "
-                f"blank cell). PyBNF's observation layer is per-observable (one materialized "
-                f"column per observable), so this is the deferred per-measurement frontier "
-                f"(#428 Phase 2 / ADR-0044). A constant-per-observable observableParameters is "
-                f"substituted into the observableFormula.")
-        result[oid] = next(iter(variants))
-    return result
+    return _classify_observable_params(rows)[0]
+
+
+def row_varying_observable_ids(rows):
+    """The set of ``observable_id``\\ s whose ``observableParameters`` tuple **differs** across
+    the observable's rows -- the row-varying observable scale/offset frontier bound per data
+    point from the binding table (:func:`measurement_param_bindings`, ADR-0045).
+
+    The observable-side sibling of :func:`row_varying_noise_ids`. A constant-per-observable
+    tuple (:func:`observable_parameters_by_observable`) and a blank cell are absent.
+    """
+    return _classify_observable_params(rows)[1]
 
 
 # ---------------------------------------------------------------------------

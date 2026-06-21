@@ -1,0 +1,6 @@
+parameterId	parameterName	lowerBound	upperBound	nominalValue	estimate
+v1	v1	0	10	0.5	true
+v2	v2	0	10	1	true
+v3	v3	0	10	3	true
+s_lo	low scale	1e-3	100	2	true
+s_hi	high scale	1e-3	100	3	true

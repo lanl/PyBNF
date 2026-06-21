@@ -56,6 +56,15 @@ class ObjectiveFunction:
     #: new-era BNGL-expression) path attaches a populated layer in ``config.py``.
     measurement = None
 
+    #: Row-varying measurement models keyed by the materialized column name (ADR-0045): a
+    #: ``{col_name: PerMeasurementModel}`` map for an ``observableParameters`` scale/offset that
+    #: differs per data row, so it CANNOT be pre-materialized as a layer column -- it is bound
+    #: per data point in ``_prediction`` (where ``exp_row`` is known), parallel to ``overrides``
+    #: on the noise side. The empty default (shared, never mutated in place -- ``config.py``
+    #: assigns a fresh dict) is an exact no-op: ``_prediction`` returns the raw simulated cell,
+    #: so every job without a row-varying observable is byte-identical.
+    _per_measurement_models = {}
+
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -171,7 +180,14 @@ class SummationObjective(ObjectiveFunction):
 
         indvar = min(exp_data.cols, key=exp_data.cols.get)  # Get the name of column 0, the independent variable
 
-        compare_cols = set(exp_data.cols).intersection(set(sim_data.cols))  # Set of columns to compare
+        # A row-varying observable (a PerMeasurementModel, ADR-0045) is NOT a materialized
+        # sim column -- it is evaluated per data point in ``_prediction`` from the matched
+        # sim row + the data row's binding token. Treat it as a "virtual" comparable column so
+        # the by-name match scores it and ``_check_columns`` does not flag it as unused. The
+        # empty default leaves this ``set(sim_data.cols)`` exactly, so every other job is
+        # byte-identical.
+        comparable = set(sim_data.cols) | set(self._per_measurement_models)
+        compare_cols = set(exp_data.cols).intersection(comparable)  # Set of columns to compare
         # Warn if experiment columns are going unused
         if show_warnings:
             self._check_columns(exp_data.cols, compare_cols)
@@ -208,7 +224,10 @@ class SummationObjective(ObjectiveFunction):
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):
                     continue
 
-                cur_sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+                # Through ``_prediction`` so a virtual per-measurement column (ADR-0045) is
+                # computed here too; the default returns ``sim_data.data[sim_row, col]`` verbatim,
+                # so the nan/inf gate is byte-identical for every materialized column.
+                cur_sim_val = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
 
                 if np.isnan(cur_sim_val) or np.isinf(cur_sim_val):
                     return None
@@ -229,6 +248,20 @@ class SummationObjective(ObjectiveFunction):
         :return:
         """
         raise NotImplementedError('Subclasses of SummationObjective must override eval_point')
+
+    def _prediction(self, sim_data, sim_row, col_name, exp_data=None, exp_row=None):
+        """The simulated prediction for one matched point. A plain cell read by default
+        (byte-identical to a direct ``sim_data.data[sim_row, col]`` access); a column with a
+        registered row-varying measurement model (a per-data-point ``observableParameters``
+        scale/offset, ADR-0045) is evaluated from ``(sim_row, exp_row)`` and the row's binding
+        token instead. ``neg_bin_dynamic`` overrides this for cumulative (``_Cum``) columns
+        (ADR-0021). Hoisted to ``SummationObjective`` (from ``LikelihoodObjective``) so every
+        per-point objfunc -- the least-squares family too -- routes its prediction through one
+        seam (#428 Phase 2b)."""
+        model = self._per_measurement_models.get(col_name)
+        if model is not None:
+            return model.value(sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values)
+        return sim_data.data[sim_row, sim_data.cols[col_name]]
 
     def _check_columns(self, exp_cols, compare_cols):
         """
@@ -508,14 +541,9 @@ class LikelihoodObjective(SummationObjective):
         else the class default."""
         return self.overrides.get(col_name, (self.noise, self.sigma_source))
 
-    def _prediction(self, sim_data, sim_row, col_name):
-        """The simulated prediction for one point. A plain cell read by default;
-        neg_bin_dynamic overrides it for cumulative (``_Cum``) columns (ADR-0021)."""
-        return sim_data.data[sim_row, sim_data.cols[col_name]]
-
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         family, source = self._spec_for(col_name)
-        prediction = self._prediction(sim_data, sim_row, col_name)
+        prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         noise_param = source.value(self, exp_data, exp_row, col_name)
         # data_fit always; the normalizer iff the noise parameter is estimated --
@@ -606,7 +634,7 @@ class LaplaceObjective(LikelihoodObjective):
 class SumOfSquaresObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        sim_val = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return (sim_val - exp_val) ** 2.
 
@@ -615,7 +643,7 @@ class SumOfSquaresObjective(SummationObjective):
 class SumOfDiffsObjective(SummationObjective):
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        sim_val = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return abs(sim_val - exp_val)
 
@@ -627,7 +655,7 @@ class NormSumOfSquaresObjective(SummationObjective):
     """
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        sim_val = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return ((sim_val - exp_val) / exp_val) ** 2.
 
@@ -645,7 +673,7 @@ class AveNormSumOfSquaresObjective(SummationObjective):
         return super().evaluate(sim_data, exp_data, show_warnings)
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        sim_val = sim_data.data[sim_row, sim_data.cols[col_name]]
+        sim_val = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         exp_val = exp_data.data[exp_row, exp_data.cols[col_name]]
         return ((sim_val - exp_val) / self.aves[col_name]) ** 2.
 
@@ -662,16 +690,19 @@ class NegBinLikelihood_Dynamic(LikelihoodObjective):
     noise = NegBinomial(location=MEAN)
     sigma_source = FreeParameterSigma('r__FREE')
 
-    def _prediction(self, sim_data, sim_row, col_name):
+    def _prediction(self, sim_data, sim_row, col_name, exp_data=None, exp_row=None):
         # A ``_Cum`` column is a cumulative count: the effective prediction is the
         # row-to-row increment (the raw value at row 0). An ad-hoc COVID-forecasting
         # feature, welded to NegBinomial only by history; kept byte-exact and
         # isolated here, with generalization to a family-independent
-        # cumulative->incident transform filed as #418 (ADR-0021).
-        if sim_row != 0 and '_Cum' in col_name:
+        # cumulative->incident transform filed as #418 (ADR-0021). A registered
+        # per-measurement model (ADR-0045) supersedes the increment and is handled by
+        # the base ``_prediction`` (the two are mutually exclusive in practice).
+        if (col_name not in self._per_measurement_models
+                and sim_row != 0 and '_Cum' in col_name):
             col = sim_data.cols[col_name]
             return sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col]
-        return sim_data.data[sim_row, sim_data.cols[col_name]]
+        return super()._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
 
 
 @register_objfunc('neg_bin')

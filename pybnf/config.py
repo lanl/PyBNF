@@ -37,6 +37,11 @@ import roadrunner
 
 logger = logging.getLogger(__name__)
 
+# A PEtab per-measurement placeholder symbol surviving in a measurement-model formula
+# (``observableParameter1_obs_y``): its presence marks a row-varying scale/offset bound per data
+# point (a ``PerMeasurementModel``, ADR-0045), not a constant pre-materialized column.
+_MEASUREMENT_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
+
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
 
@@ -1158,7 +1163,7 @@ class Configuration:
         edition.require_edition(
             ed, 2, "the 'observable: <id>, formula: <expr>' measurement-model syntax")
 
-        from .measurement import MeasurementLayer, MeasurementModel
+        from .measurement import MeasurementLayer, MeasurementModel, PerMeasurementModel
         from .petab.formula import compile_petab_formula
 
         namespace, constants = self._model_expression_namespace()
@@ -1172,23 +1177,58 @@ class Configuration:
         # scale/offset substituted into the observableFormula (ADR-0044).
         allowed = namespace | free_names
 
-        models = []
+        models = []                 # constant measurement models -> pre-materialized layer
+        per_measurement = {}        # row-varying ones -> bound per data point in the objective
         for obs_id, formula in specs:
+            # A surviving per-measurement placeholder marks a row-varying scale/offset (ADR-0045):
+            # its token differs per data row, so it is bound per data point, NOT pre-materialized.
+            # Admit the placeholder symbol(s) to the allowed set so the rest validates fail-fast.
+            placeholders = set(_MEASUREMENT_PLACEHOLDER.findall(formula))
+            allowed_here = allowed | placeholders
             # Fail fast at load: parse + validate the formula's free symbols against the allowed
             # set (a pointed PybnfError on an unknown symbol / missing petab extra). The callable
             # is rebuilt lazily at eval time (dropped across pickling), so this is a validation
             # pass, not the runtime compile -- but its free-symbol list records which free
             # parameters the model reads from the PSet (the nuisances above).
             _func, names = compile_petab_formula(
-                formula, allowed,
+                formula, allowed_here,
                 detail=(f"Measurement model '{obs_id}': allowed symbols are the model's "
-                        f"species/parameters/observables/functions and the fit's free "
-                        f"parameters {sorted(allowed)}."))
-            self._measurement_free_params |= set(names) & free_names
-            models.append(MeasurementModel(obs_id, formula, allowed, constants))
+                        f"species/parameters/observables/functions, the fit's free "
+                        f"parameters {sorted(allowed)}, and any row-varying placeholder."))
+            # The placeholder tokens are per-row nuisances (collected from the sidecar, ADR-0045),
+            # not always-present PSet names; only the non-placeholder free symbols are nuisances.
+            self._measurement_free_params |= (set(names) - placeholders) & free_names
+            if placeholders:
+                per_measurement[obs_id] = PerMeasurementModel(
+                    obs_id, formula, allowed_here, constants)
+            else:
+                models.append(MeasurementModel(obs_id, formula, allowed, constants))
         self.obj.measurement = MeasurementLayer(models)
-        logger.debug("Built measurement-model layer with %d model(s): %s",
-                     len(models), [m.observable_id for m in models])
+        if per_measurement:
+            self._attach_per_measurement_models(per_measurement)
+        logger.debug("Built measurement-model layer with %d model(s) + %d per-measurement: %s",
+                     len(models), len(per_measurement),
+                     [m.observable_id for m in models] + sorted(per_measurement))
+
+    def _attach_per_measurement_models(self, per_measurement):
+        """Register the row-varying measurement models on the objective (ADR-0045).
+
+        A :class:`~pybnf.measurement.PerMeasurementModel` is bound per data point in the
+        objective's prediction step (``_prediction``), which only the per-point objfuncs (the
+        :class:`~pybnf.objective.SummationObjective` family -- least-squares + the likelihoods)
+        have. The column-joint ``kl`` / ``wasserstein`` (a
+        :class:`~pybnf.objective.ColumnSummationObjective`) score a whole column's shape at once
+        and have no per-point seam, so a row-varying observable scale has no meaning there --
+        raise rather than silently drop it.
+        """
+        from .objective import SummationObjective
+        if not isinstance(self.obj, SummationObjective):
+            raise NotImplementedError(
+                f"A row-varying observableParameters scale/offset (a per-measurement measurement "
+                f"model, ADR-0045) is bound per data point in the objective's prediction step, "
+                f"which the column-joint objective '{type(self.obj).__name__}' (kl / wasserstein) "
+                f"does not have. Use a per-point objective (chi_sq, sos, laplace, ...).")
+        self.obj._per_measurement_models = per_measurement
 
     def _model_expression_namespace(self):
         """The union expression namespace + fixed-constant snapshot across the job's models,

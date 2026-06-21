@@ -54,6 +54,7 @@ from pybnf.petab.measurements import (
     observable_parameters_by_observable,
     read_measurement_table,
     row_varying_noise_ids,
+    row_varying_observable_ids,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
@@ -67,6 +68,11 @@ SCALING_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'scaling_v2'
 # A crafted PEtab v2 problem exercising the ADR-0045 row-varying per-measurement noise frontier
 # (a noiseParameters id that differs across an observable's rows -> a per-data-point binding).
 ROWSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'rowsigma_v2'
+
+# A crafted PEtab v2 problem exercising the ADR-0045 row-varying per-measurement OBSERVABLE
+# frontier (an observableParameters scale that differs across rows -> a per-data-point
+# PerMeasurementModel evaluated in the objective's prediction step, #428 Phase 2b).
+OBSSCALE_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'obsscale_v2'
 
 # A real-world (externally authored) PEtab v2 problem -- the regression oracle for the
 # table readers, decoupled from the model (see the fixture's SOURCE.md).
@@ -697,22 +703,24 @@ class TestReverseAssets:
         with pytest.raises(NotImplementedError, match='source kind'):
             noise_parameter_ids_by_observable([row('a', 0, pid='sd_a'), row('a', 1, num=2.0)])
 
-    def test_observable_parameters_per_observable_guards_row_varying(self):
+    def test_observable_parameters_per_observable_classifies_constant_and_row_varying(self):
         # A constant-per-observable observableParameters tuple reduces to a per-observable
         # scale/offset (ADR-0044); a row-varying tuple (or a row that mixes a value with a
-        # blank) is the deferred per-measurement frontier (#428 Phase 2).
+        # blank) routes to the per-measurement binding table instead (ADR-0045), so it is
+        # absent from the constant map and present in the row-varying set.
         def row(oid, t, op=()):
             return PetabMeasurementRow(observable_id=oid, time=t, measurement=1.0,
                                        observable_parameters=op)
         ok = [row('a', 0, ('scaling',)), row('a', 1, ('scaling',)),
-              row('b', 0, ('s', 'o')), row('c', 0)]   # c blank -> absent from the map
+              row('b', 0, ('s', 'o')), row('c', 0)]   # c blank -> absent from both
         assert observable_parameters_by_observable(ok) == {'a': ('scaling',), 'b': ('s', 'o')}
-        with pytest.raises(NotImplementedError, match='row-varying'):
-            observable_parameters_by_observable(
-                [row('a', 0, ('s1',)), row('a', 1, ('s2',))])     # differing per row
-        with pytest.raises(NotImplementedError, match='row-varying'):
-            observable_parameters_by_observable(
-                [row('a', 0, ('s1',)), row('a', 1)])              # value mixed with a blank
+        assert row_varying_observable_ids(ok) == set()
+        rv = [row('a', 0, ('s1',)), row('a', 1, ('s2',))]            # differing per row
+        assert observable_parameters_by_observable(rv) == {}
+        assert row_varying_observable_ids(rv) == {'a'}
+        mixed = [row('a', 0, ('s1',)), row('a', 1)]                  # value mixed with a blank
+        assert observable_parameters_by_observable(mixed) == {}
+        assert row_varying_observable_ids(mixed) == {'a'}
 
     def test_conditions_inverse_recovers_perturbations(self):
         exps = [('wt', None), ('dbl', 'doubled'), ('scl', 'scaled')]
@@ -1028,19 +1036,31 @@ class TestPlaceholderReductionImport:
         # The materialized scale is live: the layer added obs_sx = scaling * x to the sim data.
         assert np.allclose(sim['obs_sx'], [-30., -27., -24.])
 
-    def test_row_varying_observable_parameters_is_deferred(self, tmp_path):
-        # A genuinely row-varying observableParameters (a different scale per timepoint) has no
-        # per-observable analogue -> the deferred per-measurement frontier (#428 Phase 2).
+    def test_row_varying_observable_parameters_imports_as_per_measurement_model(self, tmp_path):
+        # A row-varying observableParameters scale (a different scale per timepoint) is no longer
+        # deferred (ADR-0045): the observableFormula KEEPS its placeholder and the per-row scale
+        # tokens ride a measurement_params sidecar, bound per data point by a PerMeasurementModel.
+        # A numeric per-row scale keeps the fixture self-contained (no extra declared parameters).
         prob = tmp_path / 'prob'
         shutil.copytree(SCALING_DIR, prob)
         (prob / 'measurements.tsv').write_text(
             'observableId\texperimentId\ttime\tmeasurement\tobservableParameters\tnoiseParameters\n'
-            'obs_sx\tepo\t0\t-20\tscaling_a\t\n'
-            'obs_sx\tepo\t1\t-18\tscaling_b\t\n'     # a different scale on the second row
+            'obs_sx\tepo\t0\t-20\t2\t\n'
+            'obs_sx\tepo\t1\t-18\t3\t\n'      # a different (numeric) scale on the second row
+            'obs_sx\tepo\t2\t-16\t2\t\n'
             'obs_y\tepo\t0\t43\t\tslope\n'
-            'obs_y\tepo\t1\t34.5\t\tslope\n')
-        with pytest.raises(NotImplementedError, match='row-varying'):
-            import_job(prob / 'problem.yaml', tmp_path / 'out')
+            'obs_y\tepo\t1\t34.5\t\tslope\n'
+            'obs_y\tepo\t2\t27\t\tslope\n')
+        out = import_job(prob / 'problem.yaml', tmp_path / 'out')
+        text = (out / 'imported.conf').read_text()
+        # The placeholder is KEPT in the observable measurement-model line (not substituted away).
+        assert 'observable: obs_sx, formula: observableParameter1_obs_sx * x' in text
+        exp_line = next(l for l in text.splitlines() if l.startswith('experiment:'))
+        assert 'measurement_params:' in exp_line
+        # The sidecar carries the per-row numeric scale, keyed by the materialized column obs_sx.
+        from pybnf.petab._measurement_params import read_measurement_params
+        table = read_measurement_params(out / 'epo_measparams.tsv')
+        assert table['obs_sx'] == {'observableParameter1_obs_sx': {0.0: '2', 1.0: '3', 2.0: '2'}}
 
 
 # ---------------------------------------------------------------------------
@@ -1141,3 +1161,113 @@ class TestRowVaryingNoiseImport:
             'obs_y\tepo\t1\t34.5\t\t0.7\n')      # an id on one row, a number on the next
         with pytest.raises(NotImplementedError, match='source kind'):
             import_job(prob / 'problem.yaml', tmp_path / 'out')
+
+
+# ---------------------------------------------------------------------------
+# Row-varying per-measurement OBSERVABLE scale (ADR-0045, #428 Phase 2b)
+#
+# A crafted PEtab v2 problem (tests/petab_fixtures/obsscale_v2/) whose obs_y observableParameters
+# scale DIFFERS across rows (s_lo, s_hi, s_lo): a per-timepoint estimated scale with no
+# per-observable analogue. It cannot be pre-materialized as a column by the MeasurementLayer, so
+# on import the observableFormula KEEPS its placeholder and the per-row scale ids ride a
+# measurement_params sidecar; at score time it is a PerMeasurementModel evaluated per data point
+# in the objective's prediction step (the genuine ADR-0036 contract change). Import-only oracle:
+# import correctness + a simulator-free score against a hand-derived NLL where the per-row scale
+# differs (a single-broadcast bug is caught).
+# ---------------------------------------------------------------------------
+class TestRowVaryingObservableImport:
+
+    @pytest.fixture(scope='class')
+    def out(self, tmp_path_factory):
+        d = tmp_path_factory.mktemp('obsscale')
+        return import_job(OBSSCALE_DIR / 'problem.yaml', d / 'out')
+
+    def test_row_varying_observable_imports_as_per_measurement_model(self, out):
+        text = (out / 'imported.conf').read_text()
+        # obs_y's row-varying observableParameters scale stays a placeholder measurement model
+        # (NOT substituted); obs_x's bare observable with its fixed sigma is the constant path.
+        assert 'objective = chi_sq' in text
+        assert 'noise_model x = gaussian, sigma = fix_at 0.5' in text
+        assert 'noise_model obs_y = gaussian, sigma = fix_at 1' in text
+        assert 'observable: obs_y, formula: observableParameter1_obs_y * y' in text
+        # The experiment line references the per-measurement binding sidecar (ADR-0045).
+        exp_line = next(l for l in text.splitlines() if l.startswith('experiment:'))
+        assert 'measurement_params: epo_measparams.tsv' in exp_line
+
+    def test_sidecar_carries_the_per_row_scale_ids(self, out):
+        from pybnf.petab._measurement_params import read_measurement_params
+        table = read_measurement_params(out / 'epo_measparams.tsv')
+        # Keyed by the materialized measurement-model COLUMN (obs_y), the placeholder, and time.
+        assert table == {'obs_y': {'observableParameter1_obs_y': {0.0: 's_lo', 1.0: 's_hi',
+                                                                   2.0: 's_lo'}}}
+
+    def test_imported_conf_loads_and_scores_with_per_row_scale(self, out, monkeypatch):
+        # The imported job loads (s_lo/s_hi recognized as binding-table nuisances, not orphan
+        # typos), attaches the binding table to the exp Data, and scales each obs_y prediction by
+        # its OWN per-row scale in _prediction. Scored simulator-free against a hand-derived NLL.
+        import types
+        from pybnf import config as config_mod
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 's_lo', 's_hi'}
+        # The per-data-point binding table rode the sidecar onto the experiment's exp Data, and
+        # the row-varying observable is registered on the objective (not pre-materialized).
+        epo = cfg.exp_data['obsscale_model']['epo']
+        assert epo.measurement_params == {'obs_y': {'observableParameter1_obs_y':
+                                                    ['s_lo', 's_hi', 's_lo']}}
+        assert set(cfg.obj._per_measurement_models) == {'obs_y'}
+
+        # A trajectory whose y differs from nominal (43, 34.5, 27) by (+1, +2, +2); obs_x matches.
+        sim = Data.from_columns(
+            np.array([[0., -10., 44.], [1., -9., 36.5], [2., -8., 29.]]),
+            ['time', 'x', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in
+                {'v1': 0.5, 'v2': 1., 'v3': 3., 's_lo': 2., 's_hi': 3.}.items()]
+        score = cfg.obj.evaluate_multiple({'obsscale_model': {'epo': sim}}, cfg.exp_data, pset)
+        # obs_x (bare, fixed sigma 0.5): residual 0 -> 0. obs_y (scale * y, fixed sigma 1):
+        #   t0 s_lo=2 pred 2*44=88   vs 86    res 2 -> 4/2 = 2
+        #   t1 s_hi=3 pred 3*36.5=109.5 vs 103.5 res 6 -> 36/2 = 18
+        #   t2 s_lo=2 pred 2*29=58   vs 54    res 4 -> 16/2 = 8
+        assert score == pytest.approx(28.0)
+        # A bug that broadcast a single scale (s_lo) over the column would score differently:
+        #   t1 would be 2*36.5=73 vs 103.5, res -30.5 -> a much larger total.
+        broadcast = (2. ** 2 + 30.5 ** 2 + 4. ** 2) / 2.
+        assert not np.isclose(score, broadcast)
+
+    def test_per_measurement_model_survives_pickle(self, out, monkeypatch):
+        # The objective (carrying the PerMeasurementModel) is scattered to dask workers; the
+        # lambdify callable is dropped + rebuilt worker-side, and the binding table rides the exp
+        # Data, so a round-tripped objective scores identically (ADR-0045).
+        import pickle
+        import types
+        from pybnf import config as config_mod
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        obj = pickle.loads(pickle.dumps(cfg.obj))
+        exp = {m: {s: pickle.loads(pickle.dumps(d)) for s, d in sd.items()}
+               for m, sd in cfg.exp_data.items()}
+        sim = Data.from_columns(
+            np.array([[0., -10., 44.], [1., -9., 36.5], [2., -8., 29.]]),
+            ['time', 'x', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in
+                {'v1': 0.5, 'v2': 1., 'v3': 3., 's_lo': 2., 's_hi': 3.}.items()]
+        score = obj.evaluate_multiple({'obsscale_model': {'epo': sim}}, exp, pset)
+        assert score == pytest.approx(28.0)
+
+    def test_row_varying_observable_on_column_joint_objective_is_deferred(self, out, monkeypatch):
+        # A row-varying observable scale is bound per data point in _prediction, which the
+        # column-joint kl / wasserstein objectives do not have -> a clean deferral (ADR-0045).
+        # Swap the per-point objective + its per-observable noise lines for a profile objective.
+        from pybnf import config as config_mod
+        monkeypatch.chdir(out)
+        kept = [l for l in (out / 'imported.conf').read_text().splitlines()
+                if not l.startswith('objective =') and not l.startswith('noise_model ')]
+        lines = []
+        for l in kept:
+            lines.append(l)
+            if l.startswith('job_type'):
+                lines.append('profile_objective = kl')
+        with pytest.raises(NotImplementedError, match='column-joint'):
+            config_mod.Configuration(ploop((l + '\n' for l in lines)))

@@ -1,15 +1,29 @@
 # PEtab row-varying per-measurement placeholders bind per data point through a sidecar table on the experimental data; the noise side lands first, the observable side is the ADR-0036 contract change (issue #428 Phase 2)
 
-**Status: Accepted; noise side + whole-fit export implemented (decision + first implementation
-2026-06-21).** Phase 2 of #428, the genuinely **row-varying** remainder ADR-0044 deferred. ADR-0044
-(Phase 1) reduced a placeholder *constant across an observable's rows* to the existing
-per-observable engines by substitution; what is left is a placeholder that **differs row to row** —
-a different scale/offset/sigma per timepoint, or per condition. A row-varying placeholder is keyed
-to a **data row** `(observable, time, condition, replicate)`, but PyBNF's measurement and noise
-models are **per-observable**, materialized once over the *simulation* trajectory before the
-sim↔data match. So a row-varying placeholder cannot be a pre-simulation column or a single
-substituted symbol; it must be **bound per data point, after the match**, with that row's token in
-hand. This ADR pins that per-data-point binding seam.
+**Status: Accepted; noise side + whole-fit export implemented (2026-06-21); observable side
+implemented (2026-06-21, #428 Phase 2b).** Phase 2 of #428, the genuinely **row-varying**
+remainder ADR-0044 deferred. ADR-0044 (Phase 1) reduced a placeholder *constant across an
+observable's rows* to the existing per-observable engines by substitution; what is left is a
+placeholder that **differs row to row** — a different scale/offset/sigma per timepoint, or per
+condition. A row-varying placeholder is keyed to a **data row**
+`(observable, time, condition, replicate)`, but PyBNF's measurement and noise models are
+**per-observable**, materialized once over the *simulation* trajectory before the sim↔data match.
+So a row-varying placeholder cannot be a pre-simulation column or a single substituted symbol; it
+must be **bound per data point, after the match**, with that row's token in hand. This ADR pins
+that per-data-point binding seam.
+
+**Update (Phase 2b, the observable side).** The observable side — `observableParameters` that
+differs row to row — is now implemented exactly as pinned below: a `PerMeasurementModel`
+(the observable sibling of `PerMeasurementFormulaSigma`) registered on the objective in a
+`{col_name: PerMeasurementModel}` map and evaluated **per data point in `_prediction`** (the
+ADR-0036 contract change). **Scope decision (Bill, 2026-06-21):** `_prediction` was **hoisted to
+`SummationObjective`** and every per-point objfunc routes through it — the least-squares family
+(`sos`/`sod`/`norm_sos`/`ave_norm_sos`) **and** the likelihoods — so a row-varying observable
+scale works under any per-point objective, not just the likelihood the importer happens to build
+("broader capability over coding shortcuts"). The column-joint `kl`/`wasserstein`
+(`ColumnSummationObjective`) have no per-point seam, so a row-varying observable raises a clean
+deferral there. The constant + empty paths stay byte-identical (`_prediction`'s default returns
+the raw simulated cell). Oracle: `tests/petab_fixtures/obsscale_v2/`.
 
 This is a staged build. **This session lands the noise side** (the easier half — the per-point
 `SigmaSource.value` seam already receives `exp_row`) plus the whole-fit constant-`FormulaSigma`
@@ -116,24 +130,35 @@ canonical row-varying-id case is the bare-placeholder noiseFormula `noiseParamet
 Boehm shape, but with the id differing across rows): the source becomes
 `sigma = formula noiseParameter1_obs_y`, resolving the row's id from the PSet.
 
-## The observable side (pinned, deferred to the follow-up)
+## The observable side (implemented, Phase 2b)
 
 A row-varying `observableParameters` scale has no pre-simulation column, so its measurement model
 **cannot** be materialized by `MeasurementLayer.apply` (which runs pre-match, over the sim grid). It
-must be evaluated **per data point** in the objective's prediction step. `LikelihoodObjective.
-_prediction(sim_data, sim_row, col_name)` does **not** currently receive `exp_row`; threading it in
-(and the row's binding table) is the change. The decision (pinned now, built later):
+is evaluated **per data point** in the objective's prediction step. `_prediction(sim_data, sim_row,
+col_name)` did **not** receive `exp_row`; threading it in (and the row's binding table) is the change.
+As built:
 
 - The constant case **keeps Phase 1's fast pre-materialized column path** — `_prediction` reads the
   materialized cell exactly as today (byte-identical). Only a column with a registered
   *per-measurement* measurement model takes the per-point path.
-- A per-measurement measurement model lives in a `{col_name: PerMeasurementModel}` map on the
-  objective (parallel to `self.overrides`), evaluated in `_prediction` from `(sim_data, sim_row,
-  exp_data, exp_row, pset)`. The binding table is the same sidecar.
+- A per-measurement measurement model (`PerMeasurementModel`, `measurement/base.py`) lives in a
+  `{col_name: PerMeasurementModel}` map on the objective (`_per_measurement_models`, parallel to
+  `self.overrides`), evaluated in `_prediction` from `(sim_data, sim_row, exp_data, exp_row,
+  col_name, pset)`. The binding table is the same sidecar. Because such a column is **not**
+  materialized into the simulated `Data`, the objective treats it as a **virtual comparable
+  column** — `evaluate` adds it to `compare_cols` (`set(sim.cols) | set(_per_measurement_models)`)
+  so the by-name match scores it and `_check_columns` does not flag it unused, and the nan/inf
+  gate reads it through `_prediction` too.
+- `_prediction` was **hoisted from `LikelihoodObjective` to `SummationObjective`** so the
+  least-squares family routes through the same seam (the scope decision above); `neg_bin_dynamic`'s
+  `_Cum` override and the constant/empty paths are byte-identical (the default returns the raw
+  cell). `config._load_measurement_models` builds a `PerMeasurementModel` when a measurement-model
+  formula carries a surviving placeholder and registers it on the objective instead of the layer;
+  attaching one to a column-joint `kl`/`wasserstein` raises.
 
 This is the real ADR-0036 contract change ("pre-materialize a column" → "pre-materialize when
-constant, evaluate per-point when per-measurement"); it lands in its own session so the empty/constant
-layer can be proven byte-identical in isolation (the ADR-0036 §2 discipline).
+constant, evaluate per-point when per-measurement"); it landed in its own session (Phase 2b) so the
+empty/constant layer could be proven byte-identical in isolation (the ADR-0036 §2 discipline).
 
 ## Scope
 
@@ -147,12 +172,21 @@ closing the Phase-1 round trip for the whole-fit case). New-era only. Oracled ag
 fixture with a row-varying noise id, simulator-free, with a hand-derived NLL where σ differs by row
 (a broadcast bug is caught).
 
-**Pinned but deferred to the follow-up:** the **observable side** (row-varying
-`observableParameters` → per-point `_prediction(exp_row)`; the importer's
-`observable_parameters_by_observable` raise stays); **per-observable** noise export (export.py's
+**In (Phase 2b, the observable side):** a row-varying `observableParameters` **scale/offset**
+(a number or an estimated id that differs across an observable's rows) → a `PerMeasurementModel`
+reading the same per-measurement binding table, evaluated per data point in `_prediction` (the
+ADR-0036 contract change); the importer routing its row-varying *observable* raise
+(`observable_parameters_by_observable`) to the table and keeping the placeholder in the emitted
+`observable: <id>, formula: <expr>` measurement-model line; `config.py` building the
+`PerMeasurementModel` and registering it on the objective. New-era only. Oracled against a crafted
+BNGL fixture (`obsscale_v2`) with a row-varying observable scale, simulator-free, with a
+hand-derived NLL where the per-row scale differs (a broadcast bug is caught).
+
+**Pinned but deferred to the follow-up:** **per-observable** noise export (export.py's
 "per-observable overrides are a later chunk" boundary) and **row-varying** export (the binding table
 back to `observableParameters` / `noiseParameters` columns + a sidecar) — so `scaling_v2`'s
-*per-observable* `FormulaSigma` does not yet round-trip (only a whole-fit one does).
+*per-observable* `FormulaSigma`, `rowsigma_v2`, and `obsscale_v2` do not yet round-trip (only a
+whole-fit `FormulaSigma` does).
 
 **Out (boundary raised in code):** a `noiseFormula` mixing a per-row placeholder **with a
 simulation-trajectory column** (a per-point σ that is also a function of the sim output — neither a

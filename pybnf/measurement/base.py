@@ -23,9 +23,16 @@ formula is compiled (the first :meth:`MeasurementModel.materialize`); the bare-n
 dependency-free (ADR-0019/0036).
 """
 
+import re
+
 import numpy as np
 
 from ..printing import PybnfError
+
+# A PEtab per-measurement placeholder symbol (``observableParameter1_*`` / ``noiseParameter1_*``):
+# in a row-varying observableFormula it stands for the *row's* scale/offset token, read from the
+# binding table rather than substituted once (ADR-0045). Mirrors ``noise.source._PLACEHOLDER``.
+_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
 
 
 class MeasurementModel:
@@ -97,6 +104,107 @@ class MeasurementModel:
             # A constant-valued (all-scalar) formula returns a scalar; broadcast it.
             column = np.full(nrows, float(column))
         return column
+
+
+class PerMeasurementModel:
+    """A measurement model whose ``observableFormula`` references a **row-varying** PEtab
+    per-measurement placeholder, bound per data point from the experimental data's binding
+    table (the observable-side sibling of :class:`~pybnf.noise.PerMeasurementFormulaSigma`,
+    ADR-0045).
+
+    A :class:`MeasurementModel` covers a constant-per-observable scale/offset: it is
+    pre-materialized once over the *simulation* trajectory by :class:`MeasurementLayer`. When the
+    ``observableParameters`` token instead **differs row to row** -- a per-condition or
+    per-timepoint scale -- there is no single column to materialize: the value must be evaluated
+    **per data point, after the sim<->data match**, with that row's token in hand. So this model
+    is **not** placed in the layer; it is registered on the objective (``_per_measurement_models``)
+    and evaluated in the objective's prediction step, where ``exp_row`` is known.
+
+    At :meth:`value` each free symbol of the (cached, lambdified) formula resolves to: a
+    **placeholder** -> the row's token from ``exp_data.measurement_params[col_name][placeholder]\
+[exp_row]`` (a number inlines, a parameter id resolves from the PSet -- a per-row estimated
+    nuisance, ADR-0034); a **simulation-output column** -> that column's value at ``sim_row``
+    (unlike :class:`MeasurementModel`, which is vectorized over the whole column, this reads one
+    matched point); a **PSet value**; or a **fixed model constant**. The compiled callable is
+    built lazily and dropped on pickling (the compile-once-per-worker pattern, ADR-0036 §5); the
+    binding table rides the experimental :class:`~pybnf.data.Data`, so it survives scatter
+    independently of this model.
+    """
+
+    def __init__(self, observable_id, formula, allowed_symbols, constants=None):
+        self.observable_id = observable_id
+        self.formula = formula
+        # allowed_symbols includes the kept placeholder symbol(s) (config admits them), so the
+        # lazy compile validates against the same set the importer/config validated against.
+        self.allowed_symbols = frozenset(allowed_symbols)
+        self.constants = dict(constants or {})
+        self._compiled = None  # (callable, ordered_names); lazy, not pickled
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_compiled'] = None  # a lambdify callable is not picklable; recompile worker-side
+        return state
+
+    def _compile(self):
+        if self._compiled is None:
+            from ..petab.formula import compile_petab_formula
+            self._compiled = compile_petab_formula(
+                self.formula, self.allowed_symbols,
+                detail=(f"Per-measurement model '{self.observable_id}': known symbols are the "
+                        f"model's species/parameters/observables/functions, the fit's free "
+                        f"parameters, and the row-varying observableParameters placeholder(s)."))
+        return self._compiled
+
+    def value(self, sim_data, sim_row, exp_data, exp_row, col_name, pset_values):
+        """The measurement-model prediction for one matched data point -- a scalar.
+
+        ``sim_data``/``sim_row`` locate the matched simulation point (trajectory columns read
+        there); ``exp_data``/``exp_row``/``col_name`` locate the data row (its placeholder
+        token(s) read from ``exp_data.measurement_params[col_name]``); ``pset_values`` is the
+        objective's ``{name: value}`` PSet map (free parameters + per-row estimated nuisances).
+        """
+        func, names = self._compile()
+        bindings = self._row_bindings(exp_data, col_name)
+        args = []
+        for name in names:
+            if _PLACEHOLDER.match(name):
+                args.append(self._resolve_token(bindings, name, exp_row, col_name, pset_values))
+            elif name in sim_data.cols:
+                args.append(float(sim_data.data[sim_row, sim_data.cols[name]]))
+            elif name in pset_values:
+                args.append(float(pset_values[name]))
+            elif name in self.constants:
+                args.append(float(self.constants[name]))
+            else:
+                # Validation at compile time should make this unreachable; keep it pointed.
+                raise PybnfError(
+                    f"Per-measurement model '{self.observable_id}' references '{name}', which "
+                    f"is neither a placeholder, a simulation-output column ({sorted(sim_data.cols)}), "
+                    f"nor a fit/model parameter. The measurement model cannot be evaluated.")
+        return float(func(*args))
+
+    @staticmethod
+    def _row_bindings(exp_data, col_name):
+        table = getattr(exp_data, 'measurement_params', None)
+        if not table or col_name not in table:
+            raise PybnfError(
+                f"A row-varying observable formula for '{col_name}' needs a per-measurement "
+                f"binding table, but none is attached to the experimental data. The "
+                f"experiment must declare 'measurement_params: <file>.tsv' (ADR-0045).")
+        return table[col_name]
+
+    @staticmethod
+    def _resolve_token(bindings, placeholder, exp_row, col_name, pset_values):
+        try:
+            token = bindings[placeholder][exp_row]
+        except (KeyError, IndexError):
+            raise PybnfError(
+                f"The per-measurement binding table for '{col_name}' has no value for "
+                f"placeholder '{placeholder}' at data row {exp_row} (ADR-0045).")
+        try:
+            return float(token)                 # a per-row numeric token, inlined
+        except (TypeError, ValueError):
+            return pset_values[token]           # a per-row parameter id, from the PSet
 
 
 class MeasurementLayer:

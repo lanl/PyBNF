@@ -88,6 +88,7 @@ from .measurements import (
     observable_parameters_by_observable,
     read_measurement_table,
     row_varying_noise_ids,
+    row_varying_observable_ids,
 )
 from ._measurement_params import write_measurement_params
 from .observables import read_observable_table
@@ -102,9 +103,15 @@ _IDENTIFIER = re.compile(r'[A-Za-z_]\w*\Z')
 
 # A PEtab per-measurement placeholder anywhere in a formula (``observableParameter1_<id>`` /
 # ``noiseParameter2_<id>``). Phase 1 substitutes a constant-per-observable placeholder away
-# (ADR-0044); a leftover one (no measurements-table value, or row-varying) is the deferred
-# frontier and raises pointing at #428 Phase 2.
+# (ADR-0044); a leftover one (no measurements-table value) is the deferred frontier and raises
+# pointing at #428 Phase 2, except a known row-varying one which is kept for per-point binding
+# (ADR-0045).
 _PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
+
+# The FULL placeholder symbol (``observableParameter1_obs_y``), used to admit a kept row-varying
+# placeholder into a measurement-model formula's allowed-symbol set at validation (ADR-0045): the
+# placeholder is not a model entity nor a free parameter -- its value is bound per data point.
+_PLACEHOLDER_SYMBOL = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 
 
 def _placeholder_subs(observable_id, obs_params, noise_param_ids=None):
@@ -218,8 +225,11 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
 
     # The constant-per-observable observableParameters tokens (ADR-0044): the n-th token binds
     # observableParameter${n}_${id}, substituted into the observable/noise formulae below. A
-    # row-varying observableParameters raises here (the deferred per-measurement frontier).
+    # row-varying observableParameters is no longer an error -- it routes to the per-measurement
+    # binding table (ADR-0045): the observableFormula keeps its placeholder and the per-row
+    # scale/offset token is bound per data point from the sidecar (a PerMeasurementModel).
     obs_params = observable_parameters_by_observable(measurement_rows)
+    row_varying_obs_params = row_varying_observable_ids(measurement_rows)
 
     # Each model is read now (not just at write time) to validate each expression
     # observableFormula's free symbols against the models' entity namespace (the BNGL
@@ -243,7 +253,8 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # plus the measurement models (id, formula) synthesized from expression
     # observableFormulas (ADR-0036: emitted as conf `observable: ... formula:` lines).
     observable_id_to_column, measurement_models = _observable_id_to_column(
-        observable_rows, namespace, entity_names, fixed_params, obs_params, free_names)
+        observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
+        row_varying_obs_params)
 
     # Measurements -> the wide Data replicates per (experiment, model), then assemble the
     # experiment list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039;
@@ -256,8 +267,10 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     # row's estimated noise id, emitted as a 'sigma = formula <placeholder>' line.
     noise_param_ids = noise_parameter_ids_by_observable(measurement_rows)
     row_varying_obs = row_varying_noise_ids(measurement_rows)
+    # One sidecar carries both row-varying frontiers (ADR-0045): the row-varying noise ids and
+    # the row-varying observableParameters scale/offset tokens, keyed by data column.
     param_bindings = measurement_param_bindings(
-        measurement_rows, observable_id_to_column, row_varying_obs)
+        measurement_rows, observable_id_to_column, row_varying_obs, row_varying_obs_params)
     objective_directives = _objective_directives(
         observable_rows, observable_id_to_column, noise_param_ids,
         _column_mean_resolver(datas, observable_id_to_column), obs_params, row_varying_obs)
@@ -357,7 +370,7 @@ def _model_namespace(model_text, language):
 
 
 def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_params,
-                             obs_params, free_names):
+                             obs_params, free_names, row_varying_obs_params=()):
     """Map each ``observableId`` to the model column it measures, recording a measurement
     model for any expression ``observableFormula`` (ADR-0036). Iteration order = table order,
     which fixes the wide-data column order on the measurement pivot.
@@ -377,9 +390,17 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
       column the layer materializes). The model file is **not** edited.
 
     A measurement model's id must not shadow an existing model entity (``PybnfError``, so the
-    materialized column does not collide with a model output column); an unknown free symbol or
-    a per-measurement placeholder in the expression raises in the validator (``PybnfError`` /
-    ``NotImplementedError``).
+    materialized column does not collide with a model output column); an unknown free symbol
+    raises in the validator (``PybnfError``).
+
+    ``row_varying_obs_params`` (ADR-0045) is the set of observable_ids whose
+    ``observableParameters`` scale/offset **differs** across rows: for those the placeholder is
+    **kept** in the observableFormula (not substituted, not raised) and emitted as a measurement
+    model whose per-row token is bound per data point from the sidecar (a
+    :class:`~pybnf.measurement.PerMeasurementModel`, built in ``config.py``). The kept
+    placeholder is admitted to the validator's allowed set so the non-placeholder symbols still
+    validate against the model namespace. A *constant*-per-observable placeholder is substituted
+    away as in Phase 1; an unresolved (neither constant nor row-varying) placeholder still raises.
     """
     # Fixed PEtab parameters that are NOT model entities are inlined as literals; one that
     # IS a model entity stays a symbol (it resolves as a model constant at eval time).
@@ -394,19 +415,27 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
     measurement_models = []
     for row in observable_rows:
         raw = (row.observable_formula or '').strip()
-        # Substitute a constant-per-observable observableParameters scale/offset (ADR-0044);
-        # an empty substitution returns the formula verbatim (the bare/expression common case
-        # stays dependency-free). A placeholder that survives substitution is the deferred
-        # frontier.
         had_placeholder = bool(_PLACEHOLDER.search(raw))
-        subs = _placeholder_subs(row.observable_id, obs_params)
-        if subs:
-            from .formula import substitute_placeholders
-            formula = substitute_placeholders(raw, subs)
-        else:
+        row_varying = row.observable_id in row_varying_obs_params
+        if row_varying:
+            # ADR-0045: a row-varying observableParameters scale is bound per data point from
+            # the sidecar; KEEP the placeholder in the observableFormula verbatim (a
+            # PerMeasurementModel resolves it). Never reduces to a bare name (it has a
+            # placeholder), so it falls to the measurement-model branch below.
             formula = raw
-        if had_placeholder:
-            _require_no_placeholder(formula, row.observable_id)
+        else:
+            # Substitute a constant-per-observable observableParameters scale/offset (ADR-0044);
+            # an empty substitution returns the formula verbatim (the bare/expression common
+            # case stays dependency-free). A placeholder that survives substitution is the
+            # deferred frontier.
+            subs = _placeholder_subs(row.observable_id, obs_params)
+            if subs:
+                from .formula import substitute_placeholders
+                formula = substitute_placeholders(raw, subs)
+            else:
+                formula = raw
+            if had_placeholder:
+                _require_no_placeholder(formula, row.observable_id)
         # A bare model-entity name (and no placeholder was substituted) is the dependency-free
         # common case; a substituted formula is always a measurement model (it references a
         # PSet nuisance) even if it reduced to a bare symbol.
@@ -427,8 +456,12 @@ def _observable_id_to_column(observable_rows, namespace, entity_names, fixed_par
         # model-file edit.
         from .formula import compile_petab_formula, inline_constants
         formula = inline_constants(formula, inline)
+        # A kept row-varying placeholder (ADR-0045) is neither a model entity nor a free
+        # parameter -- its value is bound per data point -- so admit it to the allowed set; the
+        # non-placeholder symbols still validate against the namespace u free parameters.
+        allowed_here = allowed | set(_PLACEHOLDER_SYMBOL.findall(formula))
         compile_petab_formula(
-            formula, allowed,
+            formula, allowed_here,
             detail=f"Model namespace (species/parameters/observables/functions) u fit free "
                    f"parameters: {sorted(allowed)}.")
         obs_id = row.observable_id

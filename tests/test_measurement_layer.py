@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from pybnf.data import Data
-from pybnf.measurement import MeasurementLayer, MeasurementModel
+from pybnf.measurement import MeasurementLayer, MeasurementModel, PerMeasurementModel
 from pybnf.printing import PybnfError
 
 # A minimal stand-in for a FreeParameter as evaluate_multiple iterates the PSet (it reads
@@ -281,3 +281,92 @@ end model
     def test_no_formula_line_leaves_no_op_default(self, tmp_path):
         conf = self._build(tmp_path, formula=None)
         assert conf.obj.measurement is None
+
+
+# ---------------------------------------------------------------------------
+# PerMeasurementModel -- the row-varying observable scale bound per data point (ADR-0045)
+# ---------------------------------------------------------------------------
+
+def _exp_with_bindings(headers, rows, measurement_params):
+    """A small exp Data carrying a per-measurement binding table (the sidecar config attaches)."""
+    data = _trace(headers, rows)
+    data.measurement_params = measurement_params
+    return data
+
+
+class TestPerMeasurementModel:
+    """The observable-side sibling of PerMeasurementFormulaSigma: a per-data-point measurement
+    model whose observableParameters scale differs row to row, read from the binding table."""
+
+    def test_numeric_per_row_token_inlines_and_scales_the_sim_column(self):
+        pytest.importorskip('petab')
+        # obs = scale * S1, scale = 2 at row 0, 3 at row 1 (a numeric per-row token).
+        sim = _trace(['time', 'S1'], [(0., 10.), (1., 20.), (2., 30.)])
+        exp = _exp_with_bindings(
+            ['time', 'obs'], [(0., 0.), (1., 0.), (2., 0.)],
+            {'obs': {'observableParameter1_obs': ['2', '3', '2']}})
+        mm = PerMeasurementModel('obs', 'observableParameter1_obs * S1',
+                                 {'S1', 'observableParameter1_obs'})
+        # Each data row reads its OWN scale and the sim column at the matched sim row.
+        assert mm.value(sim, 0, exp, 0, 'obs', {}) == pytest.approx(2 * 10.)
+        assert mm.value(sim, 1, exp, 1, 'obs', {}) == pytest.approx(3 * 20.)
+        assert mm.value(sim, 2, exp, 2, 'obs', {}) == pytest.approx(2 * 30.)
+
+    def test_parameter_id_token_resolves_from_the_pset(self):
+        pytest.importorskip('petab')
+        # A per-row PARAMETER ID (an estimated scale nuisance) resolves from the PSet per row.
+        sim = _trace(['time', 'S1'], [(0., 10.), (1., 20.)])
+        exp = _exp_with_bindings(
+            ['time', 'obs'], [(0., 0.), (1., 0.)],
+            {'obs': {'observableParameter1_obs': ['s_lo', 's_hi']}})
+        mm = PerMeasurementModel('obs', 'observableParameter1_obs * S1',
+                                 {'S1', 'observableParameter1_obs'})
+        pset = {'s_lo': 2., 's_hi': 5.}
+        assert mm.value(sim, 0, exp, 0, 'obs', pset) == pytest.approx(2. * 10.)
+        assert mm.value(sim, 1, exp, 1, 'obs', pset) == pytest.approx(5. * 20.)
+
+    def test_reads_sim_column_at_sim_row_not_exp_row(self):
+        pytest.importorskip('petab')
+        # The sim<->data match can pair different row indices; the sim value is read at sim_row.
+        sim = _trace(['time', 'S1'], [(0., 100.), (5., 200.), (9., 300.)])
+        exp = _exp_with_bindings(
+            ['time', 'obs'], [(5., 0.)],
+            {'obs': {'observableParameter1_obs': ['4']}})
+        mm = PerMeasurementModel('obs', 'observableParameter1_obs * S1',
+                                 {'S1', 'observableParameter1_obs'})
+        # exp_row 0 binds scale 4; sim_row 1 is the matched simulation point (S1 = 200).
+        assert mm.value(sim, 1, exp, 0, 'obs', {}) == pytest.approx(4 * 200.)
+
+    def test_offset_formula_mixes_pset_constant_and_two_placeholders(self):
+        pytest.importorskip('petab')
+        # obs = observableParameter1*S1 + observableParameter2 (a scale + an offset, both per-row).
+        sim = _trace(['time', 'S1'], [(0., 10.)])
+        exp = _exp_with_bindings(
+            ['time', 'obs'], [(0., 0.)],
+            {'obs': {'observableParameter1_obs': ['2'], 'observableParameter2_obs': ['7']}})
+        mm = PerMeasurementModel(
+            'obs', 'observableParameter1_obs * S1 + observableParameter2_obs',
+            {'S1', 'observableParameter1_obs', 'observableParameter2_obs'})
+        assert mm.value(sim, 0, exp, 0, 'obs', {}) == pytest.approx(2 * 10. + 7.)
+
+    def test_survives_pickle_dropping_the_callable(self):
+        pytest.importorskip('petab')
+        sim = _trace(['time', 'S1'], [(0., 10.), (1., 20.)])
+        exp = _exp_with_bindings(
+            ['time', 'obs'], [(0., 0.), (1., 0.)],
+            {'obs': {'observableParameter1_obs': ['2', '3']}})
+        mm = PerMeasurementModel('obs', 'observableParameter1_obs * S1',
+                                 {'S1', 'observableParameter1_obs'})
+        mm.value(sim, 0, exp, 0, 'obs', {})           # force a compile, then pickle
+        assert mm.__getstate__()['_compiled'] is None  # the callable is not pickled
+        restored = pickle.loads(pickle.dumps(mm))
+        assert restored.value(sim, 1, exp, 1, 'obs', {}) == pytest.approx(3 * 20.)
+
+    def test_missing_binding_table_raises_pointed_error(self):
+        pytest.importorskip('petab')
+        sim = _trace(['time', 'S1'], [(0., 10.)])
+        exp = _trace(['time', 'obs'], [(0., 0.)])      # no measurement_params attached
+        mm = PerMeasurementModel('obs', 'observableParameter1_obs * S1',
+                                 {'S1', 'observableParameter1_obs'})
+        with pytest.raises(PybnfError, match='binding table'):
+            mm.value(sim, 0, exp, 0, 'obs', {})

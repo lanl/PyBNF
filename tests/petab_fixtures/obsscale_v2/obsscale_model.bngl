@@ -1,0 +1,36 @@
+begin model
+
+  begin parameters
+    # A parabola Y = v1*x^2 + v2*x + v3 over a linearly growing counter x.
+    # s_lo / s_hi are NOT model parameters: they are PEtab per-measurement observable-scale
+    # nuisances (the row-varying observableParameters id), declared only in parameters.tsv and
+    # bound per data point from the measurement_params sidecar at eval time (ADR-0045).
+    v1 0.5
+    v2 1
+    v3 3
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)+v3
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+# New-era (edition 2): the simulation is synthesized from the experiment: line, so the
+# model carries no actions block (ADR-0028). Carried byte-verbatim on import (ADR-0036).
