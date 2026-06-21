@@ -1406,8 +1406,7 @@ class Configuration:
         # be declared as a free parameter. One general check derived from the
         # objective's sources (ADR-0021) replacing the old per-objfunc magic-name
         # special cases; self.obj is already built (it precedes _load_variables).
-        declared_params = {k[1] for k in self.config.keys()
-                           if isinstance(k, tuple) and re.search('var$', k[0])}
+        declared_params = {k[1] for k in self.config.keys() if self._is_free_param_key(k)}
         missing = self.obj.required_free_noise_params() - declared_params
         if missing:
             names = ', '.join(sorted(missing))
@@ -1441,11 +1440,138 @@ class Configuration:
                         p2 = self.config[k][1] if len(self.config[k]) >= 2 else None
                         free_param = FreeParameter(k[1], k[0], self.config[k][0], p2,
                                                    initialization_distribution=initialization_distribution)
+            elif isinstance(k, tuple) and k[0] == 'parameter':
+                # New-era ``parameter:`` record (ADR-0043) -- a fully-labeled free-parameter
+                # declaration. Edition-gated (>= 2); the legacy positional ``*_var`` lines above
+                # are unchanged at every edition.
+                ed = edition.resolve_edition(self.config.get('edition'))
+                edition.require_edition(ed, 2, "the 'parameter:' declaration syntax")
+                free_param = self._free_parameter_from_record(k[1], self.config[k],
+                                                              initialization_distribution)
+            else:
+                continue
 
-                logger.debug(f'Adding parameter {free_param.name} with bounds [{free_param.lower_bound}, {free_param.upper_bound}]')
-                variables.append(free_param)
+            logger.debug(f'Adding parameter {free_param.name} with bounds [{free_param.lower_bound}, {free_param.upper_bound}]')
+            variables.append(free_param)
         logger.info('Loaded variables')
         return variables
+
+    @staticmethod
+    def _is_free_param_key(k):
+        """Whether a config key declares a free parameter -- a legacy ``(*_var, id)`` tuple
+        or a new-era ``('parameter', id)`` record (ADR-0043)."""
+        return isinstance(k, tuple) and (bool(re.search('var$', k[0])) or k[0] == 'parameter')
+
+    def _free_parameter_from_record(self, pid, raw_fields, initialization_distribution):
+        """Build a :class:`FreeParameter` from a new-era ``parameter:`` record (ADR-0043).
+
+        ``raw_fields`` is the parsed ``{field: str}`` map -- every part of the line is named:
+        ``prior`` (the family), ``space`` (``linear``/``log10``, the sampling-space transform),
+        the family's own distribution fields (``mean``/``sd``, ``location``/``scale``, ...),
+        ``lower``/``upper`` (the bounds that truncate the prior -- #417/ADR-0020), and
+        ``initial_value`` (the start point). No positional numbers; the family names its fields
+        via ``Prior.field_names``. The truncation/box capability is unchanged -- this only maps
+        named fields onto the existing ``FreeParameter`` constructor.
+        """
+        fields = dict(raw_fields)
+
+        def _num(name):
+            v = fields.pop(name)
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                raise PybnfError(f"Parameter '{pid}': field '{name}' must be a number, got {v!r}.")
+
+        prior_name = fields.pop('prior', None)
+        # The sampling-space transform. PyBNF samples in linear, log10, or natural log; each
+        # base is named explicitly so it is never ambiguous (ADR-0022/0043). ``lin`` is
+        # accepted as PEtab's spelling of ``linear``; ``log`` is rejected as ambiguous (PEtab
+        # means natural by it, PyBNF historically means log10) -- write ``ln`` or ``log10``.
+        # The base prefixes the family keyword (``log{f}_var`` / ``ln{f}_var`` / ``var``).
+        pscale = str(fields.pop('parameter_scale', 'linear')).lower()
+        scale_prefix = {'lin': '', 'linear': '', 'log10': 'log', 'ln': 'ln'}
+        if pscale == 'log':
+            raise PybnfError(
+                f"Parameter '{pid}': parameter_scale 'log' is ambiguous -- write 'log10' "
+                f"(base 10) or 'ln' (natural log) explicitly (ADR-0022).")
+        if pscale not in scale_prefix:
+            raise PybnfError(f"Parameter '{pid}': parameter_scale must be 'linear', 'log10', or "
+                             f"'ln', got '{pscale}'.")
+        prefix = scale_prefix[pscale]
+
+        lower = _num('lower') if 'lower' in fields else None
+        upper = _num('upper') if 'upper' in fields else None
+        if (lower is None) != (upper is None):
+            raise PybnfError(f"Parameter '{pid}': bounds need both 'lower' and 'upper' "
+                             f"(one-sided truncation is not supported).")
+        initial_value = _num('initial_value') if 'initial_value' in fields else None
+        # On a log scale, theta must be strictly positive (log of <= 0 is -inf, an infinite
+        # box edge / undefined start). Catch it here with a clear message rather than letting
+        # it become a degenerate -inf bound downstream.
+        is_log_scale = prefix in ('log', 'ln')
+        if is_log_scale and lower is not None and lower <= 0.0:
+            raise PybnfError(f"Parameter '{pid}': a {pscale} parameter_scale needs 'lower' > 0 "
+                             f"(log of <= 0 is -inf), got lower={lower}.")
+
+        if prior_name is None:
+            if lower is not None:
+                # No prior but bounds -> uniform over the bounds (PEtab's default for an
+                # estimated parameter without an explicit prior; the importer does the same).
+                keyword = f'{prefix}uniform_var'
+                self._reject_extra_fields(pid, fields, keyword)
+                return FreeParameter(pid, keyword, lower, upper, value=initial_value, bounded=True,
+                                     initialization_distribution=initialization_distribution)
+            # No prior and no bounds -> the no-prior start point (legacy var/logvar/lnvar). Its
+            # start value is carried in the FreeParameter's first slot *in sampling space*
+            # (Simplex reads it via from_sampling_space(p1)), so map the theta-space
+            # initial_value through the scale -- making initial_value the real value (theta) for
+            # a log start point too, consistent with the prior-param case.
+            if initial_value is None:
+                raise PybnfError(f"Parameter '{pid}': declares no prior, no bounds, and no "
+                                 f"initial_value -- nothing to fit. Give it a 'prior:', a "
+                                 f"'lower:'/'upper:' box, or an 'initial_value:'.")
+            if is_log_scale and initial_value <= 0.0:
+                raise PybnfError(f"Parameter '{pid}': a {pscale} start point needs "
+                                 f"initial_value > 0, got {initial_value}.")
+            self._reject_extra_fields(pid, fields, 'a no-prior start point')
+            _, start_scale = PRIOR_KEYWORD_MAP[f'{prefix}var']
+            return FreeParameter(pid, f'{prefix}var', float(start_scale.forward(initial_value)), None,
+                                 initialization_distribution=initialization_distribution)
+
+        prior_name = str(prior_name).lower()
+        if prior_name == 'uniform':
+            # Uniform: lower/upper ARE the support (and the bounds); no separate family fields.
+            if lower is None:
+                raise PybnfError(f"Parameter '{pid}': a uniform prior needs 'lower' and 'upper'.")
+            keyword = f'{prefix}uniform_var'
+            self._reject_extra_fields(pid, fields, keyword)
+            return FreeParameter(pid, keyword, lower, upper, value=initial_value, bounded=True,
+                                 initialization_distribution=initialization_distribution)
+
+        keyword = f'{prefix}{prior_name}_var'
+        if keyword not in PRIOR_KEYWORD_MAP:
+            raise PybnfError(f"Parameter '{pid}': unknown prior family '{prior_name}'.")
+        fam, _scale = PRIOR_KEYWORD_MAP[keyword]
+        params = []
+        for fname in fam.field_names:
+            if fname not in fields:
+                raise PybnfError(f"Parameter '{pid}': prior '{prior_name}' needs field '{fname}'.")
+            params.append(_num(fname))
+        self._reject_extra_fields(pid, fields, f"prior '{prior_name}'")
+        p1 = params[0]
+        p2 = params[1] if len(fam.field_names) >= 2 else None
+        # lower/upper truncate an unbounded-support family to a finite reflecting box (ADR-0020).
+        return FreeParameter(pid, keyword, p1, p2, lb=lower, ub=upper, value=initial_value,
+                             initialization_distribution=initialization_distribution)
+
+    @staticmethod
+    def _reject_extra_fields(pid, leftover, where):
+        """Raise a clear error if a ``parameter:`` record carries fields unknown to ``where``
+        (a typo or a field from a different family) -- naming every part means an unrecognised
+        name is an error, not a silently-ignored token."""
+        if leftover:
+            unknown = ', '.join(sorted(leftover))
+            raise PybnfError(f"Parameter '{pid}': unknown field(s) for {where}: {unknown}.")
 
     def _check_variable_keyword_combination(self, fit_type):
         """Validate that the fit's free-parameter keywords match what the fit_type

@@ -20,6 +20,7 @@ from .base import FrozenPrior
 @register_prior_family('laplace')
 class Laplace(FrozenPrior):
     has_bounded_support = False
+    field_names = ('location', 'scale')
 
     def __init__(self, loc, b):
         # b is the Laplace scale (diversity) parameter, i.e. scipy's `scale`.

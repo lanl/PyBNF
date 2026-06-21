@@ -250,3 +250,41 @@ class TestParse:
         # observable-specific format hint.
         with pytest.raises(PybnfError, match='observable:'):
             parse.ploop(['observable: pErk'])
+
+
+class TestParameterRecord:
+    """The new-era ``parameter:`` record grammar (ADR-0043): a fully-labeled
+    free-parameter declaration parsed into ordered named string fields. config.py
+    validates the field set against the family and builds the FreeParameter."""
+
+    def test_parses_into_ordered_named_fields(self):
+        assert parse.parse('parameter: k, prior: normal, mean: 0, sd: 1, lower: -5, upper: 5') == \
+            ['parameter', 'k', ['prior', 'normal'], ['mean', '0'], ['sd', '1'],
+             ['lower', '-5'], ['upper', '5']]
+        # a bare-word value (a family name / a space) and a numeric value coexist
+        assert parse.parse('parameter: k, prior: normal, space: log10, mean: 1, sd: 0.5') == \
+            ['parameter', 'k', ['prior', 'normal'], ['space', 'log10'], ['mean', '1'], ['sd', '0.5']]
+        # the head alone with a single field
+        assert parse.parse('parameter: k, initial_value: 5') == \
+            ['parameter', 'k', ['initial_value', '5']]
+
+    def test_ploop_stores_fields_dict(self):
+        d = parse.ploop(['parameter: k, prior: normal, mean: 0, sd: 1, lower: -5, upper: 5',
+                         'parameter: j, prior: uniform, lower: 0, upper: 10'])
+        assert d[('parameter', 'k')] == {'prior': 'normal', 'mean': '0', 'sd': '1',
+                                         'lower': '-5', 'upper': '5'}
+        assert d[('parameter', 'j')] == {'prior': 'uniform', 'lower': '0', 'upper': '10'}
+
+    def test_duplicate_field_raises(self):
+        with pytest.raises(PybnfError, match="field 'mean' is specified multiple times"):
+            parse.ploop(['parameter: k, prior: normal, mean: 0, mean: 1'])
+
+    def test_duplicate_parameter_raises(self):
+        with pytest.raises(PybnfError, match="Parameter 'k' is specified multiple times"):
+            parse.ploop(['parameter: k, prior: normal, mean: 0, sd: 1',
+                         'parameter: k, prior: uniform, lower: 0, upper: 1'])
+
+    def test_malformed_line_reports_parameter_hint(self):
+        # A field missing its value -> the parameter-specific format hint.
+        with pytest.raises(PybnfError, match='parameter:'):
+            parse.ploop(['parameter: k, prior'])

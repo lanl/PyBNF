@@ -50,6 +50,18 @@ the ambiguity instead.
   PEtab's natural-log priors to PyBNF's log10 (`σ → σ/ln10`). The mismatch is
   confined to the adapter; the PyBNF core sees one base.
 
+## Amendment (2026-06-20, #417 / ADR-0043)
+
+The new-era `parameter:` record adds a first-class **`Ln` parameter scale**, selectable as
+`parameter_scale: ln` (alongside `linear` / `log10`). This **amends the "one base = log10"
+*simplification*** above — natural log is no longer noise-side only — but **keeps this ADR's actual
+rule intact**: every log scale names its base explicitly (`log10` vs `ln`), and a bare ambiguous
+`log` is rejected, so the units trap this ADR closed stays closed. The motivation is symmetric: just
+as silently reading a log10 σ as natural was wrong, *forcing* a user who wants ln to convert to log10
+by hand is user-hostile. The `Scale` abstraction already centralized the transform, so the families /
+proposal arithmetic / prior density compose for free; only a few base-10 hardcodes that bypassed
+`_scale` were routed back through it (ADR-0043's implementation note).
+
 ## Considered Options
 
 - **Keep `lognormal` natural-log and document the difference.** Rejected — this is

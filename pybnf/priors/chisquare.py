@@ -16,6 +16,7 @@ from .base import FrozenPrior
 class ChiSquare(FrozenPrior):
     has_bounded_support = False
     n_params = 1
+    field_names = ('dof',)
 
     def __init__(self, dof):
         self.frozen = stats.chi2(df=dof)

@@ -251,8 +251,26 @@ def parse(s):
         ((obs_column_key + colon - obs_column)
          | (obs_formula_kw + colon - obs_formula)) - comment
 
+    # new-era free-parameter record (ADR-0043) -- every part of the line is named:
+    #   parameter: <id>[, prior: <family>][, scale: lin|log10][, <field>: <num> ...]
+    #             [, lower: <num>, upper: <num>][, initial_value: <num>]
+    # The fully-labeled replacement for the legacy positional ``<family>_var = id p1 p2``
+    # (which stays, edition-gated): no positional numbers, the family names its own params
+    # (normal -> mean/sd, ...), bounds are named lower/upper, and the prior-truncation box of
+    # #417 is just the lower/upper fields. Parsed permissively into ordered (field, value)
+    # pairs -- the noise_model/observable pattern -- and config.py validates the field set
+    # against the family + builds the FreeParameter. A field value is a number or a bare word
+    # (a family name like ``normal`` or a scale like ``log10``). Output:
+    # ``['parameter', <id>, [<field>, <value>], ...]``. Edition-gated (>= 2) in config.py.
+    parameter_key = pp.CaselessLiteral('parameter')
+    param_id = pp.Word(pp.alphas, pp.alphanums + '_')
+    param_field_name = pp.Word(pp.alphas, pp.alphanums + '_')
+    param_field_value = num | pp.Word(pp.alphas, pp.alphanums + '_')
+    parameter_field = pp.Group(pp.Suppress(',') + param_field_name + colon - param_field_value)
+    parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
+
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -410,6 +428,23 @@ def ploop(ls):  # parse loop
                     if obs_key in d:
                         raise PybnfError(f"Observable '{entity}' is specified multiple times")
                     d[obs_key] = header
+            elif l[0] == 'parameter':
+                # New-era parameter record (ADR-0043): ['parameter', <id>, [field, value], ...].
+                # Store under a structural ('parameter', id) tuple key -> an ordered dict of the
+                # named string fields (prior/scale/<family params>/lower/upper/initial_value).
+                # config.py edition-gates these and builds the FreeParameter; keeping the values
+                # as strings here lets config.py do the float/family-aware interpretation.
+                pid = l[1]
+                fields = {}
+                for grp in l[2:]:
+                    fname, fval = grp[0].lower(), grp[1]
+                    if fname in fields:
+                        raise PybnfError(f"Parameter '{pid}': field '{fname}' is specified multiple times")
+                    fields[fname] = fval
+                pkey = ('parameter', pid)
+                if pkey in d:
+                    raise PybnfError(f"Parameter '{pid}' is specified multiple times")
+                d[pkey] = fields
             elif l[0] == 'noise_model':
                 # noise_model [<obs>] = <family>, <param> = <verb> [<arg>][, location = mean|median]
                 # (ADR-0021, ADR-0024, ADR-0031). Store as a structural ('noise_model',
@@ -538,6 +573,11 @@ def ploop(ls):  # parse loop
             elif key == 'observable':
                 fmt = "'observable: entity, column: header' mapping a model observable/function name to a " \
                       "differently-named data column header (requires edition >= 2)"
+            elif key == 'parameter':
+                fmt = "'parameter: id, prior: <family>, <field>: <num>, ...' with named fields -- e.g. " \
+                      "'parameter: k, prior: normal, mean: 0, sd: 1, lower: -5, upper: 5' or " \
+                      "'parameter: k, prior: uniform, lower: 0, upper: 10' (optionally parameter_scale: log10|ln, " \
+                      "initial_value: x) (requires edition >= 2)"
 
             message = f"Parsing configuration key '{key}' on line {i}.\n"
             if fmt == '':

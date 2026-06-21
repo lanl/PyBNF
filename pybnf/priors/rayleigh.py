@@ -16,6 +16,7 @@ from .base import FrozenPrior
 class Rayleigh(FrozenPrior):
     has_bounded_support = False
     n_params = 1
+    field_names = ('scale',)
 
     def __init__(self, ray_scale):
         self.frozen = stats.rayleigh(scale=ray_scale)

@@ -15,7 +15,7 @@ no-prior keywords (Simplex start points), mapped to ``NoPrior``.
 
 from ..registry import PRIOR_FAMILY_REGISTRY
 from .base import FrozenPrior, NoPrior, Prior
-from .scale import LINEAR, LOG10, Linear, Log10, Scale
+from .scale import LINEAR, LN, LOG10, Linear, Ln, Log10, Scale
 from .truncated import TruncatedPrior
 
 # Import the family leaves for their @register_prior_family side effects.
@@ -29,13 +29,20 @@ from . import chisquare  # noqa: F401, E402
 from . import rayleigh  # noqa: F401, E402
 
 # {keyword: (family_cls, scale)}. NoPrior carries a scale but no distribution.
+# The ``log`` (log10) and ``ln`` (natural) prefixes give a family its two log-scale
+# keywords; the ``ln*`` set is reachable only via the new-era ``parameter:`` record
+# (``parameter_scale: ln``, ADR-0043/0022) -- the legacy positional grammar
+# (``var_keyword_grammar``) still generates only the linear + log10 keywords, so legacy
+# configs are unchanged.
 PRIOR_KEYWORD_MAP = {
     'var': (NoPrior, LINEAR),
     'logvar': (NoPrior, LOG10),
+    'lnvar': (NoPrior, LN),
 }
 for _base, _entry in PRIOR_FAMILY_REGISTRY.items():
     PRIOR_KEYWORD_MAP[f'{_base}_var'] = (_entry.cls, LINEAR)
     PRIOR_KEYWORD_MAP[f'log{_base}_var'] = (_entry.cls, LOG10)
+    PRIOR_KEYWORD_MAP[f'ln{_base}_var'] = (_entry.cls, LN)
 
 
 def build_prior(keyword, p1, p2):
@@ -76,6 +83,6 @@ def var_keyword_grammar():
 
 
 __all__ = [
-    'Prior', 'NoPrior', 'FrozenPrior', 'TruncatedPrior', 'Scale', 'Linear', 'Log10',
-    'LINEAR', 'LOG10', 'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
+    'Prior', 'NoPrior', 'FrozenPrior', 'TruncatedPrior', 'Scale', 'Linear', 'Log10', 'Ln',
+    'LINEAR', 'LOG10', 'LN', 'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
 ]

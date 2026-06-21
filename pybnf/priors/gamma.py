@@ -17,6 +17,7 @@ from .base import FrozenPrior
 @register_prior_family('gamma')
 class Gamma(FrozenPrior):
     has_bounded_support = False
+    field_names = ('shape', 'scale')
 
     def __init__(self, shape, gamma_scale):
         # a = shape, scale = scale (scipy's gamma is shape-scale; PEtab matches).

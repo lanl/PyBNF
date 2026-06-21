@@ -19,6 +19,7 @@ from .base import Prior
 @register_prior_family('uniform')
 class Uniform(Prior):
     has_bounded_support = True
+    field_names = ('lower', 'upper')
 
     def __init__(self, lo, hi):
         self.lo = lo

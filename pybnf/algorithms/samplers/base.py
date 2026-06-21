@@ -356,10 +356,10 @@ class BayesianAlgorithm(Algorithm):
             # Bin in the parameter's sampling space u -- log10 for a log variable,
             # identity otherwise; ask the parameter for the transform (#412).
             histdata = v.to_sampling_space(dat_array[:, i])
-            if v.log_space:
-                header = 'log10_lower_bound\tlog10_upper_bound\tcount'
-            else:
-                header = 'lower_bound\tupper_bound\tcount'
+            # Label the bin edges with the variable's actual sampling space (log10 / ln /
+            # linear) so a natural-log parameter is not mislabeled 'log10' (ADR-0043).
+            edge_prefix = f'{v.scale_name}_' if v.log_space else ''
+            header = f'{edge_prefix}lower_bound\t{edge_prefix}upper_bound\tcount'
             hist, bin_edges = np.histogram(histdata, bins=self.num_bins)
             result_array = np.stack((bin_edges[:-1], bin_edges[1:], hist), axis=-1)
             np.savetxt(fname, result_array, delimiter='\t', header=header)

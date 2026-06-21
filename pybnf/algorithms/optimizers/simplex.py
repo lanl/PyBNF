@@ -3,11 +3,12 @@
 Also used as the refinement step after another fit. Extracted byte-identical
 (M1 Step 4). Subclasses Algorithm and sets ``_is_simplex = True`` so the
 inherited run() teardown always clears the Simulations directory at end-of-fit.
-Imports the module-level ``exp10`` helper from the package base (leaf -> base).
+The start value is mapped out of sampling space by the parameter's own scale
+(``FreeParameter.from_sampling_space``), so log10 and natural-log vars both work.
 """
 
 
-from ..base import Algorithm, exp10
+from ..base import Algorithm
 from ...config_schema import PyBNFConfigModel
 from ...pset import PSet
 from ...printing import print1, print2
@@ -132,9 +133,10 @@ class SimplexAlgorithm(Algorithm):
         """
         start_vars = []
         for v in self.variables:
-            # var/logvar carry a single start value p1 in the parameter's scale;
-            # map it back to a stored value (logvar's p1 is log10, so exp10).
-            start_vars.append(v.set_value(exp10(v.p1) if v.log_space else v.p1))
+            # var/logvar/lnvar carry a single start value p1 in the parameter's sampling
+            # space; the scale maps it back to a stored value (10**p1 for log10, exp(p1)
+            # for ln, identity for linear).
+            start_vars.append(v.set_value(v.from_sampling_space(v.p1)))
         start_pset = PSet(start_vars)
         self.config.config['simplex_start_point'] = start_pset
 

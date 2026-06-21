@@ -1753,6 +1753,7 @@ class FreeParameter:
         self.value = value
 
         self.log_space = self._scale.is_log
+        self.scale_name = self._scale.name
 
     @property
     def _distribution(self):
@@ -2000,7 +2001,10 @@ class FreeParameter:
             raise ValueError("Cannot calculate diff between two FreeParameter instances that are not varying in the same"
                              "space")
         if self.log_space:
-            return np.log10(self.value / other.value)
+            # Difference in the parameter's sampling space; ``_scale.forward`` is the base
+            # (log10 or ln), so this is log10(a/b) for a log10 parameter -- bit-identical to
+            # the old hardcode -- and ln(a/b) for a natural-log one (ADR-0043).
+            return self._scale.forward(self.value / other.value)
         else:
             return self.value - other.value
 

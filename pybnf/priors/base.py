@@ -38,6 +38,11 @@ class Prior(ABC):
     #: location/scale/bounds families; the one-parameter exponential/chisquare/rayleigh
     #: override to 1, so the grammar admits a single number -- ADR-0010/#417).
     n_params = 2
+    #: The config field names for the family's distribution parameters, in ``build()`` order
+    #: -- the new-era ``parameter:`` record names each one (ADR-0043), so a positional
+    #: ``p1 p2`` becomes ``mean: .. , sd: ..``. Concrete families override; the length must
+    #: match ``n_params``.
+    field_names = ('p1', 'p2')
     #: The underlying scipy frozen distribution, or ``None``.
     frozen = None
 
@@ -98,6 +103,7 @@ class NoPrior(Prior):
 
     has_prior = False
     has_bounded_support = False
+    field_names = ()
     frozen = None
 
     @classmethod

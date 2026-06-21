@@ -17,6 +17,7 @@ from .base import FrozenPrior
 class Exponential(FrozenPrior):
     has_bounded_support = False
     n_params = 1
+    field_names = ('scale',)
 
     def __init__(self, exp_scale):
         self.frozen = stats.expon(scale=exp_scale)

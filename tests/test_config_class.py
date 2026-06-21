@@ -1,12 +1,15 @@
 from .context import config
 from .context import data
 from .context import objective
+from .context import parse
 from .context import pset
 from .context import printing
 from .context import raises
 
+import json
 import numpy as np
 import operator
+import pytest
 
 
 class TestConfig(object):
@@ -424,3 +427,125 @@ class TestConfig(object):
     @raises(config.UnmatchedExperimentalDataError)
     def test_unmatched_data(self):
         config.Configuration(self.cf1)
+
+
+class TestParameterRecordConfig:
+    """The new-era ``parameter:`` record (ADR-0043) -> FreeParameter, end to end.
+
+    Every part of the line is named: prior family, space (lin/log10), the family's own
+    distribution fields, lower/upper bounds (which truncate the prior, ADR-0020/#417), and
+    initial_value. Built simulator-free over an AnalyticalModel ``.target`` (the golden-config
+    tier) under edition 2, plus direct unit checks of the field->FreeParameter mapping."""
+
+    _GAUSS_TARGET = json.dumps({'type': 'gaussian', 'mean': [0.0], 'variance': [1.0]})
+    _TARGET_EXP = '# index\tscore\n0\t0\n'
+
+    def _build_vars(self, tmp_path, monkeypatch, param_lines):
+        (tmp_path / 'gaussian.target').write_text(self._GAUSS_TARGET)
+        (tmp_path / 'target.exp').write_text(self._TARGET_EXP)
+        monkeypatch.chdir(tmp_path)
+        conf = ('edition = 2\njob_type = de\nobjective = sos\n'
+                'model = gaussian.target : target.exp\n'
+                'population_size = 5\nmax_iterations = 5\nwall_time_sim = 0\n'
+                + ''.join(line + '\n' for line in param_lines))
+        c = config.Configuration(parse.ploop(conf.splitlines(keepends=True)))
+        return {v.name: v for v in c.variables}
+
+    def test_truncated_normal_record_matches_direct(self, tmp_path, monkeypatch):
+        v = self._build_vars(tmp_path, monkeypatch,
+                             ['parameter: t, prior: normal, mean: 0, sd: 1, lower: -5, upper: 5'])['t']
+        ref = pset.FreeParameter('t', 'normal_var', 0.0, 1.0, lb=-5.0, ub=5.0)
+        assert v.type == 'normal_var' and v.bounded and v.has_bounded_support
+        assert (v.lower_bound, v.upper_bound) == (ref.lower_bound, ref.upper_bound)
+        for theta in (-5.0, 0.0, 4.9, 10.0):
+            assert v.prior_logpdf(theta) == ref.prior_logpdf(theta)
+
+    def test_record_family_variety(self, tmp_path, monkeypatch):
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: a, prior: normal, mean: 0, sd: 1',                       # unbounded
+            'parameter: b, prior: uniform, lower: 0, upper: 10',                 # uniform
+            'parameter: c, prior: normal, parameter_scale: log10, mean: 1, sd: 0.5, lower: 0.1, upper: 100',
+            'parameter: e, prior: exponential, scale: 0.5',                      # one-param family
+        ])
+        a = got['a']
+        assert a.type == 'normal_var' and not a.bounded
+        assert a.lower_bound == -np.inf and a.upper_bound == np.inf
+        b = got['b']
+        assert b.type == 'uniform_var' and (b.lower_bound, b.upper_bound) == (0.0, 10.0)
+        c = got['c']
+        assert c.type == 'lognormal_var' and c.log_space
+        assert (c.lower_bound, c.upper_bound) == (0.1, 100.0) and c.has_bounded_support
+        e = got['e']
+        assert e.type == 'exponential_var' and e.p1 == 0.5
+
+    def test_no_prior_bounds_defaults_to_uniform(self, tmp_path, monkeypatch):
+        # prior omitted but bounds given -> uniform over the bounds (PEtab's default).
+        v = self._build_vars(tmp_path, monkeypatch,
+                             ['parameter: u, lower: 0, upper: 10'])['u']
+        assert v.type == 'uniform_var' and (v.lower_bound, v.upper_bound) == (0.0, 10.0)
+
+    def test_initial_value_routing(self, tmp_path, monkeypatch):
+        # A prior parameter carries initial_value as its theta-space .value (read by the
+        # population seed); a no-prior start point carries it as the first slot (Simplex reads p1).
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: p, prior: normal, mean: 0, sd: 1, lower: -5, upper: 5, initial_value: 2',
+            'parameter: s, initial_value: 3',
+        ])
+        assert got['p'].value == 2.0
+        assert got['s'].type == 'var' and got['s'].p1 == 3.0
+
+    def test_parameter_scale_linear_log10_ln(self, tmp_path, monkeypatch):
+        # All three sampling scales build; each prior is over the parameter in its OWN base
+        # (ADR-0043/0022): a natural-log normal is Normal over ln(theta), a log10 normal over
+        # log10(theta), and they differ -- proof the base is honored, not silently coerced.
+        from scipy import stats
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: a, prior: normal, mean: 1, sd: 0.5',                       # linear (default)
+            'parameter: b, prior: normal, parameter_scale: log10, mean: 1, sd: 0.5',
+            'parameter: c, prior: normal, parameter_scale: ln, mean: 1, sd: 0.5',
+            'parameter: u, prior: uniform, parameter_scale: ln, lower: 0.1, upper: 100',
+            'parameter: s, parameter_scale: ln, initial_value: 2',                 # no-prior ln start point
+        ])
+        ref = stats.norm(1, 0.5)
+        assert got['a'].scale_name == 'linear' and not got['a'].log_space
+        assert got['b'].type == 'lognormal_var' and got['b'].scale_name == 'log10'
+        assert got['c'].type == 'lnnormal_var' and got['c'].scale_name == 'ln'
+        theta = 3.0
+        assert got['b'].prior_logpdf(theta) == pytest.approx(ref.logpdf(np.log10(theta)))
+        assert got['c'].prior_logpdf(theta) == pytest.approx(ref.logpdf(np.log(theta)))
+        assert got['c'].prior_logpdf(theta) != got['b'].prior_logpdf(theta)   # base is honored
+        assert got['u'].type == 'lnuniform_var' and (got['u'].lower_bound, got['u'].upper_bound) == (0.1, 100.0)
+        # the ln start point's initial_value is the REAL value (theta): it round-trips out of
+        # ln sampling space to exactly 2, not exp(2) (initial_value is theta on every scale).
+        s = got['s']
+        assert s.type == 'lnvar' and s.from_sampling_space(s.p1) == pytest.approx(2.0)
+
+    def test_record_is_edition_gated(self, tmp_path, monkeypatch):
+        # A parameter: record in an otherwise-legacy job is rejected -- it needs edition 2.
+        (tmp_path / 'gaussian.target').write_text(self._GAUSS_TARGET)
+        (tmp_path / 'target.exp').write_text(self._TARGET_EXP)
+        monkeypatch.chdir(tmp_path)
+        conf = ('objfunc = direct_pass\nfit_type = de\n'
+                'model = gaussian.target : target.exp\n'
+                'parameter: a, prior: normal, mean: 0, sd: 1\n'
+                'population_size = 5\nmax_iterations = 5\nwall_time_sim = 0\n')
+        with pytest.raises(printing.PybnfError, match='edition 2'):
+            config.Configuration(parse.ploop(conf.splitlines(keepends=True)))
+
+    @pytest.mark.parametrize('fields,match', [
+        ({'prior': 'gaussian', 'mean': '0', 'sd': '1'}, 'unknown prior family'),
+        ({'prior': 'normal', 'mean': '0'}, "needs field 'sd'"),
+        ({'prior': 'normal', 'mean': '0', 'sd': '1', 'oops': '2'}, 'unknown field'),
+        ({'prior': 'normal', 'mean': '0', 'sd': '1', 'lower': '-5'}, "both 'lower' and 'upper'"),
+        ({'parameter_scale': 'log10'}, 'nothing to fit'),
+        ({'prior': 'normal', 'mean': 'abc', 'sd': '1'}, 'must be a number'),
+        ({'prior': 'normal', 'parameter_scale': 'bogus', 'mean': '0', 'sd': '1'}, "'linear', 'log10', or"),
+        ({'prior': 'normal', 'parameter_scale': 'log', 'mean': '0', 'sd': '1'}, 'ambiguous'),
+        ({'prior': 'normal', 'parameter_scale': 'ln', 'mean': '1', 'sd': '0.5',
+          'lower': '0', 'upper': '100'}, "'lower' > 0"),
+        ({'parameter_scale': 'log10', 'initial_value': '-5'}, 'initial_value > 0'),
+    ])
+    def test_record_field_errors(self, fields, match):
+        c = object.__new__(config.Configuration)
+        with pytest.raises(printing.PybnfError, match=match):
+            c._free_parameter_from_record('k', fields, 'prior')

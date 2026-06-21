@@ -17,6 +17,7 @@ from .base import FrozenPrior
 @register_prior_family('normal')
 class Normal(FrozenPrior):
     has_bounded_support = False
+    field_names = ('mean', 'sd')
 
     def __init__(self, loc, sigma):
         self.frozen = stats.norm(loc=loc, scale=sigma)

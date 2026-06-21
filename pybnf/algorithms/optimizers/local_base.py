@@ -27,7 +27,7 @@ These methods plug into the run loop through ``start_run`` / ``got_result`` only
 (ADR-0007); no method overrides ``run()``.
 """
 
-from ..base import Algorithm, exp10
+from ..base import Algorithm
 from ...pset import PSet
 
 import numpy as np
@@ -52,9 +52,10 @@ class StartPointOptimizer(Algorithm):
         * the **box center**, for a ``start_from_box`` optimizer given bounded
           priors -- the 0.5 quantile of each ``uniform_var`` / ``loguniform_var``,
           i.e. the midpoint of the box in sampling space ``u`` (#404, ADR-0017);
-        * else the single ``var`` / ``logvar`` start point Simplex uses (a single
-          value per parameter; ``logvar`` carries ``p1`` in ``log10``, so ``exp10``
-          maps it back to a stored value).
+        * else the single ``var`` / ``logvar`` / ``lnvar`` start point Simplex uses (a
+          single value per parameter; a log variable carries ``p1`` in its sampling
+          space, so ``from_sampling_space`` maps it back to a stored value -- ``10**p1``
+          for ``logvar``, ``exp(p1)`` for ``lnvar``, identity for ``var``).
         """
         if self.START_POINT_KEY in self.config.config:
             return self.config.config[self.START_POINT_KEY]
@@ -63,8 +64,7 @@ class StartPointOptimizer(Algorithm):
             # fit_types reach here with bounded priors -- config._load_variables
             # rejects them for the point-only start optimizers (Simplex/Powell).
             return PSet([v.value_from_quantile(0.5) for v in self.variables])
-        start_vars = [v.set_value(exp10(v.p1) if v.log_space else v.p1)
-                      for v in self.variables]
+        start_vars = [v.set_value(v.from_sampling_space(v.p1)) for v in self.variables]
         return PSet(start_vars)
 
     def _is_box_start(self):

@@ -17,6 +17,7 @@ from .base import FrozenPrior
 @register_prior_family('cauchy')
 class Cauchy(FrozenPrior):
     has_bounded_support = False
+    field_names = ('location', 'scale')
 
     def __init__(self, loc, scale):
         self.frozen = stats.cauchy(loc=loc, scale=scale)
