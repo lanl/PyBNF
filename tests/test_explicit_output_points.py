@@ -62,6 +62,30 @@ class TestExplicitPointsActions:
     def test_param_scan_needs_a_value(self):
         pset.ParamScan({'param': 'kAB', 'time': '500'}, explicit_points=[])
 
+    def test_param_scan_steady_state_makes_time_optional(self):
+        # ADR-0046: a steady-state scan needs no endpoint time -- `time` defaults to the
+        # bngsim max-time bound used only by the non-convergence parity fallback.
+        ps = pset.ParamScan({'param': 'kAB', 'steady_state': 1},
+                            explicit_points=[0.02, 0.005, 0.0125])
+        assert ps.steady_state == 1
+        assert ps.time == 1e6
+        assert ps.explicit_points == [0.005, 0.0125, 0.02]
+
+    def test_param_scan_t_end_aliases_time_and_is_not_steady_state(self):
+        # ADR-0046: an explicit `t_end:` is the fixed-endpoint escape hatch -- it sets the
+        # readout time and leaves steady_state off (a finite PEtab measurement time).
+        ps = pset.ParamScan({'param': 'kAB', 't_end': '500'}, explicit_points=[0.005, 0.02])
+        assert ps.time == 500.0
+        assert ps.steady_state == 0
+
+    def test_param_scan_legacy_default_is_not_steady_state(self):
+        ps = pset.ParamScan({'param': 'k', 'min': '0', 'max': '10', 'step': '2', 'time': '5'})
+        assert ps.steady_state == 0
+
+    @raises(printing.PybnfError)
+    def test_param_scan_steady_state_must_be_0_or_1(self):
+        pset.ParamScan({'param': 'kAB', 'steady_state': 2}, explicit_points=[0.005, 0.02])
+
 
 class TestBnglActionText:
     """BNGLModel.add_action emits sample_times / par_scan_vals into the action text."""
@@ -96,6 +120,28 @@ class TestBnglActionText:
         # are present ("defined min/max takes precedence").
         assert 'par_min' not in line and 'par_max' not in line and 'n_scan_pts' not in line
         assert 'parameter=>"kAB"' in line
+
+    def test_param_scan_steady_state_emits_newton_and_max_time_bound(self):
+        # ADR-0046: steady_state=>1 + ss_method=>"newton" flip on the already-built bngsim
+        # KINSOL path; t_end is the parity-fallback bound (bngsim's own max_time=1e6).
+        m = self._model()
+        m.add_action(pset.ParamScan({'param': 'kAB', 'steady_state': 1, 'suffix': 'dose'},
+                                   explicit_points=[0.005, 0.02]))
+        line = m.actions[-1]
+        assert 'steady_state=>1' in line
+        assert 'ss_method=>"newton"' in line
+        assert 't_end=>1000000.0' in line
+        assert 'par_scan_vals=>[0.005,0.02]' in line
+
+    def test_param_scan_fixed_endpoint_omits_steady_state(self):
+        # A `t_end:`-bearing (fixed-endpoint) scan is byte-identical to the pre-ADR-0046
+        # emission: no steady_state / ss_method, t_end is the readout time.
+        m = self._model()
+        m.add_action(pset.ParamScan({'param': 'kAB', 't_end': '500', 'suffix': 'dose'},
+                                   explicit_points=[0.005, 0.02]))
+        line = m.actions[-1]
+        assert 'steady_state' not in line and 'ss_method' not in line
+        assert 't_end=>500' in line
 
     def test_legacy_time_course_still_emits_n_steps(self):
         m = self._model()

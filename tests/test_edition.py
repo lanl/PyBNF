@@ -18,6 +18,7 @@ import numpy as np
 
 from pybnf import data, edition, noise, objective
 from pybnf.config import Configuration
+from pybnf.pset import ParamScan
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
 
@@ -517,6 +518,66 @@ wall_time_sim = 0
     assert 'abc_data' in suffixes       # wildtype sim output (the base MutationSet)
 
 
+# --- the new-era parameter_scan (dose-response) experiment (ADR-0046) ------------
+
+_SCAN_EXP = 'tests/bngl_files/abc/abc_scan.exp'
+
+
+@pytest.mark.roadrunner
+def test_experiment_parameter_scan_synthesizes_steady_state_scan():
+    """A new-era parameter_scan (dose-response) experiment synthesizes a ParamScan over the
+    data's swept-axis column, running each dose to STEADY STATE by default (ADR-0046): no
+    `t_end:` => steady_state=1, the doses fed as explicit_points (par_scan_vals), and the
+    col-0 header naming the swept parameter. The type is inferred from the non-`time`
+    independent variable -- no `type:` needed. abc_scan.exp's col 0 is `kAB`."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: dose, data: tests/bngl_files/abc/abc_scan.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    c = Configuration(ploop(conf.splitlines(keepends=True)))
+    action = c.models['abc'].actions[0]
+    assert isinstance(action, ParamScan)
+    assert action.steady_state == 1              # steady state by default (no t_end:)
+    assert action.param == 'kAB'                 # the col-0 header names the swept parameter
+    doses = sorted(set(data.Data(file_name=_SCAN_EXP)['kAB']))
+    assert action.explicit_points == doses       # the doses, fed as par_scan_vals (no forced 0)
+    # the swept-axis data is bound under the experiment name, scored at steady state.
+    assert c.exp_data['abc']['dose'].indvar == 'kAB'
+    assert c.mapping['abc'] == {'dose'}
+    # one output row per dose (no t=0 baseline) -> the adaptive_mcmc array-length invariant.
+    assert c.config['time_length']['dose'] == len(doses) - 1
+
+
+@pytest.mark.roadrunner
+def test_experiment_parameter_scan_t_end_is_fixed_endpoint():
+    """An explicit `t_end:` makes the scan a fixed-endpoint scan instead of steady state
+    (ADR-0046): steady_state stays off and `time` carries the readout endpoint (a finite
+    PEtab measurement time)."""
+    conf = """
+edition = 2
+model: tests/bngl_files/abc.xml
+experiment: dose, type: parameter_scan, t_end: 500, data: tests/bngl_files/abc/abc_scan.exp
+job_type = de
+objective = sos
+loguniform_var = kBA 0.001 1
+population_size = 8
+max_iterations = 5
+wall_time_sim = 0
+"""
+    c = Configuration(ploop(conf.splitlines(keepends=True)))
+    action = c.models['abc'].actions[0]
+    assert isinstance(action, ParamScan)
+    assert action.steady_state == 0
+    assert action.time == 500.0
+
+
 @pytest.mark.roadrunner
 def test_experiment_unknown_condition_raises():
     conf = """
@@ -531,26 +592,6 @@ max_iterations = 5
 wall_time_sim = 0
 """
     with pytest.raises(PybnfError, match="references condition 'nope'"):
-        Configuration(ploop(conf.splitlines(keepends=True)))
-
-
-@pytest.mark.roadrunner
-def test_experiment_parameter_scan_is_deferred():
-    """A parameter_scan experiment (inferred here from the non-time indvar 'kAB') is
-    rejected with the deferral message -- the scan endpoint time is not yet expressible
-    in the experiment: grammar (ADR-0028 Open/deferred)."""
-    conf = """
-edition = 2
-model: tests/bngl_files/abc.xml
-experiment: dose, data: tests/bngl_files/abc/abc_scan.exp
-job_type = de
-objective = sos
-loguniform_var = kBA 0.001 1
-population_size = 8
-max_iterations = 5
-wall_time_sim = 0
-"""
-    with pytest.raises(PybnfError, match='parameter_scan experiments are not yet supported'):
         Configuration(ploop(conf.splitlines(keepends=True)))
 
 

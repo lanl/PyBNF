@@ -274,6 +274,64 @@ def test_de_recovers_via_experiment_surface(seed, tmp_path, exp_for):
 
 
 # --------------------------------------------------------------------------- #
+# New-era parameter_scan (dose-response) at steady state (ADR-0046)
+# --------------------------------------------------------------------------- #
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('seed', [1234, 7])
+def test_de_recovers_dose_response_steady_state(seed, tmp_path):
+    """A new-era ``parameter_scan`` experiment recovers a parameter from STEADY-STATE
+    dose-response data through the real bngsim backend (ADR-0046).
+
+    Birth-death: ``0 -> A`` (rate ``k_prod``), ``A -> 0`` (rate ``k_deg``); the steady
+    state ``A_ss = k_prod / k_deg`` is an exact closed form, so the synthetic ``.exp``
+    (column 0 = the swept dose ``k_prod``, column 1 = ``A_tot = dose / k_deg_true``) is a
+    zero-noise oracle with a reachable optimum at the truth. The conf carries NO ``t_end:``,
+    so PyBNF synthesizes a ``steady_state=>1`` scan (bngsim's KINSOL solve per dose); a
+    correct steady-state simulate -> score -> propose loop recovers ``k_deg``. This is the
+    dose-response counterpart of ``test_de_recovers_via_experiment_surface`` (a time course).
+    """
+    H.require_bng2pl()
+    model_path = H.RECOVERY_MODELS_DIR / 'm08_birth_death.bngl'
+
+    k_deg_true = 2.0
+    doses = [1.0, 2.0, 4.0, 8.0, 16.0]            # k_prod values (the .exp swept axis)
+    exp_path = tmp_path / 'dose.exp'
+    lines = ['#\tk_prod\tA_tot']
+    lines += ['%.12g\t%.12g' % (d, d / k_deg_true) for d in doses]
+    exp_path.write_text('\n'.join(lines) + '\n')
+
+    # k_deg is the fitted free parameter (bound by id, ADR-0034); k_prod is the swept dose.
+    # The non-`time` independent variable ('k_prod') infers type=parameter_scan -- no type:
+    # field needed. No t_end: => steady state (PEtab time=inf).
+    conf = H.make_newera_config(tmp_path, str(model_path), str(exp_path),
+                                {'k_deg': ('uniform_var', 0.1, 10.0)}, 'dose', 'de',
+                                random_seed=seed, refine=1,
+                                population_size=10, max_iterations=20)
+
+    # The synthesized action is a steady-state scan over exactly the data's doses (a BNGL
+    # model carries its actions as emitted BNGL strings).
+    scan_line = next(a for a in conf.models['m08_birth_death'].actions if 'parameter_scan' in a)
+    assert 'steady_state=>1' in scan_line and 'ss_method=>"newton"' in scan_line
+    assert 'par_scan_vals=>[1.0,2.0,4.0,8.0,16.0]' in scan_line
+    assert 'parameter=>"k_prod"' in scan_line
+    assert conf.exp_data['m08_birth_death']['dose'].indvar == 'k_prod'
+
+    alg = H.build(conf, 'de')
+    H.drive(alg)
+    H.refine(alg, conf)
+
+    # Hard gate (data reproduced): zero-noise steady-state data -> objective floors near 0.
+    data_ss = sum((d / k_deg_true) ** 2 for d in doses)
+    assert alg.trajectory.best_score() < 1e-3 * data_ss, \
+        'dose-response: best objective %g not < %g' % (
+            alg.trajectory.best_score(), 1e-3 * data_ss)
+    # Soft gate: the degradation rate comes back at the truth.
+    rec = H.best_params(alg, ('k_deg',))['k_deg']
+    rel = abs(rec - k_deg_true) / k_deg_true
+    assert rel < 0.15, 'k_deg recovered %g, expected ~%g (%.0f%% off)' % (rec, k_deg_true, rel * 100)
+
+
+# --------------------------------------------------------------------------- #
 # Determinism (guards the RNG-migration contract on the real-sim path)
 # --------------------------------------------------------------------------- #
 @pytest.mark.usefixtures('_fakes')

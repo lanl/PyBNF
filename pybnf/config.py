@@ -868,11 +868,13 @@ class Configuration:
           different axis; the objective sums over every row, so replicate rows simply
           contribute more measurement terms -- the thing the legacy surface cannot do);
         * infers the simulation type from the data's independent variable (``time`` =>
-          time_course; anything else names a swept parameter => parameter_scan, which is
-          deferred -- see below) unless ``type:`` states it;
-        * synthesizes the ``TimeCourse`` action with the data's time points as explicit
-          output points (Chunk 3a), so the simulation lands on exactly the data and the
-          objective's by-indvar match always succeeds -- no hand-tuned uniform grid;
+          time_course; anything else names a swept parameter => parameter_scan) unless
+          ``type:`` states it;
+        * synthesizes the action with the data's independent-variable points as explicit
+          output points (Chunk 3a) -- a ``TimeCourse`` over the data's time grid, or a
+          ``ParamScan`` over the data's dose grid (ADR-0046) -- so the simulation lands on
+          exactly the data and the objective's by-indvar match always succeeds, with no
+          hand-tuned uniform grid;
         * attaches the action to the model and registers the stacked ``Data`` under the
           experiment's data key (the experiment name, or name+condition when a condition
           is applied -- the conditioned simulation output's suffix) in ``self.exp_data``
@@ -881,11 +883,10 @@ class Configuration:
         Edition-gated (``>= 2``): the parser accepts ``experiment:`` regardless, so the
         error is an explanatory ``require_edition`` rather than a parse failure.
 
-        **Deferred (ADR-0028 Open/deferred):** a parameter_scan experiment is rejected with
-        a clear message -- the scan's simulation endpoint time has no home in the
-        ``experiment:`` grammar yet. The Chunk 3a ``par_scan_vals`` plumbing stands ready
-        for when that surface is designed. ``.con``/``.prop`` (BPSL) data files are likewise
-        not yet routed through ``data:``.
+        A **parameter_scan** (dose-response) experiment runs each dose to steady state by
+        default (no ``t_end:``), mapping to PEtab ``time=inf`` (ADR-0046); an optional
+        ``t_end:`` fixes a finite endpoint. ``.con``/``.prop`` (BPSL) data files are not yet
+        routed through ``data:``.
         """
         # Parameter ids referenced only as a row-varying per-measurement noise token (the
         # ADR-0045 binding table) -- recognized as used by the free-parameter orphan check
@@ -911,28 +912,41 @@ class Configuration:
             if fields.get('measurement_params'):
                 self._attach_measurement_params(name, stacked, fields['measurement_params'])
             action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
-            if action_type != 'time_course':
-                raise PybnfError(
-                    f"Experiment '{name}' is a parameter_scan (independent variable "
-                    f"'{stacked.indvar}'), but parameter_scan experiments are not yet "
-                    "supported via the new 'experiment:' surface: the scan's simulation "
-                    "endpoint time has no home in the experiment grammar yet (ADR-0028, "
-                    "Open/deferred). Use a legacy 'param_scan' action for now.")
-
             data_key = self._resolve_experiment_data_key(name, model, base, fields.get('condition'))
 
             method = fields.get('method', 'ode')
             points = sorted({float(x) for x in stacked[stacked.indvar]})
-            action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+            if action_type == 'time_course':
+                action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+            else:
+                # parameter_scan / dose-response (ADR-0046): the data's independent-variable
+                # column (col 0) is the swept parameter -- its values are the doses, fed to the
+                # scan as explicit_points (par_scan_vals). A `t_end:` field fixes the endpoint
+                # (a finite PEtab measurement time); with none the scan runs each dose to
+                # STEADY STATE (the new-era default, mapping to PEtab time=inf). steady_state=1
+                # requests bngsim's KINSOL solve with the parity fallback (ss_method=>"newton",
+                # not user-exposed); that execution and its warn-and-score-last-value policy on
+                # non-convergence already live in bngsim_model -- the only new wire is requesting it.
+                scan = {'suffix': name, 'method': method, 'param': stacked.indvar}
+                t_end = fields.get('t_end')
+                if t_end is not None:
+                    scan['time'] = t_end
+                else:
+                    scan['steady_state'] = 1
+                action = ParamScan(scan, explicit_points=points)
             model.add_action(action)
 
             self.exp_data.setdefault(base, {})[data_key] = stacked
             self.mapping.setdefault(base, set()).add(data_key)
             # time_length is keyed by the bare action suffix (the experiment name); the
-            # condition/mutant combinations are formed downstream (adaptive_mcmc).
+            # condition/mutant combinations are formed downstream (adaptive_mcmc). The output
+            # is one row per explicit point in BOTH cases (a time course: one per sample time
+            # including the forced t=0; a scan: one per dose, no baseline), so len(points)-1
+            # equals the adaptive_mcmc output-array length for either action.
             self._experiment_time_length[name] = len(action.explicit_points) - 1
-            logger.debug(f"Experiment '{name}' on model '{base}': {len(points)} data time "
-                         f"point(s), data key '{data_key}', {len(fields['data'])} replicate file(s)")
+            logger.debug(f"Experiment '{name}' ({action_type}) on model '{base}': "
+                         f"{len(points)} point(s), data key '{data_key}', "
+                         f"{len(fields['data'])} replicate file(s)")
 
     def _resolve_experiment_model(self, name, model_ref):
         """Resolve an experiment's base model: the single declared model when ``model:`` is
@@ -1061,7 +1075,7 @@ class Configuration:
         """Infer an experiment's simulation type from the data's independent variable
         (``time`` => time_course; otherwise the indvar names a swept parameter =>
         parameter_scan), unless ``type:`` states it. Returns ``'time_course'`` or
-        ``'parameter_scan'`` (the caller defers the latter -- ADR-0028)."""
+        ``'parameter_scan'`` (a scan runs each dose to steady state by default -- ADR-0046)."""
         if explicit_type is not None:
             t = explicit_type.lower()
             if t in ('time_course', 'timecourse'):
@@ -1070,8 +1084,7 @@ class Configuration:
                 return 'parameter_scan'
             raise PybnfError(
                 f"Experiment '{name}' has type '{explicit_type}', which is not recognized. "
-                "Use 'time_course' (parameter_scan via the experiment: surface is deferred; "
-                "bifurcate is not supported).")
+                "Use 'time_course' or 'parameter_scan' (bifurcate is not supported).")
         if data.indvar is not None and data.indvar.lower() == 'time':
             return 'time_course'
         return 'parameter_scan'

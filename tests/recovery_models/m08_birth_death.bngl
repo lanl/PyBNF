@@ -1,0 +1,39 @@
+begin model
+#@model_id: m08_birth_death
+#@title: Birth-death steady state (PyBNF dose-response recovery fixture)
+#@description: 0 -> A (k_prod), A -> 0 (k_deg). The steady state A_ss = k_prod/k_deg is
+#  the closed form a dose-response fit recovers. A new-era parameter_scan sweeps k_prod
+#  (the dose, .exp column 0) and reads the steady-state observable A_tot; the fit recovers
+#  the degradation rate k_deg.
+#
+# Recovery-tier / new-era conventions (see tests/test_recovery.py):
+#   * NO `begin actions` block: PyBNF synthesizes the steady-state scan entirely from the
+#     experiment:/data: surface (ADR-0046) -- each dose runs to steady state (PEtab
+#     time=inf) via bngsim's KINSOL solver.
+#   * Free parameters bind BY ID (ADR-0034, edition >= 2): the fitted `k_deg` is a bare
+#     model-parameter id (no `__FREE` marker); the optimizer overrides it in place.
+#   * `k_prod` is the swept dose -- a plain model parameter the scan overrides per point.
+
+begin parameters
+  k_prod   1.0    # production rate (the SWEPT dose; overridden per scan point)
+  k_deg    1.0    # degradation rate (the FITTED free parameter, bound by id)
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  0
+end seed species
+
+begin observables
+  Molecules  A_tot  A()
+end observables
+
+begin reaction rules
+  birth: 0 -> A()    k_prod
+  death: A() -> 0    k_deg
+end reaction rules
+
+end model

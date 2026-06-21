@@ -209,16 +209,17 @@ def parse(s):
         pp.Suppress(',') + perturbations_key + colon - cond_perts - comment
 
     # new-era experiment grammar (ADR-0028) -- a PEtab Experiment carrying its data:
-    #   experiment: <name>[, condition: <c>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...]
+    #   experiment: <name>[, condition: <c>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...][, t_end: <t>]
     # A named simulation bound to its measurement files. The experiment NAME replaces the
     # legacy BNGL Suffix as the simulation's identity (it becomes both the action suffix and
     # the exp_data key); ``data:`` is a comma list whose multiple files are REPLICATES (all
     # measurements under the one experiment). The optional ``condition:`` names the Condition
     # to apply (omitted => wildtype), ``model:`` resolves the base model (omittable when one
-    # model), ``type:`` overrides the data-driven type inference, and ``method:`` the
-    # simulator. Each labeled sub-field is a single pp.Group, combined with pp.Each (``&``)
-    # so they may appear in ANY order after the name; only ``data:`` is required. ploop reads
-    # the groups by their label, so order does not matter. Output:
+    # model), ``type:`` overrides the data-driven type inference, ``method:`` the simulator,
+    # and ``t_end:`` a parameter_scan's fixed endpoint time (absent => steady state, the
+    # new-era scan default -- ADR-0046). Each labeled sub-field is a single pp.Group, combined
+    # with pp.Each (``&``) so they may appear in ANY order after the name; only ``data:`` is
+    # required. ploop reads the groups by their label, so order does not matter. Output:
     # ``['experiment', <name>, <field group>, ...]``. Edition-gated (>= 2) in config.py.
     experiment_key = pp.CaselessLiteral('experiment')
     exp_name = pp.Word(pp.alphas, pp.alphanums + '_')
@@ -228,6 +229,11 @@ def parse(s):
     exp_data_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('data') + colon + _DelimitedList(exp_file))
     exp_type_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('type') + colon + exp_field_token)
     exp_method_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('method') + colon + exp_field_token)
+    # The optional ``t_end:`` field (ADR-0046): a parameter_scan's fixed simulation endpoint
+    # time (a finite PEtab measurement time). Absent => the scan runs to steady state (PEtab
+    # time=inf), the new-era default. Ignored for a time course (its endpoint comes from the
+    # data's time grid). A single number; config.py reads it by label.
+    exp_tend_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('t_end') + colon + num)
     # The optional per-measurement binding-table sidecar (ADR-0045): names a .tsv whose
     # per-row placeholder tokens config.py attaches to this experiment's exp Data.
     exp_measparams_field = pp.Group(
@@ -235,7 +241,7 @@ def parse(s):
     experiment_gram = experiment_key + colon - exp_name + \
         (pp.Optional(exp_condition_field) & pp.Optional(exp_model_field) & exp_data_field
          & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)
-         & pp.Optional(exp_measparams_field)) - comment
+         & pp.Optional(exp_tend_field) & pp.Optional(exp_measparams_field)) - comment
 
     # new-era observable grammar (ADR-0028) -- a column-header override:
     #   observable: <entity>, column: <header>
@@ -584,9 +590,9 @@ def ploop(ls):  # parse loop
                       "= * / + - , optionally with 'model: modelfile' before perturbations (requires edition >= 2)"
             elif key == 'experiment':
                 fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' optionally with 'condition: c', " \
-                      "'model: modelfile', 'type: time_course' (parameter_scan is not yet supported via this " \
-                      "surface), 'method: ode|ssa|pla|nf', or 'measurement_params: file.tsv' in any order " \
-                      "(requires edition >= 2)"
+                      "'model: modelfile', 'type: time_course|parameter_scan', 'method: ode|ssa|pla|nf', " \
+                      "'t_end: <number>' (a parameter_scan's fixed endpoint; omit to run to steady state), " \
+                      "or 'measurement_params: file.tsv' in any order (requires edition >= 2)"
             elif key == 'observable':
                 fmt = "'observable: entity, column: header' mapping a model observable/function name to a " \
                       "differently-named data column header (requires edition >= 2)"

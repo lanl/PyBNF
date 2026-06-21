@@ -209,6 +209,13 @@ class TestParse:
             'type': 'time_course', 'data': ['a.exp', 'b.exp'],
             'condition': 'c1', 'model': 'm.xml', 'method': 'ssa'}
 
+    def test_experiment_t_end_field(self):
+        # ADR-0046: a parameter_scan's optional `t_end:` fixed endpoint -- a number read by
+        # label (order-independent), absent => the scan runs to steady state.
+        d = parse.ploop(['experiment: dose, type: parameter_scan, t_end: 500, data: d.exp'])
+        assert d[('experiment', 'dose')] == {
+            'type': 'parameter_scan', 't_end': '500', 'data': ['d.exp']}
+
     def test_experiment_ploop_stages_data_files(self):
         # Replicate data files are also staged into the exp_data set so the
         # normalization key can validate against them (as model/mutant lines do).

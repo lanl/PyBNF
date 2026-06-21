@@ -972,8 +972,14 @@ class BNGLModel(Model):
                 # n_scan_pts are deliberately omitted -- when present BioNetGen ignores
                 # par_scan_vals (BNGAction.pm: "defined min/max takes precedence").
                 par_scan_vals = ','.join(_format_bngl_number(p) for p in action.explicit_points)
+                # A steady-state scan (ADR-0046) requests bngsim's KINSOL solve per dose
+                # via steady_state=>1; ss_method=>"newton" is the only exposed method
+                # (KINSOL + parity fallback). t_end is emitted as the max-time bound for
+                # that fallback. A fixed-endpoint scan omits steady_state and reads each
+                # dose at t_end -- byte-identical to the pre-ADR-0046 emission.
+                ss = 'steady_state=>1,ss_method=>"newton",' if action.steady_state else ''
                 line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},' \
-                       f'par_scan_vals=>[{par_scan_vals}],log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
+                       f'{ss}par_scan_vals=>[{par_scan_vals}],log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
             else:
                 line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},' \
                        f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
@@ -1489,7 +1495,7 @@ class ParamScan(Action):
         # Available keys and default values
         num_keys = {'min', 'max', 'step', 'time'}
         str_keys = {'model', 'suffix', 'param', 'method'}
-        int_keys = {'subdivisions', 'logspace'}
+        int_keys = {'subdivisions', 'logspace', 'steady_state'}
         required_keys = {'min', 'max', 'step', 'time', 'param'}
         # Default values
         self.min = None
@@ -1502,6 +1508,19 @@ class ParamScan(Action):
         self.suffix = 'param_scan'
         self.method = 'ode'
         self.subdivisions = 1000
+        # Steady-state default (ADR-0046): a new-era parameter scan runs each dose to
+        # steady state (PEtab time=inf) rather than to a fixed endpoint. 0 = the legacy
+        # fixed-endpoint behaviour; the new-era loader sets 1 (with no ``time``).
+        self.steady_state = 0
+
+        # ``t_end`` is an accepted alias for ``time`` (the integration end time): for a
+        # fixed-endpoint scan it is the readout time, and for a steady-state scan the
+        # max-time bound of the parity fallback (ADR-0046). Map it onto ``time`` before the
+        # key loop so a single attribute carries both senses; copy the dict so the caller's
+        # is not mutated.
+        d = dict(d)
+        if 't_end' in d:
+            d['time'] = d.pop('t_end')
 
         # Transfer all the keys in the dict to my attributes of the same name
         for k in d:
@@ -1542,6 +1561,17 @@ class ParamScan(Action):
                 self.max = pts[-1]
             if self.step is None:
                 self.step = (pts[-1] - pts[0]) if pts[-1] != pts[0] else 1.0
+
+        # A steady-state scan (ADR-0046) integrates each dose to steady state, so ``time``
+        # (the BNG ``t_end``) is not a readout time the user must supply -- it is only the
+        # max-time BOUND used when bngsim's KINSOL solve does not converge and it falls back
+        # to a long parity integration (warn-and-score-last-value). Default it to bngsim's
+        # own ``steady_state(max_time=1e6)`` bound so that fallback is a genuine long run.
+        self.steady_state = int(self.steady_state)
+        if self.steady_state not in (0, 1):
+            raise PybnfError('For key "param_scan", the value for "steady_state" must be 0 or 1')
+        if self.steady_state and self.time is None:
+            self.time = 1e6
 
         for k in required_keys:
             if self.__getattribute__(k) is None:
