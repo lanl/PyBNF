@@ -142,8 +142,10 @@ Required Keys
    becomes a PEtab Condition, and an ``observable:`` renames a column before it is
    classified. The exporter is **new-era only**: it refuses a legacy data linkage
    (``model = X : Y.exp`` / ``mutant`` / ``param_scan``) under a modern edition, requiring
-   the surface above. Dose-response (parameter-scan) export is deferred together with the
-   parameter-scan authoring surface (#426). (ADR-0028)
+   the surface above. A dose-response (``parameter_scan``) experiment runs each dose to
+   steady state by default (PEtab ``time = inf``), with an optional ``t_end:`` fixed
+   endpoint; it exports to N steady-state Conditions/Experiments and imports back, closing
+   the dose-response round trip (#426). (ADR-0028, ADR-0046)
 
 .. _fit_type:
 

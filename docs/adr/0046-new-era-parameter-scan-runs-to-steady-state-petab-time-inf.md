@@ -1,9 +1,14 @@
 # A new-era `parameter_scan` experiment runs to steady state by default; PEtab `time = inf` maps to bngsim's KINSOL steady-state solve, and an explicit `t_end:` is the fixed-time escape hatch (issue #426)
 
-**Status: Accepted (2026-06-21); not yet implemented.** Closes the last experiment-type
+**Status: Accepted → implemented (2026-06-21).** Closes the last experiment-type
 gap ADR-0028 deferred: the new-era `experiment:` surface ran **time-course** experiments only
 and *raised* on a parameter scan (dose-response), because the scan's **simulation endpoint
-time** had no home in the grammar. This ADR pins that endpoint-time surface — and the PEtab v2
+time** had no home in the grammar. Built in three commits (#426): the fitter keystone (a new-era
+scan synthesizes a `steady_state=>1` `ParamScan` and fits), the exporter (a scan → N
+steady-state Conditions/Experiments at `time = inf`), and the importer (the inverse — N `time =
+inf` conditions → a swept-axis `.exp` + a `parameter_scan` experiment). Oracled by a `-m
+recovery` dose-response fit through real bngsim and an export→import→re-export byte-equal round
+trip (steady-state and fixed-`t_end:` alike). This ADR pins that endpoint-time surface — and the PEtab v2
 interop it unlocks — using the steady-state capability the bngsim backend already provides.
 
 ## The gap ADR-0028 left

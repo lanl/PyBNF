@@ -27,11 +27,9 @@ in the parameter table), while the model name ``v1`` becomes a pure condition ta
 marker, so it can never clash with a user-defined model name.
 
 The exporter reads the **new-era surface** (ADR-0028): :func:`build_experiment_conditions`
-transcribes named ``condition:``/``experiment:`` lines (the live path). The
-dose-response :func:`build_dose_response_conditions` is the era-neutral
-one-Condition-per-dose mapping, kept ready for when the new-era dose-response authoring
-surface lands (its scan endpoint time is deferred, #426); there is no new-era conf that
-exports a dose-response yet, so it has no live caller.
+transcribes named ``condition:``/``experiment:`` lines, and :func:`build_dose_response_conditions`
+maps a dose-response (parameter_scan) experiment to one Condition per dose + an Experiment
+measured at the scan time (``inf`` => steady state, ADR-0046) -- both live export paths.
 """
 
 import csv

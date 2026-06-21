@@ -4,8 +4,9 @@
 surface (`job_type` + `model:` + `condition:` + `experiment:`/`data:` + `observable:`) is
 built and edition-gated (Chunks 0–4), and the PEtab v2 exporter now reads it directly
 (Chunk 5) — export is transcription, and the exporter is new-era only (it refuses the
-legacy data linkage). Dose-response (parameter-scan) authoring/export remains deferred
-(its simulation endpoint time has no home in the `experiment:` grammar; **#426**).
+legacy data linkage). Dose-response (parameter-scan) authoring/export/import is now also
+done — a scan runs to steady state by default (PEtab `time = inf`), with an optional
+`t_end:` fixed endpoint (**#426**, ADR-0046).
 **Separate from ADR-0027** (the PEtab v2 *exporter* seam this builds on). This ADR
 redesigns PyBNF's *own* config language so a fitting job is natively shaped like a PEtab v2
 problem — which turns export into transcription and fixes long-standing UX warts. Backward
@@ -137,19 +138,14 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
 
 ## Open / deferred (the loose ends to tie up)
 
-- **`parameter_scan` via `experiment:` — the scan's simulation endpoint time.** The swept
-  *values* of a parameter scan come from the data's independent-variable column, but the
-  *simulation end time* (how long to integrate before reading the observable) is a
-  simulation setting, not a data property, and the `experiment:` grammar (condition / model
-  / data / type / method) has no home for it. Decided during Chunk 3 implementation
-  (2026-06-19): **defer.** Chunk 3 ships time-course experiments only; a parameter-scan
-  experiment (inferred from a non-`time` independent variable, or stated as
-  `type: parameter_scan`) raises a clear "not yet supported — use a legacy `param_scan`
-  action" error. The backend plumbing is ready — `ParamScan` already accepts explicit
-  scan values and `add_action` emits `par_scan_vals` (Chunk 3a) — so the remaining work is
-  purely the authoring surface for the endpoint time (and whether a dose-response should
-  instead run to steady state). **Tracked in #426** (recommended design: steady-state
-  default à la PEtab `time = inf`, with an optional explicit `t_end:`).
+- **`parameter_scan` via `experiment:` — the scan's simulation endpoint time. *Done
+  (ADR-0046, 2026-06-21).*** Decided during Chunk 3 to defer (the swept *values* come from
+  the data, but the *endpoint time* is a simulation setting with no home in the grammar);
+  ADR-0046 resolved it by making a new-era scan **run to steady state by default** (no
+  endpoint field), mapping bidirectionally to PEtab `time = inf`, with an optional `t_end:`
+  fixed-endpoint escape hatch. The fitter synthesizes a `steady_state=>1` `ParamScan` (bngsim's
+  KINSOL solve + parity fallback), and the exporter/importer round-trip the dose-response as N
+  steady-state Conditions/Experiments at `time = inf`. **#426 closed.**
 - **Explicit output points unsupported for NFsim / RuleMonkey on the bngsim backend
   (#427).** The new-era "simulation outputs at the data's points" mechanism (`sample_times`
   / `simulate(times=)`) is honored by BNG2.pl (all methods), RoadRunner (cvode + gillespie),
@@ -177,8 +173,9 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
 - **Exporter support for the new syntax.** *Done (Chunk 5, 2026-06-19).* The PEtab v2
   exporter reads the new-era surface directly (`pybnf/petab/export.py::_export_new_era` +
   `conditions.build_experiment_conditions`) and refuses the legacy data linkage under a
-  modern edition — export is transcription. Dose-response export stays deferred with the
-  parameter-scan authoring surface (#426).
+  modern edition — export is transcription. Dose-response export/import is now done too
+  (ADR-0046, #426): a scan exports to N steady-state Conditions/Experiments at `time = inf`
+  and imports back to a swept-axis `.exp` + a `parameter_scan` experiment.
 
 ## Considered / rejected
 
