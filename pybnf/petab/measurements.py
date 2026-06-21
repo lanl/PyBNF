@@ -10,11 +10,11 @@ seam shared with the other PEtab tables:
 * **export** -- ``measurement_rows_from_data`` (wide ``Data`` -> neutral rows) +
   ``write_measurement_table`` (rows -> TSV, the disposable half).
 * **import** -- ``read_measurement_table`` (TSV -> rows, the disposable half) +
-  ``data_from_measurement_rows`` (long rows -> the wide ``Data`` replicates per experiment,
-  the exact inverse of ``measurement_rows_from_data``: it groups rows by ``experimentId``,
-  deals repeated ``(observable, time)`` rows into replicate grids (ADR-0039), pivots
-  long->wide, and rebuilds each observable's ``_SD`` companion column from the per-point
-  ``noiseParameters``).
+  ``data_from_measurement_rows`` (long rows -> the wide ``Data`` replicates per
+  ``(experiment, model)``, the exact inverse of ``measurement_rows_from_data``: it groups
+  rows by ``(experimentId, modelId)`` (the model->data link, ADR-0041), deals repeated
+  ``(observable, time)`` rows into replicate grids (ADR-0039), pivots long->wide, and
+  rebuilds each observable's ``_SD`` companion column from the per-point ``noiseParameters``).
 
 **Scope (chunk 1, ADR-0025):** a single experiment, a **time-course** ``.exp``
 (independent variable ``time``), one value per ``(observable, time)`` cell, the
@@ -33,6 +33,8 @@ from ..data import Data
 from ..printing import PybnfError
 from ._tsv import num, write_tsv
 
+# The fixed columns; ``modelId`` (the optional model->data link, ADR-0041) is inserted
+# after ``experimentId`` only when the job is multi-model (see ``write_measurement_table``).
 _MEASUREMENT_COLUMNS = [
     'observableId', 'experimentId', 'time', 'measurement', 'noiseParameters']
 
@@ -42,7 +44,9 @@ class PetabMeasurementRow:
     """One row of a PEtab v2 measurements table, in PyBNF's neutral vocabulary.
 
     ``experiment_id`` is ``''`` for a base time-course with no condition changes
-    (PEtab's "model as is"); ``noise_parameters`` is the per-point **numeric** noise
+    (PEtab's "model as is"); ``model_id`` is the optional model->data link (ADR-0041) --
+    the ``modelId`` of the model that produced the row (``''`` for a single-model job,
+    where the column is omitted). ``noise_parameters`` is the per-point **numeric** noise
     value (the ``_SD`` cell) feeding the observable's single declared noise
     placeholder, or ``None`` when the column carries no number. ``noise_parameter_id``
     is the alternative: a **parameter id** in the ``noiseParameters`` column (Boehm's
@@ -55,6 +59,7 @@ class PetabMeasurementRow:
     time: float
     measurement: float
     experiment_id: str = ''
+    model_id: str = ''
     noise_parameters: float | None = None
     noise_parameter_id: str | None = None
 
@@ -64,7 +69,7 @@ class PetabMeasurementRow:
 # ---------------------------------------------------------------------------
 
 def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
-                               sd_suffix='_SD'):
+                               sd_suffix='_SD', model_id=''):
     """Pivot one experiment's wide :class:`~pybnf.data.Data` to long measurement rows.
 
     ``column_to_observable_id`` maps a ``Data`` column header (a model
@@ -75,9 +80,11 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
     (``noiseParameters`` left blank) -- used when the objective's sigma source is not
     a data column (a fixed or column-mean sigma carried inline in ``noiseFormula``), so
     a stray ``_SD`` column does not produce a ``noiseParameters`` override with no
-    placeholder to bind to. ``NaN`` cells are skipped (a ragged long table round trips
-    through PyBNF's ``NaN``-skipping objective). Rows are grouped by observable, then
-    ordered by the independent variable as it appears in ``data``.
+    placeholder to bind to. ``model_id`` is the optional model->data link (ADR-0041): the
+    ``modelId`` of the model the experiment simulates, stamped on every row (``''`` for a
+    single-model job, where the column is omitted on write). ``NaN`` cells are skipped (a
+    ragged long table round trips through PyBNF's ``NaN``-skipping objective). Rows are
+    grouped by observable, then ordered by the independent variable as it appears in ``data``.
 
     Raises ``NotImplementedError`` if the independent variable is not ``time`` (a
     dose-response / ``parameter_scan`` ``.exp`` -- a later export chunk).
@@ -104,7 +111,7 @@ def measurement_rows_from_data(data, column_to_observable_id, experiment_id='',
             rows.append(PetabMeasurementRow(
                 observable_id=observable_id, time=float(data.data[i, iv]),
                 measurement=float(value), experiment_id=experiment_id,
-                noise_parameters=noise))
+                model_id=model_id, noise_parameters=noise))
     return rows
 
 
@@ -144,41 +151,49 @@ def dose_response_measurement_rows(data, column_to_observable_id, experiment_ids
 def data_from_measurement_rows(rows, observable_id_to_column, sd_suffix='_SD',
                                indvar='time'):
     """Pivot long measurement ``rows`` back to the wide :class:`~pybnf.data.Data`
-    replicates per experiment -- the inverse of :func:`measurement_rows_from_data`.
+    replicates per ``(experiment, model)`` -- the inverse of :func:`measurement_rows_from_data`.
 
     ``observable_id_to_column`` maps a PEtab ``observableId`` (e.g. ``obs_x``) to the
     model column header it measures (e.g. ``x``); its *iteration order* fixes the wide
     column order, so a re-export classifies columns in the same order the original
-    export did (the byte-equal round trip). Rows are grouped by ``experimentId``; within
-    a group the sorted-unique ``time`` values become column 0 and each measured
-    observable becomes a value column, ``NaN``-filled where a ``(time, observable)`` cell
-    is absent (the forward pivot skips ``NaN``, so this restores the ragged grid). When
-    any row in the group carries a ``noiseParameters`` value, each value column gets a
-    ``<col><sd_suffix>`` companion rebuilt from those per-point values (the ``_SD`` source
-    a ``chi_sq`` re-export reads back); a group with no ``noiseParameters`` (a fixed /
-    column-mean sigma objective) gets no ``_SD`` columns.
+    export did (the byte-equal round trip). Rows are grouped by ``(experimentId,
+    modelId)``; within a group the sorted-unique ``time`` values become column 0 and each
+    measured observable becomes a value column, ``NaN``-filled where a ``(time,
+    observable)`` cell is absent (the forward pivot skips ``NaN``, so this restores the
+    ragged grid). When any row in the group carries a ``noiseParameters`` value, each
+    value column gets a ``<col><sd_suffix>`` companion rebuilt from those per-point values
+    (the ``_SD`` source a ``chi_sq`` re-export reads back); a group with no
+    ``noiseParameters`` (a fixed / column-mean sigma objective) gets no ``_SD`` columns.
 
-    **Replicates.** PEtab models replicates as repeated ``(experiment, observable, time)``
-    rows with no replicate index. They are *dealt* across grids in first-seen order: the
-    k-th occurrence of a cell goes to the k-th :class:`~pybnf.data.Data` (the first grid is
-    the full one; later grids hold only the cells that repeat). This is the exact inverse
-    of the forward export's ``for data in exp['datas']`` stacking (ADR-0039), so a
-    homogeneous-grid replicate set re-exports to byte-identical long rows; PyBNF's
+    **Why group on ``(experimentId, modelId)``** (ADR-0041): two wildtype experiments on
+    different models both carry ``experimentId = ''`` (PEtab's "model as is"); the modelId
+    is what distinguishes them. Grouping on the pair keeps them separate without needing
+    synthesized experimentIds; a single-model job carries ``modelId = ''`` on every row, so
+    its grouping is identical to keying on ``experimentId`` alone.
+
+    **Replicates.** PEtab models replicates as repeated ``(experiment, model, observable,
+    time)`` rows with no replicate index. They are *dealt* across grids in first-seen
+    order: the k-th occurrence of a cell goes to the k-th :class:`~pybnf.data.Data` (the
+    first grid is the full one; later grids hold only the cells that repeat). This is the
+    exact inverse of the forward export's ``for data in exp['datas']`` stacking (ADR-0039),
+    so a homogeneous-grid replicate set re-exports to byte-identical long rows; PyBNF's
     summing objective scores the dealt grids exactly as it scored the source ``.exp``
-    files (the partition PEtab never recorded does not affect the fit).
+    files (the partition PEtab never recorded does not affect the fit). Replicate dealing
+    runs *within* one ``(experimentId, modelId)`` group, so the two groupings compose.
 
-    Returns ``{experiment_id: [Data, ...]}`` -- a **list** of replicate grids per
-    experiment (length 1 for the common no-replicate case), ``experiment_id`` being ``''``
-    for the "model as is" base time course. Raises ``PybnfError`` if a row names an
-    ``observableId`` absent from the map.
+    Returns ``{(experiment_id, model_id): [Data, ...]}`` -- a **list** of replicate grids
+    per ``(experiment, model)`` (length 1 for the common no-replicate case),
+    ``experiment_id`` being ``''`` for the "model as is" base time course and ``model_id``
+    ``''`` for a single-model job. Raises ``PybnfError`` if a row names an ``observableId``
+    absent from the map.
     """
-    by_experiment = {}
+    by_group = {}
     for row in rows:
-        by_experiment.setdefault(row.experiment_id, []).append(row)
-    return {eid: [_wide_data_from_group(eid, bucket, observable_id_to_column, sd_suffix,
-                                        indvar)
+        by_group.setdefault((row.experiment_id, row.model_id), []).append(row)
+    return {key: [_wide_data_from_group(key[0], bucket, observable_id_to_column,
+                                        sd_suffix, indvar)
                   for bucket in _deal_replicates(group)]
-            for eid, group in by_experiment.items()}
+            for key, group in by_group.items()}
 
 
 def _deal_replicates(group):
@@ -250,8 +265,9 @@ def read_measurement_table(path):
     """Read a PEtab v2 ``measurements.tsv`` into :class:`PetabMeasurementRow` records.
 
     Dependency-free (stdlib ``csv``), mirroring ``parameters.read_parameter_table``.
-    ``experimentId`` is optional (blank -> ``''``, the base time course); ``time`` and
-    ``measurement`` are required; ``noiseParameters`` is the optional per-point ``_SD``
+    ``experimentId`` is optional (blank -> ``''``, the base time course); ``modelId`` is
+    the optional model->data link (blank -> ``''``, a single-model job; ADR-0041); ``time``
+    and ``measurement`` are required; ``noiseParameters`` is the optional per-point ``_SD``
     value (blank -> ``None``). Unknown extra columns are tolerated and ignored.
     """
     with open(path, newline='') as fh:
@@ -270,6 +286,7 @@ def _measurement_row_from_record(rec):
         time=_require_float(rec.get('time'), 'time', oid),
         measurement=_require_float(rec.get('measurement'), 'measurement', oid),
         experiment_id=(rec.get('experimentId') or '').strip(),
+        model_id=(rec.get('modelId') or '').strip(),
         noise_parameters=numeric,
         noise_parameter_id=param_id,
     )
@@ -354,9 +371,24 @@ def noise_parameter_ids_by_observable(rows):
 # ---------------------------------------------------------------------------
 
 def write_measurement_table(rows, path):
-    """Write measurement ``rows`` to ``path`` as a PEtab v2 ``measurements.tsv``."""
-    records = [
-        [r.observable_id, r.experiment_id, num(r.time), num(r.measurement),
-         num(r.noise_parameters)]
-        for r in rows]
-    write_tsv(path, _MEASUREMENT_COLUMNS, records)
+    """Write measurement ``rows`` to ``path`` as a PEtab v2 ``measurements.tsv``.
+
+    The optional ``modelId`` column (the model->data link, ADR-0041) is emitted only when
+    some row carries a non-empty ``model_id`` -- i.e. the job is multi-model. A single-model
+    job stamps ``''`` on every row, so the column is dropped and the table stays
+    byte-identical to the pre-multi-model output (the byte-equal round-trip oracle)."""
+    include_model = any(r.model_id for r in rows)
+    if include_model:
+        columns = ['observableId', 'experimentId', 'modelId', 'time', 'measurement',
+                   'noiseParameters']
+        records = [
+            [r.observable_id, r.experiment_id, r.model_id, num(r.time), num(r.measurement),
+             num(r.noise_parameters)]
+            for r in rows]
+    else:
+        columns = _MEASUREMENT_COLUMNS
+        records = [
+            [r.observable_id, r.experiment_id, num(r.time), num(r.measurement),
+             num(r.noise_parameters)]
+            for r in rows]
+    write_tsv(path, columns, records)

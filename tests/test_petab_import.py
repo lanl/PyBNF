@@ -279,6 +279,110 @@ class TestReplicateRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Multi-model round trip (ADR-0041, #430): a two-model BNGL job exports to a PEtab problem
+# with two model_files entries + a modelId column on measurements, imports back to a conf
+# declaring both models (each experiment naming its model), and re-exports byte-for-byte.
+# The mixed BNGL + SBML round trip lives in test_petab_sbml_layer.py (it needs RoadRunner +
+# the petab math layer); this is the dependency-free BNGL-only case.
+# ---------------------------------------------------------------------------
+
+# A second BNGL model (distinct stem/parameters/observable/function) for the two-model job.
+_GROWTH_BNGL = """\
+begin model
+  begin parameters
+    a1 0.5
+    a2 2
+  end parameters
+  begin molecule types
+    cnt()
+  end molecule types
+  begin seed species
+    cnt() 5
+  end seed species
+  begin observables
+    Molecules p cnt()
+  end observables
+  begin functions
+    q()=a1*p+a2
+  end functions
+  begin reaction rules
+    0->cnt() 1
+  end reaction rules
+end model
+"""
+
+
+class TestImportMultiModelRoundTrip:
+
+    CONF = (
+        'edition = 2\njob_type = de\nobjective = chi_sq\n'
+        f'model: {DEMO_MODEL}\n'
+        'model: growth_v2.bngl\n'
+        f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+        'experiment: gr, model: growth_v2.bngl, data: gr.exp\n'
+        + _PARAMS_U +
+        'uniform_var = a1 0 10\nuniform_var = a2 0 10\n')
+
+    EXTRA = {
+        'growth_v2.bngl': _GROWTH_BNGL,
+        'pa.exp': (DEMO_DIR / 'par1.exp').read_text(),
+        'gr.exp': ('# time\tp\tq\tp_SD\tq_SD\n'
+                   + ''.join(f'{t}\t{5 + t}\t{0.5 * (5 + t) + 2}\t1\t1\n' for t in range(5))),
+    }
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(tmp_path_factory.mktemp('mm'), self.CONF, extra_files=self.EXTRA)
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        # The dominant oracle: two models, each experiment's modelId stamped on its rows;
+        # import recovers the model->experiment link and re-exports byte-identically.
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_imported_conf_declares_both_models_and_per_experiment_model(self, imported):
+        _, imported_dir, _, conf = imported
+        text = conf.read_text()
+        assert f'model: {DEMO_MODEL}' in text and 'model: growth_v2.bngl' in text
+        with open(conf) as fh:
+            d = ploop(fh.readlines())
+        assert d['models'] == {DEMO_MODEL, 'growth_v2.bngl'}
+        # Each experiment names the model it simulates (recovered from the rows' modelId).
+        exp_models = {fields['model'][0] if isinstance(fields.get('model'), list)
+                      else fields.get('model')
+                      for k, fields in d.items()
+                      if isinstance(k, tuple) and k[0] == 'experiment'}
+        assert exp_models == {DEMO_MODEL, 'growth_v2.bngl'}
+
+    def test_both_models_carried_verbatim(self, imported):
+        petab1, imported_dir, _, _ = imported
+        for name in (DEMO_MODEL, 'growth_v2.bngl'):
+            assert (imported_dir / name).read_text() == (petab1 / name).read_text()
+
+    def test_each_experiment_reconstructs_its_own_data(self, imported):
+        _, imported_dir, _, _ = imported
+        # parabola measures x/y; growth measures p/q -- each .exp carries only its columns.
+        recon = {p.name: Data(file_name=str(p)) for p in imported_dir.glob('*.exp')}
+        assert len(recon) == 2
+        cols = [set(d.cols) for d in recon.values()]
+        assert {'time', 'x', 'y', 'x_SD', 'y_SD'} in cols
+        assert {'time', 'p', 'q', 'p_SD', 'q_SD'} in cols
+
+    def test_imported_multimodel_conf_loads_as_a_configuration(self, imported, monkeypatch):
+        # The imported conf is a genuinely runnable multi-model job (ADR-0028/0034 already
+        # run it; ADR-0041 verifies the round trip emits a loadable one): both models load,
+        # each experiment's data binds to the model it names, and the union of free
+        # parameters binds across the two models. Simulator-free (no fit).
+        from pybnf import config as config_mod
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        cfg = config_mod.Configuration(ploop(conf.read_text().splitlines(keepends=True)))
+        assert set(cfg.models) == {'parabola_v2', 'growth_v2'}
+        assert set(cfg.exp_data) == {'parabola_v2', 'growth_v2'}   # data bound per-model
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 'a1', 'a2'}
+
+
+# ---------------------------------------------------------------------------
 # Extensions: prior catalog, objective family, conditions, emit-all
 # ---------------------------------------------------------------------------
 
@@ -518,9 +622,9 @@ class TestReverseAssets:
         rows = measurement_rows_from_data(data, column_to_id, experiment_id='')
         datas = data_from_measurement_rows(rows, {'obs_x': 'x', 'func_y': 'y'})
         # No repeats -> a single reconstructed replicate, re-pivoting to the same rows
-        # (the long<->wide inverse).
-        assert len(datas['']) == 1
-        again = measurement_rows_from_data(datas[''][0], column_to_id, experiment_id='')
+        # (the long<->wide inverse). Single-model -> the ('', '') (experimentId, modelId) key.
+        assert len(datas[('', '')]) == 1
+        again = measurement_rows_from_data(datas[('', '')][0], column_to_id, experiment_id='')
         assert rows == again
 
     def test_measurement_no_noise_yields_no_sd_columns(self):
@@ -528,7 +632,7 @@ class TestReverseAssets:
         # are reconstructed (mirrors what a sos/ave_norm_sos re-export reads).
         data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
         rows = measurement_rows_from_data(data, {'x': 'obs_x'}, sd_suffix=None)
-        recon = data_from_measurement_rows(rows, {'obs_x': 'x'})[''][0]
+        recon = data_from_measurement_rows(rows, {'obs_x': 'x'})[('', '')][0]
         assert set(recon.cols) == {'time', 'x'}
 
     def test_repeated_observation_deals_into_replicates(self):
@@ -539,7 +643,7 @@ class TestReverseAssets:
         # one grid's rows -- so concatenating them reproduces the doubled long table.
         data = Data(file_name=str(DEMO_DIR / 'par1.exp'))
         rows = measurement_rows_from_data(data, {'x': 'obs_x'})
-        reps = data_from_measurement_rows(rows + rows, {'obs_x': 'x'})['']
+        reps = data_from_measurement_rows(rows + rows, {'obs_x': 'x'})[('', '')]
         assert len(reps) == 2
         for rep in reps:
             assert measurement_rows_from_data(rep, {'x': 'obs_x'}) == rows
@@ -554,7 +658,7 @@ class TestReverseAssets:
             return PetabMeasurementRow(observable_id=oid, time=t, measurement=m)
         rows = [row('obs_x', 0.0, 1.0), row('obs_x', 0.0, 2.0),  # x@0 twice
                 row('obs_x', 1.0, 3.0)]                            # x@1 once
-        reps = data_from_measurement_rows(rows, {'obs_x': 'x'})['']
+        reps = data_from_measurement_rows(rows, {'obs_x': 'x'})[('', '')]
         assert len(reps) == 2
         assert np.allclose(reps[0]['x'], [1.0, 3.0])               # full grid, first values
         assert np.allclose(reps[1]['time'], [0.0])                 # only the repeated cell

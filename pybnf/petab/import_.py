@@ -47,19 +47,22 @@ bare-name common case runs in the bngsim-less CI tier. ``problem.yaml`` is hand-
 exporter emits a fixed, simple shape). The ``petab`` library is the test-only oracle for the
 bare-name path, and the optional ``pybnf[petab]`` extra for an expression ``observableFormula``.
 
-**Scope (read path: BNGL and SBML).** Both model languages import (ADR-0036): the model file
-is carried **verbatim** for each, and an expression ``observableFormula`` becomes a
-first-class *measurement model* -- a PEtab math expression evaluated as a post-simulation
-transform over the output trajectory (the observation layer), emitted as an
-``observable: <id>, formula: <expr>`` conf line -- **never** by editing the model file (the
-``begin functions`` synthesis of ADR-0035 is superseded). The bare-name common case still
-needs no translator and stays dependency-free. SBML observables are 100% expressions, so SBML
-import pulls in the ``pybnf[petab]`` extra. Out of scope, each mirroring an export-side
-boundary: fitting the imported job (gated on the ADR-0028 config loader, #423); the
+**Scope (read path: BNGL and SBML, one or many models).** Both model languages import
+(ADR-0036): the model file is carried **verbatim** for each, and an expression
+``observableFormula`` becomes a first-class *measurement model* -- a PEtab math expression
+evaluated as a post-simulation transform over the output trajectory (the observation layer),
+emitted as an ``observable: <id>, formula: <expr>`` conf line -- **never** by editing the model
+file (the ``begin functions`` synthesis of ADR-0035 is superseded). The bare-name common case
+still needs no translator and stays dependency-free. SBML observables are 100% expressions, so
+SBML import pulls in the ``pybnf[petab]`` extra. A **multi-model** problem imports too (ADR-0041):
+each ``model_files`` entry is carried verbatim and declared with its own ``model:`` line, an
+expression observableFormula validates against the union of every model's namespace, and each
+experiment's model is recovered from the ``modelId`` on its measurement rows (emitted as a
+per-experiment ``model:`` field; a BNGL + SBML mix is fine). Out of scope, each mirroring an
+export-side boundary: fitting the imported job (gated on the ADR-0028 config loader, #423); the
 ``noiseFormula`` / condition sympy layer and per-measurement
 ``observableParameters``/``noiseParameters`` placeholders (bare names / numbers only); the
-five PEtab prior families PyBNF lacks; one-sided truncation; multi-model; parameter-scan /
-dose-response; replicate reconstruction.
+five PEtab prior families PyBNF lacks; one-sided truncation; parameter-scan / dose-response.
 """
 
 import re
@@ -141,7 +144,7 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
 
     problem = read_problem_yaml(problem_yaml_path)
     _require_supported_model(problem, problem_yaml_path)
-    language = (problem.get('model_language') or 'bngl').lower()
+    models = problem['models']
 
     parameter_rows = read_parameter_table(base / problem['parameter_files'][0])
     observable_rows = read_observable_table(base / problem['observable_files'][0])
@@ -162,15 +165,23 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
                     for row in parameter_rows
                     if not row.estimate and row.nominal_value is not None}
 
-    # The model is read now (not just at write time) to validate each expression
-    # observableFormula's free symbols against the model's entity namespace (the BNGL
-    # ParamList, or SBML species u parameters -- ADR-0026/0036). The model file itself is
-    # carried **byte-verbatim** for every language -- the measurement model is a post-sim
-    # observation layer, never a model-file edit (ADR-0036, superseding the ADR-0035
-    # begin-functions synthesis).
-    model_filename = problem['model_file']
-    model_text = (base / model_filename).read_text(encoding='utf-8', errors='replace')
-    namespace, entity_names = _model_namespace(model_text, language)
+    # Each model is read now (not just at write time) to validate each expression
+    # observableFormula's free symbols against the models' entity namespace (the BNGL
+    # ParamList, or SBML species u parameters -- ADR-0026/0036). A multi-model job (ADR-0041)
+    # validates a (model-agnostic) observableFormula against the **union** of every model's
+    # namespace. Each model file is carried **byte-verbatim** -- the measurement model is a
+    # post-sim observation layer, never a model-file edit (ADR-0036).
+    model_texts = {}            # location -> verbatim text
+    namespaces, entity_name_sets = [], []
+    for m in models:
+        loc, lang = m['location'], (m['language'] or 'bngl').lower()
+        text = (base / loc).read_text(encoding='utf-8', errors='replace')
+        model_texts[loc] = text
+        ns, ents = _model_namespace(text, lang)
+        namespaces.append(ns)
+        entity_name_sets.append(ents)
+    namespace = set().union(*namespaces)
+    entity_names = set().union(*entity_name_sets)
 
     # Observables -> the observableId -> model-column map (the data pivot's column order)
     # plus the measurement models (id, formula) synthesized from expression
@@ -178,8 +189,9 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     observable_id_to_column, measurement_models = _observable_id_to_column(
         observable_rows, namespace, entity_names, fixed_params)
 
-    # Measurements -> the wide Data replicates per experiment, then assemble the experiment
-    # list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039).
+    # Measurements -> the wide Data replicates per (experiment, model), then assemble the
+    # experiment list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039;
+    # the modelId distinguishes experiments that share an experimentId -- ADR-0041).
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
     # A constant-per-observable parameter-id noiseParameters placeholder is a
     # per-observable estimated sigma (Boehm's sd_*); the map drives the per-observable
@@ -189,18 +201,23 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         observable_rows, observable_id_to_column, noise_param_ids,
         _column_mean_resolver(datas, observable_id_to_column))
     conditions = conditions_from_rows(condition_rows, surrogate_params)
-    experiments = _experiments(datas, experiment_rows, out_dir)
+    # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
+    # a single-model job carries modelId '' and emits no per-experiment model: field.
+    model_location_of = {m['model_id']: m['location'] for m in models}
+    experiments = _experiments(datas, experiment_rows, out_dir, model_location_of)
 
-    # The model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
+    # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
-    (out_dir / model_filename).write_text(model_text)
+    for loc, text in model_texts.items():
+        (out_dir / loc).write_text(text)
 
     merged_settings = {**_DEFAULT_SETTINGS, **(settings or {})}
+    model_filenames = [m['location'] for m in models]
     job_types = _emit_all_job_types() if job_type == 'all' else [job_type]
     for jt in job_types:
         conf_name = f'imported_{jt}.conf' if len(job_types) > 1 else 'imported.conf'
         _write_conf(
-            out_dir / conf_name, model_filename=model_filename, job_type=jt,
+            out_dir / conf_name, model_filenames=model_filenames, job_type=jt,
             objective_directives=objective_directives, free_param_lines=free_param_lines,
             conditions=conditions, experiments=experiments,
             measurement_models=measurement_models, method=method,
@@ -525,33 +542,43 @@ def _approx(a, b):
 # Experiments: measurement groups + experiment rows -> (name, condition, data files)
 # ---------------------------------------------------------------------------
 
-def _experiments(datas, experiment_rows, out_dir):
+def _experiments(datas, experiment_rows, out_dir, model_location_of):
     """Assemble the conf's experiments and write each one's ``.exp`` file(s).
 
     The set of experiments is the measurement groups (the replicate grids per
-    ``experimentId``); each experiment's replicate ``Data`` objects are written to
-    ``<name>.exp`` (the first / only replicate) and ``<name>_rep<k>.exp`` (k>=2), all bound
-    to the one experiment's ``data:`` list -- the inverse of the forward export, which
-    stacks an experiment's replicate ``Data`` objects into repeated measurement rows
+    ``(experimentId, modelId)``, ADR-0041); each experiment's replicate ``Data`` objects are
+    written to ``<name>.exp`` (the first / only replicate) and ``<name>_rep<k>.exp`` (k>=2),
+    all bound to the one experiment's ``data:`` list -- the inverse of the forward export,
+    which stacks an experiment's replicate ``Data`` objects into repeated measurement rows
     (ADR-0039). The single-replicate case keeps the bare ``<name>.exp`` name, so the common
     round trip is byte-stable. The experiment's condition comes from the experiments table
     (``cond_<c>`` -> ``c``; the synthesized ``cond_wildtype`` and an absent row -> no
     condition). A ``''`` experimentId is the "model as is" base time course (PEtab erased
     its name because the job had no fit-and-perturbed parameters); it is synthesized a name,
-    which never reaches the PEtab output (it re-exports to ``''`` again). Returns
-    ``[(name, condition_or_None, [data_file, ...]), ...]`` in measurement order.
+    which never reaches the PEtab output (it re-exports to ``''`` again) -- a name keyed on the
+    modelId when set, so two wildtype experiments on different models stay distinct. Each
+    experiment's model is the ``modelId`` on its rows: ``model_location_of`` maps it to the
+    model file, emitted as a per-experiment ``model:`` field (omitted for a single-model job,
+    whose modelId is ``''``). Returns ``[(name, condition_or_None, [data_file, ...],
+    model_location_or_None), ...]`` in measurement order.
     """
     condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
     experiments = []
-    for eid, group in datas.items():
-        name = eid if eid else 'experiment1'
+    for (eid, mid), group in datas.items():
+        if eid:
+            name = eid
+        elif mid:
+            name = f'experiment_{mid}'
+        else:
+            name = 'experiment1'
         condition = condition_name_from_id(condition_of.get(eid))
+        model_location = model_location_of.get(mid)   # None for a single-model job (mid '')
         data_files = []
         for k, data in enumerate(group):
             data_file = f'{name}.exp' if k == 0 else f'{name}_rep{k + 1}.exp'
             _write_exp(out_dir / data_file, data)
             data_files.append(data_file)
-        experiments.append((name, condition, data_files))
+        experiments.append((name, condition, data_files, model_location))
     return experiments
 
 
@@ -572,12 +599,14 @@ def _write_exp(path, data):
 # The .conf writer (the disposable output half)
 # ---------------------------------------------------------------------------
 
-def _write_conf(path, *, model_filename, job_type, objective_directives, free_param_lines,
+def _write_conf(path, *, model_filenames, job_type, objective_directives, free_param_lines,
                 conditions, experiments, measurement_models, method, method_overrides,
                 settings, multi):
     """Write one new-era (edition 2) ``.conf``: the recovered problem + the supplied
     run-recipe (``job_type``, per-experiment ``method:``, required settings).
 
+    ``model_filenames`` is the list of the problem's model files (one ``model:`` line each;
+    a multi-model job also tags every experiment with its ``model:`` field -- ADR-0041).
     ``objective_directives`` is the list of recovered objective lines -- either a single
     ``objective = <token>`` / whole-fit ``noise_model = ...`` line, or a base objective plus
     per-observable ``noise_model <obs> = ...`` overrides (:func:`_objective_directives`).
@@ -595,7 +624,7 @@ def _write_conf(path, *, model_filename, job_type, objective_directives, free_pa
         f'output_dir=output/{stem}',
         'edition = 2',
         '',
-        f'model: {model_filename}',
+        *[f'model: {mf}' for mf in model_filenames],
         f'job_type = {job_type}',
         *objective_directives,
     ]
@@ -607,13 +636,15 @@ def _write_conf(path, *, model_filename, job_type, objective_directives, free_pa
     for name, perts in conditions.items():
         pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
         lines.append(f'condition: {name}, perturbations: {pert_str}')
-    for name, condition, data_files in experiments:
+    for name, condition, data_files, model_location in experiments:
         sim_method = method_overrides.get(name, method)
         cond_field = f', condition: {condition}' if condition else ''
+        model_field = f', model: {model_location}' if model_location else ''
         data_field = ', '.join(f'data: {f}' if i == 0 else f
                                for i, f in enumerate(data_files))
         lines.append(
-            f'experiment: {name}{cond_field}, method: {sim_method}, {data_field}')
+            f'experiment: {name}{cond_field}{model_field}, method: {sim_method}, '
+            f'{data_field}')
     lines.append('')
     lines.extend(free_param_lines)
     lines.append('')
@@ -641,22 +672,24 @@ def read_problem_yaml(path):
     """Hand-parse the minimal ``problem.yaml`` shape :func:`write_problem_yaml` emits.
 
     Returns a dict with the table-file lists (``parameter_files`` / ``observable_files`` /
-    ``measurement_files`` / ``condition_files`` / ``experiment_files``) and the single
-    model (``model_file`` / ``model_id`` / ``model_language``). Dependency-free (no YAML
+    ``measurement_files`` / ``condition_files`` / ``experiment_files``) and a ``models`` list
+    -- one ``{model_id, location, language}`` entry per ``model_files`` entry, in declaration
+    order (one or many, ADR-0041). For single-model convenience the first model is also
+    surfaced as ``model_file`` / ``model_id`` / ``model_language``. Dependency-free (no YAML
     library): the writer emits a flat ``key:`` + ``  - item`` list shape and a two-level
     ``model_files`` block, which a small indentation-aware scan reads exactly. The scan is
     **order-independent**, so a real v2 ``problem.yaml`` that lists ``model_files`` first
     (our writer emits it last) reads identically.
 
-    This is a pure *reader*: it records the model ``language`` but does not enforce a
+    This is a pure *reader*: it records each model's ``language`` but does not enforce a
     policy on it. The supported-language scope (BNGL or SBML, ADR-0036) is enforced by the
-    importer (:func:`_require_supported_model`), not here. A second model raises
-    ``NotImplementedError`` (multi-model is out of scope).
+    importer (:func:`_require_supported_model`), not here.
     """
     file_keys = ('parameter_files', 'observable_files', 'measurement_files',
                  'condition_files', 'experiment_files')
     files = {k: [] for k in file_keys}
-    model_id = model_location = model_language = None
+    models = []         # [{model_id, location, language}, ...] in declaration order
+    current = None      # the model entry being filled (set by a `<modelId>:` line)
 
     section = None      # the current top-level *_files key (list items follow)
     in_model = False    # inside the model_files: block
@@ -666,7 +699,7 @@ def read_problem_yaml(path):
         indent = len(raw) - len(raw.lstrip())
         stripped = raw.strip()
         if indent == 0:
-            section, in_model = None, False
+            section, in_model, current = None, False, None
             if stripped.endswith(':') and stripped[:-1] in files:
                 section = stripped[:-1]
             elif stripped == 'model_files:':
@@ -676,44 +709,46 @@ def read_problem_yaml(path):
         if section is not None and stripped.startswith('-'):
             files[section].append(stripped[1:].strip())
         elif in_model:
-            if stripped.startswith('location:'):
-                model_location = stripped.split(':', 1)[1].strip()
-            elif stripped.startswith('language:'):
-                model_language = stripped.split(':', 1)[1].strip()
+            if stripped.startswith('location:') and current is not None:
+                current['location'] = stripped.split(':', 1)[1].strip()
+            elif stripped.startswith('language:') and current is not None:
+                current['language'] = stripped.split(':', 1)[1].strip()
             elif stripped.endswith(':'):
-                if model_id is not None:
-                    raise NotImplementedError(
-                        f"problem.yaml declares more than one model ({model_id!r} and "
-                        f"{stripped[:-1]!r}); multi-model import is out of scope (#407).")
-                model_id = stripped[:-1].strip()
+                # A new `<modelId>:` block (the location/language lines follow, indented).
+                current = {'model_id': stripped[:-1].strip(), 'location': None,
+                           'language': None}
+                models.append(current)
 
-    _require_problem(files, model_location, path)
-    return {**files, 'model_file': model_location, 'model_id': model_id,
-            'model_language': model_language}
+    _require_problem(files, models, path)
+    first = models[0]
+    return {**files, 'models': models, 'model_file': first['location'],
+            'model_id': first['model_id'], 'model_language': first['language']}
 
 
-def _require_problem(files, model_location, path):
+def _require_problem(files, models, path):
     for key in ('parameter_files', 'observable_files', 'measurement_files'):
         if not files[key]:
             raise PybnfError(f"problem.yaml at {path} has no {key}.")
-    if model_location is None:
+    if not models or any(m['location'] is None for m in models):
         raise PybnfError(f"problem.yaml at {path} declares no model file.")
 
 
 def _require_supported_model(problem, path):
     """Enforce the importer's supported-language scope on a parsed ``problem.yaml`` (ADR-0036).
 
-    The reader (:func:`read_problem_yaml`) records the model ``language`` without judging it;
-    the importer holds the policy. **BNGL and SBML both import**: the model file is carried
-    verbatim and an expression ``observableFormula`` becomes a post-simulation measurement
-    model (the observation layer), so neither the ``.bngl`` nor the ``.xml`` is ever edited
-    (ADR-0036). Any other model language (e.g. ``pysb``) raises ``NotImplementedError`` early,
-    before any table is read. A ``None`` language (the field was absent) is permitted -- the
-    exporter omits it only for a BNGL model.
+    The reader (:func:`read_problem_yaml`) records each model's ``language`` without judging
+    it; the importer holds the policy. **BNGL and SBML both import** (one or many models,
+    ADR-0041): each model file is carried verbatim and an expression ``observableFormula``
+    becomes a post-simulation measurement model (the observation layer), so neither a
+    ``.bngl`` nor an ``.xml`` is ever edited (ADR-0036). Any other model language (e.g.
+    ``pysb``) raises ``NotImplementedError`` early, before any table is read. A ``None``
+    language (the field was absent) is permitted -- the exporter omits it only for a BNGL
+    model.
     """
-    language = problem.get('model_language')
-    if language is not None and language.lower() not in ('bngl', 'sbml'):
-        raise NotImplementedError(
-            f"problem.yaml model '{problem.get('model_id')}' has language '{language}', "
-            f"not 'bngl' or 'sbml' (at {path}). Only BNGL and SBML PEtab problems are "
-            f"importable (ADR-0036); other model languages are out of scope (#407).")
+    for m in problem['models']:
+        language = m['language']
+        if language is not None and language.lower() not in ('bngl', 'sbml'):
+            raise NotImplementedError(
+                f"problem.yaml model '{m['model_id']}' has language '{language}', not "
+                f"'bngl' or 'sbml' (at {path}). Only BNGL and SBML PEtab problems are "
+                f"importable (ADR-0036); other model languages are out of scope (#407).")

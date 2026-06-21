@@ -236,6 +236,99 @@ class TestSbmlExport:
 
 
 # ---------------------------------------------------------------------------
+# 1c. Multi-model export mixing BNGL + SBML (ADR-0041, #430): the two-model round trip
+# composes with the per-language emit (ADR-0040). A job declares a BNGL model and an SBML
+# model, each experiment naming the one it simulates; the exported problem.yaml lists each in
+# its own language, the modelId column links each measurement row to its model, and the
+# whole thing round-trips export -> import -> re-export byte-for-byte.
+# ---------------------------------------------------------------------------
+
+_DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
+_DEMO_BNGL = 'parabola_v2.bngl'   # v1/v2/v3, observable x + function y
+
+
+def _write_mixed_job(d):
+    """A two-model job mixing a BNGL model (parabola_v2: observable x) and the crafted SBML
+    decay model (its obs_ratio measurement model), one experiment each naming its model."""
+    import shutil
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_DEMO_DIR / _DEMO_BNGL, d / _DEMO_BNGL)
+    (d / 'decay.xml').write_text(DECAY_SBML)
+    (d / 'pa.exp').write_text('# time\tx\n0\t-10\n1\t-9\n2\t-8\n')
+    (d / 'dec.exp').write_text('# time\tobs_ratio\n0\t100\n1\t60\n2\t36\n')
+    conf = d / 'job.conf'
+    conf.write_text(textwrap.dedent(f"""\
+        edition = 2
+        job_type = de
+        objective = sos
+        model: {_DEMO_BNGL}
+        model: decay.xml
+        observable: obs_ratio, formula: {OBS_FORMULA}
+        experiment: pa, model: {_DEMO_BNGL}, data: pa.exp
+        experiment: dec, model: decay.xml, data: dec.exp
+        uniform_var = v1 0 10
+        uniform_var = v2 0 10
+        uniform_var = v3 0 10
+        uniform_var = k1 0.01 10
+        """))
+    return conf
+
+
+class TestMixedBnglSbmlExport:
+
+    def test_problem_yaml_emits_each_model_in_its_language(self, tmp_path):
+        from pybnf.petab import export_job
+        out = export_job(_write_mixed_job(tmp_path / 'job'), tmp_path / 'petab')
+        yaml = (out / 'problem.yaml').read_text()
+        # The BNGL model is PEtab-cleaned (no begin actions), the SBML carried verbatim.
+        assert 'location: parabola_v2.bngl' in yaml and 'language: bngl' in yaml
+        assert 'location: decay.xml' in yaml and 'language: sbml' in yaml
+        assert (out / 'decay.xml').read_text() == DECAY_SBML
+        # The SBML observable is the measurement-model formula; the BNGL one is the bare name.
+        obs = {r['observableId']: r['observableFormula']
+               for r in csv.DictReader(open(out / 'observables.tsv'), delimiter='\t')}
+        assert obs == {'obs_x': 'x', 'obs_ratio': OBS_FORMULA}
+        # The modelId column links each measurement row to its model.
+        rows = list(csv.DictReader(open(out / 'measurements.tsv'), delimiter='\t'))
+        assert {r['modelId'] for r in rows} == {'parabola_v2', 'decay'}
+
+    def test_mixed_round_trips_byte_for_byte(self, tmp_path):
+        # The dominant oracle: a mixed BNGL + SBML job exports -> imports (the SBML expression
+        # observable becomes a measurement model, ADR-0036) -> re-exports byte-identically.
+        pytest.importorskip('petab')
+        from pybnf.petab import export_job, import_job
+
+        conf = _write_mixed_job(tmp_path / 'job')
+        petab1 = export_job(conf, tmp_path / 'petab1')
+        import_job(petab1 / 'problem.yaml', tmp_path / 'imported')
+        petab2 = export_job(tmp_path / 'imported' / 'imported.conf', tmp_path / 'petab2')
+
+        names = sorted(p.name for p in petab1.iterdir())
+        assert names == sorted(p.name for p in petab2.iterdir())
+        for name in names:
+            assert (petab1 / name).read_text() == (petab2 / name).read_text(), \
+                f'{name} differs after export -> import -> re-export'
+
+    def test_imported_mixed_conf_declares_both_models(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.parse import ploop
+        from pybnf.petab import export_job, import_job
+
+        conf = _write_mixed_job(tmp_path / 'job')
+        export_job(conf, tmp_path / 'petab1')
+        import_job(tmp_path / 'petab1' / 'problem.yaml', tmp_path / 'imported')
+        text = (tmp_path / 'imported' / 'imported.conf').read_text()
+        assert 'model: parabola_v2.bngl' in text and 'model: decay.xml' in text
+        # The SBML expression observable rides the measurement-model layer (ADR-0036).
+        d = ploop(text.splitlines(keepends=True))
+        meas = {k[1]: v for k, v in d.items()
+                if isinstance(k, tuple) and k[0] == 'measurement'}
+        assert meas == {'obs_ratio': OBS_FORMULA}
+        # Both model files carried verbatim into the imported job.
+        assert (tmp_path / 'imported' / 'decay.xml').read_text() == DECAY_SBML
+
+
+# ---------------------------------------------------------------------------
 # 2. Config wiring: an SBML conf's formula line builds the layer (SBML namespace)
 # ---------------------------------------------------------------------------
 

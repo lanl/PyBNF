@@ -672,6 +672,221 @@ class TestExportNewEraConditions:
             export_job(conf, src / 'out')
 
 
+# ---------------------------------------------------------------------------
+# Multi-model export (ADR-0041, #430): a job with more than one model: each experiment names
+# the model it simulates; the model id is stamped on its measurement rows' modelId (the column
+# is omitted single-model), free parameters bind across the union of every model's ids, and
+# problem.yaml lists every model in its own language (BNGL + SBML may mix). The dominant oracle
+# is the byte-equal round trip (test_petab_import.py / test_petab_sbml_layer.py); here we assert
+# the export shape + the unit boundaries.
+# ---------------------------------------------------------------------------
+
+# A second BNGL model (distinct stem, distinct parameters/observable/function) for the
+# two-model fixtures: p/q where parabola has x/y, a1/a2 where parabola has v1/v2/v3.
+_GROWTH_BNGL = """\
+begin model
+  begin parameters
+    a1 0.5
+    a2 2
+  end parameters
+  begin molecule types
+    cnt()
+  end molecule types
+  begin seed species
+    cnt() 5
+  end seed species
+  begin observables
+    Molecules p cnt()
+  end observables
+  begin functions
+    q()=a1*p+a2
+  end functions
+  begin reaction rules
+    0->cnt() 1
+  end reaction rules
+end model
+"""
+
+# A conflict model: x is a FUNCTION here, where parabola_v2 has x as an OBSERVABLE -- so the
+# shared column 'x' classifies differently across the two models (the cross-model conflict).
+_CONFLICT_BNGL = """\
+begin model
+  begin parameters
+    a1 1
+  end parameters
+  begin molecule types
+    m()
+  end molecule types
+  begin seed species
+    m() 1
+  end seed species
+  begin observables
+    Molecules z m()
+  end observables
+  begin functions
+    x()=a1*z
+  end functions
+  begin reaction rules
+    0->m() 1
+  end reaction rules
+end model
+"""
+
+
+def _petab_multimodel_validation_errors(problem_yaml):
+    """ERROR-severity petablint issues for a **multi-model** problem (the partial oracle).
+
+    libpetab-python's validation framework is not yet multi-model-aware (libpetab#392): the
+    model-cross tasks (``CheckModel``, ``CheckValidConditionTargets``, ...) access
+    ``Problem.model`` (singular) and raise ``ValueError`` on a >1-model problem, and petablint
+    emits only a WARNING on multiple models -- so the byte-equal round trip is the primary
+    oracle (ADR-0041). This still runs every task that *can* run (asserting the multi-model
+    problem loads, both models parsed), skipping only the ones that raise the multi-model
+    ``ValueError``, and returns any genuine ERROR among the rest."""
+    pytest.importorskip('petab.v2')
+    from petab.v2 import Problem
+    from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
+
+    from pybnf.petab.bngl_model import register_bngl
+    register_bngl()
+    problem = Problem.from_yaml(str(problem_yaml))
+    assert len(problem.models) > 1                 # the multi-model problem loaded
+    errors = []
+    for task in default_validation_tasks:
+        try:
+            issue = task.run(problem)
+        except ValueError as exc:
+            if 'more than one model' in str(exc):
+                continue                            # libpetab#392: not multi-model-aware yet
+            raise
+        if issue is not None and getattr(issue, 'level', None) == \
+                ValidationIssueSeverity.ERROR:
+            errors.append((type(task).__name__, issue.message))
+    return errors
+
+
+def _write_two_model_bngl_job(d):
+    """A two-model BNGL job: parabola_v2 (v1/v2/v3, observable x + function y) and growth
+    (a1/a2, observable p + function q), one wildtype experiment each naming its model."""
+    import shutil
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copy(DEMO_DIR / DEMO_MODEL, d / DEMO_MODEL)
+    (d / 'growth_v2.bngl').write_text(_GROWTH_BNGL)
+    shutil.copy(DEMO_DIR / 'par1.exp', d / 'pa.exp')
+    (d / 'gr.exp').write_text(
+        '# time\tp\tq\tp_SD\tq_SD\n'
+        + ''.join(f'{t}\t{5 + t}\t{0.5 * (5 + t) + 2}\t1\t1\n' for t in range(5)))
+    conf = d / 'job.conf'
+    conf.write_text(
+        'edition = 2\njob_type = de\nobjective = chi_sq\n'
+        f'model: {DEMO_MODEL}\n'
+        'model: growth_v2.bngl\n'
+        f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+        'experiment: gr, model: growth_v2.bngl, data: gr.exp\n'
+        'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10\n'
+        'uniform_var = a1 0 10\nuniform_var = a2 0 10\n')
+    return conf
+
+
+class TestExportMultiModel:
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        src = tmp_path_factory.mktemp('mm_export')
+        conf = _write_two_model_bngl_job(src)
+        out = src / 'petab'
+        export_job(conf, out)
+        return out
+
+    def test_problem_yaml_lists_both_models_each_in_its_language(self, exported):
+        text = (exported / 'problem.yaml').read_text()
+        # Two model_files entries, declaration order, each its own language (here both bngl).
+        assert text.index('parabola_v2:') < text.index('growth_v2:')   # declaration order
+        assert 'location: parabola_v2.bngl' in text
+        assert 'location: growth_v2.bngl' in text
+        assert text.count('language: bngl') == 2
+
+    def test_measurements_carry_the_modelid_link(self, exported):
+        rows = _tsv_rows(exported / 'measurements.tsv')
+        assert 'modelId' in rows[0]               # the optional column is present (multi-model)
+        # Each experiment's rows are stamped with its model's stem; both wildtype, so
+        # experimentId stays '' and the modelId is what distinguishes them (ADR-0041).
+        by_model = {r['modelId'] for r in rows}
+        assert by_model == {'parabola_v2', 'growth_v2'}
+        assert all(r['experimentId'] == '' for r in rows)
+        # The right observables landed under the right model.
+        assert {r['observableId'] for r in rows if r['modelId'] == 'parabola_v2'} == \
+            {'obs_x', 'func_y'}
+        assert {r['observableId'] for r in rows if r['modelId'] == 'growth_v2'} == \
+            {'obs_p', 'func_q'}
+
+    def test_observables_cover_every_model(self, exported):
+        ids = {r['observableId'] for r in _tsv_rows(exported / 'observables.tsv')}
+        assert ids == {'obs_x', 'func_y', 'obs_p', 'func_q'}
+
+    def test_parameters_union_across_models(self, exported):
+        ids = {r['parameterId'] for r in _tsv_rows(exported / 'parameters.tsv')}
+        assert ids == {'v1', 'v2', 'v3', 'a1', 'a2'}   # the union of both models' free params
+
+    def test_partial_petab_validation_has_no_errors(self, exported):
+        # The model-cross checks raise on multi-model (libpetab#392); the rest pass clean.
+        assert _petab_multimodel_validation_errors(exported / 'problem.yaml') == []
+
+    def test_stem_collision_across_models_raises(self, tmp_path):
+        from pybnf.printing import PybnfError
+        # Two model files sharing a stem ('m') would collide on the modelId / output filename.
+        (tmp_path / 'm.bngl').write_text(_PARABOLA2_BNGL)
+        (tmp_path / 'm.xml').write_text('<sbml/>\n')
+        (tmp_path / 'e.exp').write_text('# time x y x_SD y_SD\n0\t-10\t86\t1\t1\n')
+        (tmp_path / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: m.bngl\nmodel: m.xml\n'
+            'experiment: e, model: m.bngl, data: e.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10\n')
+        with pytest.raises(PybnfError, match='stem'):
+            export_job(tmp_path / 'job.conf', tmp_path / 'out')
+
+    def test_unnamed_experiment_under_multiple_models_is_ambiguous(self, tmp_path):
+        from pybnf.printing import PybnfError
+        src = tmp_path / 'src'
+        conf = _write_two_model_bngl_job(src)
+        # Strip the model: field off the 'pa' experiment -> ambiguous under 2 models.
+        conf.write_text(conf.read_text().replace(
+            f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp',
+            'experiment: pa, data: pa.exp'))
+        with pytest.raises(PybnfError, match='does not name a model'):
+            export_job(conf, tmp_path / 'out')
+
+    def test_free_parameter_in_no_model_is_a_typo(self, tmp_path):
+        from pybnf.printing import PybnfError
+        src = tmp_path / 'src'
+        conf = _write_two_model_bngl_job(src)
+        # 'nope' is a parameter id of neither model -> the union typo check fires.
+        conf.write_text(conf.read_text() + 'uniform_var = nope 0 10\n')
+        with pytest.raises(PybnfError, match='nope'):
+            export_job(conf, tmp_path / 'out')
+
+    def test_cross_model_observable_conflict_raises(self, tmp_path):
+        import shutil
+
+        from pybnf.printing import PybnfError
+        src = tmp_path / 'src'
+        src.mkdir()
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)   # x is an observable
+        (src / 'conflict.bngl').write_text(_CONFLICT_BNGL)      # x is a function
+        (src / 'a.exp').write_text('# time\tx\tx_SD\n0\t-10\t1\n1\t-9\t1\n')
+        (src / 'b.exp').write_text('# time\tx\tx_SD\n0\t3\t1\n1\t4\t1\n')
+        (src / 'job.conf').write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            f'model: {DEMO_MODEL}\nmodel: conflict.bngl\n'
+            f'experiment: ea, model: {DEMO_MODEL}, data: a.exp\n'
+            'experiment: eb, model: conflict.bngl, data: b.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10\n'
+            'uniform_var = a1 0 10\n')
+        with pytest.raises(PybnfError, match='inconsistently'):
+            export_job(src / 'job.conf', tmp_path / 'out')
+
+
 class TestBuildExperimentConditions:
 
     def test_surrogate_set_and_wildtype_base(self):

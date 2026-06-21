@@ -47,11 +47,15 @@ fixed, or column-mean sigma (``chi_sq``/``sos``/``sod``/``ave_norm_sos``), and t
 A BNGL (``.bngl``) or SBML (``.xml``) model is exported in its own native language
 (ADR-0040): a BNGL model PEtab-cleaned, an SBML model carried byte-verbatim with its
 observables emitted as ``observableFormula`` expressions from the conf measurement-model
-layer (the mirror of the ADR-0036 import). Everything else raises ``NotImplementedError``
-(the boundary is in code, not silent): a second model (#430); an objective PEtab cannot
-represent (``neg_bin*`` -- removed from v2; ``lognormal`` -- log10 vs PEtab natural log; a
-free-parameter or relative sigma; ``direct_pass``/``kl``/``wasserstein``); the no-prior
-``var``/``logvar``; a ``.con``/``.prop`` Constraint; an Antimony (``.ant``) model. The
+layer (the mirror of the ADR-0036 import). A job may declare **more than one model**
+(ADR-0041): each ``experiment:`` names the model it simulates, that model's id is stamped
+on the experiment's measurement rows (the ``modelId`` link), free parameters bind across
+the union of every model's ids, and ``problem.yaml`` lists every model in its own language
+(BNGL + SBML may mix). Everything else raises ``NotImplementedError`` (the boundary is in
+code, not silent): an objective PEtab cannot represent (``neg_bin*`` -- removed from v2;
+``lognormal`` -- log10 vs PEtab natural log; a free-parameter or relative sigma;
+``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a ``.con``/``.prop``
+Constraint; an Antimony (``.ant``) model. The
 oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the native
 ``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027/0028/0036/0040.
 """
@@ -144,24 +148,24 @@ def export_job(conf_path, out_dir, inline_functions=False):
 
     conf = _read_conf_dict(conf_path)
     _require_modern_edition(conf)
-    model_file = _resolve_model(conf)
-    language = _model_language(model_file)
-    _require_new_era_data(conf, model_file)
+    models = _resolve_models(conf)
+    languages = {mf: _model_language(mf) for mf in models}
+    _require_new_era_data(conf, models)
     noise = _resolve_noise(conf)
     free_params = _free_parameters_from_conf(conf)
-    model = _read_model(model_file, conf_path.parent / model_file, language)
-    free_to_model = _resolve_free_to_model(free_params, model, model_file)
+    # A registry of per-language model views (ADR-0040/0041): a job may mix BNGL + SBML,
+    # each read once and threaded through the language-agnostic classification below.
+    registry = {mf: _read_model(mf, conf_path.parent / mf, languages[mf]) for mf in models}
+    free_to_model = _resolve_free_to_model(free_params, registry, models)
     fit_model_params = set(free_to_model.values())
 
     (observable_rows, measurement_rows, condition_rows, experiment_rows,
      surrogate_params) = _export_new_era(
-        conf, conf_path, model_file, model, noise, fit_model_params, inline_functions)
+        conf, conf_path, models, registry, noise, fit_model_params, inline_functions)
 
     parameter_rows = _parameter_rows(
-        free_params, free_to_model, surrogate_params, model, model_file)
+        free_params, free_to_model, surrogate_params, registry, models)
 
-    model_filename = Path(model_file).name
-    model_id = Path(model_filename).stem
     write_parameter_table(parameter_rows, out_dir / 'parameters.tsv')
     write_observable_table(observable_rows, out_dir / 'observables.tsv')
     write_measurement_table(measurement_rows, out_dir / 'measurements.tsv')
@@ -169,12 +173,17 @@ def export_job(conf_path, out_dir, inline_functions=False):
         write_condition_table(condition_rows, out_dir / 'conditions.tsv')
     if experiment_rows:
         write_experiment_table(experiment_rows, out_dir / 'experiments.tsv')
-    # The model is emitted in its own native language (ADR-0040): a BNGL model is
+    # Each model is emitted in its own native language (ADR-0040): a BNGL model is
     # PEtab-cleaned (drop 'begin actions'); an SBML model is carried byte-verbatim (the
     # measurement model lives in the observables table, never a model-file edit -- ADR-0036).
-    model_text = clean_model_for_petab(model.text) if language == 'bngl' else model.text
-    (out_dir / model_filename).write_text(model_text)
-    write_problem_yaml(out_dir / 'problem.yaml', model_filename, model_id, language=language,
+    for mf in models:
+        view, language = registry[mf], languages[mf]
+        model_text = clean_model_for_petab(view.text) if language == 'bngl' else view.text
+        (out_dir / Path(mf).name).write_text(model_text)
+    # One model_files entry per model (ADR-0041), modelId = the file stem, in declaration
+    # order (so a re-export reproduces the same problem.yaml model_files ordering).
+    model_yaml = [(Path(mf).stem, Path(mf).name, languages[mf]) for mf in models]
+    write_problem_yaml(out_dir / 'problem.yaml', model_yaml,
                        has_conditions=bool(condition_rows),
                        has_experiments=bool(experiment_rows))
     return out_dir
@@ -194,7 +203,7 @@ def _has_new_era_data(conf):
                for k in conf)
 
 
-def _require_new_era_data(conf, model_file):
+def _require_new_era_data(conf, models):
     """Refuse a legacy data linkage -- the PEtab v2 exporter reads only the new-era data
     surface (ADR-0028 Chunk 5c, "refuse legacy everything").
 
@@ -203,11 +212,11 @@ def _require_new_era_data(conf, model_file):
     A job must introduce data through named ``experiment:`` lines (a PEtab Experiment
     carrying its ``data:``); the legacy filename->suffix binding (``model = X : Y.exp``),
     ``mutant`` lines, and ``param_scan`` actions are refused rather than silently read.
-    Mixing the two (a ``mutant``/``param_scan`` line, or data on the ``model =`` line,
+    Mixing the two (a ``mutant``/``param_scan`` line, or data on any ``model =`` line,
     alongside ``experiment:``) is refused too, so a legacy line is never silently dropped.
     The gate is on the *exporter* only; the fitter still runs legacy confs unchanged.
     """
-    legacy_data = bool(conf.get(model_file))          # model = X : Y.exp data list
+    legacy_data = any(conf.get(mf) for mf in models)  # model = X : Y.exp data list
     legacy_features = [k for k in ('mutant', 'param_scan') if k in conf]
     if not _has_new_era_data(conf):
         raise NotImplementedError(
@@ -227,16 +236,19 @@ def _require_new_era_data(conf, model_file):
             f"legacy line is silently ignored on export (ADR-0028, #423).")
 
 
-def _export_new_era(conf, conf_path, model_file, model, noise, fit_model_params,
+def _export_new_era(conf, conf_path, models, registry, noise, fit_model_params,
                     inline_functions=False):
     """Read a job's data/conditions/observables from the **new-era surface** (ADR-0028).
 
     Export is *transcription*: an ``experiment:`` is a PEtab Experiment (experimentId =
     the experiment name) carrying its ``data:`` replicates as measurement rows; an
     ``observable:`` line renames a data column to a model entity before classification.
-    ``inline_functions`` is threaded to :func:`_observable_rows` (ADR-0035 inlining).
-    Returns ``(observable_rows, measurement_rows, condition_rows, experiment_rows,
-    surrogate_params)``.
+    ``models`` is the ordered list of model files and ``registry`` their per-language views
+    (ADR-0041): each experiment names the model it simulates, that model's id is stamped on
+    its measurement rows' ``modelId`` (omitted when the job is single-model), and a column
+    is classified against its experiment's model. ``inline_functions`` is threaded to
+    :func:`_observable_rows` (ADR-0035 inlining). Returns ``(observable_rows,
+    measurement_rows, condition_rows, experiment_rows, surrogate_params)``.
 
     A ``condition:`` referenced by an experiment becomes a PEtab Condition (the
     surrogate-base machinery of ADR-0027, generalized by
@@ -246,16 +258,16 @@ def _export_new_era(conf, conf_path, model_file, model, noise, fit_model_params,
     :func:`_read_experiments`). With no referenced conditions the surrogate set is empty,
     so a single wildtype experiment is byte-identical to the chunk-1 base time-course.
     """
-    experiments = _read_experiments(conf, conf_path, model_file)
+    experiments = _read_experiments(conf, conf_path, models)
     overrides = _read_observable_overrides(conf)
     all_datas = [d for exp in experiments for d in exp['datas']]
     _apply_observable_overrides(all_datas, overrides)
 
     measurement_models = _read_measurement_models(conf)
     observable_rows, column_to_observable_id = _observable_rows(
-        all_datas, model, noise, model_file, inline_functions, measurement_models)
+        experiments, registry, noise, inline_functions, measurement_models)
 
-    conditions = _read_conditions(conf, model_file, model)
+    conditions = _read_conditions(conf, models, registry)
     referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
     undefined = referenced - set(conditions)
     if undefined:
@@ -272,7 +284,7 @@ def _export_new_era(conf, conf_path, model_file, model, noise, fit_model_params,
     condition_rows, experiment_rows, surrogate_params, experiment_to_id = \
         build_experiment_conditions(
             [(exp['name'], exp['condition']) for exp in experiments],
-            conditions, fit_model_params, lambda v: _numeric_nominal(model, v))
+            conditions, fit_model_params, lambda v: _nominal_of(registry, v))
 
     # Per-point noiseParameters are emitted only when the objective's sigma comes from a
     # data column (the placeholder source); a fixed / column-mean sigma is carried inline
@@ -281,47 +293,51 @@ def _export_new_era(conf, conf_path, model_file, model, noise, fit_model_params,
     _dist, sigma_verb, sigma_arg = noise
     sd_suffix = sigma_arg if sigma_verb == 'read_exp_file' else None
 
+    # The modelId link (ADR-0041): each experiment stamps its model's stem onto its
+    # measurement rows. Single-model -> '' (the column is dropped on write, byte-stable).
+    multi_model = len(models) > 1
     measurement_rows = []
     for exp in experiments:
         eid = experiment_to_id[exp['name']]
+        model_id = Path(exp['model']).stem if multi_model else ''
         # Each replicate Data contributes its own rows under the one experiment (PEtab
         # models replicates as repeated rows -- no need to pre-stack as config.py does).
         for data in exp['datas']:
             cmap = {c: o for c, o in column_to_observable_id.items() if c in data.cols}
             measurement_rows += measurement_rows_from_data(
-                data, cmap, experiment_id=eid, sd_suffix=sd_suffix)
+                data, cmap, experiment_id=eid, sd_suffix=sd_suffix, model_id=model_id)
     return observable_rows, measurement_rows, condition_rows, experiment_rows, \
         surrogate_params
 
 
-def _read_experiments(conf, conf_path, model_file):
+def _read_experiments(conf, conf_path, models):
     """Read + resolve the new-era ``experiment:`` entries from the raw ``ploop`` dict.
 
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
-    mf?, 'type': t?, 'method': m?}``. Returns a list (declaration order) of dicts
-    ``{'name', 'condition', 'datas': [Data, ...]}`` -- the ``data:`` files read as
-    individual :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated
-    measurement rows, so they are not pre-stacked). Raises:
+    mf?, 'type': t?, 'method': m?}``. ``models`` is the ordered list of the job's model
+    files. Returns a list (declaration order) of dicts ``{'name', 'condition', 'model':
+    model_file, 'datas': [Data, ...]}`` -- the ``data:`` files read as individual
+    :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
+    rows, so they are not pre-stacked), and each experiment's resolved model
+    (:func:`_resolve_experiment_model`, ADR-0041). Raises:
 
     * the parameter-scan deferral for a non-time-course experiment -- the scan's
       simulation endpoint time has no home in the ``experiment:`` grammar yet, so a fully
       new-era conf cannot author one (deferred, #426; mirrors
       ``config.py::_load_experiments``);
-    * a multi-model boundary if an experiment names a different model (a later chunk);
+    * the ambiguous-model error if an experiment names no model but the job has more than
+      one (mirrors ``config.py::_resolve_experiment_model``);
     * a constraint boundary for non-``.exp`` data (``.con``/``.prop`` is deferred,
       ADR-0028 Open/deferred).
     """
-    model_stem = Path(model_file).stem
+    stem_to_model = {Path(mf).stem: mf for mf in models}
     experiments = []
     for key, fields in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment'):
             continue
         name = key[1]
-        ref = fields.get('model')
-        if ref is not None and Path(ref).stem != model_stem:
-            raise PybnfError(
-                f"Experiment '{name}' names model '{ref}', but this job's model is "
-                f"'{model_file}'. Multi-model export is a later chunk.")
+        model_file = _resolve_experiment_model(name, fields.get('model'), models,
+                                               stem_to_model)
         data_files = fields.get('data', [])
         if not data_files:
             raise PybnfError(f"Experiment '{name}' declares no 'data:' files.")
@@ -340,9 +356,34 @@ def _read_experiments(conf, conf_path, model_file):
                 f"'experiment:' surface: the scan's simulation endpoint time has no home "
                 f"in the experiment grammar yet, so a fully new-era conf cannot author "
                 f"one (deferred, #426). Export covers time-course experiments.")
-        experiments.append(
-            {'name': name, 'condition': fields.get('condition'), 'datas': datas})
+        experiments.append({'name': name, 'condition': fields.get('condition'),
+                            'model': model_file, 'datas': datas})
     return experiments
+
+
+def _resolve_experiment_model(name, ref, models, stem_to_model):
+    """The model file an experiment simulates (ADR-0041), the export peer of
+    ``config.py::_resolve_experiment_model``.
+
+    With an explicit ``model:`` ref, resolve it by filename stem (the ``model_files`` key);
+    an unknown ref is a typo. With no ref, default to the sole model when the job declares
+    exactly one; under more than one model an unnamed experiment is ambiguous -- the
+    exporter requires the ``model:`` field rather than guessing which model produced the
+    data (matching the fitter's rule).
+    """
+    if ref is not None:
+        stem = Path(ref).stem
+        if stem not in stem_to_model:
+            raise PybnfError(
+                f"Experiment '{name}' names model '{ref}', but the job declares no model "
+                f"with id '{stem}' (declared model ids: {sorted(stem_to_model)}).")
+        return stem_to_model[stem]
+    if len(models) == 1:
+        return models[0]
+    raise PybnfError(
+        f"Experiment '{name}' does not name a model, but the job declares {len(models)} "
+        f"models ({models}). Add 'model: <file>' to the experiment to say which model it "
+        f"simulates (ADR-0041).")
 
 
 def _experiment_type(name, data, explicit_type):
@@ -405,32 +446,36 @@ def _apply_observable_overrides(datas, overrides):
                 f"present: {present}). Check for a typo in the column name.")
 
 
-def _read_conditions(conf, model_file, model):
+def _read_conditions(conf, models, registry):
     """Read + validate the new-era ``condition:`` entries from the raw ``ploop`` dict.
 
     Each ``('condition', name)`` entry is ``(model_ref_or_None, [(var, op, val_str), ...])``
     (a named set of parameter perturbations -- a PyBNF Mutant = a PEtab Condition). Returns
-    ``{condition_name: [(var, op, float(val)), ...]}``. Validates the model ref
-    (single-model boundary) and that every perturbation target is a model parameter /
-    compartment -- a PEtab condition target must be a model entity (mirrors the legacy
-    :func:`_read_mutants` checks)."""
-    model_stem = Path(model_file).stem
+    ``{condition_name: [(var, op, float(val)), ...]}``. A PEtab condition is model-agnostic
+    (no modelId column; ADR-0041), so a perturbation target must be a parameter / compartment
+    of **some** model in the job (the union); an explicit ``model:`` ref, when given, must
+    name a declared model. The single-model job validates against its one model exactly as
+    before."""
+    union_params = set().union(*(set(v.parameters) for v in registry.values()))
+    union_comparts = set().union(*(set(v.compartment_names) for v in registry.values()))
+    stem_to_model = {Path(mf).stem: mf for mf in models}
     conditions = {}
     for key, value in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'condition'):
             continue
         name = key[1]
         model_ref, perts = value
-        if model_ref is not None and Path(model_ref).stem != model_stem:
+        if model_ref is not None and Path(model_ref).stem not in stem_to_model:
             raise PybnfError(
-                f"Condition '{name}' is declared for model '{model_ref}', but this job's "
-                f"model is '{model_file}'. Multi-model export is a later chunk.")
+                f"Condition '{name}' is declared for model '{model_ref}', but the job "
+                f"declares no model with id '{Path(model_ref).stem}' (declared model ids: "
+                f"{sorted(stem_to_model)}).")
         muts = []
         for var, op, val in perts:
-            if var not in model.parameters and var not in model.compartment_names:
+            if var not in union_params and var not in union_comparts:
                 raise PybnfError(
                     f"Condition '{name}' perturbs '{var}', which is not a parameter or "
-                    f"compartment of model '{model_file}' (a PEtab condition target must "
+                    f"compartment of any model in the job (a PEtab condition target must "
                     f"be a model entity).")
             muts.append((var, op, float(val)))
         conditions[name] = muts
@@ -441,20 +486,33 @@ def _read_conditions(conf, model_file, model):
 # Scope resolution (the documented boundaries)
 # ---------------------------------------------------------------------------
 
-def _resolve_model(conf):
-    """Return the job's single model file, raising at the chunk boundaries.
+def _resolve_models(conf):
+    """Return the job's model files in declaration order (ADR-0041).
 
     A BNGL (``.bngl``) or SBML (``.xml``) model is exported in its own native language
-    (ADR-0040, dispatched by :func:`_model_language`); any other extension raises there.
-    Multi-model export (more than one ``model:``) is a later chunk (#430)."""
-    models = sorted(conf.get('models', set()))
-    if len(models) != 1:
-        raise NotImplementedError(
-            f"This chunk exports a single-model job; this one has {len(models)} models "
-            f"({models}). Multi-model export (PEtab modelId) is a later chunk (#430).")
-    model_file = models[0]
-    _model_language(model_file)   # validate the extension is a supported language
-    return model_file
+    (ADR-0040, dispatched by :func:`_model_language`); any other extension raises there. A
+    job may declare one or many models; the new-era ``model:`` declarations accumulate into
+    ``conf['model']`` in declaration order (a legacy ``model = X : Y`` job has none -- it is
+    refused downstream by :func:`_require_new_era_data` -- so fall back to the model set).
+    The model id is the file **stem** (the ``model_files`` key); two files sharing a stem
+    would collide on that key and the output filename, so a stem collision raises."""
+    ordered = list(dict.fromkeys(conf.get('model', [])))
+    if not ordered:
+        ordered = sorted(conf.get('models', set()))
+    if not ordered:
+        raise PybnfError(
+            "The job declares no model; add a 'model: <file>' declaration (ADR-0028).")
+    stems = {}
+    for mf in ordered:
+        _model_language(mf)   # validate the extension is a supported language
+        stem = Path(mf).stem
+        if stem in stems:
+            raise PybnfError(
+                f"Models '{stems[stem]}' and '{mf}' share the file stem '{stem}', which "
+                f"would collide on the PEtab modelId and the exported filename. Rename one "
+                f"so each model has a distinct stem (ADR-0041).")
+        stems[stem] = mf
+    return ordered
 
 
 def _require_modern_edition(conf):
@@ -559,62 +617,97 @@ def _independent_variable(data):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(datas, model, noise, model_file, inline_functions=False,
+def _observable_rows(experiments, registry, noise, inline_functions=False,
                      measurement_models=None):
-    """Classify each fitted column across all experiments' ``datas`` as a model observable,
-    a model function, or a conf measurement model, and map it to a PEtab observable row.
+    """Classify each fitted column across all experiments as a model observable, a model
+    function, or a conf measurement model, and map it to a PEtab observable row.
 
-    ``datas`` is the list of every experiment's (override-renamed) :class:`~pybnf.data.Data`
-    (one element for the legacy single base time-course); a column is gathered once, in
-    first-appearance order, so the observables table covers the whole job. ``noise`` is the
-    ``(noiseDistribution, sigma_verb, sigma_arg)`` from :func:`_resolve_noise`; the sigma
-    source is resolved per column (it can depend on the column's data, e.g. a
-    ``column_mean`` sigma).
+    A column is classified against the model of **each** experiment that measures it
+    (ADR-0041): the observables table has no per-model namespace, so a column shared across
+    models must classify identically in each (the same kind, hence the same observableId and
+    formula) -- a column that is an observable in one model and a function in another is a
+    real conflict and raises. A column is gathered once, in first-appearance order across the
+    experiments' (override-renamed) ``datas``, so the observables table covers the whole job.
+    ``noise`` is the ``(noiseDistribution, sigma_verb, sigma_arg)`` from
+    :func:`_resolve_noise`; the sigma source is resolved per column across every experiment's
+    data (it can depend on the column's data, e.g. a ``column_mean`` sigma).
 
     ``inline_functions`` (ADR-0035) emits a **function** column's body as an
     ``observableFormula`` expression instead of the bare name -- the opt-in path that
     generates the importer's round-trip oracle; the default keeps every column bare.
-    ``measurement_models`` (``{id: formula}``, ADR-0036) are conf-declared measurement models:
-    a column matching one is emitted with that formula as its ``observableFormula`` and its id
-    verbatim (the inverse of the importer's ``observable: ... formula:`` line)."""
+    ``measurement_models`` (``{id: formula}``, ADR-0036) are conf-declared measurement models
+    (model-agnostic): a column matching one is emitted with that formula as its
+    ``observableFormula`` and its id verbatim (the inverse of the importer's ``observable: ...
+    formula:`` line)."""
     distribution, verb, arg = noise
     measurement_models = measurement_models or {}
+    all_datas = [d for exp in experiments for d in exp['datas']]
+
+    # Gather the fitted columns in first-appearance order, each tagged with the model
+    # file(s) that measure it (distinct, declaration order). A measurement-model column is
+    # model-agnostic (it never touches a model's entities), so its models list is inert.
     columns = []
-    for data in datas:
-        indvar = data.indvar if data.indvar is not None else _independent_variable(data)
-        for col in sorted(data.cols, key=data.cols.get):
-            if col == indvar or col.endswith('_SD') or col in columns:
-                continue
-            columns.append(col)
+    column_models = {}
+    for exp in experiments:
+        mf = exp['model']
+        for data in exp['datas']:
+            indvar = data.indvar if data.indvar is not None else _independent_variable(data)
+            for col in sorted(data.cols, key=data.cols.get):
+                if col == indvar or col.endswith('_SD'):
+                    continue
+                if col not in column_models:
+                    columns.append(col)
+                    column_models[col] = []
+                if mf not in column_models[col]:
+                    column_models[col].append(mf)
+
     observable_rows = []
     column_to_observable_id = {}
     for col in columns:
-        formula = None
-        if col in measurement_models:
-            kind = 'measurement'
-            formula = measurement_models[col]   # the conf observableFormula, verbatim
-        elif col in model.observable_names:
-            kind = 'observable'
-        elif col in model.function_names:
-            kind = 'function'
-            formula = _inlined_formula(col, kind, model, model_file) if inline_functions \
-                else None
-        else:
+        classes = [(mf, _classify_column(col, registry[mf], mf, measurement_models,
+                                         inline_functions))
+                   for mf in column_models[col]]
+        distinct = {kind_formula for _mf, kind_formula in classes}
+        if len(distinct) != 1:
+            detail = '; '.join(f"{mf} -> {kind}" for mf, (kind, _f) in classes)
             raise PybnfError(
-                f"Exp column '{col}' matches no observable, function, or measurement model "
-                f"in model '{model_file}' (its observables: {sorted(model.observable_names)}; "
-                f"functions: {sorted(model.function_names)}; measurement models: "
-                f"{sorted(measurement_models)}).")
-        noise_source = _noise_source_for_column(verb, arg, col, datas)
+                f"Exp column '{col}' classifies inconsistently across the models that "
+                f"measure it ({detail}). PEtab's observables table has no per-model "
+                f"namespace, so a column shared across models must mean the same observable "
+                f"in each (ADR-0041).")
+        kind, formula = classes[0][1]
+        noise_source = _noise_source_for_column(verb, arg, col, all_datas)
         row = petab_observable_row(col, kind, distribution, noise_source,
                                    observable_formula=formula)
         observable_rows.append(row)
         column_to_observable_id[col] = row.observable_id
     if not observable_rows:
         raise PybnfError(
-            f"Exp data for model '{model_file}' has no fittable observable/function "
-            f"columns (only an independent variable and/or _SD columns).")
+            "The job's experiment data has no fittable observable/function columns "
+            "(only an independent variable and/or _SD columns).")
     return observable_rows, column_to_observable_id
+
+
+def _classify_column(col, model, model_file, measurement_models, inline_functions):
+    """Classify one fitted column against one model view, returning ``(kind, formula)``
+    (the formula is ``None`` unless it is a measurement model or an inlined function body).
+
+    A conf-declared measurement model wins first (it is model-agnostic, ADR-0036); else the
+    column must be a model observable or function (its bare name being the
+    ``observableFormula``). A column matching nothing in this model raises -- naming the
+    model so a multi-model job points at the right namespace (ADR-0041)."""
+    if col in measurement_models:
+        return 'measurement', measurement_models[col]   # the conf observableFormula, verbatim
+    if col in model.observable_names:
+        return 'observable', None
+    if col in model.function_names:
+        formula = _inlined_formula(col, 'function', model, model_file) \
+            if inline_functions else None
+        return 'function', formula
+    raise PybnfError(
+        f"Exp column '{col}' matches no observable, function, or measurement model in model "
+        f"'{model_file}' (its observables: {sorted(model.observable_names)}; functions: "
+        f"{sorted(model.function_names)}; measurement models: {sorted(measurement_models)}).")
 
 
 def _inlined_formula(col, kind, model, model_file):
@@ -678,21 +771,22 @@ def _noise_source_for_column(verb, arg, col, datas):
         f"sympy layer, mirroring the importer boundary). ADR-0021/0023, #423.")
 
 
-def _resolve_free_to_model(free_params, model, model_file):
+def _resolve_free_to_model(free_params, registry, models):
     """Validate each free parameter binds to a model parameter id; return the identity map.
 
     New-era binds free parameters **by id** (ADR-0034): a free parameter's name *is* the
-    model parameter it drives -- no ``__FREE`` marker. The id space is the model's parameter
-    ids (a BNGL ``begin parameters`` id, or an SBML global parameter id -- ADR-0040). This is
-    the exporter's analogue of the new-era config typo check
-    (:meth:`config._check_variable_correspondence_modern`): a free parameter matching a model
-    parameter id binds; one matching none is a typo (or a ``fit`` sigma, which the exporter
+    model parameter it drives -- no ``__FREE`` marker. The id space is the **union** of every
+    model's parameter ids (a BNGL ``begin parameters`` id, or an SBML global parameter id --
+    ADR-0040/0041); a free parameter present in at least one model binds (the same id means
+    the same knob, so a multi-model job binds it across all models that carry it). This is the
+    exporter's analogue of the new-era config typo check
+    (:meth:`config._check_variable_correspondence_modern`, which unions the same way): a free
+    parameter matching no model parameter id is a typo (or a ``fit`` sigma, which the exporter
     rejects separately at column classification). The exporter never builds a
-    ``Configuration``, so it validates against ``model.parameters`` directly rather than
-    calling into ``config``. Returns ``{name: name}`` -- the identity map the rest of the
-    exporter threads as ``free_to_model``.
+    ``Configuration``, so it validates against the views' ``parameters`` directly. Returns
+    ``{name: name}`` -- the identity map the rest of the exporter threads as ``free_to_model``.
     """
-    model_ids = set(model.parameters)
+    model_ids = set().union(*(set(v.parameters) for v in registry.values()))
     free_to_model = {}
     for fp in free_params:
         if fp.name not in model_ids:
@@ -701,33 +795,46 @@ def _resolve_free_to_model(free_params, model, model_file):
                 legacy_hint = (
                     f" The '__FREE' marker is legacy-edition only (ADR-0034); declare "
                     f"the bare parameter id '{fp.name[:-len('__FREE')]}' instead.")
+            where = (f"model '{models[0]}'" if len(models) == 1
+                     else f"any of the job's {len(models)} models ({models})")
             raise PybnfError(
-                f"Free parameter '{fp.name}' matches no parameter id in model "
-                f"'{model_file}'.",
+                f"Free parameter '{fp.name}' matches no parameter id in {where}.",
                 f"Under edition >= 2 a BNGL free parameter binds to a model parameter by "
-                f"id (the SBML/PEtab convention; ADR-0034), so '{fp.name}' must be one of "
-                f"the model's parameter ids: {sorted(model_ids)}.{legacy_hint}")
+                f"id (the SBML/PEtab convention; ADR-0034/0041), so '{fp.name}' must be one "
+                f"of the models' parameter ids: {sorted(model_ids)}.{legacy_hint}")
         free_to_model[fp.name] = fp.name
     return free_to_model
 
 
-def _parameter_rows(free_params, free_to_model, surrogate_params, model, model_file):
+def _parameter_rows(free_params, free_to_model, surrogate_params, registry, models):
     """Map each free parameter to a row; a fit-and-mutated one renamed to ``<p>__REF``."""
+    union_ids = set().union(*(set(v.parameters) for v in registry.values()))
     parameter_rows = []
     for fp in free_params:
         model_param = free_to_model[fp.name]
         if model_param in surrogate_params:
             ref = surrogate_name(model_param)
-            if ref in model.parameters:
+            if ref in union_ids:
                 raise PybnfError(
                     f"The surrogate-base name '{ref}' for fit-and-mutated parameter "
-                    f"'{model_param}' clashes with an existing parameter in model "
-                    f"'{model_file}'. Rename that model parameter.")
+                    f"'{model_param}' clashes with an existing parameter in the job's "
+                    f"models. Rename that model parameter.")
             parameter_id = ref
         else:
             parameter_id = model_param
         parameter_rows.append(petab_parameter_row(fp, parameter_id=parameter_id))
     return parameter_rows
+
+
+def _nominal_of(registry, var):
+    """A fixed parameter's numeric nominal value across the job's models (ADR-0041), or
+    ``None``: the value from the first model view that declares ``var`` (a fixed target's
+    nominal is read from whichever model defines it, since a PEtab condition is
+    model-agnostic). A free target never reaches here (the surrogate path handles it)."""
+    for view in registry.values():
+        if var in view.parameters:
+            return _numeric_nominal(view, var)
+    return None
 
 
 def _numeric_nominal(model, var):
@@ -880,12 +987,14 @@ def clean_model_for_petab(text):
                   '', text, flags=re.S | re.I | re.M)
 
 
-def write_problem_yaml(path, model_filename, model_id, language='bngl',
-                       has_conditions=False, has_experiments=False):
-    """Write a PEtab v2 ``problem.yaml`` referencing the tables and the model.
+def write_problem_yaml(path, models, has_conditions=False, has_experiments=False):
+    """Write a PEtab v2 ``problem.yaml`` referencing the tables and the model(s).
 
-    ``language`` is the model's PEtab language (``bngl`` or ``sbml``, ADR-0040) -- emitted
-    verbatim in the ``model_files`` block so each model declares its own native language."""
+    ``models`` is a list of ``(model_id, location, language)`` tuples (ADR-0041): one entry
+    for a single-model job (byte-identical to the pre-multi-model output), or N entries in
+    declaration order for a multi-model job. ``language`` is each model's PEtab language
+    (``bngl`` or ``sbml``, ADR-0040) -- emitted verbatim so every model declares its own
+    native language (a BNGL + SBML mix is just two entries)."""
     parts = [
         'format_version: 2.0.0\n',
         'parameter_files:\n  - parameters.tsv\n',
@@ -896,10 +1005,11 @@ def write_problem_yaml(path, model_filename, model_id, language='bngl',
         parts.append('condition_files:\n  - conditions.tsv\n')
     if has_experiments:
         parts.append('experiment_files:\n  - experiments.tsv\n')
-    parts += [
-        'model_files:\n',
-        f'  {model_id}:\n',
-        f'    location: {model_filename}\n',
-        f'    language: {language}\n',
-    ]
+    parts.append('model_files:\n')
+    for model_id, location, language in models:
+        parts += [
+            f'  {model_id}:\n',
+            f'    location: {location}\n',
+            f'    language: {language}\n',
+        ]
     Path(path).write_text(''.join(parts))
