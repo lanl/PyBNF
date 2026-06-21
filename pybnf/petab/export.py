@@ -44,17 +44,21 @@ The objective and prior surfaces map to PEtab as far as PEtab v2 can express the
 (ADR-0023/0031 reversed): the Gaussian/Laplace likelihoods with a ``_SD``-column,
 fixed, or column-mean sigma (``chi_sq``/``sos``/``sod``/``ave_norm_sos``), and the
 ``uniform``/``log-uniform``/``normal``/``laplace`` prior families with their log forms.
-Everything else raises ``NotImplementedError`` (the boundary is in code, not silent): a
-second model; an objective PEtab cannot represent (``neg_bin*`` -- removed from v2;
-``lognormal`` -- log10 vs PEtab natural log; a free-parameter or relative sigma;
-``direct_pass``/``kl``/``wasserstein``); the no-prior ``var``/``logvar``; a
-``.con``/``.prop`` Constraint; an SBML model. The oracle is petab's full
-``default_validation_tasks`` via ``Problem.from_yaml`` + the native ``BnglModel`` loader
-(ADR-0026), wired into the tests; see ADR-0025/0027/0028.
+A BNGL (``.bngl``) or SBML (``.xml``) model is exported in its own native language
+(ADR-0040): a BNGL model PEtab-cleaned, an SBML model carried byte-verbatim with its
+observables emitted as ``observableFormula`` expressions from the conf measurement-model
+layer (the mirror of the ADR-0036 import). Everything else raises ``NotImplementedError``
+(the boundary is in code, not silent): a second model (#430); an objective PEtab cannot
+represent (``neg_bin*`` -- removed from v2; ``lognormal`` -- log10 vs PEtab natural log; a
+free-parameter or relative sigma; ``direct_pass``/``kl``/``wasserstein``); the no-prior
+``var``/``logvar``; a ``.con``/``.prop`` Constraint; an Antimony (``.ant``) model. The
+oracle is petab's full ``default_validation_tasks`` via ``Problem.from_yaml`` + the native
+``BnglModel`` loader (ADR-0026), wired into the tests; see ADR-0025/0027/0028/0036/0040.
 """
 
 import logging
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +69,8 @@ from ..objective import _OBJECTIVE_DESUGAR
 from ..parse import ploop
 from ..printing import PybnfError
 from ..pset import FreeParameter
-from ._bngl import parse_model
+from ._bngl import parse_model as parse_bngl_model
+from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
     build_experiment_conditions,
     surrogate_name,
@@ -140,22 +145,23 @@ def export_job(conf_path, out_dir, inline_functions=False):
     conf = _read_conf_dict(conf_path)
     _require_modern_edition(conf)
     model_file = _resolve_model(conf)
+    language = _model_language(model_file)
     _require_new_era_data(conf, model_file)
     noise = _resolve_noise(conf)
     free_params = _free_parameters_from_conf(conf)
-    bngl = _read_bngl(conf_path.parent / model_file)
-    free_to_model = _resolve_free_to_model(free_params, bngl, model_file)
+    model = _read_model(model_file, conf_path.parent / model_file, language)
+    free_to_model = _resolve_free_to_model(free_params, model, model_file)
     fit_model_params = set(free_to_model.values())
 
     (observable_rows, measurement_rows, condition_rows, experiment_rows,
      surrogate_params) = _export_new_era(
-        conf, conf_path, model_file, bngl, noise, fit_model_params, inline_functions)
+        conf, conf_path, model_file, model, noise, fit_model_params, inline_functions)
 
     parameter_rows = _parameter_rows(
-        free_params, free_to_model, surrogate_params, bngl, model_file)
+        free_params, free_to_model, surrogate_params, model, model_file)
 
     model_filename = Path(model_file).name
-    model_id = re.sub(r'\.bngl$', '', model_filename)
+    model_id = Path(model_filename).stem
     write_parameter_table(parameter_rows, out_dir / 'parameters.tsv')
     write_observable_table(observable_rows, out_dir / 'observables.tsv')
     write_measurement_table(measurement_rows, out_dir / 'measurements.tsv')
@@ -163,8 +169,12 @@ def export_job(conf_path, out_dir, inline_functions=False):
         write_condition_table(condition_rows, out_dir / 'conditions.tsv')
     if experiment_rows:
         write_experiment_table(experiment_rows, out_dir / 'experiments.tsv')
-    (out_dir / model_filename).write_text(clean_model_for_petab(bngl.text))
-    write_problem_yaml(out_dir / 'problem.yaml', model_filename, model_id,
+    # The model is emitted in its own native language (ADR-0040): a BNGL model is
+    # PEtab-cleaned (drop 'begin actions'); an SBML model is carried byte-verbatim (the
+    # measurement model lives in the observables table, never a model-file edit -- ADR-0036).
+    model_text = clean_model_for_petab(model.text) if language == 'bngl' else model.text
+    (out_dir / model_filename).write_text(model_text)
+    write_problem_yaml(out_dir / 'problem.yaml', model_filename, model_id, language=language,
                        has_conditions=bool(condition_rows),
                        has_experiments=bool(experiment_rows))
     return out_dir
@@ -217,7 +227,7 @@ def _require_new_era_data(conf, model_file):
             f"legacy line is silently ignored on export (ADR-0028, #423).")
 
 
-def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params,
+def _export_new_era(conf, conf_path, model_file, model, noise, fit_model_params,
                     inline_functions=False):
     """Read a job's data/conditions/observables from the **new-era surface** (ADR-0028).
 
@@ -236,16 +246,16 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params,
     :func:`_read_experiments`). With no referenced conditions the surrogate set is empty,
     so a single wildtype experiment is byte-identical to the chunk-1 base time-course.
     """
-    experiments = _read_experiments(conf, conf_path, model_file, bngl)
+    experiments = _read_experiments(conf, conf_path, model_file)
     overrides = _read_observable_overrides(conf)
     all_datas = [d for exp in experiments for d in exp['datas']]
     _apply_observable_overrides(all_datas, overrides)
 
     measurement_models = _read_measurement_models(conf)
     observable_rows, column_to_observable_id = _observable_rows(
-        all_datas, bngl, noise, model_file, inline_functions, measurement_models)
+        all_datas, model, noise, model_file, inline_functions, measurement_models)
 
-    conditions = _read_conditions(conf, model_file, bngl)
+    conditions = _read_conditions(conf, model_file, model)
     referenced = {exp['condition'] for exp in experiments if exp['condition'] is not None}
     undefined = referenced - set(conditions)
     if undefined:
@@ -262,7 +272,7 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params,
     condition_rows, experiment_rows, surrogate_params, experiment_to_id = \
         build_experiment_conditions(
             [(exp['name'], exp['condition']) for exp in experiments],
-            conditions, fit_model_params, lambda v: _numeric_nominal(bngl, v))
+            conditions, fit_model_params, lambda v: _numeric_nominal(model, v))
 
     # Per-point noiseParameters are emitted only when the objective's sigma comes from a
     # data column (the placeholder source); a fixed / column-mean sigma is carried inline
@@ -284,7 +294,7 @@ def _export_new_era(conf, conf_path, model_file, bngl, noise, fit_model_params,
         surrogate_params
 
 
-def _read_experiments(conf, conf_path, model_file, bngl):
+def _read_experiments(conf, conf_path, model_file):
     """Read + resolve the new-era ``experiment:`` entries from the raw ``ploop`` dict.
 
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
@@ -395,7 +405,7 @@ def _apply_observable_overrides(datas, overrides):
                 f"present: {present}). Check for a typo in the column name.")
 
 
-def _read_conditions(conf, model_file, bngl):
+def _read_conditions(conf, model_file, model):
     """Read + validate the new-era ``condition:`` entries from the raw ``ploop`` dict.
 
     Each ``('condition', name)`` entry is ``(model_ref_or_None, [(var, op, val_str), ...])``
@@ -417,7 +427,7 @@ def _read_conditions(conf, model_file, bngl):
                 f"model is '{model_file}'. Multi-model export is a later chunk.")
         muts = []
         for var, op, val in perts:
-            if var not in bngl.parameters and var not in bngl.compartment_names:
+            if var not in model.parameters and var not in model.compartment_names:
                 raise PybnfError(
                     f"Condition '{name}' perturbs '{var}', which is not a parameter or "
                     f"compartment of model '{model_file}' (a PEtab condition target must "
@@ -432,17 +442,18 @@ def _read_conditions(conf, model_file, bngl):
 # ---------------------------------------------------------------------------
 
 def _resolve_model(conf):
-    """Return the job's single BNGL model file, raising at the chunk boundaries."""
+    """Return the job's single model file, raising at the chunk boundaries.
+
+    A BNGL (``.bngl``) or SBML (``.xml``) model is exported in its own native language
+    (ADR-0040, dispatched by :func:`_model_language`); any other extension raises there.
+    Multi-model export (more than one ``model:``) is a later chunk (#430)."""
     models = sorted(conf.get('models', set()))
     if len(models) != 1:
         raise NotImplementedError(
             f"This chunk exports a single-model job; this one has {len(models)} models "
-            f"({models}). Multi-model export (PEtab modelId) is a later chunk.")
+            f"({models}). Multi-model export (PEtab modelId) is a later chunk (#430).")
     model_file = models[0]
-    if not model_file.endswith('.bngl'):
-        raise NotImplementedError(
-            f"This chunk exports BNGL models; '{model_file}' is not '.bngl'. SBML/Antimony "
-            f"export is a later chunk (ADR-0025 settles the BNGL side first).")
+    _model_language(model_file)   # validate the extension is a supported language
     return model_file
 
 
@@ -548,7 +559,7 @@ def _independent_variable(data):
 # Observable + parameter rows
 # ---------------------------------------------------------------------------
 
-def _observable_rows(datas, bngl, noise, model_file, inline_functions=False,
+def _observable_rows(datas, model, noise, model_file, inline_functions=False,
                      measurement_models=None):
     """Classify each fitted column across all experiments' ``datas`` as a model observable,
     a model function, or a conf measurement model, and map it to a PEtab observable row.
@@ -582,17 +593,17 @@ def _observable_rows(datas, bngl, noise, model_file, inline_functions=False,
         if col in measurement_models:
             kind = 'measurement'
             formula = measurement_models[col]   # the conf observableFormula, verbatim
-        elif col in bngl.observable_names:
+        elif col in model.observable_names:
             kind = 'observable'
-        elif col in bngl.function_names:
+        elif col in model.function_names:
             kind = 'function'
-            formula = _inlined_formula(col, kind, bngl, model_file) if inline_functions \
+            formula = _inlined_formula(col, kind, model, model_file) if inline_functions \
                 else None
         else:
             raise PybnfError(
                 f"Exp column '{col}' matches no observable, function, or measurement model "
-                f"in model '{model_file}' (its observables: {sorted(bngl.observable_names)}; "
-                f"functions: {sorted(bngl.function_names)}; measurement models: "
+                f"in model '{model_file}' (its observables: {sorted(model.observable_names)}; "
+                f"functions: {sorted(model.function_names)}; measurement models: "
                 f"{sorted(measurement_models)}).")
         noise_source = _noise_source_for_column(verb, arg, col, datas)
         row = petab_observable_row(col, kind, distribution, noise_source,
@@ -606,7 +617,7 @@ def _observable_rows(datas, bngl, noise, model_file, inline_functions=False,
     return observable_rows, column_to_observable_id
 
 
-def _inlined_formula(col, kind, bngl, model_file):
+def _inlined_formula(col, kind, model, model_file):
     """The ``observableFormula`` for a column under inlining mode (ADR-0035), or ``None``.
 
     Only a **function** column is inlined (an observable is a model species/group, not an
@@ -614,18 +625,20 @@ def _inlined_formula(col, kind, bngl, model_file):
     by :func:`~pybnf.petab.formula.bngl_body_to_petab_math`. A function with an empty body
     -- a forward declaration, or a function *of arguments* (only zero-arg global functions
     are the BNGL measurement-model convention) -- cannot be inlined and raises rather than
-    emitting a bare-name formula that silently contradicts the requested mode.
+    emitting a bare-name formula that silently contradicts the requested mode. Reached only
+    for a BNGL model (SBML has no functions -- :class:`_SbmlModelView.function_names` is
+    empty), so ``model`` here is always a :class:`~pybnf.petab._bngl.BnglEntities`.
     """
     if kind != 'function':
         return None
-    body = bngl.function_bodies.get(col, '')
+    body = model.function_bodies.get(col, '')
     if not body:
         raise NotImplementedError(
             f"Function '{col}' in model '{model_file}' has no inlinable body (a forward "
             f"declaration or a function with arguments); only a zero-arg global function "
             f"'{col}() = <body>' can be inlined as an observableFormula (ADR-0035). Export "
             f"without inline_functions to reference it by bare name.")
-    return bngl_body_to_petab_math(body, bngl)
+    return bngl_body_to_petab_math(body, model)
 
 
 def _noise_source_for_column(verb, arg, col, datas):
@@ -665,19 +678,21 @@ def _noise_source_for_column(verb, arg, col, datas):
         f"sympy layer, mirroring the importer boundary). ADR-0021/0023, #423.")
 
 
-def _resolve_free_to_model(free_params, bngl, model_file):
+def _resolve_free_to_model(free_params, model, model_file):
     """Validate each free parameter binds to a model parameter id; return the identity map.
 
-    New-era BNGL binds free parameters **by id** (ADR-0034): a free parameter's name *is*
-    the model parameter it drives -- no ``__FREE`` marker. This is the exporter's analogue
-    of the new-era config typo check (:meth:`config._check_variable_correspondence_modern`):
-    a free parameter matching a model parameter id binds; one matching none is a typo (or
-    a ``fit`` sigma, which the exporter rejects separately at column classification). The
-    exporter never builds a ``Configuration``, so it validates against ``bngl.parameters``
-    directly rather than calling into ``config``. Returns ``{name: name}`` -- the identity
-    map the rest of the exporter threads as ``free_to_model``.
+    New-era binds free parameters **by id** (ADR-0034): a free parameter's name *is* the
+    model parameter it drives -- no ``__FREE`` marker. The id space is the model's parameter
+    ids (a BNGL ``begin parameters`` id, or an SBML global parameter id -- ADR-0040). This is
+    the exporter's analogue of the new-era config typo check
+    (:meth:`config._check_variable_correspondence_modern`): a free parameter matching a model
+    parameter id binds; one matching none is a typo (or a ``fit`` sigma, which the exporter
+    rejects separately at column classification). The exporter never builds a
+    ``Configuration``, so it validates against ``model.parameters`` directly rather than
+    calling into ``config``. Returns ``{name: name}`` -- the identity map the rest of the
+    exporter threads as ``free_to_model``.
     """
-    model_ids = set(bngl.parameters)
+    model_ids = set(model.parameters)
     free_to_model = {}
     for fp in free_params:
         if fp.name not in model_ids:
@@ -696,14 +711,14 @@ def _resolve_free_to_model(free_params, bngl, model_file):
     return free_to_model
 
 
-def _parameter_rows(free_params, free_to_model, surrogate_params, bngl, model_file):
+def _parameter_rows(free_params, free_to_model, surrogate_params, model, model_file):
     """Map each free parameter to a row; a fit-and-mutated one renamed to ``<p>__REF``."""
     parameter_rows = []
     for fp in free_params:
         model_param = free_to_model[fp.name]
         if model_param in surrogate_params:
             ref = surrogate_name(model_param)
-            if ref in bngl.parameters:
+            if ref in model.parameters:
                 raise PybnfError(
                     f"The surrogate-base name '{ref}' for fit-and-mutated parameter "
                     f"'{model_param}' clashes with an existing parameter in model "
@@ -715,14 +730,18 @@ def _parameter_rows(free_params, free_to_model, surrogate_params, bngl, model_fi
     return parameter_rows
 
 
-def _numeric_nominal(bngl, var):
-    """A fixed parameter's numeric nominal value, or ``None`` (expression/unknown RHS)."""
-    rhs = bngl.parameters.get(var)
+def _numeric_nominal(model, var):
+    """A fixed parameter's numeric nominal value, or ``None`` (expression/unknown RHS).
+
+    Works for both model views: a BNGL ``parameters`` value is the raw RHS string (a number
+    floats, an expression raises ``ValueError`` -> ``None``); an SBML view's value is already
+    a float or ``None`` (a value-less parameter -> ``None`` via the ``TypeError`` guard)."""
+    rhs = model.parameters.get(var)
     if rhs is None:
         return None
     try:
         return float(rhs)
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
@@ -766,10 +785,68 @@ def _free_parameters_from_conf(conf):
     return free_params
 
 
-def _read_bngl(path):
-    """Read a BNGL model's named entities (delegates to the shared stdlib parser)."""
+@dataclass(frozen=True)
+class _SbmlModelView:
+    """An SBML model presented through the attribute surface the exporter's shared
+    classification reads (the :class:`~pybnf.petab._bngl.BnglEntities` subset), with SBML
+    semantics (ADR-0040 -- the export mirror of the ADR-0036 import dispatch):
+
+    * ``observable_names`` are the SBML **species** (the trajectory's bare-name output
+      columns). SBML has no BNGL-style observables, so a bare-name ``observableFormula``
+      names a species directly -- the inverse of the importer mapping a bare-name formula
+      back to a species column.
+    * ``function_names`` / ``function_bodies`` are **empty**: SBML has no global BNGL
+      functions, so an SBML observable is never inlined; an expression observable is carried
+      in the conf measurement-model layer (``observable: <id>, formula: <expr>``) and
+      classified via ``measurement_models``.
+    * ``parameters`` maps each global parameter id to its numeric nominal (or ``None``) --
+      the free-parameter binding set, the condition-target set, and the nominal source.
+    * ``compartment_names`` are the SBML compartments (also a valid condition target).
+    """
+
+    text: str
+    parameters: dict
+    observable_names: frozenset
+    compartment_names: frozenset
+    function_names: frozenset = frozenset()
+    function_bodies: dict = field(default_factory=dict)
+
+
+def _model_language(model_file):
+    """The PEtab model language for a model file, by extension: ``.bngl`` -> ``'bngl'``,
+    ``.xml`` -> ``'sbml'``. Mirrors ``config.py``'s model-suffix dispatch (which also maps
+    ``.xml`` to its SBML backends)."""
+    if model_file.endswith('.bngl'):
+        return 'bngl'
+    if model_file.endswith('.xml'):
+        return 'sbml'
+    raise NotImplementedError(
+        f"Model '{model_file}' has an unrecognized extension; the exporter emits BNGL "
+        f"('.bngl') and SBML ('.xml') models (ADR-0025/0040). An Antimony ('.ant') model "
+        f"would need an Antimony->SBML conversion first -- a later chunk.")
+
+
+def _read_model(model_file, path, language):
+    """Read the job's model into the entity view the exporter consumes, per ``language``.
+
+    BNGL -> :class:`~pybnf.petab._bngl.BnglEntities`; SBML -> :class:`_SbmlModelView`
+    (the same attribute surface, SBML semantics). Both expose ``text`` (verbatim source),
+    ``parameters`` (the bindable ids + nominals), ``observable_names`` (bare-name observable
+    columns), ``function_names``/``function_bodies`` (BNGL only), and ``compartment_names``
+    -- everything the language-agnostic classification reads. The dispatch is the export
+    peer of the importer's :func:`~pybnf.petab.import_._model_namespace`.
+    """
     text = Path(path).read_text(encoding='utf-8', errors='replace')
-    return parse_model(text)
+    if language == 'sbml':
+        ent = parse_sbml_model(text)
+        return _SbmlModelView(
+            text=text,
+            # Every global parameter id -> its nominal (float or None); the binding set is
+            # the key set, the nominal source is the value (a value-less parameter -> None).
+            parameters={p: ent.parameter_values.get(p) for p in ent.parameter_names},
+            observable_names=ent.species_names,
+            compartment_names=ent.compartment_names)
+    return parse_bngl_model(text)
 
 
 # ---------------------------------------------------------------------------
@@ -803,9 +880,12 @@ def clean_model_for_petab(text):
                   '', text, flags=re.S | re.I | re.M)
 
 
-def write_problem_yaml(path, model_filename, model_id, has_conditions=False,
-                       has_experiments=False):
-    """Write a PEtab v2 ``problem.yaml`` referencing the tables and the model."""
+def write_problem_yaml(path, model_filename, model_id, language='bngl',
+                       has_conditions=False, has_experiments=False):
+    """Write a PEtab v2 ``problem.yaml`` referencing the tables and the model.
+
+    ``language`` is the model's PEtab language (``bngl`` or ``sbml``, ADR-0040) -- emitted
+    verbatim in the ``model_files`` block so each model declares its own native language."""
     parts = [
         'format_version: 2.0.0\n',
         'parameter_files:\n  - parameters.tsv\n',
@@ -820,6 +900,6 @@ def write_problem_yaml(path, model_filename, model_id, has_conditions=False,
         'model_files:\n',
         f'  {model_id}:\n',
         f'    location: {model_filename}\n',
-        '    language: bngl\n',
+        f'    language: {language}\n',
     ]
     Path(path).write_text(''.join(parts))

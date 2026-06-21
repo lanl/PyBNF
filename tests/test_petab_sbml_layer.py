@@ -161,6 +161,81 @@ class TestSbmlImport:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Exporter: a native SBML PyBNF job -> a valid SBML PEtab v2 problem (#429, ADR-0040)
+# ---------------------------------------------------------------------------
+
+def _write_sbml_job(d):
+    """Write a native SBML PyBNF job (a new-era conf + the verbatim ``.xml`` + a ``.exp``)
+    into directory ``d``; return the conf path. The job measures ``obs_ratio`` -- a
+    measurement-model formula (``observable: ... formula:``) over the SBML species, the
+    exporter's input for emitting an ``observableFormula`` expression."""
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'decay.xml').write_text(DECAY_SBML)
+    (d / 'meas.exp').write_text('# time\tobs_ratio\n0\t100\n1\t60\n2\t36\n')
+    conf = d / 'job.conf'
+    conf.write_text(textwrap.dedent(f"""\
+        edition = 2
+        job_type = de
+        objective = sos
+        model: decay.xml
+        observable: obs_ratio, formula: {OBS_FORMULA}
+        experiment: meas, data: meas.exp
+        uniform_var = k1 0.01 10
+        """))
+    return conf
+
+
+class TestSbmlExport:
+
+    def test_exports_sbml_verbatim_with_observable_formula(self, tmp_path):
+        from pybnf.petab import export_job
+
+        out = export_job(_write_sbml_job(tmp_path / 'job'), tmp_path / 'petab')
+        # problem.yaml declares the model in its own native language, at the verbatim .xml.
+        yaml = (out / 'problem.yaml').read_text()
+        assert 'language: sbml' in yaml
+        assert 'location: decay.xml' in yaml
+        # The .xml is carried byte-verbatim -- the dynamical model is never edited (ADR-0036).
+        assert (out / 'decay.xml').read_text() == DECAY_SBML
+        # SBML carries no observables, so the measurement-model formula is emitted as the
+        # observableFormula (the mirror of the importer's measurement-model line).
+        obs = (out / 'observables.tsv').read_text()
+        assert 'obs_ratio' in obs and OBS_FORMULA in obs
+
+    def test_sbml_round_trips_byte_for_byte(self, tmp_path):
+        # The dominant oracle: a native SBML job exports -> imports (ADR-0036) -> re-exports,
+        # reproducing every PEtab file byte-for-byte. Import needs the petab math layer.
+        pytest.importorskip('petab')
+        from pybnf.petab import export_job, import_job
+
+        conf = _write_sbml_job(tmp_path / 'job')
+        petab1 = export_job(conf, tmp_path / 'petab1')
+        import_job(petab1 / 'problem.yaml', tmp_path / 'imported')
+        petab2 = export_job(tmp_path / 'imported' / 'imported.conf', tmp_path / 'petab2')
+
+        names = sorted(p.name for p in petab1.iterdir())
+        assert names == sorted(p.name for p in petab2.iterdir())
+        for name in names:
+            assert (petab1 / name).read_text() == (petab2 / name).read_text(), \
+                f'{name} differs after export -> import -> re-export'
+
+    def test_exported_sbml_problem_passes_petab_validation(self, tmp_path):
+        # The external oracle: the exported SBML problem loads + validates via the real
+        # petablint path (an SBML model needs libsbml, which petab pulls in).
+        pytest.importorskip('petab')
+        from petab.v2 import Problem
+        from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
+
+        from pybnf.petab import export_job
+        out = export_job(_write_sbml_job(tmp_path / 'job'), tmp_path / 'petab')
+        problem = Problem.from_yaml(str(out / 'problem.yaml'))
+        errors = [type(t).__name__ for t in default_validation_tasks
+                  if (i := t.run(problem)) is not None
+                  and getattr(i, 'level', None) == ValidationIssueSeverity.ERROR]
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
 # 2. Config wiring: an SBML conf's formula line builds the layer (SBML namespace)
 # ---------------------------------------------------------------------------
 
