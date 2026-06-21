@@ -19,11 +19,19 @@ ADR-0011's "normalizer retained iff the noise parameter is estimated", now keyed
 off the source rather than hard-coded per objfunc.
 """
 
+import re
 from abc import ABC, abstractmethod
 
 import numpy as np
 
 from ..printing import PybnfError
+
+# A PEtab per-measurement placeholder symbol (``observableParameter1_*`` /
+# ``noiseParameter1_*``): in a row-varying noiseFormula it stands for the *row's* token
+# (a number or an estimated id), read from the binding table rather than substituted once
+# (ADR-0045). Mirrors ``petab.formula._PLACEHOLDER`` (kept local so the noise engine carries
+# no petab dependency on this path).
+_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
 
 
 class SigmaSource(ABC):
@@ -205,6 +213,97 @@ class FormulaSigma(SigmaSource):
     def value(self, owner, exp_data, exp_row, col_name):
         func, names = self._callable()
         return float(func(*[owner._pset_values[n] for n in names]))
+
+
+class PerMeasurementFormulaSigma(SigmaSource):
+    """The noise parameter given by an expression that references a **row-varying** PEtab
+    per-measurement placeholder, bound per data point from the experimental data's
+    binding table (the native ``formula`` source over a placeholder, ADR-0045).
+
+    ADR-0044's :class:`FormulaSigma` covers a noiseFormula whose placeholder is *constant
+    across an observable's rows* (substituted away to a per-observable σ). When the
+    placeholder's ``noiseParameters`` token instead **differs row to row** -- a per-condition
+    or per-timepoint estimated σ -- it cannot be substituted to one symbol; it must be bound
+    at scoring time from the row's token. This source keeps the placeholder as a free symbol
+    of the (cached, lambdified) expression and, at ``value(owner, exp_data, exp_row,
+    col_name)``, reads ``exp_data.measurement_params[col_name][placeholder][exp_row]`` for the
+    row's token -- a **number** binds as itself, a **parameter id** resolves from
+    ``owner._pset_values`` (a per-row estimated nuisance, ADR-0034). Any non-placeholder free
+    symbol resolves from the PSet exactly as :class:`FormulaSigma`'s do.
+
+    It is *estimated* (a per-row token id is an estimated parameter), lazy-compiled, and not
+    pickled (the same compile-once-per-worker pattern as :class:`FormulaSigma`). The binding
+    table lives on the experimental :class:`~pybnf.data.Data` (carried there by ``config.py``
+    from the importer's sidecar), not on the source, so the source survives dask scatter
+    independently of the data."""
+
+    estimated = True
+
+    def __init__(self, formula, names=None):
+        #: The PEtab-math expression, with its per-measurement placeholder(s) kept as symbols.
+        self.formula = formula
+        #: The ordered free-symbol names (placeholders + fixed PSet names); ``None`` until a
+        #: parse resolves them, then the compiler's canonical sorted order. Picklable.
+        self.names = list(names) if names is not None else None
+        self._func = None  # lambdify callable; not pickled (rebuilt lazily worker-side)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_func'] = None
+        return state
+
+    def _ensure_names(self):
+        if self.names is None:
+            from ..petab.formula import formula_free_symbols
+            self.names = formula_free_symbols(self.formula)
+        return self.names
+
+    def _callable(self):
+        if self._func is None:
+            from ..petab.formula import compile_petab_formula
+            func, names = compile_petab_formula(self.formula, self._ensure_names())
+            self._func, self.names = func, names
+        return self._func, self.names
+
+    def required_free_params(self):
+        # Only the FIXED (non-placeholder) symbols are always-required PSet names; the
+        # per-row placeholder tokens are validated against the binding table by config.py
+        # (they vary by row, so they are not a fixed required-name set here).
+        return {n for n in self._ensure_names() if not _PLACEHOLDER.match(n)}
+
+    def value(self, owner, exp_data, exp_row, col_name):
+        func, names = self._callable()
+        bindings = self._row_bindings(exp_data, col_name)
+        args = []
+        for name in names:
+            if _PLACEHOLDER.match(name):
+                args.append(self._resolve_token(owner, bindings, name, exp_row, col_name))
+            else:
+                args.append(owner._pset_values[name])
+        return float(func(*args))
+
+    @staticmethod
+    def _row_bindings(exp_data, col_name):
+        table = getattr(exp_data, 'measurement_params', None)
+        if not table or col_name not in table:
+            raise PybnfError(
+                f"A row-varying noise formula for '{col_name}' needs a per-measurement "
+                f"binding table, but none is attached to the experimental data. The "
+                f"experiment must declare 'measurement_params: <file>.tsv' (ADR-0045).")
+        return table[col_name]
+
+    @staticmethod
+    def _resolve_token(owner, bindings, placeholder, exp_row, col_name):
+        try:
+            token = bindings[placeholder][exp_row]
+        except (KeyError, IndexError):
+            raise PybnfError(
+                f"The per-measurement binding table for '{col_name}' has no value for "
+                f"placeholder '{placeholder}' at data row {exp_row} (ADR-0045).")
+        try:
+            return float(token)                 # a per-row numeric token, inlined
+        except (TypeError, ValueError):
+            return owner._pset_values[token]    # a per-row parameter id, from the PSet
 
 
 class ColumnMeanSigma(SigmaSource):

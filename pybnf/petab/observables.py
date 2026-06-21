@@ -264,6 +264,10 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
     * ``('constant', value)`` -- a fixed sigma written inline as a numeric
       ``noiseFormula`` with no placeholder: a ``fix_at`` constant (``sos`` -> 1,
       ``sod`` -> 1) or an observable's column mean (``ave_norm_sos``).
+    * ``('formula', expr)`` -- an expression sigma (``FormulaSigma``, ADR-0044/0045): the
+      PEtab-math ``noiseFormula`` over free-parameter ids + constants, emitted verbatim with
+      no placeholder. The inverse of the importer's expression-``noiseFormula`` classification,
+      so a whole-fit ``FormulaSigma`` round-trips.
     """
     try:
         prefix = _PETAB_OBSERVABLE_PREFIX[kind]
@@ -284,10 +288,15 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
     elif source_kind == 'constant':
         noise_formula = num(source_value)
         noise_placeholders = None
+    elif source_kind == 'formula':
+        # An expression sigma (FormulaSigma, ADR-0044/0045): the noiseFormula is the PEtab-math
+        # expression verbatim, no placeholder slot (its free symbols are PEtab parameter ids).
+        noise_formula = source_value
+        noise_placeholders = None
     else:
         raise PybnfError(
             f"Observable '{observable_id}': unknown noise source kind "
-            f"{source_kind!r} (expected 'placeholder' or 'constant').")
+            f"{source_kind!r} (expected 'placeholder', 'constant', or 'formula').")
 
     return PetabObservableRow(
         observable_id=observable_id,

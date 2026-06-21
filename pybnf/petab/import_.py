@@ -83,10 +83,13 @@ from .conditions import (
 )
 from .measurements import (
     data_from_measurement_rows,
+    measurement_param_bindings,
     noise_parameter_ids_by_observable,
     observable_parameters_by_observable,
     read_measurement_table,
+    row_varying_noise_ids,
 )
+from ._measurement_params import write_measurement_params
 from .observables import read_observable_table
 from .parameters import free_parameter_from_row, read_parameter_table
 from ._bngl import parse_model as parse_bngl_model
@@ -248,16 +251,23 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     datas = data_from_measurement_rows(measurement_rows, observable_id_to_column)
     # A constant-per-observable parameter-id noiseParameters placeholder is a
     # per-observable estimated sigma (Boehm's sd_*); the map drives the per-observable
-    # noise_model lines (ADR-0037). A row-varying id raises here (deferred frontier).
+    # noise_model lines (ADR-0037). A row-varying id is no longer an error -- it routes to
+    # the per-measurement binding table (ADR-0045): the per-data-point sidecar carrying the
+    # row's estimated noise id, emitted as a 'sigma = formula <placeholder>' line.
     noise_param_ids = noise_parameter_ids_by_observable(measurement_rows)
+    row_varying_obs = row_varying_noise_ids(measurement_rows)
+    param_bindings = measurement_param_bindings(
+        measurement_rows, observable_id_to_column, row_varying_obs)
     objective_directives = _objective_directives(
         observable_rows, observable_id_to_column, noise_param_ids,
-        _column_mean_resolver(datas, observable_id_to_column), obs_params)
+        _column_mean_resolver(datas, observable_id_to_column), obs_params, row_varying_obs)
     conditions = conditions_from_rows(condition_rows, surrogate_params)
     # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
-    # a single-model job carries modelId '' and emits no per-experiment model: field.
+    # a single-model job carries modelId '' and emits no per-experiment model: field. A group
+    # with a row-varying noise binding also writes its per-measurement sidecar (ADR-0045).
     model_location_of = {m['model_id']: m['location'] for m in models}
-    experiments = _experiments(datas, experiment_rows, out_dir, model_location_of)
+    experiments = _experiments(datas, experiment_rows, out_dir, model_location_of,
+                               param_bindings)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -463,7 +473,7 @@ _PETAB_DISTRIBUTION_TO_NOISE_MODEL = {
 
 
 def _objective_directives(observable_rows, observable_id_to_column, noise_param_ids,
-                          column_mean_of, obs_params):
+                          column_mean_of, obs_params, row_varying_obs=()):
     """Recover the conf's objective directive lines from the observables' noise (ADR-0031/0037).
 
     The inverse of the objective-family / whole-fit / per-observable ``noise_model`` export.
@@ -488,7 +498,8 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     """
     per_obs = [(row, *_resolve_noise(
                     row, noise_param_ids.get(row.observable_id),
-                    _placeholder_subs(row.observable_id, obs_params, noise_param_ids)))
+                    _placeholder_subs(row.observable_id, obs_params, noise_param_ids),
+                    row.observable_id in row_varying_obs))
                for row in observable_rows]
     single = _try_uniform_directive(per_obs, column_mean_of)
     if single is not None:
@@ -496,11 +507,18 @@ def _objective_directives(observable_rows, observable_id_to_column, noise_param_
     return _per_observable_directives(per_obs, observable_id_to_column)
 
 
-def _resolve_noise(row, noise_param_id, obs_subs):
+def _resolve_noise(row, noise_param_id, obs_subs, row_varying=False):
     """One observables row -> ``(family_token, source)`` where ``source`` is one of
     ``('placeholder', None)`` (per-point ``_SD``), ``('constant', value)`` (a fixed sigma),
-    ``('free', parameter_id)`` (an estimated sigma), or ``('formula', expr)`` (an expression
-    sigma -> ``FormulaSigma``, ADR-0044).
+    ``('free', parameter_id)`` (an estimated sigma), ``('formula', expr)`` (an expression
+    sigma -> ``FormulaSigma``, ADR-0044), or ``('per_measurement', expr)`` (a row-varying
+    placeholder bound per data point -> ``PerMeasurementFormulaSigma``, ADR-0045).
+
+    ``row_varying`` (ADR-0045): the observable's ``noiseParameters`` id **differs** across its
+    measurement rows, so it cannot reduce to one substituted symbol -- the noiseFormula is
+    emitted with its placeholder **kept** (``('per_measurement', formula)``) and the per-row
+    token is bound from the experiment's sidecar binding table at eval time. Checked first,
+    before the constant-reduction paths below.
 
     A **declared placeholder** noiseFormula -- a ``noiseParameter*`` token or a bare id listed
     in the row's ``noisePlaceholders`` -- has its value supplied per measurement: a parameter
@@ -510,7 +528,7 @@ def _resolve_noise(row, noise_param_id, obs_subs):
     ``observableParameter*`` / ``noiseParameter*`` placeholder is substituted in (``obs_subs``)
     and the resulting noiseFormula classified: a number -> ``('constant', v)``, a bare id ->
     ``('free', id)``, an arithmetic expression -> ``('formula', expr)``. A placeholder that
-    survives substitution (row-varying / unresolved) raises the deferred frontier."""
+    survives substitution (unresolved, and not row-varying) raises the deferred frontier."""
     dist = (row.noise_distribution or 'normal').lower()
     if dist not in _PETAB_DISTRIBUTION_TO_NOISE_MODEL:
         raise NotImplementedError(
@@ -522,6 +540,10 @@ def _resolve_noise(row, noise_param_id, obs_subs):
     formula = (row.noise_formula or '').strip()
     if not formula:
         raise PybnfError(f"Observable '{row.observable_id}' is missing a noiseFormula.")
+    # ADR-0045: a row-varying noiseParameters id is bound per data point from the sidecar; keep
+    # the placeholder in the noiseFormula verbatim (PerMeasurementFormulaSigma resolves it).
+    if row_varying:
+        return dist, ('per_measurement', formula)
     placeholders = {p.strip() for p in (row.noise_placeholders or '').split(';') if p.strip()}
     # ADR-0037 declared-placeholder path FIRST (preserved byte-for-byte: Boehm).
     if formula.startswith('noiseParameter') or formula in placeholders:
@@ -561,10 +583,22 @@ def _try_uniform_directive(per_obs, column_mean_of):
     kind = kinds.pop()
     petab_family, param = _PETAB_DISTRIBUTION_TO_NOISE_MODEL[family]
 
-    if kind == 'formula':
-        # An expression sigma (FormulaSigma, ADR-0044) has no whole-fit objective token; emit
-        # it as a per-observable noise_model override even when only one observable carries it.
+    if kind == 'per_measurement':
+        # A row-varying placeholder sigma (ADR-0045) is inherently per-observable -- its
+        # noiseFormula carries the observable-specific placeholder noiseParameter1_<id>, so
+        # several observables are never "uniform" -- and it is bound from the experiment's
+        # sidecar binding table. Always a per-observable noise_model line.
         return None
+    if kind == 'formula':
+        # An expression sigma (FormulaSigma, ADR-0044) has no whole-fit objective *token*, but a
+        # uniform one (every observable the same expression) is a whole-fit noise_model line --
+        # the inverse of the export's whole-fit formula sigma, so it round-trips byte-for-byte.
+        # A non-uniform / per-observable formula falls to _per_observable_directives (not yet
+        # re-exportable -- the deferred per-observable export boundary, ADR-0045).
+        exprs = {src[1] for _row, _dist, src in per_obs}
+        if len(exprs) != 1:
+            return None
+        return f'noise_model = {petab_family}, {param} = formula {exprs.pop()}'
     if kind == 'placeholder':
         if family != 'normal':
             raise NotImplementedError(
@@ -610,7 +644,10 @@ def _per_observable_directives(per_obs, observable_id_to_column):
         kind = src[0]
         if kind == 'free':
             lines.append(f'noise_model {column} = {petab_family}, {param} = fit {src[1]}')
-        elif kind == 'formula':
+        elif kind in ('formula', 'per_measurement'):
+            # Both emit a 'formula' source; for 'per_measurement' the expression keeps its
+            # row-varying placeholder, which config.py routes to PerMeasurementFormulaSigma
+            # (the placeholder's row token comes from the measurement_params sidecar; ADR-0045).
             lines.append(f'noise_model {column} = {petab_family}, {param} = formula {src[1]}')
         elif kind == 'constant':
             lines.append(
@@ -636,7 +673,7 @@ def _approx(a, b):
 # Experiments: measurement groups + experiment rows -> (name, condition, data files)
 # ---------------------------------------------------------------------------
 
-def _experiments(datas, experiment_rows, out_dir, model_location_of):
+def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindings=None):
     """Assemble the conf's experiments and write each one's ``.exp`` file(s).
 
     The set of experiments is the measurement groups (the replicate grids per
@@ -653,9 +690,16 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of):
     modelId when set, so two wildtype experiments on different models stay distinct. Each
     experiment's model is the ``modelId`` on its rows: ``model_location_of`` maps it to the
     model file, emitted as a per-experiment ``model:`` field (omitted for a single-model job,
-    whose modelId is ``''``). Returns ``[(name, condition_or_None, [data_file, ...],
-    model_location_or_None), ...]`` in measurement order.
+    whose modelId is ``''``).
+
+    ``param_bindings`` (ADR-0045) is the ``{(experiment_id, model_id): {column: {placeholder:
+    {time: token}}}}`` per-measurement binding table; a group with an entry also writes a
+    ``<name>_measparams.tsv`` sidecar carrying its row-varying noise tokens, emitted as the
+    experiment's ``measurement_params:`` field. Returns ``[(name, condition_or_None,
+    [data_file, ...], model_location_or_None, measparams_file_or_None), ...]`` in measurement
+    order.
     """
+    param_bindings = param_bindings or {}
     condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
     experiments = []
     for (eid, mid), group in datas.items():
@@ -672,7 +716,12 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of):
             data_file = f'{name}.exp' if k == 0 else f'{name}_rep{k + 1}.exp'
             _write_exp(out_dir / data_file, data)
             data_files.append(data_file)
-        experiments.append((name, condition, data_files, model_location))
+        measparams_file = None
+        binding = param_bindings.get((eid, mid))
+        if binding:
+            measparams_file = f'{name}_measparams.tsv'
+            write_measurement_params(binding, out_dir / measparams_file)
+        experiments.append((name, condition, data_files, model_location, measparams_file))
     return experiments
 
 
@@ -730,14 +779,17 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
     for name, perts in conditions.items():
         pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
         lines.append(f'condition: {name}, perturbations: {pert_str}')
-    for name, condition, data_files, model_location in experiments:
+    for name, condition, data_files, model_location, measparams_file in experiments:
         sim_method = method_overrides.get(name, method)
         cond_field = f', condition: {condition}' if condition else ''
         model_field = f', model: {model_location}' if model_location else ''
+        # The row-varying per-measurement binding sidecar (ADR-0045), when this experiment
+        # carries one; config.py attaches it to the experiment's exp Data.
+        mp_field = f', measurement_params: {measparams_file}' if measparams_file else ''
         data_field = ', '.join(f'data: {f}' if i == 0 else f
                                for i, f in enumerate(data_files))
         lines.append(
-            f'experiment: {name}{cond_field}{model_field}, method: {sim_method}, '
+            f'experiment: {name}{cond_field}{model_field}, method: {sim_method}{mp_field}, '
             f'{data_field}')
     lines.append('')
     lines.extend(free_param_lines)

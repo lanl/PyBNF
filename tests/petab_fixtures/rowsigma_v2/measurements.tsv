@@ -1,0 +1,7 @@
+observableId	experimentId	time	measurement	observableParameters	noiseParameters
+obs_x	epo	0	-10		
+obs_x	epo	1	-9		
+obs_x	epo	2	-8		
+obs_y	epo	0	43		sd_lo
+obs_y	epo	1	34.5		sd_hi
+obs_y	epo	2	27		sd_lo

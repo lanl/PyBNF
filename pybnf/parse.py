@@ -115,6 +115,10 @@ def parse(s):
     nonetoken = pp.Suppress(pp.CaselessLiteral("none"))
     model_file = pp.Regex(r".*?\.(bngl|xml|ant|target)")
     exp_file = pp.Regex(r".*?\.(exp|con|prop)")
+    # A per-measurement binding-table sidecar (ADR-0045): a .tsv referenced by an
+    # experiment's ``measurement_params:`` field, carrying a row-varying placeholder's
+    # per-row token (an estimated id that cannot ride a float .exp column).
+    param_file = pp.Regex(r".*?\.tsv")
     mdmgram = mdmkey - equals - model_file - colon - (_DelimitedList(exp_file) ^ nonetoken) - comment
 
     # new-era model declaration grammar (ADR-0028):
@@ -224,9 +228,14 @@ def parse(s):
     exp_data_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('data') + colon + _DelimitedList(exp_file))
     exp_type_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('type') + colon + exp_field_token)
     exp_method_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('method') + colon + exp_field_token)
+    # The optional per-measurement binding-table sidecar (ADR-0045): names a .tsv whose
+    # per-row placeholder tokens config.py attaches to this experiment's exp Data.
+    exp_measparams_field = pp.Group(
+        pp.Suppress(',') + pp.CaselessLiteral('measurement_params') + colon + param_file)
     experiment_gram = experiment_key + colon - exp_name + \
         (pp.Optional(exp_condition_field) & pp.Optional(exp_model_field) & exp_data_field
-         & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)) - comment
+         & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)
+         & pp.Optional(exp_measparams_field)) - comment
 
     # new-era observable grammar (ADR-0028) -- a column-header override:
     #   observable: <entity>, column: <header>
@@ -576,7 +585,8 @@ def ploop(ls):  # parse loop
             elif key == 'experiment':
                 fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' optionally with 'condition: c', " \
                       "'model: modelfile', 'type: time_course' (parameter_scan is not yet supported via this " \
-                      "surface), or 'method: ode|ssa|pla|nf' in any order (requires edition >= 2)"
+                      "surface), 'method: ode|ssa|pla|nf', or 'measurement_params: file.tsv' in any order " \
+                      "(requires edition >= 2)"
             elif key == 'observable':
                 fmt = "'observable: entity, column: header' mapping a model observable/function name to a " \
                       "differently-named data column header (requires edition >= 2)"

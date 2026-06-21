@@ -439,6 +439,40 @@ class TestExportObjectiveFamily:
         assert all(r['noiseFormula'] == '1' for r in rows)
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
+    def test_whole_fit_formula_sigma_round_trips(self, tmp_path_factory):
+        # A whole-fit FormulaSigma (ADR-0044/0045): sigma = an expression over a model
+        # parameter. It exports as the observables.tsv noiseFormula verbatim and round-trips
+        # export -> import -> re-export byte-for-byte (the import collapses the uniform
+        # expression back to a whole-fit noise_model line; ADR-0045).
+        import shutil
+        from pybnf.petab.import_ import import_job
+        expr = '0.1 + 0.05 * v1'
+        src = tmp_path_factory.mktemp('formula_src')
+        shutil.copy(DEMO_DIR / DEMO_MODEL, src / DEMO_MODEL)
+        shutil.copy(DEMO_DIR / 'par1.exp', src / 'par1.exp')
+        (src / 'job.conf').write_text(
+            f'edition = 2\njob_type = de\n'
+            f'model: {DEMO_MODEL}\n'
+            'experiment: par1, data: par1.exp\n'
+            f'noise_model = gaussian, sigma = formula {expr}\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10\n')
+        out1 = tmp_path_factory.mktemp('formula_out1')
+        export_job(src / 'job.conf', out1)
+        rows = _tsv_rows(out1 / 'observables.tsv')
+        assert all(r['noiseDistribution'] == 'normal' for r in rows)
+        assert all(r['noiseFormula'] == expr for r in rows)      # the expression, verbatim
+        assert all(r['noisePlaceholders'] == '' for r in rows)   # no per-measurement placeholder
+        assert _petab_validation_errors(out1 / 'problem.yaml') == []
+
+        # Import recovers a whole-fit formula line (the uniform-expression collapse, ADR-0045),
+        # and a re-export reproduces the observables table byte-for-byte.
+        imp = import_job(out1 / 'problem.yaml', tmp_path_factory.mktemp('formula_imp'))
+        conf_text = (imp / 'imported.conf').read_text()
+        assert f'noise_model = gaussian, sigma = formula {expr}' in conf_text
+        out2 = tmp_path_factory.mktemp('formula_out2')
+        export_job(imp / 'imported.conf', out2)
+        assert (out2 / 'observables.tsv').read_text() == (out1 / 'observables.tsv').read_text()
+
 
 # ---------------------------------------------------------------------------
 # Chunk 5a: the exporter reads the new-era data surface (model: / experiment: / data: /

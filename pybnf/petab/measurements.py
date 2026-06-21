@@ -345,6 +345,38 @@ def _noise_parameters(s):
         return None, s
 
 
+def _classify_noise_ids(rows):
+    """Split observables whose ``noiseParameters`` is a parameter id into
+    ``(constant, row_varying)`` (ADR-0037/0044/0045).
+
+    ``constant`` is ``{observable_id: parameter_id}`` for an id constant across the
+    observable's rows (a per-observable estimated sigma, Phase 1); ``row_varying`` is the set
+    of observable_ids whose id **differs** across rows (the per-measurement binding-table
+    frontier, Phase 2). Raises ``NotImplementedError`` for an observable that **mixes** a
+    parameter id with numeric per-point values across its rows -- a per-row source-*kind*
+    change with no clean binding-table form yet (still deferred).
+    """
+    ids, numeric = {}, set()
+    for row in rows:
+        if row.noise_parameter_id is not None:
+            ids.setdefault(row.observable_id, set()).add(row.noise_parameter_id)
+        elif row.noise_parameters is not None:
+            numeric.add(row.observable_id)
+    constant, row_varying = {}, set()
+    for oid, id_set in ids.items():
+        if oid in numeric:
+            raise NotImplementedError(
+                f"Observable '{oid}' mixes a parameter-id noiseParameters placeholder "
+                f"with numeric per-point values across its measurement rows -- a per-row "
+                f"change of the noise *source kind* (id vs data column), which has no clean "
+                f"per-measurement binding-table form and stays deferred (#428/ADR-0045).")
+        if len(id_set) == 1:
+            constant[oid] = next(iter(id_set))
+        else:
+            row_varying.add(oid)
+    return constant, row_varying
+
+
 def noise_parameter_ids_by_observable(rows):
     """``{observable_id: parameter_id}`` for observables whose ``noiseParameters`` is a
     single parameter id constant across all of that observable's rows (ADR-0037).
@@ -355,35 +387,49 @@ def noise_parameter_ids_by_observable(rows):
     ``noiseParameters`` is numeric (per-point ``_SD``) or blank are simply absent from
     the map.
 
-    Raises ``NotImplementedError`` -- the documented per-measurement frontier -- when a
-    single observable's rows carry **differing** parameter ids (a genuinely
-    per-measurement-varying noise scale, which per-observable PyBNF noise cannot
-    represent) or **mix** a parameter id with numeric per-point values.
+    A **row-varying** id (differing across the observable's rows) is no longer an error: it
+    routes to the per-measurement binding table (:func:`row_varying_noise_ids` /
+    :func:`measurement_param_bindings`, ADR-0045) and is excluded here. An id/numeric **mix**
+    is still deferred (raises in :func:`_classify_noise_ids`).
     """
-    ids, numeric = {}, set()
+    return _classify_noise_ids(rows)[0]
+
+
+def row_varying_noise_ids(rows):
+    """The set of ``observable_id``\\ s whose ``noiseParameters`` parameter id **differs**
+    across the observable's rows -- the row-varying per-measurement noise frontier bound per
+    data point from the binding table (:func:`measurement_param_bindings`, ADR-0045).
+
+    A constant-per-observable id (:func:`noise_parameter_ids_by_observable`) and a numeric /
+    blank cell are absent. The complement of the constant map over the id-valued observables.
+    """
+    return _classify_noise_ids(rows)[1]
+
+
+def measurement_param_bindings(rows, observable_id_to_column, row_varying_obs):
+    """Per-experiment per-measurement binding tables for the row-varying-noise observables
+    (ADR-0045) -- the source the importer writes to the sidecar TSV.
+
+    Returns ``{(experiment_id, model_id): {column: {placeholder: {time: token}}}}``: for each
+    measurement row of an observable in ``row_varying_obs``, the row's ``noiseParameters`` id
+    binds ``noiseParameter1_<observable_id>`` at that row's ``time``. The table is keyed by the
+    experimental-data **column** (``observable_id_to_column[oid]`` -- the model entity the
+    objective compares, what :class:`~pybnf.noise.PerMeasurementFormulaSigma` looks up at eval),
+    not the PEtab observableId, and grouped by ``(experiment_id, model_id)`` to match
+    :func:`data_from_measurement_rows` so each experiment gets its own sidecar. Two replicate
+    rows at the same ``(observable, time)`` share the token (last-wins; a per-replicate-varying
+    token is out of scope).
+    """
+    table = {}
     for row in rows:
-        if row.noise_parameter_id is not None:
-            ids.setdefault(row.observable_id, set()).add(row.noise_parameter_id)
-        elif row.noise_parameters is not None:
-            numeric.add(row.observable_id)
-    result = {}
-    for oid, id_set in ids.items():
-        if oid in numeric:
-            raise NotImplementedError(
-                f"Observable '{oid}' mixes a parameter-id noiseParameters placeholder "
-                f"with numeric per-point values across its measurement rows -- a "
-                f"per-measurement-varying noise scale with no per-observable PyBNF "
-                f"analogue (the deferred placeholder frontier, #407/ADR-0037).")
-        if len(id_set) != 1:
-            raise NotImplementedError(
-                f"Observable '{oid}' has more than one noiseParameters parameter id "
-                f"across its measurement rows ({sorted(id_set)}): a genuinely "
-                f"per-measurement-varying noise scale. PyBNF noise is per-observable "
-                f"(a single estimated sigma per observable), so this is the deferred "
-                f"placeholder frontier (#407/ADR-0037). A constant-per-observable id is "
-                f"imported as 'noise_model <obs> = <family>, sigma = fit <id>'.")
-        result[oid] = next(iter(id_set))
-    return result
+        if row.observable_id not in row_varying_obs or row.noise_parameter_id is None:
+            continue
+        key = (row.experiment_id, row.model_id)
+        column = observable_id_to_column[row.observable_id]
+        placeholder = f'noiseParameter1_{row.observable_id}'
+        (table.setdefault(key, {}).setdefault(column, {})
+              .setdefault(placeholder, {}))[row.time] = row.noise_parameter_id
+    return table
 
 
 def observable_parameters_by_observable(rows):

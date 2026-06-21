@@ -48,10 +48,12 @@ from pybnf.petab.conditions import (
 from pybnf.petab.measurements import (
     PetabMeasurementRow,
     data_from_measurement_rows,
+    measurement_param_bindings,
     measurement_rows_from_data,
     noise_parameter_ids_by_observable,
     observable_parameters_by_observable,
     read_measurement_table,
+    row_varying_noise_ids,
 )
 
 DEMO_DIR = Path(__file__).resolve().parents[1] / 'examples' / 'demo'
@@ -61,6 +63,10 @@ DEMO_MODEL = 'parabola_v2.bngl'
 # A crafted PEtab v2 problem exercising the ADR-0044 per-measurement placeholder reduction
 # (an observableParameters scale in the observableFormula + an expression noiseFormula).
 SCALING_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'scaling_v2'
+
+# A crafted PEtab v2 problem exercising the ADR-0045 row-varying per-measurement noise frontier
+# (a noiseParameters id that differs across an observable's rows -> a per-data-point binding).
+ROWSIGMA_DIR = Path(__file__).resolve().parent / 'petab_fixtures' / 'rowsigma_v2'
 
 # A real-world (externally authored) PEtab v2 problem -- the regression oracle for the
 # table readers, decoupled from the model (see the fixture's SOURCE.md).
@@ -669,17 +675,26 @@ class TestReverseAssets:
         assert np.allclose(reps[1]['time'], [0.0])                 # only the repeated cell
         assert np.allclose(reps[1]['x'], [2.0])
 
-    def test_noise_parameter_ids_per_observable_guards_row_varying(self):
-        # A constant-per-observable parameter id is a per-observable sigma; a row-varying id
-        # (or a mix with numeric per-point values) is the deferred per-measurement frontier.
+    def test_noise_parameter_ids_per_observable_classifies_constant_and_row_varying(self):
+        # A constant-per-observable parameter id is a per-observable sigma (Phase 1); a
+        # row-varying id now routes to the per-measurement binding table (ADR-0045), not an
+        # error. An id/numeric MIX is still the deferred frontier.
         def row(oid, t, pid=None, num=None):
             return PetabMeasurementRow(observable_id=oid, time=t, measurement=1.0,
                                        noise_parameter_id=pid, noise_parameters=num)
         ok = [row('a', 0, pid='sd_a'), row('a', 1, pid='sd_a'), row('b', 0, pid='sd_b')]
         assert noise_parameter_ids_by_observable(ok) == {'a': 'sd_a', 'b': 'sd_b'}
-        with pytest.raises(NotImplementedError, match='per-measurement'):
-            noise_parameter_ids_by_observable([row('a', 0, pid='sd_a'), row('a', 1, pid='sd_a2')])
-        with pytest.raises(NotImplementedError, match='per-measurement'):
+        assert row_varying_noise_ids(ok) == set()
+        # Differing ids across the rows: excluded from the constant map, surfaced as row-varying.
+        rv = [row('a', 0, pid='sd_a'), row('a', 1, pid='sd_a2')]
+        assert noise_parameter_ids_by_observable(rv) == {}
+        assert row_varying_noise_ids(rv) == {'a'}
+        # The per-experiment binding table maps the column's noiseParameter1 placeholder to the
+        # row's id, keyed by (experiment, model) and time (ADR-0045).
+        assert measurement_param_bindings(rv, {'a': 'ya'}, {'a'}) == {
+            ('', ''): {'ya': {'noiseParameter1_a': {0: 'sd_a', 1: 'sd_a2'}}}}
+        # An id/numeric mix is still deferred.
+        with pytest.raises(NotImplementedError, match='source kind'):
             noise_parameter_ids_by_observable([row('a', 0, pid='sd_a'), row('a', 1, num=2.0)])
 
     def test_observable_parameters_per_observable_guards_row_varying(self):
@@ -1025,4 +1040,104 @@ class TestPlaceholderReductionImport:
             'obs_y\tepo\t0\t43\t\tslope\n'
             'obs_y\tepo\t1\t34.5\t\tslope\n')
         with pytest.raises(NotImplementedError, match='row-varying'):
+            import_job(prob / 'problem.yaml', tmp_path / 'out')
+
+
+# ---------------------------------------------------------------------------
+# Row-varying per-measurement noise (ADR-0045, #428 Phase 2)
+#
+# A crafted PEtab v2 problem (tests/petab_fixtures/rowsigma_v2/) whose obs_y noiseParameters id
+# DIFFERS across rows (sd_lo, sd_hi, sd_lo): a per-timepoint estimated sigma with no per-observable
+# analogue. On import it is bound per data point from a measurement_params sidecar and scored by a
+# PerMeasurementFormulaSigma. Import-only: oracled by import correctness + a simulator-free score
+# against a hand-derived NLL where the per-row sigma differs (a broadcast bug is caught).
+# ---------------------------------------------------------------------------
+
+class TestRowVaryingNoiseImport:
+
+    @pytest.fixture(scope='class')
+    def out(self, tmp_path_factory):
+        d = tmp_path_factory.mktemp('rowsigma')
+        return import_job(ROWSIGMA_DIR / 'problem.yaml', d / 'out')
+
+    def test_row_varying_noise_imports_as_per_measurement_formula(self, out):
+        text = (out / 'imported.conf').read_text()
+        # obs_y's row-varying noiseParameters id stays a placeholder formula on column y; obs_x's
+        # fixed sigma is the constant path (the two coexist under a structural base objective).
+        assert 'objective = chi_sq' in text
+        assert 'noise_model x = gaussian, sigma = fix_at 0.5' in text
+        assert 'noise_model y = gaussian, sigma = formula noiseParameter1_obs_y' in text
+        # The experiment line references the per-measurement binding sidecar (ADR-0045).
+        exp_line = next(l for l in text.splitlines() if l.startswith('experiment:'))
+        assert 'measurement_params: epo_measparams.tsv' in exp_line
+
+    def test_sidecar_carries_the_per_row_ids(self, out):
+        from pybnf.petab._measurement_params import read_measurement_params
+        table = read_measurement_params(out / 'epo_measparams.tsv')
+        # Keyed by the data COLUMN (y), the placeholder, and time -> the row's estimated id.
+        assert table == {'y': {'noiseParameter1_obs_y': {0.0: 'sd_lo', 1.0: 'sd_hi', 2.0: 'sd_lo'}}}
+
+    def test_imported_conf_loads_and_scores_with_per_row_sigma(self, out, monkeypatch):
+        # The imported job loads (sd_lo/sd_hi recognized as binding-table nuisances, not orphan
+        # typos), attaches the binding table to the exp Data, and scores each obs_y point with its
+        # OWN sigma. Scored simulator-free against a hand-derived Gaussian NLL.
+        import types
+        from pybnf import config as config_mod
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 'sd_lo', 'sd_hi'}
+        # The per-data-point binding table rode the sidecar onto the experiment's exp Data.
+        epo = cfg.exp_data['rowsigma_model']['epo']
+        assert epo.measurement_params == {'y': {'noiseParameter1_obs_y': ['sd_lo', 'sd_hi', 'sd_lo']}}
+
+        # A trajectory whose obs_y differs from the data by residuals (1, 2, 2); obs_x matches.
+        sim = Data.from_columns(
+            np.array([[0., -10., 44.], [1., -9., 36.5], [2., -8., 29.]]),
+            ['time', 'x', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in
+                {'v1': 0.5, 'v2': 1., 'v3': 3., 'sd_lo': 0.5, 'sd_hi': 2.}.items()]
+        score = cfg.obj.evaluate_multiple({'rowsigma_model': {'epo': sim}}, cfg.exp_data, pset)
+        # obs_x (fixed sigma 0.5): residual 0 -> 0. obs_y (estimated Gaussian, per-row sigma):
+        #   t0 sd_lo=0.5 res 1 -> 1/(2*.25) + log(.5) = 2 + log(.5)
+        #   t1 sd_hi=2.0 res 2 -> 4/(2*4)   + log(2)  = 0.5 + log(2)
+        #   t2 sd_lo=0.5 res 2 -> 4/(2*.25) + log(.5) = 8 + log(.5)
+        expected = 10.5 + 2 * float(np.log(0.5)) + float(np.log(2.0))
+        assert score == pytest.approx(expected)
+        # A bug that broadcast a single sigma (sd_lo) over the column would score differently.
+        broadcast = 18.0 + 3 * float(np.log(0.5))
+        assert not np.isclose(score, broadcast)
+
+    def test_per_measurement_sigma_source_survives_pickle(self, out, monkeypatch):
+        # The objective (carrying the PerMeasurementFormulaSigma) is scattered to dask workers;
+        # the lambdify callable is dropped + rebuilt worker-side, and the binding table rides the
+        # exp Data, so a round-tripped objective scores identically (ADR-0045).
+        import pickle
+        import types
+        from pybnf import config as config_mod
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(
+            ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        obj = pickle.loads(pickle.dumps(cfg.obj))
+        exp = {m: {s: pickle.loads(pickle.dumps(d)) for s, d in sd.items()}
+               for m, sd in cfg.exp_data.items()}
+        sim = Data.from_columns(
+            np.array([[0., -10., 44.], [1., -9., 36.5], [2., -8., 29.]]),
+            ['time', 'x', 'y'], indvar='time')
+        pset = [types.SimpleNamespace(name=n, value=v) for n, v in
+                {'v1': 0.5, 'v2': 1., 'v3': 3., 'sd_lo': 0.5, 'sd_hi': 2.}.items()]
+        score = obj.evaluate_multiple({'rowsigma_model': {'epo': sim}}, exp, pset)
+        assert score == pytest.approx(10.5 + 2 * float(np.log(0.5)) + float(np.log(2.0)))
+
+    def test_row_varying_noise_with_numeric_mix_is_deferred(self, tmp_path):
+        # An observable whose noiseParameters MIXES a parameter id with a numeric per-point value
+        # across rows is a per-row source-kind change -> still the deferred frontier (ADR-0045).
+        prob = tmp_path / 'prob'
+        shutil.copytree(ROWSIGMA_DIR, prob)
+        (prob / 'measurements.tsv').write_text(
+            'observableId\texperimentId\ttime\tmeasurement\tobservableParameters\tnoiseParameters\n'
+            'obs_x\tepo\t0\t-10\t\t\n'
+            'obs_y\tepo\t0\t43\t\tsd_lo\n'
+            'obs_y\tepo\t1\t34.5\t\t0.7\n')      # an id on one row, a number on the next
+        with pytest.raises(NotImplementedError, match='source kind'):
             import_job(prob / 'problem.yaml', tmp_path / 'out')

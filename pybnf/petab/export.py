@@ -744,6 +744,12 @@ def _noise_source_for_column(verb, arg, col, datas):
       value its declared placeholder binds to).
     * ``fix_at`` -> a constant noiseFormula (the fixed sigma).
     * ``column_mean`` -> a constant noiseFormula = the column's mean across all data.
+    * ``formula`` -> the expression noiseFormula verbatim (a ``FormulaSigma``, ADR-0044/0045):
+      a PEtab-math expression over free-parameter ids + constants. The expression's symbols are
+      PEtab parameter ids (exported as estimated parameters); a noise nuisance that is not a
+      model parameter is still a deferred boundary (it would fail the model-id binding check,
+      shared with the ``fit`` sigma), so the whole-fit ``formula`` export covers an expression
+      over model parameters.
 
     A free-parameter sigma (``fit``) and a relative sigma (``relative``) are deferred
     boundaries: the former needs the noise parameter wired into the PEtab parameter
@@ -751,6 +757,8 @@ def _noise_source_for_column(verb, arg, col, datas):
     expression (the sympy layer, mirroring the importer's expression boundary).
     """
     holders = [data for data in datas if col in data.cols]
+    if verb == 'formula':
+        return ('formula', arg)
     if verb == 'read_exp_file':
         sd_col = col + arg
         if any(sd_col not in data.cols for data in holders):

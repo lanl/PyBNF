@@ -882,6 +882,11 @@ class Configuration:
         for when that surface is designed. ``.con``/``.prop`` (BPSL) data files are likewise
         not yet routed through ``data:``.
         """
+        # Parameter ids referenced only as a row-varying per-measurement noise token (the
+        # ADR-0045 binding table) -- recognized as used by the free-parameter orphan check
+        # (_check_variable_correspondence_modern), like the measurement-layer nuisances. Always
+        # defined (even with no experiments) so the check can union it unconditionally.
+        self._per_measurement_free_params = set()
         experiments = [(k[1], v) for k, v in self.config.items()
                        if isinstance(k, tuple) and k[0] == 'experiment']
         if not experiments:
@@ -898,6 +903,8 @@ class Configuration:
             base = self._resolve_experiment_model(name, fields.get('model'))
             model = self.models[base]
             stacked = self._load_experiment_data(name, fields['data'])
+            if fields.get('measurement_params'):
+                self._attach_measurement_params(name, stacked, fields['measurement_params'])
             action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
             if action_type != 'time_course':
                 raise PybnfError(
@@ -992,6 +999,58 @@ class Configuration:
         stacked.indvar = datas[0].indvar
         stacked.data = np.vstack([d.data for d in datas])
         return stacked
+
+    def _attach_measurement_params(self, name, stacked, mp_file):
+        """Attach an experiment's per-measurement binding table to its exp ``Data`` (ADR-0045).
+
+        Reads the ``measurement_params: <file>.tsv`` sidecar -- ``{column: {placeholder:
+        {time: token}}}`` -- and rebuilds it onto ``stacked.measurement_params`` as
+        ``{column: {placeholder: [token_per_row]}}`` aligned to ``stacked``'s row order (so a
+        :class:`~pybnf.noise.PerMeasurementFormulaSigma` can read the row's token at
+        ``exp_row``). Each row is matched to its sidecar entry by the independent-variable
+        (time) value, so replicate rows that share a time share the token (the stacking in
+        :meth:`_load_experiment_data` repeats times; this is robust to it). A token that is a
+        parameter id (not a number) is collected into ``_per_measurement_free_params`` so the
+        free-parameter orphan check recognizes it as used.
+        """
+        from .petab._measurement_params import read_measurement_params
+        raw = read_measurement_params(self._absolute(mp_file))
+        row_times = list(stacked[stacked.indvar])
+        binding = {}
+        for column, by_placeholder in raw.items():
+            binding[column] = {}
+            for placeholder, by_time in by_placeholder.items():
+                tokens = [self._token_at_time(by_time, t, name, column, placeholder)
+                          for t in row_times]
+                binding[column][placeholder] = tokens
+                for tok in tokens:
+                    if tok is not None and not self._is_numeric_token(tok):
+                        self._per_measurement_free_params.add(tok)
+        stacked.measurement_params = binding
+
+    @staticmethod
+    def _is_numeric_token(token):
+        """Whether a per-measurement binding token is a numeric literal (inlined at eval) vs a
+        parameter id (resolved from the PSet -- a free-parameter nuisance)."""
+        try:
+            float(token)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _token_at_time(by_time, t, name, column, placeholder):
+        """The sidecar token for time ``t``: an exact float-key hit, else the closest key
+        within a tight tolerance (the .exp and sidecar times share a source, so this only
+        absorbs float-repr noise). Raises if no row matches."""
+        if t in by_time:
+            return by_time[t]
+        for st, token in by_time.items():
+            if np.isclose(st, t, rtol=0, atol=1e-9):
+                return token
+        raise PybnfError(
+            f"Experiment '{name}': the measurement_params sidecar has no token for "
+            f"placeholder '{placeholder}' of column '{column}' at time={t} (ADR-0045).")
 
     def _infer_experiment_type(self, name, data, explicit_type):
         """Infer an experiment's simulation type from the data's independent variable
@@ -1770,6 +1829,9 @@ class Configuration:
         # referenced only by a measurement model is an observation-layer nuisance (ADR-0044).
         nuisance = set(self.obj.required_free_noise_params())
         nuisance |= getattr(self, '_measurement_free_params', set())
+        # A parameter id used only as a row-varying per-measurement noise token (the ADR-0045
+        # binding table) is a legitimate nuisance, bound to no model id.
+        nuisance |= getattr(self, '_per_measurement_free_params', set())
 
         orphans = sorted(v.name for v in self.variables
                          if v.name not in model_ids and v.name not in nuisance)

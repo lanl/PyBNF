@@ -2,11 +2,18 @@
 
 from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
-                    RelativeSigma)
+                    PerMeasurementFormulaSigma, RelativeSigma)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
+import re
+
 import numpy as np
+
+# A PEtab per-measurement placeholder in a ``formula`` source expression (ADR-0045): its
+# presence is what distinguishes a row-varying ``PerMeasurementFormulaSigma`` (bound per data
+# point from the measurement_params table) from the constant-per-observable ``FormulaSigma``.
+_PLACEHOLDER_IN_FORMULA = re.compile(r'(?:observable|noise)Parameter\d')
 
 
 class ObjectiveCalculator:
@@ -363,8 +370,13 @@ def _build_sigma_source(verb, arg):
         # An expression sigma over free parameters (+ constants), evaluated against the
         # PSet per point (ADR-0044): the PEtab expression-noiseFormula source. The arg is
         # the (whitespace-stripped) PEtab math expression; FormulaSigma derives the free
-        # parameters it requires and compiles lazily.
+        # parameters it requires and compiles lazily. When the expression still references a
+        # per-measurement placeholder (observableParameter*/noiseParameter*), the token is
+        # row-varying and bound per data point from the experiment's binding table -- a
+        # PerMeasurementFormulaSigma instead (ADR-0045).
         _require_arg(verb, arg)
+        if _PLACEHOLDER_IN_FORMULA.search(arg):
+            return PerMeasurementFormulaSigma(arg)
         return FormulaSigma(arg)
     if verb == 'read_exp_file':
         _require_arg(verb, arg)
