@@ -426,6 +426,31 @@ class TestTruncatedPrior:
         assert xs.mean() == pytest.approx(oracle.mean(), abs=0.05)
         assert xs.std() == pytest.approx(oracle.std(), abs=0.05)
 
+    @pytest.mark.parametrize("lo,hi", [
+        (-1.0, np.inf),   # open above
+        (-np.inf, 4.0),   # open below
+    ])
+    def test_half_bounded_matches_truncnorm(self, lo, hi):
+        # One infinite bound: the decorator renormalizes over the half-line via
+        # Z = cdf(hi) - cdf(lo) with cdf(+-inf) in {0, 1} (ADR-0047). Oracle against
+        # scipy truncnorm with the matching infinite bound.
+        tp = TruncatedPrior(Normal(loc=1.0, sigma=2.0), lo, hi)
+        oracle = _truncnorm(1.0, 2.0, lo, hi)
+        for u in (-0.5, 0.0, 1.0, 3.0):
+            if lo <= u <= hi:
+                assert tp.logpdf(u) == pytest.approx(oracle.logpdf(u), rel=1e-12)
+        for q in (0.05, 0.25, 0.5, 0.75, 0.95):
+            assert tp.ppf(q) == pytest.approx(oracle.ppf(q), rel=1e-9)
+        assert tp.has_bounded_support and tp.support() == (lo, hi)
+
+    def test_half_bounded_density_integrates_to_one(self):
+        # Correct half-line renormalization: integrate over a wide finite proxy of
+        # the open tail (the density is negligible far from the bulk).
+        tp = TruncatedPrior(Normal(1.0, 2.0), 0.0, np.inf)
+        grid = np.linspace(0.0, 60.0, 60001)
+        dens = np.exp(np.array([tp.logpdf(u) for u in grid]))
+        assert _trapz(dens, grid) == pytest.approx(1.0, abs=1e-4)
+
     def test_flags_and_support(self):
         tp = TruncatedPrior(Normal(0.0, 1.0), -2.0, 2.0)
         assert tp.has_bounded_support and tp.has_prior

@@ -17,6 +17,7 @@ from .base import FrozenPrior
 @register_prior_family('gamma')
 class Gamma(FrozenPrior):
     has_bounded_support = False
+    support_lo_u = 0.0   # support (0, inf): a one-sided truncation floors here (ADR-0047)
     field_names = ('shape', 'scale')
 
     def __init__(self, shape, gamma_scale):

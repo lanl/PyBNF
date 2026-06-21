@@ -34,6 +34,13 @@ class Prior(ABC):
     #: Whether the family's support is finite -- drives reflecting-bounds
     #: eligibility and latin-hypercube participation. ``Uniform`` overrides.
     has_bounded_support = False
+    #: The family's natural lower support endpoint in sampling space ``u`` (the lower
+    #: edge of ``support()``, a family constant independent of the distribution's
+    #: parameters). ``-inf`` for the doubly-unbounded families; the half-bounded
+    #: families (gamma/exponential/chisquare/rayleigh) override to ``0.0``. The
+    #: owning ``FreeParameter``'s ``Scale.inverse`` maps it to the theta-space floor
+    #: a one-sided truncation measures bounds against (ADR-0047).
+    support_lo_u = -np.inf
     #: How many config numbers the family's ``*_var`` keyword takes (``p1 p2`` for the
     #: location/scale/bounds families; the one-parameter exponential/chisquare/rayleigh
     #: override to 1, so the grammar admits a single number -- ADR-0010/#417).

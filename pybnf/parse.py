@@ -79,9 +79,14 @@ def parse(s):
     numkeys = _one_of(' '.join(numkeys_int + numkeys_float), caseless=True)
     point = pp.Literal(".")
     e = pp.CaselessLiteral("E")
-    num = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
+    # An optionally-signed infinity (an open truncation side, ADR-0047 -- 'inf' / '-inf')
+    # or a real number. inf is tried first so '-inf' matches it whole rather than the
+    # real-number branch consuming the lone sign.
+    inf_num = pp.Combine(pp.Optional(pp.Word("+-", exact=1)) + pp.CaselessLiteral("inf"))
+    real_num = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
                          pp.Optional(point + pp.Optional(pp.Word(pp.nums))) +
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
+    num = inf_num | real_num
     numgram = numkeys - equals - num - comment
 
     # variable definition grammar, split by the family's parameter count so the arity is

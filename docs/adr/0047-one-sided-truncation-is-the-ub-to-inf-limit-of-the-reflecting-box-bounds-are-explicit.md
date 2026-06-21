@@ -1,13 +1,18 @@
 # One-sided truncation is the `ub → ∞` limit of the reflecting box; bounds are explicit `±inf` with scale-aware support floors, never specified by absence (issue #432)
 
-**Status: Accepted (decision 2026-06-21); not yet implemented.** Amends **ADR-0020**,
+**Status: Accepted → implemented (2026-06-21).** Amends **ADR-0020**,
 which gave the unbounded-support families (`normal`/`laplace`/`cauchy` + log forms) a
 *two-sided* truncated prior (a finite reflecting box) and explicitly carved out
 *one-sided* truncation — a single finite bound with the other infinite — as a `raise`
 across both adapters (native `parameter:` record, PEtab importer). This ADR removes that
 carve-out: it pins (a) the **native grammar** for an open side, (b) the **half-bounded
 containment scheme**, and (c) the two **design principles** that fell out of working the
-problem against PEtab v2. Issue #432.
+problem against PEtab v2. Built across the seven sites in the wiring section below
+(including two beyond the issue's four: the `parse.py` `num` token and the importer's
+conf-writer — a half-bounded import must reach a *runnable* conf, which also closed a
+latent two-sided gap). Covered by half-bounded unit + round-trip tests in
+`test_priors` / `test_freeparameter_class` / `test_config_class` / `test_petab_parameters`
+/ `test_petab_import`; full fast-tier suite green (2115 passed). Issue #432.
 
 ## What ADR-0020 left raising
 
@@ -144,22 +149,35 @@ because PEtab v2 deliberately made the same calls:
    `0/inf`) the PEtab importer reads explicitly. The two-adapter proof (ADR-0004) holds; the
    surfaces differ only in whether the bound is mandatory.
 
-## Wiring (four sites)
+## Wiring (the sites it touched)
 
-- **Core (`pset.py`)** — `FreeParameter.__init__` accepts exactly one infinite `lb`/`ub`
-  (both infinite ≡ untruncated, routed to the existing `lb is None and ub is None` branch;
-  both finite ≡ today's two-sided box). The `not (isfinite ∧ isfinite)` guard
-  (`pset.py:1755-1758`) relaxes to "reject *both* infinite as a degenerate box; allow one."
-  `_reflect` gains the single-wall branch (skip the modular wrap on the infinite side, mirror
-  at the finite wall). `TruncatedPrior` accepts one infinite `u`-bound (`Z` via `cdf(±∞)`).
-- **Native surface (`config.py`)** — drop the both-required raise; apply the pairing rule
-  (still required as a pair) and the graded sentinel/floor rule; `±inf` parse to
-  `float('inf')`.
+The four sites the issue named, plus two the end-to-end path required (the native grammar
+token and the importer's conf-writer) — found because a half-bounded import must reach a
+*runnable* conf, not just an in-memory `FreeParameter`:
+
+- **Core (`pset.py`)** — `FreeParameter.__init__` accepts one infinite `u`-wall (both infinite
+  ≡ untruncated; both finite ≡ the two-sided box). Open-ness is detected in sampling space `u`
+  via a warning-safe `_bound_to_u` (a log family's floor `theta 0`/`-inf` → `u = -inf` without
+  tripping `log10(0)`). `_reflect` gains single-wall branches (mirror at the lone finite wall);
+  `TruncatedPrior` already handles one infinite `u`-bound (`Z` via `cdf(±∞)`), so it was left
+  unchanged.
+- **Prior families (`priors/*.py`)** — a `support_lo_u` class attribute (the family's natural
+  `u`-floor: `-inf` by default, `0` for gamma/exponential/chisquare/rayleigh) so the floor is
+  derived as `scale.inverse(support_lo_u)`, not a hardcoded list.
+- **Native grammar (`parse.py`)** — the `num` token accepts a signed `inf` (tried before the
+  real-number branch so `-inf` matches whole), so an open side is a parseable conf token.
+- **Native surface (`config.py`)** — drop the both-required raise; keep the pairing rule (new
+  message), apply the graded sentinel/floor rule, and require finite bounds for a uniform box.
 - **PEtab importer (`parameters.py`)** — `_truncation_box` replaces its `NotImplementedError`
-  with the half-bounded mapping (one finite wall + the support endpoint on the open side).
-- **PEtab exporter (`parameters.py`)** — a half-bounded native prior emits a valid PEtab row:
-  the finite wall on the truncated side, the natural-domain endpoint (`0`/`±inf`) on the open
-  side — matching PEtab's own untruncated spelling.
+  with the half-bounded mapping (the covered side → the support endpoint, the other → a finite
+  wall).
+- **PEtab importer conf-writer (`import_.py`)** — a truncated free parameter (two-sided *or*
+  half-bounded) is emitted as a new-era `parameter:` record (the only grammar carrying bounds),
+  not the legacy `*_var = name p1 p2` line, which silently dropped the box — also closing a
+  latent two-sided gap.
+- **PEtab exporter (`parameters.py`)** — a half-bounded native prior already emits a valid
+  PEtab row (the finite wall on the truncated side, an explicit `±inf` on the open side) via
+  `trunc_lb`/`trunc_ub` and the `inf`-aware `num` serializer — no code change, only docstrings.
 
 ## Considered Options
 

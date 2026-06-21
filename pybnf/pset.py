@@ -1689,9 +1689,12 @@ class FreeParameter:
         :param bounded: Determines whether the parameter should be bounded after initial sampling
          (only relevant if parameter's initial distribution is bounded)
         :param lb: Optional lower truncation bound (in theta) for an unbounded-support
-         prior (normal/laplace/log-*). With ``ub``, the prior is truncated to a
-         finite reflecting box (ADR-0020, issue #411). Distinct from ``p1``, which
-         is the family's location/scale, not a bound. Ignored for the Uniform
+         prior (normal/laplace/log-*). With a finite ``lb`` and ``ub`` the prior is
+         truncated to a two-sided reflecting box (ADR-0020, issue #411); an infinite
+         bound on one side (or ``None``) gives a half-bounded box -- a single
+         reflecting wall, the ``ub->inf`` limit of the fold (ADR-0047, issue #432).
+         Both sides infinite/``None`` is the untruncated prior. Distinct from ``p1``,
+         which is the family's location/scale, not a bound. Ignored for the Uniform
          families, whose bounds are ``p1``/``p2``.
         :param ub: Optional upper truncation bound (in theta); see ``lb``.
         :param initialization_distribution: Which distribution should generate
@@ -1733,35 +1736,43 @@ class FreeParameter:
             self.bounded = bounded
             self.lower_bound = -np.inf if not self.bounded else self.p1
             self.upper_bound = np.inf if not self.bounded else self.p2
-        elif lb is None and ub is None:
-            # Unbounded, untruncated -- today's behavior (the default bounded flag
-            # is meaningless for an unbounded-support family without a box).
-            self.bounded = False
-            self.lower_bound = -np.inf
-            self.upper_bound = np.inf
         else:
-            # Truncated unbounded-support prior (ADR-0020): a finite, two-sided
-            # reflecting box that also truncates the prior density and sampling.
-            # The family-agnostic reflection fold (_reflect) needs two finite
-            # bounds, so one-sided truncation has no box to fold into -- raise
-            # rather than silently drop the bound.
-            if lb is None or ub is None:
+            # Unbounded-support family with a (possibly one-sided) truncation box
+            # (ADR-0020/0047). Bounds are in theta; a None or an explicit infinity on
+            # a side means "no wall there". The reflecting box and the TruncatedPrior
+            # both live in sampling space u, so detect open-ness there: an open side is
+            # +-inf in u (linear -inf/inf, or a log family's natural floor 0 ->
+            # log10(0) = -inf). A doubly-open box is just the untruncated prior; a
+            # single finite u-wall is a half-bounded box (the ub->inf limit of the
+            # two-sided fold); two finite walls are the original two-sided box.
+            lo_theta = -np.inf if lb is None else float(lb)
+            hi_theta = np.inf if ub is None else float(ub)
+            lo_u = self._bound_to_u(lo_theta)
+            hi_u = self._bound_to_u(hi_theta)
+            if np.isnan(lo_u) or np.isnan(hi_u):
                 raise PybnfError(
-                    f"Parameter {self.name}: truncating an unbounded-support prior "
-                    f"needs both lb and ub (got lb={lb}, ub={ub}); one-sided "
-                    f"truncation has no finite reflecting box.")
-            self.lower_bound = float(lb)
-            self.upper_bound = float(ub)
-            if not (np.isfinite(self.lower_bound) and np.isfinite(self.upper_bound)):
+                    f"Parameter {self.name}: truncation bound is invalid in sampling "
+                    f"space (a {self._scale.name} scale needs a positive lower bound), "
+                    f"got theta [{lo_theta}, {hi_theta}].")
+            if not lo_u < hi_u:
                 raise PybnfError(
-                    f"Parameter {self.name}: truncation bounds must both be finite "
-                    f"to form a reflecting box, got [{self.lower_bound}, {self.upper_bound}]")
-            self.bounded = True
-            # Wrap the family in a TruncatedPrior carrying the box in sampling
-            # space u (the scale owns theta<->u; log parameters truncate in log10).
-            self._prior = TruncatedPrior(
-                self._prior, self._scale.forward(self.lower_bound),
-                self._scale.forward(self.upper_bound))
+                    f"Parameter {self.name}: truncation bounds must be increasing in "
+                    f"sampling space, got theta [{lo_theta}, {hi_theta}].")
+            if np.isfinite(lo_u) or np.isfinite(hi_u):
+                # At least one finite wall -- a half- or two-sided reflecting box that
+                # also truncates the prior density and sampling. The fold (_reflect)
+                # handles one infinite wall as the ub->inf limit of the triangle wave.
+                self.bounded = True
+                self.lower_bound = lo_theta
+                self.upper_bound = hi_theta
+                self._prior = TruncatedPrior(self._prior, lo_u, hi_u)
+            else:
+                # Both sides open (e.g. an explicit -inf/inf) -- the untruncated prior,
+                # identical to omitting the bounds (the bounded flag is meaningless for
+                # an unbounded-support family without a box).
+                self.bounded = False
+                self.lower_bound = -np.inf
+                self.upper_bound = np.inf
 
         if self.lower_bound > self.upper_bound:
             raise PybnfError(f"Parameter {self.name} has a lower bound that is greater than its upper bound")
@@ -1842,33 +1853,58 @@ class FreeParameter:
                              initialization_lb=self.initialization_lb,
                              initialization_ub=self.initialization_ub)
 
+    def _bound_to_u(self, theta):
+        """Map a theta box-edge to sampling space ``u``, mapping an open side to
+        ``+-inf`` without tripping numpy's ``log10`` warnings.
+
+        On a log scale the family's natural floor (theta ``0`` or ``-inf``) is
+        ``-inf`` in ``u``, and a *finite negative* theta is invalid -- it returns
+        ``nan`` for the caller to reject (rather than warning via ``log10`` of a
+        non-positive). Linear's ``forward`` already maps ``+-inf`` cleanly (ADR-0047).
+        """
+        if self._scale.is_log and theta <= 0.0:
+            return -np.inf if (theta == 0.0 or theta == -np.inf) else np.nan
+        return self._scale.forward(theta)
+
     def _reflect(self, new):
         """Reflect a proposed value back inside the parameter's bounds.
 
-        The reflection is the triangle-wave fold of ``new`` into ``[lb, ub]`` --
-        a deterministic, measure-preserving involution. Because it is symmetric
-        and depends only on the proposed value (not the current one), a
-        random-walk proposal followed by this fold stays symmetric, so the plain
-        Metropolis acceptance used by the MCMC samplers still targets the correct
-        bound-restricted posterior. Computing the fold in closed form (rather than
-        iterating one reflection at a time) means it is exact for an arbitrarily
-        large step, with no iteration cap and no balance-breaking random fallback.
+        The fold is computed in sampling space ``u`` (the scale owns the theta<->u
+        transform, so log parameters reflect in log10 space). With two finite walls
+        it is the triangle-wave fold of ``new`` into ``[lb, ub]``; with one infinite
+        wall (a half-bounded box, ADR-0047) it degenerates to a single reflection at
+        the finite wall -- the ``ub->inf`` limit of that wave. Both are symmetric,
+        measure-preserving involutions depending only on the proposed value, so a
+        random-walk proposal followed by the fold stays symmetric and the plain
+        Metropolis acceptance the MCMC samplers use still targets the correct
+        bound-restricted posterior. Closed form (no per-reflection iteration) makes
+        it exact for an arbitrarily large step, with no iteration cap.
         """
-        ub = self.upper_bound
-        lb = self.lower_bound
-        if lb == ub:
-            return lb
-        # Fold in sampling space u; the scale owns the theta<->u transform, so log
-        # parameters reflect in log10 space (Linear's transform is the identity).
-        ub = self._scale.forward(ub)
-        lb = self._scale.forward(lb)
-        new = self._scale.forward(new)
+        if self.lower_bound == self.upper_bound:
+            return self.lower_bound
+        lo_u = self._bound_to_u(self.lower_bound)
+        hi_u = self._bound_to_u(self.upper_bound)
+        new_u = self._scale.forward(new)
         if self._scale.is_log:
-            logger.debug(f"Reflecting in log space: new={new} lb={lb} ub={ub}")
+            logger.debug(f"Reflecting in log space: new={new_u} lb={lo_u} ub={hi_u}")
 
-        width = ub - lb
-        q = (new - lb) % (2.0 * width)
-        folded = lb + q if q <= width else ub - (q - width)
+        lo_finite = np.isfinite(lo_u)
+        hi_finite = np.isfinite(hi_u)
+        if lo_finite and hi_finite:
+            # Two finite walls: the periodic triangle-wave fold.
+            width = hi_u - lo_u
+            q = (new_u - lo_u) % (2.0 * width)
+            folded = lo_u + q if q <= width else hi_u - (q - width)
+        elif lo_finite:
+            # Open above: one reflecting wall at lo_u.
+            folded = new_u if new_u >= lo_u else 2.0 * lo_u - new_u
+        elif hi_finite:
+            # Open below: one reflecting wall at hi_u.
+            folded = new_u if new_u <= hi_u else 2.0 * hi_u - new_u
+        else:
+            # Both sides open -- no wall to fold into (an unbounded parameter never
+            # reaches here; set_value only reflects an out-of-bounds value).
+            folded = new_u
 
         return self._scale.inverse(folded)
 

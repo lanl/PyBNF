@@ -68,8 +68,8 @@ time (``inf`` => steady state, or a finite ``t_end``) are reconstructed into a s
 ``.exp`` (column 0 the swept parameter) + a ``parameter_scan`` ``experiment:`` (the inverse of
 the exporter's dose-response emission -- ``reconstruct_dose_responses``). Out of scope, each
 mirroring an export-side boundary: a condition-table sympy layer; the five PEtab prior families
-PyBNF lacks; one-sided truncation; a dose-response that also carries a named condition or
-row-varying per-measurement placeholders.
+PyBNF lacks; a dose-response that also carries a named condition or row-varying per-measurement
+placeholders. (One-sided truncation now maps to a half-bounded box -- ADR-0047, #432.)
 """
 
 import math
@@ -79,6 +79,7 @@ from pathlib import Path
 import numpy as np
 
 from ..printing import PybnfError
+from ..priors import PRIOR_KEYWORD_MAP
 from .conditions import (
     REF_MARKER,
     condition_name_from_id,
@@ -340,15 +341,17 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
 # ---------------------------------------------------------------------------
 
 def _free_parameters(parameter_rows):
-    """Map estimated parameter rows to conf ``*_var`` lines + the surrogate set.
+    """Map estimated parameter rows to conf free-parameter lines + the surrogate set.
 
     Returns ``(free_param_lines, surrogate_params)``: ``free_param_lines`` are the conf
     declarations (**bare ids**, in table order -- new-era binds a free parameter to its
     model parameter by id, ADR-0034, so the declaration *is* ``<id>``, not ``<id>__FREE``);
     ``surrogate_params`` is the set ``M`` of fit-and-perturbed model parameters (a
-    ``<p>__REF`` parameterId recovered to ``p`` by :func:`_model_param`).
-    ``free_parameter_from_row`` surfaces the prior boundaries (5 families, one-sided
-    truncation) as ``NotImplementedError``.
+    ``<p>__REF`` parameterId recovered to ``p`` by :func:`_model_param`). A truncated
+    prior (two-sided or half-bounded, ADR-0020/0047) is emitted as a new-era
+    ``parameter:`` record -- the only grammar carrying ``lower``/``upper`` -- via
+    :func:`_free_parameter_conf_line`; ``free_parameter_from_row`` still surfaces the
+    remaining boundary (the five unmapped PEtab families) as ``NotImplementedError``.
     """
     free_param_lines = []
     surrogate_params = set()
@@ -359,9 +362,7 @@ def _free_parameters(parameter_rows):
         if is_surrogate:
             surrogate_params.add(model_param)
         fp = free_parameter_from_row(row)
-        # A one-parameter unbounded family (exponential/chisquare/rayleigh) carries only p1.
-        nums = num(fp.p1) if fp.p2 is None else f'{num(fp.p1)} {num(fp.p2)}'
-        free_param_lines.append(f'{fp.type} = {model_param} {nums}')
+        free_param_lines.append(_free_parameter_conf_line(fp, model_param))
     if not free_param_lines:
         raise PybnfError(
             "The PEtab parameters table declares no estimated (estimate=true) parameters, "
@@ -375,6 +376,32 @@ def _model_param(parameter_id):
     if parameter_id.endswith(REF_MARKER):
         return parameter_id[:-len(REF_MARKER)], True
     return parameter_id, False
+
+
+_SCALE_PREFIX = {'linear': '', 'log10': 'log', 'ln': 'ln'}
+
+
+def _free_parameter_conf_line(fp, model_param):
+    """One conf line for an imported free parameter.
+
+    An untruncated prior keeps the compact legacy ``<type> = <name> p1 [p2]`` form (a
+    one-parameter family carries only ``p1``). A *truncated* prior -- two-sided or
+    half-bounded (ADR-0020/0047) -- is emitted as a new-era ``parameter:`` record, the
+    only grammar that carries ``lower``/``upper`` bounds (#417/ADR-0043); an open side
+    is written as an explicit infinity. The family's stem and scale are recovered from
+    the prior registry so the record round-trips to the same ``FreeParameter``."""
+    if fp.trunc_lb is None and fp.trunc_ub is None:
+        nums = num(fp.p1) if fp.p2 is None else f'{num(fp.p1)} {num(fp.p2)}'
+        return f'{fp.type} = {model_param} {nums}'
+    fam, scale = PRIOR_KEYWORD_MAP[fp.type]
+    stem = fp.type[len(_SCALE_PREFIX[scale.name]):-len('_var')]
+    parts = [f'parameter: {model_param}', f'prior: {stem}']
+    if scale.name != 'linear':
+        parts.append(f'parameter_scale: {scale.name}')
+    values = [fp.p1] if fp.p2 is None else [fp.p1, fp.p2]
+    parts += [f'{fname}: {num(val)}' for fname, val in zip(fam.field_names, values)]
+    parts += [f'lower: {num(fp.trunc_lb)}', f'upper: {num(fp.trunc_ub)}']
+    return ', '.join(parts)
 
 
 # ---------------------------------------------------------------------------

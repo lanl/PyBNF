@@ -954,9 +954,12 @@ class TestBoundaries:
         with pytest.raises(PybnfError, match='priorDistribution'):
             import_job(prob / 'problem.yaml', tmp_path / 'out')
 
-    def test_one_sided_truncation_is_refused(self, demo_petab, tmp_path):
-        # A finite bound on one side with an infinite bound on the other has no finite
-        # reflecting box -- the deferred #417 boundary, still raised in code.
+    def test_one_sided_truncation_imports_half_bounded(self, demo_petab, tmp_path, monkeypatch):
+        # A finite wall on one side with the other covering the support maps to a
+        # half-bounded box -- a single reflecting wall, the ub->inf limit of the fold
+        # (ADR-0047, #432). gamma [5, inf): a wall at 5, open above.
+        from pybnf import config as config_mod
+        from pybnf.parse import ploop
         prob = tmp_path / 'prob'
         shutil.copytree(demo_petab, prob)
         (prob / 'parameters.tsv').write_text(
@@ -965,8 +968,12 @@ class TestBoundaries:
             'v1\ttrue\t5\tinf\tgamma\t2;3\n'
             'v2\ttrue\t0\t10\t\t\n'
             'v3\ttrue\t0\t10\t\t\n')
-        with pytest.raises(NotImplementedError, match='one-sided'):
-            import_job(prob / 'problem.yaml', tmp_path / 'out')
+        out = import_job(prob / 'problem.yaml', tmp_path / 'out')
+        monkeypatch.chdir(out)
+        cfg = config_mod.Configuration(ploop((out / 'imported.conf').read_text().splitlines(keepends=True)))
+        v1 = next(v for v in cfg.variables if v.name == 'v1')
+        assert v1.bounded and v1.has_bounded_support
+        assert v1.lower_bound == 5.0 and v1.upper_bound == np.inf
 
 
 # ---------------------------------------------------------------------------

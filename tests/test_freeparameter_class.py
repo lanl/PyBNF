@@ -255,17 +255,49 @@ class TestTruncatedFreeParameter:
         with pytest.raises(pset.OutOfBoundsException):
             pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, value=99.0, lb=-1.0, ub=4.0)
 
-    def test_one_sided_box_raises(self):
-        # An infinite bound -> no finite width to fold into.
-        with pytest.raises(PybnfError):
-            pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=0.0, ub=np.inf)
+    def test_one_sided_box_is_half_bounded(self):
+        # An infinite bound is the ub->inf limit of the fold: a single reflecting
+        # wall, not an error (ADR-0047). Open above: wall at lb, reflect below it.
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=0.0, ub=np.inf)
+        assert fp.bounded and fp.has_bounded_support
+        assert fp.lower_bound == 0.0 and fp.upper_bound == np.inf
+        assert fp.set_value(-3.0).value == pytest.approx(3.0)   # 2*0 - (-3)
+        assert fp.set_value(7.0).value == pytest.approx(7.0)    # in-bounds, untouched
+        # Open below: wall at ub, reflect above it.
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=-np.inf, ub=2.0)
+        assert fp.lower_bound == -np.inf and fp.upper_bound == 2.0
+        assert fp.set_value(5.0).value == pytest.approx(-1.0)   # 2*2 - 5
 
-    def test_only_one_bound_given_raises(self):
-        # Passing exactly one of lb/ub is loud, not a silent unbounded prior.
-        with pytest.raises(PybnfError):
-            pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, ub=5.0)
-        with pytest.raises(PybnfError):
-            pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=-5.0)
+    def test_only_one_bound_given_is_half_bounded(self):
+        # The constructor treats a missing (None) side as open (+-inf); the pairing
+        # rule is a native-surface concern (ADR-0047), not a core constraint.
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, ub=5.0)
+        assert fp.lower_bound == -np.inf and fp.upper_bound == 5.0
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=-5.0)
+        assert fp.lower_bound == -5.0 and fp.upper_bound == np.inf
+
+    def test_half_bounded_logpdf_matches_truncnorm(self):
+        # A half-line truncated normal renormalizes over [lb, inf): oracle against
+        # scipy truncnorm with an infinite upper bound (ADR-0047).
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, lb=-1.0, ub=np.inf)
+        oracle = _truncnorm(1.0, 2.0, -1.0, np.inf)
+        for v in (-0.5, 0.0, 1.0, 3.0, 8.0):
+            assert fp.prior_logpdf(v) == pytest.approx(oracle.logpdf(v))
+        assert fp.prior_logpdf(-2.0) == -np.inf   # below the wall
+
+    def test_half_bounded_value_from_quantile_matches_truncnorm(self):
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 1.0, 2.0, lb=-1.0, ub=np.inf)
+        oracle = _truncnorm(1.0, 2.0, -1.0, np.inf)
+        for q in (0.1, 0.5, 0.9, 0.99):
+            assert fp.value_from_quantile(q).value == pytest.approx(oracle.ppf(q))
+
+    def test_explicit_infinite_box_is_untruncated(self):
+        # lb/ub both infinite is identical to omitting the bounds (the untruncated
+        # prior), not a degenerate box (ADR-0047).
+        fp = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0, lb=-np.inf, ub=np.inf)
+        assert not fp.bounded and not fp.has_bounded_support
+        plain = pset.FreeParameter('x__FREE', 'normal_var', 0.0, 1.0)
+        assert fp.prior_logpdf(2.0) == pytest.approx(plain.prior_logpdf(2.0))
 
 
 class TestInitializationDistribution:

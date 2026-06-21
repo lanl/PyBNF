@@ -15,6 +15,7 @@ from .base import FrozenPrior
 @register_prior_family('rayleigh')
 class Rayleigh(FrozenPrior):
     has_bounded_support = False
+    support_lo_u = 0.0   # support (0, inf): a one-sided truncation floors here (ADR-0047)
     n_params = 1
     field_names = ('scale',)
 

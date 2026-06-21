@@ -11,8 +11,9 @@ and the equivalent native ``*_var`` config line must produce the *same*
    parameters convert to PyBNF's log10 families so the distribution *over theta*
    matches a scipy ``lognorm`` oracle (the ADR-0003 "scale lives in the sampling
    parameterization, no Jacobian term" point).
-3. **The documented gaps** -- explicit ``NotImplementedError`` at the five
-   unsupported families, unbounded-prior truncation, and ``estimate=false``; plus
+3. **One-sided truncation** -- a single finite bound with a covered side maps to
+   a half-bounded box (ADR-0047, #432), no longer a gap; plus the remaining
+   documented gap (``estimate=false``) raising ``NotImplementedError`` and
    malformed-row ``PybnfError``.
 4. **The TSV reader** -- round-trips a ``parameters.tsv`` into rows.
 """
@@ -212,18 +213,20 @@ class TestCatalogFamilies:
 
 class TestGaps:
 
-    @pytest.mark.parametrize("prior,params,lb,ub", [
-        ('normal',     (5.0, 2.0), 0.0, np.inf),     # upper bound infinite
-        ('normal',     (5.0, 2.0), -np.inf, 10.0),   # lower bound infinite
-        ('laplace',    (1.0, 0.5), -np.inf, 10.0),
-        ('log-normal', (2.0, 0.7), 0.0, 1000.0),     # log scale, non-positive lower
-        ('log-laplace', (1.5, 0.4), 0.0, 1000.0),
+    @pytest.mark.parametrize("prior,params,lb,ub,exp_lo,exp_hi", [
+        ('normal',      (5.0, 2.0), 0.0,     np.inf, 0.0,     np.inf),  # wall below, open above
+        ('normal',      (5.0, 2.0), -np.inf, 10.0,   -np.inf, 10.0),    # open below, wall above
+        ('laplace',     (1.0, 0.5), -np.inf, 10.0,   -np.inf, 10.0),
+        ('log-normal',  (2.0, 0.7), 0.0,     1000.0, 0.0,     1000.0),  # log floor 0 -> open below
+        ('log-laplace', (1.5, 0.4), 0.0,     1000.0, 0.0,     1000.0),
     ])
-    def test_one_sided_truncation_of_unbounded_family_raises(self, prior, params, lb, ub):
-        # Truncation needs two finite bounds (and a positive lower bound on a log
-        # scale) to form a reflecting box; one-sided still raises (#411/#407).
-        with pytest.raises(NotImplementedError, match='one-sided'):
-            free_parameter_from_row(_row(prior=prior, params=params, lb=lb, ub=ub))
+    def test_one_sided_truncation_maps_to_half_bounded(self, prior, params, lb, ub, exp_lo, exp_hi):
+        # One finite wall + a covered side maps to a half-bounded box -- a single
+        # reflecting wall, the ub->inf limit of the fold (ADR-0047, #432). A covered
+        # lower side becomes the family's support endpoint (-inf, or 0 for a log form).
+        got = free_parameter_from_row(_row(prior=prior, params=params, lb=lb, ub=ub))
+        assert got.bounded and got.has_bounded_support
+        assert got.lower_bound == exp_lo and got.upper_bound == exp_hi
 
     def test_estimate_false_raises(self):
         with pytest.raises(NotImplementedError, match='estimate=false'):

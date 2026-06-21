@@ -460,6 +460,24 @@ class TestParameterRecordConfig:
         for theta in (-5.0, 0.0, 4.9, 10.0):
             assert v.prior_logpdf(theta) == ref.prior_logpdf(theta)
 
+    def test_half_bounded_record_parses_and_builds(self, tmp_path, monkeypatch):
+        # The full parse path (ploop grammar -> record builder): an open side is an
+        # explicit +-inf token (ADR-0047). Covers the parse.py num-token inf support
+        # and the graded floor canonicalization, end to end.
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: a, prior: normal, mean: 0, sd: 1, lower: -inf, upper: 5',   # open below
+            'parameter: b, prior: normal, mean: 0, sd: 1, lower: -2, upper: inf',   # open above
+            'parameter: c, prior: gamma, shape: 2, scale: 3, lower: -inf, upper: 9',  # -inf canon -> 0
+            'parameter: d, prior: normal, parameter_scale: log10, mean: 1, sd: 0.5, lower: 0, upper: 100',
+        ])
+        assert got['a'].bounded and (got['a'].lower_bound, got['a'].upper_bound) == (-np.inf, 5.0)
+        assert (got['b'].lower_bound, got['b'].upper_bound) == (-2.0, np.inf)
+        # gamma floor is 0: 'lower: -inf' canonicalizes to the floor, a wall at 0.
+        assert (got['c'].lower_bound, got['c'].upper_bound) == (0.0, 9.0)
+        # log family: lower 0 is open below (log10(0) = -inf in u), wall at 100 above.
+        assert got['d'].type == 'lognormal_var' and got['d'].has_bounded_support
+        assert (got['d'].lower_bound, got['d'].upper_bound) == (0.0, 100.0)
+
     def test_record_family_variety(self, tmp_path, monkeypatch):
         got = self._build_vars(tmp_path, monkeypatch, [
             'parameter: a, prior: normal, mean: 0, sd: 1',                       # unbounded
@@ -536,13 +554,16 @@ class TestParameterRecordConfig:
         ({'prior': 'gaussian', 'mean': '0', 'sd': '1'}, 'unknown prior family'),
         ({'prior': 'normal', 'mean': '0'}, "needs field 'sd'"),
         ({'prior': 'normal', 'mean': '0', 'sd': '1', 'oops': '2'}, 'unknown field'),
-        ({'prior': 'normal', 'mean': '0', 'sd': '1', 'lower': '-5'}, "both 'lower' and 'upper'"),
+        ({'prior': 'normal', 'mean': '0', 'sd': '1', 'lower': '-5'}, "come as a pair"),
         ({'parameter_scale': 'log10'}, 'nothing to fit'),
         ({'prior': 'normal', 'mean': 'abc', 'sd': '1'}, 'must be a number'),
         ({'prior': 'normal', 'parameter_scale': 'bogus', 'mean': '0', 'sd': '1'}, "'linear', 'log10', or"),
         ({'prior': 'normal', 'parameter_scale': 'log', 'mean': '0', 'sd': '1'}, 'ambiguous'),
+        # A finite lower wall below a log family's support floor (0) is a wall in the
+        # zero-density region -> error (ADR-0047). lower: 0 / -inf is now *allowed*
+        # (open below); only a finite sub-floor value raises.
         ({'prior': 'normal', 'parameter_scale': 'ln', 'mean': '1', 'sd': '0.5',
-          'lower': '0', 'upper': '100'}, "'lower' > 0"),
+          'lower': '-5', 'upper': '100'}, "support floor"),
         ({'parameter_scale': 'log10', 'initial_value': '-5'}, 'initial_value > 0'),
     ])
     def test_record_field_errors(self, fields, match):

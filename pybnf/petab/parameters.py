@@ -42,14 +42,15 @@ PEtab v2 specifics this encodes (current spec, *not* the v1 shape):
 * Bounds **truncate** the prior. A Uniform prior truncates exactly (we intersect
   the box). For an unbounded-support family, *two-sided* finite bounds map to a
   truncated prior on a finite reflecting box (ADR-0020, ``TruncatedPrior``); a
-  *one-sided* truncation (one bound infinite, or a non-positive lower bound on a
-  log scale) still raises ``NotImplementedError``, because the reflection fold
-  needs two finite bounds (#417 follow-up).
+  *one-sided* truncation -- one finite wall and the other side covering the family's
+  natural domain (an infinite bound, or a log form's ``theta <= 0``) -- maps to a
+  half-bounded box, a single reflecting wall (ADR-0047, #432). Both directions are
+  the ``ub->inf`` limit of the two-sided fold; the open side is the family's natural
+  support endpoint.
 
 Gaps are surfaced as ``NotImplementedError`` with clear messages so the boundary
-is documented in code, not silent: one-sided truncation of an unbounded-support
-family, and ``estimate = false`` fixed parameters (those become model constants,
-handled by a later importer chunk, not here).
+is documented in code, not silent: ``estimate = false`` fixed parameters (those
+become model constants, handled by a later importer chunk, not here).
 """
 
 import csv
@@ -152,13 +153,13 @@ class PetabParameterRow:
 def free_parameter_from_row(row):
     """Map one estimated PEtab v2 parameters row to a :class:`FreeParameter`.
 
-    Two-sided finite bounds truncating an unbounded-support family map to a bounded
-    ``FreeParameter`` (ADR-0020). The full v2 prior catalog maps (uniform / normal /
-    laplace / cauchy / gamma / exponential / chisquare / rayleigh, #417). Raises
-    ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (``estimate=false``
-    fixed parameters; *one-sided* truncation of an unbounded-support family) and
-    ``PybnfError`` for malformed rows (unknown prior type, wrong parameter count,
-    reversed bounds).
+    Finite bounds truncating an unbounded-support family map to a bounded
+    ``FreeParameter`` -- two finite walls to a two-sided box (ADR-0020), one finite
+    wall plus an open side to a half-bounded box (ADR-0047, #432). The full v2 prior
+    catalog maps (uniform / normal / laplace / cauchy / gamma / exponential /
+    chisquare / rayleigh, #417). Raises ``NotImplementedError`` at the remaining
+    PEtab/PyBNF boundary (``estimate=false`` fixed parameters) and ``PybnfError`` for
+    malformed rows (unknown prior type, wrong parameter count, reversed bounds).
     """
     if not row.estimate:
         raise NotImplementedError(
@@ -266,48 +267,45 @@ def _resolve_prior(row, lb, ub):
     # The family's natural lower support in theta: 0 for a half-bounded family, and 0 for
     # any log form (theta > 0), else -inf. The upper support is +inf for all of these.
     support_lo = 0.0 if (is_log or family_support_lo == 0.0) else -np.inf
-    tlb, tub = _truncation_box(row, dist, support_lo, is_log, lb, ub)
+    tlb, tub = _truncation_box(support_lo, lb, ub)
     return keyword, p1, p2, tlb is not None, tlb, tub
 
 
-def _truncation_box(row, dist, support_lo, is_log, lb, ub):
+def _truncation_box(support_lo, lb, ub):
     """Map PEtab bounds on an unbounded-support prior to a truncation box.
 
     PEtab truncates a prior by ``[lb, ub]``. ``support_lo`` is the family's natural lower
-    support in theta (0 for a half-bounded family or any log form, -inf otherwise). Three
-    cases (ADR-0020, issue #411):
+    support in theta (0 for a half-bounded family or any log form, -inf otherwise). The
+    cases (ADR-0020, ADR-0047, issues #411/#432):
 
     * **Untruncated** -- the bounds cover the family's natural domain in theta
       (``[support_lo, inf)``). Returns ``(None, None)``: the prior is built unbounded.
-    * **Two-sided truncation** -- both bounds finite (and a positive lower bound on
-      a log scale). Returns ``(lb, ub)``: the family is wrapped in a finite
+    * **Two-sided truncation** -- neither side covers (both are finite walls inside the
+      domain). Returns ``(lb, ub)``: the family is wrapped in a finite two-sided
       reflecting box (a ``TruncatedPrior``).
-    * **One-sided truncation** -- exactly one bound truncates while the other is
-      infinite (or, on a log scale, a non-positive lower bound, whose log10 is
-      ``-inf``). The triangle-wave reflection fold needs *two* finite bounds, so
-      this still raises ``NotImplementedError`` -- the boundary is documented in
-      code rather than silently importing a different prior.
+    * **One-sided truncation** -- exactly one side covers the natural domain while the
+      other is a finite wall. Returns the covered side as the family's natural support
+      endpoint (an open side) and the other as the wall, so the ``FreeParameter``
+      constructor builds a half-bounded box -- a single reflecting wall, the ``ub->inf``
+      limit of the two-sided fold (ADR-0047).
+
+    A covered lower side is returned as ``support_lo`` (``-inf`` for a doubly-unbounded
+    family; ``0`` for a log form, which the constructor maps to ``-inf`` in sampling
+    space, or for a linear half-bounded family, where it is the support floor). On a log
+    scale a non-covered (finite-wall) lower bound is automatically strictly positive
+    (``support_lo`` is 0, so ``lb <= 0`` implies covered), so no ``log10(<=0)`` arises.
     """
     covers_lower = lb <= support_lo
     covers_upper = ub >= np.inf
     if covers_lower and covers_upper:
         return None, None  # no truncation: build the prior unbounded
 
-    # A finite reflecting box needs both bounds finite; on a log scale the lower
-    # bound must additionally be strictly positive (log10 of <= 0 is -inf).
-    lower_ok = np.isfinite(lb) and (lb > 0.0 if is_log else True)
-    if lower_ok and np.isfinite(ub):
-        return lb, ub
-
-    domain = "(0, inf)" if is_log else "(-inf, inf)"
-    raise NotImplementedError(
-        f"Parameter '{row.parameter_id}': PEtab one-sided truncation of the "
-        f"'{dist}' prior to [{lb}, {ub}] is not supported -- PyBNF's reflecting "
-        f"box needs two finite bounds"
-        f"{' (and a positive lower bound on a log scale)' if is_log else ''} "
-        f"(truncation follow-up, #407/#411). Use two finite bounds to truncate, or "
-        f"set the bounds to the prior's natural domain {domain} for the untruncated "
-        f"prior.")
+    # A covered side becomes an open side at the family's natural endpoint; a
+    # non-covered side is a finite reflecting wall. One open + one wall is the
+    # half-bounded box; two walls the two-sided box (ADR-0047).
+    tlb = support_lo if covers_lower else lb
+    tub = np.inf if covers_upper else ub
+    return tlb, tub
 
 
 def _expect_n(params, n, dist, row):
@@ -367,10 +365,12 @@ def petab_parameter_row(free_parameter, parameter_id=None):
     * ``exponential_var`` / ``chisquare_var`` / ``rayleigh_var`` -- a one-parameter
       prior: ``priorParameters`` is a single ``(p1,)`` (the scale, or chisquare's dof).
 
-    A truncated parameter (ADR-0020) writes its reflecting box as the truncating bounds;
-    an unbounded one writes blank bounds. The no-prior ``var`` / ``logvar`` point-start
-    keywords and the log forms of the five catalog families (no PEtab ``log-`` spelling)
-    raise ``NotImplementedError`` -- surfaced in code, not mis-exported.
+    A truncated parameter writes its reflecting box as the truncating bounds: two finite
+    walls (two-sided, ADR-0020) or one finite wall with the open side as an explicit
+    infinity (half-bounded, ADR-0047). An unbounded one writes blank bounds. The no-prior
+    ``var`` / ``logvar`` point-start keywords and the log forms of the five catalog
+    families (no PEtab ``log-`` spelling) raise ``NotImplementedError`` -- surfaced in
+    code, not mis-exported.
     """
     if parameter_id is None:
         parameter_id = free_parameter.name
