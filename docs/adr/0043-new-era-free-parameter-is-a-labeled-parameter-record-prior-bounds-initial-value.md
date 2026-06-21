@@ -1,11 +1,12 @@
 # The new-era free parameter is a labeled `parameter:` record — every part is named (issue #417)
 
-**Status: Accepted (decision 2026-06-20); authoring surface implemented 2026-06-20 (Phase 1); the
-`initial_value` population-seeding (Phase 2) pending.** The grammar, the per-family field names
-(`Prior.field_names`), the edition-gated loader (`config._free_parameter_from_record`), and the
-`FreeParameter` wiring are built and tested (`tests/test_parse_class.py::TestParameterRecord`,
-`tests/test_config_class.py::TestParameterRecordConfig`). What remains is the behavior that one
-initial-population member is seeded at the `initial_value` point (see "initial_value vs prior"). Under
+**Status: Accepted (decision 2026-06-20); authoring surface implemented 2026-06-20 (Phase 1);
+`initial_value` population-seeding implemented 2026-06-21 (Phase 2).** The grammar, the per-family
+field names (`Prior.field_names`), the edition-gated loader (`config._free_parameter_from_record`),
+and the `FreeParameter` wiring are built and tested (`tests/test_parse_class.py::TestParameterRecord`,
+`tests/test_config_class.py::TestParameterRecordConfig`). Phase 2 — exactly one initial-population
+member seeded at the `initial_value` point (see "initial_value vs prior") — is built and tested
+(`tests/test_optimizer_integration.py`, the `initial_value`/reserve/unseeded cases). Under
 `edition >= 2` a free parameter is declared as a labeled, comma-separated record:
 
 ```
@@ -150,11 +151,23 @@ single-start local optimizer (Simplex/Powell) takes it as its one start point. S
   instead of `exp10`), the histogram header (labels `log10_`/`ln_`) — **bit-identical for log10/linear,
   correct for ln**. This amends ADR-0022's log10-only simplification while keeping its rule (every log
   scale names its base; bare `log` is still rejected as ambiguous). *(Done, Phase 1.)*
-- **`initial_value` population seeding (Phase 2, pending).** Make one initial-population member sit at
-  the `initial_value` point. Injection point: `Algorithm.random_pset` / `random_latin_hypercube_psets`
-  (`algorithms/base.py`) — the shared path every population algorithm uses; replace one member with a
-  pset that takes each parameter's `value` where set and samples the rest. (Distinct from the existing
-  `starting_params`, which overrides *all* members uniformly — samplers only.)
+- **`initial_value` population seeding (Phase 2, done 2026-06-21).** Exactly one member of the initial
+  population sits at the `initial_value` point. A shared helper `Algorithm._seed_initial_value_pset`
+  (`algorithms/base.py`) takes a member already drawn from the prior/bounds and overwrites each
+  parameter that declares an `initial_value` (carried on `FreeParameter.value` by the loader) with that
+  value, leaving the rest at their draw — so a partially-specified seed is still a complete pset, and a
+  parameter without an `initial_value` is drawn as usual *for that member*. It returns the input
+  unchanged when no parameter declares an `initial_value`, so non-record runs are byte-for-byte
+  unaffected. The helper is **not** routed through `random_pset` (which returns one pset and would seed
+  *every* member); instead each population algorithm's `start_run` calls it on exactly one member of its
+  main initial population — `de` on `proposed_individuals[0][0]` (and `ade` on `individuals[0]`), `pso`
+  on the first particle, `ss` on the first init pset (**not** the latin-hypercube reserve), `sa` on the
+  first replicate, and the Bayesian samplers (`am`/`dream`/`p_dream`/`pt`/`mh`) on `first_psets[0]` in
+  the shared `BayesianAlgorithm.start_run`, placed *before* the `continue_run`/`starting_params`
+  overrides so those still take precedence. The single-start local optimizers (Simplex/Powell) already
+  take `initial_value` as their lone start via `p1`, untouched. (Distinct from `starting_params`, which
+  overrides *all* members uniformly — samplers only.) Edition-agnostic at the algorithm layer:
+  `FreeParameter.value` is set the same way however the parameter was declared.
 - Tests use **bare ids** (no `__FREE`) per ADR-0034; the golden-config corpus can gain additive
   new-era cases (ADR-0013, additions only).
 

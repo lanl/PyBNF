@@ -157,6 +157,10 @@ class ParticleSwarm(Algorithm):
         else:
             new_params_list = [self.random_pset() for i in range(self.num_particles)]
 
+        # ADR-0043 Phase 2: seed exactly one particle at the initial_value point (a no-op
+        # unless a parameter: record declares one); the rest stay random for diversity.
+        new_params_list[0] = self._seed_initial_value_pset(new_params_list[0])
+
         for i in range(len(new_params_list)):
             p = new_params_list[i]
             p.name = 'iter0p%i' % i

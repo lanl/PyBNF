@@ -224,9 +224,15 @@ class BayesianAlgorithm(Algorithm):
         else:
             first_psets = [self.random_pset() for i in range(self.num_parallel)]
 
+        # ADR-0043 Phase 2: seed exactly one chain's initial pset at the initial_value
+        # point (a no-op unless a parameter: record declares one); the other chains stay
+        # random. Placed before continue_run / starting_params below so those still take
+        # precedence when set -- they override every chain's start uniformly.
+        first_psets[0] = self._seed_initial_value_pset(first_psets[0])
+
         self.ln_current_P = [np.nan]*self.num_parallel  # Forces accept on the first run
         self.current_pset = [None]*self.num_parallel
-        
+
         if self.config.config['continue_run'] == 1:
             self.mle_start = np.loadtxt(Path(self.config.config['output_dir']) / 'adaptive_files' / 'MLE_params.txt')
             for n in range(self.num_parallel):

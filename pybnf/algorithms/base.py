@@ -758,6 +758,37 @@ class Algorithm(ABC):
             pset_vars.append(var.sample_initial_value(self.rng))
         return PSet(pset_vars)
 
+    def _seed_initial_value_pset(self, sampled_pset):
+        """Pin the parameters that declare an ``initial_value`` to that point, in ONE pset.
+
+        ADR-0043 Phase 2. A new-era ``parameter:`` record may carry an ``initial_value``
+        -- the point where the search/walk should start (PEtab ``nominalValue``). Exactly
+        one member of a population algorithm's initial population is seeded there: this
+        helper takes a member already drawn from the prior/bounds and overwrites each
+        parameter that declares an ``initial_value`` (carried on ``FreeParameter.value``
+        by the loader, ``config._free_parameter_from_record``) with that value, leaving
+        every other parameter at its sampled draw. So a partially-specified seed is still
+        a complete pset -- pinned where an ``initial_value`` was given, drawn otherwise.
+
+        Returns ``sampled_pset`` unchanged when no parameter declares an ``initial_value``
+        (the common case), so runs without the record are byte-for-byte unaffected. Only
+        this one member is ever touched, so the rest of the population keeps the full
+        diversity global search (de/pso/ss) needs; this is distinct from the sampler-only
+        ``starting_params``, which overrides *every* chain uniformly.
+
+        Edition-agnostic: it reads ``FreeParameter.value``, which the loader sets the
+        same way however the parameter was declared, so the algorithm layer is unaware
+        of the config edition.
+        """
+        if not any(v.value is not None for v in self.variables):
+            return sampled_pset
+        fps = [v.set_value(v.value) if v.value is not None
+               else sampled_pset.get_param(v.name)
+               for v in self.variables]
+        seeded = PSet(fps)
+        seeded.name = sampled_pset.name
+        return seeded
+
     def random_latin_hypercube_psets(self, n):
         """
         Generates n random PSets with a latin hypercube distribution. Variables

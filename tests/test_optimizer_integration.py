@@ -12,11 +12,13 @@ These are deliberately small (low dimension, modest budgets) so the suite stays
 fast enough to run on every change. The slow, tighter-tolerance recovery checks
 (e.g. the banana valley) are marked ``slow``.
 """
+import json
+
 import numpy as np
 import pytest
 
 from . import integration_harness as H
-from .context import algorithms
+from .context import algorithms, config, parse
 
 
 # fit_type -> Algorithm subclass
@@ -554,3 +556,101 @@ def test_powell_refine_respects_box_bounds_near_boundary(tmp_path):
     # the out-of-box mean), to tight tolerance — the boundary IS the line minimum.
     assert np.all(recovered >= -2.0 - 1e-9) and np.all(recovered <= 2.0 + 1e-9), recovered
     assert np.allclose(recovered, [2.0, 2.0], atol=1e-2), recovered
+
+
+# --------------------------------------------------------------------------- #
+# ADR-0043 Phase 2: initial_value population seeding
+# --------------------------------------------------------------------------- #
+# A new-era ``parameter:`` record may carry an ``initial_value`` -- the point where
+# the search should start. Exactly ONE member of a population algorithm's initial
+# population is seeded at that point; every other member is the normal random draw,
+# so the population keeps the diversity global search needs. Driven simulator-free
+# over an AnalyticalModel ``.target`` (the golden-config pattern), edition 2.
+SEED_OPTIMIZERS = {
+    'de': algorithms.DifferentialEvolution,
+    'pso': algorithms.ParticleSwarm,
+    'ss': algorithms.ScatterSearch,
+}
+
+
+def _new_era_seed_config(tmp_path, monkeypatch, fit_type, param_lines, **overrides):
+    """Build a real edition-2 ``Configuration`` over a 2-D Gaussian ``.target`` whose
+    free parameters are declared as new-era ``parameter:`` records (ADR-0043). Used to
+    drive a population optimizer's ``start_run`` and inspect the seeded population."""
+    (tmp_path / 'g.target').write_text(json.dumps(H.gaussian_spec([0.0, 0.0], [1.0, 1.0])))
+    (tmp_path / 'target.exp').write_text('# index\tscore\n0\t0\n')
+    monkeypatch.chdir(tmp_path)
+    settings = {
+        'edition': 2, 'job_type': fit_type, 'objective': 'sos',
+        'output_dir': 'out', 'population_size': 12, 'max_iterations': 5,
+        'wall_time_sim': 0, 'random_seed': 1234,
+    }
+    settings.update(overrides)
+    lines = ['%s = %s' % (k, v) for k, v in settings.items()]
+    lines.append('model = g.target : target.exp')
+    lines += list(param_lines)
+    conf = ''.join(line + '\n' for line in lines)
+    return config.Configuration(parse.ploop(conf.splitlines(keepends=True)))
+
+
+@pytest.mark.parametrize('fit_type', list(SEED_OPTIMIZERS))
+def test_initial_value_seeds_exactly_one_member(tmp_path, monkeypatch, fit_type):
+    """initial_value pins exactly ONE initial-population member to the point; the rest
+    stay random (no clustering -- the population keeps its diversity)."""
+    conf = _new_era_seed_config(tmp_path, monkeypatch, fit_type, [
+        'parameter: p1, prior: uniform, lower: -10, upper: 10, initial_value: 3',
+        'parameter: p2, prior: uniform, lower: -10, upper: 10, initial_value: -4',
+    ])
+    alg = SEED_OPTIMIZERS[fit_type](conf)
+    psets = alg.start_run()
+
+    at_point = [ps for ps in psets if ps['p1'] == 3.0 and ps['p2'] == -4.0]
+    assert len(at_point) == 1, \
+        '%s seeded %d members at the initial_value point, expected 1' % (fit_type, len(at_point))
+    # Every other member is a genuine random draw -- not a clone of the seed point, and
+    # all distinct from one another (diversity preserved).
+    others = [ps for ps in psets if ps is not at_point[0]]
+    assert all(not (ps['p1'] == 3.0 and ps['p2'] == -4.0) for ps in others)
+    assert len({(ps['p1'], ps['p2']) for ps in others}) == len(others)
+
+
+def test_initial_value_partial_spec_seeds_one_and_draws_the_rest(tmp_path, monkeypatch):
+    """Partial spec: a parameter without initial_value is drawn as usual *for the seed
+    member too*, so the seed pset is complete -- pinned on p1, drawn on p2."""
+    conf = _new_era_seed_config(tmp_path, monkeypatch, 'de', [
+        'parameter: p1, prior: uniform, lower: -10, upper: 10, initial_value: 3',
+        'parameter: p2, prior: uniform, lower: -10, upper: 10',   # no initial_value -> drawn
+    ])
+    alg = algorithms.DifferentialEvolution(conf)
+    psets = alg.start_run()
+
+    seeded = [ps for ps in psets if ps['p1'] == 3.0]
+    assert len(seeded) == 1
+    seed = seeded[0]
+    assert -10.0 <= seed['p2'] <= 10.0                  # p2 is a real draw within bounds
+    assert all(ps['p1'] != 3.0 for ps in psets if ps is not seed)
+
+
+def test_no_initial_value_leaves_population_unseeded(tmp_path, monkeypatch):
+    """Without any initial_value the seed helper is a no-op: the whole initial population
+    is random, so byte-for-byte the pre-ADR-0043 behavior is preserved."""
+    conf = _new_era_seed_config(tmp_path, monkeypatch, 'de', [
+        'parameter: p1, prior: uniform, lower: -10, upper: 10',
+        'parameter: p2, prior: uniform, lower: -10, upper: 10',
+    ])
+    alg = algorithms.DifferentialEvolution(conf)
+    psets = alg.start_run()
+    # All members distinct: nothing pinned, every member an independent draw.
+    assert len({(ps['p1'], ps['p2']) for ps in psets}) == len(psets)
+
+
+def test_scatter_search_reserve_is_not_seeded(tmp_path, monkeypatch):
+    """Scatter search keeps a separate latin-hypercube reserve; only the main initial
+    psets are seeded, never the reserve (ADR-0043: seed exactly one *real* start)."""
+    conf = _new_era_seed_config(tmp_path, monkeypatch, 'ss', [
+        'parameter: p1, prior: uniform, lower: -10, upper: 10, initial_value: 3',
+        'parameter: p2, prior: uniform, lower: -10, upper: 10, initial_value: -4',
+    ])
+    alg = algorithms.ScatterSearch(conf)
+    alg.start_run()
+    assert not any(ps['p1'] == 3.0 and ps['p2'] == -4.0 for ps in alg.reserve)
