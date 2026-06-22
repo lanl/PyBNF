@@ -173,10 +173,16 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   synthesized uniform-grid time course. They are PyBNF-native (no core-PEtab shape), so the
   exporter refuses an experiment carrying them. See the addendum "*BPSL constraints through
   `data:`*" below for the binding decision. (The #423 survey's #1 gap.)
-- **`_SD` / noise.** How per-point noise (`_SD` columns) and the per-observable noise model
-  (`noise_model`, ADR-0021) ride along — undecided. Park until the spine is fixed.
-  (Mechanically, Chunk 3's replicate stacking concatenates all columns, so `_SD` columns do
-  ride through the stacked `Data`; the per-observable `noise_model` interaction is untested.)
+- **`_SD` / noise. *Verified (2026-06-21, "Slice D").*** Per-point noise (`_SD` columns) and
+  the per-observable `noise_model` (ADR-0021) ride the new-era surface as-is: Chunk 3's
+  replicate stacking concatenates all columns, so the `_SD` companions ride through the stacked
+  `Data`, and the `(family × σ-source)` engine reads them per point. An integration test
+  (`tests/test_noise_model_config.py::TestNewEraExperimentReplicateNoise`) builds an edition-2
+  `experiment:` over two disagreeing replicate `.exp` files (stacked → 4 rows, not averaged),
+  scores `x` by a per-observable Laplace override (`scale = read_exp_file _SD`) and `y` by the
+  whole-fit `chi_sq` base (Gaussian `_SD`), and asserts the total against a hand computation
+  (`Σ|pred−obs|/b` + `Σ(pred−obs)²/2σ²`) — both families fixed-σ, so no normalizer. No design
+  change was needed; the two ADRs compose.
 - **Smooth output curves.** Data-derived times give a ragged output grid; a future option
   could also emit a fine grid for plotting (mechanism TBD).
 - **Observables as a first-class table** (vs header-inference + `observable:` overrides) —

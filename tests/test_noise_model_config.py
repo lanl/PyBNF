@@ -7,12 +7,15 @@ verbs), its error cases, and the generalized free-noise-parameter validation tha
 replaced the hard-coded ``sigma__FREE`` / ``r__FREE`` checks.
 """
 
+import os
 import types
 
+import numpy as np
 import pytest
 
 from pybnf import noise, objective
 from pybnf.config import Configuration
+from pybnf.data import Data
 from pybnf.objective import _build_noise_overrides, _build_noise_spec
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
@@ -330,3 +333,118 @@ def test_global_noise_location_does_not_touch_per_observable_override():
                      ('noise_model', 'o'): ('laplace', {'scale': ('fit', 'b__FREE')}, None)})
     assert obj._spec_for('o')[0].location is noise.MEDIAN     # override: Laplace default
     assert obj._spec_for('other')[0].location is noise.MEAN   # global default applied
+
+
+# --- integration: new-era experiment: x replicate .exp x per-observable noise (Slice D) ----
+#
+# Closes the ADR-0028 "Open/deferred" item "the per-observable noise_model interaction [with
+# the new-era experiment: surface] is untested": a full edition-2 Configuration whose
+# `experiment:` binds *replicate* .exp files (stacked, NOT averaged) carrying _SD columns, with
+# a per-observable noise_model override reading _SD. The score is asserted against a hand
+# computation -- no simulator runs; a synthetic sim trajectory is fed straight to the loaded
+# objective, so the oracle is exact and deterministic.
+
+_NR_MODEL = """\
+begin model
+begin parameters
+  kA 2
+  kB 3
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 10
+  B() 0
+end seed species
+begin observables
+  Molecules x A()
+  Molecules y B()
+end observables
+begin reaction rules
+  A() -> B() kA
+end reaction rules
+end model
+"""
+# Two replicates measuring x and y at t=1,2 (two positive points -> the synthesized action's
+# [0,1,2] grid clears BioNetGen's 3-sample-time minimum), each with its own _SD column. The
+# replicates disagree (r1 vs r2) so stacking -- not averaging -- is observable in the score:
+# every one of the four rows contributes its own term.
+_NR_R1 = "# time\tx\ty\tx_SD\ty_SD\n1\t10\t0\t2\t1\n2\t6\t4\t1\t2\n"
+_NR_R2 = "# time\tx\ty\tx_SD\ty_SD\n1\t9\t1\t2\t1\n2\t7\t3\t1\t2\n"
+
+
+def _build_noise_replicate_conf(tmp_path):
+    """A full edition-2 Configuration: x scored by a per-observable Laplace override reading
+    _SD, y by the whole-fit chi_sq base (Gaussian reading _SD), over two replicate .exp."""
+    (tmp_path / "m.bngl").write_text(_NR_MODEL)
+    (tmp_path / "r1.exp").write_text(_NR_R1)
+    (tmp_path / "r2.exp").write_text(_NR_R2)
+    lines = [
+        "edition = 2", "job_type = de",
+        "objective = chi_sq",                                  # base: Gaussian x _SD (scores y)
+        "model: m.bngl",
+        "noise_model x = laplace, scale = read_exp_file _SD",  # per-observable override (scores x)
+        "experiment: e, data: r1.exp, r2.exp",                 # replicates -> stacked
+        "uniform_var = kA 0 10",
+        "population_size = 4", "max_iterations = 1", "verbosity = 0",
+    ]
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return Configuration(ploop(("\n".join(lines) + "\n").splitlines(keepends=True)))
+    finally:
+        os.chdir(home)
+
+
+class TestNewEraExperimentReplicateNoise:
+    """Slice D: per-observable noise_model reading _SD over a new-era replicate experiment."""
+
+    def test_replicates_stack_keeping_sd_columns(self, tmp_path):
+        # Two replicate files -> one stacked Data of 4 rows (NOT averaged to 2), with both
+        # observables' _SD companion columns carried through intact (ADR-0021/0028).
+        conf = _build_noise_replicate_conf(tmp_path)
+        stacked = conf.exp_data["m"]["e"]
+        assert stacked.data.shape[0] == 4
+        assert {"x", "y", "x_SD", "y_SD"} <= set(stacked.cols)
+
+    def test_per_observable_override_loaded(self, tmp_path):
+        # x takes the per-observable Laplace override reading its _SD column; y falls back to
+        # the whole-fit chi_sq base (Gaussian reading its _SD). Both sources are fixed (data
+        # columns), so neither keeps a likelihood normalizer.
+        conf = _build_noise_replicate_conf(tmp_path)
+        x_family, x_source = conf.obj._spec_for("x")
+        y_family, y_source = conf.obj._spec_for("y")
+        assert isinstance(x_family, noise.Laplace) and isinstance(x_source, noise.DataColumnSigma)
+        assert isinstance(y_family, noise.Gaussian) and isinstance(y_source, noise.DataColumnSigma)
+        assert x_source.estimated is False and y_source.estimated is False
+
+    def test_score_matches_hand_computation(self, tmp_path):
+        conf = _build_noise_replicate_conf(tmp_path)
+        # A synthetic simulation trajectory at the two distinct data times (one row per time;
+        # each replicate row matches its time's sim row). No simulator runs.
+        sim = {"m": {"e": Data.from_columns(
+            np.array([[1.0, 8.0, 2.0], [2.0, 5.0, 5.0]]), ["time", "x", "y"])}}
+
+        # x: Laplace, scale b = x_SD -> data_fit = |pred - obs| / b (fixed source, no normalizer)
+        #   r1 t1 |8-10|/2=1.0  r1 t2 |5-6|/1=1.0  r2 t1 |8-9|/2=0.5  r2 t2 |5-7|/1=2.0  -> 4.5
+        # y: Gaussian, sigma = y_SD -> data_fit = (pred-obs)^2 / (2 sigma^2) (no normalizer)
+        #   r1 t1 4/2=2.0  r1 t2 1/8=0.125  r2 t1 1/2=0.5  r2 t2 4/8=0.5            -> 3.125
+        expected = 4.5 + 3.125
+        # pset=[] -> empty {name: value} map (the _SD sources read no free parameter); the
+        # modern (non-legacy) calling convention, so constraints stay empty.
+        score = conf.obj.evaluate_multiple(sim, conf.exp_data, [], show_warnings=False)
+        assert score == pytest.approx(expected)
+
+    def test_override_actually_changes_the_score(self, tmp_path):
+        # Guard against a false pass: the Laplace override must change x's contribution vs the
+        # chi_sq base (Gaussian) it replaces. Recompute x under the base and confirm it differs.
+        conf = _build_noise_replicate_conf(tmp_path)
+        sim = {"m": {"e": Data.from_columns(
+            np.array([[1.0, 8.0, 2.0], [2.0, 5.0, 5.0]]), ["time", "x", "y"])}}
+        score = conf.obj.evaluate_multiple(sim, conf.exp_data, [], show_warnings=False)
+        # If x were scored by the Gaussian base instead of the Laplace override:
+        #   x gaussian: 4/8 + 1/2 + 1/8 + 4/2 = 0.5+0.5+0.125+2.0 = 3.125; total 6.25 != 7.625
+        gaussian_x_total = 3.125 + 3.125
+        assert score != pytest.approx(gaussian_x_total)
