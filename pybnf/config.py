@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 # point (a ``PerMeasurementModel``, ADR-0045), not a constant pre-materialized column.
 _MEASUREMENT_PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d+_\w+')
 
+# Network-free method tokens the BNGL action layer recognizes (mirrors the NF detection in
+# pset.BNGLModel), split by the bngsim NF session backend they normalize to: NFsim
+# (``nf``/``nf_reject``/``nfsim``) vs RuleMonkey (``rm``/``rulemonkey``/``nf_exact``) -- the
+# same mapping bngsim.normalize_method applies. A new-era ``experiment:``'s synthesized action
+# only accepts ``'nf'`` downstream, but the guard recognizes the wider set so its actionable
+# bngsim message wins over a generic "invalid method" for any NF spelling (#434).
+_NFSIM_METHODS = frozenset(('nf', 'nf_reject', 'nfsim'))
+_RULEMONKEY_METHODS = frozenset(('rm', 'rulemonkey', 'nf_exact'))
+_NETWORK_FREE_METHODS = _NFSIM_METHODS | _RULEMONKEY_METHODS
+
 
 def init_logging(file_prefix, debug=False, log_level_name='info'):
 
@@ -917,6 +927,7 @@ class Configuration:
             if exp_files:
                 # The common case: quantitative .exp data drives the simulation grid (and the
                 # objective). A constraint, if any, rides the same simulation (below).
+                self._guard_network_free_on_bngsim(name, method)
                 stacked = self._load_experiment_data(name, exp_files)
                 if fields.get('measurement_params'):
                     self._attach_measurement_params(name, stacked, fields['measurement_params'])
@@ -977,6 +988,66 @@ class Configuration:
             # the exporter refuses an experiment carrying them.
             for cf in constraint_files:
                 self._load_experiment_constraints(name, base, data_key, cf)
+
+    def _guard_network_free_on_bngsim(self, name, method):
+        """Fail loud for the one unsupported new-era combination: a network-free method
+        (NFsim/RuleMonkey) whose ``bngl_backend`` resolves to bngsim (#434).
+
+        A data-driven ``experiment:`` synthesizes its action with the data's
+        independent-variable points as explicit output points (``sample_times`` for a
+        time course, ``par_scan_vals`` for a dose-response). The bngsim network-free
+        bridge has no explicit-output-time support (verified absent in bngsim 0.9.50:
+        ``NfsimSession.simulate``/``RuleMonkeySession.simulate`` are uniform-grid only),
+        so it would silently *drop* those points and integrate on a uniform 0..100 grid
+        -- making the objective's by-independent-variable match fail, or worse mis-score
+        if a grid point happens to coincide with a data point. BNG2.pl honors the points,
+        so reject this combination here at config build instead of producing a
+        silently-wrong fit. The real fix (native bngsim support + the bridge passing
+        ``sample_times`` through) is tracked in #427.
+
+        The backend resolves the same way the model-list builder resolves it
+        (``algorithms.base``): explicit ``bngl_backend = bngsim`` is always bngsim (the
+        combination is unsupported whether or not the NF backend is even built, so it is
+        guarded unconditionally); ``auto`` (the shared default) resolves to bngsim only when
+        bngsim is importable AND the specific NF session backend this method needs is built
+        in (NFsim for ``nf``/``nfsim``/``nf_reject``, RuleMonkey for ``rm``/``rulemonkey``/
+        ``nf_exact``) -- otherwise ``auto`` falls back to BNG2.pl (which honors the points),
+        so it is not guarded; ``bionetgen`` (BNG2.pl) honors the points and is never guarded.
+        """
+        token = method.strip().lower()
+        if token not in _NETWORK_FREE_METHODS:
+            return
+        backend = self.config.get('bngl_backend')
+        if backend == 'bngsim':
+            how = "bngl_backend = bngsim"
+        elif backend == 'auto':
+            # Mirror the runtime resolution in algorithms.base: auto -> bngsim only when
+            # bngsim is importable and not disabled (PYBNF_NO_BNGSIM) AND the NF session
+            # backend this method needs is built into the install (else missing_nf_support
+            # makes algorithms.base fall back to BNG2.pl). Imported locally so the calls
+            # resolve the live (test-patchable) seams and to keep config free of an
+            # import-time dependency on the algorithms / bngsim layers.
+            from .algorithms.base import _bngsim_runtime_available
+            from .bngsim_model import _runtime
+            if not _bngsim_runtime_available():
+                return
+            if token in _NFSIM_METHODS:
+                nf_built, nf_label = _runtime.BNGSIM_HAS_NFSIM, 'NFsim'
+            else:
+                nf_built, nf_label = _runtime.BNGSIM_HAS_RULEMONKEY, 'RuleMonkey'
+            if not nf_built:
+                return
+            how = (f"bngl_backend = auto resolves to bngsim because bngsim with {nf_label} "
+                   "support is installed")
+        else:
+            return
+        raise PybnfError(
+            f"Experiment '{name}' uses a network-free method ('{method}'), but "
+            "NFsim/RuleMonkey do not support explicit output points on the bngsim "
+            f"backend ({how}), so a new-era 'experiment:' cannot output at your data's "
+            "independent-variable points. Use a BNG2.pl backend (bngl_backend = "
+            "bionetgen) for NFsim/RuleMonkey with the 'experiment:' surface, or use an "
+            "ODE/SSA/PSA method. (Tracking native bngsim support: issue #427.)")
 
     def _resolve_experiment_model(self, name, model_ref):
         """Resolve an experiment's base model: the single declared model when ``model:`` is
