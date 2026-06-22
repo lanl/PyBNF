@@ -65,6 +65,18 @@ class ObjectiveFunction:
     #: so every job without a row-varying observable is byte-identical.
     _per_measurement_models = {}
 
+    #: Columns whose prediction is a **cumulative** count to be differenced to its
+    #: per-interval **incident** value before scoring (ADR-0051, #418). A
+    #: family-independent prediction transform: ``_prediction`` returns the row-to-row
+    #: increment (the raw value at row 0) for a declared column, for every objfunc that
+    #: routes through the seam. The empty default is an exact no-op, so a job that
+    #: declares no cumulative column is byte-identical. Populated from the explicit
+    #: per-observable ``cumulative`` declaration (``config.py``); ``neg_bin_dynamic``
+    #: additionally recognizes the legacy ``_Cum`` column-name convention (see its
+    #: ``_is_cumulative`` override), scoped to that one objfunc so other families are
+    #: unchanged.
+    _cumulative_cols = frozenset()
+
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -254,14 +266,32 @@ class SummationObjective(ObjectiveFunction):
         (byte-identical to a direct ``sim_data.data[sim_row, col]`` access); a column with a
         registered row-varying measurement model (a per-data-point ``observableParameters``
         scale/offset, ADR-0045) is evaluated from ``(sim_row, exp_row)`` and the row's binding
-        token instead. ``neg_bin_dynamic`` overrides this for cumulative (``_Cum``) columns
-        (ADR-0021). Hoisted to ``SummationObjective`` (from ``LikelihoodObjective``) so every
-        per-point objfunc -- the least-squares family too -- routes its prediction through one
-        seam (#428 Phase 2b)."""
+        token instead; a column declared **cumulative** (ADR-0051, #418) yields the row-to-row
+        increment (cumulative count -> per-interval incident count). The two are mutually
+        exclusive -- a per-measurement model takes priority -- and both default off, so a plain
+        job is byte-identical. Hoisted to ``SummationObjective`` (from ``LikelihoodObjective``)
+        so every per-point objfunc -- the least-squares family too -- routes its prediction
+        through one seam (#428 Phase 2b), which is what makes the cumulative transform
+        family-independent (#418)."""
         model = self._per_measurement_models.get(col_name)
         if model is not None:
             return model.value(sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values)
+        if sim_row != 0 and self._is_cumulative(col_name):
+            # A cumulative count's effective prediction is the per-interval increment;
+            # row 0 has no predecessor and keeps its raw value (ADR-0051).
+            col = sim_data.cols[col_name]
+            return sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col]
         return sim_data.data[sim_row, sim_data.cols[col_name]]
+
+    def _is_cumulative(self, col_name):
+        """Whether this column's prediction is a cumulative count to be differenced to its
+        per-interval incident value (ADR-0051, #418). The explicit, family-independent
+        declaration is the per-observable ``cumulative`` flag, surfaced through
+        ``self._cumulative_cols``. ``neg_bin_dynamic`` overrides this to *additionally*
+        honor the legacy ``_Cum`` column-name convention -- scoped to that one objfunc, so
+        a ``_Cum``-named column under any other family is **not** silently differenced
+        (the strict-superset guarantee ADR-0021 left for this follow-up)."""
+        return col_name in self._cumulative_cols
 
     def _check_columns(self, exp_cols, compare_cols):
         """
@@ -482,6 +512,17 @@ def _build_noise_overrides(config):
     return overrides
 
 
+def _build_cumulative_cols(config):
+    """The set of observables declared a **cumulative** prediction (ADR-0051, #418), from
+    the parsed ``('cumulative', observable)`` structural keys. Empty when none is declared,
+    so ``_prediction`` is byte-identical. Sibling to :func:`_build_noise_overrides`, kept
+    separate because the cumulative->incident differencing is a prediction transform
+    orthogonal to the ``(family x sigma-source)`` noise spec -- it merely rides the same
+    per-observable ``noise_model`` line for authoring convenience."""
+    return frozenset(k[1] for k in config
+                     if isinstance(k, tuple) and k[0] == 'cumulative')
+
+
 class LikelihoodObjective(SummationObjective):
     """A per-point likelihood: a distribution-family NoiseModel scored against the
     data with its noise parameter drawn from a SigmaSource, summed over points
@@ -690,19 +731,15 @@ class NegBinLikelihood_Dynamic(LikelihoodObjective):
     noise = NegBinomial(location=MEAN)
     sigma_source = FreeParameterSigma('r__FREE')
 
-    def _prediction(self, sim_data, sim_row, col_name, exp_data=None, exp_row=None):
-        # A ``_Cum`` column is a cumulative count: the effective prediction is the
-        # row-to-row increment (the raw value at row 0). An ad-hoc COVID-forecasting
-        # feature, welded to NegBinomial only by history; kept byte-exact and
-        # isolated here, with generalization to a family-independent
-        # cumulative->incident transform filed as #418 (ADR-0021). A registered
-        # per-measurement model (ADR-0045) supersedes the increment and is handled by
-        # the base ``_prediction`` (the two are mutually exclusive in practice).
-        if (col_name not in self._per_measurement_models
-                and sim_row != 0 and '_Cum' in col_name):
-            col = sim_data.cols[col_name]
-            return sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col]
-        return super()._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
+    def _is_cumulative(self, col_name):
+        # Legacy compatibility (ADR-0051, #418): the ``_Cum`` column-name substring is an
+        # implicit cumulative declaration. An ad-hoc COVID-forecasting convention, welded to
+        # NegBinomial only by history; preserved byte-exact here and scoped to this objfunc
+        # ALONE -- generalizing the substring to every family would silently start
+        # differencing ``_Cum`` columns under chi_sq etc., breaking ADR-0021's strict-superset
+        # guarantee. New configs declare ``cumulative`` explicitly (family-independent, the
+        # base ``self._cumulative_cols`` path); this OR-clause is the migration bridge.
+        return super()._is_cumulative(col_name) or '_Cum' in col_name
 
 
 @register_objfunc('neg_bin')

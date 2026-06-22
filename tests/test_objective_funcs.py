@@ -302,6 +302,68 @@ class TestNegBinLikelihoodDynamic:
         npt.assert_almost_equal(obj.evaluate(sim, exp), expected)
 
 
+class TestCumulativePredictionTransform:
+    """The family-independent cumulative->incident prediction transform (ADR-0051, #418).
+
+    The seam lives on ``SummationObjective._prediction`` / ``_is_cumulative``, so it is shared
+    by every per-point objfunc -- exercised here on the least-squares ``sos`` (a non-NegBinomial
+    family, the whole point of the generalization). The legacy ``neg_bin_dynamic`` ``_Cum``
+    substring is the only family that triggers without an explicit declaration; every other
+    family differences a column iff it is in ``_cumulative_cols``.
+    """
+
+    # cumulative sim [2, 7, 15] -> per-interval increments [2, 5, 8] (row 0 raw).
+    sim = _mkdata(['# x  obs1\n', ' 0  2.0\n', ' 1  7.0\n', ' 2  15.0\n'])
+
+    def test_prediction_returns_increment_for_declared_column(self):
+        """A declared cumulative column's prediction is sim[row] - sim[row-1]; row 0 is raw."""
+        obj = objective.SumOfSquaresObjective()
+        obj._cumulative_cols = frozenset({'obs1'})
+        assert obj._prediction(self.sim, 0, 'obs1') == 2.0   # row 0: no predecessor -> raw
+        assert obj._prediction(self.sim, 1, 'obs1') == 5.0   # 7 - 2
+        assert obj._prediction(self.sim, 2, 'obs1') == 8.0   # 15 - 7
+
+    def test_undeclared_column_is_raw_for_every_family(self):
+        """Without a declaration the prediction is the raw cell -- the strict-superset default,
+        even for a column literally named with the legacy _Cum substring (only neg_bin_dynamic
+        honors that substring)."""
+        sim = _mkdata(['# x  obs_Cum\n', ' 0  2.0\n', ' 1  7.0\n', ' 2  15.0\n'])
+        obj = objective.ChiSquareObjective()                 # empty _cumulative_cols default
+        assert obj._is_cumulative('obs_Cum') is False
+        assert obj._prediction(sim, 1, 'obs_Cum') == 7.0     # raw, NOT the 5.0 increment
+
+    def test_family_independent_differencing_scores_increments(self):
+        """sos over a declared cumulative column scores the increments: residuals
+        [(2-3),(5-5),(8-8)] = [-1,0,0] -> sos = 1.0 (the oracle a raw comparison cannot give)."""
+        obj = objective.SumOfSquaresObjective()
+        obj._cumulative_cols = frozenset({'obs1'})
+        exp = _mkdata(['# x  obs1\n', ' 0  3.0\n', ' 1  5.0\n', ' 2  8.0\n'])
+        npt.assert_almost_equal(obj.evaluate(self.sim, exp), 1.0)
+        # Same data without the declaration compares raw [2,7,15] vs [3,5,8] -> 1+4+49 = 54.
+        npt.assert_almost_equal(objective.SumOfSquaresObjective().evaluate(self.sim, exp), 54.0)
+
+    def test_neg_bin_dynamic_is_cumulative_is_substring_or_declaration(self):
+        """neg_bin_dynamic differences a _Cum column by substring (legacy) OR an explicit
+        declaration; a plain column only when explicitly declared."""
+        obj = objective.NegBinLikelihood_Dynamic()
+        assert obj._is_cumulative('cases_Cum') is True       # legacy substring, this objfunc only
+        assert obj._is_cumulative('cases') is False
+        obj._cumulative_cols = frozenset({'cases'})
+        assert obj._is_cumulative('cases') is True           # explicit declaration also works
+
+    def test_per_measurement_model_takes_priority_over_cumulative(self):
+        """A registered per-measurement model (ADR-0045) supersedes the increment: the base
+        _prediction returns the model value and never reaches the cumulative branch."""
+        class _Model:
+            def value(self, sim_data, sim_row, exp_data, exp_row, col_name, pset):
+                return 99.0
+        obj = objective.SumOfSquaresObjective()
+        obj._cumulative_cols = frozenset({'obs1'})
+        obj._per_measurement_models = {'obs1': _Model()}
+        obj._pset_values = {}
+        assert obj._prediction(self.sim, 1, 'obs1', None, 1) == 99.0
+
+
 class TestNegBinMedianCentering:
     """The negative-binomial median location (issue #419, ADR-0031): the prediction is
     the **continuous** 0.5-quantile, realized by solving for the mean whose continuous

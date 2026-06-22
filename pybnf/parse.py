@@ -181,7 +181,14 @@ def parse(s):
     nm_formula_arg = pp.Regex(r'[^,#\n]+').set_parse_action(lambda t: t[0].strip())
     nm_formula_field = pp.Group(nm_token + equals + pp.CaselessLiteral('formula') + nm_formula_arg)
     nm_source_field = pp.Group(nm_token - equals - nm_verb - pp.Optional(nm_arg))
-    nm_field = nm_location_field | nm_formula_field | nm_source_field
+    # An optional bare ``cumulative`` flag field (ADR-0051, #418): declares the column's
+    # prediction a cumulative count, differenced to its per-interval increment before scoring.
+    # A *prediction* transform, orthogonal to the noise family/source -- it rides the
+    # per-observable noise_model line for ergonomics, but ploop stores it under its own
+    # ('cumulative', observable) structural key. A bare literal (no ``=``), matched first so it
+    # never shadows a ``<param> = <source>`` field.
+    nm_cumulative_field = pp.Group(pp.CaselessLiteral('cumulative'))
+    nm_field = nm_cumulative_field | nm_location_field | nm_formula_field | nm_source_field
     # The observable is optional: present -> a per-observable override; absent
     # (``noise_model = <family>``) -> the whole-fit default (ADR-0031). pyparsing
     # distinguishes them by whether a bare token precedes the ``=``.
@@ -503,7 +510,17 @@ def ploop(ls):  # parse loop
                 where = "the whole-fit noise_model" if observable is None else f"noise_model for {observable}"
                 fields = {}
                 location = None
+                cumulative = False
                 for field in raw_fields:
+                    if field[0].lower() == 'cumulative':
+                        # A bare flag (ADR-0051, #418): a per-observable prediction transform,
+                        # orthogonal to the noise spec -- stored under its own ('cumulative',
+                        # observable) key below, not folded into the (family, fields, location)
+                        # noise tuple.
+                        if cumulative:
+                            raise PybnfError(f"In {where}, cumulative is specified multiple times")
+                        cumulative = True
+                        continue
                     if field[0].lower() == 'location':
                         if location is not None:
                             raise PybnfError(f"In {where}, location is specified multiple times")
@@ -520,6 +537,18 @@ def ploop(ls):  # parse loop
                     target = "The whole-fit noise_model" if observable is None else f"noise_model for observable '{observable}'"
                     raise PybnfError(f"{target} is specified multiple times")
                 d[nm_key] = (family, fields, location)
+                if cumulative:
+                    # The transform differences ONE column's cumulative counts into per-interval
+                    # increments, so it is inherently per-observable; a whole-fit ('cumulative',
+                    # None) would mean "every column is cumulative", an easy foot-gun -- reject it.
+                    if observable is None:
+                        raise PybnfError(
+                            "The whole-fit noise_model line cannot be 'cumulative'",
+                            "The cumulative->incident prediction transform (#418) is per-observable: "
+                            "it differences one column's cumulative counts to per-interval "
+                            "increments. Declare it on a per-observable line, e.g. "
+                            "'noise_model <obs> = <family>, <param> = <source>, cumulative'.")
+                    d[('cumulative', observable)] = True
             elif l[0] == 'postprocess':
                 if len(values) < 2:
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "

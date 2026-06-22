@@ -1707,6 +1707,24 @@ class Configuration:
                     f"{', '.join(scopes)} (ADR-0031); its legacy default was the mean. Set "
                     f"'location = mean' (or 'noise_location = mean' for the whole fit) to keep "
                     f"mean centering, or '= median' to silence this warning.")
+
+        # The explicit per-observable cumulative->incident prediction transform (ADR-0051,
+        # #418): differences a declared column's cumulative counts to per-interval increments
+        # in the objective's prediction step. Family-independent -- it attaches to any per-point
+        # objective (the SummationObjective family) regardless of the noise family, the
+        # generalization of neg_bin_dynamic's legacy `_Cum` substring. Bound per data point in
+        # `_prediction`, which the column-joint kl / wasserstein lack, so raise rather than
+        # silently drop it (mirrors `_attach_per_measurement_models`).
+        cumulative_cols = objective._build_cumulative_cols(self.config)
+        if cumulative_cols:
+            if not isinstance(obj, objective.SummationObjective):
+                raise UnknownObjectiveFunctionError(
+                    'cumulative is not available for a column-joint objective',
+                    f"The cumulative->incident prediction transform (#418) is applied per data "
+                    f"point in the objective's prediction step, which the column-joint objective "
+                    f"'{type(obj).__name__}' (kl / wasserstein) does not have. Declare 'cumulative' "
+                    f"only with a per-point objective (chi_sq, sos, laplace, neg_bin, ...).")
+            obj._cumulative_cols = cumulative_cols
         return obj
 
     def _load_variables(self):

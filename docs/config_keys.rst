@@ -301,7 +301,7 @@ Required Keys
   ``noise_model``. Each key names the distribution family and, for each of the family's
   noise parameters, where its value comes from::
 
-    noise_model [<observable>] = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median]
+    noise_model [<observable>] = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median][, cumulative]
 
   The **family** is one of ``normal``, ``lognormal``, ``laplace``, or ``neg_bin``.
   Each **parameter** is named by its standard statistical name -- ``sigma`` for
@@ -329,6 +329,16 @@ Required Keys
   interprets the prediction as the count distribution's 0.5-quantile, solved for by a
   per-point continuous-CDF inversion (issue #419).
 
+  The optional **cumulative** flag (per-observable only) declares the observable a
+  *cumulative* count: its simulated prediction is differenced row-to-row (cumulative
+  total -> per-interval increment, with the first row kept as-is) before scoring. It is
+  a prediction transform, independent of the noise family, so it pairs with any family
+  (e.g. ``normal``, ``laplace``, ``neg_bin``). Legacy configs that relied on the older
+  convention -- a data column whose name contains ``_Cum``, recognized only by
+  ``objfunc = neg_bin_dynamic`` -- keep working unchanged; the explicit ``cumulative``
+  flag is the family-independent replacement (issue #418). A cumulative observable
+  cannot be exported to PEtab (PEtab has no cumulative-count operator).
+
   Examples:
 
     * ``noise_model = gaussian, sigma = fix_at 1`` (whole-fit default; ``edition = 2``)
@@ -336,6 +346,7 @@ Required Keys
     * ``noise_model obs3 = normal, sigma = read_exp_file _SD``
     * ``noise_model obs4 = neg_bin, dispersion = fix_at 10``
     * ``noise_model obs5 = lognormal, sigma = read_exp_file _SD, location = mean``
+    * ``noise_model cases = neg_bin, dispersion = fit r__FREE, cumulative``
 
 
 .. _edition:

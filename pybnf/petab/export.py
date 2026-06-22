@@ -162,6 +162,7 @@ def export_job(conf_path, out_dir, inline_functions=False):
     _require_new_era_data(conf, models)
     noise = _resolve_noise(conf)
     per_obs_noise = _resolve_per_observable_noise(conf)
+    _reject_cumulative(conf)
     free_params = _free_parameters_from_conf(conf)
     # A registry of per-language model views (ADR-0040/0041): a job may mix BNGL + SBML,
     # each read once and threaded through the language-agnostic classification below.
@@ -694,6 +695,25 @@ def _resolve_per_observable_noise(conf):
             overrides[column] = _reduce_noise_spec(
                 family_token, fields, location, f"the 'noise_model {column}' override")
     return overrides
+
+
+def _reject_cumulative(conf):
+    """Fail loud if the job declares a ``cumulative`` prediction transform (ADR-0051, #418).
+
+    The cumulative->incident differencing is a PyBNF *prediction* transform with no PEtab v2
+    representation -- PEtab observables/measurements have no row-coupled cumulative-counts
+    operator. Exporting would silently drop it and emit a problem that scores the raw
+    cumulative columns, a different objective. Refuse instead (the project's fail-loud-over-
+    silently-wrong stance), naming the offending observables."""
+    cumulative = sorted(k[1] for k in conf
+                        if isinstance(k, tuple) and k[0] == 'cumulative')
+    if cumulative:
+        raise NotImplementedError(
+            f"Observable(s) {cumulative} declare a cumulative->incident prediction transform "
+            f"('cumulative', #418), which PEtab v2 cannot express -- it has no row-coupled "
+            f"cumulative-counts observable operator. Exporting would silently score the raw "
+            f"cumulative columns instead. Remove the 'cumulative' flag (and difference the data "
+            f"to per-interval increments yourself) to export to PEtab.")
 
 
 def _reduce_noise_spec(family_token, fields, location, where):

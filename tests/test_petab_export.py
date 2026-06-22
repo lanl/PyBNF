@@ -1310,6 +1310,19 @@ class TestBoundaries:
                 "uniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
+    def test_cumulative_prediction_transform_not_implemented(self, tmp_path):
+        # The cumulative->incident differencing (ADR-0051, #418) is a PyBNF prediction
+        # transform with no PEtab v2 representation: refuse rather than silently export a
+        # problem that scores the raw cumulative columns (a different objective). The
+        # offending observable is named in the error.
+        with pytest.raises(NotImplementedError, match='cumulative'):
+            export_job(_boundary_conf(
+                tmp_path,
+                "noise_model = gaussian, sigma = fix_at 1\n"
+                "noise_model x = gaussian, sigma = fix_at 2, cumulative\n"
+                "uniform_var = v1 0 10\n"),
+                tmp_path / 'out')
+
 
 class TestCleanModelUnit:
 

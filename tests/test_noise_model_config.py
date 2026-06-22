@@ -16,7 +16,7 @@ import pytest
 from pybnf import noise, objective
 from pybnf.config import Configuration
 from pybnf.data import Data
-from pybnf.objective import _build_noise_overrides, _build_noise_spec
+from pybnf.objective import _build_cumulative_cols, _build_noise_overrides, _build_noise_spec
 from pybnf.parse import ploop
 from pybnf.printing import PybnfError
 
@@ -420,6 +420,29 @@ class TestNewEraExperimentReplicateNoise:
         assert isinstance(y_family, noise.Gaussian) and isinstance(y_source, noise.DataColumnSigma)
         assert x_source.estimated is False and y_source.estimated is False
 
+    def test_cumulative_flag_survives_the_full_config_build(self, tmp_path):
+        # End-to-end real-Configuration path (not the _load_obj idiom): the ('cumulative', 'x')
+        # structural key emitted by ploop survives the build and reaches the objective as
+        # _cumulative_cols, family-independent (here x is Laplace, not neg_bin). ADR-0051, #418.
+        (tmp_path / "m.bngl").write_text(_NR_MODEL)
+        (tmp_path / "r1.exp").write_text(_NR_R1)
+        (tmp_path / "r2.exp").write_text(_NR_R2)
+        lines = [
+            "edition = 2", "job_type = de", "objective = chi_sq", "model: m.bngl",
+            "noise_model x = laplace, scale = read_exp_file _SD, cumulative",
+            "experiment: e, data: r1.exp, r2.exp", "uniform_var = kA 0 10",
+            "population_size = 4", "max_iterations = 1", "verbosity = 0",
+        ]
+        home = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            conf = Configuration(ploop(("\n".join(lines) + "\n").splitlines(keepends=True)))
+        finally:
+            os.chdir(home)
+        assert conf.obj._cumulative_cols == frozenset({"x"})
+        assert conf.obj._is_cumulative("x") is True
+        assert conf.obj._is_cumulative("y") is False         # declared only on x
+
     def test_score_matches_hand_computation(self, tmp_path):
         conf = _build_noise_replicate_conf(tmp_path)
         # A synthetic simulation trajectory at the two distinct data times (one row per time;
@@ -448,3 +471,75 @@ class TestNewEraExperimentReplicateNoise:
         #   x gaussian: 4/8 + 1/2 + 1/8 + 4/2 = 0.5+0.5+0.125+2.0 = 3.125; total 6.25 != 7.625
         gaussian_x_total = 3.125 + 3.125
         assert score != pytest.approx(gaussian_x_total)
+
+
+# --- the cumulative->incident prediction transform (ADR-0051, #418) -----------
+#
+# A per-observable `cumulative` flag rides the noise_model line but is stored under its own
+# structural ('cumulative', observable) key, orthogonal to the (family, fields, location)
+# noise tuple, and consumed as the objective's family-independent prediction transform.
+
+def test_cumulative_flag_emits_separate_key_and_leaves_noise_tuple_intact():
+    d = ploop(['noise_model cases = neg_bin, dispersion = fit r__FREE, cumulative'])
+    # The noise tuple is unchanged (still a 3-tuple, cumulative NOT folded in)...
+    assert d[('noise_model', 'cases')] == ('neg_bin', {'dispersion': ('fit', 'r__FREE')}, None)
+    # ...and the transform rides its own sibling structural key.
+    assert d[('cumulative', 'cases')] is True
+
+
+def test_cumulative_composes_with_location_in_any_order():
+    d = ploop(['noise_model o = normal, sigma = read_exp_file _SD, cumulative, location = median'])
+    assert d[('noise_model', 'o')] == ('normal', {'sigma': ('read_exp_file', '_SD')}, 'median')
+    assert d[('cumulative', 'o')] is True
+
+
+def test_no_cumulative_flag_emits_no_key():
+    d = ploop(['noise_model o = normal, sigma = read_exp_file _SD'])
+    assert ('cumulative', 'o') not in d
+
+
+def test_whole_fit_cumulative_is_rejected():
+    # The transform differences one column, so a whole-fit (observable=None) cumulative is a
+    # foot-gun ("every column is cumulative") -- rejected at parse time.
+    with pytest.raises(PybnfError, match='whole-fit noise_model line cannot be'):
+        ploop(['noise_model = normal, sigma = fix_at 1, cumulative'])
+
+
+def test_duplicate_cumulative_is_rejected():
+    with pytest.raises(PybnfError, match='cumulative is specified multiple times'):
+        ploop(['noise_model o = normal, sigma = fix_at 1, cumulative, cumulative'])
+
+
+def test_build_cumulative_cols_collects_declared_observables():
+    config = {
+        ('noise_model', 'a'): ('neg_bin', {'dispersion': ('fit', 'r__FREE')}, None),
+        ('cumulative', 'a'): True,
+        ('noise_model', 'b'): ('normal', {'sigma': ('fix_at', '1')}, None),
+        ('cumulative', 'b'): True,
+        ('noise_model', 'c'): ('normal', {'sigma': ('fix_at', '1')}, None),  # not cumulative
+    }
+    assert _build_cumulative_cols(config) == frozenset({'a', 'b'})
+    assert _build_cumulative_cols({}) == frozenset()       # empty -> no-op default
+
+
+def test_load_obj_func_attaches_cumulative_cols_family_independent():
+    # chi_sq (Gaussian) is NOT neg_bin: declaring `cumulative` still attaches the transform,
+    # which is the whole point of the generalization.
+    obj = _load_obj({'objfunc': 'chi_sq', 'ind_var_rounding': 0,
+                     ('cumulative', 'cases'): True})
+    assert obj._cumulative_cols == frozenset({'cases'})
+    assert obj._is_cumulative('cases') is True
+    assert obj._is_cumulative('other') is False
+
+
+def test_load_obj_func_no_declaration_is_empty_and_chi_sq_ignores_legacy_substring():
+    # Strict-superset guarantee: a chi_sq job with NO declaration differences nothing, even a
+    # column literally named with the legacy _Cum substring (only neg_bin_dynamic honors it).
+    obj = _load_obj({'objfunc': 'chi_sq', 'ind_var_rounding': 0})
+    assert obj._cumulative_cols == frozenset()
+    assert obj._is_cumulative('cases_Cum') is False
+
+
+def test_load_obj_func_cumulative_on_column_joint_objective_raises():
+    with pytest.raises(PybnfError, match='column-joint'):
+        _load_obj({'objfunc': 'kl', 'ind_var_rounding': 0, ('cumulative', 'cases'): True})
