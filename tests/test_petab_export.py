@@ -1236,6 +1236,21 @@ class TestBoundaries:
             export_job(_boundary_conf(tmp_path, "uniform_var = v1 0 10\n"),
                        tmp_path / 'out')
 
+    def test_constraint_experiment_is_refused(self, tmp_path):
+        # BPSL constraints (.con/.prop) are PyBNF-native qualitative fitting with no core-PEtab
+        # representation (ADR-0028 addendum): an experiment whose data: carries one is refused
+        # rather than mis-exported (dropping it would export a different, weaker fit). The
+        # fitter still runs the job; only export is refused.
+        (tmp_path / 'c.prop').write_text('x > 0 always weight 1\n')
+        conf = tmp_path / 'job.conf'
+        conf.write_text(
+            f"edition = 2\njob_type = de\nobjective = chi_sq\n"
+            f"model: {DEMO_DIR / DEMO_MODEL}\n"
+            f"experiment: e, data: {DEMO_DIR / 'par1.exp'}, {tmp_path / 'c.prop'}\n"
+            "uniform_var = v1 0 10\n")
+        with pytest.raises(NotImplementedError, match='constraint'):
+            export_job(conf, tmp_path / 'out')
+
     @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
     def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
         # neg_bin was removed from PEtab v2; score (the direct_pass successor) is not a

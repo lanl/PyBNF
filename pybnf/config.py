@@ -885,8 +885,10 @@ class Configuration:
 
         A **parameter_scan** (dose-response) experiment runs each dose to steady state by
         default (no ``t_end:``), mapping to PEtab ``time=inf`` (ADR-0046); an optional
-        ``t_end:`` fixes a finite endpoint. ``.con``/``.prop`` (BPSL) data files are not yet
-        routed through ``data:``.
+        ``t_end:`` fixes a finite endpoint. ``.con``/``.prop`` (BPSL) files in an
+        experiment's ``data:`` are split off by :meth:`_partition_experiment_data` and loaded
+        as constraints bound to the experiment's simulation (:meth:`_load_experiment_constraints`);
+        they are PyBNF-native, so the PEtab exporter refuses an experiment carrying them.
         """
         # Parameter ids referenced only as a row-varying per-measurement noise token (the
         # ADR-0045 binding table) -- recognized as used by the free-parameter orphan check
@@ -908,45 +910,73 @@ class Configuration:
         for name, fields in experiments:
             base = self._resolve_experiment_model(name, fields.get('model'))
             model = self.models[base]
-            stacked = self._load_experiment_data(name, fields['data'])
-            if fields.get('measurement_params'):
-                self._attach_measurement_params(name, stacked, fields['measurement_params'])
-            action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
+            exp_files, constraint_files = self._partition_experiment_data(name, fields['data'])
             data_key = self._resolve_experiment_data_key(name, model, base, fields.get('condition'))
-
             method = fields.get('method', 'ode')
-            points = sorted({float(x) for x in stacked[stacked.indvar]})
-            if action_type == 'time_course':
-                action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
-            else:
-                # parameter_scan / dose-response (ADR-0046): the data's independent-variable
-                # column (col 0) is the swept parameter -- its values are the doses, fed to the
-                # scan as explicit_points (par_scan_vals). A `t_end:` field fixes the endpoint
-                # (a finite PEtab measurement time); with none the scan runs each dose to
-                # STEADY STATE (the new-era default, mapping to PEtab time=inf). steady_state=1
-                # requests bngsim's KINSOL solve with the parity fallback (ss_method=>"newton",
-                # not user-exposed); that execution and its warn-and-score-last-value policy on
-                # non-convergence already live in bngsim_model -- the only new wire is requesting it.
-                scan = {'suffix': name, 'method': method, 'param': stacked.indvar}
-                t_end = fields.get('t_end')
-                if t_end is not None:
-                    scan['time'] = t_end
-                else:
-                    scan['steady_state'] = 1
-                action = ParamScan(scan, explicit_points=points)
-            model.add_action(action)
 
-            self.exp_data.setdefault(base, {})[data_key] = stacked
-            self.mapping.setdefault(base, set()).add(data_key)
+            if exp_files:
+                # The common case: quantitative .exp data drives the simulation grid (and the
+                # objective). A constraint, if any, rides the same simulation (below).
+                stacked = self._load_experiment_data(name, exp_files)
+                if fields.get('measurement_params'):
+                    self._attach_measurement_params(name, stacked, fields['measurement_params'])
+                action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
+                points = sorted({float(x) for x in stacked[stacked.indvar]})
+                if action_type == 'time_course':
+                    action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+                else:
+                    # parameter_scan / dose-response (ADR-0046): the data's independent-variable
+                    # column (col 0) is the swept parameter -- its values are the doses, fed to the
+                    # scan as explicit_points (par_scan_vals). A `t_end:` field fixes the endpoint
+                    # (a finite PEtab measurement time); with none the scan runs each dose to
+                    # STEADY STATE (the new-era default, mapping to PEtab time=inf). steady_state=1
+                    # requests bngsim's KINSOL solve with the parity fallback (ss_method=>"newton",
+                    # not user-exposed); that execution and its warn-and-score-last-value policy on
+                    # non-convergence already live in bngsim_model -- the only new wire is requesting it.
+                    scan = {'suffix': name, 'method': method, 'param': stacked.indvar}
+                    t_end = fields.get('t_end')
+                    if t_end is not None:
+                        scan['time'] = t_end
+                    else:
+                        scan['steady_state'] = 1
+                    action = ParamScan(scan, explicit_points=points)
+                model.add_action(action)
+                self.exp_data.setdefault(base, {})[data_key] = stacked
+                self.mapping.setdefault(base, set()).add(data_key)
+                logger.debug(f"Experiment '{name}' ({action_type}) on model '{base}': "
+                             f"{len(points)} point(s), data key '{data_key}', "
+                             f"{len(exp_files)} replicate file(s)")
+            else:
+                # Constraint-only experiment (data: is .con/.prop only -- ADR-0028 addendum).
+                # There is no measurement grid to derive, so the experiment carries its own
+                # timing on the experiment line (`t_end:` + optional `n_steps:`) -- the new-era
+                # home for the simulation the legacy model kept in its `begin actions` block.
+                # A uniform-grid TimeCourse is synthesized and run; no exp_data/mapping entry is
+                # registered (there is no quantitative data to score), but the action still runs
+                # (the engine simulates every model action), producing the output the
+                # constraints below read.
+                action = self._constraint_only_action(name, method, fields)
+                model.add_action(action)
+                logger.debug(f"Experiment '{name}' (constraint-only time_course) on model "
+                             f"'{base}': t_end={action.time}, n_steps={action.stepnumber}, "
+                             f"data key '{data_key}', {len(constraint_files)} constraint file(s)")
+
             # time_length is keyed by the bare action suffix (the experiment name); the
-            # condition/mutant combinations are formed downstream (adaptive_mcmc). The output
-            # is one row per explicit point in BOTH cases (a time course: one per sample time
-            # including the forced t=0; a scan: one per dose, no baseline), so len(points)-1
-            # equals the adaptive_mcmc output-array length for either action.
-            self._experiment_time_length[name] = len(action.explicit_points) - 1
-            logger.debug(f"Experiment '{name}' ({action_type}) on model '{base}': "
-                         f"{len(points)} point(s), data key '{data_key}', "
-                         f"{len(fields['data'])} replicate file(s)")
+            # condition/mutant combinations are formed downstream (adaptive_mcmc). The output is
+            # one row per explicit point for a data-driven action (a time course: one per sample
+            # time including the forced t=0; a scan: one per dose), or n_steps+... for a uniform
+            # grid -- ``Action.output_length`` gives the row count either way.
+            self._experiment_time_length[name] = action.output_length() - 1
+
+            # BPSL constraints (.con/.prop) ride along with this experiment's simulation
+            # (ADR-0028 addendum): each binds to the experiment's own simulation output
+            # (base_model = the experiment's model, base_suffix = its data_key), so a bare
+            # observable in the constraint resolves to this experiment's sim columns --
+            # inheriting the experiment's condition and model -- and the objective adds the
+            # penalty alongside the .exp terms. They are PyBNF-native (no PEtab v2 shape), so
+            # the exporter refuses an experiment carrying them.
+            for cf in constraint_files:
+                self._load_experiment_constraints(name, base, data_key, cf)
 
     def _resolve_experiment_model(self, name, model_ref):
         """Resolve an experiment's base model: the single declared model when ``model:`` is
@@ -981,22 +1011,108 @@ class Configuration:
                 "'condition:' line.")
         return name + condition
 
+    @staticmethod
+    def _partition_experiment_data(name, data_files):
+        """Split an experiment's ``data:`` files by kind (ADR-0028): ``.exp`` measurement
+        files (quantitative data, drive the simulation grid + the objective) vs ``.con``/
+        ``.prop`` BPSL constraint files (qualitative data, scored as penalties). Any other
+        extension is an error. Returns ``(exp_files, constraint_files)`` preserving order."""
+        exp_files, constraint_files = [], []
+        for ef in data_files:
+            if re.search(r'\.exp$', ef):
+                exp_files.append(ef)
+            elif re.search(r'\.(con|prop)$', ef):
+                constraint_files.append(ef)
+            else:
+                raise PybnfError(
+                    f"Experiment '{name}' data file '{ef}': unsupported extension. A "
+                    "'data:' file is either an .exp measurement file or a .con/.prop "
+                    "constraint file.")
+        return exp_files, constraint_files
+
+    def _constraint_only_action(self, name, method, fields):
+        """Synthesize the time-course action for a **constraint-only** experiment -- one whose
+        ``data:`` is BPSL ``.con``/``.prop`` files only, with no ``.exp`` measurements
+        (ADR-0028 addendum).
+
+        With no measurement data there is no independent-variable grid to derive, and a
+        constraint's times are often variable conditions (``at A=5.5`` -- "when column A
+        reaches 5.5") that cannot be resolved before the trajectory exists. So the experiment
+        states its own simulation timing -- the new-era home for what a legacy ``.prop`` job
+        kept in the model's ``begin actions`` block: ``t_end:`` (the integration endpoint,
+        required here), an optional ``t_start:`` (the integration start; default 0, like every
+        config-action time course), and an optional ``n_steps:`` (the uniform output
+        resolution over ``[t_start, t_end]``; default = the :class:`~pybnf.pset.TimeCourse`
+        step of 1). A uniform-grid ``TimeCourse`` is returned (no ``explicit_points``); the
+        constraints (loaded separately) score against its output. ``type: parameter_scan`` has
+        no constraint-only form (a scan's swept axis comes from data) and is refused."""
+        action_type = (fields.get('type') or 'time_course').lower()
+        if action_type not in ('time_course', 'timecourse'):
+            raise PybnfError(
+                f"Experiment '{name}' has only constraint data (.con/.prop) and type "
+                f"'{fields['type']}'. A constraint-only experiment runs a time course to a "
+                "fixed endpoint; a parameter_scan's swept axis can only come from .exp data.")
+        t_end = fields.get('t_end')
+        if t_end is None:
+            raise PybnfError(
+                f"Experiment '{name}' has only constraint data (.con/.prop) and no .exp to "
+                "derive its simulation grid. Give it an explicit endpoint with 't_end: "
+                "<time>' (and optionally 't_start: <t0>' / 'n_steps: <N>') -- the new-era home "
+                "for the timing a legacy job kept in the model's 'begin actions' block.")
+        d = {'suffix': name, 'method': method, 'time': t_end}
+        t_start = fields.get('t_start')
+        if t_start is not None:
+            if float(t_start) >= float(t_end):
+                raise PybnfError(
+                    f"Experiment '{name}': t_start ({t_start}) must be less than t_end ({t_end}).")
+            d['t_start'] = t_start
+        span = float(t_end) - float(t_start if t_start is not None else 0.0)
+        n_steps = fields.get('n_steps')
+        if n_steps is not None:
+            if float(n_steps) < 1:
+                raise PybnfError(
+                    f"Experiment '{name}': 'n_steps' must be a positive integer (got {n_steps}).")
+            d['step'] = span / float(n_steps)
+        return TimeCourse(d)
+
+    def _load_experiment_constraints(self, name, base, data_key, constraint_file):
+        """Load a BPSL constraint file (``.con``/``.prop``) bound to a new-era experiment
+        (ADR-0028 addendum).
+
+        The constraint reads the experiment's *own* simulation output: ``base_model`` is the
+        experiment's resolved model and ``base_suffix`` is the experiment's ``data_key`` (the
+        experiment name, or name+condition when a condition is applied -- the suffix the
+        conditioned simulation output carries). So a bare observable in the constraint file
+        resolves to ``sim_data_dict[base][data_key]`` -- this experiment's simulation --
+        inheriting the experiment's condition and model with no extra binding syntax. The
+        resulting :class:`~pybnf.constraint.ConstraintSet` joins ``self.constraints``, so the
+        objective adds its penalty alongside the experiment's quantitative ``.exp`` terms
+        (:meth:`pybnf.objective.ObjectiveFunction.evaluate_multiple`). BPSL has no core-PEtab
+        representation, so the PEtab v2 exporter refuses an experiment carrying it."""
+        cs = ConstraintSet(base, data_key)
+        try:
+            cs.load_constraint_file(constraint_file, scale=self.config['constraint_scale'])
+        except FileNotFoundError:
+            raise PybnfError(
+                f"Constraint file {constraint_file} for experiment '{name}' was not found.")
+        self.constraints.add(cs)
+
     def _load_experiment_data(self, name, data_files):
-        """Read an experiment's ``data:`` files into one ``Data``, stacking replicates.
+        """Read an experiment's ``.exp`` ``data:`` files into one ``Data``, stacking replicates.
 
         A single file is returned as-is. Multiple files are **replicates**: their rows are
         vertically concatenated into one ``Data`` (NOT averaged -- the objective sums over
         all rows, so duplicate-indvar rows from replicates add measurement terms). All
         replicates must share the same columns (so ``_SD`` noise columns ride through
-        intact, ADR-0021). Only ``.exp`` files are supported here for now (``.con``/``.prop``
-        constraint data via ``data:`` is deferred -- ADR-0028 Open/deferred)."""
+        intact, ADR-0021). ``data_files`` is the ``.exp`` subset (constraint ``.con``/
+        ``.prop`` files are split off by :meth:`_partition_experiment_data` and loaded
+        separately); a stray non-``.exp`` here is an internal-consistency error."""
         datas = []
         for ef in data_files:
             if not re.search(r'\.exp$', ef):
                 raise PybnfError(
-                    f"Experiment '{name}' data file '{ef}': only .exp files are supported "
-                    "by the 'experiment:' surface for now (constraint .con/.prop data is "
-                    "not yet routed through 'data:' -- ADR-0028 Open/deferred).")
+                    f"Experiment '{name}' data file '{ef}': expected an .exp measurement "
+                    "file (constraint .con/.prop files are routed separately).")
             try:
                 datas.append(Data(file_name=ef))
             except FileNotFoundError:

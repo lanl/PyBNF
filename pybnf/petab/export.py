@@ -391,8 +391,9 @@ def _read_experiments(conf, conf_path, models):
       one (mirrors ``config.py::_resolve_experiment_model``);
     * a not-yet-supported boundary for a parameter_scan that also names a ``condition:``
       (a dose-response already makes each dose its own condition -- ADR-0046);
-    * a constraint boundary for non-``.exp`` data (``.con``/``.prop`` is deferred,
-      ADR-0028 Open/deferred).
+    * a constraint refusal for non-``.exp`` data: BPSL ``.con``/``.prop`` constraints are
+      PyBNF-native with no core-PEtab representation, so an experiment carrying them cannot
+      be exported (the fitter still runs it -- ADR-0028 addendum).
     """
     stem_to_model = {Path(mf).stem: mf for mf in models}
     experiments = []
@@ -408,9 +409,12 @@ def _read_experiments(conf, conf_path, models):
         non_exp = [f for f in data_files if not f.endswith('.exp')]
         if non_exp:
             raise NotImplementedError(
-                f"Experiment '{name}' has non-.exp data ({non_exp}); constraint "
-                f"(.con/.prop) export has no core-PEtab representation -- a later chunk "
-                f"(ADR-0028 Open/deferred).")
+                f"Experiment '{name}' carries BPSL constraint data ({non_exp}). PyBNF "
+                f"constraints (.con/.prop) are a native qualitative-fitting feature with no "
+                f"core-PEtab v2 representation, so this experiment cannot be exported "
+                f"(ADR-0028). The fitter still runs it; only export is refused. Drop the "
+                f"constraint file(s) from 'data:' to export the quantitative measurements "
+                f"alone.")
         datas = [Data(file_name=str(conf_path.parent / f)) for f in data_files]
         exp_type = _experiment_type(name, datas[0], fields.get('type'))
         # A parameter_scan (dose-response) experiment's measurement time is its scan endpoint

@@ -964,7 +964,12 @@ class BNGLModel(Model):
                 sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
                 line = f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],suffix=>"{action.suffix}",print_functions=>1}})'
             else:
-                line = f'simulate({{method=>"{action.method}",t_start=>0,t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
+                # t_start renders as a bare int when integral (so the default 0 stays
+                # ``t_start=>0`` -- byte-identical to the pre-t_start emission), else full
+                # precision; a non-zero t_start shifts the integration window (ADR-0028).
+                _ts = float(action.t_start)
+                ts_str = str(int(_ts)) if _ts.is_integer() else repr(_ts)
+                line = f'simulate({{method=>"{action.method}",t_start=>{ts_str},t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
         elif isinstance(action, ParamScan):
             if action.explicit_points is not None:
                 # New-era explicit scan values (ADR-0028): emit par_scan_vals so the scan
@@ -1282,7 +1287,8 @@ class SbmlModelNoTimeout(Model):
                             # starts at the model baseline.
                             res_array = runner.simulate(times=act.explicit_points, selections=selection)
                         else:
-                            res_array = runner.simulate(0., act.time, steps=act.stepnumber, selections=selection)
+                            t_start = getattr(act, 't_start', 0.)
+                            res_array = runner.simulate(t_start, act.time, steps=act.stepnumber, selections=selection)
                     except RuntimeError:
                         # Rethrow simulation errors as something more specific to be caught
                         raise FailedSimulationError
@@ -1374,7 +1380,18 @@ class Action:
     """
     Represents a simulation action performed within a model
     """
-    pass
+
+    def output_length(self):
+        """Number of output rows this action produces.
+
+        One row per explicit output point when the grid is data-derived (ADR-0028
+        ``explicit_points``, which always includes the forced ``t=0`` for a time course),
+        else the uniform ``n_steps`` grid's row count (``stepnumber + 1``, including
+        ``t_start``). Used to size the per-experiment output arrays
+        (``config.py::_load_experiments`` -> ``_load_t_length`` -> adaptive_mcmc)."""
+        if getattr(self, 'explicit_points', None) is not None:
+            return len(self.explicit_points)
+        return self.stepnumber + 1
 
 
 class TimeCourse(Action):
@@ -1402,11 +1419,12 @@ class TimeCourse(Action):
         ``t=0`` is always included so integration starts at the model's baseline.
         """
         # Available keys and default values
-        num_keys = {'time', 'step'}
+        num_keys = {'time', 'step', 't_start'}
         str_keys = {'model', 'suffix', 'method'}
         int_keys = {'subdivisions'}
         # Default values
-        self.time = None  # Required (or derived from explicit_points below)
+        self.time = None  # Required (or derived from explicit_points below): the t_end endpoint
+        self.t_start = 0.  # Integration start time (BNGL t_start); 0 unless stated (ADR-0028)
         self.step = 1.
         self.subdivisions = 1
         self.model = ''
@@ -1465,7 +1483,15 @@ class TimeCourse(Action):
 
         if self.step == 0:
             raise PybnfError('For key "time_course", the value of "step" must be nonzero.')
-        self.stepnumber = int(np.round(self.time/self.step))
+        # A non-zero t_start (a uniform grid only -- the data-derived explicit_points path
+        # forces a leading t=0 baseline, ADR-0028) shifts the integration window: the grid
+        # spans [t_start, t_end], so n_steps = (t_end - t_start)/step. t_start defaults to 0,
+        # so legacy/data-driven actions are unchanged.
+        if self.time <= self.t_start:
+            raise PybnfError(
+                f'For key "time_course", t_end ({self.time}) must be greater than t_start '
+                f'({self.t_start}).')
+        self.stepnumber = int(np.round((self.time - self.t_start) / self.step))
         self.bng_codeword = 'simulate'
 
 class ParamScan(Action):

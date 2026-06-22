@@ -214,7 +214,7 @@ def parse(s):
         pp.Suppress(',') + perturbations_key + colon - cond_perts - comment
 
     # new-era experiment grammar (ADR-0028) -- a PEtab Experiment carrying its data:
-    #   experiment: <name>[, condition: <c>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...][, t_end: <t>]
+    #   experiment: <name>[, condition: <c>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...][, t_end: <t>][, t_start: <t0>][, n_steps: <n>]
     # A named simulation bound to its measurement files. The experiment NAME replaces the
     # legacy BNGL Suffix as the simulation's identity (it becomes both the action suffix and
     # the exp_data key); ``data:`` is a comma list whose multiple files are REPLICATES (all
@@ -234,11 +234,24 @@ def parse(s):
     exp_data_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('data') + colon + _DelimitedList(exp_file))
     exp_type_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('type') + colon + exp_field_token)
     exp_method_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('method') + colon + exp_field_token)
-    # The optional ``t_end:`` field (ADR-0046): a parameter_scan's fixed simulation endpoint
-    # time (a finite PEtab measurement time). Absent => the scan runs to steady state (PEtab
-    # time=inf), the new-era default. Ignored for a time course (its endpoint comes from the
-    # data's time grid). A single number; config.py reads it by label.
+    # The optional ``t_end:`` field: a fixed simulation endpoint time. For a parameter_scan
+    # (ADR-0046) it is the scan's measurement time (absent => steady state, PEtab time=inf,
+    # the new-era default). For a *constraint-only* experiment (``data:`` is .con/.prop only,
+    # so there is no measurement time grid to derive -- ADR-0028 addendum) it is the
+    # time-course endpoint, the new-era home for the timing a legacy job kept in the model's
+    # begin actions block. Ignored for a time course that has .exp data (its grid comes from
+    # the data). A single number; config.py reads it by label.
     exp_tend_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('t_end') + colon + num)
+    # The optional ``t_start:`` field (ADR-0028 addendum): the integration start time for a
+    # constraint-only experiment's synthesized time course (with ``t_end:``); the legacy
+    # begin-actions ``t_start``. Absent => 0 (every config-action time course's default).
+    # Inert when the grid comes from data (which forces a t=0 baseline). config.py by label.
+    exp_tstart_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('t_start') + colon + num)
+    # The optional ``n_steps:`` field (ADR-0028 addendum): the number of uniform output steps
+    # for a constraint-only experiment's synthesized time course (with ``t_end:``); the legacy
+    # begin-actions ``n_steps``. Absent => the TimeCourse default (step = 1). Inert when the
+    # grid comes from data. A single number; config.py reads it by label.
+    exp_nsteps_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('n_steps') + colon + num)
     # The optional per-measurement binding-table sidecar (ADR-0045): names a .tsv whose
     # per-row placeholder tokens config.py attaches to this experiment's exp Data.
     exp_measparams_field = pp.Group(
@@ -246,7 +259,8 @@ def parse(s):
     experiment_gram = experiment_key + colon - exp_name + \
         (pp.Optional(exp_condition_field) & pp.Optional(exp_model_field) & exp_data_field
          & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)
-         & pp.Optional(exp_tend_field) & pp.Optional(exp_measparams_field)) - comment
+         & pp.Optional(exp_tend_field) & pp.Optional(exp_tstart_field)
+         & pp.Optional(exp_nsteps_field) & pp.Optional(exp_measparams_field)) - comment
 
     # new-era observable grammar (ADR-0028) -- a column-header override:
     #   observable: <entity>, column: <header>
@@ -594,10 +608,13 @@ def ploop(ls):  # parse loop
                 fmt = "'condition: name, perturbations: var1 op val1, var2 op val2, ...' where op is one of " \
                       "= * / + - , optionally with 'model: modelfile' before perturbations (requires edition >= 2)"
             elif key == 'experiment':
-                fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' optionally with 'condition: c', " \
+                fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' (data files may be .exp " \
+                      "measurements and/or .con/.prop constraints) optionally with 'condition: c', " \
                       "'model: modelfile', 'type: time_course|parameter_scan', 'method: ode|ssa|pla|nf', " \
-                      "'t_end: <number>' (a parameter_scan's fixed endpoint; omit to run to steady state), " \
-                      "or 'measurement_params: file.tsv' in any order (requires edition >= 2)"
+                      "'t_end: <number>' (a parameter_scan's fixed endpoint, or a constraint-only " \
+                      "experiment's time-course endpoint), 't_start: <number>' / 'n_steps: <number>' " \
+                      "(a constraint-only experiment's integration start / output resolution), or " \
+                      "'measurement_params: file.tsv' in any order (requires edition >= 2)"
             elif key == 'observable':
                 fmt = "'observable: entity, column: header' mapping a model observable/function name to a " \
                       "differently-named data column header (requires edition >= 2)"

@@ -6,7 +6,9 @@ built and edition-gated (Chunks 0–4), and the PEtab v2 exporter now reads it d
 (Chunk 5) — export is transcription, and the exporter is new-era only (it refuses the
 legacy data linkage). Dose-response (parameter-scan) authoring/export/import is now also
 done — a scan runs to steady state by default (PEtab `time = inf`), with an optional
-`t_end:` fixed endpoint (**#426**, ADR-0046).
+`t_end:` fixed endpoint (**#426**, ADR-0046). BPSL constraint files (`.con`/`.prop`) now
+also ride an experiment's `data:` as a qualitative-fitting term (2026-06-21; addendum
+below) — PyBNF-native, so non-exportable.
 **Separate from ADR-0027** (the PEtab v2 *exporter* seam this builds on). This ADR
 redesigns PyBNF's *own* config language so a fitting job is natively shaped like a PEtab v2
 problem — which turns export into transcription and fixes long-standing UX warts. Backward
@@ -152,14 +154,25 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   and bngsim for ode/ssa/psa — but bngsim's network-free path drops `sample_times` (in the
   PyBNF bridge, anticipating the bngsim NF API), so a `method: nf` (or RuleMonkey) new-era
   experiment under `bngl_backend = bngsim` falls back to a uniform grid and mis-scores; the
-  same job under BNG2.pl works. Verified 2026-06-19 (bngsim 0.9.40). Tracked in #427
-  (PyBNF re-enable) + the upstream bngsim fix; pla is out of scope (bngsim doesn't support
-  it; impractical method).
-- **`.con` / `.prop` (BPSL) data through `data:`.** `data:` parses heterogeneous file
-  extensions, but Chunk 3's `_load_experiments` handles only `.exp`; a constraint/property
-  file under `data:` raises. The #423 survey's #1 gap (`.prop` is PyBNF-native, not
-  PEtab-exportable) — route it through `data:` (carried + marked non-exportable) in a
-  follow-on.
+  same job under BNG2.pl works. **Re-verified 2026-06-21 (bngsim 0.9.50): still open.** 0.9.50
+  *did* add `sample_times` to the high-level `Simulator.run(...)` and now forwards it into the
+  NF/RuleMonkey C++ backends — but the bridge runs network-free actions through the *low-level
+  session API* (`NfsimSession`/`RuleMonkeySession`), whose `simulate(t_start, t_end, n_points,
+  …)` still has no `sample_times` kwarg, and `Simulator` rejects the interactive session helpers
+  (`setConcentration`/`addConcentration`/`continue=>1`) the bridge relies on, so it is not a
+  drop-in. Close-out still requires the session API to honor explicit output times (or a
+  bridge-side native explicit-time sampler — see #427). Tracked in #427 (PyBNF re-enable) + the
+  upstream bngsim fix; pla is out of scope (bngsim doesn't support it; impractical method).
+- **`.con` / `.prop` (BPSL) data through `data:`. *Done (2026-06-21; addendum below).***
+  `data:` parses heterogeneous file extensions; `_load_experiments` now splits them by kind
+  (`_partition_experiment_data`) — `.exp` measurements drive the simulation and the
+  objective; `.con`/`.prop` constraint files load as a `ConstraintSet` bound to the
+  experiment's own simulation (`base_suffix` = the experiment's data key), scored as a
+  penalty alongside the `.exp` terms. A **constraint-only** experiment (no `.exp`) is fully
+  supported: it states its own timing on the experiment line (`t_end:`/`n_steps:`) and runs a
+  synthesized uniform-grid time course. They are PyBNF-native (no core-PEtab shape), so the
+  exporter refuses an experiment carrying them. See the addendum "*BPSL constraints through
+  `data:`*" below for the binding decision. (The #423 survey's #1 gap.)
 - **`_SD` / noise.** How per-point noise (`_SD` columns) and the per-observable noise model
   (`noise_model`, ADR-0021) ride along — undecided. Park until the spine is fixed.
   (Mechanically, Chunk 3's replicate stacking concatenates all columns, so `_SD` columns do
@@ -263,3 +276,89 @@ are carried unchanged (a PEtab problem says nothing about which optimizer/sample
 the tool chooses that separately, as pyPESTO does). `fit_type` → `job_type` is the one tool
 key the new era renames, and only because the name was inaccurate — not for PEtab
 alignment.
+
+## Addendum (2026-06-21): BPSL constraints (`.con`/`.prop`) through `data:`
+
+The #423 survey's #1 gap: PyBNF's **BPSL** constraint files (`.con` ≡ `.prop` — both are
+loaded by one `ConstraintSet`) are a native *qualitative*-fitting feature (inequalities a
+simulation must satisfy, scored as a penalty) with **no core-PEtab v2 representation**. They
+were already edition-agnostic on the *legacy* surface (`model = m.bngl : d.prop` works at
+any edition), but the new-era `experiment:`/`data:` loader rejected any non-`.exp` file on
+purpose. This resolves that: a `.con`/`.prop` file in an experiment's `data:` now loads.
+
+### How a constraint binds — it rides its experiment's simulation
+
+`_load_experiments` splits each experiment's `data:` by extension
+(`_partition_experiment_data`): `.exp` files are the quantitative measurements (as before);
+`.con`/`.prop` files become a `ConstraintSet` bound to **that experiment's own simulation**:
+
+- **`base_model`** = the experiment's resolved model (its single declared model, or its
+  named one);
+- **`base_suffix`** = the experiment's **data key** — the experiment name, or *name+condition*
+  when the experiment applies a `condition:` (exactly the suffix the conditioned simulation
+  output carries).
+
+A bare observable in the constraint file (`pErk > 0 at 100`) therefore resolves to
+`sim_data_dict[base_model][base_suffix]` — *this* experiment's simulation output — so the
+constraint **inherits the experiment's model and condition with no extra binding syntax**.
+This answers the open design question (*does a constraint inherit the experiment's
+condition/model?*): **yes, by construction** — binding `base_suffix` to the data key is what
+carries the condition through, and `base_model` carries the model. (BPSL's existing
+`suffix.Observable` cross-reference still names any *other* simulation explicitly, unchanged.)
+
+The `ConstraintSet` joins `self.constraints`, and the objective already adds every
+constraint set's penalty to the score (`evaluate_multiple`), so a mixed `.exp`+`.prop`
+experiment is scored on both axes at once with no further wiring.
+
+### Where the simulation grid comes from — `.exp` data, or the experiment line
+
+A constraint scores against simulation *output*, so the experiment's simulation still has to
+run. Two cases:
+
+- **Mixed `.exp` + `.prop`** — the simulation grid comes from the `.exp` independent-variable
+  column (ADR-0028's central move), and the constraint rides that same simulation.
+- **Constraint-only (`.prop`/`.con`, no `.exp`)** — a legitimate, common job (the legacy
+  `model = m.bngl : c.prop` qualitative fit). There is no measurement column to derive a grid
+  from, and a constraint's times are **often variable conditions** (`at A=5.5` = "when column
+  A reaches 5.5") that can't be resolved before the trajectory exists — so the grid *cannot*
+  be inferred from the constraints. Instead the experiment **states its own timing on the
+  experiment line**: `t_end:` (the integration endpoint, required), optional `t_start:` (the
+  integration start; default 0), and optional `n_steps:` (uniform output resolution over
+  `[t_start, t_end]`; default = the `TimeCourse` step of 1). These are the new-era home for
+  exactly what a legacy `.prop` job kept in the model's `begin actions` block — the new era
+  removed `begin actions`, so the `simulate(t_start, t_end, n_steps)` timing moves onto the
+  `experiment:` line. A uniform-grid `TimeCourse` is synthesized and run (the engine simulates
+  every model action), and the constraints score against its output; no `exp_data`/`mapping`
+  entry is registered (there is no quantitative data to score). `type: parameter_scan` has no
+  constraint-only form (a scan's swept axis comes from data) and is refused.
+
+```
+edition = 2
+model: m.bngl
+experiment: qual, t_end: 100, n_steps: 200, data: c.prop   # constraint-only: runs a 0..100 time course
+```
+
+A constraint-only experiment with no `t_end:` errors clearly (it has no timing at all).
+(Considered and rejected: deriving the grid from the constraints' `at`-times — unreliable,
+since those are commonly variable conditions, not bare times.)
+
+**`t_start` symmetry.** `t_start:` is the symmetric companion to `t_end:`, restoring the one
+piece of `begin actions` timing the new era would otherwise drop (config-action time courses
+have *always* hardcoded `t_start=0` — it was only ever settable inside `begin actions`). It
+defaults to 0, so every existing job is byte-identical; a non-zero value shifts the
+integration window to `[t_start, t_end]` (`n_steps` counts over the span). All three backends
+honor it: BNG2.pl consumes the synthesized `simulate(...)` line verbatim, bngsim parses
+`t_start` from it, and RoadRunner's uniform path reads `act.t_start`. It applies to the
+synthesized (constraint-only) time course; the data-driven `.exp` grid keeps its forced `t=0`
+baseline (a correctness invariant — the explicit-times backends return the IC at the first
+listed time).
+
+### Non-exportable, and the exporter says so
+
+BPSL has no core-PEtab v2 shape, so export is **refused, not mis-translated**: the PEtab v2
+exporter (`_read_experiments`) raises a clear `NotImplementedError` for an experiment whose
+`data:` contains a `.con`/`.prop` file, naming the offending file(s) and noting the fitter
+still runs the job. Refusing the whole experiment (rather than silently dropping the
+constraint and exporting its `.exp` alone) is deliberate — a dropped constraint would make
+the exported problem a *different*, weaker fit. (Considered and rejected: skip-and-export the
+`.exp` with a warning; it violates "don't mis-export".)
