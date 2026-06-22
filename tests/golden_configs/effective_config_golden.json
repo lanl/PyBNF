@@ -99,6 +99,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -479,6 +483,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exchange_every",
@@ -879,6 +887,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -1257,6 +1269,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exchange_every",
@@ -1751,6 +1767,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exchange_every",
@@ -2263,6 +2283,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -2761,6 +2785,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -3141,6 +3169,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exchange_every",
@@ -3541,6 +3573,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -3873,6 +3909,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -4202,6 +4242,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -4506,6 +4550,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -4737,6 +4785,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -4992,6 +5044,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -5268,6 +5324,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -5539,6 +5599,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -5836,6 +5900,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -6167,6 +6235,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -6462,6 +6534,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -6813,6 +6889,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     [
      "$float",
@@ -7117,6 +7197,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -7412,6 +7496,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -7711,6 +7799,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -8008,6 +8100,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -8299,6 +8395,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -8600,6 +8700,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -8926,6 +9030,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exchange_every",
@@ -9264,6 +9372,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exchange_every",
     20
    ],
@@ -9575,6 +9687,10 @@
     null
    ],
    [
+    "embed_best_fit_data",
+    0
+   ],
+   [
     "exp_data",
     [
      "$set",
@@ -9846,6 +9962,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",
@@ -10136,6 +10256,10 @@
    [
     "edition",
     null
+   ],
+   [
+    "embed_best_fit_data",
+    0
    ],
    [
     "exp_data",

@@ -16,7 +16,8 @@ from .core import (
     result_from_completed,
 )
 from subprocess import run, CalledProcessError, TimeoutExpired, STDOUT
-from ..pset import PSet, Trajectory, BNGLModel, NetModel, run_subprocess
+from ..pset import PSet, Trajectory, BNGLModel, NetModel, run_subprocess, _stage_and_rewrite_tfun_files
+from .. import edition
 from ..bngsim_model import (
     BngsimModel,
     BngsimNfModel,
@@ -1159,6 +1160,7 @@ class Algorithm(ABC):
         best_pset = self.trajectory.best_fit()
         self._copy_best_fit_sims(best_pset, best_name)
         self._rerun_best_fit_to_save_data(best_pset)
+        self._emit_best_fit_bngl(best_pset, best_name)
         self._finalize_backup_pickle()
         self._teardown_sim_dir()
 
@@ -1243,6 +1245,179 @@ class Algorithm(ABC):
             for m in self.model_list:
                 if hasattr(m, 'save_files'):
                     m.save_files = False
+
+    def _emit_best_fit_bngl(self, best_pset, best_name):
+        """Write a stable-named, family-labelled best-fit BNGL per model (ADR-0048).
+
+        New-era (``edition >= 2``) only, and a no-op when there is no best fit (e.g.
+        every evaluation failed). For each BNGL model, render ``best_pset`` into a
+        runnable ``Results/<model>_bestfit.bngl`` prefaced by a header comment that
+        records the objective value and labels the point honestly per algorithm
+        family: an optimizer's *best fit (minimum objective)*; a Bayesian sampler's
+        *maximum-likelihood point* -- the recorded objective excludes the prior, so
+        it is NOT the MAP (see :meth:`_best_fit_header` and the ADR). When
+        ``embed_best_fit_data`` is set, each time-indexed observable's experimental
+        data is embedded as a sidecar ``.tfun`` reference function
+        (:meth:`_build_exp_data_tfuns`).
+
+        Reuses the ADR-0034 rendering path (``copy_with_param_set`` -> ``model_text``)
+        and the same ``_stage_and_rewrite_tfun_files`` staging ``save()`` uses, so a
+        legacy run is untouched (it never reaches here) and a model carrying its own
+        tfun file refs stays runnable. Split out of run()'s tail so it can be unit
+        tested without a dask client; per-model failures are logged, never fatal.
+        """
+        if not edition.is_modern(edition.resolve_edition(self.config.config.get('edition'))):
+            return
+        if best_pset is None:
+            return
+        try:
+            best_obj = self.trajectory.best_score()
+        except (ValueError, IndexError):
+            # Empty trajectory -> no best fit to emit.
+            return
+        header = self._best_fit_header(best_obj, best_name)
+        embed = bool(self.config.config.get('embed_best_fit_data'))
+        for m in self.config.models:
+            model = self.config.models[m]
+            if not isinstance(model, BNGLModel):
+                # Only BNGL models render to a .bngl artifact; SBML/analytical models
+                # carry non-BNGL text and are out of scope here.
+                continue
+            try:
+                self._write_one_best_fit_bngl(model, best_pset, header, embed)
+            except Exception:
+                logger.exception('Failed to write best-fit BNGL for model %s' % m)
+                print1('Could not write the best-fit BNGL artifact for model %s; see log.' % m)
+
+    def _best_fit_header(self, best_obj, best_name):
+        """The comment block prefacing a best-fit BNGL, labelled by family (ADR-0048).
+
+        Optimizers get *best fit*; Bayesian samplers get *maximum-likelihood point*
+        with an explicit note that the recorded objective omits the prior (so it is
+        not the MAP) and a pointer to ``samples.txt`` for the posterior mode. The
+        discriminator is the ``BayesianAlgorithm`` family base every sampler
+        subclasses, imported lazily here to avoid the base<-sampler import cycle.
+        """
+        from .samplers.base import BayesianAlgorithm
+        lines = [
+            '# Best-fit model emitted by PyBNF (ADR-0048).',
+            '# fit_type: %s' % self.config.config.get('fit_type', '?'),
+            '# Parameter set: %s' % best_name,
+            '# Objective (minimum recorded): %.10g' % best_obj,
+        ]
+        if isinstance(self, BayesianAlgorithm):
+            lines += [
+                '# Point: MAXIMUM-LIKELIHOOD (minimum recorded objective).',
+                '# NOTE: this is NOT the MAP. The recorded objective is the negative',
+                '#   log-likelihood only -- the prior is not folded in. For the',
+                '#   posterior mode (MAP), take the row with the largest Ln_probability',
+                '#   in Results/samples.txt.',
+            ]
+        else:
+            lines.append('# Point: BEST FIT (minimum objective).')
+        return '\n'.join(lines) + '\n'
+
+    def _write_one_best_fit_bngl(self, model, best_pset, header, embed):
+        """Render one BNGL model's best-fit artifact (+ optional embedded data) to Results/."""
+        to_save = model.copy_with_param_set(best_pset)
+        text = to_save.model_text()
+        # Stage any tfun file refs the *source* model already carries (as save() does),
+        # before injecting the embedded refs below -- those point at sidecars already in
+        # Results/, which staging (source_dir -> dest_dir) must not try to copy in.
+        text = _stage_and_rewrite_tfun_files(
+            text, os.path.dirname(model.file_path), self.res_dir)
+        if embed:
+            text = self._inject_function_lines(text, self._build_exp_data_tfuns(model))
+        out_path = str(Path(self.res_dir) / ('%s_bestfit.bngl' % to_save.name))
+        with open(out_path, 'w') as f:
+            f.write(header + text)
+        logger.info('Wrote best-fit BNGL artifact %s' % out_path)
+
+    def _build_exp_data_tfuns(self, model):
+        """Embed this model's experimental data as sidecar ``.tfun`` reference functions.
+
+        For each time-indexed experiment in ``self.exp_data[model.name]`` and each of
+        its observable columns (excluding the independent variable and ``_SD`` noise
+        columns), write a ``Results/<model>_bestfit_tfun/<exp>__<obs>.tfun`` sidecar --
+        a ``# time <fn>`` header over the experimental (time, value) rows, sorted and
+        de-duplicated to the strictly-increasing index ``tfun`` requires -- and return
+        a ``<fn>() = tfun('<rel-path>', time)`` function line per sidecar (ADR-0048).
+
+        Non-time-indexed experiments (parameter scan / dose-response, whose indvar is
+        a swept parameter) are skipped with a log note: a ``tfun(file, time)`` would
+        misrepresent them. Columns with fewer than two finite points are skipped
+        (``tfun`` needs at least two). Returns ``[]`` when nothing is embeddable.
+        """
+        func_lines = []
+        model_data = self.exp_data.get(model.name, {})
+        tfun_dir = Path(self.res_dir) / ('%s_bestfit_tfun' % model.name)
+        for suffix in sorted(model_data):
+            data = model_data[suffix]
+            if data.indvar != 'time':
+                logger.info('best-fit data embed: skipping non-time experiment %r '
+                            '(independent variable %r)' % (suffix, data.indvar))
+                continue
+            times = data[data.indvar]
+            for obs in sorted(data.cols, key=data.cols.get):
+                if obs == data.indvar or obs.endswith('_SD'):
+                    continue
+                pairs = self._clean_tfun_pairs(times, data[obs])
+                if len(pairs) < 2:
+                    continue
+                fn = self._sanitize_id('expt_%s_%s' % (suffix, obs))
+                rel = '%s_bestfit_tfun/%s.tfun' % (model.name, self._sanitize_id('%s__%s' % (suffix, obs)))
+                tfun_dir.mkdir(parents=True, exist_ok=True)
+                with open(Path(self.res_dir) / rel, 'w') as f:
+                    f.write('# time %s\n' % fn)
+                    for t, v in pairs:
+                        f.write('%.17g %.17g\n' % (t, v))
+                func_lines.append("%s() = tfun('%s', time)" % (fn, rel))
+        return func_lines
+
+    @staticmethod
+    def _clean_tfun_pairs(times, values):
+        """(time, value) pairs ready for a ``.tfun``: finite, sorted, strictly increasing.
+
+        Drops NaN/Inf in either column, sorts by time, and collapses repeated times to
+        the first value seen (``tfun`` requires a strictly increasing index)."""
+        pairs = []
+        seen = set()
+        for t, v in sorted(zip(times, values), key=lambda p: p[0]):
+            if not (np.isfinite(t) and np.isfinite(v)) or t in seen:
+                continue
+            seen.add(t)
+            pairs.append((float(t), float(v)))
+        return pairs
+
+    @staticmethod
+    def _sanitize_id(name):
+        """A safe BNGL identifier / filename stem: non-word chars -> ``_``, never
+        leading-digit (the ``expt_``/``<exp>__`` prefixes already guarantee this)."""
+        s = re.sub(r'\W', '_', str(name))
+        return s if re.match(r'[A-Za-z_]', s) else '_' + s
+
+    @staticmethod
+    def _inject_function_lines(text, func_lines):
+        """Insert ``func_lines`` into ``text``'s ``begin functions`` block (ADR-0048).
+
+        Merges into an existing ``functions`` block (before its ``end functions``);
+        otherwise opens a fresh ``begin functions ... end functions`` block before the
+        model's ``end model`` (or, lacking one, ``begin actions``). A no-op for an
+        empty ``func_lines``."""
+        if not func_lines:
+            return text
+        body = '\n'.join(func_lines)
+        end_fn = re.search(r'(?im)^[ \t]*end[ \t]+functions\b', text)
+        if end_fn and re.search(r'(?im)^[ \t]*begin[ \t]+functions\b', text):
+            i = end_fn.start()
+            return text[:i] + body + '\n' + text[i:]
+        block = 'begin functions\n' + body + '\nend functions\n'
+        anchor = (re.search(r'(?im)^[ \t]*end[ \t]+model\b', text)
+                  or re.search(r'(?im)^[ \t]*begin[ \t]+actions\b', text))
+        if anchor:
+            i = anchor.start()
+            return text[:i] + block + text[i:]
+        return text + '\n' + block
 
     def _finalize_backup_pickle(self):
         """Rename the periodic backup pickle to its 'finished' name on completion.
