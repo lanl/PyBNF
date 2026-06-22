@@ -217,6 +217,12 @@ class GlobalConfig(PyBNFConfigModel):
     stochastic_seed: str = 'auto'
     parallel_count: Optional[int] = None
     save_best_data: int = 0
+    # Opt-in (new-era only): also embed each time-indexed observable's experimental
+    # data into the end-of-run Results/<model>_bestfit.bngl artifact as sidecar
+    # .tfun reference functions, so the model self-contains its comparison curves
+    # (ADR-0048). A no-op in legacy (the artifact itself is edition >= 2 only) and
+    # when unset.
+    embed_best_fit_data: int = 0
     simulation_dir: Optional[str] = None
     parallelize_models: int = 1
     starting_params: Any = None

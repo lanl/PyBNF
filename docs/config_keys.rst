@@ -726,10 +726,19 @@ Output Options
   If 1, run an extra simulation at the end of fitting using the best-fit parameters, and save the best-fit .gdat and .scan files to the Results directory. 
   
   Default: 0
-  
+
   Example:
-  
+
     * ``save_best_data = 1``
+
+**embed_best_fit_data**
+  Opt-in, new-era (``edition = 2``) only. When 1, the end-of-run ``Results/<model>_bestfit.bngl`` artifact additionally embeds each time-indexed observable's experimental data as a sidecar ``.tfun`` reference function, so the saved model self-contains its comparison curves. A no-op in the legacy edition and when unset.
+
+  Default: 0
+
+  Example:
+
+    * ``embed_best_fit_data = 1``
 
 **verbosity**
   An integer value that specifies the amount of information output to the terminal.
