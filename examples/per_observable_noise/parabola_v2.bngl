@@ -13,12 +13,11 @@ begin model
     v2 1
     v3 3
 
-# b_y is the scale of the Laplace observation noise on observable y. It is a
-# fit-time noise parameter (used by the likelihood, not the dynamics), but like
-# every new-era free parameter it binds to a model parameter by id (ADR-0034), so
-# it is declared here with a bare nominal -- the .conf's `noise_model y = laplace,
-# scale = fit b_y` line drives it.
-    b_y 1.0
+# b_y (the Laplace observation-noise scale on observable y) is NOT declared here.
+# Under the new era it is a fit-time noise *nuisance* -- a free parameter referenced
+# only by the likelihood (the .conf's `noise_model y = laplace, scale = fit b_y`
+# line), never by the dynamics -- so the objective tracks it via
+# required_free_noise_params() and it lives in the .conf alone, not the model file.
 
   end parameters
 

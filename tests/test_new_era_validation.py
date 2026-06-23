@@ -394,13 +394,19 @@ class TestPerObservableNoiseExample:
         assert np.isfinite(s2) and np.isfinite(s4)
         assert s2 != pytest.approx(s4)
 
-    def test_export_defers_the_fit_sigma_source(self, tmp_path):
-        # The fitted Laplace scale is a documented export boundary (a free-parameter sigma needs
-        # the noise parameter wired into the PEtab parameter table -- a later chunk, tracked in
-        # #439); the exporter raises rather than emit a malformed problem. Keeps the example
-        # honest. When #439 lands, replace this with a positive export round-trip.
-        with pytest.raises(NotImplementedError, match='fit'):
+    def test_export_is_blocked_by_the_fitted_noise_nuisance(self, tmp_path):
+        # b_y is authored correctly as a pure observation-layer nuisance (NOT a model parameter
+        # -- config build + scoring fully support that today, above). Only EXPORT is deferred,
+        # with two walls #439 must clear: (1) the exporter's free->model binding check does not
+        # yet admit a `fit`-source noise nuisance (_referenced_nuisance_symbols scans `formula`-
+        # verb sources but not `fit`), so it rejects b_y here; (2) even once admitted,
+        # _noise_source_for_column cannot emit the `fit` sigma into a PEtab noiseFormula. The
+        # exporter refuses rather than emit a malformed problem; when #439 lands, replace this
+        # with a positive export round-trip.
+        from pybnf.printing import PybnfError
+        with pytest.raises((PybnfError, NotImplementedError)) as exc:
             export_job(PON_CONF, tmp_path / 'petab')
+        assert 'b_y' in str(exc.value) or 'fit' in str(exc.value)
 
 
 # --------------------------------------------------------------------------- #
