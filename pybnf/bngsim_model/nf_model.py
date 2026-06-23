@@ -36,7 +36,7 @@ from .expressions import (
     _evaluate_bngl_params,
     _parse_bngl_param_block,
 )
-from .scan import _resolve_scan_points
+from .scan import _resolve_sample_times, _resolve_scan_points
 from .output import _write_saved_action_outputs
 from .classification import (
     _normalize_nf_action_method,
@@ -173,16 +173,20 @@ class BngsimNfModel(Model):
         session_backend = _nf_session_backend_for_method(method)
         scan_timeout = _normalize_session_timeout(timeout, session_backend)
 
-        # sample_times is not supported for network-free bngsim sessions
-        # (possible future BNGsim enhancement).
-        if ps_params.get('sample_times') is not None:
-            logger.warning(
-                "sample_times is not supported for bngsim network-free parameter_scan; ignoring")
+        # Explicit output times now ride through the bngsim session API
+        # (NfsimSession/RuleMonkeySession.simulate(sample_times=...), bngsim >= 0.9.52 --
+        # PyBNF #427 / bngsim #184). When present they override the uniform t_start/t_end/
+        # n_steps grid so each scan-point trajectory is sampled at exactly the data's points
+        # (parity with the network-based scan path, net_model._resolve_scan_settings).
+        sample_times = _resolve_sample_times(ps_params)
 
         param_name = ps_params.get('parameter', '')
         t_start = float(ps_params.get('t_start', 0))
         t_end = float(ps_params.get('t_end', 100))
         n_steps = int(ps_params.get('n_steps', 1))
+        if sample_times is not None:
+            t_start = sample_times[0]
+            t_end = sample_times[-1]
         suffix = ps_params.get('suffix', 'param_scan')
         print_funcs = bool(int(float(ps_params.get('print_functions', 0))))
         gml = ps_params.get('gml')
@@ -215,7 +219,10 @@ class BngsimNfModel(Model):
                 sim_kwargs = {}
                 if scan_timeout is not None:
                     sim_kwargs['timeout'] = scan_timeout
-                result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
+                if sample_times is not None:
+                    result = nfsim.simulate(sample_times=sample_times, **sim_kwargs)
+                else:
+                    result = nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
                 row, row_obs, row_expr = BngsimModel._scan_result_to_row(
                     result, value, print_functions=print_funcs)
                 if len(obs_names) == 0:
@@ -357,11 +364,12 @@ class BngsimNfModel(Model):
         """
         method = _normalize_nf_action_method(sim_params.get('method', 'nf'))
 
-        # sample_times is not supported for network-free bngsim
-        # sessions (possible future BNGsim enhancement).
-        if sim_params.get('sample_times') is not None:
-            logger.warning(
-                "sample_times is not supported for bngsim network-free simulation; ignoring")
+        # Explicit output times now ride through the bngsim session API
+        # (NfsimSession/RuleMonkeySession.simulate(sample_times=...), bngsim >= 0.9.52 --
+        # PyBNF #427 / bngsim #184): the new-era experiment: surface outputs at exactly the
+        # data's independent-variable points, which the objective matches by ivar. When
+        # present, sample_times overrides the uniform t_start/t_end/n_steps grid.
+        sample_times = _resolve_sample_times(sim_params)
 
         t_start = float(sim_params.get('t_start', 0))
         t_end = float(sim_params.get('t_end', 100))
@@ -412,7 +420,10 @@ class BngsimNfModel(Model):
             'n_steps': n_steps,
             'gml': gml_int,
         })
-        result = sess.nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
+        if sample_times is not None:
+            result = sess.nfsim.simulate(sample_times=sample_times, **sim_kwargs)
+        else:
+            result = sess.nfsim.simulate(t_start, t_end, n_steps + 1, **sim_kwargs)
         ds[suffix] = self._result_to_data(result, print_functions=print_funcs)
 
     def _nf_set_concentration_action(self, sc, sess, current_param_overrides, bootstrap_seed):

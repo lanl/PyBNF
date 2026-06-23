@@ -185,6 +185,49 @@ def test_bngsim_nfsim_and_rm_agree_statistically(tmp_path):
     )
 
 
+# Explicit output times (sample_times) on the network-free session — PyBNF #427, unblocked
+# by bngsim #184 (NfsimSession/RuleMonkeySession.simulate(sample_times=...), bngsim >= 0.9.52).
+# The new-era experiment: surface (ADR-0028) outputs at exactly the data's independent-variable
+# points; before the re-enable the NF bridge warned-and-dropped sample_times, falling back to a
+# uniform t_start..t_end/n_steps grid (101 default points) and mis-scoring against the data.
+# These instants are deliberately NON-uniform and few, so passing is decisive: the old fallback
+# grid could never reproduce them.
+_NF_SAMPLE_TIMES = [0.0, 1.0, 2.5, 7.0, 10.0]
+
+
+def _nf_sample_times_model(method_token):
+    """BngsimNfModel whose simulate names explicit sample_times (no n_steps)."""
+    action = (
+        'simulate({method=>"%s",t_start=>0,sample_times=>[0,1,2.5,7,10],'
+        'gml=>1000,suffix=>"tc"})' % method_token
+    )
+    return bngsim_model.BngsimNfModel(
+        'e2e_nf_binding',
+        [action],
+        [('simulate', 'tc')],
+        [],
+        str(NF_XML),
+        bngl_model_lines=_read_bngl_lines(),
+        param_names=(),
+    )
+
+
+@pytest.mark.bngsim_nfsim
+def test_nf_simulate_honors_explicit_sample_times(tmp_path):
+    """NFsim: a new-era simulate with sample_times outputs at exactly those instants
+    (PyBNF #427), not the uniform fallback grid the bridge used to drop down to."""
+    data = _nf_sample_times_model('nf').execute(str(tmp_path), 'nf_st', 60)['tc']
+    np.testing.assert_allclose(data.data[:, data.cols['time']], _NF_SAMPLE_TIMES)
+
+
+@pytest.mark.bngsim_rulemonkey
+def test_rm_simulate_honors_explicit_sample_times(tmp_path):
+    """RuleMonkey: a new-era simulate with sample_times outputs at exactly those instants
+    (PyBNF #427), not the uniform fallback grid the bridge used to drop down to."""
+    data = _nf_sample_times_model('rm').execute(str(tmp_path), 'rm_st', 60)['tc']
+    np.testing.assert_allclose(data.data[:, data.cols['time']], _NF_SAMPLE_TIMES)
+
+
 def _nf_function_model(print_functions):
     """BngsimNfModel over the function fixture; print_functions toggled on the action."""
     action = (
