@@ -206,12 +206,12 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   petablint-clean export, over tiny synthetic problems **and** the rewritten Tier-0/1
   examples. The examples were ported to edition-2 (`_v2`): `demo/parabola`,
   `per_observable_noise` (per-observable noise; its fitted-Laplace `fit` sigma is a
-  documented export deferral, so it is covered by build + scoring), and `egfr_ode`
+  documented export deferral tracked in #439, so it is covered by build + scoring), and `egfr_ode`
   (the highest-coverage case: a multi-observable time course **and** a dose-response in one
   job). A tiny real-bngsim new-era recovery sub-tier (m01 time course + m08 dose-response)
   was promoted out of `-m recovery` to run by default wherever bngsim is present. `receptor`
   was **left legacy-only**: its fit needs a multi-phase pre-equilibration protocol the
-  new-era surface defers (see "Open / deferred" multi-period note in ADR-0025);
+  new-era surface defers (see "Open / deferred" multi-period note in ADR-0025; tracked in #440);
   `examples/receptor/NEW_ERA_NOTE.md` records why, and the tier carries it as a skipped case.
 
 ## Considered / rejected

@@ -396,8 +396,9 @@ class TestPerObservableNoiseExample:
 
     def test_export_defers_the_fit_sigma_source(self, tmp_path):
         # The fitted Laplace scale is a documented export boundary (a free-parameter sigma needs
-        # the noise parameter wired into the PEtab parameter table -- a later chunk); the
-        # exporter raises rather than emit a malformed problem. Keeps the example honest.
+        # the noise parameter wired into the PEtab parameter table -- a later chunk, tracked in
+        # #439); the exporter raises rather than emit a malformed problem. Keeps the example
+        # honest. When #439 lands, replace this with a positive export round-trip.
         with pytest.raises(NotImplementedError, match='fit'):
             export_job(PON_CONF, tmp_path / 'petab')
 
@@ -408,8 +409,8 @@ class TestPerObservableNoiseExample:
 # --------------------------------------------------------------------------- #
 @pytest.mark.skip(reason="receptor needs pre-equilibration (equilibrate without ligand, flip "
                          "Ligand_isPresent on, then measure) -- a multi-phase protocol the "
-                         "new-era surface defers (ADR-0028/0025), and receptor.exp has no _SD "
-                         "columns. Dropped from the edition-2 example set per #436; see "
-                         "examples/receptor/NEW_ERA_NOTE.md.")
+                         "new-era surface defers (ADR-0028/0025, tracked in #440), and "
+                         "receptor.exp has no _SD columns. Dropped from the edition-2 example "
+                         "set per #436; see examples/receptor/NEW_ERA_NOTE.md.")
 def test_receptor_is_a_deferred_preequilibration_case():
     pass

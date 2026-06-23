@@ -25,5 +25,5 @@ t=0** (an initial condition), not mid-run, so it cannot stand in for step 2.
 objective has no sigma source — another reason it is not a drop-in edition-2 case.
 
 A faithful edition-2 `receptor` therefore awaits new-era **multi-period / pre-equilibration**
-support. Until then, keep using `receptor.conf` (legacy linkage). The deferral is
-recorded as a skipped case in `tests/test_new_era_validation.py`.
+support, tracked in **#440**. Until then, keep using `receptor.conf` (legacy linkage). The
+deferral is recorded as a skipped case in `tests/test_new_era_validation.py`.
