@@ -1,5 +1,6 @@
-"""Config build: a network-free new-era ``experiment:`` (``method: nf``) under
-``bngl_backend = bngsim`` is now SUPPORTED (#427, the guard removed in #435).
+"""Config build: a network-free new-era ``experiment:`` (``method: nf`` / ``method: rm``)
+under ``bngl_backend = bngsim`` is now SUPPORTED (#427, the guard removed in #435; RuleMonkey
+routing added alongside).
 
 The interim #434 guard rejected this combination at config build because the bngsim
 network-free bridge dropped the data's explicit output points (``sample_times``) and
@@ -10,7 +11,13 @@ the config-build half (no simulator); the runtime output-at-the-data's-points be
 verified against the real engine in ``test_bngsim_nf_e2e.py``
 (``test_nf_simulate_honors_explicit_sample_times`` + the RuleMonkey twin).
 
-These tests need no simulator: only the config-build path (``_load_experiments``) runs.
+Both network-free engines are reachable from the new-era surface: ``method: nf`` (NFsim) and
+``method: rm`` / ``method: rulemonkey`` (RuleMonkey, a bngsim-only engine). The synthesized
+action carries the token verbatim, and the bngsim model-list router classifies it to the
+matching NF session backend (``classification._required_nf_session_backends``).
+
+These tests need no simulator: only the config-build path (``_load_experiments``) and the
+(pure-function) backend classification run.
 """
 
 import os
@@ -19,6 +26,10 @@ import pytest
 
 from pybnf.config import Configuration
 from pybnf.parse import ploop
+from pybnf.bngsim_model.classification import (
+    _nf_session_backend_label,
+    _required_nf_session_backends,
+)
 
 _MODEL = """\
 begin model
@@ -73,28 +84,49 @@ def _build(tmp_path, *, conf_lines):
 
 
 class TestNetworkFreeOnBngsimBuilds:
-    """The combination the #434 guard used to reject now builds cleanly (#435): NFsim on a
-    data-driven new-era ``experiment:`` under bngsim. ``nf`` is the network-free token the
-    new-era ``TimeCourse``/``ParamScan`` accept; the bridge honors the data's points."""
+    """The combination the #434 guard used to reject now builds cleanly (#435): a network-free
+    method on a data-driven new-era ``experiment:`` under bngsim. Both NF engines are reachable
+    -- ``nf`` (NFsim) and ``rm``/``rulemonkey`` (RuleMonkey) -- the new-era
+    ``TimeCourse``/``ParamScan`` accept them and the bridge honors the data's points."""
 
-    def test_nf_time_course_on_bngsim_builds(self, tmp_path):
+    @pytest.mark.parametrize("method", ["nf", "rm", "rulemonkey"])
+    def test_network_free_time_course_on_bngsim_builds(self, tmp_path, method):
         conf = _build(tmp_path, conf_lines=_BASE + [
             "bngl_backend = bngsim",
-            "experiment: tc, method: nf, data: tc.exp",
+            f"experiment: tc, method: {method}, data: tc.exp",
         ])
         assert "tc" in conf.exp_data["m"]
         line = next(a for a in conf.models["m"].actions if 'suffix=>"tc"' in a)
-        assert 'method=>"nf"' in line
+        # The token is emitted verbatim; the data's points ride along as sample_times (#427).
+        assert f'method=>"{method}"' in line
+        assert 'sample_times=>[0.0,1.0,2.0]' in line
 
-    def test_nf_dose_response_on_bngsim_builds(self, tmp_path):
+    @pytest.mark.parametrize("method", ["nf", "rm"])
+    def test_network_free_dose_response_on_bngsim_builds(self, tmp_path, method):
         # The guard was simulation-type agnostic; a dose-response (parameter_scan) is data-
-        # driven too, so it must build cleanly now as well.
+        # driven too, so it must build cleanly for both engines now as well.
         conf = _build(tmp_path, conf_lines=_BASE + [
             "bngl_backend = bngsim",
-            "experiment: dose, method: nf, data: dose.exp",
+            f"experiment: dose, method: {method}, data: dose.exp",
         ])
         assert "dose" in conf.exp_data["m"]
-        assert any('parameter_scan' in a for a in conf.models["m"].actions)
+        scan = next(a for a in conf.models["m"].actions if 'parameter_scan' in a)
+        assert f'method=>"{method}"' in scan
+
+    @pytest.mark.bngsim   # the classification seam normalizes via bngsim.normalize_method
+    @pytest.mark.parametrize("method,backend", [("nf", "NFsim"), ("rm", "RuleMonkey")])
+    def test_network_free_method_routes_to_its_backend(self, tmp_path, method, backend):
+        # The synthesized action's method routes to the matching NF session backend: nf ->
+        # NFsim, rm -> RuleMonkey (the bngsim model-list router's classification, the seam
+        # algorithms.base uses to pick the session class). This is what makes `method: rm`
+        # actually reach RuleMonkey, not silently fall back to NFsim.
+        conf = _build(tmp_path, conf_lines=_BASE + [
+            "bngl_backend = bngsim",
+            f"experiment: tc, method: {method}, data: tc.exp",
+        ])
+        labels = {_nf_session_backend_label(b)
+                  for b in _required_nf_session_backends(conf.models["m"].actions)}
+        assert labels == {backend}
 
     def test_nf_under_auto_builds(self, tmp_path):
         # The default bngl_backend = auto also builds: config build no longer resolves the

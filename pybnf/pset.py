@@ -1444,6 +1444,14 @@ class Action:
     Represents a simulation action performed within a model
     """
 
+    # Simulation method tokens a config-constructed action accepts: the network-based
+    # methods (ode/ssa/pla) plus the network-free engines NFsim (``nf``) and RuleMonkey
+    # (``rm``/``rulemonkey``). ``nf`` runs on both BNG2.pl and bngsim; RuleMonkey is a
+    # bngsim-only engine (BNG2.pl has no equivalent), routed to the bngsim NF session
+    # bridge. The bridge normalizes every spelling via ``bngsim.normalize_method`` and now
+    # honors the data's explicit output points for both NF engines (#427).
+    VALID_METHODS = ('ode', 'ssa', 'pla', 'nf', 'rm', 'rulemonkey')
+
     def output_length(self):
         """Number of output rows this action produces.
 
@@ -1541,8 +1549,10 @@ class TimeCourse(Action):
         if self.time is None:
             raise PybnfError('For key "time_course" a value for "end" must be specified.')
 
-        if self.method not in ('ode', 'ssa', 'pla', 'nf'):
-            raise PybnfError(f'Invalid time course method {self.method}. Options are ode, ssa, pla, nf')
+        if self.method not in self.VALID_METHODS:
+            raise PybnfError(
+                f'Invalid time course method {self.method}. Options are '
+                f'{", ".join(self.VALID_METHODS)}')
 
         if self.step == 0:
             raise PybnfError('For key "time_course", the value of "step" must be nonzero.')
@@ -1690,8 +1700,10 @@ class ParamScan(Action):
         self.logspace = int(self.logspace)
         if self.logspace not in (0, 1):
             raise PybnfError('For key "param_scan", the value for "logspace" must be 0 or 1')
-        if self.method not in ('ode', 'ssa', 'pla', 'nf'):
-            raise PybnfError(f'Invalid time course method {self.method}. Options are ode, ssa, pla, nf')
+        if self.method not in self.VALID_METHODS:
+            raise PybnfError(
+                f'Invalid time course method {self.method}. Options are '
+                f'{", ".join(self.VALID_METHODS)}')
 
         if self.step == 0:
             raise PybnfError('For key "param_scan", the value of "step" must be nonzero.')
