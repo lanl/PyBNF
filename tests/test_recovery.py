@@ -43,14 +43,19 @@ decisions so a failure points at the right layer:
     scores correctly end to end through the real backend.
   * ``test_de_recovers_dose_response_steady_state`` (``newera``) -- a new-era
     ``parameter_scan`` recovering a rate from steady-state dose-response data (ADR-0046).
+  * ``test_de_recovers_preequilibration`` (``newera``) -- a new-era ``preequilibrate:``
+    experiment recovering a rate from two-phase (equilibrate-to-steady-state -> perturb ->
+    measure) data whose measurement t=0 value is the equilibration steady state, proving
+    state carry-over across the synthesized phases end to end (ADR-0052, #440).
   * ``test_de_reproducible`` -- a fixed seed gives a bit-identical fit (RNG
     determinism on the real-sim path).
   * ``test_m01_real_run_job_smoke`` -- one fit through the genuine run_job/folders.
 
 The module carries the ``bngsim`` marker for every test; the heavy fits add
-``recovery`` (opt-in), while the two ``newera`` fits carry neither ``recovery`` nor
+``recovery`` (opt-in), while the three ``newera`` fits carry neither ``recovery`` nor
 ``slow`` so they run by default wherever bngsim is present (#436).
 """
+import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -355,6 +360,142 @@ def test_de_recovers_dose_response_steady_state(seed, tmp_path):
     rec = H.best_params(alg, ('k_deg',))['k_deg']
     rel = abs(rec - k_deg_true) / k_deg_true
     assert rel < 0.15, 'k_deg recovered %g, expected ~%g (%.0f%% off)' % (rec, k_deg_true, rel * 100)
+
+
+# --------------------------------------------------------------------------- #
+# New-era pre-equilibration surface (ADR-0052 #440): two-phase protocol, real bngsim
+# --------------------------------------------------------------------------- #
+@pytest.mark.newera
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('seed', [1234, 7])
+def test_de_recovers_preequilibration(seed, tmp_path):
+    """A new-era ``preequilibrate:`` experiment recovers a rate from a two-phase protocol
+    through the real bngsim backend (ADR-0052, #440).
+
+    Birth-death with switchable production (``m09_preequilibration``): equilibrating with
+    ``Production_isOn=1`` settles ``A`` to ``A_ss = k_prod/k_deg``; switching production OFF
+    then makes ``A`` decay as ``A(t) = (k_prod/k_deg)*exp(-k_deg*t)`` -- an exact closed form,
+    so the synthetic ``.exp`` is a zero-noise oracle with a reachable optimum at the truth.
+    The conf carries ``preequilibrate: prod_on, condition: prod_off``, so PyBNF synthesizes the
+    two-phase action (steady-state equilibration -> setParameter -> measurement) and the fit
+    recovers ``k_deg``.
+
+    The measurement's t=0 value (``A_ss``) is *entirely* the equilibration steady state, so this
+    is a sharp **carry-over** gate: if state did not carry from the equilibration phase into the
+    measurement, the measurement would start at the seed ``A=0`` and stay flat, matching nothing.
+    This is the pre-equilibration counterpart of ``test_de_recovers_dose_response_steady_state``.
+    """
+    H.require_bng2pl()
+    model_path = H.RECOVERY_MODELS_DIR / 'm09_preequilibration.bngl'
+
+    k_prod, k_deg_true = 3.0, 2.0
+    times = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+    a_ss = k_prod / k_deg_true                                   # the equilibration steady state
+    exp_path = tmp_path / 'relax.exp'
+    lines = ['#\ttime\tA_tot']
+    lines += ['%.12g\t%.12g' % (t, a_ss * np.exp(-k_deg_true * t)) for t in times]
+    exp_path.write_text('\n'.join(lines) + '\n')
+
+    # k_deg is the fitted free parameter (bound by id). prod_on (Production_isOn=1) is the
+    # pre-equilibration condition; prod_off (Production_isOn=0) the measurement condition. No
+    # t_end: anywhere -> the equilibration runs to steady state (ADR-0052/0046).
+    conf = H.make_newera_config(tmp_path, str(model_path), str(exp_path),
+                                {'k_deg': ('uniform_var', 0.1, 10.0)}, 'relax', 'de',
+                                condition=('prod_off', 'Production_isOn = 0'),
+                                preequilibrate=('prod_on', 'Production_isOn = 1'),
+                                random_seed=seed, refine=1,
+                                population_size=10, max_iterations=20)
+
+    # The synthesized action is the two-phase block: a steady-state equilibration simulate
+    # (unmeasured, suffix *_preequil), the two setParameter switches, and the measurement
+    # simulate over the data grid -- and ONLY 'relax' is a scored suffix.
+    model = conf.models['m09_preequilibration']
+    acts = model.actions
+    assert any('steady_state=>1' in a and 'relax_preequil' in a for a in acts), acts
+    assert 'setParameter("Production_isOn",1)' in acts        # pre-equilibration: production ON
+    assert 'setParameter("Production_isOn",0)' in acts        # measurement: production OFF
+    # the equilibration setParameter precedes the equilibration simulate precedes the
+    # measurement setParameter precedes the measurement simulate (phase order)
+    i_on = acts.index('setParameter("Production_isOn",1)')
+    i_equil = next(i for i, a in enumerate(acts) if 'relax_preequil' in a)
+    i_off = acts.index('setParameter("Production_isOn",0)')
+    i_meas = next(i for i, a in enumerate(acts) if 'sample_times' in a and 'suffix=>"relax"' in a)
+    assert i_on < i_equil < i_off < i_meas, acts
+    # carry-over invariant: NO resetConcentrations between equilibration and measurement
+    assert 'resetConcentrations()' not in acts[i_equil:i_meas + 1], acts[i_equil:i_meas + 1]
+    assert [s[1] for s in model.suffixes] == ['relax']        # equilibration is unmeasured
+    assert not model.mutants                                  # both conditions consumed inline
+    assert conf.exp_data['m09_preequilibration']['relax'].indvar == 'time'
+
+    alg = H.build(conf, 'de')
+    H.drive(alg)
+    H.refine(alg, conf)
+
+    # Hard gate (data reproduced): zero-noise two-phase data -> objective floors near 0.
+    data_ss = sum((a_ss * np.exp(-k_deg_true * t)) ** 2 for t in times)
+    assert alg.trajectory.best_score() < 1e-3 * data_ss, \
+        'pre-equilibration: best objective %g not < %g' % (
+            alg.trajectory.best_score(), 1e-3 * data_ss)
+    # Soft gate: the degradation rate comes back at the truth.
+    rec = H.best_params(alg, ('k_deg',))['k_deg']
+    rel = abs(rec - k_deg_true) / k_deg_true
+    assert rel < 0.15, 'k_deg recovered %g, expected ~%g (%.0f%% off)' % (rec, k_deg_true, rel * 100)
+
+
+@pytest.mark.newera
+@pytest.mark.usefixtures('_fakes')
+def test_receptor_v2_example_builds_and_fits(tmp_path):
+    """The shipped ``examples/receptor/receptor_v2`` (the edition-2 pre-equilibration form of
+    the BioNetFit ex.5 receptor fit) builds the two-phase action and fits through real bngsim
+    (ADR-0052, #440 acceptance).
+
+    This is the real-model counterpart of ``test_de_recovers_preequilibration`` (a synthetic
+    2-param oracle): receptor is a 6-parameter rule-based model, so this is a **qualitative
+    smoke** -- it proves the full receptor model network-generates, synthesizes the two-phase
+    pre-equilibration action, and runs the simulate -> score -> propose loop end to end, not
+    that 6 parameters are recovered from one short fit. The motivating example for the whole
+    feature; previously receptor was legacy-only (#436, ``NEW_ERA_NOTE.md``)."""
+    H.require_bng2pl()
+    from pybnf import config
+    from pybnf.parse import ploop
+
+    example_dir = Path(__file__).resolve().parents[1] / 'examples' / 'receptor'
+    text = (example_dir / 'receptor_v2.conf').read_text()
+    d = ploop(text.splitlines(keepends=True))
+    # A short, deterministic DE smoke (the conf ships scatter search over 50 iterations); keep
+    # the loop tiny -- the gate is "it runs + improves", not convergence. output_dir -> tmp.
+    d.update({'job_type': 'de', 'population_size': 6, 'max_iterations': 3,
+              'random_seed': 1234, 'output_dir': str(tmp_path / 'out'),
+              'bngl_backend': 'bngsim', 'verbosity': 0, 'wall_time_sim': 0,
+              'delete_old_files': 1})
+    home = os.getcwd()
+    os.chdir(example_dir)            # relative model:/data: paths resolve at the conf's dir
+    try:
+        conf = config.Configuration(d)
+    finally:
+        os.chdir(home)
+
+    # Build assertion: the synthesized action is the two-phase pre-equilibration block
+    # (steady-state equilibration -> the two Ligand_isPresent switches -> measurement), with
+    # only 'receptor' a scored suffix and both conditions consumed inline.
+    model = conf.models['receptor_v2']
+    acts = model.actions
+    assert any('steady_state=>1' in a and 'receptor_preequil' in a for a in acts), acts
+    assert 'setParameter("Ligand_isPresent",0)' in acts          # pre-equilibrate: no ligand
+    assert 'setParameter("Ligand_isPresent",1)' in acts          # measure: ligand added
+    assert [s[1] for s in model.suffixes] == ['receptor']
+    assert not model.mutants
+    assert {v.name for v in conf.variables} == {
+        'KD1', 'km1', 'K2RT', 'km2', 'kphos', 'kdephos'}         # 6 bare-id free params
+
+    alg = H.build(conf, 'de')
+    H.drive(alg)
+
+    # Smoke gate: the fit ran end to end through the two-phase bngsim simulation and found a
+    # finite best score (the loop scored real receptor trajectories -- e.g. nonzero pR at t=0
+    # carried over from the unmeasured equilibration phase).
+    best = alg.trajectory.best_score()
+    assert np.isfinite(best), 'receptor_v2 fit produced no finite objective (got %r)' % best
 
 
 # --------------------------------------------------------------------------- #

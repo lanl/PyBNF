@@ -566,6 +566,18 @@ class BngsimModel(NetModel):
         elif explicit_seed is not None:
             run_kwargs['seed'] = explicit_seed
 
+        # steady_state=>1 on a simulate() (ADR-0052, new-era pre-equilibration): integrate
+        # to steady state (early-stop on ||dx/dt||) rather than to a fixed endpoint. This
+        # wires the simulate path to bngsim's existing ``Simulator.run(steady_state=True)``
+        # parity primitive -- the same early-stop the steady-state parameter_scan uses
+        # (``_scan_parity_steady_state``) -- so an UNMEASURED equilibration phase relaxes to
+        # equilibrium, then a subsequent simulate carries that state over (no
+        # resetConcentrations between them). ``t_end`` remains the max-time bound for the
+        # run if steady state is not reached within the window. Additive: no existing
+        # simulate action emits ``steady_state``; only parameter_scan did (its own path).
+        if bool(int(float(sim_params.get('steady_state', 0)))):
+            run_kwargs['steady_state'] = True
+
         # Gap 2: stop_if
         stop_if = sim_params.get('stop_if')
         if stop_if is not None:

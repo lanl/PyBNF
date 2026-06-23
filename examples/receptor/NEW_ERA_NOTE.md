@@ -1,29 +1,39 @@
-# Why `receptor` has no edition-2 (`_v2`) form
+# `receptor` on the new-era (edition-2) surface
 
-The `demo/parabola`, `per_observable_noise`, and `egfr_ode` examples were rewritten
-to the new-era (edition 2) config surface for the fast validation tier (#436). The
-`receptor` example was **deliberately left legacy-only** because its fit needs a
-**multi-phase / pre-equilibration protocol** that the new-era surface defers by design
-(ADR-0028 "Open / deferred"; ADR-0025).
+`receptor_v2.{bngl,conf}` is the edition-2 form of this fit. It exists because PyBNF now
+synthesizes the **pre-equilibration protocol** the new-era `experiment:` surface had
+deferred (ADR-0052, #440 Phase 1 — the *fitter*).
 
 `receptor.bngl`'s actions block is three phases:
 
-1. simulate 600 s **without ligand** to reach equilibrium (receptors dimerize and
-   phosphorylate even before ligand is added, so this baseline is not a no-op);
+1. simulate **without ligand** to reach equilibrium (receptors dimerize and phosphorylate
+   even before ligand is added, so this baseline is not a no-op — `receptor.exp`'s t=0
+   `pR` is already 3670);
 2. `setParameter("Ligand_isPresent", 1)` — a **mid-protocol parameter change** that
    switches ligand binding on;
-3. simulate 60 s with ligand and fit the data to **this** (second) phase.
+3. simulate with ligand and fit the data to **this** (second) phase.
 
-The new-era `experiment:` surface synthesizes a **single-phase** simulation whose
-output grid comes from the data's independent-variable column (ADR-0028). It has no
-grammar for a pre-equilibration phase or a parameter change applied after t=0
-(PEtab v2 expresses these as multi-period experiments / `preequilibrationConditionId`,
-which PyBNF's exporter does not yet emit). A `condition:` perturbs parameters **at
-t=0** (an initial condition), not mid-run, so it cannot stand in for step 2.
+The edition-2 conf expresses that with two conditions and a `preequilibrate:` field:
 
-`receptor.exp` also carries **no `_SD` columns**, so a `chi_sq` (per-point Gaussian)
-objective has no sigma source — another reason it is not a drop-in edition-2 case.
+```
+condition: noligand,   perturbations: Ligand_isPresent = 0
+condition: withligand, perturbations: Ligand_isPresent = 1
+experiment: receptor, preequilibrate: noligand, condition: withligand, data: receptor.exp
+```
 
-A faithful edition-2 `receptor` therefore awaits new-era **multi-period / pre-equilibration**
-support, tracked in **#440**. Until then, keep using `receptor.conf` (legacy linkage). The
-deferral is recorded as a skipped case in `tests/test_new_era_validation.py`.
+PyBNF synthesizes the two-phase action (equilibrate **to steady state**, unmeasured →
+`setParameter` → measure over the data grid; state carried over with no reset between the
+phases — ADR-0052). `receptor_v2.bngl` carries **no `begin actions` block** and binds its 6
+rate constants by id (ADR-0034); `receptor.exp` has no `_SD`, so the objective is `sos`.
+
+## What is still deferred
+
+PEtab v2 **export** and **import** of the multi-period experiment are not yet built —
+**#441 (export)** and **#442 (import + the export→import round trip)**. Until #442 lands,
+the round-trip case is recorded as a skipped test in `tests/test_new_era_validation.py`
+(`test_receptor_is_a_deferred_preequilibration_case`). The fitter is covered by
+`test_receptor_v2_builds_the_two_phase_preequilibration_action` (backend-free build) and
+`tests/test_recovery.py::test_receptor_v2_example_builds_and_fits` (real bngsim fit).
+
+Both `receptor.conf` (legacy) and `receptor_v2.conf` (edition-2) fit the same problem
+(BioNetFit 1, example 5); use whichever surface you prefer.

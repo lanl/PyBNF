@@ -948,28 +948,16 @@ class BNGLModel(Model):
         write actions in the BNGL file's ``begin actions`` block instead.
         """
         if isinstance(action, TimeCourse):
-            if action.explicit_points is not None:
-                # New-era explicit output points (ADR-0028): emit BioNetGen sample_times
-                # so the gdat lands on exactly the data's time points. Covers BNG2.pl
-                # (BNGAction.pm) and bngsim (parses the bracket list out of the action
-                # text). BNG requires 3 or more sample times; explicit_points already
-                # includes t=0, so a single positive data time still yields 2 -- guard
-                # for the (rare) too-short grid with a clear message.
-                if len(action.explicit_points) < 3:
-                    raise PybnfError(
-                        f'The time_course action with suffix "{action.suffix}" has only '
-                        f'{len(action.explicit_points)} explicit output time point(s) (including t=0), but '
-                        "BioNetGen's sample_times requires 3 or more. Provide a data set with at least two "
-                        'positive time points.')
-                sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
-                line = f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],suffix=>"{action.suffix}",print_functions=>1}})'
-            else:
-                # t_start renders as a bare int when integral (so the default 0 stays
-                # ``t_start=>0`` -- byte-identical to the pre-t_start emission), else full
-                # precision; a non-zero t_start shifts the integration window (ADR-0028).
-                _ts = float(action.t_start)
-                ts_str = str(int(_ts)) if _ts.is_integer() else repr(_ts)
-                line = f'simulate({{method=>"{action.method}",t_start=>{ts_str},t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
+            if getattr(action, 'preequilibrate', False):
+                # New-era pre-equilibration (ADR-0052, #440): this is the MEASURED phase of a
+                # two-phase protocol. Emit the whole block (reset -> setParameter(pre) ->
+                # unmeasured steady-state equilibration -> setParameter(meas) -> measurement),
+                # registering ONLY the measurement suffix, then return -- the standard
+                # reset+line+suffix tail below does not apply (it would inject a reset BETWEEN
+                # the phases, breaking carry-over).
+                self._append_preequilibration_actions(action)
+                return
+            line = self._timecourse_line(action)
         elif isinstance(action, ParamScan):
             if action.explicit_points is not None:
                 # New-era explicit scan values (ADR-0028): emit par_scan_vals so the scan
@@ -996,6 +984,72 @@ class BNGLModel(Model):
         self.generates_network = True
         if self.generate_network_line is None:
             self.generate_network_line = 'generate_network({overwrite=>1})'
+        self.suffixes.append((action.bng_codeword, action.suffix))
+
+    @staticmethod
+    def _timecourse_line(action):
+        """The BNGL ``simulate(...)`` line for a :class:`TimeCourse` (shared by the ordinary
+        and the pre-equilibration emission paths)."""
+        if action.explicit_points is not None:
+            # New-era explicit output points (ADR-0028): emit BioNetGen sample_times
+            # so the gdat lands on exactly the data's time points. Covers BNG2.pl
+            # (BNGAction.pm) and bngsim (parses the bracket list out of the action
+            # text). BNG requires 3 or more sample times; explicit_points already
+            # includes t=0, so a single positive data time still yields 2 -- guard
+            # for the (rare) too-short grid with a clear message.
+            if len(action.explicit_points) < 3:
+                raise PybnfError(
+                    f'The time_course action with suffix "{action.suffix}" has only '
+                    f'{len(action.explicit_points)} explicit output time point(s) (including t=0), but '
+                    "BioNetGen's sample_times requires 3 or more. Provide a data set with at least two "
+                    'positive time points.')
+            sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
+            return f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],suffix=>"{action.suffix}",print_functions=>1}})'
+        # t_start renders as a bare int when integral (so the default 0 stays
+        # ``t_start=>0`` -- byte-identical to the pre-t_start emission), else full
+        # precision; a non-zero t_start shifts the integration window (ADR-0028).
+        _ts = float(action.t_start)
+        ts_str = str(int(_ts)) if _ts.is_integer() else repr(_ts)
+        return f'simulate({{method=>"{action.method}",t_start=>{ts_str},t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
+
+    def _append_preequilibration_actions(self, action):
+        """Emit the new-era pre-equilibration action block for a measurement ``TimeCourse``
+        (ADR-0052, #440): a single simulation in two phases.
+
+        ``resetConcentrations()`` (clean ICs -- independence from any other experiment's
+        simulation) -> the pre-equilibration condition as absolute ``setParameter`` -> an
+        UNMEASURED steady-state ``simulate`` (``steady_state=>1``, early-stops on
+        ``||dx/dt||``; ``t_end`` is its max-time bound) -> the measurement condition as
+        ``setParameter`` -> the measurement ``simulate`` over the data grid. There is
+        deliberately NO ``resetConcentrations()`` between the phases: BioNetGen carries the
+        equilibrated species state into the measurement (the measurement's clock restarts at
+        ``t_start=0``, but the *concentrations* are the equilibrium -- verified on bngsim).
+        Only the measurement suffix is registered, so the equilibration phase runs but is
+        never scored (no ``exp_data`` entry)."""
+        def _param_value(v):
+            # Render an integral perturbation value as a bare int (so a flag like
+            # ``Ligand_isPresent`` emits ``setParameter("Ligand_isPresent",1)`` -- matching
+            # legacy receptor.bngl byte-for-byte), else full round-tripping precision.
+            f = float(v)
+            return str(int(f)) if f.is_integer() else repr(f)
+
+        _mt = float(action.equil_max_time)
+        max_time = str(int(_mt)) if _mt.is_integer() else repr(_mt)
+        equil_suffix = f'{action.suffix}_preequil'
+        self.actions.append('resetConcentrations()')
+        for pname, pval in action.equil_perturbations:
+            self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
+        self.actions.append(
+            f'simulate({{method=>"{action.method}",steady_state=>1,t_start=>0,'
+            f't_end=>{max_time},n_steps=>1,suffix=>"{equil_suffix}",print_functions=>1}})')
+        for pname, pval in action.measure_perturbations:
+            self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
+        self.actions.append(self._timecourse_line(action))
+        self.generates_network = True
+        if self.generate_network_line is None:
+            self.generate_network_line = 'generate_network({overwrite=>1})'
+        # Register ONLY the measurement suffix: the equilibration phase is unmeasured, so its
+        # gdat is never read (BNG2.pl) / its ds entry never scored (bngsim).
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     def get_suffixes(self):
@@ -1212,6 +1266,15 @@ class SbmlModelNoTimeout(Model):
         if action.method not in ('ode', 'ssa'):
             raise PybnfError(f'time_course or param_scan method {action.method} is not possible with an SBML model. Options are '
                              'ode or ssa.')
+        if getattr(action, 'preequilibrate', False):
+            # New-era pre-equilibration (ADR-0052, #440) needs state carried over between the
+            # equilibration and measurement phases. The RoadRunner/SBML backend resets every
+            # action (no carry-over), so a pre-equilibration protocol cannot be expressed here.
+            # receptor (the motivating case) is BNGL; this is a separate track (a known gap).
+            raise PybnfError(
+                f"Experiment '{action.suffix}' uses pre-equilibration (preequilibrate:), which "
+                "is not supported on the SBML/RoadRunner backend (it has no state carry-over "
+                "between simulation phases). Use a BNGL model for a pre-equilibration protocol.")
         self.actions.append(action)
         self.suffixes.append((action.bng_codeword, action.suffix))
         if action.method == 'ssa':
@@ -1493,6 +1556,28 @@ class TimeCourse(Action):
                 f'({self.t_start}).')
         self.stepnumber = int(np.round((self.time - self.t_start) / self.step))
         self.bng_codeword = 'simulate'
+
+        # New-era pre-equilibration (ADR-0052, #440): when set, this time course is the
+        # MEASUREMENT phase of a two-phase protocol -- an unmeasured steady-state
+        # equilibration runs first, a parameter is perturbed, then this measurement runs
+        # with the equilibrated state carried over. ``set_preequilibration`` fills these in;
+        # ``BNGLModel.add_action`` reads them to emit the full action block. Default off, so
+        # an ordinary time course is unchanged.
+        self.preequilibrate = False
+        self.equil_perturbations = []     # [(param, value)] setParameter before equilibration
+        self.measure_perturbations = []   # [(param, value)] setParameter before measurement
+        self.equil_max_time = 1e6         # steady-state run's max-time bound (early-stops sooner)
+
+    def set_preequilibration(self, equil_perturbations, measure_perturbations,
+                             equil_max_time=1e6):
+        """Mark this time course as the measured phase of a pre-equilibration protocol
+        (ADR-0052). ``equil_perturbations`` are applied (as absolute ``setParameter``) before
+        the unmeasured steady-state equilibration; ``measure_perturbations`` after it, before
+        this measurement. Each is a list of ``(param_name, value)`` pairs."""
+        self.preequilibrate = True
+        self.equil_perturbations = list(equil_perturbations)
+        self.measure_perturbations = list(measure_perturbations)
+        self.equil_max_time = equil_max_time
 
 class ParamScan(Action):
     """A parameter-scan action parsed from the PyBNF configuration file.

@@ -420,6 +420,11 @@ def _read_experiments(conf, conf_path, models):
         data_files = fields.get('data', [])
         if not data_files:
             raise PybnfError(f"Experiment '{name}' declares no 'data:' files.")
+        if fields.get('preequilibrate') is not None:
+            raise NotImplementedError(
+                f"Experiment '{name}' uses pre-equilibration (preequilibrate:). PEtab export "
+                f"of a multi-period / pre-equilibration experiment is deferred to #441 (Phase "
+                f"2); the fitter runs it, but export is not yet supported (ADR-0052).")
         non_exp = [f for f in data_files if not f.endswith('.exp')]
         if non_exp:
             raise NotImplementedError(

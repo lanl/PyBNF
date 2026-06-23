@@ -1,0 +1,49 @@
+begin model
+#@model_id: m09_preequilibration
+#@title: Pre-equilibration relaxation (PyBNF new-era pre-equilibration recovery fixture)
+#@description: Birth-death with a SWITCHABLE production. 0 -> A at rate k_prod*Production_isOn,
+#  A -> 0 at rate k_deg. Equilibrating with Production_isOn=1 settles A to its steady state
+#  A_ss = k_prod/k_deg; switching production OFF (Production_isOn=0) then makes A decay as
+#  A(t) = (k_prod/k_deg)*exp(-k_deg*t). The measurement's t=0 value is ENTIRELY the equilibration
+#  steady state, so a correct fit must carry state across the two phases (ADR-0052 #440): if
+#  carry-over broke, the measurement would start at the seed A=0 and stay flat, matching nothing.
+#
+# New-era conventions (see tests/test_recovery.py):
+#   * NO `begin actions` block: PyBNF synthesizes the two-phase protocol (equilibrate to steady
+#     state -> setParameter -> measure) from the experiment:'s `preequilibrate:`/`condition:` +
+#     the data grid -- there is no hand-written action.
+#   * Free parameters bind BY ID (ADR-0034, edition >= 2): the fitted `k_deg` is a bare
+#     model-parameter id (no `__FREE` marker); the optimizer overrides it in place.
+#   * `Production_isOn` is a 0/1 flag the two conditions set via inline setParameter; `k_prod`
+#     is a fixed (known) production rate.
+
+begin parameters
+  k_prod           3.0    # production rate (fixed/known)
+  k_deg            2.0    # degradation rate (the FITTED free parameter, bound by id)
+  Production_isOn  1      # 0/1 flag: the conditions set this inline (equilibrate ON, measure OFF)
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  0
+end seed species
+
+begin observables
+  Molecules  A_tot  A()
+end observables
+
+begin functions
+  # production is gated by the flag: full rate when ON, zero when OFF (the receptor
+  # func()*Ligand_isPresent idiom that makes a mid-protocol setParameter switch a reaction)
+  prod_rate()  k_prod * Production_isOn
+end functions
+
+begin reaction rules
+  birth: 0 -> A()    prod_rate()
+  death: A() -> 0    k_deg
+end reaction rules
+
+end model

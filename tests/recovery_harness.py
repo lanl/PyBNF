@@ -125,7 +125,8 @@ def strip_actions_block(model_bngl, dest):
 
 
 def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_name,
-                       fit_type, *, objective='sos', condition=None, **overrides):
+                       fit_type, *, objective='sos', condition=None, preequilibrate=None,
+                       **overrides):
     """Build a real bngsim ``Configuration`` for a recovery fit on the NEW-ERA
     ``experiment:`` / ``data:`` surface (ADR-0028, ``edition >= 2``).
 
@@ -137,7 +138,11 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
     independent-variable column.
 
     :param condition: optional ``(name, "var op val[, …]")`` -- emits a ``condition:``
-        line and applies it to the experiment.
+        line and applies it to the experiment (the *measurement* condition).
+    :param preequilibrate: optional ``(name, "var op val[, …]")`` -- emits a second
+        ``condition:`` line and adds ``preequilibrate: name`` to the experiment, so the
+        system equilibrates under it (unmeasured, to steady state) before the measurement
+        ``condition`` perturbs and the data grid is measured (ADR-0052, #440).
     """
     scalars = {
         'edition': 2, 'job_type': fit_type, 'objective': objective,
@@ -151,9 +156,13 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
     lines += [f'{vt} = {name} {lo} {hi}' for name, (vt, lo, hi) in free_specs.items()]
     if condition is not None:
         lines.append(f'condition: {condition[0]}, perturbations: {condition[1]}')
+    if preequilibrate is not None:
+        lines.append(f'condition: {preequilibrate[0]}, perturbations: {preequilibrate[1]}')
     exp_line = f'experiment: {experiment_name}'
     if condition is not None:
         exp_line += f', condition: {condition[0]}'
+    if preequilibrate is not None:
+        exp_line += f', preequilibrate: {preequilibrate[0]}'
     exp_line += f', data: {exp_path}'
     lines.append(exp_line)
     conf_text = '\n'.join(lines) + '\n'

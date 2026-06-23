@@ -432,13 +432,42 @@ class TestPerObservableNoiseExample:
 
 
 # --------------------------------------------------------------------------- #
-# Deferred example (documented, not a failure): receptor needs a multi-phase
-# pre-equilibration protocol the new-era surface does not express (ADR-0028/0025).
+# receptor pre-equilibration (ADR-0052, #440 Phase 1): the FITTER is built -- the
+# edition-2 receptor_v2 builds its two-phase action here (backend-free). PEtab
+# export/import of the multi-period experiment stays deferred (#441/#442).
 # --------------------------------------------------------------------------- #
-@pytest.mark.skip(reason="receptor needs pre-equilibration (equilibrate without ligand, flip "
-                         "Ligand_isPresent on, then measure) -- a multi-phase protocol the "
-                         "new-era surface defers (ADR-0028/0025, tracked in #440), and "
-                         "receptor.exp has no _SD columns. Dropped from the edition-2 example "
-                         "set per #436; see examples/receptor/NEW_ERA_NOTE.md.")
+RECEPTOR_V2_CONF = EXAMPLES / 'receptor' / 'receptor_v2.conf'
+
+
+def test_receptor_v2_builds_the_two_phase_preequilibration_action():
+    """``examples/receptor/receptor_v2`` builds the synthesized two-phase pre-equilibration
+    action (ADR-0052, #440) -- backend-free (``BNG2.pl -v`` validates the model; no bngsim,
+    no simulation). The fit itself runs through bngsim in
+    ``test_recovery.py::test_receptor_v2_example_builds_and_fits``; this covers the build +
+    action synthesis in the default leg where bngsim is absent."""
+    cfg = _build_cfg(RECEPTOR_V2_CONF)
+    model = cfg.models['receptor_v2']
+    acts = model.actions
+    # equilibrate (unmeasured, steady state) -> setParameter switches -> measurement, in order
+    i_off = acts.index('setParameter("Ligand_isPresent",0)')        # pre-equilibrate: no ligand
+    i_equil = next(i for i, a in enumerate(acts) if 'steady_state=>1' in a and 'receptor_preequil' in a)
+    i_on = acts.index('setParameter("Ligand_isPresent",1)')         # measure: ligand added
+    i_meas = next(i for i, a in enumerate(acts) if 'sample_times' in a and 'suffix=>"receptor"' in a)
+    assert i_off < i_equil < i_on < i_meas, acts
+    # carry-over: no resetConcentrations between the equilibration and the measurement
+    assert 'resetConcentrations()' not in acts[i_equil:i_meas + 1], acts[i_equil:i_meas + 1]
+    assert [s[1] for s in model.suffixes] == ['receptor']           # equilibration is unmeasured
+    assert not model.mutants                                        # both conditions consumed inline
+    # the 6 ex.5 rate constants are bare-id free params (ADR-0034); receptor.exp drives the grid
+    assert {v.name for v in cfg.variables} == {'KD1', 'km1', 'K2RT', 'km2', 'kphos', 'kdephos'}
+    assert cfg.exp_data['receptor_v2']['receptor'].indvar == 'time'
+
+
+@pytest.mark.skip(reason="PEtab EXPORT/IMPORT of receptor's multi-period pre-equilibration "
+                         "experiment is deferred to #441 (export) / #442 (import + round trip). "
+                         "The fitter is built (ADR-0052, #440 Phase 1): receptor_v2 builds + fits "
+                         "(see test_receptor_v2_builds_the_two_phase_preequilibration_action and "
+                         "test_recovery.py::test_receptor_v2_example_builds_and_fits). This case "
+                         "is promoted when the PEtab round trip lands (#442).")
 def test_receptor_is_a_deferred_preequilibration_case():
     pass

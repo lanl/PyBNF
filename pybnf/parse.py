@@ -222,12 +222,14 @@ def parse(s):
         pp.Suppress(',') + perturbations_key + colon - cond_perts - comment
 
     # new-era experiment grammar (ADR-0028) -- a PEtab Experiment carrying its data:
-    #   experiment: <name>[, condition: <c>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...][, t_end: <t>][, t_start: <t0>][, n_steps: <n>]
+    #   experiment: <name>[, condition: <c>][, preequilibrate: <c0>][, model: <f>], data: <f1>[, <f2>...][, type: ...][, method: ...][, t_end: <t>][, t_start: <t0>][, n_steps: <n>]
     # A named simulation bound to its measurement files. The experiment NAME replaces the
     # legacy BNGL Suffix as the simulation's identity (it becomes both the action suffix and
     # the exp_data key); ``data:`` is a comma list whose multiple files are REPLICATES (all
     # measurements under the one experiment). The optional ``condition:`` names the Condition
-    # to apply (omitted => wildtype), ``model:`` resolves the base model (omittable when one
+    # to apply (omitted => wildtype), ``preequilibrate:`` names the Condition to equilibrate
+    # under first (unmeasured, to steady state -- ADR-0052 pre-equilibration #440),
+    # ``model:`` resolves the base model (omittable when one
     # model), ``type:`` overrides the data-driven type inference, ``method:`` the simulator,
     # and ``t_end:`` a parameter_scan's fixed endpoint time (absent => steady state, the
     # new-era scan default -- ADR-0046). Each labeled sub-field is a single pp.Group, combined
@@ -238,6 +240,13 @@ def parse(s):
     exp_name = pp.Word(pp.alphas, pp.alphanums + '_')
     exp_field_token = pp.Word(pp.alphas, pp.alphanums + '_')
     exp_condition_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('condition') + colon + cond_name)
+    # The optional ``preequilibrate:`` field (ADR-0052, new-era pre-equilibration #440): names
+    # the Condition the system equilibrates UNDER (unmeasured, to steady state -- PEtab time=-inf)
+    # before the measurement ``condition:`` perturbs and the data grid is measured. Its presence
+    # triggers the two-phase action synthesis in config.py (equilibrate -> setParameter -> measure,
+    # state carried over). Mirrors ``condition:`` (a single condition name). config.py by label.
+    exp_preequilibrate_field = pp.Group(
+        pp.Suppress(',') + pp.CaselessLiteral('preequilibrate') + colon + cond_name)
     exp_model_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('model') + colon + model_file)
     exp_data_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('data') + colon + _DelimitedList(exp_file))
     exp_type_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('type') + colon + exp_field_token)
@@ -265,7 +274,8 @@ def parse(s):
     exp_measparams_field = pp.Group(
         pp.Suppress(',') + pp.CaselessLiteral('measurement_params') + colon + param_file)
     experiment_gram = experiment_key + colon - exp_name + \
-        (pp.Optional(exp_condition_field) & pp.Optional(exp_model_field) & exp_data_field
+        (pp.Optional(exp_condition_field) & pp.Optional(exp_preequilibrate_field)
+         & pp.Optional(exp_model_field) & exp_data_field
          & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)
          & pp.Optional(exp_tend_field) & pp.Optional(exp_tstart_field)
          & pp.Optional(exp_nsteps_field) & pp.Optional(exp_measparams_field)) - comment
@@ -640,6 +650,8 @@ def ploop(ls):  # parse loop
             elif key == 'experiment':
                 fmt = "'experiment: name, data: file1.exp[, file2.exp ...]' (data files may be .exp " \
                       "measurements and/or .con/.prop constraints) optionally with 'condition: c', " \
+                      "'preequilibrate: c0' (equilibrate under c0 to steady state, unmeasured, before " \
+                      "measuring -- ADR-0052), " \
                       "'model: modelfile', 'type: time_course|parameter_scan', 'method: ode|ssa|pla|nf', " \
                       "'t_end: <number>' (a parameter_scan's fixed endpoint, or a constraint-only " \
                       "experiment's time-course endpoint), 't_start: <number>' / 'n_steps: <number>' " \

@@ -917,12 +917,24 @@ class Configuration:
         # nor the legacy time_course list, so find_t_length / the xml branch miss them).
         self._experiment_time_length = {}
 
+        # Conditions a pre-equilibration experiment CONSUMES (applies inline as setParameter,
+        # ADR-0052): base model -> set of condition suffixes. Removed from each model's mutant
+        # list after the loop so they do not also run as redundant separate simulations.
+        consumed_conditions = {}
+        # Conditions used the ordinary way (a regular conditioned experiment's mutant suffix),
+        # so a consumed one cannot also be a live mutant: base -> set of condition suffixes.
+        regular_conditions = {}
+
         for name, fields in experiments:
             base = self._resolve_experiment_model(name, fields.get('model'))
             model = self.models[base]
             exp_files, constraint_files = self._partition_experiment_data(name, fields['data'])
-            data_key = self._resolve_experiment_data_key(name, model, base, fields.get('condition'))
+            preequilibrate = fields.get('preequilibrate')
+            data_key = self._resolve_experiment_data_key(
+                name, model, base, fields.get('condition'), preequilibrate)
             method = fields.get('method', 'ode')
+            if preequilibrate is None and fields.get('condition') is not None:
+                regular_conditions.setdefault(base, set()).add(fields['condition'])
 
             if exp_files:
                 # The common case: quantitative .exp data drives the simulation grid (and the
@@ -933,7 +945,13 @@ class Configuration:
                     self._attach_measurement_params(name, stacked, fields['measurement_params'])
                 action_type = self._infer_experiment_type(name, stacked, fields.get('type'))
                 points = sorted({float(x) for x in stacked[stacked.indvar]})
-                if action_type == 'time_course':
+                if preequilibrate is not None:
+                    # New-era pre-equilibration (ADR-0052, #440): equilibrate UNDER the named
+                    # condition (unmeasured, to steady state), perturb to the measurement
+                    # condition, then measure -- one simulation, two phases, state carried over.
+                    action = self._build_preequilibration_action(
+                        name, model, base, method, points, action_type, fields, consumed_conditions)
+                elif action_type == 'time_course':
                     action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
                 else:
                     # parameter_scan / dose-response (ADR-0046): the data's independent-variable
@@ -966,6 +984,11 @@ class Configuration:
                 # registered (there is no quantitative data to score), but the action still runs
                 # (the engine simulates every model action), producing the output the
                 # constraints below read.
+                if preequilibrate is not None:
+                    raise PybnfError(
+                        f"Experiment '{name}' uses pre-equilibration (preequilibrate:) but has "
+                        "no .exp measurement data. Pre-equilibration measures a time course over "
+                        "the data grid after equilibrating; give it an .exp file (ADR-0052).")
                 action = self._constraint_only_action(name, method, fields)
                 model.add_action(action)
                 logger.debug(f"Experiment '{name}' (constraint-only time_course) on model "
@@ -988,6 +1011,75 @@ class Configuration:
             # the exporter refuses an experiment carrying them.
             for cf in constraint_files:
                 self._load_experiment_constraints(name, base, data_key, cf)
+
+        # Remove the conditions that pre-equilibration experiments consumed (applied inline as
+        # setParameter, ADR-0052) from each model's mutant list, so they do not also run as
+        # redundant separate simulations. A condition cannot be both consumed and a live mutant:
+        # if one is also used as a regular conditioned experiment's measurement condition, that
+        # is ambiguous -- raise.
+        for base, conds in consumed_conditions.items():
+            clash = conds & regular_conditions.get(base, set())
+            if clash:
+                raise PybnfError(
+                    f"Condition(s) {sorted(clash)} are used both for pre-equilibration "
+                    "(applied inline as setParameter) and as a regular experiment's "
+                    "'condition:' (a separate mutant simulation) on the same model. A "
+                    "condition cannot be both; use distinct conditions (ADR-0052).")
+            model = self.models[base]
+            model.mutants = [m for m in model.mutants if m.suffix not in conds]
+
+    def _preequilibration_perturbations(self, exp_name, model, condition_name):
+        """Absolute ``(param, value)`` setParameter perturbations for a pre-equilibration phase,
+        read from a named condition's ``MutationSet`` (ADR-0052).
+
+        A pre-equilibration condition is applied INLINE as ``setParameter`` (a mid-protocol
+        parameter change), so each of its mutations must resolve to an absolute value. Phase 1
+        supports absolute (``=``) perturbations only -- what receptor uses (``Ligand_isPresent
+        = 1``); a relative op (``* / + -``) needs the nominal value and is deferred (it would
+        emit an expression form), so it raises a clear message here."""
+        mut_set = next((m for m in model.mutants if m.suffix == condition_name), None)
+        if mut_set is None:
+            raise PybnfError(
+                f"Experiment '{exp_name}' references condition '{condition_name}', but no "
+                f"condition with that name is defined. Define it with a 'condition:' line.")
+        perts = []
+        for mut in mut_set.mutations:
+            if mut.operation != '=':
+                raise PybnfError(
+                    f"Experiment '{exp_name}': pre-equilibration condition '{condition_name}' "
+                    f"uses a relative perturbation ('{mut.name} {mut.operation} {mut.value}'). "
+                    "Pre-equilibration currently supports only absolute ('=') perturbations "
+                    "(applied as setParameter); use '=' (ADR-0052).")
+            perts.append((mut.name, mut.value))
+        return perts
+
+    def _build_preequilibration_action(self, name, model, base, method, points, action_type,
+                                       fields, consumed_conditions):
+        """Build the measurement ``TimeCourse`` for a pre-equilibration experiment (ADR-0052)
+        and record the conditions it consumes.
+
+        Reads the ``preequilibrate:`` condition (the unmeasured equilibration state) and the
+        measurement ``condition:`` (optional -- omitted measures at the model default) as
+        absolute ``setParameter`` perturbations, attaches them to a time-course action over the
+        data grid (so :meth:`pybnf.pset.BNGLModel.add_action` emits the two-phase block), and
+        marks both conditions consumed (removed from the model's mutants after the loop)."""
+        if action_type != 'time_course':
+            raise PybnfError(
+                f"Experiment '{name}' uses pre-equilibration (preequilibrate:) with type "
+                f"'{action_type}'. Pre-equilibration measures a time course after equilibrating; "
+                "a parameter_scan with pre-equilibration is not supported (ADR-0052).")
+        preequil_cond = fields['preequilibrate']
+        equil_perts = self._preequilibration_perturbations(name, model, preequil_cond)
+        consumed_conditions.setdefault(base, set()).add(preequil_cond)
+        meas_cond = fields.get('condition')
+        if meas_cond is not None:
+            measure_perts = self._preequilibration_perturbations(name, model, meas_cond)
+            consumed_conditions[base].add(meas_cond)
+        else:
+            measure_perts = []
+        action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+        action.set_preequilibration(equil_perts, measure_perts)
+        return action
 
     def _guard_network_free_on_bngsim(self, name, method):
         """Fail loud for the one unsupported new-era combination: a network-free method
@@ -1067,11 +1159,19 @@ class Configuration:
             f"{len(self.models)} models. Add 'model: <file>' to the experiment to say "
             "which model it simulates.")
 
-    def _resolve_experiment_data_key(self, name, model, base, condition):
+    def _resolve_experiment_data_key(self, name, model, base, condition, preequilibrate=None):
         """The exp_data/sim-output key for an experiment: the experiment name for a
         wildtype experiment, or name+condition for a conditioned one (the suffix the
         conditioned simulation output carries -- action suffix + the condition's
-        MutationSet suffix). Validates that the named condition exists on the model."""
+        MutationSet suffix). Validates that the named condition exists on the model.
+
+        Under pre-equilibration (``preequilibrate:`` set -- ADR-0052), BOTH the
+        pre-equilibration condition and the measurement ``condition:`` are applied INLINE as
+        ``setParameter`` actions on the single measured (base) simulation, not as a separate
+        mutant. So the data key is just the experiment name (the conditions are validated and
+        consumed in :meth:`_load_experiments`, not turned into a mutant suffix here)."""
+        if preequilibrate is not None:
+            return name
         if condition is None:
             return name
         cond_suffixes = {m.suffix for m in model.mutants}
