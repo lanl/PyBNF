@@ -26,14 +26,24 @@ PyBNF synthesizes the two-phase action (equilibrate **to steady state**, unmeasu
 phases — ADR-0052). `receptor_v2.bngl` carries **no `begin actions` block** and binds its 6
 rate constants by id (ADR-0034); `receptor.exp` has no `_SD`, so the objective is `sos`.
 
-## What is still deferred
+## PEtab v2: the full round trip (the arc is complete)
 
-PEtab v2 **export** and **import** of the multi-period experiment are not yet built —
-**#441 (export)** and **#442 (import + the export→import round trip)**. Until #442 lands,
-the round-trip case is recorded as a skipped test in `tests/test_new_era_validation.py`
-(`test_receptor_is_a_deferred_preequilibration_case`). The fitter is covered by
-`test_receptor_v2_builds_the_two_phase_preequilibration_action` (backend-free build) and
-`tests/test_recovery.py::test_receptor_v2_example_builds_and_fits` (real bngsim fit).
+`receptor_v2` now makes the complete PEtab v2 round trip — the multi-period
+pre-equilibration experiment maps to a **two-period Experiment** and back:
+
+| direction | shape |
+| --- | --- |
+| `preequilibrate: noligand, condition: withligand` | `experiments.tsv`: a leading `time = -inf` steady-state period under `cond_noligand` + a `time = 0` measurement period under `cond_withligand` (**#441**, export) |
+| the two-period Experiment | `experiment: receptor, preequilibrate: noligand, condition: withligand` (**#442**, import) |
+
+The export→import→re-export is **byte-identical** and **fit-preserving** (ADR-0052). Coverage:
+
+- `tests/test_new_era_validation.py::test_receptor_round_trips_through_preequilibration` —
+  the closed round trip (petablint-clean → re-export identical two-period shape → equal score);
+- `test_receptor_v2_builds_the_two_phase_preequilibration_action` — backend-free build + action
+  synthesis; `test_receptor_v2_exports_a_petab_clean_preequilibration_problem` — the export half;
+- `tests/test_petab_import.py::TestImportPreequilibrationRoundTrip` — a focused import round trip;
+- `tests/test_recovery.py::test_receptor_v2_example_builds_and_fits` — the real bngsim fit.
 
 Both `receptor.conf` (legacy) and `receptor_v2.conf` (edition-2) fit the same problem
 (BioNetFit 1, example 5); use whichever surface you prefer.

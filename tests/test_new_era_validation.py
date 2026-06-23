@@ -29,10 +29,11 @@ petab (the v2 typed-table API + validator) ARE used, exactly as in ``test_petab_
 and are present in the default-CI leg. ``pytest.importorskip('petab.v2')`` guards the petab
 oracle so the suite still collects where petab is absent.
 
-The ``receptor`` example (a multi-phase pre-equilibration protocol, ADR-0052) is now on the
-new-era surface: it builds + fits (Phase 1, #440) and EXPORTS to a petablint-clean two-period
-problem (Phase 2, #441) -- both covered below. Its PEtab import / round-trip is Phase 3 (#442),
-recorded as a skipped case at the end; ``examples/receptor/NEW_ERA_NOTE.md`` tracks the arc.
+The ``receptor`` example (a multi-phase pre-equilibration protocol, ADR-0052) is now fully on
+the new-era surface: it builds + fits (Phase 1, #440), EXPORTS to a petablint-clean two-period
+problem (Phase 2, #441), and IMPORTS / round-trips (Phase 3, #442) -- the two-period ``-inf``/
+``0`` Experiment reads back as a ``preequilibrate:`` experiment and re-exports byte-identically.
+All three legs are covered below; ``examples/receptor/NEW_ERA_NOTE.md`` tracks the arc.
 """
 import csv
 import os
@@ -433,9 +434,10 @@ class TestPerObservableNoiseExample:
 
 
 # --------------------------------------------------------------------------- #
-# receptor pre-equilibration (ADR-0052, #440 Phase 1): the FITTER is built -- the
-# edition-2 receptor_v2 builds its two-phase action here (backend-free). PEtab
-# export/import of the multi-period experiment stays deferred (#441/#442).
+# receptor pre-equilibration (ADR-0052): the full arc on the edition-2 receptor_v2,
+# backend-free -- the FITTER builds its two-phase action (#440 Phase 1), the job EXPORTS
+# to a petablint-clean two-period problem (#441 Phase 2), and it IMPORTS / round-trips
+# (#442 Phase 3, the multi-period inversion that recovers `preequilibrate:`).
 # --------------------------------------------------------------------------- #
 RECEPTOR_V2_CONF = EXAMPLES / 'receptor' / 'receptor_v2.conf'
 
@@ -489,11 +491,37 @@ def test_receptor_v2_exports_a_petab_clean_preequilibration_problem(tmp_path):
     assert _petab_validation_errors(out / 'problem.yaml') == []
 
 
-@pytest.mark.skip(reason="PEtab IMPORT of receptor's multi-period pre-equilibration experiment "
-                         "(and the export -> import -> export round trip) is deferred to #442 "
-                         "(Phase 3). EXPORT now works (ADR-0052, #441 Phase 2): receptor_v2 "
-                         "exports a petablint-clean two-period problem -- see "
-                         "test_receptor_v2_exports_a_petab_clean_preequilibration_problem. This "
-                         "case is promoted to a full round trip when import lands (#442).")
-def test_receptor_is_a_deferred_preequilibration_case():
-    pass
+def test_receptor_round_trips_through_preequilibration(tmp_path):
+    """``examples/receptor/receptor_v2`` makes the full PEtab v2 round trip (ADR-0052, #442
+    Phase 3): export -> import recovers the ``preequilibrate:`` experiment -> re-export is
+    byte-identical, and the round trip is fit-preserving. The import is the multi-period
+    inversion Phase 3 adds: the two-period ``-inf``/``0`` Experiment is read back as
+    ``experiment: receptor, preequilibrate: noligand, condition: withligand``, NOT flattened to
+    a plain conditioned time course (the pre-#442 bug). Backend-free (BNG2.pl ``--check`` via the
+    petablint oracle; the fit-preserving score runs the objective over a synthetic trajectory)."""
+    petab1, imp, petab2 = _round_trip(RECEPTOR_V2_CONF, tmp_path / 'receptor_rt')
+
+    # (a) the first export is petablint-clean (the Phase-2 guarantee, re-asserted here).
+    assert _petab_validation_errors(petab1 / 'problem.yaml') == []
+
+    # (b) import recovers the pre-equilibration experiment line -- preequilibrate: before
+    # condition: (the fitter grammar / receptor_v2.conf authoring order), not a flattened
+    # `condition: withligand` time course that drops the -inf equilibration period.
+    exp_lines = [ln for ln in (imp / 'imported.conf').read_text().splitlines()
+                 if ln.startswith('experiment:')]
+    assert exp_lines == [
+        'experiment: receptor, preequilibrate: noligand, condition: withligand, '
+        'method: ode, data: receptor.exp']
+
+    # (c) the re-export reproduces the identical two-period shape (the double round trip).
+    assert [(e['experimentId'], e['time'], e['conditionId'])
+            for e in _tsv_rows(petab2 / 'experiments.tsv')] == [
+        ('receptor', '-inf', 'cond_noligand'),
+        ('receptor', '0', 'cond_withligand')]
+    assert _petab_validation_errors(petab2 / 'problem.yaml') == []
+
+    # (d) fit-preserving: the synthetic trajectory scores identically through the original and
+    # the re-imported objective (the equilibration phase is preserved, so the fit is the same).
+    original = _score(_build_cfg(RECEPTOR_V2_CONF))
+    reimported = _score(_build_cfg(imp / 'imported.conf'))
+    assert reimported == pytest.approx(original)

@@ -74,6 +74,7 @@ placeholders. (One-sided truncation now maps to a half-bounded box -- ADR-0047, 
 
 import math
 import re
+from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
@@ -763,8 +764,54 @@ def _approx(a, b):
 
 
 # ---------------------------------------------------------------------------
-# Experiments: measurement groups + experiment rows -> (name, condition, data files)
+# Experiments: measurement groups + experiment rows -> conf experiment entries
 # ---------------------------------------------------------------------------
+
+# One reconstructed conf experiment. A 7-wide record shared by :func:`_experiments`,
+# :func:`_dose_response_experiments`, and :func:`_write_conf` -- a namedtuple (not a bare
+# tuple) so the three sites bind by field name and a new field can't silently mis-align a
+# positional unpack. ``preequilibrate`` (ADR-0052) is the unmeasured steady-state condition a
+# pre-equilibration experiment equilibrates under before the ``condition:`` measurement period;
+# ``None`` for a plain time course or a dose-response scan.
+ImportedExperiment = namedtuple(
+    'ImportedExperiment',
+    ['name', 'condition', 'preequilibrate', 'data_files', 'model_location',
+     'measparams_file', 't_end'])
+
+
+def _condition_and_preequilibrate(periods, name):
+    """Resolve an experiment's measurement ``condition:`` and optional ``preequilibrate:`` from
+    its experiments-table period rows (sorted by time) -- the inverse of Phase 2's
+    :func:`~pybnf.petab.conditions.build_preequilibration_conditions` (ADR-0052).
+
+    A single-period experiment is a plain time course: its sole ``conditionId`` is the
+    measurement condition, no pre-equilibration. A **two-period** experiment whose leading
+    period is a ``time = -inf`` steady state is a pre-equilibration: the ``-inf`` period's
+    condition equilibrates the system unmeasured (the ``preequilibrate:`` state) before the
+    ``time = 0`` measurement period's ``condition:`` (a blank ``conditionId`` there -> ``None``
+    = a wash-out measured at the model default). Returns ``(condition, preequilibrate)``, each a
+    condition name or ``None``.
+
+    Only steady-state (``time = -inf``) equilibration is in scope -- Phase 1 deferred fixed-time
+    equilibration -- so a finite leading period, an experiment of more than two periods, or a
+    non-leading ``-inf`` raises :class:`NotImplementedError` rather than silently flattening the
+    experiment to its last period (the pre-#442 bug).
+    """
+    if len(periods) <= 1:
+        cid = periods[0].condition_id if periods else None
+        return condition_name_from_id(cid), None
+    if (len(periods) == 2 and math.isinf(periods[0].time) and periods[0].time < 0
+            and math.isfinite(periods[1].time)):
+        return (condition_name_from_id(periods[1].condition_id),
+                condition_name_from_id(periods[0].condition_id))
+    raise NotImplementedError(
+        f"Experiment '{name}' has a {len(periods)}-period PEtab experiments-table structure "
+        f"(times {[r.time for r in periods]}) the importer does not recover. Only a "
+        f"single-period time course or a two-period pre-equilibration (a leading time=-inf "
+        f"steady-state period + a finite measurement period, ADR-0052) is supported; a finite "
+        f"leading equilibration period (fixed-time equilibration) and experiments of more than "
+        f"two periods are deferred (Phase 1/2 cover steady-state -inf only).")
+
 
 def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindings=None):
     """Assemble the conf's experiments and write each one's ``.exp`` file(s).
@@ -775,26 +822,34 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
     all bound to the one experiment's ``data:`` list -- the inverse of the forward export,
     which stacks an experiment's replicate ``Data`` objects into repeated measurement rows
     (ADR-0039). The single-replicate case keeps the bare ``<name>.exp`` name, so the common
-    round trip is byte-stable. The experiment's condition comes from the experiments table
+    round trip is byte-stable. The experiment's condition comes from its experiments-table
+    period rows, grouped by experimentId: a single period gives the measurement condition
     (``cond_<c>`` -> ``c``; the synthesized ``cond_wildtype`` and an absent row -> no
-    condition). A ``''`` experimentId is the "model as is" base time course (PEtab erased
-    its name because the job had no fit-and-perturbed parameters); it is synthesized a name,
-    which never reaches the PEtab output (it re-exports to ``''`` again) -- a name keyed on the
-    modelId when set, so two wildtype experiments on different models stay distinct. Each
-    experiment's model is the ``modelId`` on its rows: ``model_location_of`` maps it to the
-    model file, emitted as a per-experiment ``model:`` field (omitted for a single-model job,
-    whose modelId is ``''``).
+    condition); a two-period ``-inf``/finite pair recovers ``preequilibrate:`` + ``condition:``
+    (ADR-0052, :func:`_condition_and_preequilibrate`). A ``''`` experimentId is the "model as
+    is" base time course (PEtab erased its name because the job had no fit-and-perturbed
+    parameters); it is synthesized a name, which never reaches the PEtab output (it re-exports
+    to ``''`` again) -- a name keyed on the modelId when set, so two wildtype experiments on
+    different models stay distinct. Each experiment's model is the ``modelId`` on its rows:
+    ``model_location_of`` maps it to the model file, emitted as a per-experiment ``model:``
+    field (omitted for a single-model job, whose modelId is ``''``).
 
     ``param_bindings`` (ADR-0045) is the ``{(experiment_id, model_id): {column: {placeholder:
     {time: token}}}}`` per-measurement binding table; a group with an entry also writes a
     ``<name>_measparams.tsv`` sidecar carrying its row-varying noise tokens, emitted as the
-    experiment's ``measurement_params:`` field. Returns ``[(name, condition_or_None,
-    [data_file, ...], model_location_or_None, measparams_file_or_None, t_end_or_None), ...]`` in
-    measurement order; ``t_end`` is ``None`` for a time course (the dose-response scans append
-    their own entries -- :func:`_dose_response_experiments`).
+    experiment's ``measurement_params:`` field. Returns a list of :class:`ImportedExperiment`
+    in measurement order; ``t_end`` is ``None`` for a time course (the dose-response scans
+    append their own entries -- :func:`_dose_response_experiments`).
     """
     param_bindings = param_bindings or {}
-    condition_of = {row.experiment_id: row.condition_id for row in experiment_rows}
+    # Group the experiment rows into per-experimentId period lists, sorted by time -- the
+    # multi-period structure a pre-equilibration experiment carries (ADR-0052). The pre-#442
+    # flat {experiment_id: condition_id} map overwrote here, dropping the -inf period.
+    periods_of = {}
+    for row in experiment_rows:
+        periods_of.setdefault(row.experiment_id, []).append(row)
+    for rows in periods_of.values():
+        rows.sort(key=lambda r: r.time)
     experiments = []
     for (eid, mid), group in datas.items():
         if eid:
@@ -803,7 +858,7 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
             name = f'experiment_{mid}'
         else:
             name = 'experiment1'
-        condition = condition_name_from_id(condition_of.get(eid))
+        condition, preequilibrate = _condition_and_preequilibrate(periods_of.get(eid, []), name)
         model_location = model_location_of.get(mid)   # None for a single-model job (mid '')
         data_files = []
         for k, data in enumerate(group):
@@ -815,7 +870,8 @@ def _experiments(datas, experiment_rows, out_dir, model_location_of, param_bindi
         if binding:
             measparams_file = f'{name}_measparams.tsv'
             write_measurement_params(binding, out_dir / measparams_file)
-        experiments.append((name, condition, data_files, model_location, measparams_file, None))
+        experiments.append(ImportedExperiment(
+            name, condition, preequilibrate, data_files, model_location, measparams_file, None))
     return experiments
 
 
@@ -826,9 +882,9 @@ def _dose_response_experiments(dose_responses, out_dir, model_location_of):
     swept parameter, so ``config._infer_experiment_type`` reads it as a parameter_scan -- no
     ``type:`` field needed). A steady-state scan (``scan_time`` inf) carries ``t_end = None`` (it
     runs to steady state, PEtab time=inf); a finite scan carries that endpoint. Returns the same
-    ``(name, condition, [data_file], model_location, measparams_file, t_end)`` tuple shape as
-    :func:`_experiments` (condition / measparams are always ``None`` -- a dose is the scan axis,
-    not a named condition, and a dose-response carries no per-measurement sidecar)."""
+    :class:`ImportedExperiment` records as :func:`_experiments` (condition / preequilibrate /
+    measparams are always ``None`` -- a dose is the scan axis, not a named condition, a scan is
+    never a pre-equilibration, and a dose-response carries no per-measurement sidecar)."""
     experiments = []
     for dr in dose_responses:
         name = dr['name']
@@ -836,7 +892,8 @@ def _dose_response_experiments(dose_responses, out_dir, model_location_of):
         _write_exp(out_dir / data_file, dr['data'])
         model_location = model_location_of.get(dr['model_id'])
         t_end = None if math.isinf(dr['scan_time']) else dr['scan_time']
-        experiments.append((name, None, [data_file], model_location, None, t_end))
+        experiments.append(ImportedExperiment(name, None, None, [data_file], model_location,
+                                              None, t_end))
     return experiments
 
 
@@ -894,21 +951,25 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
     for name, perts in conditions.items():
         pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
         lines.append(f'condition: {name}, perturbations: {pert_str}')
-    for name, condition, data_files, model_location, measparams_file, t_end in experiments:
-        sim_method = method_overrides.get(name, method)
-        cond_field = f', condition: {condition}' if condition else ''
-        model_field = f', model: {model_location}' if model_location else ''
+    for exp in experiments:
+        sim_method = method_overrides.get(exp.name, method)
+        # A pre-equilibration experiment (ADR-0052) leads with its unmeasured steady-state
+        # `preequilibrate:` condition, then the measured `condition:` -- mirroring the fitter
+        # grammar / receptor_v2.conf authoring order (`preequilibrate:` before `condition:`).
+        preequil_field = f', preequilibrate: {exp.preequilibrate}' if exp.preequilibrate else ''
+        cond_field = f', condition: {exp.condition}' if exp.condition else ''
+        model_field = f', model: {exp.model_location}' if exp.model_location else ''
         # A fixed-endpoint dose-response scan's endpoint time (ADR-0046); a steady-state scan
         # and a time course carry none (the scan runs to steady state / the data drives the grid).
-        tend_field = f', t_end: {num(t_end)}' if t_end is not None else ''
+        tend_field = f', t_end: {num(exp.t_end)}' if exp.t_end is not None else ''
         # The row-varying per-measurement binding sidecar (ADR-0045), when this experiment
         # carries one; config.py attaches it to the experiment's exp Data.
-        mp_field = f', measurement_params: {measparams_file}' if measparams_file else ''
+        mp_field = f', measurement_params: {exp.measparams_file}' if exp.measparams_file else ''
         data_field = ', '.join(f'data: {f}' if i == 0 else f
-                               for i, f in enumerate(data_files))
+                               for i, f in enumerate(exp.data_files))
         lines.append(
-            f'experiment: {name}{cond_field}{model_field}, method: {sim_method}'
-            f'{tend_field}{mp_field}, {data_field}')
+            f'experiment: {exp.name}{preequil_field}{cond_field}{model_field}, '
+            f'method: {sim_method}{tend_field}{mp_field}, {data_field}')
     lines.append('')
     lines.extend(free_param_lines)
     lines.append('')

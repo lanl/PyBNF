@@ -39,7 +39,9 @@ from pybnf.petab import (
     read_problem_yaml,
 )
 from pybnf.petab._bngl import parse_model
+from pybnf.petab.import_ import _condition_and_preequilibrate
 from pybnf.petab.conditions import (
+    PetabExperimentRow,
     build_experiment_conditions,
     conditions_from_rows,
     read_condition_table,
@@ -346,6 +348,142 @@ class TestImportDoseResponseRoundTrip:
         assert all(m['time'] == '250' for m in meas)
         assert 't_end: 250' in conf_path.read_text()
         _assert_problem_round_trips(petab1, petab2)
+
+
+# ---------------------------------------------------------------------------
+# Pre-equilibration: a PEtab v2 two-period Experiment (a leading time=-inf
+# steady-state period under the pre-equilibration condition + a time=0 measurement
+# period under the measurement condition) imports as a new-era `preequilibrate:`
+# experiment and round-trips byte-for-byte (ADR-0052, #442 Phase 3).
+# ---------------------------------------------------------------------------
+
+# A birth-death model whose decay is gated by a 0/1 flag (the receptor Ligand_isPresent idiom):
+# flag is a FIXED model parameter the two conditions perturb (M empty -- no surrogate split), k
+# is the bare-id fit parameter.
+_PREEQUIL_MODEL = """begin model
+begin parameters
+  k     1.0
+  flag  1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 10
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin functions
+  deg() k*flag
+end functions
+begin reaction rules
+  A() -> 0 deg()
+end reaction rules
+end model
+"""
+
+_PREEQUIL_CONF = (
+    'edition = 2\njob_type = de\nobjective = sos\n'
+    'model: m.bngl\n'
+    'condition: pre,  perturbations: flag = 0\n'
+    'condition: meas, perturbations: flag = 1\n'
+    'experiment: relax, preequilibrate: pre, condition: meas, data: relax.exp\n'
+    'uniform_var = k 0.1 10\n')
+
+_PREEQUIL_EXP = '# time A_tot\n0\t10\n1\t6\n2\t4\n'
+
+
+class TestImportPreequilibrationRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(
+            tmp_path_factory.mktemp('preequil'), _PREEQUIL_CONF,
+            extra_files={'m.bngl': _PREEQUIL_MODEL, 'relax.exp': _PREEQUIL_EXP},
+            model_name='m.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        # The strong oracle: export a pre-equilibration (the two-period -inf/0 Experiment),
+        # import (recovering preequilibrate: from the multi-period structure), re-export
+        # byte-for-byte -- the experiments/conditions/measurements tables all reproduce.
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_first_export_is_a_two_period_experiment(self, imported):
+        # Sanity on the source PEtab: the leading -inf equilibration period (cond_pre) precedes
+        # the time=0 measurement period (cond_meas).
+        petab1, _, _, _ = imported
+        assert [(r['experimentId'], r['time'], r['conditionId'])
+                for r in _tsv_rows(petab1 / 'experiments.tsv')] == [
+            ('relax', '-inf', 'cond_pre'),
+            ('relax', '0', 'cond_meas')]
+
+    def test_imported_conf_recovers_the_preequilibrate_experiment(self, imported):
+        # The crux of #442: the two-period structure is read back as a single preequilibrate:
+        # experiment (preequilibrate: before condition:, the fitter grammar order), NOT
+        # flattened to a `condition: meas` time course that drops the -inf period (the pre-#442
+        # bug -- the flat experiment->condition map let the last row win).
+        _, _, _, conf = imported
+        text = conf.read_text()
+        assert ('experiment: relax, preequilibrate: pre, condition: meas, '
+                'method: ode, data: relax.exp') in text
+        assert 'condition: pre, perturbations: flag = 0' in text
+        assert 'condition: meas, perturbations: flag = 1' in text
+
+    def test_imported_conf_synthesizes_the_two_phase_action(self, imported, monkeypatch):
+        # The fitter accepts the imported conf and synthesizes the equilibrate -> perturb ->
+        # measure two-phase action (the pre-equilibration keystone, end to end from a PEtab
+        # problem). Backend-free: BNG2.pl -v validates the model; no bngsim, no simulation.
+        from pybnf.config import Configuration
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        c = Configuration(ploop(conf.read_text().splitlines(keepends=True)))
+        acts = c.models['m'].actions
+        assert any('steady_state=>1' in a for a in acts)   # the unmeasured equilibration phase
+        assert 'setParameter("flag",0)' in acts            # equilibrate under pre (flag=0)
+        assert 'setParameter("flag",1)' in acts            # measure under meas (flag=1)
+
+
+class TestPreequilibrationPeriodGrouping:
+    """White-box on the multi-period resolver (`_condition_and_preequilibrate`, ADR-0052/#442):
+    a single period is a plain time course; a leading time=-inf steady-state period + a finite
+    measurement period is a pre-equilibration; only steady-state -inf equilibration is in scope
+    (Phase 1/2), so a finite leading period or >2 periods raises rather than silently flattens."""
+
+    def _row(self, time, cid):
+        return PetabExperimentRow('relax', time, cid)
+
+    def test_single_period_is_a_plain_time_course(self):
+        # One period -> the measurement condition, no pre-equilibration.
+        assert _condition_and_preequilibrate([self._row(0.0, 'cond_meas')], 'relax') == \
+            ('meas', None)
+
+    def test_leading_minus_inf_is_a_preequilibration(self):
+        # The -inf period's condition is preequilibrate:, the time=0 period's is condition:
+        # (sorted by time, so the rows can arrive in either order).
+        periods = [self._row(0.0, 'cond_meas'), self._row(float('-inf'), 'cond_pre')]
+        periods.sort(key=lambda r: r.time)
+        assert _condition_and_preequilibrate(periods, 'relax') == ('meas', 'pre')
+
+    def test_wash_out_measurement_period_drops_the_condition(self):
+        # A blank measurement conditionId (a wash-out, Phase 2's empty time=0 period) -> no
+        # condition:, just preequilibrate:.
+        periods = [self._row(float('-inf'), 'cond_pre'), self._row(0.0, '')]
+        assert _condition_and_preequilibrate(periods, 'relax') == (None, 'pre')
+
+    def test_finite_leading_equilibration_period_is_deferred(self):
+        # A FINITE leading period is fixed-time equilibration (ADR-0052 "Out"), not steady state;
+        # refuse rather than flatten to the last period.
+        periods = [self._row(100.0, 'cond_pre'), self._row(200.0, 'cond_meas')]
+        with pytest.raises(NotImplementedError, match='fixed-time equilibration'):
+            _condition_and_preequilibrate(periods, 'relax')
+
+    def test_more_than_two_periods_is_deferred(self):
+        periods = [self._row(float('-inf'), 'cond_pre'), self._row(0.0, 'cond_meas'),
+                   self._row(50.0, 'cond_late')]
+        with pytest.raises(NotImplementedError, match='more than'):
+            _condition_and_preequilibrate(periods, 'relax')
 
 
 # ---------------------------------------------------------------------------
