@@ -143,6 +143,7 @@ addopts = "-m 'not slow and not recovery'"
 markers = [
     "slow: long-running statistical recovery tests; deselected by default, run with `-m slow`",
     "recovery: synthetic-data parameter-recovery fits through the real bngsim backend; opt-in, run with `-m recovery` (needs bngsim + BNG2.pl)",
+    "newera: fast new-era (edition-2) validation surface (#436) -- backend-free import/export round-trips (run in default CI) plus a tiny new-era recovery sub-tier (runs by default where bngsim is present, skips otherwise); select with `-m newera`",
     "integration: end-to-end algorithm runs against analytical targets (no simulation backend)",
     "bngsim: requires bngsim installed and PYBNF_NO_BNGSIM unset",
     "bngsim_nfsim: requires bngsim built with NFsim",

@@ -1,0 +1,50 @@
+begin model
+
+  begin parameters
+
+# Original values used to generate par1.exp
+# (v1, v2, v3) = 0.5, 1, 3
+
+#Parabola:    y = v1*(x^2)  +  v2*x  +  v3
+
+# New-era (edition 2) binds each free parameter to the model parameter of the
+# same id (ADR-0034), so these carry bare numeric nominals -- no `v#__FREE` alias.
+    v1 0.5
+    v2 1
+    v3 3
+
+# b_y is the scale of the Laplace observation noise on observable y. It is a
+# fit-time noise parameter (used by the likelihood, not the dynamics), but like
+# every new-era free parameter it binds to a model parameter by id (ADR-0034), so
+# it is declared here with a bare nominal -- the .conf's `noise_model y = laplace,
+# scale = fit b_y` line drives it.
+    b_y 1.0
+
+  end parameters
+
+  begin molecule types
+    counter()
+  end molecule types
+
+  begin seed species
+    # initial conditions
+    counter() -10
+  end seed species
+
+  begin observables
+    Molecules x counter()
+  end observables
+
+  begin functions
+    y()=v1*(x^2)+(v2*x)+v3
+  end functions
+
+  begin reaction rules
+    0->counter() 1
+  end reaction rules
+
+end model
+
+# This model carries no actions block: under the new era (edition 2) the simulation is
+# synthesized from the `experiment:` line (its `data:` supplies the output points), so the
+# model file carries no fitting actions. See per_observable_noise_v2.conf and ADR-0028.

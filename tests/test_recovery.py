@@ -1,11 +1,27 @@
-"""Recovery tier (opt-in ``-m recovery``): synthetic-data parameter recovery for
-a small set of tiny ODE models, fit through the **real bngsim backend**.
+"""Recovery tier: synthetic-data parameter recovery for a small set of tiny ODE
+models, fit through the **real bngsim backend**.
 
 For each model we simulate at known-true parameters to generate a zero-noise
 ``.exp`` (the oracle), then a real fit must recover those parameters. This
 exercises the simulate -> score -> propose loop end to end with a genuine
 simulation engine -- the integration surface the analytical tiers
 (``test_optimizer_integration`` / ``test_sampler_integration``) deliberately fake.
+
+**Two sub-tiers split by marker (#436):**
+
+  * the **fast new-era sub-tier** (``newera`` marker, NOT ``recovery``) -- the two
+    tiny edition-2 recovery fits (a synthesized time course, m01; a synthesized
+    steady-state dose-response, m08). These run **by default** wherever bngsim is
+    present (a plain ``pytest`` includes them; they auto-skip via the ``bngsim``
+    marker where it is absent, e.g. the public-CI leg), so the new-era
+    ``experiment:`` surface gets default real-backend coverage without ``-m recovery``.
+  * the **heavy opt-in tier** (``recovery`` marker) -- the broader multi-model /
+    multi-seed fits, the sampler recovery, and the real-``run_job`` smoke. These stay
+    deselected by default (``addopts = -m 'not slow and not recovery'``) and run with
+    ``-m recovery``.
+
+Both need bngsim (auto-skipped via the ``bngsim`` marker) and BNG2.pl for the
+one-time network generation (``recovery_harness.require_bng2pl`` skips otherwise).
 
 See ``tests/recovery_harness.py`` for the faithfulness boundary (bngsim
 simulation is real; dask + per-evaluation folders are faked, the latter covered
@@ -21,16 +37,19 @@ decisions so a failure points at the right layer:
   * ``test_de_recovers``    -- the fit reproduces the data (hard gate, relative to
     data magnitude) AND recovers the identifiable parameters (soft gate), across
     two seeds so it can't pass by a lucky one.
-  * ``test_de_recovers_via_experiment_surface`` -- the same m01 recovery driven by a
-    new-era ``experiment:`` / ``data:`` conf (ADR-0028) on a model with NO ``begin
-    actions`` block, proving PyBNF's synthesized ``sample_times`` simulation scores
-    correctly end to end through the real backend.
+  * ``test_de_recovers_via_experiment_surface`` (``newera``) -- the same m01 recovery
+    driven by a new-era ``experiment:`` / ``data:`` conf (ADR-0028) on a model with NO
+    ``begin actions`` block, proving PyBNF's synthesized ``sample_times`` simulation
+    scores correctly end to end through the real backend.
+  * ``test_de_recovers_dose_response_steady_state`` (``newera``) -- a new-era
+    ``parameter_scan`` recovering a rate from steady-state dose-response data (ADR-0046).
   * ``test_de_reproducible`` -- a fixed seed gives a bit-identical fit (RNG
     determinism on the real-sim path).
   * ``test_m01_real_run_job_smoke`` -- one fit through the genuine run_job/folders.
 
-Needs bngsim (auto-skipped via the ``bngsim`` marker) and BNG2.pl for the
-one-time network generation (``recovery_harness.require_bng2pl`` skips otherwise).
+The module carries the ``bngsim`` marker for every test; the heavy fits add
+``recovery`` (opt-in), while the two ``newera`` fits carry neither ``recovery`` nor
+``slow`` so they run by default wherever bngsim is present (#436).
 """
 import re
 from dataclasses import dataclass, replace
@@ -42,7 +61,10 @@ import pytest
 from . import recovery_harness as H
 
 
-pytestmark = [pytest.mark.recovery, pytest.mark.bngsim]
+# Every test in this module needs the real bngsim backend (auto-skipped via the
+# ``bngsim`` marker where bngsim is absent). The ``recovery`` (opt-in) vs ``newera``
+# (default-run) split is applied per test below (#436).
+pytestmark = [pytest.mark.bngsim]
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +214,7 @@ def _assert_recovered(spec, alg):
 # --------------------------------------------------------------------------- #
 # Oracle well-posedness (no optimizer)
 # --------------------------------------------------------------------------- #
+@pytest.mark.recovery
 @pytest.mark.parametrize('name', [n for n, s in MODELS.items() if s.analytic])
 def test_synthetic_data_matches_analytic(name, exp_for):
     """Where a closed form exists, the generated data matches it -- an
@@ -207,6 +230,7 @@ def test_synthetic_data_matches_analytic(name, exp_for):
 # --------------------------------------------------------------------------- #
 # Recovery: hard gate (data reproduced) + soft gate (params), across two seeds
 # --------------------------------------------------------------------------- #
+@pytest.mark.recovery
 @pytest.mark.usefixtures('_fakes')
 @pytest.mark.parametrize('name', list(MODELS))
 @pytest.mark.parametrize('seed', [1234, 7])
@@ -229,6 +253,7 @@ def test_de_recovers(name, seed, tmp_path, exp_for):
 # --------------------------------------------------------------------------- #
 # New-era experiment:/data: surface (ADR-0028 Chunk 3d): same recovery, modern conf
 # --------------------------------------------------------------------------- #
+@pytest.mark.newera
 @pytest.mark.usefixtures('_fakes')
 @pytest.mark.parametrize('seed', [1234, 7])
 def test_de_recovers_via_experiment_surface(seed, tmp_path, exp_for):
@@ -276,6 +301,7 @@ def test_de_recovers_via_experiment_surface(seed, tmp_path, exp_for):
 # --------------------------------------------------------------------------- #
 # New-era parameter_scan (dose-response) at steady state (ADR-0046)
 # --------------------------------------------------------------------------- #
+@pytest.mark.newera
 @pytest.mark.usefixtures('_fakes')
 @pytest.mark.parametrize('seed', [1234, 7])
 def test_de_recovers_dose_response_steady_state(seed, tmp_path):
@@ -334,6 +360,7 @@ def test_de_recovers_dose_response_steady_state(seed, tmp_path):
 # --------------------------------------------------------------------------- #
 # Determinism (guards the RNG-migration contract on the real-sim path)
 # --------------------------------------------------------------------------- #
+@pytest.mark.recovery
 @pytest.mark.usefixtures('_fakes')
 def test_de_reproducible(tmp_path, exp_for):
     """A fixed seed yields a bit-identical best fit. Determinism is a property of
@@ -348,6 +375,7 @@ def test_de_reproducible(tmp_path, exp_for):
 # --------------------------------------------------------------------------- #
 # Real run_job smoke (genuine production path with the bngsim backend)
 # --------------------------------------------------------------------------- #
+@pytest.mark.recovery
 def test_m01_real_run_job_smoke(tmp_path, exp_for, monkeypatch):
     """One fit through the GENUINE ``run_job`` + per-evaluation folders with the
     bngsim backend, so the production path (not just ``slim_run_job``) is covered."""
@@ -366,6 +394,7 @@ AM_BUDGET = dict(population_size=3, max_iterations=600, adaptive=100, burn_in=20
                  rhat_threshold=0)
 
 
+@pytest.mark.recovery
 @pytest.mark.usefixtures('_fakes')
 def test_am_recovers_m01(tmp_path, exp_for):
     """The ``am`` sampler run through bngsim concentrates its posterior at the
