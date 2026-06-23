@@ -1260,10 +1260,11 @@ class TestBoundaries:
                 tmp_path, f"objective = {objfunc}\nuniform_var = v1 0 10\n"),
                 tmp_path / 'out')
 
-    def test_free_parameter_sigma_objective_not_implemented(self, tmp_path):
-        # chi_sq_dynamic's free sigma needs the noise parameter wired into the PEtab
-        # parameter table -- a deferred sigma-source path (raised at column classification).
-        with pytest.raises(NotImplementedError):
+    def test_implicit_dynamic_sigma_objective_not_implemented(self, tmp_path):
+        # A declared `fit` noise scale now exports (#439); chi_sq_dynamic is the remaining
+        # boundary because its free sigma is an IMPLICIT `sigma__FREE` the user never declared,
+        # so there are no bounds/prior to write as a PEtab estimated parameter.
+        with pytest.raises(NotImplementedError, match='sigma__FREE'):
             export_job(_boundary_conf(
                 tmp_path, "objective = chi_sq_dynamic\nuniform_var = v1 0 10\n"),
                 tmp_path / 'out')

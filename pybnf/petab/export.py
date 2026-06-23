@@ -164,6 +164,19 @@ def export_job(conf_path, out_dir, inline_functions=False):
     per_obs_noise = _resolve_per_observable_noise(conf)
     _reject_cumulative(conf)
     free_params = _free_parameters_from_conf(conf)
+    # An estimated (`fit`) sigma exports as a bare-id noiseFormula naming an estimated PEtab
+    # parameter (#439), so its noise scale must be a DECLARED free parameter (with bounds/prior
+    # to write). The legacy whole-fit `chi_sq_dynamic` synthesizes an IMPLICIT `sigma__FREE` the
+    # user never declared, so it has nothing to write -- still a boundary.
+    _declared_free = {fp.name for fp in free_params}
+    for _dist, _verb, _arg in [noise, *per_obs_noise.values()]:
+        if _verb == 'fit' and _arg not in _declared_free:
+            raise NotImplementedError(
+                f"The objective's estimated sigma '{_arg}' is an implicit noise parameter "
+                f"(e.g. chi_sq_dynamic's sigma__FREE) that is not a declared free parameter, so "
+                f"it has no bounds/prior to export as a PEtab estimated parameter. Declare it as "
+                f"a free parameter (as a per-observable `fit` noise scale does) to export it. "
+                f"ADR-0021/0023, #439.")
     # A registry of per-language model views (ADR-0040/0041): a job may mix BNGL + SBML,
     # each read once and threaded through the language-agnostic classification below.
     registry = {mf: _read_model(mf, conf_path.parent / mf, languages[mf]) for mf in models}
@@ -890,9 +903,13 @@ def _noise_source_for_column(verb, arg, col, datas):
       noiseFormula emitted verbatim with its placeholder and the per-row token supplied by the
       measurements' ``noiseParameters`` column (the binding-table sidecar).
 
-    A free-parameter sigma (``fit``) and a relative sigma (``relative``) are deferred
-    boundaries: the former needs the noise parameter wired into the PEtab parameter
-    table (it is not a model parameter), and the latter is a ``noiseFormula``
+    * ``fit`` -> ``('free_param', id)``: a free-parameter (estimated) sigma -> a bare-id
+      noiseFormula naming the noise parameter ``id``, declared estimated in the parameter table
+      and admitted as an observation-layer nuisance (not a model entity -- #439). The importer
+      reads it back to a ``fit`` source (ADR-0044), so a per-observable estimated sigma
+      round-trips.
+
+    A relative sigma (``relative``) is still a deferred boundary: it is a ``noiseFormula``
     expression (the sympy layer, mirroring the importer's expression boundary).
     """
     holders = [data for data in datas if col in data.cols]
@@ -911,11 +928,17 @@ def _noise_source_for_column(verb, arg, col, datas):
         return ('constant', float(arg))
     if verb == 'column_mean':
         return ('constant', float(np.average(np.concatenate([d[col] for d in holders]))))
+    if verb == 'fit':
+        # A free-parameter (estimated) sigma -> a bare-id noiseFormula naming the noise
+        # parameter (declared estimated in parameters.tsv; admitted as an observation-layer
+        # nuisance by _referenced_nuisance_symbols, NOT a model entity -- #439). The importer
+        # reads a bare-id noiseFormula back to a 'fit' source (ADR-0044), so a per-observable
+        # estimated sigma (the per_observable_noise example / Boehm's sd_*) round-trips.
+        return ('free_param', arg)
     raise NotImplementedError(
         f"Observable column '{col}': the '{verb}' sigma source is a later export chunk "
-        f"-- a free-parameter sigma (fit) needs the noise parameter wired into the "
-        f"PEtab parameter table, and a relative sigma is a noiseFormula expression (the "
-        f"sympy layer, mirroring the importer boundary). ADR-0021/0023, #423.")
+        f"-- a relative sigma is a noiseFormula expression (the sympy layer, mirroring "
+        f"the importer boundary). ADR-0021/0023, #423.")
 
 
 def _resolve_free_to_model(free_params, registry, models, nuisances=()):
@@ -980,6 +1003,9 @@ def _referenced_nuisance_symbols(conf, conf_path, noise, per_obs_noise):
       symbol, e.g. ``scaling`` in ``scaling*x``);
     * the symbols of every ``formula``-verb ``noiseFormula`` (whole-fit or per-observable),
       e.g. ``slope`` in ``0.05*slope + 0.1`` (a ``FormulaSigma`` noise coefficient);
+    * the id of every ``fit``-verb sigma (whole-fit or per-observable), e.g. ``b_y`` in
+      ``noise_model y = laplace, scale = fit b_y`` (a ``FreeParameterSigma`` estimated scale --
+      #439): an estimated noise parameter is an observation-layer nuisance, not a model entity;
     * the non-numeric (parameter-id) tokens of every experiment's ``measurement_params:``
       binding-table sidecar, e.g. the per-row ``sd_lo`` / ``s_lo`` (a row-varying estimated
       sigma / scale -- ADR-0045).
@@ -993,6 +1019,8 @@ def _referenced_nuisance_symbols(conf, conf_path, noise, per_obs_noise):
     for _dist, verb, arg in [noise, *per_obs_noise.values()]:
         if verb == 'formula':
             referenced |= set(_FORMULA_SYMBOL.findall(arg))
+        elif verb == 'fit':
+            referenced.add(arg)         # an estimated noise scale (FreeParameterSigma), #439
     for key, fields in conf.items():
         if not (isinstance(key, tuple) and len(key) == 2 and key[0] == 'experiment'):
             continue

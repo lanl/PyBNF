@@ -286,6 +286,11 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
       PEtab-math ``noiseFormula`` over free-parameter ids + constants, emitted verbatim with
       no placeholder. The inverse of the importer's expression-``noiseFormula`` classification,
       so a whole-fit ``FormulaSigma`` round-trips.
+    * ``('free_param', id)`` -- a free-parameter (estimated) sigma (``FreeParameterSigma``,
+      #439): the bare noise-parameter ``id`` as the ``noiseFormula``, no placeholder, declared
+      estimated in the parameter table and an observation-layer nuisance (not a model entity).
+      The importer reads a bare-id ``noiseFormula`` back to a ``fit`` source (ADR-0044), so a
+      per-observable estimated sigma round-trips.
     * ``('per_measurement', expr)`` -- a **row-varying** placeholder sigma
       (``PerMeasurementFormulaSigma``, ADR-0045): the ``noiseFormula`` expression carries a
       per-measurement placeholder (``noiseParameter1_<id>``) whose value differs row to row,
@@ -327,6 +332,13 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
         # expression verbatim, no placeholder slot (its free symbols are PEtab parameter ids).
         noise_formula = source_value
         noise_placeholders = None
+    elif source_kind == 'free_param':
+        # A free-parameter (estimated) sigma (FreeParameterSigma, #439): the noiseFormula is the
+        # bare noise-parameter id, declared estimated in the parameter table and constant across
+        # the observable's measurements (no per-measurement placeholder). The importer reads a
+        # bare-id noiseFormula back to a 'fit' source (ADR-0044), so it round-trips.
+        noise_formula = source_value
+        noise_placeholders = None
     elif source_kind == 'per_measurement':
         # A row-varying placeholder sigma (PerMeasurementFormulaSigma, ADR-0045): the
         # noiseFormula keeps its per-measurement placeholder, retargeted to THIS observableId
@@ -339,7 +351,8 @@ def petab_observable_row(model_name, kind, noise_distribution, noise_source,
     else:
         raise PybnfError(
             f"Observable '{observable_id}': unknown noise source kind {source_kind!r} "
-            f"(expected 'placeholder', 'constant', 'formula', or 'per_measurement').")
+            f"(expected 'placeholder', 'constant', 'formula', 'free_param', or "
+            f"'per_measurement').")
 
     return PetabObservableRow(
         observable_id=observable_id,

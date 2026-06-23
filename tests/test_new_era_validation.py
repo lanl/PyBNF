@@ -353,9 +353,11 @@ class TestExampleRoundTrip:
 
 
 # --------------------------------------------------------------------------- #
-# per_observable_noise (Tier 0): per-observable noise families on the new-era surface.
-# Its fitted Laplace scale (`fit b_y`) is a documented EXPORT deferral, so this case is
-# covered by config-build + scoring rather than an export round trip.
+# per_observable_noise (Tier 0): per-observable noise families on the new-era surface --
+# two observables scored by two different families, one with an estimated (fitted) noise
+# scale. b_y is a pure observation-layer nuisance (not a model parameter); config build +
+# scoring accept it, and since #439 the exporter emits the `fit` sigma as a bare-id
+# noiseFormula naming an estimated parameter, so this case round-trips fully.
 # --------------------------------------------------------------------------- #
 PON_CONF = EXAMPLES / 'per_observable_noise' / 'per_observable_noise_v2.conf'
 
@@ -365,6 +367,10 @@ class TestPerObservableNoiseExample:
     @pytest.fixture(scope='class')
     def cfg(self):
         return _build_cfg(PON_CONF)
+
+    @pytest.fixture(scope='class')
+    def round_trip(self, tmp_path_factory):
+        return _round_trip(PON_CONF, tmp_path_factory.mktemp('pon_rt'))
 
     def test_two_distinct_per_observable_specs_loaded(self, cfg):
         from pybnf import noise
@@ -394,19 +400,35 @@ class TestPerObservableNoiseExample:
         assert np.isfinite(s2) and np.isfinite(s4)
         assert s2 != pytest.approx(s4)
 
-    def test_export_is_blocked_by_the_fitted_noise_nuisance(self, tmp_path):
-        # b_y is authored correctly as a pure observation-layer nuisance (NOT a model parameter
-        # -- config build + scoring fully support that today, above). Only EXPORT is deferred,
-        # with two walls #439 must clear: (1) the exporter's free->model binding check does not
-        # yet admit a `fit`-source noise nuisance (_referenced_nuisance_symbols scans `formula`-
-        # verb sources but not `fit`), so it rejects b_y here; (2) even once admitted,
-        # _noise_source_for_column cannot emit the `fit` sigma into a PEtab noiseFormula. The
-        # exporter refuses rather than emit a malformed problem; when #439 lands, replace this
-        # with a positive export round-trip.
-        from pybnf.printing import PybnfError
-        with pytest.raises((PybnfError, NotImplementedError)) as exc:
-            export_job(PON_CONF, tmp_path / 'petab')
-        assert 'b_y' in str(exc.value) or 'fit' in str(exc.value)
+    def test_export_emits_fit_sigma_as_a_bare_estimated_noise_param(self, round_trip):
+        # #439: the estimated Laplace scale on y exports as a bare-id noiseFormula naming the
+        # noise parameter (no per-measurement placeholder), with b_y declared estimated in the
+        # parameter table as a pure observation-layer nuisance (NOT a model entity). x keeps its
+        # per-point _SD placeholder, so the two families coexist in one observables table.
+        petab1, _imp, _petab2 = round_trip
+        obs = {r['observableId']: r for r in _tsv_rows(petab1 / 'observables.tsv')}
+        assert obs['func_y']['noiseFormula'] == 'b_y'
+        assert obs['func_y']['noisePlaceholders'] == ''
+        assert obs['func_y']['noiseDistribution'] == 'laplace'
+        assert obs['obs_x']['noiseFormula'] == 'noiseParameter1_obs_x'   # x: per-point _SD
+        params = {r['parameterId']: r for r in _tsv_rows(petab1 / 'parameters.tsv')}
+        assert params['b_y']['estimate'] == 'true'    # the noise scale is an estimated parameter
+
+    def test_export_is_petab_clean(self, round_trip):
+        petab1, _imp, _petab2 = round_trip
+        assert _petab_validation_errors(petab1 / 'problem.yaml') == []
+
+    def test_round_trip_is_fit_preserving(self, round_trip):
+        # The estimated noise scale (b_y) survives export -> re-import: scoring the same
+        # synthetic trajectory through the original and the re-imported objective (with b_y
+        # supplied in the pset -- the FreeParameterSigma reads it) gives the same total, so the
+        # `fit` sigma source round-trips faithfully (#439).
+        import types
+        _petab1, imp, _petab2 = round_trip
+        b_y = [types.SimpleNamespace(name='b_y', value=2.0)]
+        original = _score(_build_cfg(PON_CONF), pset=b_y)
+        reimported = _score(_build_cfg(imp / 'imported.conf'), pset=b_y)
+        assert reimported == pytest.approx(original)
 
 
 # --------------------------------------------------------------------------- #

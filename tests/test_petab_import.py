@@ -1052,6 +1052,33 @@ class TestRealWorldBoehmV2:
         assert {m.observable_id for m in conf.obj.measurement.models} == {
             'pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'}
 
+    def test_imported_boehm_reexports_to_clean_petab(self, tmp_path):
+        # #439: Boehm's three estimated per-observable sigmas (`sigma = fit sd_*`) re-export as
+        # bare-id noiseFormulae naming estimated parameters -- so the import->export round trip
+        # now closes for real-world estimated noise (it used to raise at the `fit` source). The
+        # re-exported SBML problem is petablint-clean.
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
+        imp = import_job(self.YAML, tmp_path / 'imp')
+        out = tmp_path / 'petab2'
+        export_job(imp / 'imported.conf', out)
+        # Each expression observable's estimated sigma is the bare noise-parameter id (no
+        # per-measurement placeholder); each sigma is an estimated parameter in the table.
+        obs = {r['observableId']: r for r in _tsv_rows(out / 'observables.tsv')}
+        params = {r['parameterId']: r for r in _tsv_rows(out / 'parameters.tsv')}
+        for o in ('pSTAT5A_rel', 'pSTAT5B_rel', 'rSTAT5A_rel'):
+            assert obs[o]['noiseFormula'] == f'sd_{o}'
+            assert obs[o]['noisePlaceholders'] == ''
+            assert params[f'sd_{o}']['estimate'] == 'true'
+        # The external oracle: the re-exported (SBML) problem validates via the real petablint
+        # path (register_bngl is a no-op for an SBML model).
+        problem = Problem.from_yaml(str(out / 'problem.yaml'))
+        errors = [type(t).__name__ for t in default_validation_tasks
+                  if (i := t.run(problem)) is not None
+                  and getattr(i, 'level', None) == ValidationIssueSeverity.ERROR]
+        assert errors == []
+
     def test_parameter_table_tolerates_real_v2_shapes(self):
         rows = {r.parameter_id: r for r in
                 read_parameter_table(BOEHM_DIR / 'parameters.tsv')}
