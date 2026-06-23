@@ -78,6 +78,7 @@ from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
     build_dose_response_conditions,
     build_experiment_conditions,
+    build_preequilibration_conditions,
     surrogate_name,
     write_condition_table,
     write_experiment_table,
@@ -297,6 +298,13 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     :func:`~pybnf.petab.measurements.dose_response_measurement_rows`. With no referenced
     conditions the surrogate set is empty, so a single wildtype time course is byte-identical
     to the chunk-1 base.
+
+    A **pre-equilibration** experiment (``preequilibrate:``, ADR-0052) takes a third shape: a
+    two-period Experiment (a ``time = -inf`` steady-state period under the pre-equilibration
+    condition + a ``time = 0`` period under the measurement condition), built by
+    :func:`~pybnf.petab.conditions.build_preequilibration_conditions`. Its measurements are
+    tagged exactly like a time course's (the data grid at times >= 0; the equilibration period
+    carries no measurements).
     """
     experiments = _read_experiments(conf, conf_path, models)
     overrides = _read_observable_overrides(conf)
@@ -307,15 +315,27 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     observable_rows, column_to_observable_id = _observable_rows(
         experiments, registry, noise, per_obs_noise, inline_functions, measurement_models)
 
-    # Time-course vs dose-response (parameter_scan) experiments take different PEtab shapes
-    # (ADR-0046): a time course is one Experiment over a referenced Condition; a dose-response
-    # is N Conditions (each sets the swept parameter to one dose) + N Experiments measured at
-    # the scan time (inf for steady state). They build independently and concatenate.
-    tc_experiments = [exp for exp in experiments if exp['type'] == 'time_course']
+    # Three PEtab experiment shapes (ADR-0046/0052): a time course is one Experiment over a
+    # referenced Condition; a dose-response (parameter_scan) is N Conditions (each sets the swept
+    # parameter to one dose) + N Experiments measured at the scan time (inf for steady state); a
+    # pre-equilibration experiment is a two-period Experiment (a -inf steady-state period + a
+    # time=0 measurement period -- ADR-0052). They build independently and concatenate. A
+    # pre-equilibration experiment is a time course measured after equilibrating, so it is split
+    # off the time-course bucket by its ``preequilibrate`` field.
+    pe_experiments = [exp for exp in experiments if exp['preequilibrate'] is not None]
+    tc_experiments = [exp for exp in experiments
+                      if exp['type'] == 'time_course' and exp['preequilibrate'] is None]
     dr_experiments = [exp for exp in experiments if exp['type'] == 'parameter_scan']
 
     conditions = _read_conditions(conf, models, registry)
     referenced = {exp['condition'] for exp in tc_experiments if exp['condition'] is not None}
+    # A pre-equilibration experiment references its pre-equilibration condition AND (optionally)
+    # its measurement condition NOT via the time-course ``condition:`` path, so add both to
+    # ``referenced`` explicitly -- else _read_conditions drops them as "unused" (ADR-0052, #441).
+    for exp in pe_experiments:
+        referenced.add(exp['preequilibrate'])
+        if exp['condition'] is not None:
+            referenced.add(exp['condition'])
     undefined = referenced - set(conditions)
     if undefined:
         raise PybnfError(
@@ -333,6 +353,21 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
             [(exp['name'], exp['condition']) for exp in tc_experiments],
             conditions, fit_model_params, lambda v: _nominal_of(registry, v))
 
+    # Pre-equilibration experiments -> two-period Experiments (ADR-0052): a -inf steady-state
+    # period under the pre-equilibration condition + a time=0 period under the measurement
+    # condition. They compose with the time-course surrogate set M (every period re-pins M); a
+    # pre-equilibration condition perturbing a fit param is a deferred surrogate-compose boundary.
+    if pe_experiments:
+        pe_condition_rows, pe_experiment_rows, pe_experiment_to_id = \
+            build_preequilibration_conditions(
+                [(exp['name'], exp['preequilibrate'], exp['condition'])
+                 for exp in pe_experiments],
+                conditions, fit_model_params, lambda v: _nominal_of(registry, v),
+                surrogate=surrogate_params)
+        condition_rows += pe_condition_rows
+        experiment_rows += pe_experiment_rows
+        experiment_to_id.update(pe_experiment_to_id)
+
     # Per-point numeric noiseParameters are emitted only when a column's sigma comes from a
     # data column (the read_exp_file placeholder source); a fixed / column-mean / formula sigma
     # is carried inline in noiseFormula, so the measurement export must not read _SD then (it
@@ -348,7 +383,10 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     # measurement rows. Single-model -> '' (the column is dropped on write, byte-stable).
     multi_model = len(models) > 1
     measurement_rows = []
-    for exp in tc_experiments:
+    # A pre-equilibration experiment's measurements are tagged exactly like a time course's
+    # (the data grid at times >= 0 under its experimentId): the -inf equilibration period
+    # carries no measurements, and PEtab resolves the data times into the time=0 period (ADR-0052).
+    for exp in tc_experiments + pe_experiments:
         eid = experiment_to_id[exp['name']]
         model_id = Path(exp['model']).stem if multi_model else ''
         # Each replicate Data contributes its own rows under the one experiment (PEtab
@@ -389,10 +427,11 @@ def _read_experiments(conf, conf_path, models):
     """Read + resolve the new-era ``experiment:`` entries from the raw ``ploop`` dict.
 
     Each ``('experiment', name)`` entry is ``{'data': [files], 'condition': c?, 'model':
-    mf?, 'type': t?, 'method': m?, 't_end': t?, 'measurement_params': mp?}``. ``models`` is the
-    ordered list of the job's model files. Returns a list (declaration order) of dicts
-    ``{'name', 'condition', 'model': model_file, 'datas': [Data, ...], 'type', 'scan_time',
-    'measurement_params': table?}`` -- the ``data:`` files read as individual
+    mf?, 'type': t?, 'method': m?, 't_end': t?, 'preequilibrate': p?, 'measurement_params':
+    mp?}``. ``models`` is the ordered list of the job's model files. Returns a list (declaration
+    order) of dicts ``{'name', 'condition', 'model': model_file, 'datas': [Data, ...], 'type',
+    'scan_time', 'preequilibrate': cond?, 'measurement_params': table?}`` -- the ``data:`` files
+    read as individual
     :class:`~pybnf.data.Data` replicates (PEtab models replicates as repeated measurement
     rows, so they are not pre-stacked), each experiment's resolved model
     (:func:`_resolve_experiment_model`, ADR-0041), the inferred ``type`` (``'time_course'`` or
@@ -404,7 +443,8 @@ def _read_experiments(conf, conf_path, models):
     * the ambiguous-model error if an experiment names no model but the job has more than
       one (mirrors ``config.py::_resolve_experiment_model``);
     * a not-yet-supported boundary for a parameter_scan that also names a ``condition:``
-      (a dose-response already makes each dose its own condition -- ADR-0046);
+      (a dose-response already makes each dose its own condition -- ADR-0046), or a
+      ``preequilibrate:`` parameter_scan (a scan after equilibration has no export route);
     * a constraint refusal for non-``.exp`` data: BPSL ``.con``/``.prop`` constraints are
       PyBNF-native with no core-PEtab representation, so an experiment carrying them cannot
       be exported (the fitter still runs it -- ADR-0028 addendum).
@@ -420,11 +460,6 @@ def _read_experiments(conf, conf_path, models):
         data_files = fields.get('data', [])
         if not data_files:
             raise PybnfError(f"Experiment '{name}' declares no 'data:' files.")
-        if fields.get('preequilibrate') is not None:
-            raise NotImplementedError(
-                f"Experiment '{name}' uses pre-equilibration (preequilibrate:). PEtab export "
-                f"of a multi-period / pre-equilibration experiment is deferred to #441 (Phase "
-                f"2); the fitter runs it, but export is not yet supported (ADR-0052).")
         non_exp = [f for f in data_files if not f.endswith('.exp')]
         if non_exp:
             raise NotImplementedError(
@@ -436,6 +471,16 @@ def _read_experiments(conf, conf_path, models):
                 f"alone.")
         datas = [Data(file_name=str(conf_path.parent / f)) for f in data_files]
         exp_type = _experiment_type(name, datas[0], fields.get('type'))
+        preequilibrate = fields.get('preequilibrate')
+        # A pre-equilibration experiment (ADR-0052) is a time course measured AFTER an
+        # unmeasured steady-state equilibration phase -> a PEtab two-period Experiment (#441).
+        # A scan after equilibration has no export route (mirrors the fitter's refusal).
+        if preequilibrate is not None and exp_type == 'parameter_scan':
+            raise NotImplementedError(
+                f"Experiment '{name}' combines pre-equilibration (preequilibrate:) with a "
+                f"parameter_scan. A pre-equilibration experiment is a time course measured "
+                f"after equilibrating to steady state; a dose-response after equilibration has "
+                f"no PEtab export route (ADR-0052/0046, #441).")
         # A parameter_scan (dose-response) experiment's measurement time is its scan endpoint
         # (ADR-0046): inf for the steady-state default (PEtab time=inf), or a finite ``t_end:``.
         # A time course derives its grid from the data, so ``t_end:`` is inert there.
@@ -455,7 +500,7 @@ def _read_experiments(conf, conf_path, models):
             measurement_params = read_measurement_params(conf_path.parent / mp_file)
         experiments.append({'name': name, 'condition': fields.get('condition'),
                             'model': model_file, 'datas': datas, 'type': exp_type,
-                            'scan_time': scan_time,
+                            'scan_time': scan_time, 'preequilibrate': preequilibrate,
                             'measurement_params': measurement_params})
     return experiments
 
@@ -1215,12 +1260,15 @@ def clean_model_for_petab(text):
     name (``v1``) here as a plain nominal-valued parameter (always overridden by its
     Condition); only the parameter *table* carries the surrogate ``v1__REF`` (ADR-0027).
 
-    A legacy ``<name>__FREE`` marker in the model text is **rejected**: new-era binds by
+    A legacy ``<name>__FREE`` marker in the model **code** is **rejected**: new-era binds by
     id, so a model still carrying one was not modernized, and shipping it would dangle an
     undefined ``v1__FREE`` symbol in PEtab. The error names the bind-by-id contract rather
-    than letting the PEtab oracle reject it opaquely.
+    than letting the PEtab oracle reject it opaquely. The scan ignores ``#`` line comments --
+    a comment may legitimately mention the retired ``KD1__FREE`` form as a counter-example
+    (``receptor_v2.bngl`` does), which is documentation, not a dangling binding.
     """
-    if _FREE_TOKEN.search(text):
+    code = re.sub(r'#[^\n]*', '', text)   # strip line comments before the marker scan
+    if _FREE_TOKEN.search(code):
         raise PybnfError(
             "This BNGL model carries a legacy '__FREE' marker, but PEtab export is a "
             "new-era feature where free parameters bind by id (ADR-0034). Declare the "

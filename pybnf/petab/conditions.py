@@ -127,6 +127,35 @@ def mutation_target_value(op, val, *, nominal=None, surrogate=None):
 # Asset: named conditions + experiments -> conditions/experiments (surrogate-base)
 # ---------------------------------------------------------------------------
 
+def _condition_rows_for(cid, perturbations, surrogate, nominal_of):
+    """The condition rows for one PEtab Condition ``cid`` from its ``perturbations``
+    (``[(var, op, val), ...]``), under the problem-global surrogate set ``surrogate``.
+
+    The shared per-condition emission of the surrogate-base machinery (ADR-0027), extracted
+    so :func:`build_experiment_conditions` (time-course / wildtype) and
+    :func:`build_preequilibration_conditions` (multi-period pre-equilibration, ADR-0052) emit
+    a condition the same way: each surrogate (fit) param is pinned (this condition's expression
+    where it sets it, else the base value ``<p>__REF`` -- every experiment re-supplies every M
+    param, since the model name is now a pure condition target), then the fixed-param
+    perturbations are emitted with precomputed numeric ``targetValue``s.
+    """
+    rows = []
+    mut_by_var = {var: (op, val) for var, op, val in perturbations}
+    for p in sorted(surrogate):
+        if p in mut_by_var:
+            op, val = mut_by_var[p]
+            rows.append(PetabConditionRow(
+                cid, p, mutation_target_value(op, val, surrogate=surrogate_name(p))))
+        else:
+            rows.append(PetabConditionRow(cid, p, surrogate_name(p)))
+    for var, op, val in perturbations:
+        if var in surrogate:
+            continue
+        rows.append(PetabConditionRow(
+            cid, var, mutation_target_value(op, val, nominal=nominal_of(var))))
+    return rows
+
+
 def build_experiment_conditions(experiments, conditions, fit_params, nominal_of):
     """Build conditions/experiments for a new-era job (ADR-0028 Chunk 5b).
 
@@ -169,23 +198,8 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of)
 
     # Each referenced condition, emitted once (deterministic order).
     for c in sorted(referenced):
-        cid = f'cond_{c}'
-        mut_by_var = {var: (op, val) for var, op, val in conditions[c]}
-        # Surrogate (fit) params: this condition's expression where it sets them, else the
-        # base value -- every experiment must re-supply every M param (out of the table).
-        for p in sorted(surrogate):
-            if p in mut_by_var:
-                op, val = mut_by_var[p]
-                condition_rows.append(PetabConditionRow(
-                    cid, p, mutation_target_value(op, val, surrogate=surrogate_name(p))))
-            else:
-                condition_rows.append(PetabConditionRow(cid, p, surrogate_name(p)))
-        # Fixed-param perturbations (targets not in M): precomputed numeric targetValues.
-        for var, op, val in conditions[c]:
-            if var in surrogate:
-                continue
-            condition_rows.append(PetabConditionRow(
-                cid, var, mutation_target_value(op, val, nominal=nominal_of(var))))
+        condition_rows += _condition_rows_for(
+            f'cond_{c}', conditions[c], surrogate, nominal_of)
 
     # A shared synthesized base condition for wildtype experiments when M is non-empty
     # (they too must re-supply every removed fit param at its base value).
@@ -213,6 +227,79 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of)
         else:
             experiment_to_id[name] = ''   # model as is -- no experiment row needed
     return condition_rows, experiment_rows, surrogate, experiment_to_id
+
+
+def build_preequilibration_conditions(experiments, conditions, fit_params, nominal_of,
+                                      surrogate=frozenset()):
+    """Build the conditions/experiments for new-era **pre-equilibration** experiments (ADR-0052,
+    #441 Phase 2) -- the multi-period structural sibling of :func:`build_experiment_conditions`.
+
+    A pre-equilibration experiment maps to a PEtab v2 **two-period** Experiment (ADR-0052's
+    bidirectional rule): a leading ``time = -inf`` period under the pre-equilibration condition
+    (equilibrate to steady state, unmeasured) followed by a ``time = 0`` period under the
+    measurement condition (the data grid is measured there). ``experiments`` is a list of
+    ``(name, preequil_cond, measurement_cond_or_None)``; ``conditions`` maps a condition name to
+    its perturbations ``[(var, op, val), ...]``; ``fit_params`` is the set of fit model-parameter
+    names; ``nominal_of(var)`` returns a fixed parameter's numeric nominal. ``surrogate`` is the
+    problem-global ``M`` (the fit-and-perturbed params already split to ``<p>__REF`` by the
+    time-course :func:`build_experiment_conditions` in the same job) -- every period's condition
+    re-pins all of ``M``, so a pre-equilibration experiment composes with a job that also has
+    fit-perturbed time-course conditions.
+
+    Returns ``(condition_rows, experiment_rows, experiment_to_id)``. ``experiment_to_id[name] =
+    name`` (a pre-equilibration experiment always has an experiments table -- two periods -- so
+    it is never the empty-id "model as is" case).
+
+    Raises ``NotImplementedError`` for the deferred surrogate-compose case: a pre-equilibration
+    condition that perturbs a **fit** parameter would need the ADR-0027 ``<p>__REF`` rename
+    applied to the multi-period shape (a Phase-2.x extension). The acceptance case (``receptor``)
+    perturbs a *fixed* parameter (``Ligand_isPresent``), so ``M`` from these conditions is empty.
+    A wash-out (no measurement condition) is supported only when ``M`` is empty: the measurement
+    period then carries an empty ``conditionId`` (no perturbation); pinning ``M`` on a wash-out
+    period has no synthesized base condition here, so it is refused rather than mis-pinned.
+    """
+    referenced = set()
+    for _name, pre, meas in experiments:
+        referenced.add(pre)
+        if meas is not None:
+            referenced.add(meas)
+
+    pe_fit = {var for c in referenced
+              for var, _op, _val in conditions[c] if var in fit_params}
+    if pe_fit:
+        raise NotImplementedError(
+            f"Pre-equilibration condition(s) perturb fit parameter(s) {sorted(pe_fit)}; "
+            f"exporting a fit-parameter perturbation in a pre-equilibration period needs the "
+            f"surrogate-base <p>__REF split (ADR-0027) applied to the multi-period shape, which "
+            f"is a later chunk. The current pre-equilibration export covers a perturbation of a "
+            f"fixed model parameter (the receptor Ligand_isPresent case -- ADR-0052, #441).")
+
+    condition_rows = []
+    for c in sorted(referenced):
+        condition_rows += _condition_rows_for(
+            f'cond_{c}', conditions[c], surrogate, nominal_of)
+
+    experiment_rows = []
+    experiment_to_id = {}
+    for name, pre, meas in experiments:
+        experiment_to_id[name] = name
+        # Period 0: the -inf pre-equilibration period (steady state, unmeasured).
+        experiment_rows.append(PetabExperimentRow(name, float('-inf'), f'cond_{pre}'))
+        # Period 1: the time=0 measurement period under the measurement condition. A wash-out
+        # (no measurement condition) measures at the model default -> an empty conditionId, but
+        # only when M is empty (no removed fit param to re-pin on this period).
+        if meas is not None:
+            meas_cid = f'cond_{meas}'
+        elif surrogate:
+            raise NotImplementedError(
+                f"Pre-equilibration experiment '{name}' has no measurement condition (a "
+                f"wash-out) but the job has fit-perturbed conditions (M={sorted(surrogate)}); "
+                f"re-pinning M on the measurement period needs a synthesized base condition, a "
+                f"later chunk (ADR-0027/0052, #441). Name a measurement 'condition:' to export.")
+        else:
+            meas_cid = ''
+        experiment_rows.append(PetabExperimentRow(name, 0.0, meas_cid))
+    return condition_rows, experiment_rows, experiment_to_id
 
 
 def build_dose_response_conditions(stem, swept_param, dose_values, scan_time):

@@ -29,9 +29,10 @@ petab (the v2 typed-table API + validator) ARE used, exactly as in ``test_petab_
 and are present in the default-CI leg. ``pytest.importorskip('petab.v2')`` guards the petab
 oracle so the suite still collects where petab is absent.
 
-The deferred ``receptor`` example (a multi-phase pre-equilibration protocol the new-era
-surface does not express -- ADR-0028/0025) is recorded as a skipped case below;
-``examples/receptor/NEW_ERA_NOTE.md`` explains why.
+The ``receptor`` example (a multi-phase pre-equilibration protocol, ADR-0052) is now on the
+new-era surface: it builds + fits (Phase 1, #440) and EXPORTS to a petablint-clean two-period
+problem (Phase 2, #441) -- both covered below. Its PEtab import / round-trip is Phase 3 (#442),
+recorded as a skipped case at the end; ``examples/receptor/NEW_ERA_NOTE.md`` tracks the arc.
 """
 import csv
 import os
@@ -463,11 +464,36 @@ def test_receptor_v2_builds_the_two_phase_preequilibration_action():
     assert cfg.exp_data['receptor_v2']['receptor'].indvar == 'time'
 
 
-@pytest.mark.skip(reason="PEtab EXPORT/IMPORT of receptor's multi-period pre-equilibration "
-                         "experiment is deferred to #441 (export) / #442 (import + round trip). "
-                         "The fitter is built (ADR-0052, #440 Phase 1): receptor_v2 builds + fits "
-                         "(see test_receptor_v2_builds_the_two_phase_preequilibration_action and "
-                         "test_recovery.py::test_receptor_v2_example_builds_and_fits). This case "
-                         "is promoted when the PEtab round trip lands (#442).")
+def test_receptor_v2_exports_a_petab_clean_preequilibration_problem(tmp_path):
+    """``examples/receptor/receptor_v2`` EXPORTS to a petablint-clean PEtab v2 problem
+    (ADR-0052, #441 Phase 2): a leading ``time = -inf`` pre-equilibration period + a
+    ``time = 0`` measurement period, plus the two conditions; the measurements are tagged by
+    the experiment id. Export only -- the import / round-trip is Phase 3 (#442), so this is the
+    export-clean half of the validation tier for receptor (BNG2.pl ``--check`` via the petablint
+    oracle; no bngsim)."""
+    out = tmp_path / 'receptor_petab'
+    export_job(RECEPTOR_V2_CONF, out)
+    # The two-period Experiment: -inf equilibration (noligand) -> time=0 measurement (withligand).
+    exps = _tsv_rows(out / 'experiments.tsv')
+    assert [(e['experimentId'], e['time'], e['conditionId']) for e in exps] == [
+        ('receptor', '-inf', 'cond_noligand'),
+        ('receptor', '0', 'cond_withligand')]
+    conds = {(c['conditionId'], c['targetId'], c['targetValue'])
+             for c in _tsv_rows(out / 'conditions.tsv')}
+    assert ('cond_noligand', 'Ligand_isPresent', '0') in conds
+    assert ('cond_withligand', 'Ligand_isPresent', '1') in conds
+    # receptor.exp's RLbonds/pR columns are the measured observables, tagged by the experiment.
+    meas = _tsv_rows(out / 'measurements.tsv')
+    assert {m['experimentId'] for m in meas} == {'receptor'}
+    assert {m['observableId'] for m in meas} == {'obs_RLbonds', 'obs_pR'}
+    assert _petab_validation_errors(out / 'problem.yaml') == []
+
+
+@pytest.mark.skip(reason="PEtab IMPORT of receptor's multi-period pre-equilibration experiment "
+                         "(and the export -> import -> export round trip) is deferred to #442 "
+                         "(Phase 3). EXPORT now works (ADR-0052, #441 Phase 2): receptor_v2 "
+                         "exports a petablint-clean two-period problem -- see "
+                         "test_receptor_v2_exports_a_petab_clean_preequilibration_problem. This "
+                         "case is promoted to a full round trip when import lands (#442).")
 def test_receptor_is_a_deferred_preequilibration_case():
     pass

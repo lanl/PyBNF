@@ -899,6 +899,137 @@ class TestExportNewEraConditions:
 
 
 # ---------------------------------------------------------------------------
+# ADR-0052 (#441, Phase 2): a new-era pre-equilibration experiment (preequilibrate:) ->
+# a PEtab v2 TWO-PERIOD Experiment: a leading time=-inf steady-state period under the
+# pre-equilibration condition + a time=0 measurement period under the measurement condition,
+# plus the two conditions. The measurements are tagged by experimentId at their data times
+# (>= 0); the -inf equilibration period carries none. (The fitter/recovery of the actual
+# carry-over physics lives in test_preequilibration.py / test_recovery.py; export reads only
+# the entity surface, so the steady-state physics is inert here.)
+# ---------------------------------------------------------------------------
+
+# A birth-death model whose decay is gated by a 0/1 flag (the receptor func()*Ligand_isPresent
+# idiom): flag is a FIXED model parameter the conditions perturb (so M is empty -- no surrogate
+# split), k is the bare-id fit parameter, A_tot is a model observable.
+_PREEQUIL_MODEL = """begin model
+begin parameters
+  k     1.0
+  flag  1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 10
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin functions
+  deg() k*flag
+end functions
+begin reaction rules
+  A() -> 0 deg()
+end reaction rules
+end model
+"""
+
+
+class TestExportPreequilibration:
+
+    def _src(self, tmp_path_factory, name='preequil'):
+        src = tmp_path_factory.mktemp(name)
+        (src / 'm.bngl').write_text(_PREEQUIL_MODEL)
+        (src / 'relax.exp').write_text('# time A_tot\n0\t10\n1\t6\n2\t4\n')
+        return src
+
+    _HEAD = 'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+    _PARAMS = 'uniform_var = k 0.1 10\n'
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        src = self._src(tmp_path_factory)
+        (src / 'job.conf').write_text(
+            self._HEAD
+            + 'condition: pre,  perturbations: flag = 0\n'
+            + 'condition: meas, perturbations: flag = 1\n'
+            + 'experiment: relax, preequilibrate: pre, condition: meas, data: relax.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        return out
+
+    def test_experiments_table_is_two_periods_in_order(self, exported):
+        # The -inf pre-equilibration period precedes the time=0 measurement period (ADR-0052).
+        rows = _tsv_rows(exported / 'experiments.tsv')
+        assert [(r['experimentId'], r['time'], r['conditionId']) for r in rows] == [
+            ('relax', '-inf', 'cond_pre'),
+            ('relax', '0', 'cond_meas')]
+
+    def test_both_conditions_are_emitted(self, exported):
+        rows = _tsv_rows(exported / 'conditions.tsv')
+        assert {(r['conditionId'], r['targetId'], r['targetValue']) for r in rows} == {
+            ('cond_pre', 'flag', '0'), ('cond_meas', 'flag', '1')}
+
+    def test_measurements_are_tagged_by_the_experiment(self, exported):
+        meas = _tsv_rows(exported / 'measurements.tsv')
+        assert {m['experimentId'] for m in meas} == {'relax'}
+        assert {m['observableId'] for m in meas} == {'obs_A_tot'}
+        # the equilibration (-inf) period carries no measurement: every row is at a data time >= 0
+        assert all(float(m['time']) >= 0 for m in meas)
+        assert sorted(float(m['time']) for m in meas) == [0.0, 1.0, 2.0]
+
+    def test_full_petab_validation_is_clean(self, exported):
+        assert _petab_validation_errors(exported / 'problem.yaml') == []
+
+    def test_wash_out_without_measurement_condition_uses_an_empty_measurement_period(
+            self, tmp_path_factory):
+        # preequilibrate: but no measurement condition: -> equilibrate under the named condition,
+        # then measure at the model default (an empty conditionId on the time=0 period). M is
+        # empty (flag is a fixed param), so no base condition is needed -- petablint-clean.
+        src = self._src(tmp_path_factory, 'washout')
+        (src / 'job.conf').write_text(
+            self._HEAD
+            + 'condition: pre, perturbations: flag = 0\n'
+            + 'experiment: relax, preequilibrate: pre, data: relax.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        rows = _tsv_rows(out / 'experiments.tsv')
+        assert [(r['experimentId'], r['time'], r['conditionId']) for r in rows] == [
+            ('relax', '-inf', 'cond_pre'),
+            ('relax', '0', '')]
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_fit_parameter_perturbation_in_preequilibration_is_deferred(self, tmp_path_factory):
+        # A pre-equilibration condition perturbing a FIT parameter (k) needs the surrogate-base
+        # <p>__REF split applied to the multi-period shape -- a deferred boundary, raised clearly
+        # rather than silently mis-handled (ADR-0027/0052).
+        src = self._src(tmp_path_factory, 'preequil_fit')
+        (src / 'job.conf').write_text(
+            self._HEAD
+            + 'condition: pre,  perturbations: k = 0.5\n'
+            + 'condition: meas, perturbations: flag = 1\n'
+            + 'experiment: relax, preequilibrate: pre, condition: meas, data: relax.exp\n'
+            + self._PARAMS)
+        with pytest.raises(NotImplementedError, match='fit parameter'):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_preequilibration_parameter_scan_is_refused(self, tmp_path_factory):
+        # A pre-equilibration combined with a dose-response scan has no export route (mirrors
+        # the fitter's refusal -- ADR-0052/0046).
+        src = self._src(tmp_path_factory, 'preequil_scan')
+        (src / 'dose.exp').write_text('# dose A_tot\n1\t1\n2\t2\n4\t4\n')
+        (src / 'job.conf').write_text(
+            self._HEAD
+            + 'condition: pre, perturbations: flag = 0\n'
+            + 'experiment: relax, preequilibrate: pre, type: parameter_scan, data: dose.exp\n'
+            + self._PARAMS)
+        with pytest.raises(NotImplementedError, match='parameter_scan'):
+            export_job(src / 'job.conf', src / 'out')
+
+
+# ---------------------------------------------------------------------------
 # Multi-model export (ADR-0041, #430): a job with more than one model: each experiment names
 # the model it simulates; the model id is stamped on its measurement rows' modelId (the column
 # is omitted single-model), free parameters bind across the union of every model's ids, and

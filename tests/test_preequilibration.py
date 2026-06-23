@@ -193,9 +193,14 @@ class TestBoundaries:
         with pytest.raises(PybnfError, match="pre-equilibration.*SBML|SBML.*pre-equilibration"):
             SbmlModel.add_action(stub, action)
 
-    def test_exporter_refuses_preequilibration(self, tmp_path):
-        # PEtab export of the multi-period experiment is deferred to #441; export must refuse
-        # rather than silently drop the equilibration phase (which would export a different fit).
+    def test_exporter_emits_the_two_period_preequilibration_shape(self, tmp_path):
+        # PEtab export of the multi-period experiment landed in #441 (Phase 2): the experiment
+        # becomes a PEtab two-period Experiment -- a time=-inf steady-state pre-equilibration
+        # period under the pre-equilibration condition + a time=0 measurement period under the
+        # measurement condition (ADR-0052). (Backend-free: export reads the conf + the BNGL
+        # entity surface, no bngsim and no BNG2.pl. The petablint-clean assertion lives in
+        # test_petab_export.py::TestExportPreequilibration, which has the BNG2.pl oracle.)
+        import csv
         from pybnf.petab.export import export_job
         (tmp_path / "m.bngl").write_text(_MODEL)
         (tmp_path / "relax.exp").write_text(_EXP)
@@ -204,8 +209,21 @@ class TestBoundaries:
             "condition: prod_off, perturbations: flag = 0",
             "experiment: relax, preequilibrate: prod_on, condition: prod_off, data: relax.exp",
         ]) + "\n")
-        with pytest.raises(NotImplementedError, match="pre-equilibration"):
-            export_job(tmp_path / "job.conf", tmp_path / "out")
+        out = tmp_path / "out"
+        export_job(tmp_path / "job.conf", out)
+
+        def _rows(name):
+            with open(out / name, newline="") as fh:
+                return list(csv.DictReader(fh, delimiter="\t"))
+
+        # Two periods in order: -inf equilibration (prod_on) -> time=0 measurement (prod_off).
+        assert [(r["experimentId"], r["time"], r["conditionId"]) for r in _rows("experiments.tsv")] == [
+            ("relax", "-inf", "cond_prod_on"),
+            ("relax", "0", "cond_prod_off")]
+        assert {(r["conditionId"], r["targetId"], r["targetValue"]) for r in _rows("conditions.tsv")} == {
+            ("cond_prod_on", "flag", "1"), ("cond_prod_off", "flag", "0")}
+        # The equilibration period is unmeasured; measurements are tagged by the experiment name.
+        assert {r["experimentId"] for r in _rows("measurements.tsv")} == {"relax"}
 
 
 # --------------------------------------------------------------------------- #
