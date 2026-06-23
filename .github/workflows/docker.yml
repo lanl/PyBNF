@@ -1,0 +1,37 @@
+name: docker
+
+# Build (and smoke-test) the legacy BNG2.pl container image so the Dockerfile
+# can't rot silently again (issue #414). Runs on demand and whenever the
+# Dockerfile or the dependency set it mirrors changes.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Dockerfile
+      - pyproject.toml
+      - .github/workflows/docker.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - pyproject.toml
+      - .github/workflows/docker.yml
+
+jobs:
+  build:
+    name: docker build (legacy BNG2.pl image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t pybnf:ci .
+
+      - name: Smoke-test the image
+        run: |
+          # PyBNF imports cleanly without bngsim (legacy BNG2.pl backend)...
+          docker run --rm pybnf:ci python -c "import pybnf; print('pybnf', pybnf.__version__)"
+          # ...the console script is wired...
+          docker run --rm pybnf:ci pybnf --help
+          # ...and BNG2.pl is on PATH via BNGPATH.
+          docker run --rm pybnf:ci bash -lc 'command -v BNG2.pl'
