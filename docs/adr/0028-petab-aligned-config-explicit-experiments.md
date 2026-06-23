@@ -140,6 +140,12 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
 
 ## Open / deferred (the loose ends to tie up)
 
+> **The redesign is complete and #423 is closed (2026-06-23).** Every blocker below is
+> resolved; the items still marked deferred (smooth-curve output, observables as a
+> first-class table, `condition: model:` under multiple models, and the second-tier
+> preprocessing keys `normalization`/`smoothing`/`constraint_scale`/`ind_var_rounding` not
+> yet wired to the new-era data key) are tracked in **#444**, not blockers for the redesign.
+
 - **`parameter_scan` via `experiment:` — the scan's simulation endpoint time. *Done
   (ADR-0046, 2026-06-21).*** Decided during Chunk 3 to defer (the swept *values* come from
   the data, but the *endpoint time* is a simulation setting with no home in the grammar);
@@ -148,21 +154,20 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
   fixed-endpoint escape hatch. The fitter synthesizes a `steady_state=>1` `ParamScan` (bngsim's
   KINSOL solve + parity fallback), and the exporter/importer round-trip the dose-response as N
   steady-state Conditions/Experiments at `time = inf`. **#426 closed.**
-- **Explicit output points unsupported for NFsim / RuleMonkey on the bngsim backend
-  (#427).** The new-era "simulation outputs at the data's points" mechanism (`sample_times`
-  / `simulate(times=)`) is honored by BNG2.pl (all methods), RoadRunner (cvode + gillespie),
-  and bngsim for ode/ssa/psa — but bngsim's network-free path drops `sample_times` (in the
-  PyBNF bridge, anticipating the bngsim NF API), so a `method: nf` (or RuleMonkey) new-era
-  experiment under `bngl_backend = bngsim` falls back to a uniform grid and mis-scores; the
-  same job under BNG2.pl works. **Re-verified 2026-06-21 (bngsim 0.9.50): still open.** 0.9.50
-  *did* add `sample_times` to the high-level `Simulator.run(...)` and now forwards it into the
-  NF/RuleMonkey C++ backends — but the bridge runs network-free actions through the *low-level
-  session API* (`NfsimSession`/`RuleMonkeySession`), whose `simulate(t_start, t_end, n_points,
-  …)` still has no `sample_times` kwarg, and `Simulator` rejects the interactive session helpers
-  (`setConcentration`/`addConcentration`/`continue=>1`) the bridge relies on, so it is not a
-  drop-in. Close-out still requires the session API to honor explicit output times (or a
-  bridge-side native explicit-time sampler — see #427). Tracked in #427 (PyBNF re-enable) + the
-  upstream bngsim fix; pla is out of scope (bngsim doesn't support it; impractical method).
+- **Explicit output points for NFsim / RuleMonkey on the bngsim backend. *Done (#427,
+  2026-06-23).*** The new-era "simulation outputs at the data's points" mechanism
+  (`sample_times` / `simulate(times=)`) is honored by BNG2.pl (all methods), RoadRunner
+  (cvode + gillespie), and bngsim for ode/ssa/psa. bngsim's network-free path had *dropped*
+  `sample_times` (in the PyBNF bridge, which runs NF/RuleMonkey through the low-level session
+  API), so a `method: nf`/`rm` new-era experiment under `bngl_backend = bngsim` fell back to a
+  uniform grid and mis-scored; the same job under BNG2.pl always worked. **bngsim 0.9.52** added
+  `NfsimSession.simulate(…, sample_times=…)` / `RuleMonkeySession.simulate(…, sample_times=…)`
+  (engine-native RuleMonkey in 0.9.53), and the bridge now resolves the data's `sample_times`
+  and passes them straight to the session `simulate` (commit `8836bb2`), with the `method:
+  rm`/`rulemonkey` token routed to the RuleMonkey session backend (`Action.VALID_METHODS`,
+  commit `470ab5a`). An interim fail-loud guard (#434) was added and then removed once #427
+  landed (#435). `pla` stays out of scope (bngsim doesn't support it; impractical method).
+  **#427 / #434 / #435 all closed.**
 - **`.con` / `.prop` (BPSL) data through `data:`. *Done (2026-06-21; addendum below).***
   `data:` parses heterogeneous file extensions; `_load_experiments` now splits them by kind
   (`_partition_experiment_data`) — `.exp` measurements drive the simulation and the
