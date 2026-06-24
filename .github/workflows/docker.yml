@@ -33,5 +33,7 @@ jobs:
           docker run --rm pybnf:ci python -c "import pybnf; print('pybnf', pybnf.__version__)"
           # ...the console script is wired...
           docker run --rm pybnf:ci pybnf --help
-          # ...and BNG2.pl is on PATH via BNGPATH.
-          docker run --rm pybnf:ci bash -lc 'command -v BNG2.pl'
+          # ...and BNG2.pl is on PATH via BNGPATH. Use a non-login shell: a
+          # login shell would re-source /etc/profile and reset PATH, dropping
+          # the image's BNGPATH entry.
+          docker run --rm pybnf:ci bash -c 'command -v BNG2.pl'
