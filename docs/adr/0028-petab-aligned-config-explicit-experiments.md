@@ -141,10 +141,15 @@ A job uses one style or the other. Retiring the legacy forms is optional and out
 ## Open / deferred (the loose ends to tie up)
 
 > **The redesign is complete and #423 is closed (2026-06-23).** Every blocker below is
-> resolved; the items still marked deferred (smooth-curve output, observables as a
-> first-class table, `condition: model:` under multiple models, and the second-tier
-> preprocessing keys `normalization`/`smoothing`/`constraint_scale`/`ind_var_rounding` not
-> yet wired to the new-era data key) are tracked in **#444**, not blockers for the redesign.
+> resolved; the remaining deferred items (smooth-curve output, observables as a
+> first-class table, `condition: model:` under multiple models) are tracked in **#444**,
+> not blockers for the redesign. The second-tier preprocessing keys
+> (`normalization`/`smoothing`/`constraint_scale`/`ind_var_rounding`) are now **done**
+> (#444, ADR-0053): `normalization` was the only one actually broken on the new-era data
+> key — it now keys by observable (`normalization <obs> = <type>`, with a
+> `<experiment>.<observable>` override), a per-observable prediction transform like the
+> `noise_model`/`cumulative` surface; the other three are global scalars that already rode
+> through (now tested).
 
 - **`parameter_scan` via `experiment:` — the scan's simulation endpoint time. *Done
   (ADR-0046, 2026-06-21).*** Decided during Chunk 3 to defer (the swept *values* come from

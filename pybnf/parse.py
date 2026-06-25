@@ -147,6 +147,24 @@ def parse(s):
     normgram = normkey - equals - anything  # The set of legal grammars for normalization is too complicated,
     # Will handle with separate code.
 
+    # new-era per-observable normalization grammar (ADR-0053, #444):
+    #   normalization <obs> = <type>           -- per-observable (every experiment)
+    #   normalization <exp>.<obs> = <type>      -- per-(experiment, observable) override
+    # Normalization is a per-observable *prediction* transform -- a sibling of the
+    # per-observable noise_model / cumulative surface (ADR-0021/0051) -- so the new era
+    # keys it by observable (and optionally an experiment), never a filename. The bare
+    # token before the ``=`` is what distinguishes this from the legacy / whole-fit
+    # ``normalization = <type>[: <files>]`` form, so it is tried first and the recoverable
+    # ``normkey + norm_target`` backtracks cleanly to ``normgram`` when no token precedes
+    # the ``=`` (the whole-fit / legacy forms). The ``.`` in norm_target carries the
+    # optional ``<experiment>.`` qualifier. The type is kept permissive (validated in
+    # config.py) so a typo'd type gives a clear "Invalid normalization type" rather than a
+    # parse failure. Tagged ``normalization_obs`` so ploop routes it; edition-gated (>= 2)
+    # in config.py.
+    norm_target = pp.Word(pp.alphas, pp.alphanums + '_.')
+    norm_modern_gram = normkey + norm_target - equals - pp.Word(pp.alphas) - comment
+    norm_modern_gram.set_parse_action(lambda t: ['normalization_obs'] + list(t)[1:])
+
     # Grammar for dictionary-like specification of simulation actions
     # We are intentionally over-permissive here, because the Action class will be able to give more helpful error
     # messages than a failed parse.
@@ -329,7 +347,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -601,6 +619,21 @@ def ploop(ls):  # parse loop
                             if k not in d['normalization']:
                                 d['normalization'][k] = []
                             d['normalization'][k].append(parsed[k])
+            elif l[0] == 'normalization_obs':
+                # New-era per-observable normalization (ADR-0053, #444):
+                # ``normalization <target> = <type>`` where <target> is an observable, or
+                # ``<experiment>.<observable>`` for a per-experiment override. Stored as a
+                # structural ('normalization', target) tuple key -- a sibling of
+                # ('noise_model', obs) / ('cumulative', obs) -- so it rides the structural-key
+                # path (ADR-0014, never flagged unused) and is resolved against the
+                # (experiment x column) grid in config.py::_postprocess_normalization, where
+                # the type is also validated. The whole-fit default stays under the plain
+                # 'normalization' string key (above); the two coexist as specificity layers.
+                target, ntype = l[1], l[2]
+                norm_key = ('normalization', target)
+                if norm_key in d:
+                    raise PybnfError(f"normalization for '{target}' is specified multiple times")
+                d[norm_key] = ntype.lower()
             else:
                 if key in d:
                     if d[key] == values:

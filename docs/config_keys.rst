@@ -861,22 +861,58 @@ Algorithm Options
   
     * ``min_objective = 0.01``
   
+.. _normalization_key:
+
 **normalization**
-  Indicates that simulation data must be normalized in order to compare with exp files. Specify one of the following types of normalization:
-  
+  Normalize a simulation's predicted observable before it is compared to the data -- useful
+  when the experimental values are themselves reported on a normalized scale (fold-change,
+  percent-of-maximum, ...). Specify one of the following types:
+
    - ``init`` - normalize to the initial value
    - ``peak`` - normalize to the maximum value
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
-   - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1). 
-  If only the type is specified, the normalization is applied to all exp files. If the type is followed by a ':' and a comma-delimited list of exp files, it applies to only those exp files. Additionally, you may enclose an exp file in parentheses, and specify which columns of that exp file get normalized, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)``. Multiple lines with this key can be used. 
-   
+   - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1).
+
+  Normalization is a per-observable *prediction* transform -- a sibling of the per-observable
+  :ref:`noise_model <noise_model_key>` / ``cumulative`` surface -- so under a modern
+  :ref:`edition <edition>` (``>= 2``) it is keyed by **observable**, never by filename. Three
+  forms layer into a single most-specific-wins rule::
+
+    normalization = <type>                          # whole-fit default (every observable)
+    normalization <observable> = <type>             # per-observable (every experiment)
+    normalization <experiment>.<observable> = <type>  # per-(experiment, observable) override
+
+  For any observable column of any experiment the most specific rule wins:
+  ``<experiment>.<observable>`` beats ``<observable>`` beats the whole-fit default; an
+  observable matched by no rule is left un-normalized. ``<observable>`` is the model
+  observable/function name (the data column name as remapped by any
+  :ref:`observable <observable>` override) and ``<experiment>`` is the experiment name (see
+  :ref:`experiment <experiment>`). A standard-deviation (``_SD``) column is never normalized
+  on its own.
+
+  Normalization has no PEtab v2 representation (peak / initial-value / z-score scaling is a
+  whole-trajectory reduction, not a pointwise observable formula), so a job that uses it
+  **cannot be exported to PEtab** -- the exporter refuses it rather than silently scoring the
+  raw, un-normalized columns.
+
   Default: No normalization
-   
-  Examples:
-  
-     * ``normalization = init``
-     * ``normalization = init: data1.exp, data2.exp``
-     * ``normalization = init: (data1.exp: 1,3-5), (data2.exp: var1,var2)``
+
+  Examples (modern, ``edition = 2``):
+
+     * ``normalization = init`` (whole-fit default)
+     * ``normalization pErk = peak`` (pErk in every experiment)
+     * ``normalization egf_high.pAkt = init`` (pAkt in experiment egf_high only)
+
+  **Legacy form** (no ``edition``): normalization is keyed by ``.exp`` *filename* instead. If
+  only the type is specified it applies to all exp files; a type followed by a ``':'`` and a
+  comma-delimited list of exp files applies to only those, and an exp file may be enclosed in
+  parentheses with a column list, as in ``(data1.exp: 1,3-5)`` or ``(data1.exp: var1,var2)``.
+  Multiple ``normalization`` lines may be used. This filename form is **not** available under
+  ``edition >= 2`` (which keys data by experiment name, not filename) -- use the per-observable
+  forms above instead.
+
+     * ``normalization = init: data1.exp, data2.exp`` (legacy)
+     * ``normalization = init: (data1.exp: 1,3-5), (data2.exp: var1,var2)`` (legacy)
 
 .. _postproc_key:
 

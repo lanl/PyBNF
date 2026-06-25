@@ -9,6 +9,7 @@ from .context import raises
 import json
 import numpy as np
 import operator
+import os
 import pytest
 
 
@@ -570,3 +571,134 @@ class TestParameterRecordConfig:
         c = object.__new__(config.Configuration)
         with pytest.raises(printing.PybnfError, match=match):
             c._free_parameter_from_record('k', fields, 'prior')
+
+
+class TestNewEraNormalization:
+    """Per-observable normalization on the new-era surface (#444, ADR-0053).
+
+    Normalization is a per-observable *prediction* transform -- a sibling of the
+    per-observable ``noise_model`` / ``cumulative`` surface -- so the new era keys it by
+    observable (``normalization <obs> = <type>``) or by experiment+observable
+    (``normalization <exp>.<obs> = <type>``), never by filename. The rules form a total
+    specificity order, most-specific-wins: ``<exp>.<obs>`` > ``<obs>`` > the whole-fit
+    default ``normalization = <type>``. ``par1.exp`` columns are: time, x, y, x_SD, y_SD.
+
+    These exercise ``_postprocess_normalization`` / ``_resolve_normalization_grid`` directly
+    through the lightweight ``object.__new__`` harness (no model build, no backend), the same
+    pattern the legacy ``_postprocess_normalization`` tests use.
+    """
+
+    @staticmethod
+    def _resolve(norm, edition_val=2, experiments=('egf_high', 'egf_low')):
+        c = object.__new__(config.Configuration)
+        c.exp_data = {'parabola': {e: data.Data(file_name='bngl_files/par1.exp')
+                                   for e in experiments}}
+        c._experiment_data_keys = {e: ('parabola', e) for e in experiments}
+        cfg = {'models': {'bngl_files/parabola.bngl'}, 'bngl_files/parabola.bngl': [],
+               'exp_data': set(), 'edition': edition_val, 'normalization': None}
+        cfg.update(norm)
+        c.config = cfg
+        c._postprocess_normalization()
+        return c.config['normalization']
+
+    def test_per_observable_applies_to_every_experiment(self):
+        out = self._resolve({('normalization', 'x'): 'peak'})
+        assert out == {'egf_high': [('peak', ['x'])], 'egf_low': [('peak', ['x'])]}
+
+    def test_observable_without_a_rule_is_not_normalized(self):
+        # No whole-fit default: y has no rule, so it is left un-normalized (only declared
+        # observables are transformed).
+        out = self._resolve({('normalization', 'x'): 'peak'})
+        for dk in out:
+            assert 'y' not in [c for _t, cols in out[dk] for c in cols]
+
+    def test_whole_fit_default_plus_per_observable_override(self):
+        out = self._resolve({'normalization': 'init', ('normalization', 'x'): 'peak'})
+        assert out == {'egf_high': [('peak', ['x']), ('init', ['y'])],
+                       'egf_low': [('peak', ['x']), ('init', ['y'])]}
+
+    def test_qualified_override_is_most_specific(self):
+        # Total order: <exp>.<obs>  beats  <obs>  beats  whole-fit default.
+        out = self._resolve({'normalization': 'init',
+                             ('normalization', 'x'): 'peak',
+                             ('normalization', 'egf_high.x'): 'zero'})
+        assert out['egf_high'] == [('zero', ['x']), ('init', ['y'])]   # qualified wins for egf_high.x
+        assert out['egf_low'] == [('peak', ['x']), ('init', ['y'])]    # per-observable elsewhere
+
+    def test_qualified_matches_conditioned_experiment_by_name(self):
+        # A conditioned experiment's data_key is name+condition, but the user authors by
+        # experiment NAME; the override resolves through the experiment-name map (ADR-0053).
+        c = object.__new__(config.Configuration)
+        c.exp_data = {'parabola': {'egf_highdimer': data.Data(file_name='bngl_files/par1.exp')}}
+        c._experiment_data_keys = {'egf_high': ('parabola', 'egf_highdimer')}
+        c.config = {'models': {'bngl_files/parabola.bngl'}, 'bngl_files/parabola.bngl': [],
+                    'exp_data': set(), 'edition': 2, 'normalization': None,
+                    ('normalization', 'egf_high.x'): 'zero'}
+        c._postprocess_normalization()
+        assert c.config['normalization'] == {'egf_highdimer': [('zero', ['x'])]}
+
+    def test_unknown_observable_raises(self):
+        with pytest.raises(printing.PybnfError, match='unknown observable'):
+            self._resolve({('normalization', 'zzz'): 'peak'})
+
+    def test_qualified_unknown_experiment_raises(self):
+        with pytest.raises(printing.PybnfError, match='unknown experiment'):
+            self._resolve({('normalization', 'nope.x'): 'peak'})
+
+    def test_qualified_unknown_observable_in_experiment_raises(self):
+        with pytest.raises(printing.PybnfError, match='unknown observable'):
+            self._resolve({('normalization', 'egf_high.zzz'): 'peak'})
+
+    def test_invalid_type_raises(self):
+        with pytest.raises(printing.PybnfError, match='Invalid normalization type'):
+            self._resolve({('normalization', 'x'): 'bogus'})
+
+    def test_modern_form_requires_edition_2(self):
+        with pytest.raises(printing.PybnfError, match='edition'):
+            self._resolve({('normalization', 'x'): 'peak'}, edition_val=None)
+
+    def test_legacy_per_file_form_rejected_under_edition_2(self):
+        # The pre-#444 failure mode: a legacy filename-keyed dict on the new-era surface
+        # crashed with ``KeyError: None`` (the filename stem is not the new-era data key).
+        # It is now a clear redirect to the per-observable form, not a crash.
+        with pytest.raises(printing.PybnfError, match='legacy form'):
+            self._resolve({'normalization': {'bngl_files/par1.exp': 'peak'}})
+
+
+class TestNewEraPreprocessingKeysRideThrough:
+    """#444 item 1: the other three preprocessing keys -- ``smoothing`` /
+    ``ind_var_rounding`` / ``constraint_scale`` -- are global scalars, NOT filename-coupled,
+    so (unlike the per-file normalization dict) they ride the new-era surface unchanged.
+    Verified by building a real edition-2 ``Configuration`` (the per_observable_noise_v2
+    example: two observables x, y) and reading the keys back, including the one that reaches
+    a consumer (``ind_var_rounding`` -> the objective). Backend-free (no bngsim / BNG2)."""
+
+    @staticmethod
+    def _build(extra):
+        home = os.getcwd()
+        os.chdir('examples/per_observable_noise')
+        try:
+            base = open('per_observable_noise_v2.conf').read()
+            return config.Configuration(
+                parse.ploop((base + extra).splitlines(keepends=True)))
+        finally:
+            os.chdir(home)
+
+    def test_ind_var_rounding_rides_through_and_reaches_the_objective(self):
+        c = self._build('\nind_var_rounding = 1\n')
+        assert c.config['ind_var_rounding'] == 1
+        assert c.obj.rounding == 1
+
+    def test_constraint_scale_rides_through(self):
+        c = self._build('\nconstraint_scale = 2.5\n')
+        assert c.config['constraint_scale'] == 2.5
+
+    def test_smoothing_rides_through(self):
+        c = self._build('\nsmoothing = 3\n')
+        assert c.config['smoothing'] == 3
+
+    def test_per_observable_normalization_resolves_on_a_real_build(self):
+        # End-to-end: the new-era per-observable + qualified forms resolve against the real
+        # experiment's columns during a full Configuration build.
+        c = self._build('\nnormalization x = peak\nnormalization par1.y = init\n')
+        assert c.config['normalization'] == {'par1': [('peak', ['x']), ('init', ['y'])]}

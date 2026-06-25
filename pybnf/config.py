@@ -895,6 +895,13 @@ class Configuration:
         # (_check_variable_correspondence_modern), like the measurement-layer nuisances. Always
         # defined (even with no experiments) so the check can union it unconditionally.
         self._per_measurement_free_params = set()
+        # experiment name -> (base model, data_key) for the new-era per-experiment
+        # normalization override (`normalization <experiment>.<observable> = <type>`,
+        # ADR-0053): users author by experiment NAME, but the exp_data/sim suffix is the
+        # data_key (name, or name+condition for a conditioned experiment), so
+        # _postprocess_normalization resolves the qualifier through this map. Always
+        # defined (even with no experiments) so the resolver can read it unconditionally.
+        self._experiment_data_keys = {}
         experiments = [(k[1], v) for k, v in self.config.items()
                        if isinstance(k, tuple) and k[0] == 'experiment']
         if not experiments:
@@ -922,6 +929,7 @@ class Configuration:
             preequilibrate = fields.get('preequilibrate')
             data_key = self._resolve_experiment_data_key(
                 name, model, base, fields.get('condition'), preequilibrate)
+            self._experiment_data_keys[name] = (base, data_key)
             method = fields.get('method', 'ode')
             if preequilibrate is None and fields.get('condition') is not None:
                 regular_conditions.setdefault(base, set()).add(fields['condition'])
@@ -2209,96 +2217,215 @@ class Configuration:
         """
         seedoc = "\nSee the documentation for the syntax options for the 'normalization' key"
         valid = ('init', 'peak', 'zero', 'unit')
-        if type(self.config['normalization']) == dict:
-            # Iterate through the keys, which should be .exp file names. Check that these are actual exp files that
-            # are used in the fitting, then add to the dictionary just the suffix, for easier lookup later
-            newdict = dict()
-            for ef in self.config['normalization']:
-                if ef not in self.config['exp_data']:
-                    raise PybnfError(f"Invalid exp file {ef} under the normalization key",
-                                     f"The exp file {ef} given under the 'normalization' keyword is not associated with "
-                                     "any model." + seedoc)
-                val = self.config['normalization'][ef]
 
-                # Figure out how to get to the right data object (it's in a dict keyed on model name, then suffix)
-                m = None
-                for modelpath in self.config['models']:
-                    if ef in self.config[modelpath]:
-                        m = self._file_prefix(modelpath, '(bngl|xml|ant)')
-                        break
-                suff = self._file_prefix(ef)
+        # New-era per-observable rules (ADR-0053, #444): structural ('normalization',
+        # target) tuple keys, where target is an observable name or
+        # '<experiment>.<observable>'. Normalization is a per-observable *prediction*
+        # transform (a sibling of the per-observable noise_model / cumulative surface,
+        # ADR-0021/0051), so the new era keys it by observable (and optionally an
+        # experiment), never a filename. Collected + validated here, then resolved against
+        # the (experiment x column) grid below; the layers form a total specificity order
+        # (whole-fit default < per-observable < per-(experiment, observable)).
+        ed = edition.resolve_edition(self.config.get('edition'))
+        per_obs, per_exp_obs = {}, {}
+        norm_tuple_keys = [k for k in self.config
+                           if isinstance(k, tuple) and k[0] == 'normalization']
+        for k in norm_tuple_keys:
+            target, ntype = k[1], self.config[k]
+            if ntype not in valid:
+                raise PybnfError(
+                    f"Invalid normalization type '{ntype}' for '{target}'",
+                    f"Invalid normalization type '{ntype}'. Options are: init, peak, zero, "
+                    "unit." + seedoc)
+            if '.' in target:
+                exp_name, obs = target.split('.', 1)
+                per_exp_obs[(exp_name, obs)] = ntype
+            else:
+                per_obs[target] = ntype
+        if norm_tuple_keys:
+            edition.require_edition(
+                ed, 2, "per-observable normalization ('normalization <observable> = <type>')")
 
-                def checkval(v):
-                    if v not in valid:
-                        raise PybnfError("Invalid normalization type '{}'".format(self.config['normalization'][ef]),
-                                         "Invalid normalization type '{}'. Options are: init, peak, zero, unit".format(self.config['normalization'][ef]) + seedoc)
-                if type(val) == str:
-                    # This exp file has a single normalization type for all columns.
-                    # Convert to column-specific form using only the columns present in the .exp file,
-                    # so that simulation columns used only by .prop constraints are not normalized.
-                    checkval(val)
-                    exp_cols = [c for c in self.exp_data[m][suff].cols
-                                if self.exp_data[m][suff].cols[c] != 0 and not c.endswith('_SD')]
-                    if not exp_cols:
-                        continue
-                    val = [(val, exp_cols)]
-                else:
-                    # This exp file has a list of one or more pairs specifying (normalization_type, [columns])
-                    for (i, (ntype, cols)) in enumerate(val):
-                        checkval(ntype)
-                        new_cols = []
-                        if type(cols[0]) == int:
-                            # Need to convert to string labels, because the indices into the sim data will be different
-                            to_convert = cols
-                            for label in self.exp_data[m][suff].cols:
-                                ci = self.exp_data[m][suff].cols[label]
-                                if ci in to_convert:
-                                    to_convert.remove(ci)
-                                    new_cols.append(label)
-                            if len(to_convert) > 0:
-                                raise PybnfError(f"Invalid normalization column {to_convert[0]} for file {ef}",
-                                                 "Specified normalization for column %i in file %s, but that file "
-                                                 "contains only %i columns." % (
-                                                 to_convert[0], ef, self.exp_data[m][suff].data.shape[1]) + seedoc)
-                        else:
-                            new_cols = cols
-                        # Iterate over a copy: the _SD branch below removes from
-                        # new_cols, and aliasing the iterator to the same list
-                        # would skip the element after each removal (so a second
-                        # consecutive _SD column was silently kept).
-                        new_cols_iter = list(new_cols)
-                        for c in new_cols_iter:
-                            if c not in self.exp_data[m][suff].cols:
-                                raise PybnfError(f"Invalid normalization column {c} for file {ef}",
-                                                 f"Specified normalization for column {c} in file {ef}, but that file does "
-                                                 "not contain that column name." + seedoc)
-                            if c[-3:] == '_SD':
-                                logger.info(f'Removing {c} from the normalization list')
-                                print1(f"Warning: You specified a normalization for {c}, but I can't normalize a "
-                                       "standard deviation separately, because it's not an output of the simulation. "
-                                       f"I'm ignoring your {c} setting and assuming it's on the same scale as its data "
-                                       "column.")
-                                new_cols.remove(c)
-                        # Update with the postprocessed normalization info
-                        val[i] = (ntype, new_cols)
+        base = self.config['normalization']
 
-                newdict[suff] = val
-            self.config['normalization'].update(newdict)
-        elif type(self.config['normalization']) == str:
-            if self.config['normalization'] not in valid:
-                raise PybnfError("Invalid normalization type '{}'".format(self.config['normalization']),
-                                 "Invalid normalization type '{}'. Options are: init, peak, zero, unit".format(self.config['normalization']) + seedoc)
-            # Convert global normalization to column-specific form for each exp file,
-            # so that simulation columns used only by .prop constraints are not normalized.
-            ntype = self.config['normalization']
-            newdict = dict()
-            for m in self.exp_data:
-                for suff in self.exp_data[m]:
-                    exp_cols = [c for c in self.exp_data[m][suff].cols
-                                if self.exp_data[m][suff].cols[c] != 0 and not c.endswith('_SD')]
-                    if exp_cols:
-                        newdict[suff] = [(ntype, exp_cols)]
-            self.config['normalization'] = newdict
+        if type(base) == dict:
+            # Legacy per-FILE normalization (keyed by .exp filename). It is incompatible
+            # with the new-era surface, which keys data by experiment name, not filename
+            # (ADR-0028): the filename stem is no longer the data key, so a per-file rule
+            # would silently fail to resolve (issue #444). Under a modern edition redirect
+            # to the per-observable form rather than mis-resolve; legacy edition keeps the
+            # historical filename behaviour byte-identical.
+            if ed >= 2:
+                raise PybnfError(
+                    "Per-file normalization (normalization = <type>: <file.exp>) is a legacy "
+                    "form not supported under edition >= 2",
+                    "Under edition >= 2 a config keys its data by experiment name, not by .exp "
+                    "filename, so per-file normalization does not apply. Use the per-observable "
+                    "form 'normalization <observable> = <type>' (every experiment) or "
+                    "'normalization <experiment>.<observable> = <type>' (one experiment)."
+                    + seedoc)
+            self._postprocess_legacy_normalization_dict(valid, seedoc)
+            return
+
+        whole_fit = base if type(base) == str else None
+        if whole_fit is not None and whole_fit not in valid:
+            raise PybnfError(
+                f"Invalid normalization type '{whole_fit}'",
+                f"Invalid normalization type '{whole_fit}'. Options are: init, peak, zero, "
+                "unit." + seedoc)
+        if whole_fit is None and not norm_tuple_keys:
+            return  # nothing declared (base is None and no per-observable rules)
+
+        self.config['normalization'] = self._resolve_normalization_grid(
+            whole_fit, per_obs, per_exp_obs, seedoc)
+
+    def _resolve_normalization_grid(self, whole_fit, per_obs, per_exp_obs, seedoc):
+        """Resolve the per-(experiment, observable) normalization grid from the layered
+        new-era rules (ADR-0053): for each measured observable column of each experiment,
+        the most specific rule wins -- a per-(experiment, observable) override
+        (``<exp>.<obs>``), else a per-observable rule (``<obs>``), else the whole-fit
+        default (``normalization = <type>``). Compiles to the
+        ``{data_key: [(type, [columns])]}`` form that ``Result.normalize`` /
+        ``Data.normalize`` already consume, so nothing below the config layer changes.
+
+        Validates that every declared target matched a real measured observable (a typo
+        otherwise), mirroring the new-era ``observable:`` override's unknown-header check.
+        """
+        # data_key (model, suffix) -> experiment name, so a ``<exp>.<obs>`` override matches
+        # by the experiment NAME the user wrote even when the data_key is name+condition.
+        dk_to_name = {(base, dk): name
+                      for name, (base, dk) in self._experiment_data_keys.items()}
+        known_exp_names = set(self._experiment_data_keys)
+
+        matched_obs, matched_exp_obs, all_observables = set(), set(), set()
+        result = {}
+        for m in self.exp_data:
+            for dk in self.exp_data[m]:
+                d = self.exp_data[m][dk]
+                cols = [c for c in d.cols if d.cols[c] != 0 and not c.endswith('_SD')]
+                all_observables.update(cols)
+                exp_name = dk_to_name.get((m, dk), dk)
+                groups, by_type = [], {}
+                for c in cols:
+                    if (exp_name, c) in per_exp_obs:
+                        t = per_exp_obs[(exp_name, c)]
+                        matched_exp_obs.add((exp_name, c))
+                    elif c in per_obs:
+                        t = per_obs[c]
+                        matched_obs.add(c)
+                    elif whole_fit is not None:
+                        t = whole_fit
+                    else:
+                        continue  # column not covered by any rule -> not normalized
+                    if t not in by_type:
+                        by_type[t] = []
+                        groups.append((t, by_type[t]))
+                    by_type[t].append(c)
+                if groups:
+                    result[dk] = groups
+
+        # Typo guards: a declared observable / experiment.observable that matched nothing.
+        unmatched_obs = sorted(set(per_obs) - matched_obs)
+        if unmatched_obs:
+            raise PybnfError(
+                f"normalization references unknown observable(s) {unmatched_obs}",
+                f"normalization was specified for {unmatched_obs}, but no experiment measures "
+                f"an observable by that name. Measured observables are "
+                f"{sorted(all_observables)}." + seedoc)
+        for (exp_name, obs) in per_exp_obs:
+            if exp_name not in known_exp_names:
+                raise PybnfError(
+                    f"normalization references unknown experiment '{exp_name}'",
+                    f"normalization '{exp_name}.{obs}' names experiment '{exp_name}', which is "
+                    f"not defined. Experiments are {sorted(known_exp_names)}." + seedoc)
+            if (exp_name, obs) not in matched_exp_obs:
+                raise PybnfError(
+                    f"normalization references unknown observable '{obs}' in experiment "
+                    f"'{exp_name}'",
+                    f"normalization '{exp_name}.{obs}' names observable '{obs}', which experiment "
+                    f"'{exp_name}' does not measure." + seedoc)
+        return result
+
+    def _postprocess_legacy_normalization_dict(self, valid, seedoc):
+        """Legacy per-FILE normalization (``normalization = <type>: <file.exp>``), keyed by
+        ``.exp`` filename -- the historical surface, kept byte-identical for legacy-edition
+        jobs (the new-era per-observable form lives in :meth:`_resolve_normalization_grid`).
+        Re-keys the filename dict to the data suffix and expands each entry to the
+        ``{suffix: [(type, [columns])]}`` form the normalizer consumes."""
+        newdict = dict()
+        for ef in self.config['normalization']:
+            if not isinstance(ef, str):
+                continue  # skip the modern ('normalization', target) tuple keys
+            if ef not in self.config['exp_data']:
+                raise PybnfError(f"Invalid exp file {ef} under the normalization key",
+                                 f"The exp file {ef} given under the 'normalization' keyword is not associated with "
+                                 "any model." + seedoc)
+            val = self.config['normalization'][ef]
+
+            # Figure out how to get to the right data object (it's in a dict keyed on model name, then suffix)
+            m = None
+            for modelpath in self.config['models']:
+                if ef in self.config[modelpath]:
+                    m = self._file_prefix(modelpath, '(bngl|xml|ant)')
+                    break
+            suff = self._file_prefix(ef)
+
+            def checkval(v):
+                if v not in valid:
+                    raise PybnfError("Invalid normalization type '{}'".format(self.config['normalization'][ef]),
+                                     "Invalid normalization type '{}'. Options are: init, peak, zero, unit".format(self.config['normalization'][ef]) + seedoc)
+            if type(val) == str:
+                # This exp file has a single normalization type for all columns.
+                # Convert to column-specific form using only the columns present in the .exp file,
+                # so that simulation columns used only by .prop constraints are not normalized.
+                checkval(val)
+                exp_cols = [c for c in self.exp_data[m][suff].cols
+                            if self.exp_data[m][suff].cols[c] != 0 and not c.endswith('_SD')]
+                if not exp_cols:
+                    continue
+                val = [(val, exp_cols)]
+            else:
+                # This exp file has a list of one or more pairs specifying (normalization_type, [columns])
+                for (i, (ntype, cols)) in enumerate(val):
+                    checkval(ntype)
+                    new_cols = []
+                    if type(cols[0]) == int:
+                        # Need to convert to string labels, because the indices into the sim data will be different
+                        to_convert = cols
+                        for label in self.exp_data[m][suff].cols:
+                            ci = self.exp_data[m][suff].cols[label]
+                            if ci in to_convert:
+                                to_convert.remove(ci)
+                                new_cols.append(label)
+                        if len(to_convert) > 0:
+                            raise PybnfError(f"Invalid normalization column {to_convert[0]} for file {ef}",
+                                             "Specified normalization for column %i in file %s, but that file "
+                                             "contains only %i columns." % (
+                                             to_convert[0], ef, self.exp_data[m][suff].data.shape[1]) + seedoc)
+                    else:
+                        new_cols = cols
+                    # Iterate over a copy: the _SD branch below removes from
+                    # new_cols, and aliasing the iterator to the same list
+                    # would skip the element after each removal (so a second
+                    # consecutive _SD column was silently kept).
+                    new_cols_iter = list(new_cols)
+                    for c in new_cols_iter:
+                        if c not in self.exp_data[m][suff].cols:
+                            raise PybnfError(f"Invalid normalization column {c} for file {ef}",
+                                             f"Specified normalization for column {c} in file {ef}, but that file does "
+                                             "not contain that column name." + seedoc)
+                        if c[-3:] == '_SD':
+                            logger.info(f'Removing {c} from the normalization list')
+                            print1(f"Warning: You specified a normalization for {c}, but I can't normalize a "
+                                   "standard deviation separately, because it's not an output of the simulation. "
+                                   f"I'm ignoring your {c} setting and assuming it's on the same scale as its data "
+                                   "column.")
+                            new_cols.remove(c)
+                    # Update with the postprocessed normalization info
+                    val[i] = (ntype, new_cols)
+
+            newdict[suff] = val
+        self.config['normalization'].update(newdict)
 
     def _load_postprocessing(self):
         """

@@ -164,6 +164,7 @@ def export_job(conf_path, out_dir, inline_functions=False):
     noise = _resolve_noise(conf)
     per_obs_noise = _resolve_per_observable_noise(conf)
     _reject_cumulative(conf)
+    _reject_normalization(conf)
     free_params = _free_parameters_from_conf(conf)
     # An estimated (`fit`) sigma exports as a bare-id noiseFormula naming an estimated PEtab
     # parameter (#439), so its noise scale must be a DECLARED free parameter (with bounds/prior
@@ -792,6 +793,38 @@ def _reject_cumulative(conf):
             f"cumulative-counts observable operator. Exporting would silently score the raw "
             f"cumulative columns instead. Remove the 'cumulative' flag (and difference the data "
             f"to per-interval increments yourself) to export to PEtab.")
+
+
+def _reject_normalization(conf):
+    """Fail loud if the job declares any normalization (ADR-0053, #444).
+
+    Normalization (``peak`` / ``init`` / ``zero`` / ``unit``) is a PyBNF *prediction*
+    transform -- a whole-trajectory reduction of a predicted observable before scoring -- with
+    no PEtab v2 representation: PEtab observable formulas are pointwise, so they cannot express
+    "divide by this trajectory's peak / initial value" (the scale comes from the trajectory
+    itself, not the model state at one point). Exporting would silently drop it and emit a
+    problem that scores the raw, un-normalized columns, a different objective. Refuse instead
+    (the fail-loud-over-silently-wrong stance, like :func:`_reject_cumulative`), naming what is
+    normalized -- the per-observable ``('normalization', target)`` keys (ADR-0053) and the
+    whole-fit / legacy ``normalization`` value alike."""
+    targets = sorted(k[1] for k in conf
+                     if isinstance(k, tuple) and k[0] == 'normalization')
+    whole_fit = conf.get('normalization')
+    if not targets and whole_fit is None:
+        return
+    if targets:
+        detail = f"observable(s) {targets}"
+    elif isinstance(whole_fit, dict):
+        detail = f"data file(s) {sorted(whole_fit)}"
+    else:
+        detail = f"the whole fit ('{whole_fit}')"
+    raise NotImplementedError(
+        f"This job normalizes {detail} (the 'normalization' key, ADR-0053), a PyBNF prediction "
+        f"transform PEtab v2 cannot express -- it has no observable operator for "
+        f"peak/initial-value/z-score normalization (a whole-trajectory reduction, not a "
+        f"pointwise observable formula). Exporting would silently score the raw, un-normalized "
+        f"columns instead. Remove the normalization (normalizing your data and model output "
+        f"equivalently yourself) to export to PEtab.")
 
 
 def _reduce_noise_spec(family_token, fields, location, where):

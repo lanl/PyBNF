@@ -1427,6 +1427,24 @@ class TestBoundaries:
         with pytest.raises(NotImplementedError, match='constraint'):
             export_job(conf, tmp_path / 'out')
 
+    def test_per_observable_normalization_is_refused(self, tmp_path):
+        # Normalization (peak/init/zero/unit) is a PyBNF *prediction* transform -- a
+        # whole-trajectory reduction of a predicted observable with no PEtab v2 operator
+        # (ADR-0053, #444). An experiment carrying it is refused rather than mis-exported:
+        # silently dropping it would emit a problem that scores the raw, un-normalized
+        # columns -- a different objective (the same fail-loud stance as cumulative).
+        with pytest.raises(NotImplementedError, match='normaliz'):
+            export_job(_boundary_conf(
+                tmp_path, "objective = chi_sq\nuniform_var = v1 0 10\nnormalization x = peak\n"),
+                tmp_path / 'out')
+
+    def test_whole_fit_normalization_is_refused(self, tmp_path):
+        # The whole-fit form (normalization = <type>) is equally inexpressible in PEtab.
+        with pytest.raises(NotImplementedError, match='normaliz'):
+            export_job(_boundary_conf(
+                tmp_path, "objective = chi_sq\nuniform_var = v1 0 10\nnormalization = init\n"),
+                tmp_path / 'out')
+
     @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
     def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
         # neg_bin was removed from PEtab v2; score (the direct_pass successor) is not a
