@@ -743,13 +743,22 @@ Output Options
     * ``save_best_data = 1``
 
 **embed_best_fit_data**
-  Opt-in, new-era (``edition = 2``) only. When 1, the end-of-run ``Results/<model>_bestfit.bngl`` artifact additionally embeds each time-indexed observable's experimental data as a sidecar ``.tfun`` reference function, so the saved model self-contains its comparison curves. A no-op in the legacy edition and when unset.
+  Opt-in, new-era (``edition = 2``) only. When 1, the end-of-run ``Results/<model>_bestfit.bngl`` artifact additionally embeds each time-indexed observable's experimental data **inline** as a ``tfun([t...],[y...], time)`` reference function (ADR-0054; was a sidecar ``.tfun`` file under ADR-0048), so the saved model self-contains its comparison curves in one file. ``tfun`` is a bngsim feature (BNG2.pl parses no ``tfun`` form), so the embedded overlay is read through a bngsim path. A no-op in the legacy edition and when unset.
 
   Default: 0
 
   Example:
 
     * ``embed_best_fit_data = 1``
+
+**smooth_plot_points**
+  Opt-in, new-era (``edition = 2``) only. In the new era a fitting job's output times come from the data, so the end-of-run ``Results/<model>_bestfit.bngl`` artifact reproduces a *ragged* trajectory (only the measured time points). When set to a positive integer N, the artifact's data-derived time-course actions are re-rendered onto a uniform grid of N output steps over ``[t_start, t_max]`` instead of the data's ``sample_times``, so running the artifact yields a smooth plot curve. This affects only the saved artifact (a post-fit re-render) -- never the fit itself -- and is honored by both BNG2.pl and bngsim. Parameter-scan (dose-response) actions and the steady-state pre-equilibration phase are left untouched. A no-op (ragged grid, as authored) when 0.
+
+  Default: 0
+
+  Example:
+
+    * ``smooth_plot_points = 500``
 
 **verbosity**
   An integer value that specifies the amount of information output to the terminal.

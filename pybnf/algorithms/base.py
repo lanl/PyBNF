@@ -16,7 +16,7 @@ from .core import (
     result_from_completed,
 )
 from subprocess import run, CalledProcessError, TimeoutExpired, STDOUT
-from ..pset import PSet, Trajectory, BNGLModel, NetModel, run_subprocess, _stage_and_rewrite_tfun_files
+from ..pset import PSet, Trajectory, BNGLModel, NetModel, run_subprocess, _stage_and_rewrite_tfun_files, _format_bngl_number
 from .. import edition
 from ..bngsim_model import (
     BngsimModel,
@@ -1257,8 +1257,10 @@ class Algorithm(ABC):
         *maximum-likelihood point* -- the recorded objective excludes the prior, so
         it is NOT the MAP (see :meth:`_best_fit_header` and the ADR). When
         ``embed_best_fit_data`` is set, each time-indexed observable's experimental
-        data is embedded as a sidecar ``.tfun`` reference function
-        (:meth:`_build_exp_data_tfuns`).
+        data is embedded inline (ADR-0054) as a ``tfun([t...],[y...], time)`` reference
+        function (:meth:`_build_exp_data_tfuns`); when ``smooth_plot_points`` is set,
+        the data-derived time-course actions render on a uniform fine grid so the
+        artifact plots a smooth curve (:meth:`_smooth_action_lines`).
 
         Reuses the ADR-0034 rendering path (``copy_with_param_set`` -> ``model_text``)
         and the same ``_stage_and_rewrite_tfun_files`` staging ``save()`` uses, so a
@@ -1320,10 +1322,16 @@ class Algorithm(ABC):
     def _write_one_best_fit_bngl(self, model, best_pset, header, embed):
         """Render one BNGL model's best-fit artifact (+ optional embedded data) to Results/."""
         to_save = model.copy_with_param_set(best_pset)
+        # Smooth-curve opt-in (ADR-0054): re-render the data-derived time-course actions
+        # onto a uniform fine grid so the artifact plots as a smooth curve. Acts only on
+        # this deep-copied artifact model -- the fit already scored on the data grid, so
+        # the objective is untouched. A no-op (0) leaves the ragged grid byte-identical.
+        smooth = self.config.config.get('smooth_plot_points', 0) or 0
+        if smooth > 0:
+            to_save.actions = self._smooth_action_lines(to_save.actions, smooth)
         text = to_save.model_text()
-        # Stage any tfun file refs the *source* model already carries (as save() does),
-        # before injecting the embedded refs below -- those point at sidecars already in
-        # Results/, which staging (source_dir -> dest_dir) must not try to copy in.
+        # Stage any tfun file refs the *source* model already carries (as save() does).
+        # The embedded data below is now inline (ADR-0054), so it needs no staging.
         text = _stage_and_rewrite_tfun_files(
             text, os.path.dirname(model.file_path), self.res_dir)
         if embed:
@@ -1333,24 +1341,54 @@ class Algorithm(ABC):
             f.write(header + text)
         logger.info('Wrote best-fit BNGL artifact %s' % out_path)
 
+    # The bracketed sample_times list of a synthesized time-course simulate action.
+    _SAMPLE_TIMES_RE = re.compile(r'sample_times=>\[([^\]]*)\]')
+
+    @classmethod
+    def _smooth_action_lines(cls, action_lines, n_points):
+        """Re-render data-derived time-course actions onto a uniform fine grid (ADR-0054).
+
+        A new-era time course is emitted with the data's ragged ``sample_times=>[t0,...,tN]``
+        grid (``pset._timecourse_line``); for a smooth, plottable best-fit artifact each such
+        ``simulate(...)`` is re-rendered as ``t_end=>{max(tᵢ)},n_steps=>{n_points}`` -- exactly
+        the uniform form ``_timecourse_line`` emits when ``explicit_points is None``, so
+        ``method``/``t_start``/``suffix``/condition ``setParameter``s are preserved and the
+        artifact stays a faithful, denser re-simulation of the same experiment.
+
+        Only ``sample_times`` lists are rewritten: ``parameter_scan`` actions carry
+        ``par_scan_vals`` (a swept axis, not time) and the steady-state pre-equilibration
+        phase carries no ``sample_times`` -- both are left as-is. Returns a new list; the
+        input is not mutated. Scoring is unaffected (this only touches the end-of-run
+        artifact copy).
+        """
+        def repl(m):
+            pts = [float(x) for x in m.group(1).split(',') if x.strip()]
+            return 't_end=>%s,n_steps=>%d' % (_format_bngl_number(max(pts)), n_points)
+        return [cls._SAMPLE_TIMES_RE.sub(repl, line) for line in action_lines]
+
     def _build_exp_data_tfuns(self, model):
-        """Embed this model's experimental data as sidecar ``.tfun`` reference functions.
+        """Embed this model's experimental data as inline ``tfun`` reference functions.
 
         For each time-indexed experiment in ``self.exp_data[model.name]`` and each of
         its observable columns (excluding the independent variable and ``_SD`` noise
-        columns), write a ``Results/<model>_bestfit_tfun/<exp>__<obs>.tfun`` sidecar --
-        a ``# time <fn>`` header over the experimental (time, value) rows, sorted and
-        de-duplicated to the strictly-increasing index ``tfun`` requires -- and return
-        a ``<fn>() = tfun('<rel-path>', time)`` function line per sidecar (ADR-0048).
+        columns), return an inline function line embedding the experimental (time, value)
+        pairs directly in the BNGL (ADR-0054, was a sidecar ``.tfun`` file under ADR-0048)::
+
+            <fn>() = tfun([t0,t1,...],[y0,y1,...], time)
+
+        so ``<model>_bestfit.bngl`` self-contains its comparison curves in one file (no
+        sidecar directory). The pairs are sorted and de-duplicated to the strictly-
+        increasing index ``tfun`` requires; default linear interpolation. ``tfun`` is a
+        bngsim feature (BNG2.pl parses no ``tfun`` form), so the embedded overlay is
+        consumed through a bngsim path -- see ADR-0054.
 
         Non-time-indexed experiments (parameter scan / dose-response, whose indvar is
-        a swept parameter) are skipped with a log note: a ``tfun(file, time)`` would
+        a swept parameter) are skipped with a log note: a ``tfun(..., time)`` would
         misrepresent them. Columns with fewer than two finite points are skipped
         (``tfun`` needs at least two). Returns ``[]`` when nothing is embeddable.
         """
         func_lines = []
         model_data = self.exp_data.get(model.name, {})
-        tfun_dir = Path(self.res_dir) / ('%s_bestfit_tfun' % model.name)
         for suffix in sorted(model_data):
             data = model_data[suffix]
             if data.indvar != 'time':
@@ -1365,13 +1403,9 @@ class Algorithm(ABC):
                 if len(pairs) < 2:
                     continue
                 fn = self._sanitize_id('expt_%s_%s' % (suffix, obs))
-                rel = '%s_bestfit_tfun/%s.tfun' % (model.name, self._sanitize_id('%s__%s' % (suffix, obs)))
-                tfun_dir.mkdir(parents=True, exist_ok=True)
-                with open(Path(self.res_dir) / rel, 'w') as f:
-                    f.write('# time %s\n' % fn)
-                    for t, v in pairs:
-                        f.write('%.17g %.17g\n' % (t, v))
-                func_lines.append("%s() = tfun('%s', time)" % (fn, rel))
+                ts = ','.join(_format_bngl_number(t) for t, _ in pairs)
+                vs = ','.join(_format_bngl_number(v) for _, v in pairs)
+                func_lines.append('%s() = tfun([%s],[%s], time)' % (fn, ts, vs))
         return func_lines
 
     @staticmethod

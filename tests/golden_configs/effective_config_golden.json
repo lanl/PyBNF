@@ -290,6 +290,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -686,6 +690,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -1094,6 +1102,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -1466,6 +1478,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -1976,6 +1992,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -2496,6 +2516,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -2982,6 +3006,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -3378,6 +3406,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -3786,6 +3818,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -4085,6 +4121,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -4439,6 +4479,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -4712,6 +4756,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -4947,6 +4995,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -5214,6 +5266,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -5492,6 +5548,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -5789,6 +5849,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -6116,6 +6180,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -6423,6 +6491,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -6736,6 +6808,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -7086,6 +7162,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -7385,6 +7465,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -7688,6 +7772,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -7987,6 +8075,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -8290,6 +8382,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -8577,6 +8673,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -8874,6 +8974,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -9226,6 +9330,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -9566,6 +9674,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -9855,6 +9967,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",
@@ -10158,6 +10274,10 @@
     null
    ],
    [
+    "smooth_plot_points",
+    0
+   ],
+   [
     "smoothing",
     1
    ],
@@ -10430,6 +10550,10 @@
    [
     "simulation_dir",
     null
+   ],
+   [
+    "smooth_plot_points",
+    0
    ],
    [
     "smoothing",

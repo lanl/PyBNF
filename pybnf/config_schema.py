@@ -218,11 +218,19 @@ class GlobalConfig(PyBNFConfigModel):
     parallel_count: Optional[int] = None
     save_best_data: int = 0
     # Opt-in (new-era only): also embed each time-indexed observable's experimental
-    # data into the end-of-run Results/<model>_bestfit.bngl artifact as sidecar
-    # .tfun reference functions, so the model self-contains its comparison curves
-    # (ADR-0048). A no-op in legacy (the artifact itself is edition >= 2 only) and
-    # when unset.
+    # data into the end-of-run Results/<model>_bestfit.bngl artifact as inline
+    # tfun() reference functions (ADR-0054, was sidecar .tfun under ADR-0048), so
+    # the model self-contains its comparison curves in one file. tfun is a bngsim
+    # feature. A no-op in legacy (the artifact itself is edition >= 2 only) and when
+    # unset.
     embed_best_fit_data: int = 0
+    # Opt-in (new-era only): render the end-of-run Results/<model>_bestfit.bngl
+    # artifact's data-derived time-course actions on a uniform fine grid of this
+    # many output steps instead of the data's ragged sample_times, so running the
+    # artifact yields a smooth plot curve (ADR-0054, #444). 0 = off (ragged grid,
+    # as authored). Cross-engine; does not affect the fit (the artifact is a
+    # post-fit re-render).
+    smooth_plot_points: int = 0
     simulation_dir: Optional[str] = None
     parallelize_models: int = 1
     starting_params: Any = None
