@@ -525,3 +525,90 @@ def test_receptor_round_trips_through_preequilibration(tmp_path):
     original = _score(_build_cfg(RECEPTOR_V2_CONF))
     reimported = _score(_build_cfg(imp / 'imported.conf'))
     assert reimported == pytest.approx(original)
+
+
+# --------------------------------------------------------------------------- #
+# Fit-parameter perturbation in a pre-equilibration period (#443, Phase 2.x): the
+# surrogate-base <p>__REF split (ADR-0027) composed onto the two-period pre-equilibration shape
+# (ADR-0052). The receptor case (above) perturbs a *fixed* parameter; here a pre-equilibration
+# condition perturbs a *fit* parameter, so M is non-empty and every period re-pins it. Both a
+# measured-condition variant and a wash-out variant round-trip fit-preserving, backend-free.
+# --------------------------------------------------------------------------- #
+_PREEQUIL_FIT_MODEL = """\
+begin model
+begin parameters
+  k     1.0
+  flag  1
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() 10
+end seed species
+begin observables
+  Molecules A_tot A()
+end observables
+begin functions
+  deg() k*flag
+end functions
+begin reaction rules
+  A() -> 0 deg()
+end reaction rules
+end model
+"""
+
+
+def _write_preequil_fit_job(d, washout=False):
+    """A pre-equilibration job whose pre-equilibration condition perturbs the FIT parameter ``k``
+    (so M = {k}). ``washout`` drops the measurement ``condition:`` (the measurement period then
+    re-pins ``k`` via the synthesized ``cond_wildtype`` base -- #443)."""
+    (d / 'm.bngl').write_text(_PREEQUIL_FIT_MODEL)
+    (d / 'relax.exp').write_text(
+        '# time\tA_tot\tA_tot_SD\n0\t10\t0.5\n1\t6\t0.5\n2\t4\t0.5\n')
+    conf = d / 'job.conf'
+    meas = '' if washout else 'condition: meas, perturbations: flag = 1\n'
+    meas_field = '' if washout else ', condition: meas'
+    conf.write_text(
+        'edition = 2\njob_type = de\nobjective = chi_sq\n'
+        'model: m.bngl\n'
+        'condition: pre,  perturbations: k = 0.5\n'
+        + meas
+        + f'experiment: relax, preequilibrate: pre{meas_field}, data: relax.exp\n'
+        'uniform_var = k 0.1 10\n'
+        'population_size = 4\nmax_iterations = 1\nverbosity = 0\n')
+    return conf
+
+
+@pytest.mark.parametrize('washout', [False, True], ids=['measured', 'washout'])
+def test_fit_parameter_preequilibration_round_trips(washout, tmp_path):
+    """A pre-equilibration condition perturbing a FIT parameter round-trips fit-preserving
+    through export -> import -> re-export (#443), mirroring the receptor round trip (#442). The
+    fit param ``k`` is split to ``k__REF`` in the parameter table; the equilibration period sets
+    ``k = 0.5`` and the measurement period re-pins ``k = k__REF`` (or the synthesized
+    ``cond_wildtype`` base for the wash-out). Backend-free (BNG2.pl ``--check`` via petablint;
+    the synthetic-trajectory score is the fit-preservation oracle)."""
+    conf = _write_preequil_fit_job(tmp_path, washout=washout)
+    petab1, imp, petab2 = _round_trip(conf, tmp_path / 'rt')
+
+    # (a) both exports are petablint-clean (the Phase-2.x guarantee).
+    assert _petab_validation_errors(petab1 / 'problem.yaml') == []
+    assert _petab_validation_errors(petab2 / 'problem.yaml') == []
+
+    # (b) the surrogate split: k is removed from the parameter table (renamed k__REF).
+    pids = {r['parameterId'] for r in _tsv_rows(petab1 / 'parameters.tsv')}
+    assert 'k__REF' in pids and 'k' not in pids
+
+    # (c) import recovers the pre-equilibration experiment line (preequilibrate: before the
+    # measurement condition:, or no condition: for the wash-out), not a flattened time course.
+    exp_lines = [ln for ln in (imp / 'imported.conf').read_text().splitlines()
+                 if ln.startswith('experiment:')]
+    assert len(exp_lines) == 1
+    assert 'preequilibrate: pre' in exp_lines[0]
+    assert ('condition: meas' in exp_lines[0]) is (not washout)
+
+    # (d) fit-preserving: the synthetic trajectory scores identically through the original and
+    # the re-imported objective.
+    original = _score(_build_cfg(conf))
+    reimported = _score(_build_cfg(imp / 'imported.conf'))
+    assert reimported == pytest.approx(original)

@@ -348,22 +348,37 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         logger.debug("Conditions defined but referenced by no experiment (skipped): %s",
                      sorted(unused))
 
+    # The surrogate set M (ADR-0027) is problem-global: removing a fit-and-perturbed param from
+    # the parameter table makes its model name a pure condition target, so EVERY condition in
+    # EVERY experiment shape must re-pin it. A pre-equilibration condition that perturbs a fit
+    # param therefore contributes to M too (#443); thread that contribution into the time-course
+    # builder's M via extra_surrogate, so the time-course/wildtype conditions re-pin it as well.
+    pe_surrogate = {
+        var for exp in pe_experiments
+        for c in ([exp['preequilibrate']]
+                  + ([exp['condition']] if exp['condition'] is not None else []))
+        for var, _op, _val in conditions[c] if var in fit_model_params}
+
     condition_rows, experiment_rows, surrogate_params, experiment_to_id = \
         build_experiment_conditions(
             [(exp['name'], exp['condition']) for exp in tc_experiments],
-            conditions, fit_model_params, lambda v: _nominal_of(registry, v))
+            conditions, fit_model_params, lambda v: _nominal_of(registry, v),
+            extra_surrogate=pe_surrogate)
 
     # Pre-equilibration experiments -> two-period Experiments (ADR-0052): a -inf steady-state
     # period under the pre-equilibration condition + a time=0 period under the measurement
-    # condition. They compose with the time-course surrogate set M (every period re-pins M); a
-    # pre-equilibration condition perturbing a fit param is a deferred surrogate-compose boundary.
+    # condition. They share the problem-global M (every period re-pins M -- #443): a
+    # fit-parameter perturbation in a pre-equilibration period emits its surrogate op and every
+    # other period re-pins the base; a wash-out re-pins M via the synthesized cond_wildtype base.
+    # existing_condition_ids dedups a condition shared with a time course and the wildtype base.
     if pe_experiments:
         pe_condition_rows, pe_experiment_rows, pe_experiment_to_id = \
             build_preequilibration_conditions(
                 [(exp['name'], exp['preequilibrate'], exp['condition'])
                  for exp in pe_experiments],
-                conditions, fit_model_params, lambda v: _nominal_of(registry, v),
-                surrogate=surrogate_params)
+                conditions, lambda v: _nominal_of(registry, v),
+                surrogate=surrogate_params,
+                existing_condition_ids={r.condition_id for r in condition_rows})
         condition_rows += pe_condition_rows
         experiment_rows += pe_experiment_rows
         experiment_to_id.update(pe_experiment_to_id)

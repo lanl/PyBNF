@@ -1001,10 +1001,13 @@ class TestExportPreequilibration:
             ('relax', '0', '')]
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
-    def test_fit_parameter_perturbation_in_preequilibration_is_deferred(self, tmp_path_factory):
-        # A pre-equilibration condition perturbing a FIT parameter (k) needs the surrogate-base
-        # <p>__REF split applied to the multi-period shape -- a deferred boundary, raised clearly
-        # rather than silently mis-handled (ADR-0027/0052).
+    def test_fit_parameter_perturbation_in_preequilibration_uses_the_surrogate_split(
+            self, tmp_path_factory):
+        # A pre-equilibration condition perturbing a FIT parameter (k) takes the ADR-0027
+        # surrogate-base <p>__REF split on the multi-period shape (#443): k is removed from the
+        # parameter table (renamed k__REF), the pre-equilibration period sets k = 0.5 (an
+        # absolute set on the surrogate), and the measurement period re-pins k = k__REF (its
+        # base value) alongside its own fixed-param perturbation.
         src = self._src(tmp_path_factory, 'preequil_fit')
         (src / 'job.conf').write_text(
             self._HEAD
@@ -1012,8 +1015,50 @@ class TestExportPreequilibration:
             + 'condition: meas, perturbations: flag = 1\n'
             + 'experiment: relax, preequilibrate: pre, condition: meas, data: relax.exp\n'
             + self._PARAMS)
-        with pytest.raises(NotImplementedError, match='fit parameter'):
-            export_job(src / 'job.conf', src / 'out')
+        out = src / 'out'
+        export_job(src / 'job.conf', out)
+        # k is fit-and-perturbed -> the parameter table carries the surrogate k__REF, not k.
+        pids = {r['parameterId'] for r in _tsv_rows(out / 'parameters.tsv')}
+        assert 'k__REF' in pids and 'k' not in pids
+        conds = {(r['conditionId'], r['targetId'], r['targetValue'])
+                 for r in _tsv_rows(out / 'conditions.tsv')}
+        assert conds == {
+            ('cond_pre', 'k', '0.5'),          # surrogate absolute set on the equilibration period
+            ('cond_meas', 'k', 'k__REF'),      # re-pinned at base on the measurement period
+            ('cond_meas', 'flag', '1')}        # the measurement period's fixed-param perturbation
+        exps = _tsv_rows(out / 'experiments.tsv')
+        assert [(e['experimentId'], e['time'], e['conditionId']) for e in exps] == [
+            ('relax', '-inf', 'cond_pre'),
+            ('relax', '0', 'cond_meas')]
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_wash_out_with_a_fit_parameter_re_pins_M_via_the_synthesized_base(
+            self, tmp_path_factory):
+        # A wash-out (no measurement condition:) whose pre-equilibration condition perturbs a FIT
+        # parameter (k) makes M non-empty, so the measurement period must re-pin k at base. With
+        # no user-named measurement condition the exporter synthesizes cond_wildtype = {k =
+        # k__REF} and the time=0 period references it (#443) -- petablint-clean, and the importer
+        # reads cond_wildtype back as a wash-out (no condition:).
+        src = self._src(tmp_path_factory, 'washout_fit')
+        (src / 'job.conf').write_text(
+            self._HEAD
+            + 'condition: pre, perturbations: k = 0.5\n'
+            + 'experiment: relax, preequilibrate: pre, data: relax.exp\n'
+            + self._PARAMS)
+        out = src / 'out'
+        export_job(src / 'job.conf', out)
+        pids = {r['parameterId'] for r in _tsv_rows(out / 'parameters.tsv')}
+        assert 'k__REF' in pids and 'k' not in pids
+        conds = {(r['conditionId'], r['targetId'], r['targetValue'])
+                 for r in _tsv_rows(out / 'conditions.tsv')}
+        assert conds == {
+            ('cond_pre', 'k', '0.5'),
+            ('cond_wildtype', 'k', 'k__REF')}   # synthesized base re-pins M on the measurement period
+        exps = _tsv_rows(out / 'experiments.tsv')
+        assert [(e['experimentId'], e['time'], e['conditionId']) for e in exps] == [
+            ('relax', '-inf', 'cond_pre'),
+            ('relax', '0', 'cond_wildtype')]
+        assert _petab_validation_errors(out / 'problem.yaml') == []
 
     def test_preequilibration_parameter_scan_is_refused(self, tmp_path_factory):
         # A pre-equilibration combined with a dose-response scan has no export route (mirrors

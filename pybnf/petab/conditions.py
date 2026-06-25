@@ -156,7 +156,8 @@ def _condition_rows_for(cid, perturbations, surrogate, nominal_of):
     return rows
 
 
-def build_experiment_conditions(experiments, conditions, fit_params, nominal_of):
+def build_experiment_conditions(experiments, conditions, fit_params, nominal_of,
+                                extra_surrogate=frozenset()):
     """Build conditions/experiments for a new-era job (ADR-0028 Chunk 5b).
 
     Generalizes :func:`build_mutant_conditions` from "base + mutants each carrying their
@@ -173,11 +174,15 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of)
     Returns ``(condition_rows, experiment_rows, surrogate_params, experiment_to_id)``:
 
     * ``surrogate_params`` (the set ``M``) -- fit parameters perturbed by some
-      *referenced* condition (an unused condition contributes nothing). They are renamed
-      to ``<p>__REF`` in the parameter table and pinned in *every* experiment's Condition:
-      ``M`` is problem-global, because the model name ``<p>`` becomes a pure condition
-      target, so every simulation must re-supply it (the surrogate-base machinery,
-      ADR-0027).
+      *referenced* condition (an unused condition contributes nothing), **unioned with**
+      ``extra_surrogate`` (fit params perturbed by a *pre-equilibration* condition in the
+      same job -- :func:`build_preequilibration_conditions`'s contribution, threaded in by
+      the orchestrator so ``M`` stays problem-global across both experiment shapes). They
+      are renamed to ``<p>__REF`` in the parameter table and pinned in *every* experiment's
+      Condition: ``M`` is problem-global, because the model name ``<p>`` becomes a pure
+      condition target, so every simulation must re-supply it (the surrogate-base
+      machinery, ADR-0027). A param that only a pre-equilibration condition perturbs is
+      thus still re-pinned (base value) in every time-course/wildtype Condition here.
     * ``condition_rows`` -- each referenced condition's targets emitted **once**
       (conditionId ``cond_<name>``): a fit target's relative op is symbolic in its
       surrogate (``v1__REF * 2``), a fixed target's relative op is precomputed; plus a
@@ -191,7 +196,7 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of)
     """
     referenced = {c for _name, c in experiments if c is not None}
     surrogate = {var for c in referenced
-                 for var, _op, _val in conditions[c] if var in fit_params}
+                 for var, _op, _val in conditions[c] if var in fit_params} | set(extra_surrogate)
 
     condition_rows = []
     experiment_rows = []
@@ -229,34 +234,45 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of)
     return condition_rows, experiment_rows, surrogate, experiment_to_id
 
 
-def build_preequilibration_conditions(experiments, conditions, fit_params, nominal_of,
-                                      surrogate=frozenset()):
+def build_preequilibration_conditions(experiments, conditions, nominal_of,
+                                      surrogate=frozenset(), existing_condition_ids=frozenset()):
     """Build the conditions/experiments for new-era **pre-equilibration** experiments (ADR-0052,
-    #441 Phase 2) -- the multi-period structural sibling of :func:`build_experiment_conditions`.
+    #441 Phase 2 + #443 Phase 2.x) -- the multi-period structural sibling of
+    :func:`build_experiment_conditions`.
 
     A pre-equilibration experiment maps to a PEtab v2 **two-period** Experiment (ADR-0052's
     bidirectional rule): a leading ``time = -inf`` period under the pre-equilibration condition
     (equilibrate to steady state, unmeasured) followed by a ``time = 0`` period under the
     measurement condition (the data grid is measured there). ``experiments`` is a list of
     ``(name, preequil_cond, measurement_cond_or_None)``; ``conditions`` maps a condition name to
-    its perturbations ``[(var, op, val), ...]``; ``fit_params`` is the set of fit model-parameter
-    names; ``nominal_of(var)`` returns a fixed parameter's numeric nominal. ``surrogate`` is the
-    problem-global ``M`` (the fit-and-perturbed params already split to ``<p>__REF`` by the
-    time-course :func:`build_experiment_conditions` in the same job) -- every period's condition
-    re-pins all of ``M``, so a pre-equilibration experiment composes with a job that also has
-    fit-perturbed time-course conditions.
+    its perturbations ``[(var, op, val), ...]``; ``nominal_of(var)`` returns a fixed parameter's
+    numeric nominal (the fit-vs-fixed split a target needs is carried by ``surrogate``, below --
+    a target in ``M`` is a surrogate-handled fit param, the rest are fixed).
+
+    ``surrogate`` is the problem-global ``M`` -- the *full* fit-and-perturbed set, already split
+    to ``<p>__REF``, including any param a **pre-equilibration** condition itself perturbs (the
+    orchestrator threads the pre-equilibration contribution into ``M`` via
+    :func:`build_experiment_conditions`'s ``extra_surrogate``, so both builders share one ``M``).
+    The shared :func:`_condition_rows_for` re-pins all of ``M`` on every period's condition, so a
+    fit-parameter perturbation in a pre-equilibration period composes correctly (#443): the
+    perturbing period emits the surrogate op (``k = k__REF * 2`` / an absolute ``k = 0.5``) and
+    every other period re-pins the base value (``k = k__REF``).
+
+    ``existing_condition_ids`` is the set of ``conditionId``s :func:`build_experiment_conditions`
+    already emitted (its time-course conditions plus the synthesized ``cond_wildtype`` base when
+    present); a condition shared between a time course and a pre-equilibration experiment is
+    emitted **once**, and the wash-out base condition is reused rather than re-emitted.
 
     Returns ``(condition_rows, experiment_rows, experiment_to_id)``. ``experiment_to_id[name] =
     name`` (a pre-equilibration experiment always has an experiments table -- two periods -- so
     it is never the empty-id "model as is" case).
 
-    Raises ``NotImplementedError`` for the deferred surrogate-compose case: a pre-equilibration
-    condition that perturbs a **fit** parameter would need the ADR-0027 ``<p>__REF`` rename
-    applied to the multi-period shape (a Phase-2.x extension). The acceptance case (``receptor``)
-    perturbs a *fixed* parameter (``Ligand_isPresent``), so ``M`` from these conditions is empty.
-    A wash-out (no measurement condition) is supported only when ``M`` is empty: the measurement
-    period then carries an empty ``conditionId`` (no perturbation); pinning ``M`` on a wash-out
-    period has no synthesized base condition here, so it is refused rather than mis-pinned.
+    A **wash-out** (no measurement condition) measures at the model default: an empty
+    ``conditionId`` on the ``time = 0`` period when ``M`` is empty, else the synthesized base
+    condition :data:`WILDTYPE_CONDITION_ID` (re-pinning every removed fit param at its base value
+    -- the same base :func:`build_experiment_conditions` pins for a wildtype time course, emitted
+    once and shared). The importer maps that base back to "no ``condition:``" (a wash-out), so the
+    round trip is preserved.
     """
     referenced = set()
     for _name, pre, meas in experiments:
@@ -264,20 +280,34 @@ def build_preequilibration_conditions(experiments, conditions, fit_params, nomin
         if meas is not None:
             referenced.add(meas)
 
-    pe_fit = {var for c in referenced
-              for var, _op, _val in conditions[c] if var in fit_params}
-    if pe_fit:
-        raise NotImplementedError(
-            f"Pre-equilibration condition(s) perturb fit parameter(s) {sorted(pe_fit)}; "
-            f"exporting a fit-parameter perturbation in a pre-equilibration period needs the "
-            f"surrogate-base <p>__REF split (ADR-0027) applied to the multi-period shape, which "
-            f"is a later chunk. The current pre-equilibration export covers a perturbation of a "
-            f"fixed model parameter (the receptor Ligand_isPresent case -- ADR-0052, #441).")
-
+    emitted = set(existing_condition_ids)
     condition_rows = []
+    # Each referenced condition, emitted once across the whole job: a condition shared with a
+    # time-course experiment was already emitted by build_experiment_conditions (skip it). A
+    # fit-parameter perturbation here is handled by _condition_rows_for, since `surrogate` is the
+    # problem-global M (the pre-equilibration contribution was threaded into it) -- #443.
     for c in sorted(referenced):
-        condition_rows += _condition_rows_for(
-            f'cond_{c}', conditions[c], surrogate, nominal_of)
+        cid = f'cond_{c}'
+        if cid in emitted:
+            continue
+        condition_rows += _condition_rows_for(cid, conditions[c], surrogate, nominal_of)
+        emitted.add(cid)
+
+    # A wash-out (no measurement condition) with a non-empty M re-pins M at base on its time=0
+    # measurement period via the synthesized base condition cond_wildtype (the same base
+    # build_experiment_conditions pins for wildtype time courses) -- emitted once, shared (#443).
+    has_washout = any(meas is None for _name, _pre, meas in experiments)
+    if surrogate and has_washout:
+        if WILDTYPE_CONDITION_ID in {f'cond_{c}' for c in referenced}:
+            raise PybnfError(
+                "A condition named 'wildtype' clashes with the synthesized base condition the "
+                "exporter uses to re-pin fit-and-perturbed parameters on a wash-out measurement "
+                "period. Rename the 'wildtype' condition.")
+        if WILDTYPE_CONDITION_ID not in emitted:
+            condition_rows.extend(
+                PetabConditionRow(WILDTYPE_CONDITION_ID, p, surrogate_name(p))
+                for p in sorted(surrogate))
+            emitted.add(WILDTYPE_CONDITION_ID)
 
     experiment_rows = []
     experiment_to_id = {}
@@ -285,17 +315,13 @@ def build_preequilibration_conditions(experiments, conditions, fit_params, nomin
         experiment_to_id[name] = name
         # Period 0: the -inf pre-equilibration period (steady state, unmeasured).
         experiment_rows.append(PetabExperimentRow(name, float('-inf'), f'cond_{pre}'))
-        # Period 1: the time=0 measurement period under the measurement condition. A wash-out
-        # (no measurement condition) measures at the model default -> an empty conditionId, but
-        # only when M is empty (no removed fit param to re-pin on this period).
+        # Period 1: the time=0 measurement period. A measurement condition -> its cond id; a
+        # wash-out -> the synthesized base cond_wildtype when M is non-empty (re-pin M at base),
+        # else an empty conditionId (M empty -> the model default).
         if meas is not None:
             meas_cid = f'cond_{meas}'
         elif surrogate:
-            raise NotImplementedError(
-                f"Pre-equilibration experiment '{name}' has no measurement condition (a "
-                f"wash-out) but the job has fit-perturbed conditions (M={sorted(surrogate)}); "
-                f"re-pinning M on the measurement period needs a synthesized base condition, a "
-                f"later chunk (ADR-0027/0052, #441). Name a measurement 'condition:' to export.")
+            meas_cid = WILDTYPE_CONDITION_ID
         else:
             meas_cid = ''
         experiment_rows.append(PetabExperimentRow(name, 0.0, meas_cid))
