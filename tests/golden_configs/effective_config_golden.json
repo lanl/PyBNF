@@ -207,6 +207,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -607,6 +611,10 @@
    [
     "output_hist_every",
     100
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -1015,6 +1023,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -1395,6 +1407,10 @@
    [
     "output_hist_every",
     100
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -1909,6 +1925,10 @@
    [
     "output_hist_every",
     100
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -2429,6 +2449,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -2923,6 +2947,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -3323,6 +3351,10 @@
    [
     "output_hist_every",
     100
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -3731,6 +3763,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -4050,6 +4086,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -4396,6 +4436,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -4689,6 +4733,10 @@
     20
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -4928,6 +4976,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -5195,6 +5247,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -5477,6 +5533,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -5778,6 +5838,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -6083,6 +6147,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -6422,6 +6490,10 @@
     20
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -6725,6 +6797,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -7079,6 +7155,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -7396,6 +7476,10 @@
     20
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -7699,6 +7783,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -8006,6 +8094,10 @@
     20
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -8311,6 +8403,10 @@
     20
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -8590,6 +8686,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -8899,6 +8999,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -9247,6 +9351,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -9591,6 +9699,10 @@
     100
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -9898,6 +10010,10 @@
     20
    ],
    [
+    "output_inference_data",
+    0
+   ],
+   [
     "output_noise_trajectory",
     null
    ],
@@ -10177,6 +10293,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",
@@ -10479,6 +10599,10 @@
    [
     "output_every",
     20
+   ],
+   [
+    "output_inference_data",
+    0
    ],
    [
     "output_noise_trajectory",

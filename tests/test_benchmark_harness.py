@@ -46,16 +46,18 @@ import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness 
 # (#424/ADR-0031; the modern objective-surface keys, both defaulting to None == the
 # legacy objfunc surface), and job_type (#423/ADR-0028; the modern run-selector key,
 # defaulting to None -- these legacy confs name the run with fit_type, so job_type is
-# a no-op here), and embed_best_fit_data / smooth_plot_points (#423/ADR-0048/ADR-0054;
+# a no-op here), embed_best_fit_data / smooth_plot_points (#423/ADR-0048/ADR-0054;
 # default to 0 == off -- the end-of-run best-fit-BNGL data embedding and smooth-curve
 # rendering are edition-2-only and opt-in, so these legacy sampler confs never carried
-# them). These always carry no-op defaults here, so excluding them keeps the oracle an
+# them), and output_inference_data (#438/ADR-0055; defaults to 0 == off -- the run-end
+# ArviZ InferenceData artifact is opt-in, so these pre-migration confs never carried it).
+# These always carry no-op defaults here, so excluding them keeps the oracle an
 # independent *pre-migration* witness without regenerating it for keys the original confs
 # could not have carried.
 _EXCLUDE = frozenset({
     'bng_command', 'output_dir', 'refine_method', 'noise_location',
     'initialization_distribution', 'edition', 'objective', 'profile_objective',
-    'job_type', 'embed_best_fit_data', 'smooth_plot_points',
+    'job_type', 'embed_best_fit_data', 'smooth_plot_points', 'output_inference_data',
 })
 
 

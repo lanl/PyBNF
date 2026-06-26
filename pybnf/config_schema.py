@@ -231,6 +231,14 @@ class GlobalConfig(PyBNFConfigModel):
     # as authored). Cross-engine; does not affect the fit (the artifact is a
     # post-fit re-render).
     smooth_plot_points: int = 0
+    # Opt-in (MCMC fits only): at the end of a Bayesian sampler run, also write
+    # Results/inference_data.nc -- an ArviZ InferenceData built from the saved
+    # samples (pybnf.inference_data.from_pybnf, ADR-0055) -- so the posterior is
+    # ready for the ArviZ/bayesplot/loo ecosystem with no extra user step. Needs
+    # the optional `arviz` extra (pip install pybnf[arviz]); a no-op (0) and on a
+    # non-sampler fit. Edition-agnostic (the bridge reads samples.txt, which any
+    # sampler writes).
+    output_inference_data: int = 0
     simulation_dir: Optional[str] = None
     parallelize_models: int = 1
     starting_params: Any = None

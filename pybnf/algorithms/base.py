@@ -1161,6 +1161,7 @@ class Algorithm(ABC):
         self._copy_best_fit_sims(best_pset, best_name)
         self._rerun_best_fit_to_save_data(best_pset)
         self._emit_best_fit_bngl(best_pset, best_name)
+        self._emit_inference_data()
         self._finalize_backup_pickle()
         self._teardown_sim_dir()
 
@@ -1290,6 +1291,37 @@ class Algorithm(ABC):
             except Exception:
                 logger.exception('Failed to write best-fit BNGL for model %s' % m)
                 print1('Could not write the best-fit BNGL artifact for model %s; see log.' % m)
+
+    def _emit_inference_data(self):
+        """Write Results/inference_data.nc when ``output_inference_data`` is set (ADR-0055).
+
+        Opt-in, and a no-op on a non-Bayesian fit (only the samplers write
+        ``samples.txt``, the bridge's source). Builds the InferenceData from the
+        saved samples via :func:`pybnf.inference_data.from_pybnf`, passing the live
+        ``self.variables`` so log parameters land in sampling space without a config
+        reload. The ``arviz`` extra is optional and imported lazily by the bridge; a
+        missing extra (or any build/write failure) is logged, never fatal -- the run
+        has already completed and written every other artifact.
+        """
+        if not self.config.config.get('output_inference_data'):
+            return
+        from .samplers.base import BayesianAlgorithm
+        if not isinstance(self, BayesianAlgorithm):
+            return
+        try:
+            from ..inference_data import from_pybnf
+            idata = from_pybnf(self.res_dir, variables=self.variables)
+            out_path = str(Path(self.res_dir) / 'inference_data.nc')
+            idata.to_netcdf(out_path)
+            logger.info('Wrote ArviZ InferenceData %s' % out_path)
+        except ImportError:
+            logger.warning('output_inference_data is set but the optional arviz extra is not '
+                           'installed; skipping inference_data.nc. Install with: pip install pybnf[arviz]')
+            print1('Skipped inference_data.nc: the optional arviz extra is not installed '
+                   '(pip install pybnf[arviz]).')
+        except Exception:
+            logger.exception('Failed to write inference_data.nc')
+            print1('Could not write the ArviZ InferenceData artifact; see log.')
 
     def _best_fit_header(self, best_obj, best_name):
         """The comment block prefacing a best-fit BNGL, labelled by family (ADR-0048).

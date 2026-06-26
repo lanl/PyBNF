@@ -760,6 +760,15 @@ Output Options
 
     * ``smooth_plot_points = 500``
 
+**output_inference_data**
+  Opt-in, MCMC fits only (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``). When 1, the end of a Bayesian sampler run also writes ``Results/inference_data.nc`` -- an `ArviZ <https://python.arviz.org>`_ ``InferenceData`` built from the saved ``Results/samples.txt`` (ADR-0055) -- so the posterior is ready for the ArviZ / bayesplot / loo ecosystem (trace, rank, forest, pair plots, ``az.summary``, ``az.compare``) with no extra step. Load it with ``arviz.from_netcdf("Results/inference_data.nc")``, or build one post-hoc from any finished run with ``pybnf.inference_data.from_pybnf("path/to/Results")``. Log-scaled parameters are emitted in their sampling space (``log10`` / ``ln``, e.g. ``log10_k``), the space PyBNF samples and computes R-hat/ESS in; the ``posterior`` group carries one variable per parameter and ``sample_stats`` carries ``lp`` (the log-posterior). Because ``samples.txt`` is the thinned (by ``sample_every``), post-burn-in saved sample, ArviZ recomputes diagnostics on fewer draws than ``Results/diagnostics.txt``, so ``az.ess`` reads lower by design (PyBNF's own final R-hat/ESS ride along in the object's attributes); lower ``sample_every`` for denser ArviZ diagnostics. Requires the optional ArviZ extra (``pip install pybnf[arviz]``); a no-op (with a log note) if the extra is absent, and on a non-sampler fit.
+
+  Default: 0
+
+  Example:
+
+    * ``output_inference_data = 1``
+
 **verbosity**
   An integer value that specifies the amount of information output to the terminal.
   

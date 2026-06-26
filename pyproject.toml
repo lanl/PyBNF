@@ -57,6 +57,23 @@ antimony = [
 petab = [
     "petab>=0.8,<1",
 ]
+# The ArviZ InferenceData bridge (pybnf.inference_data, ADR-0055): from_pybnf()
+# maps a finished MCMC run's Results/samples.txt onto an arviz.InferenceData so
+# PyBNF's posterior output is first-class in the ArviZ/bayesplot/loo ecosystem.
+# OPTIONAL runtime extra -- only the bridge imports arviz, lazily, with a clear
+# install hint; core stays dependency-free (ADR-0019). h5netcdf gives the netCDF
+# engine the config-gated auto-emit of Results/inference_data.nc writes through.
+# Uncapped across the arviz major boundary: arviz 1.x is a 2026 rewrite onto
+# xarray's DataTree (InferenceData -> DataTree, a changed from_dict signature). The
+# bridge supports BOTH lines -- the only API difference is the one from_dict
+# construction call (pybnf.inference_data._build_idata branches on its signature);
+# every downstream access (.posterior/.sample_stats/.attrs/to_netcdf) is identical.
+# So we neither pin to the superseded 0.x nor force 1.x, and pip install
+# pybnf[arviz] never downgrades or conflicts with a user's existing arviz.
+arviz = [
+    "arviz>=0.17",
+    "h5netcdf>=1",
+]
 tests = [
     "pytest>=7,<10",
     "hypothesis>=6,<7",
@@ -76,6 +93,13 @@ tests = [
     # any stock petab. The oracle/formula tests `pytest.importorskip('petab')`, so this
     # is not a hard test requirement.
     "petab @ git+https://github.com/wshlavacek/libpetab-python.git@bngl_model_support",
+    # ArviZ InferenceData bridge oracle (ADR-0055): tests/test_inference_data.py
+    # builds real containers and round-trips them through netCDF, so the bridge is
+    # exercised in CI rather than skipped. importorskip('arviz') keeps it non-fatal
+    # for a bare checkout. Uncapped like the runtime extra (the bridge supports both
+    # the 0.x InferenceData and 1.x DataTree lines); CI exercises whichever resolves.
+    "arviz>=0.17",
+    "h5netcdf>=1",
 ]
 
 [project.scripts]
@@ -152,4 +176,5 @@ markers = [
     "bngsim_antimony: requires bngsim + antimony Python package",
     "roadrunner: requires libroadrunner",
     "bionetgen: requires a working BNG2.pl on PATH",
+    "arviz: requires the optional arviz extra (the InferenceData bridge); skips otherwise",
 ]
