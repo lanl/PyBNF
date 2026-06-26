@@ -1,6 +1,7 @@
 from .context import data, algorithms, pset, config
 import os
 import shutil
+import tempfile
 import numpy as np
 
 
@@ -15,8 +16,18 @@ class TestBayes:
         cls.d1s = data.Data()
         cls.d1s.data = cls.d1s._read_file_lines(cls.data1s, r'\s+')
 
-        os.makedirs('noseoutput1/Results', exist_ok=True)
-        os.makedirs('noseoutput2/Results', exist_ok=True)
+        # Per-class temp output dirs (absolute + unique) instead of the shared
+        # relative noseoutput1/noseoutput2. Under pytest-xdist this class and
+        # test_dream_class previously raced on those same relative names: one
+        # class's teardown_class rmtree'd a directory another worker was mid-test
+        # inside, surfacing as a BNG2.pl network-gen failure plus an os.getcwd()
+        # FileNotFoundError in the error handler. A unique tempdir per class can't
+        # be deleted out from under another worker.
+        cls._tmpdir = tempfile.mkdtemp(prefix='test_bayes_mcmc_')
+        cls.out1 = os.path.join(cls._tmpdir, 'noseoutput1') + os.sep
+        cls.out2 = os.path.join(cls._tmpdir, 'noseoutput2') + os.sep
+        os.makedirs(os.path.join(cls.out1, 'Results'), exist_ok=True)
+        os.makedirs(os.path.join(cls.out2, 'Results'), exist_ok=True)
 
         cls.p0 = pset.FreeParameter('v1__FREE', 'lognormal_var', 1., 0.5, 4.14)
         cls.p1 = pset.FreeParameter('v2__FREE', 'lognormal_var', 1., 0.5, 10.0)
@@ -27,14 +38,14 @@ class TestBayes:
         # create a duplicate parameter set, causing the "not in individuals" tests to fail.
         cls.config = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
-            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': cls.out1,
             ('lognormal_var', 'v1__FREE'): [0., 0.5], ('loguniform_var', 'v2__FREE'): [1., 10.], ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'mh'})
 
         cls.config_box = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
-            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': cls.out1,
             ('uniform_var', 'v1__FREE'): [0, 10], ('uniform_var', 'v2__FREE'): [0, 10],
             ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
@@ -42,7 +53,7 @@ class TestBayes:
 
         cls.config_normal = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
-            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput2/',
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': cls.out2,
             ('lognormal_var', 'v1__FREE'): [0., 0.5], ('lognormal_var', 'v2__FREE'): [0., 0.5],
             ('lognormal_var', 'v3__FREE'): [0., 0.5],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
@@ -50,14 +61,14 @@ class TestBayes:
 
         cls.config_replica = config.Configuration({
             'population_size': 4, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
-            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': cls.out1,
             ('lognormal_var', 'v1__FREE'): [1., 0.5], ('lognormal_var', 'v2__FREE'): [1., 0.5], ('normal_var', 'v3__FREE'): [50, 3],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7], 'fit_type': 'pt'})
 
         cls.config_replica_multi = config.Configuration({
             'population_size': 8, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 5, 'sample_every': 2,
-            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': cls.out1,
             ('lognormal_var', 'v1__FREE'): [1., 0.5], ('lognormal_var', 'v2__FREE'): [1., 0.5], ('normal_var', 'v3__FREE'): [50, 3],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'exchange_every': 5, 'beta': [1., 0.9, 0.8, 0.7],
@@ -65,8 +76,7 @@ class TestBayes:
 
     @classmethod
     def teardown_class(cls):
-        shutil.rmtree('noseoutput1')
-        # shutil.rmtree('noseoutput2')
+        shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     def test_start(self):
         ba = algorithms.BasicBayesMCMCAlgorithm(self.config)
@@ -142,15 +152,15 @@ class TestBayes:
             curr_params = next_params
 
         # Check the files came out looking reasonable
-        a = np.genfromtxt('noseoutput2/Results/Histograms/v1__FREE_10.txt')
+        a = np.genfromtxt(self.out2 + 'Results/Histograms/v1__FREE_10.txt')
         assert a.shape == (10, 3)
         assert sum(a[:, 2]) == 80  # 20 saves on iters 4, 6, 8, and 10
 
-        s = np.genfromtxt('noseoutput2/Results/samples.txt', usecols=(1, 2, 3, 4))
+        s = np.genfromtxt(self.out2 + 'Results/samples.txt', usecols=(1, 2, 3, 4))
         assert s.shape[0] == 80
         # Don't know what the Names in s should be; depends what PSets got randomly kept in the population.
 
-        with open('noseoutput2/Results/credible68_10.txt') as f:
+        with open(self.out2 + 'Results/credible68_10.txt') as f:
             first = True
             for line in f:
                 if first:
@@ -182,10 +192,10 @@ class TestBayes:
         # Read the same sample matrix update_histograms used: columns 2.. are the
         # variables, one per credible-file line, in self.variables order.
         nvars = len(ba.variables)
-        samples = np.genfromtxt('noseoutput2/Results/samples.txt',
+        samples = np.genfromtxt(self.out2 + 'Results/samples.txt',
                                 usecols=range(2, nvars + 2))
         for interval in (100, 110):
-            with open('noseoutput2/Results/credible%i_ci1.txt' % interval) as f:
+            with open(self.out2 + ('Results/credible%i_ci1.txt' % interval)) as f:
                 lines = f.readlines()[1:]  # skip header
             assert len(lines) == nvars
             for col, line in enumerate(lines):

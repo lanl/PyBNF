@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import re
 import shutil
+import tempfile
 from scipy import stats
 
 
@@ -39,20 +40,27 @@ class TestDream:
 
         cls.chi_sq = objective.ChiSquareObjective()
 
-        os.makedirs('noseoutput1/Results', exist_ok=True)
-        os.makedirs('noseoutput2/Results', exist_ok=True)
+        # Per-class temp output dirs (absolute + unique) instead of the shared
+        # relative noseoutput1/noseoutput2 this class once shared with
+        # test_bayes_mcmc -- under pytest-xdist the two classes raced on those
+        # names, one teardown_class deleting a directory the other was mid-test
+        # inside. A unique tempdir per class removes the collision.
+        cls._tmpdir = tempfile.mkdtemp(prefix='test_dream_class_')
+        cls.out1 = os.path.join(cls._tmpdir, 'noseoutput1') + os.sep
+        cls.out2 = os.path.join(cls._tmpdir, 'noseoutput2') + os.sep
+        os.makedirs(os.path.join(cls.out1, 'Results'), exist_ok=True)
+        os.makedirs(os.path.join(cls.out2, 'Results'), exist_ok=True)
 
         cls.config = config.Configuration({
             'population_size': 20, 'max_iterations': 20, 'step_size': 0.2, 'output_hist_every': 10, 'sample_every': 2,
-            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': 'noseoutput1/',
+            'burn_in': 3, 'credible_intervals': [68, 95], 'num_bins': 10, 'output_dir': cls.out1,
             ('uniform_var', 'v1__FREE'): [0., 0.5], ('loguniform_var', 'v2__FREE'): [1., 10.], ('uniform_var', 'v3__FREE'): [0, 10],
             'models': {'bngl_files/parabola.bngl'}, 'exp_data': {'bngl_files/par1.exp'}, 'initialization': 'lh',
             'bngl_files/parabola.bngl': ['bngl_files/par1.exp'], 'fit_type': 'dream'})
 
     @classmethod
     def teardown_class(cls):
-        shutil.rmtree('noseoutput1')
-        shutil.rmtree('noseoutput2')
+        shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
     def test_start(self):
         dream = algorithms.DreamAlgorithm(self.config)
