@@ -948,9 +948,34 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
     for obs_id, formula in measurement_models:
         lines.append(f'observable: {obs_id}, formula: {formula}')
     lines.append('')
+    # A PyBNF condition belongs to ONE model: the fitter attaches its MutationSet to a
+    # specific model and requires a `model:` ref on the condition when the job declares
+    # more than one model (config.py::_load_conditions). PEtab conditions are model-
+    # agnostic (no modelId column, ADR-0041), so under multiple models recover each
+    # condition's owning model from the experiment(s) that apply it -- via `condition:`
+    # or, for the equilibration period, `preequilibrate:`. A condition applied by
+    # experiments on *different* models has no PyBNF representation (a condition can't
+    # span models) -> refuse with a clear boundary error rather than emit a conf the
+    # fitter rejects. Single-model jobs carry no `model:` on a condition (byte-identical).
+    multi_model = len(model_filenames) > 1
+    cond_models = {}
+    for exp in experiments:
+        for cname in (exp.condition, exp.preequilibrate):
+            if cname:
+                cond_models.setdefault(cname, set()).add(exp.model_location)
     for name, perts in conditions.items():
         pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
-        lines.append(f'condition: {name}, perturbations: {pert_str}')
+        model_field = ''
+        if multi_model:
+            locs = {loc for loc in cond_models.get(name, set()) if loc}
+            if len(locs) > 1:
+                raise NotImplementedError(
+                    f"Condition {name!r} is applied by experiments on different models "
+                    f"({sorted(locs)}). A PyBNF condition belongs to a single model, so a "
+                    f"PEtab condition shared across models has no PyBNF representation.")
+            if locs:
+                model_field = f', model: {next(iter(locs))}'
+        lines.append(f'condition: {name}{model_field}, perturbations: {pert_str}')
     for exp in experiments:
         sim_method = method_overrides.get(exp.name, method)
         # A pre-equilibration experiment (ADR-0052) leads with its unmeasured steady-state

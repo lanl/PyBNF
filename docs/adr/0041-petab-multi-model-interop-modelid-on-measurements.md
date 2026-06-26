@@ -121,3 +121,37 @@ grouping the modelId grouping composes with), ADR-0034 (bind-by-id, the union's 
 ADR-0028 (the new-era surface the fitter already runs multi-model on), and ADR-0027 (the
 surrogate-base machinery, untouched). Sibling #407 follow-up still open: #428 (per-measurement
 `observableParameters`/`noiseParameters` placeholders).
+
+## Addendum (2026-06-25): a model-scoped `condition:` round-trips by recovering its owning model on import (#444 item 4)
+
+The original round trip exercised multi-model jobs with **wildtype** experiments only.
+A multi-model job whose experiment applies a `condition:` exposed a gap on the import
+side: the exporter and fitter both already handle `condition: <name>, model: <file>`
+(the exporter validates the ref; the fitter attaches the `MutationSet` to that model and
+**requires** the ref when the job declares more than one model — `config.py::_load_conditions`),
+but the importer emitted the `condition:` line with **no `model:` field**. The imported
+multi-model conf then failed to load with `Condition '<name>' does not name a model, but
+the job declares N models` — a broken round trip (export succeeds, the re-imported conf
+is unfittable).
+
+**The semantic, made explicit.** A **PyBNF condition belongs to exactly one model** — the
+model of the experiment(s) that apply it. A **PEtab condition is model-agnostic** (there is
+no modelId column on the conditions table; the model↔data link lives only on the
+measurements, the core decision of this ADR). The two are reconciled on import by
+*recovering* the condition's owning model from the experiment that references it (via its
+`condition:` or, for the equilibration period, `preequilibrate:`), then emitting the
+`model:` field under multiple models. Single-model jobs are byte-identical (no `model:` on
+a condition — there is no ambiguity to resolve).
+
+**The boundary.** PEtab is strictly more permissive here: a single PEtab condition may be
+referenced by experiments on *different* models. That has no PyBNF representation (a
+condition cannot span models), so the importer **refuses** it with a clear
+`NotImplementedError` rather than emit a conf the fitter rejects — the same fail-loud
+posture as the other documented import boundaries (SBML, unsupported prior families,
+expression conditions). The exporter is unchanged (a PyBNF-authored job can never produce a
+cross-model condition); this is purely an import-side recovery (`import_.py::_write_conf`),
+so the byte-equal round trip is preserved — the condition's `model:` field does not alter
+the exported PEtab (conditions are model-agnostic), so `conditions.tsv` is identical with or
+without it. Tested in `tests/test_petab_import.py::TestImportMultiModelCondition` (a
+fixed-target and a fit-target/surrogate condition round-trip + load, and the cross-model
+refusal). Closes #444 item 4.

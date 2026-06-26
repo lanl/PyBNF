@@ -667,6 +667,70 @@ class TestImportMultiModelRoundTrip:
         assert {v.name for v in cfg.variables} == {'v1', 'v2', 'v3', 'a1', 'a2'}
 
 
+class TestImportMultiModelCondition:
+    """A model-scoped ``condition:`` in a multi-model job round-trips (#444 item 4,
+    ADR-0041 addendum). PEtab conditions are model-agnostic (no modelId column); a PyBNF
+    condition belongs to ONE model, and the fitter *requires* ``model:`` on a condition
+    when the job declares more than one model. So the importer recovers the condition's
+    owning model from the experiment that applies it -- without this the imported conf
+    raised ``Condition '<name>' does not name a model, but the job declares 2 models``."""
+
+    _EXTRA = {
+        'growth_v2.bngl': _GROWTH_BNGL,
+        'pa.exp': (DEMO_DIR / 'par1.exp').read_text(),
+        'gr.exp': ('# time\tp\tq\tp_SD\tq_SD\n'
+                   + ''.join(f'{t}\t{5 + t}\t{0.5 * (5 + t) + 2}\t1\t1\n' for t in range(5))),
+    }
+
+    def _conf(self, pert, growth_fit):
+        # growth's a1 is FIXED when only a2 is declared fit (numeric condition target);
+        # declaring a1 fit too exercises the surrogate (`a1__REF`) path (ADR-0027).
+        return (
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            f'model: {DEMO_MODEL}\nmodel: growth_v2.bngl\n'
+            f'condition: hi, model: growth_v2.bngl, perturbations: {pert}\n'
+            f'experiment: pa, model: {DEMO_MODEL}, data: pa.exp\n'
+            'experiment: gr, model: growth_v2.bngl, condition: hi, data: gr.exp\n'
+            + _PARAMS_U + ''.join(f'uniform_var = {p} 0 10\n' for p in growth_fit))
+
+    @pytest.mark.parametrize('pert,growth_fit', [
+        ('a1 = 5', ['a2']),          # fixed target -> numeric condition value
+        ('a1 / 2', ['a1', 'a2']),    # fit target  -> surrogate `a1__REF / 2`
+    ])
+    def test_model_scoped_condition_round_trips_and_loads(self, tmp_path, monkeypatch,
+                                                          pert, growth_fit):
+        petab1, imported, petab2, conf = _roundtrip(
+            tmp_path, self._conf(pert, growth_fit), extra_files=self._EXTRA)
+        # Problem round-trips byte-for-byte (the condition's model: doesn't alter PEtab --
+        # PEtab conditions are model-agnostic, so conditions.tsv is identical either way).
+        _assert_problem_round_trips(petab1, petab2)
+        # The condition recovered its owning model from experiment `gr`.
+        assert f'condition: hi, model: growth_v2.bngl, perturbations: {pert}' in conf.read_text()
+        # And the multi-model conf now LOADS (the bug: it raised without the model: ref).
+        from pybnf import config as config_mod
+        monkeypatch.chdir(imported)
+        cfg = config_mod.Configuration(ploop(conf.read_text().splitlines(keepends=True)))
+        assert set(cfg.models) == {'parabola_v2', 'growth_v2'}
+
+    def test_condition_shared_across_models_is_refused(self, tmp_path):
+        """A PEtab condition applied by experiments on *different* models has no PyBNF
+        representation (a condition belongs to one model) -> a clear boundary error,
+        not a silently-unfittable conf."""
+        from pybnf.petab.import_ import _write_conf, ImportedExperiment
+        exps = [
+            ImportedExperiment('e1', 'shared', None, ['e1.exp'], 'parabola_v2.bngl', None, None),
+            ImportedExperiment('e2', 'shared', None, ['e2.exp'], 'growth_v2.bngl', None, None),
+        ]
+        with pytest.raises(NotImplementedError, match='different models'):
+            _write_conf(
+                tmp_path / 'x.conf', model_filenames=['parabola_v2.bngl', 'growth_v2.bngl'],
+                job_type='de', objective_directives=['objective = chi_sq'],
+                free_param_lines=[], conditions={'shared': [('a1', '=', 5.0)]},
+                experiments=exps, measurement_models=[], method='ode', method_overrides={},
+                settings={'population_size': 10, 'max_iterations': 5, 'verbosity': 1},
+                multi=False)
+
+
 # ---------------------------------------------------------------------------
 # Extensions: prior catalog, objective family, conditions, emit-all
 # ---------------------------------------------------------------------------

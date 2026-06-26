@@ -29,6 +29,9 @@ All notable changes to PyBNF are documented below. This project adheres to
 ### Removed
 - Python 3.10 support, and the `tomli` test dependency it required (the standard-library `tomllib` is available on 3.11+).
 
+### Fixed
+- **Multi-model `condition:` round-trip** (ADR-0041 addendum, closing #444 item 4) — a multi-model PEtab job whose experiment applies a named `condition:` now round-trips. The exporter and fitter already handled `condition: <name>, model: <file>` (the fitter attaches the condition's `MutationSet` to that model and **requires** the `model:` ref under more than one model), but the importer emitted the reconstructed `condition:` line with **no `model:` field**, so the re-imported multi-model conf failed to load with `Condition '<name>' does not name a model, but the job declares N models`. PEtab conditions are model-agnostic (no `modelId` column — the model↔data link lives on the measurements, ADR-0041), whereas a PyBNF condition belongs to one model, so the importer now **recovers** each condition's owning model from the experiment that applies it (via `condition:` or `preequilibrate:`) and emits the `model:` field under multiple models; single-model jobs stay byte-identical. A PEtab condition referenced by experiments on *different* models has no PyBNF representation (a condition can't span models) and is refused with a clear `NotImplementedError`. The byte-equal export→import→re-export identity is preserved (a condition's `model:` field doesn't alter the model-agnostic PEtab `conditions.tsv`). (#444, ADR-0041)
+
 ## [v1.4.0] - 2026-06-06
 
 ### Added
