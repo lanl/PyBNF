@@ -39,12 +39,28 @@ class AdditiveNoiseScale:
         """Transform an original-space value into the additive space."""
         raise NotImplementedError
 
+    def log_abs_dforward(self, x):
+        """``log|d forward(x)/dx|`` -- the change-of-variables Jacobian term that
+        turns an additive-space log-density into the original-space (data-space)
+        log-density, ``log p_X(x) = log p_L(forward(x)) + log|d forward/dx|``
+        (ADR-0056). It is 0 on the linear scale (identity transform) and the only
+        thing besides a family's own normalizer that a *normalized* per-point
+        likelihood (LOO/WAIC) needs that the optimizer/sampler never did -- the
+        Jacobian is constant in the parameters, so it cancels in every accept ratio
+        and PyBNF's ``nll`` omits it. ``forward``'s sibling: ``forward`` moves the
+        value, this accounts for the density's stretch under that move."""
+        raise NotImplementedError
+
 
 class _Linear(AdditiveNoiseScale):
     ln_base = 0.0
 
     def forward(self, x):
         return x
+
+    def log_abs_dforward(self, x):
+        # Identity transform: |d x/d x| = 1, log 1 = 0.
+        return 0.0
 
 
 class _Log10(AdditiveNoiseScale):
@@ -53,12 +69,20 @@ class _Log10(AdditiveNoiseScale):
     def forward(self, x):
         return np.log10(x)
 
+    def log_abs_dforward(self, x):
+        # d log10(x)/dx = 1/(x ln 10); log|.| = -log(x) - log(ln 10).
+        return -np.log(x) - np.log(_LN10)
+
 
 class _Ln(AdditiveNoiseScale):
     ln_base = 1.0
 
     def forward(self, x):
         return np.log(x)
+
+    def log_abs_dforward(self, x):
+        # d ln(x)/dx = 1/x; log|.| = -log(x).
+        return -np.log(x)
 
 
 LINEAR = _Linear()

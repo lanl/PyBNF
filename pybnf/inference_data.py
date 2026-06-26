@@ -26,9 +26,13 @@ Design (ADR-0055), in brief:
   path passes the live ``variables``; the standalone path auto-discovers the
   ``.conf`` copied into ``Results/`` and falls back to natural-space-with-a-warning
   if it cannot.
-- **Groups: ``posterior`` + ``sample_stats`` (``lp``).** ``log_likelihood`` (which
-  unlocks ``az.loo`` / ``az.waic``, #438 item 4), ``prior``, and ``observed_data``
-  are deferred to the follow-on that rides on this bridge.
+- **Groups: ``posterior`` + ``sample_stats`` (``lp``), plus an optional
+  ``log_likelihood``.** When the run recorded the per-observation log-likelihood
+  sidecar (``output_inference_data`` set + a per-point likelihood objfunc, ADR-0056,
+  #438 item 4), the bridge adds a ``log_likelihood`` group so ``az.loo`` / ``az.waic``
+  / ``az.compare`` work directly. Its values are genuine *unweighted* per-point
+  log-densities (the complete, normalized family ``log_density``), not ``-score``.
+  ``prior`` and ``observed_data`` remain deferred.
 
 ``arviz`` is an optional extra (``pip install pybnf[arviz]``), imported lazily so
 core stays dependency-free (ADR-0019). Both arviz major lines are supported -- the
@@ -84,11 +88,19 @@ def _resolve_samples_path(source):
         "output directory, or a samples.txt file from a finished MCMC run." % str(source))
 
 
-def _parse_samples(samples_path):
+def _parse_samples(samples_path, loglik_rows=None):
     """Parse ``samples.txt`` into ``(param_names, chains)``.
 
     ``param_names`` is the header parameter order; ``chains`` maps a chain index to
-    a list of ``(iter, lp, values)`` rows (values aligned to ``param_names``).
+    a list of ``(iter, lp, values, loglik)`` rows (``values`` aligned to
+    ``param_names``; ``loglik`` the matching per-observation log-likelihood vector
+    from the sidecar, or ``None``).
+
+    ``loglik_rows`` is the sidecar's data rows in file order (from :func:`_parse_loglik`).
+    samples.txt and log_likelihood.txt are each written one data row per saved sample,
+    in the same order, so the i-th *data line* of samples.txt aligns with the i-th
+    sidecar row -- the position counter advances on every data line (even a malformed,
+    skipped one) so a corrupt samples row cannot shear the alignment.
     """
     with open(samples_path) as f:
         header = f.readline()
@@ -101,10 +113,13 @@ def _parse_samples(samples_path):
         param_names = cols[2:]
 
         chains = {}
+        pos = -1  # index into loglik_rows; advances on every data line
         for line in f:
             line = line.rstrip('\n')
             if not line or line.startswith('#'):
                 continue
+            pos += 1
+            ll = loglik_rows[pos] if (loglik_rows is not None and pos < len(loglik_rows)) else None
             fields = line.split('\t')
             if len(fields) != len(param_names) + 2:
                 logger.warning('Skipping malformed samples row (%d fields, expected %d): %r',
@@ -121,12 +136,37 @@ def _parse_samples(samples_path):
             draw_iter = int(iter_m.group(0))
             lp = float(fields[1])
             values = [float(x) for x in fields[2:]]
-            chains.setdefault(chain, []).append((draw_iter, lp, values))
+            chains.setdefault(chain, []).append((draw_iter, lp, values, ll))
 
     if not chains:
         raise ValueError("No samples found in %s (header only?). A run that wrote no "
                          "post-burn-in samples produces no InferenceData." % samples_path)
     return param_names, chains
+
+
+def _parse_loglik(loglik_path):
+    """Parse the per-observation log-likelihood sidecar (ADR-0056, #438 item 4).
+
+    Returns ``(obs_ids, rows)``: ``obs_ids`` the ``# <id>\\t<id>...`` header labelling
+    each observation, ``rows`` the per-sample float vectors in file order -- positionally
+    aligned with ``samples.txt``'s data rows (both are written one row per saved sample by
+    ``sample_pset``). Returns ``(None, [])`` for an absent/empty sidecar, so a run that
+    recorded no pointwise log-likelihoods (no ``output_inference_data``, or a non-likelihood
+    objfunc) simply yields an InferenceData without the ``log_likelihood`` group.
+    """
+    obs_ids = None
+    rows = []
+    with open(loglik_path) as f:
+        for line in f:
+            s = line.rstrip('\n')
+            if not s.strip():
+                continue
+            if s.startswith('#'):
+                if obs_ids is None:
+                    obs_ids = s.lstrip('#').strip().split('\t')
+                continue
+            rows.append([float(x) for x in s.split('\t')])
+    return obs_ids, rows
 
 
 def _resolve_variables(results_dir, config, variables):
@@ -223,13 +263,22 @@ def from_pybnf(source, *, config=None, variables=None):
         auto-emit path passes these directly, so no config reload is needed).
     :returns: an ``InferenceData`` with a ``posterior`` group (one variable per
         parameter, dims ``chain`` x ``draw``, log parameters in sampling space) and
-        a ``sample_stats`` group carrying ``lp`` (the recorded log-posterior).
+        a ``sample_stats`` group carrying ``lp`` (the recorded log-posterior). When a
+        ``log_likelihood.txt`` sidecar is present beside the samples (ADR-0056), a
+        ``log_likelihood`` group (variable ``y`` over an ``obs_id`` axis) is added so
+        ``az.loo`` / ``az.waic`` / ``az.compare`` work directly.
     :raises ImportError: if the optional ``arviz`` extra is not installed.
     """
     az = _require_arviz()
 
     samples_path, results_dir = _resolve_samples_path(source)
-    param_names, chains = _parse_samples(samples_path)
+    # The per-observation log-likelihood sidecar (ADR-0056, #438 item 4), if the run
+    # wrote one (output_inference_data + a likelihood objfunc). Read first so its rows
+    # parse in lockstep with samples.txt -- they are written one row per saved sample,
+    # same order, so positional row i corresponds to samples row i.
+    loglik_path = Path(results_dir) / 'log_likelihood.txt'
+    obs_ids, loglik_rows = _parse_loglik(loglik_path) if loglik_path.is_file() else (None, None)
+    param_names, chains = _parse_samples(samples_path, loglik_rows)
     var_map = _resolve_variables(results_dir, config, variables)
 
     # Rectangular chain x draw array: chains in index order, draws ordered by the
@@ -246,14 +295,30 @@ def from_pybnf(source, *, config=None, variables=None):
                     'rectangular InferenceData.', draw_counts, n_draws)
 
     n_chains = len(chain_ids)
-    # values[chain, draw, param]; lp[chain, draw]
+    # values[chain, draw, param]; lp[chain, draw]; loglik[chain, draw, obs] when a sidecar
+    # was found. The log_likelihood group is dropped (with a warning) if any kept draw's
+    # sidecar row is missing or the wrong width -- better no group than a misaligned one.
+    have_loglik = obs_ids is not None
+    n_obs = len(obs_ids) if have_loglik else 0
     values = np.empty((n_chains, n_draws, len(param_names)))
     lp = np.empty((n_chains, n_draws))
+    loglik = np.empty((n_chains, n_draws, n_obs)) if have_loglik else None
     for ci, c in enumerate(chain_ids):
         for di in range(n_draws):
-            draw_iter, draw_lp, vals = ordered[c][di]
+            draw_iter, draw_lp, vals, ll = ordered[c][di]
             lp[ci, di] = draw_lp
             values[ci, di, :] = vals
+            # Fill the log_likelihood array only while it is still valid: a single bad
+            # row disables the group (loglik -> None, the block is skipped thereafter)
+            # but values/lp keep filling, so the posterior is never left ragged.
+            if have_loglik:
+                if ll is None or len(ll) != n_obs:
+                    logger.warning('log_likelihood.txt row for chain %d draw %d is %s '
+                                   '(expected %d values); omitting the log_likelihood group.',
+                                   c, di, 'missing' if ll is None else 'width %d' % len(ll), n_obs)
+                    have_loglik, loglik = False, None
+                else:
+                    loglik[ci, di, :] = ll
 
     posterior = {}
     natural_fallback = []
@@ -275,17 +340,27 @@ def from_pybnf(source, *, config=None, variables=None):
     space_clause = ('log parameters are in sampling space (log10 / ln)'
                     if var_map is not None
                     else 'log parameters are in NATURAL space (scale could not be recovered)')
+    loo_clause = (' A log_likelihood group (%d observations) is included, so az.loo / '
+                  'az.waic / az.compare work directly; its values are genuine unweighted '
+                  'per-point log-densities (not -score).' % n_obs) if have_loglik else ''
     attrs = {
         'inference_library': 'pybnf',
         'created_from': str(samples_path),
         'note': ('posterior is the saved (thinned by sample_every, post-burn-in) '
                  'sample; %s. ArviZ recomputes R-hat/ESS on this thinned sample, so '
                  "az.ess reads lower than PyBNF's dense diagnostics.txt by design "
-                 '(see pybnf_* attrs).' % space_clause),
+                 '(see pybnf_* attrs).%s' % (space_clause, loo_clause)),
     }
     attrs.update(_read_diagnostics_attrs(results_dir))
 
-    idata = _build_idata(az, posterior, lp)
+    # The log_likelihood group: one variable 'y' over a named 'obs_id' dimension whose
+    # coordinate carries the human-readable point labels (model/suffix/observable@indvar).
+    # az.loo / az.waic pool every dim except chain/draw, so the obs axis is found by shape.
+    log_likelihood = {'y': loglik} if have_loglik else None
+    coords = {'obs_id': obs_ids} if have_loglik else None
+    dims = {'y': ['obs_id']} if have_loglik else None
+
+    idata = _build_idata(az, posterior, lp, log_likelihood=log_likelihood, coords=coords, dims=dims)
     # Stamp the run metadata on the posterior group, where it sits with the data and
     # survives the per-group netCDF round-trip. (Set here, not via from_dict's attrs=
     # kwarg, which 1.x reads as *per-group* attrs and would ignore a flat dict.) The
@@ -295,18 +370,27 @@ def from_pybnf(source, *, config=None, variables=None):
     return idata
 
 
-def _build_idata(az, posterior, lp):
+def _build_idata(az, posterior, lp, log_likelihood=None, coords=None, dims=None):
     """Construct the arviz container, tolerant of both arviz major lines.
 
     The two lines differ only in ``from_dict``'s calling convention -- 0.x takes
     per-group keywords and returns an ``InferenceData``; 1.x (the xarray-DataTree
     rewrite) takes a single group-keyed mapping and returns a ``DataTree``. Every
     downstream access the bridge and its callers use (``.posterior`` /
-    ``.sample_stats`` / ``.attrs`` / ``to_netcdf``) is identical on both, so this
-    one branch is the whole compatibility surface. The branch is on the signature,
-    not a version string, so it tracks the actual API."""
+    ``.sample_stats`` / ``.log_likelihood`` / ``.attrs`` / ``to_netcdf``) is identical
+    on both, so this one branch is the whole compatibility surface. The branch is on
+    the signature, not a version string, so it tracks the actual API. ``coords`` /
+    ``dims`` (used to name and label the log_likelihood group's observation axis) pass
+    through to either calling convention unchanged."""
     import inspect
-    sample_stats = {'lp': lp}
+    groups = {'posterior': posterior, 'sample_stats': {'lp': lp}}
+    if log_likelihood is not None:
+        groups['log_likelihood'] = log_likelihood
+    extra = {}
+    if coords is not None:
+        extra['coords'] = coords
+    if dims is not None:
+        extra['dims'] = dims
     if 'posterior' in inspect.signature(az.from_dict).parameters:
-        return az.from_dict(posterior=posterior, sample_stats=sample_stats)
-    return az.from_dict({'posterior': posterior, 'sample_stats': sample_stats})
+        return az.from_dict(**groups, **extra)
+    return az.from_dict(groups, **extra)

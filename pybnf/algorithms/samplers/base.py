@@ -201,6 +201,28 @@ class BayesianAlgorithm(Algorithm):
         self.current_constraint_satisfied = [None] * self.num_parallel
         self.constraint_samples_file = str(Path(self.config.config['output_dir']) / 'Results' / 'constraint_samples.txt')
 
+        # Per-observation log-likelihood sidecar for LOO/WAIC (ADR-0056, #438 item 4).
+        # Recorded only when output_inference_data is set AND the objective is a per-point
+        # likelihood (a least-squares / distance / pass-through objective has no normalized
+        # density to leave one out of -- warn once and stay off so the rest of the run is
+        # untouched). Like constraint satisfaction, the accepted pset's pointwise vector is
+        # cached per chain at accept time (where its simdata is in hand) and written for the
+        # current pset at each sample iteration, so log_likelihood.txt stays row-aligned with
+        # samples.txt (the bridge reads the two in lockstep).
+        self.log_likelihood_file = str(Path(self.config.config['output_dir']) / 'Results' / 'log_likelihood.txt')
+        self.current_pointwise_loglik = [None] * self.num_parallel
+        self._loglik_ids = None
+        self._loglik_header_written = False
+        self._record_loglik = bool(self.config.config.get('output_inference_data')) \
+            and getattr(self.objective, 'supports_pointwise_log_likelihood', False)
+        if self.config.config.get('output_inference_data') and not self._record_loglik:
+            print1("Note: output_inference_data is set, but objfunc '%s' is not a per-point "
+                   "likelihood, so no pointwise log-likelihoods are recorded -- the "
+                   "InferenceData will omit the log_likelihood group and az.loo/az.waic will "
+                   "be unavailable. Use a likelihood objfunc (chi_sq, chi_sq_dynamic, "
+                   "lognormal, laplace, neg_bin, neg_bin_dynamic) for LOO/WAIC."
+                   % self.config.config.get('objfunc'))
+
         # Check that the iteration range is valid with respect to the burnin and or adaptive iterations
         
 
@@ -250,6 +272,13 @@ class BayesianAlgorithm(Algorithm):
         if setup_samples:
             with open(self.samples_file, 'w') as f:
                 f.write('# Name\tLn_probability\t'+first_psets[0].keys_to_string()+'\n')
+            if self._record_loglik:
+                # Truncate any stale sidecar in lockstep with samples.txt above (a fresh
+                # run starts both empty; a continue_run leaves both untouched, so the two
+                # append in step and stay row-aligned). The id header is written lazily on
+                # the first sample, once an accepted draw reveals the observation labels.
+                open(self.log_likelihood_file, 'w').close()
+                self._loglik_header_written = False
             if self.all_constraints:
                 with open(self.constraint_samples_file, 'w') as f:
                     header = '\t'.join(c.source_line or 'constraint_%i' % i
@@ -294,6 +323,28 @@ class BayesianAlgorithm(Algorithm):
             satisfied.append(1 if c.penalty(simdata) == 0 else 0)
         self.current_constraint_satisfied[chain_index] = satisfied
 
+    def record_pointwise_loglik(self, res, chain_index):
+        """Cache the just-accepted pset's per-observation log-likelihoods for this chain
+        (ADR-0056), mirroring :meth:`evaluate_constraints`: computed here, where
+        ``res.simdata`` for the accepted pset is in hand, and written later by
+        :meth:`sample_pset` for whichever pset is current at a sample iteration. A no-op
+        unless ``output_inference_data`` is set and the objective is a likelihood; any
+        failure is logged, never fatal (the run must not die for a diagnostics sidecar)."""
+        if not self._record_loglik:
+            return
+        try:
+            result = self.objective.evaluate_pointwise(res.simdata, self.exp_data, res.pset)
+        except Exception:
+            logger.debug('Could not compute pointwise log-likelihood for chain %d',
+                         chain_index, exc_info=True)
+            return
+        if result is None:
+            return
+        ids, values = result
+        if self._loglik_ids is None:
+            self._loglik_ids = ids
+        self.current_pointwise_loglik[chain_index] = values
+
     def sample_pset(self, pset, ln_prob, chain_index=None):
         """
         Adds this pset to the set of sampled psets for the final distribution.
@@ -309,6 +360,29 @@ class BayesianAlgorithm(Algorithm):
         if self.all_constraints and chain_index is not None and self.current_constraint_satisfied[chain_index] is not None:
             with open(self.constraint_samples_file, 'a') as f:
                 f.write('\t'.join(str(x) for x in self.current_constraint_satisfied[chain_index]) + '\n')
+        if self._record_loglik:
+            self._write_pointwise_loglik(chain_index)
+
+    def _write_pointwise_loglik(self, chain_index):
+        """Append the current chain's cached per-observation log-likelihood vector to
+        log_likelihood.txt, one row per sample so it stays row-aligned with the
+        samples.txt row :meth:`sample_pset` just wrote -- the bridge reads the two in
+        lockstep (ADR-0056). The id header is written lazily on the first row, once the
+        observation labels are known. If a vector is somehow missing but other chains
+        have recorded (essentially impossible past burn-in, where every chain has
+        accepted), a NaN row preserves the alignment rather than silently dropping a row."""
+        if chain_index is None:
+            return
+        values = self.current_pointwise_loglik[chain_index]
+        if values is None:
+            if self._loglik_ids is None:
+                return  # nothing recorded anywhere yet -- no row to align to
+            values = np.full(len(self._loglik_ids), np.nan)
+        with open(self.log_likelihood_file, 'a') as f:
+            if not self._loglik_header_written:
+                f.write('# ' + '\t'.join(self._loglik_ids) + '\n')
+                self._loglik_header_written = True
+            f.write('\t'.join('%.17g' % float(v) for v in values) + '\n')
 
     def report_constraint_satisfaction(self, file_ext):
         """

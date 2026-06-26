@@ -189,7 +189,8 @@ class Adaptive_MCMC(BayesianAlgorithm):
             self.current_pset[index] = pset
             self.acceptances += 1
             self.evaluate_constraints(res.simdata, index)
-            self.list_trajactory = []      
+            self.record_pointwise_loglik(res, index)
+            self.list_trajactory = []
             self.cp = []
             for i in self.current_pset[index]:
                 self.cp.append(i.value)

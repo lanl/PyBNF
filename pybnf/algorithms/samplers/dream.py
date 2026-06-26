@@ -281,6 +281,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.ln_current_P[index] = lnposterior
             self.acceptances[index] += 1
             self.evaluate_constraints(res.simdata, index)
+            self.record_pointwise_loglik(res, index)
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))

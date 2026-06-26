@@ -119,6 +119,25 @@ def test_same_seed_reproduces_saved_samples(tmp_path, fit_type):
     np.testing.assert_array_equal(best1, best2)
 
 
+def test_output_inference_data_with_non_likelihood_records_no_sidecar(tmp_path):
+    """The LOO/WAIC no-op gate, end to end through a real am run: output_inference_data=1
+    with direct_pass (not a per-point likelihood) leaves _record_loglik False, so the run
+    writes no log_likelihood.txt -- loo/waic are simply not offered where they would be
+    invalid (ADR-0056). The InferenceData (sans log_likelihood group) is still emitted."""
+    import os
+    mean, var = [0.3, -0.7], [1.0, 1.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, var))
+    kw = dict(burn_in=120, sample_every=2, rhat_threshold=0, output_hist_every=10 ** 9,
+              hist_bins=10, population_size=3, max_iterations=240, adaptive=60,
+              num_bins=10, credible_intervals=[68, 95], step_size=0.6,
+              output_inference_data=1)
+    conf = H.make_config(tmp_path, 'am', tgt, exp, len(mean), **kw)
+    alg = SAMPLERS['am'](conf)
+    assert alg._record_loglik is False  # direct_pass is not a per-point likelihood
+    H.drive(alg)
+    assert not os.path.exists(os.path.join(conf.config['output_dir'], 'Results', 'log_likelihood.txt'))
+
+
 # --------------------------------------------------------------------------- #
 # SLOW: full posterior-moment recovery against the analytical truth
 # --------------------------------------------------------------------------- #

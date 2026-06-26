@@ -435,6 +435,118 @@ class TestNegBinMedianCentering:
         assert noise.NegBinomial(location=noise.MEDIAN).data_fit(8.0, -1, self.r) == 0
 
 
+class TestLogDensity:
+    """The complete, normalized per-point ``log_density`` LOO/WAIC consume (ADR-0056).
+
+    Unlike ``-nll`` (built for the sampler, so it drops every parameter-independent
+    constant), ``log_density`` is the genuine data-space log pdf/pmf, so each family's
+    oracle is the matching ``scipy.stats`` density -- including the ``½ log 2π`` Gaussian
+    drops and the change-of-variables Jacobian a log-scale family drops."""
+
+    PRED, OBS = 5.0, 6.3
+
+    def test_gaussian_linear_matches_norm_logpdf(self):
+        g = noise.Gaussian()  # LINEAR, MEDIAN
+        npt.assert_allclose(g.log_density(self.PRED, self.OBS, 0.7),
+                            stats.norm.logpdf(self.OBS, loc=self.PRED, scale=0.7))
+
+    def test_lognormal_log10_matches_lognorm_logpdf(self):
+        # Gaussian additive on log10 with the prediction as the median is a lognormal
+        # whose shape is sigma*ln10 (sigma is a log10-scale SD) and scale is the median.
+        g = noise.Gaussian(additive_on=noise.LOG10, location=noise.MEDIAN)
+        npt.assert_allclose(g.log_density(self.PRED, self.OBS, 0.25),
+                            stats.lognorm.logpdf(self.OBS, s=0.25 * np.log(10), scale=self.PRED))
+
+    def test_lognormal_ln_matches_lognorm_logpdf(self):
+        g = noise.Gaussian(additive_on=noise.LN, location=noise.MEDIAN)
+        npt.assert_allclose(g.log_density(self.PRED, self.OBS, 0.25),
+                            stats.lognorm.logpdf(self.OBS, s=0.25, scale=self.PRED))
+
+    def test_laplace_linear_matches_laplace_logpdf(self):
+        lp = noise.Laplace()
+        npt.assert_allclose(lp.log_density(2.0, 3.1, 0.9),
+                            stats.laplace.logpdf(3.1, loc=2.0, scale=0.9))
+
+    def test_negbin_mean_matches_nbinom_logpmf(self):
+        nb = noise.NegBinomial(location=noise.MEAN)
+        r, pred, obs = 4.0, 8.0, 6.0
+        npt.assert_allclose(nb.log_density(pred, obs, r),
+                            stats.nbinom.logpmf(obs, r, r / (r + pred)))
+
+    def test_density_keeps_the_constants_nll_drops(self):
+        """The whole point: log_density != -nll for Gaussian (½log2π) and for any
+        log-scale family (the Jacobian) -- those are exactly the dropped constants."""
+        g = noise.Gaussian()
+        # Gaussian linear: the gap is precisely ½ log 2π.
+        gap = -g.nll(3.0, 4.0, 0.5) - g.log_density(3.0, 4.0, 0.5)
+        npt.assert_allclose(gap, 0.5 * np.log(2 * np.pi))
+        # NegBinomial's PMF is self-normalizing, so there is no gap: log_density == -nll.
+        nb = noise.NegBinomial(location=noise.MEAN)
+        npt.assert_allclose(nb.log_density(8.0, 6.0, 4.0), -nb.nll(8.0, 6.0, 4.0))
+
+
+class TestEvaluatePointwise:
+    """``evaluate_pointwise`` (ADR-0056): the per-observation log-likelihood vector LOO/WAIC
+    need, the pointwise twin of ``evaluate_multiple``'s scalar total."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.exp = _mkdata(['# x  obs1  obs3  obs1_SD  obs3_SD\n',
+                           ' 0 3 5 0.1 0.3\n', ' 1 2 6 0.1 0.1\n', ' 2 4 10 0.3 1.0\n'])
+        cls.sim = _mkdata(['# x  obs1  obs3\n', ' 0 3.1 5.1\n', ' 0.5 7 8\n',
+                           ' 1 2 6\n', ' 1.5 7 8\n', ' 2 4.2 10.2\n'])
+        cls.simd = {'m': {'s': cls.sim}}
+        cls.expd = {'m': {'s': cls.exp}}
+        cls.pset = [_Param('a', 1.0)]
+
+    def test_values_match_scipy_norm_logpdf_unweighted(self):
+        """chi_sq (Gaussian, sigma from the _SD column) -- the genuine per-point Gaussian
+        log-density, unweighted, regardless of the data weights."""
+        ids, vals = objective.ChiSquareObjective().evaluate_pointwise(self.simd, self.expd, self.pset)
+        assert len(ids) == 6  # 3 rows x 2 observables
+        pairs = [(3.1, 3, 0.1), (5.1, 5, 0.3), (2, 2, 0.1), (6, 6, 0.1), (4.2, 4, 0.3), (10.2, 10, 1.0)]
+        oracle = sorted(stats.norm.logpdf(o, loc=p, scale=s) for p, o, s in pairs)
+        npt.assert_allclose(sorted(vals), oracle)
+
+    def test_ids_are_stable_and_descriptive(self):
+        ids, _ = objective.ChiSquareObjective().evaluate_pointwise(self.simd, self.expd, self.pset)
+        assert ids == ['m/s/obs1@x=0', 'm/s/obs3@x=0', 'm/s/obs1@x=1',
+                       'm/s/obs3@x=1', 'm/s/obs1@x=2', 'm/s/obs3@x=2']
+
+    def test_obs_set_is_fixed_by_exp_data_not_the_draw(self):
+        """The emitted observations depend only on the (fixed) experimental data, so every
+        parameter draw yields the same ids in the same order -- the rectangular obs axis."""
+        obj = objective.ChiSquareObjective()
+        ids_a, va = obj.evaluate_pointwise(self.simd, self.expd, [_Param('a', 1.0)])
+        # A different sim (different predictions) must not change the obs set, only the values.
+        sim2 = _mkdata(['# x  obs1  obs3\n', ' 0 9 9\n', ' 0.5 7 8\n',
+                        ' 1 9 9\n', ' 1.5 7 8\n', ' 2 9 9\n'])
+        ids_b, vb = obj.evaluate_pointwise({'m': {'s': sim2}}, self.expd, [_Param('a', 1.0)])
+        assert ids_a == ids_b
+        assert not np.allclose(va, vb)
+
+    def test_nan_observation_is_skipped(self):
+        """A NaN observation is missing data -- not an observation -- so it is dropped, the
+        only point-skipping rule (draw-independent, so the obs count stays constant)."""
+        exp_nan = _mkdata(['# x  obs1  obs3  obs1_SD  obs3_SD\n',
+                           ' 0 3 5 0.1 0.3\n', ' 1 nan 6 0.1 0.1\n', ' 2 4 10 0.3 1.0\n'])
+        ids, vals = objective.ChiSquareObjective().evaluate_pointwise(
+            self.simd, {'m': {'s': exp_nan}}, self.pset)
+        assert len(ids) == 5 and 'm/s/obs1@x=1' not in ids
+
+    def test_non_likelihood_returns_none(self):
+        """A least-squares / distance / pass-through objective has no normalized density,
+        so evaluate_pointwise is the LOO/WAIC no-op (None) and the gate flag is False."""
+        for obj in (objective.SumOfSquaresObjective(), objective.NormSumOfSquaresObjective(),
+                    objective.DirectPassObjective()):
+            assert obj.supports_pointwise_log_likelihood is False
+            assert obj.evaluate_pointwise(self.simd, self.expd, self.pset) is None
+
+    def test_likelihood_objectives_advertise_support(self):
+        assert objective.ChiSquareObjective().supports_pointwise_log_likelihood is True
+        assert objective.NegBinLikelihood_Dynamic().supports_pointwise_log_likelihood is True
+
+
 # ---------------------------------------------------------------------------
 # Dynamic chi-square and sum-of-diffs (closed-form values)
 # ---------------------------------------------------------------------------

@@ -68,3 +68,33 @@ class NoiseModel(ABC):
     def nll(self, prediction, observation, noise):
         """The full per-point negative log-likelihood (data fit + normalizer)."""
         return self.data_fit(prediction, observation, noise) + self.log_normalizer(noise)
+
+    def _density_constant(self):
+        """The parameter-independent additive constant a *normalized* density keeps
+        but ``nll`` drops -- 0 by default (the count family, whose ``-data_fit`` is
+        already a complete log-pmf), Gaussian's ``½ log(2π)`` for the normal family.
+        Distinct from ``log_normalizer``, which is the noise-parameter-*dependent*
+        part PyBNF sums only when that parameter is estimated; this is the pure
+        constant the sampler never needed (it cancels in every accept ratio)."""
+        return 0.0
+
+    def log_density(self, prediction, observation, noise):
+        """The genuine per-point log-density ``log p(observation | prediction,
+        noise)`` in **data space** -- the complete, normalized value model-comparison
+        (LOO/WAIC, ADR-0056) consumes, as opposed to ``-nll``.
+
+        ``nll`` is built for the sampler, which only needs likelihood *ratios*, so it
+        drops every term constant in the parameters: the family constant
+        (``_density_constant``) and, for a family additive on a log scale, the
+        change-of-variables Jacobian (``scale.log_abs_dforward``). A predictive
+        density needs them, so this restores both -- giving a value that matches
+        ``scipy.stats.<dist>.logpdf`` / ``.logpmf`` (the oracle each family documents).
+        The count family carries no ``additive_on`` (its PMF is self-normalizing and
+        needs no Jacobian), so the scale term is skipped there."""
+        log_dens = -(self.data_fit(prediction, observation, noise)
+                     + self.log_normalizer(noise)
+                     + self._density_constant())
+        scale = getattr(self, 'additive_on', None)
+        if scale is not None:
+            log_dens += scale.log_abs_dforward(observation)
+        return log_dens

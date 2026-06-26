@@ -6,6 +6,8 @@ from .base import NoiseModel
 from .location import MEDIAN
 from .scale import LINEAR
 
+_HALF_LOG_2PI = 0.5 * np.log(2.0 * np.pi)
+
 
 class Gaussian(NoiseModel):
     """Gaussian (normal) observation noise, configured by two of the three axes:
@@ -51,3 +53,11 @@ class Gaussian(NoiseModel):
 
     def log_normalizer(self, noise):
         return np.log(noise)
+
+    def _density_constant(self):
+        # The Gaussian's ½ log(2π): the part of -log N that is constant in the
+        # parameters, which the sampler never needed (it cancels in accept ratios)
+        # but a normalized density (log_density, for LOO/WAIC) keeps. Restoring it
+        # makes log_density match scipy.stats.norm.logpdf (and, on a log scale plus
+        # the Jacobian, scipy.stats.lognorm.logpdf).
+        return _HALF_LOG_2PI

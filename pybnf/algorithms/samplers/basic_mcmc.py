@@ -156,6 +156,7 @@ class BasicBayesMCMCAlgorithm(BayesianAlgorithm):
             self.current_pset[index] = pset
             self.ln_current_P[index] = lnposterior
             self.evaluate_constraints(res.simdata, index)
+            self.record_pointwise_loglik(res, index)
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         if self.current_pset[index] is not None:

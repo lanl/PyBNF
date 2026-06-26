@@ -163,6 +163,23 @@ class ObjectiveFunction:
         ``sigma__FREE`` / ``r__FREE`` hard-coded checks."""
         return set()
 
+    #: Whether this objective can decompose its value into genuine per-observation
+    #: log-likelihoods (ADR-0056) -- the precondition for LOO/WAIC. True only for a
+    #: per-point likelihood (``LikelihoodObjective``); a least-squares / distance /
+    #: pass-through objective has no normalized density to leave one out of, so it
+    #: stays False and ``evaluate_pointwise`` returns None (the LOO/WAIC no-op gate).
+    supports_pointwise_log_likelihood = False
+
+    def evaluate_pointwise(self, sim_data_dict, exp_data_dict, pset):
+        """Per-observation log-likelihoods for one parameter set -- the pointwise
+        decomposition LOO/WAIC consume, as opposed to ``evaluate_multiple``'s scalar
+        total (ADR-0056). Returns ``(ids, values)`` -- ``ids`` a list of stable
+        per-point labels, ``values`` the matching ``np.ndarray`` of genuine,
+        *unweighted* log-densities -- or ``None`` for an objective that is not a
+        per-point likelihood. The base is that no-op; ``LikelihoodObjective``
+        overrides it (and flips ``supports_pointwise_log_likelihood``)."""
+        return None
+
 
 class SummationObjective(ObjectiveFunction):
     """
@@ -212,25 +229,7 @@ class SummationObjective(ObjectiveFunction):
         # Iterate through rows of experimental data
         for rownum in range(exp_data.data.shape[0]):
 
-            if self.rounding == 0:
-                # Figure out the corresponding row number in the simulation data
-                # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
-                sim_row = np.argmax(np.isclose(sim_data[indvar], exp_data.data[rownum, 0], atol=0.))
-                # If no such column existed, sim_row will come out as 0; need to check for this and skip if it happened
-                if sim_row == 0 and not np.isclose(sim_data[indvar][0], exp_data.data[rownum, 0], atol=0.):
-                    raise PybnfError(f'Experimental data includes {indvar}={exp_data.data[rownum, 0]}, but that {indvar} is not in the simulation output. ')
-            elif self.rounding == 1:
-                # Take the closest row to the exp data
-                sim_row = np.argmin(abs(sim_data[indvar] - exp_data.data[rownum, 0]))
-                # Warn if there was really nothing close
-                diff = abs(sim_data[indvar][sim_row] - exp_data.data[rownum, 0])
-                if diff > 1. and diff / exp_data.data[rownum, 0] > 0.1:
-                    warnstr = indvar + str(exp_data.data[rownum, 0])  # An identifier so we only print the warning once
-                    if show_warnings and warnstr not in self.warned:
-                        print1(f"Warning: For exp point {indvar}={exp_data.data[rownum, 0]}, used sim data at {indvar}={sim_data[indvar][sim_row]}")
-                        self.warned.add(warnstr)
-            else:
-                raise PybnfError('Possible values for ind_var_rounding are 0 or 1.')
+            sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings)
 
             for col_name in compare_cols:
                 if np.isnan(exp_data.data[rownum, exp_data.cols[col_name]]):
@@ -247,6 +246,35 @@ class SummationObjective(ObjectiveFunction):
                     * exp_data.weights[rownum, exp_data.cols[col_name]]
 
         return func_value
+
+    def _sim_row_for(self, sim_data, exp_data, indvar, rownum, show_warnings=True):
+        """The simulation-data row matching experimental row ``rownum`` on the
+        independent variable -- the row-matching ``evaluate`` and
+        ``evaluate_pointwise`` share, so a point's per-observation likelihood reads
+        its prediction from the exact sim row scoring used (ADR-0056). Extracted
+        verbatim from ``evaluate``'s loop; ``show_warnings=False`` suppresses the
+        rounding-mismatch warning when re-walking points whose scoring already
+        warned."""
+        target = exp_data.data[rownum, 0]
+        if self.rounding == 0:
+            # Find the row number of sim_data column 0 that is almost equal to exp_data[rownum, 0]
+            sim_row = np.argmax(np.isclose(sim_data[indvar], target, atol=0.))
+            # If no such row existed, sim_row comes out as 0; check for that and error if it happened
+            if sim_row == 0 and not np.isclose(sim_data[indvar][0], target, atol=0.):
+                raise PybnfError(f'Experimental data includes {indvar}={target}, but that {indvar} is not in the simulation output. ')
+        elif self.rounding == 1:
+            # Take the closest row to the exp data
+            sim_row = np.argmin(abs(sim_data[indvar] - target))
+            # Warn if there was really nothing close
+            diff = abs(sim_data[indvar][sim_row] - target)
+            if diff > 1. and diff / target > 0.1:
+                warnstr = indvar + str(target)  # An identifier so we only print the warning once
+                if show_warnings and warnstr not in self.warned:
+                    print1(f"Warning: For exp point {indvar}={target}, used sim data at {indvar}={sim_data[indvar][sim_row]}")
+                    self.warned.add(warnstr)
+        else:
+            raise PybnfError('Possible values for ind_var_rounding are 0 or 1.')
+        return sim_row
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """
@@ -581,6 +609,67 @@ class LikelihoodObjective(SummationObjective):
         """The (NoiseModel, SigmaSource) for one observable -- its override if any,
         else the class default."""
         return self.overrides.get(col_name, (self.noise, self.sigma_source))
+
+    #: A per-point likelihood can be left-one-out, so it supports LOO/WAIC (ADR-0056).
+    supports_pointwise_log_likelihood = True
+
+    def evaluate_pointwise(self, sim_data_dict, exp_data_dict, pset):
+        """The per-observation log-likelihoods this fit's noise model assigns the data
+        under ``pset`` -- the pointwise decomposition LOO/WAIC consume (ADR-0056).
+
+        Returns ``(ids, values)``: ``ids`` a list of stable per-point labels
+        (``model/suffix/observable@indvar=value``), ``values`` the matching
+        ``np.ndarray`` of genuine, *unweighted* log-densities. Each value is the
+        family's complete normalized ``log_density`` (the constant Gaussian/Jacobian
+        terms ``eval_point`` drops restored), NOT ``-eval_point``: a predictive density
+        needs the full normalization, and PyBNF's per-point ``weights`` are a fitting
+        device, not part of the generative model. So these do **not** sum to
+        ``-score``; they are the honest densities ``az.loo`` / ``az.waic`` need.
+
+        Mirrors ``evaluate_multiple``'s per-evaluation setup -- the ``{name: value}``
+        map a ``FreeParameterSigma`` reads, and the measurement-model observation layer
+        -- so the densities are scored against exactly the data ``evaluate`` saw. The
+        emitted observation set is fixed by the *experimental* data (a point is skipped
+        only on a NaN observation, never on anything draw-dependent), so every draw
+        yields the same ids in the same order -- the rectangular ``chain x draw x obs``
+        array the bridge needs."""
+        self._pset_values = {p.name: p.value for p in pset}
+        ids, values = [], []
+        with np.errstate(all='ignore'):
+            if self.measurement:
+                self.measurement.apply(sim_data_dict, self._pset_values)
+            for model in sim_data_dict:
+                for suffix in sim_data_dict[model]:
+                    if suffix in exp_data_dict[model]:
+                        self._pointwise_suffix(sim_data_dict[model][suffix],
+                                               exp_data_dict[model][suffix],
+                                               '%s/%s' % (model, suffix), ids, values)
+        return ids, np.array(values, dtype=float)
+
+    def _pointwise_suffix(self, sim_data, exp_data, prefix, ids, values):
+        """Append ``(id, log_density)`` for every scored point of one model/suffix to
+        ``ids``/``values`` -- the pointwise twin of ``SummationObjective.evaluate``'s
+        loop. Same row-matching (``_sim_row_for``), same prediction seam
+        (``_prediction``), same per-observable ``(family, source)`` spec; it sums
+        nothing and instead records the unweighted ``family.log_density`` per point.
+        Columns are walked in sorted order so the obs axis is deterministic across
+        draws."""
+        indvar = min(exp_data.cols, key=exp_data.cols.get)
+        comparable = set(sim_data.cols) | set(self._per_measurement_models)
+        compare_cols = set(exp_data.cols).intersection(comparable)
+        compare_cols.discard(indvar)
+        for rownum in range(exp_data.data.shape[0]):
+            sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
+            indvar_val = exp_data.data[rownum, exp_data.cols[indvar]]
+            for col_name in sorted(compare_cols):
+                observation = exp_data.data[rownum, exp_data.cols[col_name]]
+                if np.isnan(observation):
+                    continue
+                family, source = self._spec_for(col_name)
+                prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
+                noise_param = source.value(self, exp_data, rownum, col_name)
+                values.append(family.log_density(prediction, observation, noise_param))
+                ids.append('%s/%s@%s=%g' % (prefix, col_name, indvar, indvar_val))
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         family, source = self._spec_for(col_name)
