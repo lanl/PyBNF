@@ -557,7 +557,7 @@ def _column_mean_resolver(datas, observable_id_to_column):
 # PEtab noiseDistribution -> (PyBNF noise_model family token, its scale-parameter field).
 # The reverse of export.py's _FAMILY_TOKEN_TO_PETAB_DISTRIBUTION for the two families a
 # PyBNF objective can carry: the noise_model line names the family and its single noise
-# parameter (gaussian/sigma, laplace/scale; ADR-0031, objective._NOISE_PARAM_NAMES). The
+# parameter (gaussian/sigma, laplace/scale; ADR-0031, the families' noise_params). The
 # four-token path is preferred where it applies (a tidier 'objective =' line that
 # round-trips); this is the fallback for the cases no token names.
 _PETAB_DISTRIBUTION_TO_NOISE_MODEL = {

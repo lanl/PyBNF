@@ -548,6 +548,169 @@ class TestEvaluatePointwise:
 
 
 # ---------------------------------------------------------------------------
+# Student-t noise (ADR-0058): the first two-parameter family.
+# Oracle: scipy.stats.t (logpdf for the density, gammaln for the df-block).
+# ---------------------------------------------------------------------------
+
+class TestStudentTFamily:
+    """The pure kernel against scipy.stats.t: the NLL decomposition (data_fit + the
+    per-parameter normalizers), the LOO/WAIC ``log_density``, and the log-scale guard."""
+
+    @pytest.mark.parametrize('nu', [3.0, 4.0, 7.0, 30.0])
+    @pytest.mark.parametrize('sigma', [0.25, 0.7, 2.0])
+    def test_log_density_matches_scipy_t_logpdf(self, nu, sigma):
+        st = noise.StudentT()
+        pred, obs = 5.0, 6.3
+        npt.assert_allclose(st.log_density(pred, obs, sigma, {'df': nu}),
+                            stats.t.logpdf(obs, df=nu, loc=pred, scale=sigma))
+
+    def test_nll_is_negative_t_logpdf(self):
+        st = noise.StudentT()
+        pred, obs, sigma, nu = 1.0, 2.4, 0.9, 5.0
+        npt.assert_allclose(st.nll(pred, obs, sigma, {'df': nu}),
+                            -stats.t.logpdf(obs, df=nu, loc=pred, scale=sigma))
+
+    def test_param_normalizers_split_sigma_and_df(self):
+        """sigma's normalizer is log sigma; df's is the gammaln df-block; together they
+        are the full likelihood normalizer (data_fit carries the rest)."""
+        st = noise.StudentT()
+        sigma, nu = 0.7, 4.0
+        norms = st.param_normalizers(sigma, {'df': nu})
+        from scipy.special import gammaln
+        df_block = -gammaln((nu + 1) / 2) + gammaln(nu / 2) + 0.5 * np.log(nu * np.pi)
+        npt.assert_allclose(norms['sigma'], np.log(sigma))
+        npt.assert_allclose(norms['df'], df_block)
+        # data_fit + both normalizers == the full nll (== -logpdf).
+        npt.assert_allclose(st.data_fit(3.0, 2.0, sigma, {'df': nu}) + sum(norms.values()),
+                            -stats.t.logpdf(2.0, df=nu, loc=3.0, scale=sigma))
+
+    def test_data_fit_is_the_parameter_dependent_core(self):
+        # ((nu+1)/2) * log(1 + z**2/nu) with z = (pred - obs)/sigma on the linear scale.
+        st = noise.StudentT()
+        pred, obs, sigma, nu = 4.0, 5.5, 0.8, 6.0
+        z = (pred - obs) / sigma
+        npt.assert_allclose(st.data_fit(pred, obs, sigma, {'df': nu}),
+                            (nu + 1) / 2 * np.log1p(z * z / nu))
+
+    def test_df_block_is_constant_in_sigma_but_varies_in_nu(self):
+        st = noise.StudentT()
+        a = st.param_normalizers(0.5, {'df': 4.0})['df']
+        b = st.param_normalizers(9.9, {'df': 4.0})['df']  # different sigma
+        c = st.param_normalizers(0.5, {'df': 9.0})['df']  # different nu
+        npt.assert_allclose(a, b)
+        assert not np.isclose(a, c)
+
+    def test_linear_mean_equals_median(self):
+        """On the linear scale t is symmetric, so the mean and median locations coincide."""
+        pred, obs, sigma, nu = 5.0, 6.3, 0.7, 4.0
+        mean = noise.StudentT(location=noise.MEAN).log_density(pred, obs, sigma, {'df': nu})
+        med = noise.StudentT(location=noise.MEDIAN).log_density(pred, obs, sigma, {'df': nu})
+        npt.assert_allclose(mean, med)
+
+    @pytest.mark.parametrize('scale', [noise.LOG10, noise.LN])
+    def test_log_scale_mean_raises(self, scale):
+        """A log-scale Student-t has no finite mean (its tails are too heavy), so
+        mean-centering is undefined -- only median is safe there (ADR-0058)."""
+        st = noise.StudentT(additive_on=scale, location=noise.MEAN)
+        with pytest.raises(printing.PybnfError, match='no finite mean'):
+            st.data_fit(5.0, 6.3, 0.7, {'df': 4.0})
+
+    def test_log_scale_median_is_well_defined(self):
+        # median commutes with the log transform, so the log-scale median Student-t works
+        # and matches a t in log space (oracle via the natural-log change of variables).
+        st = noise.StudentT(additive_on=noise.LN, location=noise.MEDIAN)
+        pred, obs, sigma, nu = 10.0, 8.0, 0.3, 5.0
+        got = st.log_density(pred, obs, sigma, {'df': nu})
+        oracle = stats.t.logpdf(np.log(obs), df=nu, loc=np.log(pred), scale=sigma) - np.log(obs)
+        npt.assert_allclose(got, oracle)
+
+
+class TestStudentTEngine:
+    """The objective engine sourcing student_t's two parameters (ADR-0058): the df
+    default, the per-parameter estimated-gated normalizer, and the LOO/WAIC path."""
+
+    def _obj(self, fields):
+        """A LikelihoodObjective with a whole-fit student_t default built from one
+        ``noise_model`` field map -- the real spec path (_build_noise_spec)."""
+        noise_model, sources = objective._build_noise_spec('o', ('student_t', fields, None))
+        return objective.LikelihoodObjective(0, noise=noise_model, sigma_sources=sources)
+
+    def setup_method(self):
+        # shared x grid so each exp row maps to the same sim row
+        self.sim = _mkdata(['# x  obs1\n', ' 0  3.1\n', ' 1  2.0\n', ' 2  4.2\n'])
+        self.exp = _mkdata(['# x  obs1\n', ' 0  3\n', ' 1  2\n', ' 2  4\n'])
+        self.simd = {'m': {'s': self.sim}}
+        self.expd = {'m': {'s': self.exp}}
+        self.pairs = [(3.1, 3), (2.0, 2), (4.2, 4)]
+
+    def _oracle(self, sigma, nu, *, sigma_free, nu_free):
+        """The expected total score: data_fit always, each parameter's normalizer iff it
+        is estimated -- computed from scipy primitives, not the kernel under test."""
+        from scipy.special import gammaln
+        total = 0.0
+        for s, o in self.pairs:
+            z = (s - o) / sigma
+            total += (nu + 1) / 2 * np.log1p(z * z / nu)
+            if sigma_free:
+                total += np.log(sigma)
+            if nu_free:
+                total += -gammaln((nu + 1) / 2) + gammaln(nu / 2) + 0.5 * np.log(nu * np.pi)
+        return total
+
+    def test_df_defaults_to_fixed_four_when_omitted(self):
+        _noise_model, sources = objective._build_noise_spec(
+            'o', ('student_t', {'sigma': ('fix_at', '0.7')}, None))
+        assert isinstance(sources['df'], noise.ConstantSigma)
+        assert sources['df'].const == 4.0
+        assert isinstance(sources['sigma'], noise.ConstantSigma)
+
+    def test_both_fixed_is_just_data_fit(self):
+        obj = self._obj({'sigma': ('fix_at', '0.7'), 'df': ('fix_at', '4')})
+        result = obj.evaluate_multiple(self.simd, self.expd, [])
+        npt.assert_almost_equal(result, self._oracle(0.7, 4.0, sigma_free=False, nu_free=False))
+
+    def test_free_sigma_keeps_only_the_sigma_normalizer(self):
+        obj = self._obj({'sigma': ('fit', 's__FREE'), 'df': ('fix_at', '4')})
+        result = obj.evaluate_multiple(self.simd, self.expd, [_Param('s__FREE', 0.7)])
+        npt.assert_almost_equal(result, self._oracle(0.7, 4.0, sigma_free=True, nu_free=False))
+
+    def test_free_df_keeps_only_the_df_normalizer(self):
+        obj = self._obj({'sigma': ('fix_at', '0.7'), 'df': ('fit', 'nu__FREE')})
+        result = obj.evaluate_multiple(self.simd, self.expd, [_Param('nu__FREE', 5.0)])
+        npt.assert_almost_equal(result, self._oracle(0.7, 5.0, sigma_free=False, nu_free=True))
+
+    def test_both_free_score_is_full_negative_logpdf(self):
+        """With both parameters estimated the score is the complete NLL -- exactly
+        -sum(t.logpdf), the cleanest scipy oracle."""
+        obj = self._obj({'sigma': ('fit', 's__FREE'), 'df': ('fit', 'nu__FREE')})
+        sigma, nu = 0.7, 5.0
+        result = obj.evaluate_multiple(self.simd, self.expd,
+                                       [_Param('s__FREE', sigma), _Param('nu__FREE', nu)])
+        expected = -sum(stats.t.logpdf(o, df=nu, loc=s, scale=sigma) for s, o in self.pairs)
+        npt.assert_almost_equal(result, expected)
+
+    def test_default_df_score_equals_explicit_four(self):
+        omitted = self._obj({'sigma': ('fit', 's__FREE')})
+        explicit = self._obj({'sigma': ('fit', 's__FREE'), 'df': ('fix_at', '4')})
+        pset = [_Param('s__FREE', 0.7)]
+        npt.assert_almost_equal(omitted.evaluate_multiple(self.simd, self.expd, pset),
+                                explicit.evaluate_multiple(self.simd, self.expd, pset))
+
+    def test_required_free_noise_params_unions_sigma_and_df(self):
+        obj = self._obj({'sigma': ('fit', 's__FREE'), 'df': ('fit', 'nu__FREE')})
+        assert obj.required_free_noise_params() == {'s__FREE', 'nu__FREE'}
+
+    def test_evaluate_pointwise_matches_scipy_t_logpdf(self):
+        """The LOO/WAIC path: each pointwise value is the complete t log-density,
+        regardless of which parameters are estimated (ADR-0056/0058)."""
+        obj = self._obj({'sigma': ('fit', 's__FREE'), 'df': ('fix_at', '4')})
+        ids, vals = obj.evaluate_pointwise(self.simd, self.expd, [_Param('s__FREE', 0.7)])
+        oracle = [stats.t.logpdf(o, df=4.0, loc=s, scale=0.7) for s, o in self.pairs]
+        npt.assert_allclose(sorted(vals), sorted(oracle))
+        assert len(ids) == 3
+
+
+# ---------------------------------------------------------------------------
 # Dynamic chi-square and sum-of-diffs (closed-form values)
 # ---------------------------------------------------------------------------
 
@@ -822,7 +985,7 @@ class TestPerObservableNoise:
     def test_override_mixes_families_per_column(self):
         """chi_sq on obs1 (Gaussian x _SD), Laplace x free b on obs3 -- the total is
         the sum of the two columns' own specs."""
-        overrides = {'obs3': (noise.Laplace(), noise.FreeParameterSigma('b__FREE'))}
+        overrides = {'obs3': (noise.Laplace(), {'scale': noise.FreeParameterSigma('b__FREE')})}
         obj = objective.ChiSquareObjective(overrides=overrides)
         result = obj.evaluate_multiple({'m': {'s': self.sim}}, {'m': {'s': self.exp}}, [_Param('b__FREE', 2.0)])
         obs1 = sum((s - e) ** 2 / (2 * sd ** 2) for s, e, sd in [(3.1, 3, 0.1), (2.0, 2, 0.1), (4.2, 4, 0.3)])
@@ -838,7 +1001,7 @@ class TestPerObservableNoise:
         npt.assert_array_equal(plain, empty)
 
     def test_required_free_noise_params_unions_default_and_overrides(self):
-        overrides = {'obs3': (noise.Laplace(), noise.FreeParameterSigma('b_obs3__FREE'))}
+        overrides = {'obs3': (noise.Laplace(), {'scale': noise.FreeParameterSigma('b_obs3__FREE')})}
         obj = objective.ChiSquareObjective_Dynamic(overrides=overrides)
         assert obj.required_free_noise_params() == {'sigma__FREE', 'b_obs3__FREE'}
 

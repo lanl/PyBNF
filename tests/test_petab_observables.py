@@ -50,13 +50,20 @@ def _row(noise_formula='sigma_o', dist=None, formula=None, oid='o'):
         noise_formula=noise_formula, noise_distribution=dist)
 
 
+def _sole_source(spec):
+    """The single ``SigmaSource`` from a ``(family, {param: source})`` spec's one-entry
+    source map (ADR-0058): the importer's families are all single-parameter."""
+    (source,) = spec[1].values()
+    return source
+
+
 def _assert_same_pair(got, expected):
-    """Two ``(NoiseModel, SigmaSource)`` pairs are equivalent: same family class,
-    same additive-noise scale and location singletons, same source class and
+    """Two ``(NoiseModel, {param: SigmaSource})`` specs are equivalent: same family
+    class, same additive-noise scale and location singletons, same source class and
     payload. (The kernels have no ``__eq__``, so compare the discriminating state,
     as ``test_noise_model_config`` does.)"""
-    g_fam, g_src = got
-    e_fam, e_src = expected
+    g_fam, e_fam = got[0], expected[0]
+    g_src, e_src = _sole_source(got), _sole_source(expected)
     assert type(g_fam) is type(e_fam)
     assert g_fam.additive_on is e_fam.additive_on
     assert g_fam.location is e_fam.location
@@ -84,10 +91,11 @@ class TestEquivalenceToNativeNoiseModel:
         # normal -> Gaussian(LINEAR, MEDIAN); native ``normal`` now also defaults to
         # MEDIAN (ADR-0031), so the adapter and native pairs are identical -- the
         # adapter's median choice is a faithful import of native ``normal``.
-        adapter_fam, adapter_src = noise_model_from_row(
-            _row(dist='normal', noise_formula='0.5'))
-        native_fam, native_src = _build_noise_overrides(
+        adapter = noise_model_from_row(_row(dist='normal', noise_formula='0.5'))
+        native = _build_noise_overrides(
             ploop(['noise_model o = normal, sigma = fix_at 0.5']))['o']
+        adapter_fam, native_fam = adapter[0], native[0]
+        adapter_src, native_src = _sole_source(adapter), _sole_source(native)
         assert adapter_fam.location is noise.MEDIAN and native_fam.location is noise.MEDIAN
         assert type(adapter_src) is type(native_src) and vars(adapter_src) == vars(native_src)
         for pred, obs, sigma in [(1.0, 1.2, 0.5), (3.0, 2.0, 0.8), (0.4, 0.4, 0.2)]:
@@ -142,15 +150,15 @@ class TestMapping:
         ('noiseParameter1_o', noise.FreeParameterSigma, 'name', 'noiseParameter1_o'),
     ])
     def test_sigma_source(self, noise_formula, src_cls, attr, value):
-        _fam, src = noise_model_from_row(_row(noise_formula=noise_formula))
+        src = _sole_source(noise_model_from_row(_row(noise_formula=noise_formula)))
         assert isinstance(src, src_cls)
         assert getattr(src, attr) == value
 
     def test_numeric_formula_is_fixed_identifier_is_estimated(self):
         # The source kind decides the normalizer (ADR-0021): a constant is fixed, a
         # noise-parameter id is estimated.
-        assert noise_model_from_row(_row(noise_formula='0.5'))[1].estimated is False
-        assert noise_model_from_row(_row(noise_formula='sigma_o'))[1].estimated is True
+        assert _sole_source(noise_model_from_row(_row(noise_formula='0.5'))).estimated is False
+        assert _sole_source(noise_model_from_row(_row(noise_formula='sigma_o'))).estimated is True
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +216,9 @@ class TestTableLevel:
         obj = ChiSquareObjective(overrides=overrides)
         assert isinstance(obj._spec_for('obs2')[0], noise.Laplace)
         # an unlisted observable falls back to the chi_sq default (Gaussian x _SD).
-        default_fam, default_src = obj._spec_for('obs_other')
-        assert isinstance(default_fam, noise.Gaussian)
-        assert isinstance(default_src, noise.DataColumnSigma)
+        default_spec = obj._spec_for('obs_other')
+        assert isinstance(default_spec[0], noise.Gaussian)
+        assert isinstance(_sole_source(default_spec), noise.DataColumnSigma)
 
     def test_read_observable_table_parses_columns(self, tmp_path):
         # Note: no observableTransformation column (removed in v2); the extra
@@ -243,7 +251,7 @@ class TestTableLevel:
         _assert_same_pair(m['obs2'],
                           _build_noise_overrides(ploop(['noise_model o = laplace, scale = fit b_obs2']))['o'])
         # obs1 (normal) is Gaussian(LINEAR, MEDIAN) with a constant sigma.
-        fam, src = m['obs1']
+        fam, src = m['obs1'][0], _sole_source(m['obs1'])
         assert isinstance(fam, noise.Gaussian) and fam.additive_on is noise.LINEAR
         assert isinstance(src, noise.ConstantSigma) and src.const == 0.5
 

@@ -63,6 +63,8 @@ class NegBinomial(NoiseModel):
     and the full ``-logpmf`` lives in ``data_fit``.
     """
 
+    noise_params = ('dispersion',)
+
     def __init__(self, location=MEDIAN):
         self.location = location
 
@@ -76,7 +78,7 @@ class NegBinomial(NoiseModel):
             return _mean_for_median(prediction, noise)
         return prediction
 
-    def data_fit(self, prediction, observation, noise):
+    def data_fit(self, prediction, observation, noise, extra=None):
         if observation < 0:
             return 0
         mean = self._mean(prediction, noise)

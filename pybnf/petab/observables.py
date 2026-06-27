@@ -173,7 +173,10 @@ def noise_model_from_row(row):
     family_cls, scale = _PETAB_NOISE_DISTRIBUTION[dist]
     noise = family_cls(additive_on=scale, location=MEDIAN)
     source = _sigma_source_from_noise_formula(row.noise_formula, row.observable_id)
-    return noise, source
+    # The per-observable spec is (family, {param: source}) -- one entry under the
+    # family's primary parameter name (ADR-0058). PEtab's two families are both
+    # single-parameter (gaussian/sigma, laplace/scale).
+    return noise, {noise.noise_params[0]: source}
 
 
 def _sigma_source_from_noise_formula(formula, observable_id):

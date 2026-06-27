@@ -303,10 +303,11 @@ Required Keys
 
     noise_model [<observable>] = <family>, <parameter> = <source>[, <parameter> = <source> ...][, location = mean|median][, cumulative]
 
-  The **family** is one of ``normal``, ``lognormal``, ``laplace``, or ``neg_bin``.
-  Each **parameter** is named by its standard statistical name -- ``sigma`` for
-  ``normal`` / ``lognormal``, ``scale`` for ``laplace``, ``dispersion`` for
-  ``neg_bin``. Each **source** is one of:
+  The **family** is one of ``normal``, ``lognormal``, ``laplace``, ``neg_bin``, or
+  ``student_t``. Each **parameter** is named by its standard statistical name --
+  ``sigma`` for ``normal`` / ``lognormal``, ``scale`` for ``laplace``, ``dispersion``
+  for ``neg_bin``, and ``sigma`` plus ``df`` for ``student_t`` (the only
+  two-parameter family). Each **source** is one of:
 
    - ``read_exp_file <suffix>`` - read it per point from the experimental data
      column ``<observable><suffix>`` (conventionally ``_SD``).
@@ -318,6 +319,16 @@ Required Keys
      heteroscedastic model the legacy ``norm_sos`` fits.
    - ``column_mean`` - ``sigma`` is the observable's experimental column mean (one
      scale per column). This is the model the legacy ``ave_norm_sos`` fits.
+
+  The **student_t** family is the heavy-tailed, outlier-robust likelihood (robust
+  regression) -- a ``normal`` with a tail-heaviness knob ``df`` (degrees of freedom):
+  small ``df`` gives fat tails that downweight outliers, and ``df`` toward infinity
+  recovers the Gaussian. Both of its parameters are sourced independently, so a fit may
+  estimate 0, 1, or 2 of them (e.g. ``sigma = fit s__FREE`` with a fixed ``df``, or both
+  free). ``df`` is the one parameter that may be **omitted**: it then defaults to a fixed
+  ``4`` (the standard robust default), so ``noise_model = student_t, sigma = fix_at 0.7``
+  is a valid robust fit. Estimating ``df`` (``df = fit nu__FREE``) is weakly identified,
+  so pair it with a positive prior on ``nu__FREE`` (e.g. ``gamma_var`` / ``half_normal_var``).
 
   The optional **location** field sets which summary of the noise distribution the
   model prediction is taken to be: ``median`` (the default -- the prediction is the
@@ -347,6 +358,8 @@ Required Keys
     * ``noise_model obs4 = neg_bin, dispersion = fix_at 10``
     * ``noise_model obs5 = lognormal, sigma = read_exp_file _SD, location = mean``
     * ``noise_model cases = neg_bin, dispersion = fit r__FREE, cumulative``
+    * ``noise_model obs6 = student_t, sigma = fit s__FREE`` (robust; ``df`` defaults to 4)
+    * ``noise_model obs7 = student_t, sigma = fit s__FREE, df = fit nu__FREE`` (estimate both)
 
 
 .. _edition:

@@ -2,7 +2,7 @@
 
 from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
-                    PerMeasurementFormulaSigma, RelativeSigma)
+                    PerMeasurementFormulaSigma, RelativeSigma, StudentT)
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
@@ -415,15 +415,15 @@ _NOISE_FAMILIES = {
     'lognormal': lambda: Gaussian(additive_on=LOG10, location=MEDIAN),
     'laplace': lambda: Laplace(),
     'neg_bin': lambda: NegBinomial(),
+    'student_t': lambda: StudentT(),
 }
 
-#: The canonical (standard statistical) name of each family's single noise
-#: parameter, used to validate the ``noise_model`` field name. Today every family
-#: has exactly one; a future multi-parameter family lists several (#410/ADR-0021).
-_NOISE_PARAM_NAMES = {
-    'normal': 'sigma', 'gaussian': 'sigma', 'lognormal': 'sigma',
-    'laplace': 'scale', 'neg_bin': 'dispersion',
-}
+# Each family owns the canonical (standard statistical) names of its noise parameters,
+# in declaration order, as ``family.noise_params`` (the first is the primary scalar; a
+# multi-parameter family lists several -- student_t's ``('sigma', 'df')``, ADR-0058).
+# That class attribute is the single source of truth ``_build_noise_sources`` reads to
+# validate a ``noise_model`` line's field names; the engine no longer keeps a parallel
+# token->name table.
 
 
 #: The native ``location = mean|median`` field -> the prediction's interpretation
@@ -499,32 +499,50 @@ def _require_arg(verb, arg):
 
 
 def _build_noise_spec(observable, value):
-    """One parsed ``noise_model`` line -> its (NoiseModel, SigmaSource) pair."""
+    """One parsed ``noise_model`` line -> its ``(NoiseModel, {param: SigmaSource})``
+    pair (ADR-0058). The source mapping carries one entry per noise parameter the family
+    declares (``family.noise_params``): one for the single-parameter families, two for
+    student_t (sigma + df)."""
     family_token, fields, location = value
     family_token = family_token.lower()
     if family_token not in _NOISE_FAMILIES:
         raise PybnfError(f'Unknown noise model family "{family_token}"',
                          f'The noise model family "{family_token}" for observable {observable} is not '
                          f'recognized. Valid families are: {", ".join(sorted(set(_NOISE_FAMILIES)))}.')
-    if len(fields) != 1:
-        # The grammar already admits several "<param> = <source>" fields, but no
-        # multi-parameter noise family exists yet, so the engine sources exactly one
-        # (ADR-0021); generalize the engine when a 2-parameter family lands.
-        raise PybnfError(f'Noise model for {observable} has {len(fields)} parameters',
-                         f'The {family_token} noise model takes a single noise parameter '
-                         f'({_NOISE_PARAM_NAMES[family_token]}); multi-parameter noise models are not yet supported.')
-    expected = _NOISE_PARAM_NAMES[family_token]
-    (param, (verb, arg)), = fields.items()
-    if param.lower() != expected:
-        raise PybnfError(f'Unknown noise parameter "{param}" for {family_token}',
-                         f'The {family_token} noise model\'s parameter is "{expected}", not "{param}" '
-                         f'(observable {observable}).')
     noise_model = _NOISE_FAMILIES[family_token]()
     if location is not None:
         # An omitted location keeps the family's default (median for lognormal -- the
         # no-correction default; the symmetric families are unaffected). ADR-0024.
         noise_model = _apply_location(noise_model, location)
-    return (noise_model, _build_sigma_source(verb, arg))
+    return (noise_model, _build_noise_sources(observable, family_token, noise_model, fields))
+
+
+def _build_noise_sources(observable, family_token, noise_model, fields):
+    """The ``{param: SigmaSource}`` mapping for one ``noise_model`` line's fields,
+    validated against the family's declared ``noise_params`` (ADR-0058). Each given
+    field's verb/arg builds its source; a parameter omitted from the line is filled
+    with its ``noise_param_defaults`` constant (student_t's df -> a fixed 4) or, if it
+    has no default, required (every family must state its scale). A field naming a
+    parameter the family doesn't have -- including a second field for a one-parameter
+    family -- raises."""
+    valid = noise_model.noise_params
+    sources = {}
+    for param, (verb, arg) in fields.items():
+        name = param.lower()
+        if name not in valid:
+            raise PybnfError(f'Unknown noise parameter "{param}" for {family_token}',
+                             f'The {family_token} noise model has no parameter "{param}" '
+                             f'(observable {observable}); its parameter(s) are: {", ".join(valid)}.')
+        sources[name] = _build_sigma_source(verb, arg)
+    for name in valid:
+        if name not in sources:
+            if name in noise_model.noise_param_defaults:
+                sources[name] = ConstantSigma(noise_model.noise_param_defaults[name])
+            else:
+                raise PybnfError(f'The {family_token} noise model requires "{name}"',
+                                 f'The {family_token} noise model for observable {observable} requires a '
+                                 f'"{name}" source (e.g. {name} = fix_at <number> or {name} = fit <param__FREE>).')
+    return sources
 
 
 def _build_noise_overrides(config):
@@ -562,34 +580,54 @@ class LikelihoodObjective(SummationObjective):
     constant, ...); per-observable selection is the new capability they all inherit.
 
     The whole family/normalizer choice collapses to one per-point expression: the
-    family's ``data_fit`` always, plus its ``log_normalizer`` iff the source is
-    ``estimated``. That single line reproduces every legacy objfunc -- the
-    data-fit-vs-nll split that used to be hard-coded per subclass now follows from
-    whether the noise parameter is estimated (ADR-0011)."""
+    family's ``data_fit`` always, plus each noise parameter's ``param_normalizers``
+    entry iff that parameter's source is ``estimated``. That single rule reproduces
+    every legacy objfunc -- the data-fit-vs-nll split that used to be hard-coded per
+    subclass now follows from whether each noise parameter is estimated (ADR-0011), and
+    a two-parameter family (student_t's sigma + df, ADR-0058) gates each independently."""
 
     #: The default per-observable noise model (applied to every column without an
-    #: override): a (NoiseModel, SigmaSource) pair. Subclasses set these as class
-    #: attributes; neg_bin sets ``sigma_source`` per instance (its constant is a
-    #: config value).
+    #: override): a NoiseModel plus its source(s). Subclasses set ``noise`` /
+    #: ``sigma_source`` (a single source) as class attributes; neg_bin sets
+    #: ``sigma_source`` per instance (its constant is a config value). A multi-parameter
+    #: default (a whole-fit student_t line) is passed as ``sigma_sources`` (the mapping)
+    #: to the constructor; :meth:`_default_sources` reconciles the two (ADR-0058).
     noise = None
     sigma_source = None
 
-    def __init__(self, ind_var_rounding=0, overrides=None, noise=None, sigma_source=None):
+    def __init__(self, ind_var_rounding=0, overrides=None, noise=None, sigma_source=None,
+                 sigma_sources=None):
         super().__init__(ind_var_rounding)
-        #: {col_name: (NoiseModel, SigmaSource)} overriding the default per
+        #: {col_name: (NoiseModel, {param: SigmaSource})} overriding the default per
         #: observable; empty -> every column uses the default, byte-identical to the
         #: pre-#410 single global objfunc.
         self.overrides = dict(overrides) if overrides else {}
-        # An explicit (noise, sigma_source) overrides the class default -- the seam the
-        # modern ``objective`` / whole-fit ``noise_model`` surface builds on (ADR-0031):
-        # a desugared legacy token, or a no-observable noise_model line, is just this
-        # base class with a runtime-chosen default spec instead of a registered
-        # subclass's class attributes. The legacy objfunc subclasses pass neither and
-        # keep their class-level noise/sigma_source.
+        # An explicit default overrides the class default -- the seam the modern
+        # ``objective`` / whole-fit ``noise_model`` surface builds on (ADR-0031): a
+        # desugared legacy token, or a no-observable noise_model line, is just this base
+        # class with a runtime-chosen default spec instead of a registered subclass's
+        # class attributes. The legacy objfunc subclasses pass neither and keep their
+        # class-level noise/sigma_source. ``sigma_sources`` (the full per-parameter
+        # mapping) is the multi-parameter path; ``sigma_source`` (a single source) the
+        # backward-compatible single-parameter one (ADR-0058).
         if noise is not None:
             self.noise = noise
+        #: The per-parameter default source mapping when built multi-parameter; ``None``
+        #: when the default is the legacy single ``sigma_source`` (wrapped on read).
+        self._default_source_map = dict(sigma_sources) if sigma_sources is not None else None
         if sigma_source is not None:
             self.sigma_source = sigma_source
+
+    def _default_sources(self):
+        """The class-default ``{param: SigmaSource}`` mapping (ADR-0058). A
+        multi-parameter default is stored directly; the legacy single ``sigma_source``
+        is wrapped under the family's primary parameter name (``noise.noise_params[0]``,
+        stable under ``set_default_location``)."""
+        if self._default_source_map is not None:
+            return self._default_source_map
+        if self.sigma_source is None:
+            return {}
+        return {self.noise.noise_params[0]: self.sigma_source}
 
     @classmethod
     def from_config(cls, config):
@@ -606,9 +644,20 @@ class LikelihoodObjective(SummationObjective):
         self.noise = _apply_location(self.noise, location)
 
     def _spec_for(self, col_name):
-        """The (NoiseModel, SigmaSource) for one observable -- its override if any,
-        else the class default."""
-        return self.overrides.get(col_name, (self.noise, self.sigma_source))
+        """The ``(NoiseModel, {param: SigmaSource})`` for one observable -- its override
+        if any, else the class default (ADR-0058)."""
+        return self.overrides.get(col_name, (self.noise, self._default_sources()))
+
+    @staticmethod
+    def _noise_values(family, sources, owner, exp_data, exp_row, col_name):
+        """Source every noise parameter for one point and split it into the family's
+        ``(primary, extra)`` call shape (ADR-0058): the primary scalar (``noise_params``'
+        first name) plus a mapping of the rest (``{'df': nu}`` for student_t, ``{}`` for
+        the single-parameter families)."""
+        values = {name: src.value(owner, exp_data, exp_row, col_name)
+                  for name, src in sources.items()}
+        names = family.noise_params
+        return values[names[0]], {n: values[n] for n in names[1:]}
 
     #: A per-point likelihood can be left-one-out, so it supports LOO/WAIC (ADR-0056).
     supports_pointwise_log_likelihood = True
@@ -650,7 +699,7 @@ class LikelihoodObjective(SummationObjective):
         """Append ``(id, log_density)`` for every scored point of one model/suffix to
         ``ids``/``values`` -- the pointwise twin of ``SummationObjective.evaluate``'s
         loop. Same row-matching (``_sim_row_for``), same prediction seam
-        (``_prediction``), same per-observable ``(family, source)`` spec; it sums
+        (``_prediction``), same per-observable ``(family, sources)`` spec; it sums
         nothing and instead records the unweighted ``family.log_density`` per point.
         Columns are walked in sorted order so the obs axis is deterministic across
         draws."""
@@ -665,32 +714,38 @@ class LikelihoodObjective(SummationObjective):
                 observation = exp_data.data[rownum, exp_data.cols[col_name]]
                 if np.isnan(observation):
                     continue
-                family, source = self._spec_for(col_name)
+                family, sources = self._spec_for(col_name)
                 prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
-                noise_param = source.value(self, exp_data, rownum, col_name)
-                values.append(family.log_density(prediction, observation, noise_param))
+                primary, extra = self._noise_values(family, sources, self, exp_data, rownum, col_name)
+                values.append(family.log_density(prediction, observation, primary, extra))
                 ids.append('%s/%s@%s=%g' % (prefix, col_name, indvar, indvar_val))
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
-        family, source = self._spec_for(col_name)
+        family, sources = self._spec_for(col_name)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        noise_param = source.value(self, exp_data, exp_row, col_name)
-        # data_fit always; the normalizer iff the noise parameter is estimated --
-        # the one rule that makes each legacy objfunc its decoupled default (chi_sq
-        # drops +log sigma, chi_sq_dynamic keeps it; ADR-0011/0021).
-        term = family.data_fit(prediction, observation, noise_param)
-        if source.estimated:
-            term += family.log_normalizer(noise_param)
+        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        # data_fit always; each parameter's normalizer iff THAT parameter is estimated --
+        # the one rule that makes each legacy objfunc its decoupled default (chi_sq drops
+        # +log sigma, chi_sq_dynamic keeps it; ADR-0011/0021) and gates student_t's sigma
+        # and df independently (ADR-0058).
+        term = family.data_fit(prediction, observation, primary, extra)
+        normalizers = family.param_normalizers(primary, extra)
+        for name, source in sources.items():
+            if source.estimated:
+                term += normalizers[name]
         return term
 
     def required_free_noise_params(self):
         """The free-parameter names this objective's noise sources estimate (default
         spec + every override) -- what ``_load_variables`` checks have matching
-        FreeParameters (ADR-0021)."""
+        FreeParameters (ADR-0021). Iterates each spec's per-parameter source mapping
+        (one source for the single-parameter families, two for student_t; ADR-0058)."""
         names = set()
-        for _family, source in [(self.noise, self.sigma_source), *self.overrides.values()]:
-            names |= source.required_free_params()
+        specs = [self._default_sources(), *[sources for _family, sources in self.overrides.values()]]
+        for sources in specs:
+            for source in sources.values():
+                names |= source.required_free_params()
         return names
 
     def _check_columns(self, exp_cols, compare_cols):
@@ -700,10 +755,11 @@ class LikelihoodObjective(SummationObjective):
         ``{obs}_SD`` exemption."""
         exempt = set()
         for col in compare_cols:
-            _family, source = self._spec_for(col)
-            column = source.exp_column(col)
-            if column is not None:
-                exempt.add(column)
+            _family, sources = self._spec_for(col)
+            for source in sources.values():
+                column = source.exp_column(col)
+                if column is not None:
+                    exempt.add(column)
         missed = set(exp_cols).difference(set(compare_cols).union(exempt))
         if len(missed) > 0:
             raise PybnfError('The following experimental data columns were not found in the simulation output: '
@@ -986,14 +1042,15 @@ _PROFILE_OBJECTIVES = {
 
 
 def _likelihood_from_noise_spec(config, spec, label):
-    """A LikelihoodObjective whose class default is the (family, source) of one
+    """A LikelihoodObjective whose class default is the (family, sources) of one
     noise_model value tuple ``spec``, with the per-observable overrides layered on --
     the shared construction for a desugared ``objective`` token and a whole-fit
-    ``noise_model`` line (ADR-0031)."""
-    noise_model, source = _build_noise_spec(label, spec)
+    ``noise_model`` line (ADR-0031). ``sources`` is the per-parameter mapping (one
+    entry for the single-parameter families, two for student_t; ADR-0058)."""
+    noise_model, sources = _build_noise_spec(label, spec)
     return LikelihoodObjective(config['ind_var_rounding'],
                                overrides=_build_noise_overrides(config),
-                               noise=noise_model, sigma_source=source)
+                               noise=noise_model, sigma_sources=sources)
 
 
 def build_named_objective(config, token):

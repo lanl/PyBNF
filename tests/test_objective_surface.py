@@ -40,6 +40,13 @@ def _modern(config):
     return Configuration._load_obj_func(types.SimpleNamespace(config=full))
 
 
+def _sole_source(spec):
+    """The single ``SigmaSource`` from a ``(family, {param: source})`` spec's one-entry
+    source map (ADR-0058) -- every desugared legacy token is single-parameter."""
+    (source,) = spec[1].values()
+    return source
+
+
 _SIM = ['# x  obs1  obs3\n', ' 0  3.1  5.1\n', ' 1  2.0  6.0\n', ' 2  4.2  10.2\n']
 _EXP = ['# x  obs1  obs3\n', ' 0  3    5\n', ' 1  2    6\n', ' 2  4    10\n']
 
@@ -65,18 +72,19 @@ def test_least_squares_desugar_matches_legacy_up_to_factor(token, legacy_cls, fa
 
 def test_objective_sos_is_gaussian_sigma_one():
     """The desugared sos is gaussian, sigma = fix_at 1 -- data_fit = (sim-exp)^2/(2*1^2)."""
-    fam, src = _modern({'objective': 'sos'})._spec_for('c')
-    assert isinstance(fam, noise.Gaussian) and isinstance(src, noise.ConstantSigma)
+    spec = _modern({'objective': 'sos'})._spec_for('c')
+    src = _sole_source(spec)
+    assert isinstance(spec[0], noise.Gaussian) and isinstance(src, noise.ConstantSigma)
     assert src.const == 1.0
 
 
 def test_objective_norm_sos_uses_relative_source():
-    _fam, src = _modern({'objective': 'norm_sos'})._spec_for('obs1')
+    src = _sole_source(_modern({'objective': 'norm_sos'})._spec_for('obs1'))
     assert isinstance(src, noise.RelativeSigma) and src.cv == 1.0
 
 
 def test_objective_ave_norm_sos_uses_column_mean_source():
-    _fam, src = _modern({'objective': 'ave_norm_sos'})._spec_for('obs1')
+    src = _sole_source(_modern({'objective': 'ave_norm_sos'})._spec_for('obs1'))
     assert isinstance(src, noise.ColumnMeanSigma)
 
 
@@ -100,16 +108,18 @@ def test_chi_sq_desugar_is_value_identical_to_legacy():
     ('neg_bin_dynamic', noise.NegBinomial, noise.FreeParameterSigma, None, {}),
 ])
 def test_desugar_selects_expected_family_and_source(token, family, source, additive, extra):
-    fam, src = _modern({'objective': token, **extra})._spec_for('c')
-    assert isinstance(fam, family) and isinstance(src, source)
+    spec = _modern({'objective': token, **extra})._spec_for('c')
+    src = _sole_source(spec)
+    assert isinstance(spec[0], family) and isinstance(src, source)
     if additive is not None:
-        assert fam.additive_on is additive
+        assert spec[0].additive_on is additive
 
 
 def test_desugar_neg_bin_reads_neg_bin_r():
-    fam, src = _modern({'objective': 'neg_bin', 'noise_location': 'mean',
-                        'neg_bin_r': 7.0})._spec_for('c')
-    assert isinstance(fam, noise.NegBinomial) and isinstance(src, noise.ConstantSigma)
+    spec = _modern({'objective': 'neg_bin', 'noise_location': 'mean',
+                    'neg_bin_r': 7.0})._spec_for('c')
+    src = _sole_source(spec)
+    assert isinstance(spec[0], noise.NegBinomial) and isinstance(src, noise.ConstantSigma)
     assert src.const == 7.0
 
 
@@ -122,8 +132,9 @@ def test_unknown_objective_token_raises():
 
 def test_whole_fit_noise_model_sets_the_default_spec():
     obj = _modern({('noise_model', None): ('gaussian', {'sigma': ('fix_at', '2')}, None)})
-    fam, src = obj._spec_for('c')
-    assert isinstance(fam, noise.Gaussian) and isinstance(src, noise.ConstantSigma)
+    spec = obj._spec_for('c')
+    src = _sole_source(spec)
+    assert isinstance(spec[0], noise.Gaussian) and isinstance(src, noise.ConstantSigma)
     assert src.const == 2.0
 
 

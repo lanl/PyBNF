@@ -29,6 +29,8 @@ class Laplace(NoiseModel):
     ``scipy.stats.laplace.logpdf``.
     """
 
+    noise_params = ('scale',)
+
     def __init__(self, additive_on=LINEAR, location=MEDIAN):
         self.additive_on = additive_on
         self.location = location
@@ -59,7 +61,7 @@ class Laplace(NoiseModel):
         """The additive-space location parameter for ``prediction``."""
         return self.additive_on.forward(prediction) - self.location.offset(self, noise)
 
-    def data_fit(self, prediction, observation, noise):
+    def data_fit(self, prediction, observation, noise, extra=None):
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
         return abs(residual) / noise
 

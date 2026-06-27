@@ -376,8 +376,10 @@ class TestPerObservableNoiseExample:
 
     def test_two_distinct_per_observable_specs_loaded(self, cfg):
         from pybnf import noise
-        x_family, x_source = cfg.obj._spec_for('x')
-        y_family, y_source = cfg.obj._spec_for('y')
+        x_family, x_sources = cfg.obj._spec_for('x')
+        y_family, y_sources = cfg.obj._spec_for('y')
+        (x_source,) = x_sources.values()
+        (y_source,) = y_sources.values()
         # x: Gaussian with sigma read per point from x_SD (fixed source, no normalizer)
         assert isinstance(x_family, noise.Gaussian) and isinstance(x_source, noise.DataColumnSigma)
         assert x_source.estimated is False

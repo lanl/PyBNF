@@ -29,6 +29,8 @@ class Gaussian(NoiseModel):
     sigma keeps the full ``nll`` (``chi_sq_dynamic``).
     """
 
+    noise_params = ('sigma',)
+
     def __init__(self, additive_on=LINEAR, location=MEDIAN):
         self.additive_on = additive_on
         self.location = location
@@ -47,7 +49,7 @@ class Gaussian(NoiseModel):
         """The additive-space location parameter for ``prediction``."""
         return self.additive_on.forward(prediction) - self.location.offset(self, noise)
 
-    def data_fit(self, prediction, observation, noise):
+    def data_fit(self, prediction, observation, noise, extra=None):
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
         return 1. / (2. * noise ** 2.) * residual ** 2.
 

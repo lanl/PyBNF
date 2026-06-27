@@ -21,6 +21,13 @@ from pybnf.parse import ploop
 from pybnf.printing import PybnfError
 
 
+def _sole_source(spec):
+    """The single ``SigmaSource`` from a ``(family, {param: source})`` spec's one-entry
+    source map (ADR-0058) -- the single-parameter families have exactly one."""
+    (source,) = spec[1].values()
+    return source
+
+
 # --- parse + override building ------------------------------------------------
 
 def test_ploop_builds_noise_model_tuple_key():
@@ -34,10 +41,51 @@ def test_ploop_builds_noise_model_tuple_key():
     ('noise_model o = neg_bin, dispersion = fix_at 10', noise.NegBinomial, noise.ConstantSigma, False),
 ])
 def test_overrides_map_tokens_to_objects(line, family, src_type, estimated):
-    fam, src = _build_noise_overrides(ploop([line]))['o']
-    assert isinstance(fam, family)
+    spec = _build_noise_overrides(ploop([line]))['o']
+    src = _sole_source(spec)
+    assert isinstance(spec[0], family)
     assert isinstance(src, src_type)
     assert src.estimated is estimated
+
+
+# --- the student_t two-parameter family (ADR-0058) ----------------------------
+
+def test_student_t_two_field_line_parses_sigma_and_df():
+    d = ploop(['noise_model o = student_t, sigma = fit s__FREE, df = fix_at 5'])
+    assert d[('noise_model', 'o')] == (
+        'student_t', {'sigma': ('fit', 's__FREE'), 'df': ('fix_at', '5')}, None)
+
+
+def test_student_t_df_defaults_to_fixed_four_when_omitted():
+    fam, sources = _build_noise_spec('o', ('student_t', {'sigma': ('fix_at', '0.7')}, None))
+    assert isinstance(fam, noise.StudentT)
+    assert set(sources) == {'sigma', 'df'}
+    assert isinstance(sources['df'], noise.ConstantSigma) and sources['df'].const == 4.0
+
+
+def test_student_t_explicit_df_source_overrides_the_default():
+    _fam, sources = _build_noise_spec(
+        'o', ('student_t', {'sigma': ('fix_at', '0.7'), 'df': ('fit', 'nu__FREE')}, None))
+    assert isinstance(sources['df'], noise.FreeParameterSigma) and sources['df'].name == 'nu__FREE'
+
+
+def test_student_t_requires_sigma():
+    # df has a default but sigma does not -- a line giving only df must raise.
+    with pytest.raises(PybnfError, match='sigma'):
+        _build_noise_spec('o', ('student_t', {'df': ('fix_at', '4')}, None))
+
+
+def test_student_t_rejects_unknown_parameter():
+    with pytest.raises(PybnfError, match='parameter'):
+        _build_noise_spec('o', ('student_t', {'sigma': ('fix_at', '1'),
+                                              'scale': ('fix_at', '1')}, None))
+
+
+def test_student_t_required_free_noise_params_unions_both_sources():
+    _fam, sources = _build_noise_spec(
+        'o', ('student_t', {'sigma': ('fit', 's__FREE'), 'df': ('fit', 'nu__FREE')}, None))
+    obj = objective.LikelihoodObjective(noise=_fam, sigma_sources=sources)
+    assert obj.required_free_noise_params() == {'s__FREE', 'nu__FREE'}
 
 
 # --- the formula sigma source (ADR-0044): an expression sigma over free parameters --------
@@ -51,8 +99,9 @@ def test_ploop_captures_formula_source_field():
 
 def test_formula_source_builds_a_formula_sigma():
     pytest.importorskip('petab')
-    fam, src = _build_noise_spec('o', ('gaussian', {'sigma': ('formula', '0.1 + 0.05*slope')}, None))
-    assert isinstance(fam, noise.Gaussian)
+    spec = _build_noise_spec('o', ('gaussian', {'sigma': ('formula', '0.1 + 0.05*slope')}, None))
+    src = _sole_source(spec)
+    assert isinstance(spec[0], noise.Gaussian)
     assert isinstance(src, noise.FormulaSigma)
     assert src.estimated is True                          # an estimated source -> keeps normalizer
     assert src.required_free_params() == {'slope'}        # the nuisances it requires declared
@@ -83,19 +132,19 @@ def test_formula_sigma_pickles_and_recompiles_worker_side():
 def test_relative_source_default_cv_is_one():
     """``relative`` with no argument is a coefficient of variation of 1 (sigma == the
     measurement) -- the source the desugared norm_sos uses."""
-    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = relative']))['o']
+    src = _sole_source(_build_noise_overrides(ploop(['noise_model o = normal, sigma = relative']))['o'])
     assert isinstance(src, noise.RelativeSigma)
     assert src.cv == 1.0
     assert src.estimated is False
 
 
 def test_relative_source_explicit_cv():
-    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = relative 0.2']))['o']
+    src = _sole_source(_build_noise_overrides(ploop(['noise_model o = normal, sigma = relative 0.2']))['o'])
     assert src.cv == pytest.approx(0.2)
 
 
 def test_column_mean_source_takes_no_arg():
-    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = column_mean']))['o']
+    src = _sole_source(_build_noise_overrides(ploop(['noise_model o = normal, sigma = column_mean']))['o'])
     assert isinstance(src, noise.ColumnMeanSigma)
     assert src.estimated is False
     # An argument on column_mean is a user error (the scale is the column's own mean).
@@ -125,12 +174,12 @@ def test_whole_fit_line_is_not_a_per_observable_override():
 def test_read_exp_file_suffix_is_explicit():
     """read_exp_file names the column suffix, dissolving the hard-coded _SD so a
     non-Gaussian family can read its own column."""
-    _fam, src = _build_noise_overrides(ploop(['noise_model o = normal, sigma = read_exp_file _scale']))['o']
+    src = _sole_source(_build_noise_overrides(ploop(['noise_model o = normal, sigma = read_exp_file _scale']))['o'])
     assert src.exp_column('o') == 'o_scale'
 
 
 def test_fix_at_parses_numeric_constant():
-    _fam, src = _build_noise_overrides(ploop(['noise_model o = neg_bin, dispersion = fix_at 12.5']))['o']
+    src = _sole_source(_build_noise_overrides(ploop(['noise_model o = neg_bin, dispersion = fix_at 12.5']))['o'])
     assert src.const == 12.5
 
 
@@ -144,7 +193,9 @@ def test_lognormal_family_is_gaussian_on_log10_median():
     (('bogus', {'sigma': ('fit', 'x__FREE')}, None), 'family'),                                 # unknown family
     (('neg_bin', {'sigma': ('fix_at', '10')}, None), 'parameter'),                              # neg_bin's param is dispersion
     (('normal', {'sigma': ('bogus', 'x')}, None), 'source'),                                    # unknown source verb
-    (('normal', {'sigma': ('fit', 'x__FREE'), 'extra': ('fix_at', '1')}, None), 'parameter'),   # multi-parameter (engine is 1-param)
+    (('normal', {'sigma': ('fit', 'x__FREE'), 'extra': ('fix_at', '1')}, None), 'parameter'),   # 'extra' is not a normal parameter
+    (('student_t', {'scale': ('fix_at', '1')}, None), 'parameter'),                             # student_t's scale param is 'sigma'
+    (('student_t', {'df': ('fix_at', '4')}, None), 'sigma'),                                    # sigma is required (no default)
 ])
 def test_invalid_noise_model_raises(value, match):
     with pytest.raises(PybnfError, match=match):
@@ -227,7 +278,7 @@ def test_location_caseless_and_bad_value_rejected():
     (objective.NegBinLikelihood_Dynamic(), 'r__FREE'),
     (objective.LaplaceObjective(), 'b__FREE'),
     (objective.ChiSquareObjective(
-        overrides={'o': (noise.Laplace(), noise.FreeParameterSigma('b_o__FREE'))}), 'b_o__FREE'),
+        overrides={'o': (noise.Laplace(), {'scale': noise.FreeParameterSigma('b_o__FREE')})}), 'b_o__FREE'),
 ])
 def test_missing_noise_free_param_raises(obj, missing_name):
     ns = types.SimpleNamespace(config={'objfunc': 'x', 'fit_type': 'de'}, obj=obj,
@@ -269,7 +320,7 @@ def test_formula_sigma_nuisances_join_required_free_noise_params():
     objective unions them with the legacy magic names, so an undeclared one is caught."""
     pytest.importorskip('petab')
     obj = objective.ChiSquareObjective(            # default sigma is the _SD data column (fixed)
-        overrides={'o': (noise.Gaussian(), noise.FormulaSigma('0.1 + 0.05*slope_o'))})
+        overrides={'o': (noise.Gaussian(), {'sigma': noise.FormulaSigma('0.1 + 0.05*slope_o')})})
     assert obj.required_free_noise_params() == {'slope_o'}
     ns = types.SimpleNamespace(config={'objfunc': 'chi_sq', 'fit_type': 'de'}, obj=obj,
                                _is_free_param_key=Configuration._is_free_param_key)
@@ -414,10 +465,10 @@ class TestNewEraExperimentReplicateNoise:
         # the whole-fit chi_sq base (Gaussian reading its _SD). Both sources are fixed (data
         # columns), so neither keeps a likelihood normalizer.
         conf = _build_noise_replicate_conf(tmp_path)
-        x_family, x_source = conf.obj._spec_for("x")
-        y_family, y_source = conf.obj._spec_for("y")
-        assert isinstance(x_family, noise.Laplace) and isinstance(x_source, noise.DataColumnSigma)
-        assert isinstance(y_family, noise.Gaussian) and isinstance(y_source, noise.DataColumnSigma)
+        x_spec, y_spec = conf.obj._spec_for("x"), conf.obj._spec_for("y")
+        x_source, y_source = _sole_source(x_spec), _sole_source(y_spec)
+        assert isinstance(x_spec[0], noise.Laplace) and isinstance(x_source, noise.DataColumnSigma)
+        assert isinstance(y_spec[0], noise.Gaussian) and isinstance(y_source, noise.DataColumnSigma)
         assert x_source.estimated is False and y_source.estimated is False
 
     def test_cumulative_flag_survives_the_full_config_build(self, tmp_path):

@@ -25,9 +25,10 @@ from .scale import LINEAR, LN, LOG10, AdditiveNoiseScale
 from .source import (ColumnMeanSigma, ConstantSigma, DataColumnSigma, FormulaSigma,
                      FreeParameterSigma, PerMeasurementFormulaSigma, RelativeSigma,
                      SigmaSource)
+from .student_t import StudentT
 
 __all__ = [
-    'NoiseModel', 'Gaussian', 'Laplace', 'NegBinomial',
+    'NoiseModel', 'Gaussian', 'Laplace', 'NegBinomial', 'StudentT',
     'AdditiveNoiseScale', 'LINEAR', 'LOG10', 'LN',
     'LocationInterpretation', 'MEAN', 'MEDIAN',
     'SigmaSource', 'DataColumnSigma', 'FreeParameterSigma', 'ConstantSigma',
