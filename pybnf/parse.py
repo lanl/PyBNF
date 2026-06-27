@@ -218,6 +218,23 @@ def parse(s):
     noise_model_gram = noise_model_key - pp.Optional(nm_token) - equals - nm_token - pp.Suppress(',') - \
         _DelimitedList(nm_field) - comment
 
+    # native named-analytical-target grammar (ADR-0059 item 6):
+    #   objective = <target>[, <const> = <number>]...
+    # e.g. ``objective = banana, a = 1, b = 100``. The target is a built-in closed-form
+    # objective whose scalar constants ride the objective line -- the noise_model field
+    # grammar's shape, but with bare ``<name> = <number>`` fields (no verbs). The target name
+    # is an explicit keyword set (canonical home: analytical_model.INLINE_TARGET_TYPES; kept
+    # literal here to avoid an import cycle), so a *bare* token like ``objective = score`` is
+    # NOT a target and backtracks -- via the leading ``+`` -- to the plain strgram. Constants
+    # are optional; their defaults are documented and echoed at run start (config.py).
+    objective_key = pp.CaselessLiteral('objective')
+    objective_target_name = _one_of('banana', caseless=True)
+    obj_const_field = pp.Group(nm_token + equals + num)
+    objective_target_gram = (objective_key + equals + objective_target_name
+                             + pp.Optional(pp.Suppress(',') + _DelimitedList(obj_const_field))
+                             - comment)
+    objective_target_gram.set_parse_action(lambda t: ['objective_spec'] + list(t)[1:])
+
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
     mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
@@ -354,7 +371,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -584,6 +601,26 @@ def ploop(ls):  # parse loop
                             "increments. Declare it on a per-observable line, e.g. "
                             "'noise_model <obs> = <family>, <param> = <source>, cumulative'.")
                     d[('cumulative', observable)] = True
+            elif l[0] == 'objective_spec':
+                # Named analytical objective with inline constants (ADR-0059 item 6):
+                # ``objective = banana, a = 1, b = 100``. Record the target name as the modern
+                # ``objective`` value (so the edition-gated objective-key machinery and the
+                # "exactly one objective" check engage), plus a structural
+                # ('objective_target', None) key carrying the (name, {const: value}) the model
+                # synthesis reads -- the structural-tuple-key pattern noise_model uses.
+                # Constants are optional; config.py applies + echoes the documented defaults.
+                target_name = l[1]
+                consts = {}
+                for field in l[2:]:
+                    cname, cval = field[0], field[1]
+                    if cname in consts:
+                        raise PybnfError(f"In 'objective = {target_name}', constant "
+                                         f"'{cname}' is specified multiple times")
+                    consts[cname] = float(cval)
+                if 'objective' in d or ('objective_target', None) in d:
+                    raise PybnfError("The 'objective' key is specified multiple times")
+                d['objective'] = target_name
+                d[('objective_target', None)] = (target_name, consts)
             elif l[0] == 'postprocess':
                 if len(values) < 2:
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "

@@ -186,7 +186,11 @@ class Configuration:
         if d is None:
             d = dict()
             
-        if 'models' not in d or len(d['models']) == 0:
+        # An inline named analytical objective (ADR-0059: ``objective = banana, ...``)
+        # synthesizes its own model from the objective line, so it needs no ``model`` /
+        # ``model:`` declaration -- that is the whole point of the no-sidecar surface.
+        has_inline_target = ('objective_target', None) in d
+        if (('models' not in d or len(d['models']) == 0) and not has_inline_target):
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
         # Edition-gate the new-era `model:` declaration syntax (ADR-0028) before the
         # run selector, so a legacy conf that reaches for it gets the model-syntax
@@ -743,6 +747,8 @@ class Configuration:
             md[model.name] = model
             self._data_map[model.name] = self.config[mf]  # List of exp files associated with this model
 
+        self._add_inline_analytical_target(md)
+
         for model in md.values():
             if isinstance(model, BNGLModel) and not model.has_observables:
                 print1(f'Warning: Model {model.file_path} has no observables defined. Fitting will not work without observables.')
@@ -779,6 +785,50 @@ class Configuration:
             raise PybnfError('Job contains %i models, so "parallelize_models" should be at most %i' % (len(md), len(md)))
 
         return md
+
+    def _add_inline_analytical_target(self, md):
+        """Synthesize the AnalyticalModel for an inline named objective (ADR-0059 item 6).
+
+        ``objective = banana, a = 1, b = 100`` carries the target *and* its constants on the
+        objective line, with no ``.target`` JSON file -- the parser leaves a structural
+        ``('objective_target', None)`` = ``(name, {const: value})`` for this method to turn
+        into an in-memory :class:`AnalyticalModel`. The model is injected straight into the
+        model dict ``md`` (so the run executes it like any other model and DirectPassObjective
+        reads its ``score``); no experimental data is needed (``_data_map`` entry is empty).
+
+        Edition-2 gated like the rest of the modern surface. Constants default to the
+        documented values and are **echoed** at run start, so the geometry is never silently
+        assumed (the #425 discoverability footgun). The matrix/mixture targets are not inline
+        (they keep a ``.target`` sidecar), so an unknown name or constant errors clearly."""
+        spec = self.config.get(('objective_target', None))
+        if spec is None:
+            return
+        from .analytical_model import AnalyticalModel, INLINE_TARGET_DEFAULTS
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(
+            ed, 2, "the 'objective = <target>, <constant> = <value>' named-target syntax")
+        target_name, user_consts = spec
+        defaults = INLINE_TARGET_DEFAULTS[target_name]   # parser only emits known names
+        unknown = sorted(set(user_consts) - set(defaults))
+        if unknown:
+            raise PybnfError(
+                f"Unknown constant(s) {unknown} for inline objective '{target_name}'.",
+                f"The '{target_name}' target takes constant(s) {sorted(defaults)} "
+                f"(defaults {defaults}); got unexpected {unknown}.")
+        consts = {**defaults, **user_consts}
+        model = AnalyticalModel(target_def={'type': target_name, **consts}, name=target_name)
+        if model.name in md:
+            raise PybnfError(
+                f'The inline objective target "{model.name}" collides with a declared model '
+                f'of the same name. Rename the model file.')
+        md[model.name] = model
+        self._data_map[model.name] = []   # analytical target: no experimental data
+        # _check_actions reads the per-model exp list at self.config[model.file_path];
+        # mirror the .target path's empty list (there is no file, so file_path == name).
+        self.config[model.file_path] = []
+        echoed = ', '.join(f'{k} = {consts[k]}' for k in defaults)
+        print1(f'Objective: analytical {target_name} target ({echoed}).')
+        logger.info(f'Inline analytical objective: {target_name} with {consts}')
 
     def _load_mutants(self):
 

@@ -23,6 +23,17 @@ from .pset import Model
 
 logger = logging.getLogger(__name__)
 
+#: Built-in analytical targets that can be declared *inline* on the objective line
+#: (ADR-0059 item 6: ``objective = banana, a = 1, b = 100``), mapped to their constants'
+#: documented defaults (applied + echoed at run start when the user omits them). These are
+#: the scalar-constant targets; the matrix/mixture targets (rotated_gaussian / multimodal)
+#: do not fit a config line and keep a ``.target`` JSON sidecar. The parser (parse.py) keeps
+#: the names literal to avoid an import cycle; this dict is the canonical home.
+INLINE_TARGET_DEFAULTS = {
+    'banana': {'a': 1.0, 'b': 100.0},
+}
+INLINE_TARGET_TYPES = frozenset(INLINE_TARGET_DEFAULTS)
+
 
 class AnalyticalModel(Model):
     """
@@ -32,16 +43,34 @@ class AnalyticalModel(Model):
     Returns a Data object with a single 'score' column containing the NLL.
     """
 
-    def __init__(self, target_file, pset=None):
-        self.file_path = target_file
-        self.name = splitext(basename(target_file))[0]
+    def __init__(self, target_file=None, pset=None, *, target_def=None, name=None):
+        """Build from a ``.target`` JSON file (``target_file``), or directly from an
+        in-memory ``target_def`` dict + ``name``.
+
+        The in-memory path is the seam the named-objective grammar uses (ADR-0059): an
+        ``objective = banana, a = 1, b = 100`` config line is parsed to a ``target_def``
+        (``{'type': 'banana', 'a': 1.0, 'b': 100.0}``) and synthesized here with no JSON
+        sidecar on disk -- the structured matrix/mixture targets still ship a ``.target``
+        file. ``file_path`` (used as the per-evaluation model prefix) falls back to the
+        name, since there is no file."""
+        if target_def is not None:
+            if name is None:
+                raise ValueError('AnalyticalModel(target_def=...) also needs a name')
+            self.target_def = target_def
+            self.name = name
+            self.file_path = target_file if target_file is not None else name
+        else:
+            if target_file is None:
+                raise ValueError('AnalyticalModel needs either a target_file or a target_def')
+            self.file_path = target_file
+            self.name = splitext(basename(target_file))[0]
+            with open(target_file, encoding='utf-8') as f:
+                self.target_def = json.load(f)
+
         self.suffixes = ['target']
         self.stochastic = False
         self.has_observables = True
         self.param_names = set()  # All params come from the config, not the model file
-
-        with open(target_file, encoding='utf-8') as f:
-            self.target_def = json.load(f)
 
         self.target_type = self.target_def['type']
         self._pset = pset

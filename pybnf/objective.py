@@ -991,14 +991,48 @@ class DirectPassObjective(ObjectiveFunction):
     """
     Passes through the score value directly from the simulated data.
 
-    Expects the simulated data to contain a single column 'score' with a single row.
-    The experimental data is ignored (but a dummy .exp file is still required by the config parser).
+    Expects the simulated data to contain a single column 'score' with a single row. The
+    experimental data is ignored: the analytical / bring-your-own objective IS the score, so
+    there is nothing to compare against (ADR-0031/0059).
     """
 
     def evaluate(self, sim_data, exp_data, show_warnings=True):
         if 'score' not in sim_data.cols:
             raise PybnfError("DirectPassObjective requires simulated data to have a 'score' column")
         return float(sim_data.data[0, sim_data.cols['score']])
+
+    def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
+        """Score straight off the model's 'score' column, with **no** experimental-data
+        pairing (ADR-0031/0059).
+
+        The base :meth:`ObjectiveFunction.evaluate_multiple` only scores a model-output
+        suffix that has a *matching experimental-data suffix* -- the right rule for a
+        per-point objective, but for ``direct_pass`` there is no exp column to compare to, so
+        that rule forced an empty placeholder ``.exp`` file to exist purely to make the suffix
+        match (the #425 discoverability footgun). This override drops the exp requirement: it
+        sums the score of every output suffix the model emits (each read by :meth:`evaluate`,
+        which still requires a ``score`` column), so a closed-form / analytical target scores
+        with no data file at all. Constraint penalties still apply, unchanged.
+        """
+        # Mirror the base's legacy-calling-convention disambiguation: a constraint set lacks
+        # ``.name`` (and a None/blank pset is not iterable), so constraints handed in the
+        # ``pset`` position fall through here. ``direct_pass`` reads no per-parameter value.
+        try:
+            [p.name for p in pset]
+        except (AttributeError, TypeError):
+            constraints = pset
+        if not sim_data_dict:
+            return np.inf
+        total = 0.
+        for model in sim_data_dict:
+            for suffix in sim_data_dict[model]:
+                val = self.evaluate(sim_data_dict[model][suffix], None, show_warnings=show_warnings)
+                if val is None:
+                    return None
+                total += val
+        for cset in constraints:
+            total += cset.total_penalty(sim_data_dict)
+        return total
 
 
 # --- the modern objective surface: desugaring + dispatch (ADR-0031) -----------
@@ -1063,6 +1097,13 @@ def build_named_objective(config, token):
         # The bare passthrough (the DirectPass successor's user-facing spelling): read
         # a single 'score' cell, ignore the data. The first-class analytical/user
         # objective surface is #425; 'score' is its minimal seed.
+        return DirectPassObjective()
+    from .analytical_model import INLINE_TARGET_TYPES
+    if token in INLINE_TARGET_TYPES:
+        # A named built-in analytical target (ADR-0059 item 6: ``objective = banana, ...``).
+        # The objective is the same score passthrough as ``score``; the target's closed-form
+        # NLL is supplied by an AnalyticalModel that config._load_models synthesizes from the
+        # parsed ('objective_target', None) (name, constants) spec -- no .target JSON file.
         return DirectPassObjective()
     if token in _PROFILE_OBJECTIVES:
         raise PybnfError(f'{token} is a profile objective, not a named noise model',
