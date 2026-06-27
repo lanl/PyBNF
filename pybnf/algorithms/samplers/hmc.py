@@ -108,6 +108,14 @@ class HMCSampler(BayesianAlgorithm):
         self.num_samples = config.config['num_samples']
         self.num_warmup = config.config['num_warmup']
         self.target_accept = config.config['target_accept']
+        #: Post-warmup divergent-transition count per chain (filled in by run()).
+        #: A NUTS-specific reliability signal the gradient-free samplers have no
+        #: analogue for: divergences flag regions the leapfrog integrator cannot
+        #: traverse (a too-sharp curvature for the tuned step size), so a nonzero
+        #: count -- like a high split-R-hat -- means HMC's *own* draws are not yet
+        #: trustworthy on this geometry (ADR-0059 gates the reference on its own
+        #: diagnostics: split-R-hat / ESS / divergences).
+        self.divergences = []
 
     # ------------------------------------------------------------------ #
     # Building the JAX target log-density
@@ -203,9 +211,11 @@ class HMCSampler(BayesianAlgorithm):
             logger.debug('HMC log-density probe failed for a non-prior reason; '
                          'continuing to the warmup, which will surface it.', exc_info=True)
 
+        self.divergences = []
         for c in range(self.num_parallel):
-            positions, logdens = self._run_one_chain(
+            positions, logdens, n_divergent = self._run_one_chain(
                 jax, jnp, blackjax, logdensity_fn, init_us[c], c)
+            self.divergences.append(n_divergent)
             for d in range(self.num_samples):
                 u = np.asarray(positions[d], dtype=float)
                 pset = self._pset_from_u(u, name='iter%irun%i' % (d, c))
@@ -213,25 +223,38 @@ class HMCSampler(BayesianAlgorithm):
                 # Diagnostics operate in sampling space u (split-R-hat / ESS); record the
                 # raw NUTS draw, not the reflected pset, so they see the true chain.
                 self.chain_history[c].append(u)
-            print1('Completed HMC chain %i of %i (%i draws)'
-                   % (c + 1, self.num_parallel, self.num_samples))
+            print1('Completed HMC chain %i of %i (%i draws, %i divergent transitions)'
+                   % (c + 1, self.num_parallel, self.num_samples, n_divergent))
 
         # The same diagnostics the gradient-free samplers report, on the NUTS draws.
         self.report_convergence_diagnostics(self.num_samples)
+        # Divergences are the one HMC-specific diagnostic the shared report has no slot
+        # for; surface the total so a curvature the integrator could not traverse is not
+        # silently folded into a clean-looking sample (ADR-0059's reliability gate).
+        total_divergent = int(sum(self.divergences))
+        if total_divergent:
+            print0('HMC saw %i divergent transition(s) across %i chains -- the NUTS draws '
+                   'on this geometry are NOT a trustworthy reference (raise num_warmup / '
+                   'target_accept, or the target is too sharply curved for this step size).'
+                   % (total_divergent, self.num_parallel))
+        else:
+            print2('HMC saw no divergent transitions.')
         self.update_histograms('_final')
         self._emit_inference_data()
         print0('HMC sampling complete: %i chains x %i draws written to %s'
                % (self.num_parallel, self.num_samples, self.samples_file))
 
     def _run_one_chain(self, jax, jnp, blackjax, logdensity_fn, init_u, chain_index):
-        """Window-adapt then sample one NUTS chain; return ``(positions, logdensities)``.
+        """Window-adapt then sample one NUTS chain; return ``(positions, logdensities,
+        n_divergent)``.
 
         The chain's JAX PRNG key is seeded from this chain's own ``np.random.Generator``
         (itself spawned from the run's resolved ``random_seed``), so the whole run is
         reproducible from the config seed -- the same guarantee the gradient-free samplers
         give. Warmup is blackjax window adaptation (dual-averaging step size + diagonal mass
         matrix); the post-warmup draws are collected with ``jax.lax.scan`` over the tuned
-        kernel."""
+        kernel. The scan also carries out each step's ``info.is_divergent`` flag, summed into
+        the chain's post-warmup divergent-transition count (the NUTS reliability signal)."""
         seed = int(self.chain_rngs[chain_index].integers(0, 2 ** 31 - 1))
         warmup_key, sample_key = jax.random.split(jax.random.PRNGKey(seed))
         init_position = jnp.asarray(init_u)
@@ -244,9 +267,9 @@ class HMCSampler(BayesianAlgorithm):
         kernel = blackjax.nuts(logdensity_fn, **parameters)
 
         def one_step(state, key):
-            state, _info = kernel.step(key, state)
-            return state, (state.position, state.logdensity)
+            state, info = kernel.step(key, state)
+            return state, (state.position, state.logdensity, info.is_divergent)
 
         keys = jax.random.split(sample_key, self.num_samples)
-        _, (positions, logdens) = jax.lax.scan(one_step, last_state, keys)
-        return np.asarray(positions), np.asarray(logdens)
+        _, (positions, logdens, is_divergent) = jax.lax.scan(one_step, last_state, keys)
+        return np.asarray(positions), np.asarray(logdens), int(np.asarray(is_divergent).sum())

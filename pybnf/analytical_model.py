@@ -92,12 +92,18 @@ class AnalyticalModel(Model):
         and the JAX log-density share one source of truth. ``theta`` is a JAX
         array of the parameter values in the order the sampler binds them.
 
-        This first HMC slice hand-writes only the two closed-form-truth oracle
-        targets -- ``gaussian`` (a diagonal quadratic form) and
-        ``rotated_gaussian`` (a full-precision quadratic form). The remaining
-        targets (banana / rotated_quartic / multimodal) and the BYO
-        ``expression`` sympy->jax lambdify path are later slices, so they raise a
-        pointed error here rather than silently differentiating nothing."""
+        The first HMC slice hand-wrote the two closed-form-truth oracle targets
+        -- ``gaussian`` (a diagonal quadratic form) and ``rotated_gaussian`` (a
+        full-precision quadratic form). This second slice adds the two canonical
+        *stress* geometries -- ``banana`` (a curved, non-Gaussian valley) and
+        ``multimodal`` (a separated-mode mixture) -- so HMC can serve as the
+        reference yardstick that scores the gradient-free samplers on the hard
+        cases (ADR-0059's stated purpose). Each JAX branch mirrors its numpy peer
+        (``_nll_banana`` / ``_nll_multimodal``) term for term off the *same*
+        precomputed constants, so the score path and the JAX log-density stay one
+        source of truth. ``rotated_quartic`` and the BYO ``expression``
+        sympy->jax lambdify path are still later slices, so they raise a pointed
+        error here rather than silently differentiating nothing."""
         import jax.numpy as jnp
         if self.target_type == 'gaussian':
             mean = jnp.asarray(self._mean)
@@ -115,14 +121,38 @@ class AnalyticalModel(Model):
                 diff = theta - mean
                 return 0.5 * (diff @ prec @ diff)
             return nll
+        if self.target_type == 'banana':
+            # 0.5 * sum_i [(a - x_i)^2 + b (x_{i+1} - x_i^2)^2] -- the vectorized
+            # peer of the _nll_banana loop (the slices x[:-1]/x[1:] are the
+            # consecutive (x_i, x_{i+1}) pairs), exact for any dimension.
+            a, b = self._a, self._b
+
+            def nll(theta):
+                x_i, x_next = theta[:-1], theta[1:]
+                return 0.5 * jnp.sum((a - x_i) ** 2 + b * (x_next - x_i ** 2) ** 2)
+            return nll
+        if self.target_type == 'multimodal':
+            # -logsumexp_k [ log w_k - 0.5 (x - mu_k)^T Sigma_k^{-1} (x - mu_k) ],
+            # the JAX peer of _nll_multimodal: jax.scipy's logsumexp supplies the
+            # same max-shift numerical stabilization the numpy branch hand-rolls.
+            from jax.scipy.special import logsumexp
+            modes = [(float(log_w), jnp.asarray(mu), jnp.asarray(inv_var))
+                     for log_w, mu, inv_var in self._modes]
+
+            def nll(theta):
+                log_components = jnp.stack([
+                    log_w - 0.5 * jnp.sum((theta - mu) ** 2 * inv_var)
+                    for log_w, mu, inv_var in modes])
+                return -logsumexp(log_components)
+            return nll
         from .printing import PybnfError
         raise PybnfError(
             "job_type = hmc has no JAX log-density for the analytical target %r yet "
-            "(ADR-0059). This first HMC slice supports only the closed-form 'gaussian' "
-            "and 'rotated_gaussian' targets (the analytic-truth oracle); banana, "
-            "rotated_quartic, multimodal, and bring-your-own 'expression' targets are a "
-            "later slice. Run a gradient-free sampler (am / dream / p_dream) on this "
-            "target instead." % self.target_type)
+            "(ADR-0059). HMC supports the closed-form 'gaussian' and 'rotated_gaussian' "
+            "oracle targets and the 'banana' / 'multimodal' stress geometries; "
+            "rotated_quartic and bring-your-own 'expression' targets are a later slice. "
+            "Run a gradient-free sampler (am / dream / p_dream) on this target instead."
+            % self.target_type)
 
     def save(self, file_prefix, **kwargs):
         pass

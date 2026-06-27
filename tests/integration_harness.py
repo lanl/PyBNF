@@ -135,6 +135,23 @@ def banana_spec(a=1.0, b=100.0):
     return {'type': 'banana', 'a': a, 'b': b}
 
 
+def multimodal_spec(modes):
+    """A Gaussian-mixture target from ``modes`` -- a list of ``(weight, mean,
+    variance)`` triples (diagonal variance per mode). NLL is
+    ``-logsumexp_k [log w_k - 0.5 (x-mu_k)^2 / var_k]`` (``_nll_multimodal``).
+
+    Well-separated modes are the canonical *honesty* geometry for a local sampler:
+    HMC/NUTS follows the gradient into whichever basin it starts in and cannot hop
+    the near-zero-density gap between modes, so independent chains park in different
+    modes and the cross-chain R-hat stays high -- exactly the failure HMC's own
+    diagnostics must flag (ADR-0059)."""
+    return {'type': 'multimodal',
+            'modes': [{'weight': float(w),
+                       'mean': np.asarray(mu, dtype=float).tolist(),
+                       'variance': np.asarray(var, dtype=float).tolist()}
+                      for w, mu, var in modes]}
+
+
 def rotated_gaussian_spec(mean, covariance):
     """A correlated/rotated Gaussian target with a full covariance matrix
     ``Sigma`` (NLL ``0.5 (x-mu)^T Sigma^{-1} (x-mu)``; mode = ``mean``). Unlike
