@@ -73,6 +73,36 @@ def test_hmc_recovers_gaussian_moments(tmp_path, mean, variance):
     assert np.nanmin(bulk_ess) > 400   # ~near-independent NUTS draws -> healthy ESS
 
 
+def test_hmc_binds_coordinates_by_name_not_declaration_order(tmp_path):
+    """Bind-by-name (ADR-0034) through the HMC path: declaring the parameters in REVERSE
+    coordinate order must not swap which coordinate each binds to.
+
+    ``nll_jax`` consumes ``theta`` in the target's coordinate order, while the sampler builds
+    ``u`` in declaration order, so HMC permutes ``u`` -> coordinate order by name
+    (``_coordinate_permutation``). An asymmetric gaussian (distinct per-coordinate means) makes
+    a mis-binding visible: with the fix ``p1`` recovers coordinate 1's mean and ``p2``
+    coordinate 2's, despite ``p2`` being declared first; a positional binding would swap them."""
+    mean, variance = [2.0, -1.0], [1.0, 4.0]
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec(mean, variance))
+    base = {
+        'output_dir': str(tmp_path) + '/out',
+        'models': {tgt}, tgt: [exp], 'exp_data': {exp},
+        'objfunc': 'direct_pass', 'fit_type': 'hmc', 'initialization': 'lh',
+        'delete_old_files': 1, 'verbosity': 0, 'wall_time_sim': 0, 'random_seed': 20260627,
+        'population_size': 4, 'num_warmup': 800, 'num_samples': 1500, 'max_iterations': 1500,
+    }
+    base[('uniform_var', 'p2')] = [-12.0, 12.0]   # declared BEFORE p1 -> variables == [p2, p1]
+    base[('uniform_var', 'p1')] = [-12.0, 12.0]
+    conf = H.config.Configuration(base)
+    assert [v.name for v in conf.variables] == ['p2', 'p1']   # declaration order really is reversed
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 2)   # columns ordered p1, p2 by name
+    rec = samples.mean(axis=0)
+    np.testing.assert_allclose(rec, mean, atol=0.15)          # p1 -> coord1 (2), p2 -> coord2 (-1)
+
+
 def test_hmc_recovers_rotated_gaussian_covariance(tmp_path):
     """A non-trivial off-diagonal covariance: HMC must recover the full Sigma, not just the
     marginals — the discriminating check that the correlated geometry is sampled correctly."""

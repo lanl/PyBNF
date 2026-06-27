@@ -13,7 +13,10 @@ Two non-simulator :class:`~pybnf.pset.Model` subclasses share the ``score``-colu
     banana           - Rosenbrock/banana-shaped distribution (2D)
     multimodal       - Mixture of Gaussians with configurable modes
 
-  Parameters bind by *sorted position* (``_get_param_values``) -- internal to the menu.
+  Coordinates bind to free parameters **by name** (``coordinate_order``): coordinate i is
+  the declared parameter whose name ends in index ``i+1`` (``x1``/``p1`` -> coordinate 1),
+  independent of declaration order and lexical sort -- the bind-by-name contract (ADR-0034),
+  replacing the old silent sorted-positional convention.
 
 * :class:`ExpressionModel` -- a **bring-your-own** target (ADR-0050): the user writes the NLL
   as a PEtab-math expression over the declared free parameters on the config line
@@ -27,6 +30,7 @@ Two non-simulator :class:`~pybnf.pset.Model` subclasses share the ``score``-colu
 import copy
 import json
 import logging
+import re
 import time
 import numpy as np
 from os.path import splitext, basename
@@ -217,11 +221,73 @@ class AnalyticalModel(Model):
         return {'target': data}
 
     def _get_param_values(self):
-        """Extract parameter values as a numpy array, sorted by name."""
+        """Extract parameter values as a numpy array in **coordinate order** (bind-by-name).
+
+        The score path's half of the bind-by-name contract: the values are ordered by
+        :meth:`coordinate_order` (the integer index in each parameter name), so the i-th
+        element is the parameter the user named for coordinate i+1 -- not whichever name
+        happened to sort first."""
         if self._pset is None:
             raise ValueError('AnalyticalModel has no parameter set')
-        names = sorted(self._pset.keys())
+        names = self.coordinate_order(self._pset.keys())
         return np.array([self._pset[n] for n in names])
+
+    def _dimension(self, n_declared):
+        """The target's coordinate dimension: intrinsic for the fixed-shape targets (the
+        mean / mixture-component vector length), and the number of declared parameters for
+        the any-dimension banana."""
+        if self.target_type in ('gaussian', 'rotated_gaussian', 'rotated_quartic'):
+            return len(self._mean)
+        if self.target_type == 'multimodal':
+            return len(self._modes[0][1])   # (log_w, mu, inv_var) -> mu length
+        return n_declared                   # banana: generalizes to any dimension
+
+    def coordinate_order(self, param_names):
+        """The declared free-parameter names ordered by the integer index in each name
+        (``x1`` -> coordinate 1, ``x2`` -> coordinate 2, ...) -- the bind-by-name contract
+        (ADR-0034) that replaces the silent sorted-positional convention.
+
+        A menu target's coordinates are anonymous (banana coordinate 0, gaussian ``mean[0]``,
+        ...), so binding free parameters to them needs a deterministic, user-controllable rule.
+        The integer suffix of each parameter name **is** that rule: it names the coordinate, so
+        the order is independent of declaration order and of lexical sort (``x10`` correctly
+        follows ``x9``, which a lexical sort got wrong). Any prefix works (``x1`` / ``p1`` /
+        ``theta1``); the index set must be exactly ``1..D`` for the target's dimension ``D``
+        (``D`` = the number of declared parameters for the any-dimension banana). Used by both
+        the numpy ``execute`` score path (:meth:`_get_param_values`) and the JAX HMC path, so
+        the two never disagree.
+
+        Raises ``PybnfError`` when a name has no integer suffix, or the indices are not exactly
+        ``1..D`` (wrong count, a gap, or a duplicate) -- naming the offending parameters and the
+        expected coordinate names, instead of silently binding the wrong coordinate (the #425
+        footgun the sorted convention hid)."""
+        names = list(param_names)
+        d = self._dimension(len(names))
+        expected = ', '.join(f'x{i}' for i in range(1, d + 1))
+        indexed, unindexed = [], []
+        for n in names:
+            m = re.search(r'(\d+)$', n)
+            if m:
+                indexed.append((int(m.group(1)), n))
+            else:
+                unindexed.append(n)
+        if unindexed:
+            raise PybnfError(
+                f"Cannot bind free parameter(s) {sorted(unindexed)} to the "
+                f"'{self.target_type}' target's coordinates.",
+                f"A menu analytical target binds coordinates to parameters by the integer "
+                f"index in the parameter name (ADR-0034 bind-by-name), so each name must end "
+                f"in its coordinate index. Name the {d} coordinate(s) {expected} (any prefix "
+                f"works, e.g. p1..p{d}); got {sorted(unindexed)} with no index.")
+        indexed.sort()
+        indices = [i for i, _ in indexed]
+        if indices != list(range(1, d + 1)):
+            raise PybnfError(
+                f"The '{self.target_type}' target has {d} coordinate(s) ({expected}), but the "
+                f"declared free parameters carry indices {indices}.",
+                f"Declare exactly the coordinates {expected} (any prefix; the indices must be "
+                f"1..{d} with no gaps or duplicates).")
+        return [n for _, n in indexed]
 
     def _compute_nll(self, params):
         """Compute negative log-likelihood for the target distribution."""

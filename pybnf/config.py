@@ -836,6 +836,17 @@ class Configuration:
         # _check_actions reads the per-model exp list at self.config[model.file_path];
         # mirror the .target path's empty list (there is no file, so file_path == name).
         self.config[model.file_path] = []
+        # Eager bind-by-name validation (ADR-0034): an inline ``objective = banana`` line is
+        # unambiguously an analytical fit whose declared free parameters ARE the target's
+        # coordinates, so validate them here -- a pointed config-load error (the #425 footgun
+        # example), not a swallowed failed-simulation at run. (The file ``.target`` path stays
+        # lazy: there a param-agnostic ``AnalyticalModel`` may be a throwaway vehicle for an
+        # unrelated config feature, so its coordinates are checked only when a fit binds them
+        # in ``execute``.) Declared ids come from the config keys -- the same source
+        # _load_variables reads, which has not run yet (it follows _load_models).
+        declared = sorted(k[1] for k in self.config.keys() if self._is_free_param_key(k))
+        if declared:
+            model.coordinate_order(declared)   # raises a pointed PybnfError on a bad name set
         echoed = ', '.join(f'{k} = {consts[k]}' for k in defaults)
         print1(f'Objective: analytical {target_name} target ({echoed}).')
         logger.info(f'Inline analytical objective: {target_name} with {consts}')

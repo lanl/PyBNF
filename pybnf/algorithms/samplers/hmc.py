@@ -142,12 +142,33 @@ class HMCSampler(BayesianAlgorithm):
                 % (len(analytical), [m.name for m in analytical]))
         return analytical[0]
 
-    def _build_logdensity(self, jnp, nll_fn):
+    def _coordinate_permutation(self, model):
+        """Map ``self.variables`` (declaration) order -> the target's coordinate order
+        (bind-by-name, ADR-0034).
+
+        ``nll_jax`` consumes ``theta`` in the target's coordinate order (``mean[0]``,
+        ``mean[1]``, ...), while the sampler builds ``u`` in ``self.variables`` order. This
+        permutation reorders ``u`` to coordinate order using the **same** by-name rule as the
+        numpy score path (:meth:`AnalyticalModel.coordinate_order`), so HMC and the
+        gradient-free samplers bind a parameter to the same coordinate -- not by the
+        ``p1..pN`` accident of declaration order happening to equal sort order. Identity when
+        the parameters are declared in coordinate order (the common case), so no behavior
+        change there; correct (not silently wrong) when they are not."""
+        var_names = [v.name for v in self.variables]
+        coord_names = model.coordinate_order(var_names)
+        return [var_names.index(cn) for cn in coord_names]
+
+    def _build_logdensity(self, jnp, nll_fn, coord_perm):
         """Compose the JAX target ``log pi(u)`` HMC samples (ADR-0059).
 
         ``log pi(u) = sum_i prior_i.logpdf_jax(u_i) + (-NLL(scale.inverse(u)))``. The prior
         is defined in ``u`` (ADR-0010), so there is no change-of-variables Jacobian -- this
         is exactly the density the gradient-free samplers target, now differentiable.
+
+        ``coord_perm`` reorders ``u`` (``self.variables`` order) into the target's coordinate
+        order before the NLL, so HMC binds parameters to coordinates by name exactly as the
+        score path does (:meth:`_coordinate_permutation`). The prior sum stays in
+        ``self.variables`` order (each ``prior_i`` already pairs with ``u_i`` by that order).
 
         This slice supports only the linear scale (``scale.inverse`` is the identity, so
         ``theta = u``); a log-scaled parameter would need a JAX ``10**u`` / ``exp(u)`` and
@@ -163,15 +184,17 @@ class HMCSampler(BayesianAlgorithm):
                 "slice. Declare them with a linear prior (uniform_var / normal_var) or run "
                 "a gradient-free sampler." % log_scaled)
         priors = [self.prior.get(v.name) for v in self.variables]
+        perm = jnp.asarray(coord_perm)
 
         def logdensity_fn(u):
-            # Linear scale: theta == u. Prior contributions sum in u-space; the model's
-            # NLL is evaluated in theta-space and negated into the log-density.
+            # Linear scale: theta == u. Prior contributions sum in u-space (self.variables
+            # order); the model's NLL is evaluated in theta-space -- reordered to the target's
+            # coordinate order by `perm` (bind-by-name) -- and negated into the log-density.
             lp = jnp.asarray(0.0)
             for i, var in enumerate(priors):
                 if var is not None:
                     lp = lp + var.prior_logpdf_jax(u[i])
-            return lp - nll_fn(u)
+            return lp - nll_fn(u[perm])
 
         return logdensity_fn
 
@@ -188,7 +211,8 @@ class HMCSampler(BayesianAlgorithm):
 
         model = self._resolve_analytical_model()
         nll_fn = model.nll_jax()                       # f(theta) -> NLL (pointed error if unsupported target)
-        logdensity_fn = self._build_logdensity(jnp, nll_fn)
+        coord_perm = self._coordinate_permutation(model)
+        logdensity_fn = self._build_logdensity(jnp, nll_fn, coord_perm)
 
         print2('Running Hamiltonian Monte Carlo (blackjax NUTS) on %i independent chain(s): '
                '%i warmup + %i draws each, target acceptance %.2f.'
