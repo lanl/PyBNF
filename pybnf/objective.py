@@ -1098,6 +1098,13 @@ def build_named_objective(config, token):
         # a single 'score' cell, ignore the data. The first-class analytical/user
         # objective surface is #425; 'score' is its minimal seed.
         return DirectPassObjective()
+    if token == 'expression':
+        # A bring-your-own analytical objective (ADR-0050: ``objective = expression`` +
+        # ``expression = <PEtab math NLL>``). The objective is the same score passthrough as
+        # ``score``; the user's closed-form NLL is supplied by an ExpressionModel that
+        # config._load_models compiles + synthesizes from the ``expression`` key -- no model
+        # file, no .exp.
+        return DirectPassObjective()
     from .analytical_model import INLINE_TARGET_TYPES
     if token in INLINE_TARGET_TYPES:
         # A named built-in analytical target (ADR-0059 item 6: ``objective = banana, ...``).

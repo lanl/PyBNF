@@ -231,6 +231,45 @@ def compile_petab_formula(formula, allowed_symbols, *, detail=None):
     return func, names
 
 
+def compile_objective_expression(formula, free_params):
+    """Compile a bring-your-own objective ``expression`` to ``(numpy_callable, ordered_names)``
+    (ADR-0050).
+
+    The fourth direction of the translator: the user writes a closed-form negative
+    log-likelihood (or cost) as PEtab math over the *declared free parameters* --
+    ``objective = expression`` + ``expression = 0.5*((1 - x1)^2 + 100*(x2 - x1^2)^2)`` -- with
+    no model file (the inline analytical objective the #425 epic asks for). The sympy backend
+    is identical to :func:`compile_petab_formula`; the only differences are the validation
+    namespace and the wording: every free symbol must be a **declared free parameter** (so the
+    expression binds *by name* to the PSet, ADR-0050 §4 -- the bind-by-name footgun fix the
+    named-target slice deferred), not a model entity, and an unknown symbol is reported in those
+    terms (naming it). PEtab math uses ``^`` for exponentiation (not ``**``); a ``**`` surfaces
+    as a clear parse error here.
+
+    ``free_params`` is the set/iterable of declared free-parameter names. Returns the callable
+    and the **sorted** free-symbol names it expects positionally
+    (``callable(*[pset[name] for name in ordered_names])``); a declared parameter the expression
+    does not reference is simply absent from the list (a likelihood flat in that direction).
+
+    Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable expression, or a free
+    symbol that is not a declared free parameter."""
+    sympify_petab = _require_petab_math()
+    expr = _parse(sympify_petab, formula, source='objective expression')
+    allowed = set(free_params)
+    _check_symbols(
+        expr, allowed,
+        unknown=lambda name: (
+            f"The objective expression references '{name}', which is not a declared free "
+            f"parameter. An inline 'objective = expression' may reference only parameters you "
+            f"declare (uniform_var / normal_var / a 'parameter:' record); '{name}' is not "
+            f"declared (ADR-0050). Either declare it as a free parameter or fix the typo."),
+        detail=f"Declared free parameters: {sorted(allowed)}.")
+    import sympy as sp
+    names = sorted(str(s) for s in expr.free_symbols)
+    func = sp.lambdify([sp.Symbol(n) for n in names], expr, modules='numpy')
+    return func, names
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers (parse, symbol validation, the BNGL <-> PEtab surface gap)
 # ---------------------------------------------------------------------------

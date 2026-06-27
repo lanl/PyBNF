@@ -235,6 +235,22 @@ def parse(s):
                              - comment)
     objective_target_gram.set_parse_action(lambda t: ['objective_spec'] + list(t)[1:])
 
+    # bring-your-own analytical objective expression (ADR-0050):
+    #   objective   = expression
+    #   expression  = 0.5*((1 - x1)^2 + 100*(x2 - x1^2)^2)
+    # ``objective = expression`` selects it (a plain ``objective`` string value -- not a named
+    # target -- so it flows through ``strgram``), and the companion ``expression`` key carries
+    # the user's PEtab-math NLL over the declared free parameters. The value grammar is kept
+    # deliberately permissive (the rest of the line, up to a ``#`` comment) -- mirroring
+    # ``normgram``'s ``anything`` and the measurement-model ``obs_formula`` -- because PEtab
+    # math (operators / parens / ``^`` powers / function calls with internal commas) is too
+    # rich to enumerate here; config.py compiles and validates it (an unparseable expression or
+    # an undeclared symbol gives a pointed error there, not a parse failure). NB PEtab math uses
+    # ``^`` for exponentiation, not ``**``.
+    expression_key = pp.CaselessLiteral('expression')
+    expression_value = pp.Regex(r'[^#\n]+').set_parse_action(lambda t: t[0].strip())
+    expression_gram = expression_key - equals - expression_value - comment
+
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
     mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
@@ -371,7 +387,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | expression_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line

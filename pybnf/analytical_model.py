@@ -1,14 +1,27 @@
-"""Analytical test models for sampler comparison benchmarks.
+"""Analytical, file-free objective models -- a negative log-likelihood computed directly
+from the free parameters, with no external simulator. Used with objfunc = direct_pass
+(``objective = score`` / a named target / an inline expression; ADR-0031/0050/0059).
 
-These models compute a negative log-likelihood directly from the free parameters,
-bypassing any external simulator. Used with objfunc = direct_pass.
+Two non-simulator :class:`~pybnf.pset.Model` subclasses share the ``score``-column seam:
 
-Supported target types:
-  gaussian         - Axis-aligned Gaussian (diagonal variance; a *separable* objective)
-  rotated_gaussian - Correlated Gaussian with a full covariance Sigma (non-separable)
-  rotated_quartic  - Smooth, non-separable, NON-quadratic, trap-free valley (2D)
-  banana           - Rosenbrock/banana-shaped distribution (2D)
-  multimodal       - Mixture of Gaussians with configurable modes
+* :class:`AnalyticalModel` -- one of a closed *menu* of built-in benchmark targets, read
+  from a ``.target`` JSON file or declared inline on the objective line (ADR-0059 item 6):
+
+    gaussian         - Axis-aligned Gaussian (diagonal variance; a *separable* objective)
+    rotated_gaussian - Correlated Gaussian with a full covariance Sigma (non-separable)
+    rotated_quartic  - Smooth, non-separable, NON-quadratic, trap-free valley (2D)
+    banana           - Rosenbrock/banana-shaped distribution (2D)
+    multimodal       - Mixture of Gaussians with configurable modes
+
+  Parameters bind by *sorted position* (``_get_param_values``) -- internal to the menu.
+
+* :class:`ExpressionModel` -- a **bring-your-own** target (ADR-0050): the user writes the NLL
+  as a PEtab-math expression over the declared free parameters on the config line
+  (``objective = expression`` + ``expression = 0.5*((1 - x1)^2 + 100*(x2 - x1^2)^2)``), with
+  no model file and no ``.exp``. The expression compiles to a numpy callable
+  (``pybnf.petab.formula.compile_objective_expression``) and its free symbols bind to PSet
+  values **by name** (``x1``, ``x2``) -- the bind-by-name fix the menu's sorted-positional
+  convention did not need.
 """
 
 import copy
@@ -20,6 +33,7 @@ from os.path import splitext, basename
 
 from .data import Data
 from .pset import Model
+from .printing import PybnfError
 
 logger = logging.getLogger(__name__)
 
@@ -293,3 +307,108 @@ class AnalyticalModel(Model):
         max_log = max(log_components)
         log_sum = max_log + np.log(sum(np.exp(lc - max_log) for lc in log_components))
         return -log_sum
+
+
+class ExpressionModel(Model):
+    """A bring-your-own analytical objective: the user's closed-form NLL as a math expression
+    over the free parameters, with no model file (ADR-0050, the #425 "Tier 1" surface).
+
+    A sibling of :class:`AnalyticalModel` -- another non-simulator :class:`~pybnf.pset.Model`
+    whose :meth:`execute` emits a one-cell ``score`` column the ``DirectPassObjective`` reads
+    straight through (so no new objective, sampler, or run-loop code). The differences from the
+    built-in *menu* are the two ADR-0050 wins:
+
+    * **Bring-your-own** -- the target is the user's ``expression = ...`` config line, compiled
+      to a numpy callable via the shared sympy backend
+      (:func:`pybnf.petab.formula.compile_objective_expression`), not one of five hardcoded
+      enum types.
+    * **Bind-by-name** -- the expression's free symbols bind to PSet values *by declared name*
+      (``x1`` -> ``pset['x1']``), not by sorted position. An expression names its variables, so
+      positional binding would be a footgun; this is the fix the menu path deferred.
+
+    A separate class (over an ``'expression'`` ``target_type`` on ``AnalyticalModel``) is the
+    right call: bind-by-name is intrinsically different from the menu's sorted-positional
+    ``_get_param_values`` / closed-form ``_compute_nll`` / ``nll_jax`` dispatch, and the state
+    is different too (a compiled callable + ordered symbol names, not precomputed matrices and a
+    type enum). ADR-0050 names the class. It still reuses the *whole* synthesis / injection /
+    score path (config synthesizes + injects it fileless exactly like the menu target, and
+    ``DirectPassObjective`` scores its ``score`` cell unchanged) -- that reuse lives at the
+    seam, not in the model class.
+
+    Holds the *expression string* (picklable) and the ordered free-symbol names; the lambdified
+    callable is **not** picklable, so it is compiled lazily and dropped from the pickle state
+    (recompiled once per dask worker). HMC for an expression target (sympy->jax) is a later
+    ADR-0059 slice; there is no ``nll_jax`` here yet.
+    """
+
+    def __init__(self, formula, ordered_names, name, *, pset=None):
+        """``formula`` is the PEtab-math NLL string; ``ordered_names`` the sorted free-symbol
+        names it expects positionally (from :func:`compile_objective_expression`); ``name`` the
+        synthesized model id (also the per-evaluation file prefix -- there is no file)."""
+        self.formula = formula
+        self._ordered_names = list(ordered_names)
+        self.name = name
+        self.file_path = name
+        self.suffixes = ['expression']
+        self.stochastic = False
+        self.has_observables = True
+        self.param_names = set()  # All params come from the config, not a model file
+        self._pset = pset
+        # The lambdify-generated callable is not picklable (no importable qualname), so it is
+        # compiled on first use and re-derived after unpickling rather than carried across the
+        # dask boundary -- see _compiled() and __getstate__.
+        self._func = None
+
+    def _compiled(self):
+        """The numpy callable for the expression, compiled lazily and memoized.
+
+        ``_ordered_names`` is exactly the expression's free-symbol set, so passing it as the
+        allowed namespace re-validates trivially (the real declared-parameter validation
+        happened once at config load). One compile per process; ``copy_with_param_set`` shares
+        the memoized callable, so a fit's many per-pset copies do not recompile."""
+        if self._func is None:
+            from .petab.formula import compile_objective_expression
+            self._func, _ = compile_objective_expression(self.formula, self._ordered_names)
+        return self._func
+
+    def __getstate__(self):
+        # Drop the lambdified callable (unpicklable); _compiled() rebuilds it from the
+        # picklable formula string + ordered_names on the worker.
+        state = self.__dict__.copy()
+        state['_func'] = None
+        return state
+
+    def copy_with_param_set(self, pset):
+        m = copy.copy(self)
+        m._pset = pset
+        return m
+
+    def save(self, file_prefix, **kwargs):
+        pass
+
+    def get_suffixes(self):
+        return self.suffixes
+
+    def execute(self, folder, filename, timeout):
+        """Evaluate the expression NLL at the current parameter set (bind-by-name) and return
+        it in a one-cell ``score`` column, mirroring :meth:`AnalyticalModel.execute`."""
+        # Small delay to prevent dask race condition with instant-completion tasks (the
+        # integration harness patches this module's time.sleep to a no-op).
+        time.sleep(0.01)
+        if self._pset is None:
+            raise ValueError('ExpressionModel has no parameter set')
+        func = self._compiled()
+        try:
+            args = [self._pset[name] for name in self._ordered_names]
+        except KeyError as e:
+            # Defensive: config-time validation already guarantees every free symbol is a
+            # declared free parameter (hence present in the PSet), so this should be unreachable.
+            raise PybnfError(
+                f"The objective expression references free parameter {e}, which is not in the "
+                f"parameter set. Declared free parameters bind to the expression's symbols by "
+                f"name (ADR-0050).")
+        score = float(func(*args))
+        data = Data(arr=np.array([[0.0, score]]))
+        data.cols = {'index': 0, 'score': 1}
+        data.headers = {0: 'index', 1: 'score'}
+        return {self.suffixes[0]: data}
