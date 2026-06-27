@@ -25,6 +25,6 @@ class Gamma(FrozenPrior):
         self.frozen = stats.gamma(a=shape, scale=gamma_scale)
 
     @classmethod
-    def build(cls, p1, p2, scale):
+    def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(shape, scale)`` -- given in-scale, untransformed."""
         return cls(shape=p1, gamma_scale=p2)

@@ -503,6 +503,62 @@ class TestParameterRecordConfig:
                              ['parameter: u, lower: 0, upper: 10'])['u']
         assert v.type == 'uniform_var' and (v.lower_bound, v.upper_bound) == (0.0, 10.0)
 
+    def test_batch_univariate_families(self, tmp_path, monkeypatch):
+        # The #438 item-1 batch families build through the full record path (ADR-0057): the
+        # one-parameter half-* scale priors, the bounded beta, and the two-parameter
+        # positive/location-scale families. Each is oracled against its scipy density at a
+        # probe point in its own support.
+        from scipy import stats
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: hn, prior: half_normal, scale: 2',
+            'parameter: hc, prior: half_cauchy, scale: 1.5',
+            'parameter: bb, prior: beta, alpha: 2, beta: 5',
+            'parameter: ig, prior: inv_gamma, shape: 3, scale: 2',
+            'parameter: wb, prior: weibull, shape: 1.5, scale: 2',
+            'parameter: gu, prior: gumbel, location: 0, scale: 1',
+            'parameter: lo, prior: logistic, location: 0, scale: 1',
+        ])
+        cases = {
+            'hn': (stats.halfnorm(scale=2), 1.0, 'half_normal_var'),
+            'hc': (stats.halfcauchy(scale=1.5), 1.0, 'half_cauchy_var'),
+            'bb': (stats.beta(a=2, b=5), 0.3, 'beta_var'),
+            'ig': (stats.invgamma(a=3, scale=2), 1.0, 'inv_gamma_var'),
+            'wb': (stats.weibull_min(c=1.5, scale=2), 1.0, 'weibull_var'),
+            'gu': (stats.gumbel_r(loc=0, scale=1), 0.5, 'gumbel_var'),
+            'lo': (stats.logistic(loc=0, scale=1), 0.5, 'logistic_var'),
+        }
+        for name, (ref, probe, keyword) in cases.items():
+            v = got[name]
+            assert v.type == keyword, name
+            assert v.prior_logpdf(probe) == pytest.approx(float(ref.logpdf(probe))), name
+
+    def test_student_t_record_three_params(self, tmp_path, monkeypatch):
+        # The three-parameter family is reachable ONLY through the record (ADR-0057); df,
+        # location, and scale land in p1/p2/p3, oracled against scipy.stats.t. A log-scaled,
+        # truncated variant exercises the third value travelling the whole carrier.
+        from scipy import stats
+        got = self._build_vars(tmp_path, monkeypatch, [
+            'parameter: st, prior: student_t, df: 4, location: 1, scale: 2',
+            'parameter: lt, prior: student_t, parameter_scale: log10, df: 3, location: 1, '
+            'scale: 0.5, lower: 0.1, upper: 100',
+        ])
+        st = got['st']
+        assert st.type == 'student_t_var'
+        assert (st.p1, st.p2, st.p3) == (4.0, 1.0, 2.0)
+        ref = stats.t(df=4, loc=1, scale=2)
+        for theta in (-3.0, 1.0, 5.0):
+            assert st.prior_logpdf(theta) == pytest.approx(float(ref.logpdf(theta)))
+        lt = got['lt']
+        assert lt.type == 'logstudent_t_var' and lt.p3 == 0.5
+        assert (lt.lower_bound, lt.upper_bound) == (0.1, 100.0) and lt.has_bounded_support
+
+    def test_student_t_missing_field_errors(self, tmp_path, monkeypatch):
+        # A three-field family needs all three; omitting one is a clear error, not a silent
+        # default (the record names every part).
+        with pytest.raises(printing.PybnfError, match="needs field 'scale'"):
+            self._build_vars(tmp_path, monkeypatch,
+                             ['parameter: st, prior: student_t, df: 4, location: 1'])
+
     def test_initial_value_routing(self, tmp_path, monkeypatch):
         # A prior parameter carries initial_value as its theta-space .value (read by the
         # population seed); a no-prior start point carries it as the first slot (Simplex reads p1).

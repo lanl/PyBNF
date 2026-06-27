@@ -27,6 +27,6 @@ class Laplace(FrozenPrior):
         self.frozen = stats.laplace(loc=loc, scale=b)
 
     @classmethod
-    def build(cls, p1, p2, scale):
+    def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(location, b)`` -- given in-scale, untransformed."""
         return cls(loc=p1, b=p2)

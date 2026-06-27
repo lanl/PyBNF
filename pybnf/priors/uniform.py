@@ -27,7 +27,7 @@ class Uniform(Prior):
         self.frozen = stats.uniform(loc=lo, scale=hi - lo)
 
     @classmethod
-    def build(cls, p1, p2, scale):
+    def build(cls, p1, p2, scale, p3=None):
         """Build from raw ``theta`` bounds, mapped into sampling space ``u``."""
         return cls(lo=scale.forward(p1), hi=scale.forward(p2))
 

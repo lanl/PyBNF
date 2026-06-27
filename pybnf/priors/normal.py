@@ -23,6 +23,6 @@ class Normal(FrozenPrior):
         self.frozen = stats.norm(loc=loc, scale=sigma)
 
     @classmethod
-    def build(cls, p1, p2, scale):
+    def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(mean, sd)`` -- given in-scale, untransformed."""
         return cls(loc=p1, sigma=p2)

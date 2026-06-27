@@ -26,6 +26,14 @@ from pybnf.priors.gamma import Gamma
 from pybnf.priors.exponential import Exponential
 from pybnf.priors.chisquare import ChiSquare
 from pybnf.priors.rayleigh import Rayleigh
+from pybnf.priors.half_normal import HalfNormal
+from pybnf.priors.half_cauchy import HalfCauchy
+from pybnf.priors.beta import Beta
+from pybnf.priors.inv_gamma import InvGamma
+from pybnf.priors.weibull import Weibull
+from pybnf.priors.gumbel import Gumbel
+from pybnf.priors.logistic import Logistic
+from pybnf.priors.student_t import StudentT
 from pybnf.priors.base import NoPrior
 from pybnf.printing import PybnfError
 
@@ -132,6 +140,16 @@ class TestCatalogFamilies:
         (Exponential, dict(exp_scale=0.5), stats.expon(scale=0.5), (0.0, np.inf)),
         (ChiSquare, dict(dof=4.0), stats.chi2(df=4.0), (0.0, np.inf)),
         (Rayleigh, dict(ray_scale=1.5), stats.rayleigh(scale=1.5), (0.0, np.inf)),
+        # Batch univariate families (#438 item 1, ADR-0057), each oracled against its scipy dist.
+        (HalfNormal, dict(hn_scale=2.0), stats.halfnorm(scale=2.0), (0.0, np.inf)),
+        (HalfCauchy, dict(hc_scale=1.5), stats.halfcauchy(scale=1.5), (0.0, np.inf)),
+        (Beta, dict(alpha=2.0, beta=5.0), stats.beta(a=2.0, b=5.0), (0.0, 1.0)),
+        (InvGamma, dict(shape=3.0, ig_scale=2.0), stats.invgamma(a=3.0, scale=2.0), (0.0, np.inf)),
+        (Weibull, dict(shape=1.5, wb_scale=2.0), stats.weibull_min(c=1.5, scale=2.0), (0.0, np.inf)),
+        (Gumbel, dict(loc=0.0, scale=1.0), stats.gumbel_r(loc=0.0, scale=1.0), (-np.inf, np.inf)),
+        (Logistic, dict(loc=0.0, scale=1.0), stats.logistic(loc=0.0, scale=1.0), (-np.inf, np.inf)),
+        (StudentT, dict(df=4.0, loc=1.0, t_scale=2.0), stats.t(df=4.0, loc=1.0, scale=2.0),
+         (-np.inf, np.inf)),
     ]
 
     @pytest.mark.parametrize("cls,kwargs,ref,support", _FAMILIES)
@@ -144,14 +162,17 @@ class TestCatalogFamilies:
         assert not p.has_bounded_support and p.has_prior
         np.testing.assert_allclose(p.support(), support)
 
+    # The heavy-tailed families have no finite mean; check the median (which they do have).
+    _NO_FINITE_MEAN = (Cauchy, HalfCauchy)
+
     @pytest.mark.parametrize("cls,kwargs,ref,_support", _FAMILIES)
     def test_rvs_mean_matches_scipy(self, cls, kwargs, ref, _support):
         rng = np.random.default_rng(0)
         p = cls(**kwargs)
         xs = np.array([p.rvs(rng) for _ in range(40000)])
-        # Cauchy has no finite mean; check the median instead (it has one).
-        stat = np.median if cls is Cauchy else np.mean
-        assert stat(xs) == pytest.approx(float(ref.median() if cls is Cauchy else ref.mean()),
+        use_median = cls in self._NO_FINITE_MEAN
+        stat = np.median if use_median else np.mean
+        assert stat(xs) == pytest.approx(float(ref.median() if use_median else ref.mean()),
                                          abs=0.1)
 
     @pytest.mark.parametrize("keyword,p1,p2,cls", [
@@ -160,6 +181,13 @@ class TestCatalogFamilies:
         ('exponential_var', 0.5, None, Exponential),
         ('chisquare_var', 4.0, None, ChiSquare),
         ('rayleigh_var', 1.5, None, Rayleigh),
+        ('half_normal_var', 2.0, None, HalfNormal),
+        ('half_cauchy_var', 1.5, None, HalfCauchy),
+        ('beta_var', 2.0, 5.0, Beta),
+        ('inv_gamma_var', 3.0, 2.0, InvGamma),
+        ('weibull_var', 1.5, 2.0, Weibull),
+        ('gumbel_var', 0.0, 1.0, Gumbel),
+        ('logistic_var', 0.0, 1.0, Logistic),
     ])
     def test_build_prior_resolves_keyword(self, keyword, p1, p2, cls):
         # The registry-derived keyword map resolves each family (linear), and one-parameter
@@ -167,6 +195,50 @@ class TestCatalogFamilies:
         prior, scale = build_prior(keyword, p1, p2)
         assert isinstance(prior, cls)
         assert scale is LINEAR
+
+
+class TestThreeParameterFamily:
+    """The student_t family exercises the three-parameter carrier extension (ADR-0057, #438).
+
+    A useful Student-t prior wants ``df`` (tail heaviness) AND ``location`` AND ``scale``, three
+    numbers, where every other family takes at most two. ``build_prior`` carries the third value
+    in ``p3``, which the family ``build`` classmethods accept (trailing-optional) and only
+    student_t reads. Because the legacy positional ``*_var`` grammar carries at most two numbers,
+    a ``n_params >= 3`` family is reachable only through the new-era ``parameter:`` record, so
+    ``var_keyword_grammar`` omits its keyword (the config-level record path is oracled in
+    test_config_class.py)."""
+
+    def test_build_prior_carries_p3(self):
+        ref = stats.t(df=4.0, loc=1.0, scale=2.0)
+        prior, scale = build_prior('student_t_var', 4.0, 1.0, 2.0)   # df, location, scale
+        assert isinstance(prior, StudentT)
+        assert scale is LINEAR
+        for q in (0.05, 0.25, 0.5, 0.75, 0.95):
+            u = float(ref.ppf(q))
+            assert prior.logpdf(u) == pytest.approx(float(ref.logpdf(u)))
+            assert prior.ppf(q) == pytest.approx(u)
+
+    def test_log_scale_keyword_resolves(self):
+        # The registry generates log/ln forms for every family, three-parameter included.
+        prior, scale = build_prior('logstudent_t_var', 3.0, 1.0, 0.5)
+        assert isinstance(prior, StudentT) and scale is LOG10
+
+    def test_freeparameter_p3_round_trips(self):
+        ref = stats.t(df=4.0, loc=1.0, scale=2.0)
+        fp = pset.FreeParameter('s__FREE', 'student_t_var', 4.0, 1.0, p3=2.0)
+        assert fp.p3 == 2.0
+        assert fp.prior_logpdf(1.0) == pytest.approx(float(ref.logpdf(1.0)))
+        # set_value reconstructs the parameter; p3 must survive (else the prior is rebuilt wrong).
+        assert fp.set_value(0.5).p3 == 2.0
+
+    def test_excluded_from_positional_grammar(self):
+        # n_params >= 3 families get no positional *_var keyword (record-only, ADR-0057).
+        bounded, unbounded, one_param = priors.var_keyword_grammar()
+        all_positional = set(bounded) | set(unbounded) | set(one_param)
+        assert 'student_t_var' not in all_positional
+        assert 'logstudent_t_var' not in all_positional
+        # ...but it is still in the keyword map, so the record path resolves it.
+        assert 'student_t_var' in priors.PRIOR_KEYWORD_MAP
 
 
 class TestNoPrior:

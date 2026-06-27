@@ -1795,7 +1795,7 @@ class FreeParameter:
 
     def __init__(self, name, type, p1, p2, value=None, bounded=True, lb=None, ub=None,
                  initialization_distribution=INITIALIZATION_PRIOR,
-                 initialization_lb=None, initialization_ub=None):
+                 initialization_lb=None, initialization_ub=None, p3=None):
         """
         Initializes a FreeParameter object based on information parsed from the configuration file
 
@@ -1807,6 +1807,11 @@ class FreeParameter:
         :type p1: float
         :param p2: The second value governing the parameter (upper bound or standard deviation or step size)
         :type p2: float
+        :param p3: The third distribution parameter, used only by a three-parameter prior
+         family (student_t's scale, after df/location -- ADR-0057). ``None`` for the one- and
+         two-parameter families and the no-prior carriers. Such families are authored only
+         through the new-era ``parameter:`` record (no legacy positional form).
+        :type p3: float
         :param value: The parameter's numerical value
         :type value: float
         :param bounded: Determines whether the parameter should be bounded after initial sampling
@@ -1830,6 +1835,7 @@ class FreeParameter:
         self.type = type
         self.p1 = p1
         self.p2 = p2
+        self.p3 = p3
         # The truncation box (in theta) requested for an unbounded-support family,
         # preserved verbatim so set_value can reconstruct the parameter (ADR-0020).
         self.trunc_lb = lb
@@ -1850,7 +1856,7 @@ class FreeParameter:
         # The prior (distribution family in sampling space u) and the scale
         # (theta<->u transform) are resolved from the legacy *_var keyword via the
         # registry-derived map -- a behavior-preserving split (ADR-0010, M2.3).
-        self._prior, self._scale = build_prior(type, p1, p2)
+        self._prior, self._scale = build_prior(type, p1, p2, p3)
 
         if self._prior.has_bounded_support:
             # Uniform: the bounds are p1/p2 in theta; the reflecting box is gated by
@@ -1974,7 +1980,7 @@ class FreeParameter:
                              bounded=self.bounded, lb=self.trunc_lb, ub=self.trunc_ub,
                              initialization_distribution=self.initialization_distribution,
                              initialization_lb=self.initialization_lb,
-                             initialization_ub=self.initialization_ub)
+                             initialization_ub=self.initialization_ub, p3=self.p3)
 
     def _bound_to_u(self, theta):
         """Map a theta box-edge to sampling space ``u``, mapping an open side to
@@ -2202,8 +2208,8 @@ class FreeParameter:
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
-            return (self.name, self.type, self.value, self.p1, self.p2) == \
-                   (other.name, other.type, other.value, other.p1, other.p2)
+            return (self.name, self.type, self.value, self.p1, self.p2, self.p3) == \
+                   (other.name, other.type, other.value, other.p1, other.p2, other.p3)
         return False
 
     def __lt__(self, other):

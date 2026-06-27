@@ -23,6 +23,6 @@ class Cauchy(FrozenPrior):
         self.frozen = stats.cauchy(loc=loc, scale=scale)
 
     @classmethod
-    def build(cls, p1, p2, scale):
+    def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(location, scale)`` -- given in-scale, untransformed."""
         return cls(loc=p1, scale=p2)

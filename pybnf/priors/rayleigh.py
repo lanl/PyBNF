@@ -23,6 +23,6 @@ class Rayleigh(FrozenPrior):
         self.frozen = stats.rayleigh(scale=ray_scale)
 
     @classmethod
-    def build(cls, p1, p2, scale):
-        """Build from config ``(scale,)`` -- one parameter; ``p2`` is unused."""
+    def build(cls, p1, p2, scale, p3=None):
+        """Build from config ``(scale,)`` -- one parameter; ``p2``/``p3`` are unused."""
         return cls(ray_scale=p1)

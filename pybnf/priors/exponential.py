@@ -24,6 +24,6 @@ class Exponential(FrozenPrior):
         self.frozen = stats.expon(scale=exp_scale)
 
     @classmethod
-    def build(cls, p1, p2, scale):
-        """Build from config ``(scale,)`` -- one parameter; ``p2`` is unused."""
+    def build(cls, p1, p2, scale, p3=None):
+        """Build from config ``(scale,)`` -- one parameter; ``p2``/``p3`` are unused."""
         return cls(exp_scale=p1)

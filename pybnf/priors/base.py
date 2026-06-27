@@ -36,19 +36,24 @@ class Prior(ABC):
     has_bounded_support = False
     #: The family's natural lower support endpoint in sampling space ``u`` (the lower
     #: edge of ``support()``, a family constant independent of the distribution's
-    #: parameters). ``-inf`` for the doubly-unbounded families; the half-bounded
-    #: families (gamma/exponential/chisquare/rayleigh) override to ``0.0``. The
-    #: owning ``FreeParameter``'s ``Scale.inverse`` maps it to the theta-space floor
-    #: a one-sided truncation measures bounds against (ADR-0047).
+    #: parameters). ``-inf`` for the doubly-unbounded families; the positive-support
+    #: families (gamma/exponential/chisquare/rayleigh, the half-* scale priors,
+    #: inv_gamma/weibull, and beta's ``[0,1]``) override to ``0.0``. The owning
+    #: ``FreeParameter``'s ``Scale.inverse`` maps it to the theta-space floor a one-sided
+    #: truncation measures bounds against (ADR-0047).
     support_lo_u = -np.inf
-    #: How many config numbers the family's ``*_var`` keyword takes (``p1 p2`` for the
-    #: location/scale/bounds families; the one-parameter exponential/chisquare/rayleigh
-    #: override to 1, so the grammar admits a single number -- ADR-0010/#417).
+    #: How many config numbers the family's parameterization takes -- ``2`` for the
+    #: location/scale/bounds families; the one-parameter families (exponential/chisquare/
+    #: rayleigh, the half-* scale priors) override to ``1`` so the positional grammar admits a
+    #: single number (ADR-0010/#417); the three-parameter families (student_t) override to
+    #: ``3``. A ``n_params >= 3`` family is authored only through the new-era ``parameter:``
+    #: record -- the legacy positional ``*_var`` grammar carries at most two numbers, so
+    #: ``var_keyword_grammar`` omits it (ADR-0057).
     n_params = 2
     #: The config field names for the family's distribution parameters, in ``build()`` order
     #: -- the new-era ``parameter:`` record names each one (ADR-0043), so a positional
     #: ``p1 p2`` becomes ``mean: .. , sd: ..``. Concrete families override; the length must
-    #: match ``n_params``.
+    #: match ``n_params`` (the record builds ``p1``/``p2``/``p3`` from the first three).
     field_names = ('p1', 'p2')
     #: The underlying scipy frozen distribution, or ``None``.
     frozen = None
@@ -114,8 +119,8 @@ class NoPrior(Prior):
     frozen = None
 
     @classmethod
-    def build(cls, p1, p2, scale):
-        """Factory matching the family ``build`` signature; ``p1``/``p2``/``scale``
+    def build(cls, p1, p2, scale, p3=None):
+        """Factory matching the family ``build`` signature; ``p1``/``p2``/``p3``/``scale``
         are ignored -- a no-prior parameter carries only a start value."""
         return cls()
 

@@ -23,6 +23,6 @@ class ChiSquare(FrozenPrior):
         self.frozen = stats.chi2(df=dof)
 
     @classmethod
-    def build(cls, p1, p2, scale):
-        """Build from config ``(dof,)`` -- one parameter; ``p2`` is unused."""
+    def build(cls, p1, p2, scale, p3=None):
+        """Build from config ``(dof,)`` -- one parameter; ``p2``/``p3`` are unused."""
         return cls(dof=p1)

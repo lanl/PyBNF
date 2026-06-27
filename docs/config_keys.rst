@@ -542,8 +542,38 @@ Parameter and Model Specification
   the base 10 logarithm of the mean, and the base 10 logarithm of the standard deviation
 
   Example:
-  
+
     * ``lognormal_var = l__FREE 1 0.1``
+
+**Additional prior families**
+  Beyond the four above, PyBNF ships a catalog of single- and two-parameter ``scipy.stats``-backed
+  prior families, each with a ``<family>_var`` keyword (and ``log<family>_var`` for the same prior in
+  base-10 log space). The value is the variable name followed by the family's parameters, **already in
+  the parameter's scale**:
+
+    * one-parameter — ``exponential`` (scale), ``chisquare`` (dof), ``rayleigh`` (scale),
+      ``half_normal`` (scale), ``half_cauchy`` (scale): e.g. ``half_normal_var = sigma__FREE 2``
+    * two-parameter — ``cauchy`` (location, scale), ``laplace`` (location, scale), ``gamma`` (shape,
+      scale), ``inv_gamma`` (shape, scale), ``weibull`` (shape, scale), ``gumbel`` (location, scale),
+      ``logistic`` (location, scale), ``beta`` (alpha, beta): e.g. ``beta_var = frac__FREE 2 5``
+
+  ``half_normal`` / ``half_cauchy`` are the standard weakly-informative *scale* priors; ``beta`` is for
+  a fraction or probability on ``[0, 1]``; ``inv_gamma`` is the conjugate variance prior; ``student_t``
+  (below) is the heavy-tailed *robust* prior.
+
+**student_t** (new-era ``parameter:`` record only)
+  The Student-t prior is parameterized by **three** numbers — ``df`` (degrees of freedom; small values
+  give fatter tails, ``df → ∞`` approaches a Normal), ``location``, and ``scale`` — one more than the
+  positional ``*_var`` grammar can carry. It is therefore declared with the new-era labeled
+  ``parameter:`` record (requires :ref:`edition <edition>` ``>= 2``), which names every field:
+
+    * ``parameter: x__FREE, prior: student_t, df: 4, location: 0, scale: 2.5``
+    * ``parameter: k__FREE, prior: student_t, parameter_scale: log10, df: 3, location: 1, scale: 0.5, lower: 0.1, upper: 100``
+
+  (A family's own ``scale`` field is its distribution parameter, distinct from the record's
+  ``parameter_scale`` sampling-space transform.) Every family above is *also* expressible through this
+  record form (``prior: <family>``, with the family's parameters as named fields); the positional
+  ``*_var`` keyword is the legacy shorthand for the one- and two-parameter families.
 
 
 The following two keys (``var`` and ``logvar``) are the single-value start point used by the start-point optimizers —

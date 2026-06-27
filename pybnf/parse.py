@@ -330,8 +330,10 @@ def parse(s):
          | (obs_formula_kw + colon - obs_formula)) - comment
 
     # new-era free-parameter record (ADR-0043) -- every part of the line is named:
-    #   parameter: <id>[, prior: <family>][, scale: lin|log10][, <field>: <num> ...]
+    #   parameter: <id>[, prior: <family>][, parameter_scale: lin|log10|ln][, <field>: <num> ...]
     #             [, lower: <num>, upper: <num>][, initial_value: <num>]
+    # (``parameter_scale`` is the sampling-space transform; a family's own ``scale`` field, e.g.
+    #  cauchy/gamma/student_t, is a distinct distribution parameter -- no collision.)
     # The fully-labeled replacement for the legacy positional ``<family>_var = id p1 p2``
     # (which stays, edition-gated): no positional numbers, the family names its own params
     # (normal -> mean/sd, ...), bounds are named lower/upper, and the prior-truncation box of

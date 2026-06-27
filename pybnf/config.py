@@ -1933,12 +1933,16 @@ class Configuration:
         self._reject_extra_fields(pid, fields, f"prior '{prior_name}'")
         p1 = params[0]
         p2 = params[1] if len(fam.field_names) >= 2 else None
+        # A three-parameter family (student_t, ADR-0057) carries its third value in p3;
+        # field_names ordered it last (df/location/scale -> p1/p2/p3). The carrier and
+        # build_prior pass it through; it is None for the one- and two-parameter families.
+        p3 = params[2] if len(fam.field_names) >= 3 else None
         # lower/upper truncate an unbounded-support family to a reflecting box: two finite
         # walls (two-sided, ADR-0020) or one finite wall + an infinity (half-bounded,
         # ADR-0047). The graded floor rule warns/errors on a sub-floor lower bound first.
         lower, upper = self._graded_truncation_bounds(pid, lower, upper, fam, _scale)
         return FreeParameter(pid, keyword, p1, p2, lb=lower, ub=upper, value=initial_value,
-                             initialization_distribution=initialization_distribution)
+                             initialization_distribution=initialization_distribution, p3=p3)
 
     @staticmethod
     def _require_finite_box(pid, lower, upper, is_log, where):
