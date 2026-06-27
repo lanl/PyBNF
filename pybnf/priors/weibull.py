@@ -21,9 +21,26 @@ class Weibull(FrozenPrior):
     field_names = ('shape', 'scale')
 
     def __init__(self, shape, wb_scale):
+        self.shape = shape
+        self.wb_scale = wb_scale
         self.frozen = stats.weibull_min(c=shape, scale=wb_scale)
 
     @classmethod
     def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(shape, scale)`` -- given in-scale, untransformed."""
         return cls(shape=p1, wb_scale=p2)
+
+    def logpdf_jax(self, u):
+        """The Weibull log-density in JAX (ADR-0059), oracle-equal to the scipy
+        ``frozen.logpdf`` (``weibull_min``) on ``(0, inf)``:
+        ``log c - c log(scale) + (c-1) log u - (u/scale)^c`` with ``c = shape``. Both
+        ``log u`` and the fractional power ``(u/scale)^c`` are undefined for
+        ``u <= 0``, so the safe-``u`` double-``where`` evaluates at ``1.0`` outside
+        and masks to ``-inf``, keeping ``jax.grad`` finite (``0``) there (ADR-0059
+        item 4). HMC at the ``u=0`` boundary awaits item 5's bijection."""
+        import jax.numpy as jnp
+        c, lam = self.shape, self.wb_scale
+        inside = u > 0.0
+        su = jnp.where(inside, u, 1.0)
+        val = jnp.log(c) - c * jnp.log(lam) + (c - 1.0) * jnp.log(su) - (su / lam) ** c
+        return jnp.where(inside, val, -jnp.inf)

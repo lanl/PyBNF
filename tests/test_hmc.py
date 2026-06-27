@@ -183,6 +183,53 @@ def test_hmc_recovers_banana_moments(tmp_path):
     assert sum(alg.divergences) == 0, 'clean reference must be divergence-free'
 
 
+@pytest.mark.parametrize('var_type,loc,scale,true_mean,true_var', [
+    # logistic: mean = loc, var = pi^2 s^2 / 3
+    ('logistic_var', 2.0, 0.7, 2.0, np.pi ** 2 * 0.7 ** 2 / 3.0),
+    # gumbel_r: mean = loc + euler_gamma * s, var = pi^2 s^2 / 6
+    ('gumbel_var', -1.0, 0.9, -1.0 + np.euler_gamma * 0.9, np.pi ** 2 * 0.9 ** 2 / 6.0),
+])
+def test_hmc_recovers_informative_nonnormal_prior(tmp_path, var_type, loc, scale,
+                                                  true_mean, true_var):
+    """HMC composes the NEW per-family JAX prior densities into its target log-density
+    (ADR-0059 item 4) and recovers a NON-normal prior's closed-form moments end to end.
+
+    Construction of the oracle: a Gaussian target with a huge variance makes the NLL
+    effectively flat over the prior's mass, so the posterior IS the prior --
+    ``p(u) ∝ prior(u)`` -- and the recovered mean/variance must equal that prior's
+    analytic moments (logistic: mean=loc, var=π²s²/3; gumbel: mean=loc+γs, var=π²s²/6).
+    Both families are smooth, log-concave and real-support, so NUTS samples them
+    divergence-free -- this exercises ``logpdf_jax`` through ``_build_logdensity`` and
+    ``prior_logpdf_jax``, not just the unit oracle above. (Positive/bounded-support
+    families would sample as densities here too, but HMC quality at their hard support
+    edge awaits the item-5 bijection, so the recovery oracle uses real-support priors.)"""
+    # 1-D near-flat likelihood (variance 1e6): the prior dominates the posterior.
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0], [1.0e6]))
+    conf = H.make_config(tmp_path, 'hmc', tgt, exp, 1, var_type=var_type,
+                         bounds=(loc, scale), population_size=4, num_warmup=1000,
+                         num_samples=2500, max_iterations=2500, random_seed=20260627)
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 1)
+    assert samples.shape[0] == conf.config['population_size'] * conf.config['num_samples']
+    assert np.all(np.isfinite(samples))
+
+    np.testing.assert_allclose(samples.mean(axis=0)[0], true_mean, atol=0.12)
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1)[0], true_var, rtol=0.15)
+
+    # Smooth unimodal prior -> HMC's own reliability gate certifies the run: well-mixed
+    # (R-hat ~ 1) with healthy ESS. A skewed tail (gumbel) can still trip a handful of
+    # divergences at the default step size, so the gate here is a small divergent
+    # FRACTION, not exactly zero (the strict zero-divergence certification is the
+    # banana test's job, with its Stan-tight target_accept).
+    rhat = alg.compute_rhat()
+    bulk_ess, _tail = alg.compute_ess()
+    assert rhat is not None and np.nanmax(rhat) < 1.05
+    assert np.nanmin(bulk_ess) > 400
+    assert sum(alg.divergences) < 0.01 * samples.shape[0]
+
+
 def test_hmc_same_seed_reproduces_samples(tmp_path):
     """Reproducibility from the resolved seed — the per-chain Generator seeds the JAX PRNG,
     so the same ``random_seed`` writes byte-identical draws (the samplers' workflow guarantee)."""
@@ -359,6 +406,86 @@ def test_uniform_logpdf_jax_matches_scipy_inside_and_walls():
     # Outside the box the JAX density is -inf, matching scipy's out-of-support logpdf.
     assert float(p.logpdf_jax(5.0)) == -np.inf
     assert float(p.logpdf_jax(-5.0)) == -np.inf
+
+
+def _all_prior_family_instances():
+    """One concrete instance of every edition-2 prior family (ADR-0059 item 4).
+
+    Construction is scipy-only (no jax), so this is safe to evaluate at parametrize
+    collection time even when the pybnf[jax] extra is absent; the jax import lives in
+    the test body, under the module skip."""
+    from pybnf.priors.beta import Beta
+    from pybnf.priors.cauchy import Cauchy
+    from pybnf.priors.chisquare import ChiSquare
+    from pybnf.priors.exponential import Exponential
+    from pybnf.priors.gamma import Gamma
+    from pybnf.priors.gumbel import Gumbel
+    from pybnf.priors.half_cauchy import HalfCauchy
+    from pybnf.priors.half_normal import HalfNormal
+    from pybnf.priors.inv_gamma import InvGamma
+    from pybnf.priors.laplace import Laplace
+    from pybnf.priors.logistic import Logistic
+    from pybnf.priors.normal import Normal
+    from pybnf.priors.rayleigh import Rayleigh
+    from pybnf.priors.student_t import StudentT
+    from pybnf.priors.uniform import Uniform
+    from pybnf.priors.weibull import Weibull
+    return [
+        Normal(loc=0.7, sigma=1.3),
+        Uniform(lo=-2.0, hi=3.0),
+        Laplace(loc=0.5, b=1.2),
+        Cauchy(loc=-0.3, scale=0.8),
+        Gamma(shape=2.5, gamma_scale=1.3),
+        Exponential(exp_scale=0.7),
+        ChiSquare(dof=3.0),
+        Rayleigh(ray_scale=1.1),
+        StudentT(df=4.0, loc=0.2, t_scale=1.5),
+        HalfNormal(hn_scale=2.0),
+        HalfCauchy(hc_scale=1.5),
+        Beta(alpha=2.0, beta=3.0),
+        InvGamma(shape=3.0, ig_scale=2.0),
+        Weibull(shape=1.7, wb_scale=1.4),
+        Gumbel(loc=0.3, scale=0.9),
+        Logistic(loc=-0.2, scale=1.1),
+    ]
+
+
+@pytest.mark.parametrize('prior', _all_prior_family_instances(),
+                         ids=lambda p: type(p).__name__)
+def test_family_logpdf_jax_matches_scipy_and_grad_is_finite(prior):
+    """Every edition-2 family's hand-written ``logpdf_jax`` is oracle-equal to its
+    scipy ``logpdf`` (the sampler-of-record), returns ``-inf`` past any finite support
+    edge, and has a FINITE ``jax.grad`` both inside and outside the support (ADR-0059
+    item 4).
+
+    The grad-outside check is the load-bearing one: a naive ``where(inside, real, -inf)``
+    over a bounded/half-line support gives a NaN gradient outside it (the jax where-grad
+    rule taints the masked branch), which derails NUTS leapfrog trajectories that step
+    out of support. The families guard it with the safe-``u`` double-``where``; this test
+    is what proves the guard holds for all of them, not just the two hand-checked ones."""
+    import jax
+    frozen = prior.frozen
+    lo, hi = frozen.support()
+
+    # In-support points spanning the bulk (scipy ppf of evenly-spaced quantiles).
+    inside = frozen.ppf(np.linspace(0.05, 0.95, 11))
+    got = np.array([float(prior.logpdf_jax(float(u))) for u in inside])
+    want = np.array([float(prior.logpdf(float(u))) for u in inside])
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-5)
+
+    # Just past each FINITE support edge the JAX density is -inf (matches scipy).
+    outside = []
+    if np.isfinite(lo):
+        outside.append(float(lo) - 1.0)
+    if np.isfinite(hi):
+        outside.append(float(hi) + 1.0)
+    for u in outside:
+        assert float(prior.logpdf_jax(float(u))) == -np.inf
+
+    grad = jax.grad(lambda x: prior.logpdf_jax(x))
+    for u in list(inside) + outside:
+        assert np.isfinite(float(grad(float(u)))), \
+            f'{type(prior).__name__} has a non-finite grad at u={u}'
 
 
 # --------------------------------------------------------------------------- #

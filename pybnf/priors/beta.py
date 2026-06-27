@@ -28,9 +28,28 @@ class Beta(FrozenPrior):
     field_names = ('alpha', 'beta')
 
     def __init__(self, alpha, beta):
+        self.alpha = alpha
+        self.beta = beta
         self.frozen = stats.beta(a=alpha, b=beta)
 
     @classmethod
     def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(alpha, beta)`` -- given in-scale, untransformed."""
         return cls(alpha=p1, beta=p2)
+
+    def logpdf_jax(self, u):
+        """The Beta log-density in JAX (ADR-0059), oracle-equal to the scipy
+        ``frozen.logpdf`` on ``(0, 1)``:
+        ``(alpha-1) log u + (beta-1) log(1-u) - betaln(alpha, beta)``. The bounded
+        ``[0, 1]`` support uses the safe-``u`` double-``where`` -- evaluate at the
+        in-support midpoint ``0.5`` outside, then mask -- so neither ``log u`` nor
+        ``log(1-u)`` ever sees an out-of-support argument and ``jax.grad`` stays
+        finite (``0``) outside (ADR-0059 item 4). HMC at the ``0``/``1`` boundaries
+        awaits item 5's bijection."""
+        import jax.numpy as jnp
+        from jax.scipy.special import betaln
+        al, be = self.alpha, self.beta
+        inside = (u > 0.0) & (u < 1.0)
+        su = jnp.where(inside, u, 0.5)
+        val = (al - 1.0) * jnp.log(su) + (be - 1.0) * jnp.log1p(-su) - betaln(al, be)
+        return jnp.where(inside, val, -jnp.inf)

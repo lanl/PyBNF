@@ -20,9 +20,20 @@ class Gumbel(FrozenPrior):
     field_names = ('location', 'scale')
 
     def __init__(self, loc, scale):
+        self.loc = loc
+        self.scale = scale
         self.frozen = stats.gumbel_r(loc=loc, scale=scale)
 
     @classmethod
     def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(location, scale)`` -- given in-scale, untransformed."""
         return cls(loc=p1, scale=p2)
+
+    def logpdf_jax(self, u):
+        """The Gumbel (right/maximum) log-density in JAX (ADR-0059), oracle-equal to
+        the scipy ``frozen.logpdf``: ``-log(scale) - z - exp(-z)`` with
+        ``z = (u - loc)/scale``. Support is all of R (no wall) and the density is
+        smooth, so ``jax.grad`` of the composed target is well-defined."""
+        import jax.numpy as jnp
+        z = (u - self.loc) / self.scale
+        return -jnp.log(self.scale) - z - jnp.exp(-z)

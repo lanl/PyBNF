@@ -24,9 +24,19 @@ class Laplace(FrozenPrior):
 
     def __init__(self, loc, b):
         # b is the Laplace scale (diversity) parameter, i.e. scipy's `scale`.
+        self.loc = loc
+        self.b = b
         self.frozen = stats.laplace(loc=loc, scale=b)
 
     @classmethod
     def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(location, b)`` -- given in-scale, untransformed."""
         return cls(loc=p1, b=p2)
+
+    def logpdf_jax(self, u):
+        """The Laplace log-density in JAX (ADR-0059), oracle-equal to the scipy
+        ``frozen.logpdf``: ``-|u - loc|/b - log(2b)``. Support is all of R, so there
+        is no ``-inf`` wall; the ``|.|`` kink at ``u == loc`` is a measure-zero point
+        where ``jax.grad`` takes a finite subgradient, so NUTS is unaffected."""
+        import jax.numpy as jnp
+        return -jnp.abs(u - self.loc) / self.b - jnp.log(2.0 * self.b)

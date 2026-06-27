@@ -32,6 +32,9 @@ class StudentT(FrozenPrior):
     field_names = ('df', 'location', 'scale')
 
     def __init__(self, df, loc, t_scale):
+        self.df = df
+        self.loc = loc
+        self.t_scale = t_scale
         self.frozen = stats.t(df=df, loc=loc, scale=t_scale)
 
     @classmethod
@@ -42,3 +45,17 @@ class StudentT(FrozenPrior):
         ``p3 = scale``. ``scale`` is the sampling-space :class:`~pybnf.priors.Scale` transform,
         not the distribution's scale (which is ``p3``)."""
         return cls(df=p1, loc=p2, t_scale=p3)
+
+    def logpdf_jax(self, u):
+        """The Student-t log-density in JAX (ADR-0059), oracle-equal to the scipy
+        ``frozen.logpdf``: ``gammaln((df+1)/2) - gammaln(df/2) - 0.5 log(df pi)
+        - log(scale) - 0.5 (df+1) log(1 + z^2/df)`` with ``z = (u - loc)/scale``.
+        Support is all of R (no wall) and the density is smooth, so ``jax.grad`` of
+        the composed target is well-defined."""
+        import jax.numpy as jnp
+        from jax.scipy.special import gammaln
+        df = self.df
+        z = (u - self.loc) / self.t_scale
+        return (gammaln((df + 1.0) / 2.0) - gammaln(df / 2.0)
+                - 0.5 * jnp.log(df * jnp.pi) - jnp.log(self.t_scale)
+                - 0.5 * (df + 1.0) * jnp.log1p(z * z / df))

@@ -84,19 +84,18 @@ class Prior(ABC):
 
         The gradient-based reference sampler (``job_type = hmc``) composes its
         target log-density entirely from these per-family JAX logpdfs plus the
-        model's JAX NLL, so ``jax.grad`` differentiates it. The full 16-family
-        mapping is the ADR's plan; this first HMC slice (#425) implements only
-        ``normal``/``uniform`` (the families the closed-form-truth benchmark
-        targets use) and ``NoPrior``. Every other family lands here and raises a
-        pointed error rather than silently producing a wrong target -- a later
-        slice fills the mapping in and oracle-checks each against this scipy
-        ``logpdf``. ``u`` is a JAX scalar; the return is a JAX scalar."""
+        model's JAX NLL, so ``jax.grad`` differentiates it. Every family in the
+        edition-2 catalog overrides this with a hand-written JAX density,
+        oracle-checked against its scipy ``logpdf`` (ADR-0059 item 4), so this base
+        implementation is the fallback for a family that has not supplied one -- it
+        raises a pointed error rather than silently producing a wrong target. ``u``
+        is a JAX scalar; the return is a JAX scalar."""
         raise PybnfError(
-            "Prior family %r has no JAX log-density yet, so it cannot be used with "
-            "job_type = hmc (ADR-0059). This first HMC slice supports only the "
-            "'normal' and 'uniform' prior families; the full catalog is a later "
-            "slice. Use a normal_var / uniform_var (or loguniform/lognormal) prior, "
-            "or run a gradient-free sampler (am / dream / p_dream)."
+            "Prior family %r has no JAX log-density (logpdf_jax), so it cannot be "
+            "used with job_type = hmc (ADR-0059). The edition-2 prior catalog is "
+            "fully mapped to JAX; this error means a custom/unregistered family was "
+            "supplied -- implement its logpdf_jax (oracle-checked against its scipy "
+            "logpdf), or run a gradient-free sampler (am / dream / p_dream)."
             % type(self).__name__)
 
 

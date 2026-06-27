@@ -73,6 +73,27 @@ class TruncatedPrior(Prior):
             return -np.inf
         return self.inner.logpdf(u) - self._log_z
 
+    def logpdf_jax(self, u):
+        """JAX log-density of the truncated family (ADR-0059): the inner family's
+        ``logpdf_jax`` renormalized by ``-log Z`` inside ``[lo_u, hi_u]``, ``-inf``
+        outside -- the JAX peer of :meth:`logpdf`. The safe-``u`` double-``where``
+        evaluates the inner density at the box midpoint outside the box (a point
+        guaranteed in-support, since ``Z > 0`` requires the box to carry inner mass),
+        then masks, so ``jax.grad`` stays finite (``0``) outside the box (the same
+        autodiff guard the positive-support families use).
+
+        This is the *density* of the truncated prior; like :class:`Uniform`, the
+        first HMC slice samples it correctly only when the retained mass sits well
+        inside the bounds (so NUTS never reaches the walls). Divergence-free sampling
+        *at* a truncation boundary is the deferred unconstraining-bijection follow-on
+        (ADR-0059 item 5); until then HMC's own divergence/R-hat gate flags a run that
+        leans on the walls."""
+        import jax.numpy as jnp
+        inside = (u >= self.lo_u) & (u <= self.hi_u)
+        su = jnp.where(inside, u, 0.5 * (self.lo_u + self.hi_u))
+        val = self.inner.logpdf_jax(su) - self._log_z
+        return jnp.where(inside, val, -jnp.inf)
+
     def rvs(self, rng):
         """Draw one sample in the box by inverse-CDF: ``ppf(U)`` with ``U ~ U(0,1)``
         drawn from the caller's Generator (so the draw lands inside the box by

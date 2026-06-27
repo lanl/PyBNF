@@ -25,12 +25,15 @@ and NO change-of-variables Jacobian -- the prior is *defined* in ``u``, so this 
 the density ``am`` samples, now differentiated w.r.t. ``u`` (keeping HMC and the
 gradient-free samplers comparable on the *same* posterior).
 
-This first slice (the end-to-end spike) supports only the closed-form-truth oracle targets
-(``gaussian`` / ``rotated_gaussian``), the ``uniform``/``normal`` prior families, and the
-linear scale; everything else raises a pointed error. The deferred work -- the
-sympy->jax expression path, the full 16-family JAX prior catalog, the named-constant
-objective grammar, and the constrained-support unconstraining bijection -- is ADR-0059's
-later slices.
+It samples the closed-form-truth and stress-geometry menu targets (``gaussian`` /
+``rotated_gaussian`` / ``banana`` / ``multimodal``) and the **full edition-2 prior catalog**
+-- every family now supplies a hand-written, scipy-``logpdf``-oracle-checked
+``logpdf_jax`` (ADR-0059 item 4) -- on the linear scale. The work still deferred to later
+slices raises a pointed error rather than sampling a silently-wrong target: the sympy->jax
+expression path (BYO ``expression`` targets) and ``rotated_quartic``, the log-scale and
+constrained-support unconstraining bijections (item 5 -- the positive/bounded-support and
+truncated priors evaluate as correct *densities* now, but HMC quality *at* a hard support
+edge awaits the bijection, and the divergence/R-hat gate flags it honestly until then).
 
 ``jax``/``blackjax`` are the optional ``pybnf[jax]`` extra (ADR-0019): only this module (and
 the lazily-imported ``nll_jax`` / ``logpdf_jax``) touches them, and a missing install

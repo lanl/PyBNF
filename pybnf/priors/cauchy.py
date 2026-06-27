@@ -20,9 +20,21 @@ class Cauchy(FrozenPrior):
     field_names = ('location', 'scale')
 
     def __init__(self, loc, scale):
+        self.loc = loc
+        self.scale = scale
         self.frozen = stats.cauchy(loc=loc, scale=scale)
 
     @classmethod
     def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(location, scale)`` -- given in-scale, untransformed."""
         return cls(loc=p1, scale=p2)
+
+    def logpdf_jax(self, u):
+        """The Cauchy log-density in JAX (ADR-0059), oracle-equal to the scipy
+        ``frozen.logpdf``: ``-log(pi) - log(scale) - log(1 + z^2)`` with
+        ``z = (u - loc)/scale`` (``log1p`` for accuracy). Support is all of R (no
+        wall) and the density is smooth, so ``jax.grad`` of the composed target is
+        well-defined."""
+        import jax.numpy as jnp
+        z = (u - self.loc) / self.scale
+        return -jnp.log(jnp.pi) - jnp.log(self.scale) - jnp.log1p(z * z)

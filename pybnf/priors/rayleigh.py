@@ -20,9 +20,24 @@ class Rayleigh(FrozenPrior):
     field_names = ('scale',)
 
     def __init__(self, ray_scale):
+        self.ray_scale = ray_scale
         self.frozen = stats.rayleigh(scale=ray_scale)
 
     @classmethod
     def build(cls, p1, p2, scale, p3=None):
         """Build from config ``(scale,)`` -- one parameter; ``p2``/``p3`` are unused."""
         return cls(ray_scale=p1)
+
+    def logpdf_jax(self, u):
+        """The Rayleigh log-density in JAX (ADR-0059), oracle-equal to the scipy
+        ``frozen.logpdf`` on ``(0, inf)``:
+        ``log u - 2 log(scale) - u^2/(2 scale^2)``. The half-line support uses the
+        safe-``u`` double-``where`` so ``log u`` never sees ``u <= 0`` and
+        ``jax.grad`` stays finite (``0``) outside the support (ADR-0059 item 4); the
+        ``u=0`` boundary awaits item 5's bijection."""
+        import jax.numpy as jnp
+        sig = self.ray_scale
+        inside = u > 0.0
+        su = jnp.where(inside, u, 1.0)
+        val = jnp.log(su) - 2.0 * jnp.log(sig) - (su * su) / (2.0 * sig * sig)
+        return jnp.where(inside, val, -jnp.inf)
