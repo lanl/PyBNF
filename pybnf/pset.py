@@ -2104,6 +2104,17 @@ class FreeParameter:
             return -np.inf
         return float(self._prior.logpdf(self._scale.forward(value)))
 
+    def prior_logpdf_jax(self, u):
+        """JAX-traceable log prior density at a **sampling-space** value ``u`` (ADR-0059).
+
+        The JAX peer of :meth:`prior_logpdf`, used by the gradient-based ``hmc`` sampler.
+        It takes ``u`` directly (HMC samples in ``u``, where the prior is defined --
+        ADR-0010), so there is no ``theta -> u`` forward transform and no Jacobian here;
+        the family supplies the differentiable log-density via ``Prior.logpdf_jax``. A
+        no-prior carrier contributes ``0`` (``NoPrior.logpdf_jax``). Keeps the sampler off
+        the private ``_prior`` attribute, mirroring the numpy ``prior_logpdf``."""
+        return self._prior.logpdf_jax(u)
+
     @property
     def has_prior(self):
         """Whether this parameter has a proper prior distribution (False for the

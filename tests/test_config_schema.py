@@ -329,5 +329,5 @@ class TestRegistrySchemaSeam:
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
         assert migrated == {'pso', 'de', 'ade', 'ss', 'sim', 'powell', 'cmaes',
-                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream'}
+                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc'}
         assert FIT_TYPE_REGISTRY['check'].schema is None

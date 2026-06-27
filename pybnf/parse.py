@@ -35,7 +35,9 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'smooth_plot_points', 'output_inference_data',
                'parallelize_models', 'adaptive', 'continue_run',
                'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size', 'powell_max_iterations',
-               'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every', 'edition']
+               'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every', 'edition',
+               # HMC (job_type = hmc, ADR-0059): per-chain warmup/draw counts.
+               'num_warmup', 'num_samples']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
@@ -43,7 +45,9 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
                  'rhat_threshold', 'snooker_prob',
-                 'powell_step', 'powell_stop_tol', 'cmaes_sigma0', 'cmaes_stop_tol']
+                 'powell_step', 'powell_stop_tol', 'cmaes_sigma0', 'cmaes_stop_tol',
+                 # HMC (job_type = hmc, ADR-0059): NUTS dual-averaging target acceptance.
+                 'target_accept']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
 # The prior-family var keywords are derived from the registry (ADR-0010): each
 # family yields {base}_var (linear) + log{base}_var (log10). Bounded-support

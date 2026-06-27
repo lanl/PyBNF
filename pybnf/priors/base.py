@@ -79,6 +79,26 @@ class Prior(ABC):
     def support(self):
         """The ``(lo, hi)`` support in sampling space ``u`` (may be infinite)."""
 
+    def logpdf_jax(self, u):
+        """JAX-traceable log prior density at sampling-space ``u`` (ADR-0059).
+
+        The gradient-based reference sampler (``job_type = hmc``) composes its
+        target log-density entirely from these per-family JAX logpdfs plus the
+        model's JAX NLL, so ``jax.grad`` differentiates it. The full 16-family
+        mapping is the ADR's plan; this first HMC slice (#425) implements only
+        ``normal``/``uniform`` (the families the closed-form-truth benchmark
+        targets use) and ``NoPrior``. Every other family lands here and raises a
+        pointed error rather than silently producing a wrong target -- a later
+        slice fills the mapping in and oracle-checks each against this scipy
+        ``logpdf``. ``u`` is a JAX scalar; the return is a JAX scalar."""
+        raise PybnfError(
+            "Prior family %r has no JAX log-density yet, so it cannot be used with "
+            "job_type = hmc (ADR-0059). This first HMC slice supports only the "
+            "'normal' and 'uniform' prior families; the full catalog is a later "
+            "slice. Use a normal_var / uniform_var (or loguniform/lognormal) prior, "
+            "or run a gradient-free sampler (am / dream / p_dream)."
+            % type(self).__name__)
+
 
 class FrozenPrior(Prior):
     """A :class:`Prior` backed entirely by a ``scipy.stats`` frozen distribution in the
@@ -126,6 +146,13 @@ class NoPrior(Prior):
 
     def logpdf(self, u):
         return 0.0
+
+    def logpdf_jax(self, u):
+        """A no-prior carrier contributes ``0`` to the HMC target (ADR-0059), the
+        JAX peer of :meth:`logpdf`. Returned as a JAX scalar so it sums cleanly
+        with the family logpdfs without forcing a host/device transfer."""
+        import jax.numpy as jnp
+        return jnp.asarray(0.0)
 
     def rvs(self, rng):
         raise PybnfError("Parameter does not have a sampling distribution")

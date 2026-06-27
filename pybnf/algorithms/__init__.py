@@ -53,6 +53,10 @@ from .samplers.dream import DreamAlgorithm as DreamAlgorithm
 from .samplers.pdream import PDreamAlgorithm as PDreamAlgorithm
 from .samplers.basic_mcmc import BasicBayesMCMCAlgorithm as BasicBayesMCMCAlgorithm
 from .samplers.adaptive_mcmc import Adaptive_MCMC as Adaptive_MCMC
+# hmc (ADR-0059) is the gradient-based reference sampler; its module imports no jax at
+# import time (jax/blackjax load lazily on the run path), so registering it here is safe
+# without the optional pybnf[jax] extra installed.
+from .samplers.hmc import HMCSampler as HMCSampler
 # ModelCheck (fit_type 'check') is a utility run -- neither optimizer nor
 # sampler -- so it lives at the algorithms top level (model_check.py).
 from .model_check import ModelCheck as ModelCheck

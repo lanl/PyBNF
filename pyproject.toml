@@ -57,6 +57,21 @@ antimony = [
 petab = [
     "petab>=0.8,<1",
 ]
+# The gradient-based reference sampler (job_type = hmc, ADR-0059): blackjax NUTS on
+# the analytical model's JAX log-density, for evaluating PyBNF's gradient-free
+# samplers (am/dream/p_dream) against reference-grade NUTS. OPTIONAL runtime extra --
+# only the HMC path (pybnf.algorithms.samplers.hmc, plus the priors' logpdf_jax and
+# the analytical model's nll_jax) imports jax/blackjax, lazily, with a clear install
+# hint; core stays numpy/scipy (ADR-0019). A missing extra raises a pointed
+# PybnfError naming `pip install pybnf[jax]`, never a bare ImportError (the house
+# pattern, mirroring pybnf[petab]). HMC also needs the analytical-expression backend,
+# but the canned gaussian/rotated_gaussian targets used as the closed-form oracle are
+# hand-written in jax.numpy and need only this extra.
+jax = [
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "blackjax>=1.2",
+]
 # The ArviZ InferenceData bridge (pybnf.inference_data, ADR-0055): from_pybnf()
 # maps a finished MCMC run's Results/samples.txt onto an arviz.InferenceData so
 # PyBNF's posterior output is first-class in the ArviZ/bayesplot/loo ecosystem.
@@ -100,6 +115,14 @@ tests = [
     # the 0.x InferenceData and 1.x DataTree lines); CI exercises whichever resolves.
     "arviz>=0.17",
     "h5netcdf>=1",
+    # HMC reference sampler oracle (ADR-0059): tests/test_hmc.py runs blackjax NUTS on
+    # the analytical gaussian/rotated_gaussian targets and checks closed-form posterior
+    # moment recovery, so the gradient path is exercised in CI rather than skipped. The
+    # module guards on jax/blackjax importability (skipif), so a bare checkout still
+    # passes. Uncapped like the runtime extra.
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "blackjax>=1.2",
 ]
 
 [project.scripts]

@@ -42,3 +42,20 @@ class Uniform(Prior):
 
     def support(self):
         return (self.lo, self.hi)
+
+    def logpdf_jax(self, u):
+        """The uniform-box log-density in JAX (ADR-0059): the constant
+        ``-log(hi - lo)`` inside ``[lo, hi]`` (in sampling space ``u``), ``-inf``
+        outside. Both ``jnp.where`` branches are constant in ``u``, so the
+        derivative is exactly ``0`` inside the box and the ``-inf`` wall injects
+        no NaN gradient (the standard ``where`` autodiff pitfall is avoided because
+        neither branch depends on ``u``).
+
+        This first HMC slice supports the box prior as a *flat* prior over a wide
+        support -- the closed-form benchmark posteriors sit far inside the box, so
+        NUTS never reaches the walls. Divergence-free sampling *at* a constrained
+        boundary (the unconstraining bijection) is the deferred follow-on (ADR-0059
+        item 5)."""
+        import jax.numpy as jnp
+        inside = (u >= self.lo) & (u <= self.hi)
+        return jnp.where(inside, -jnp.log(self.hi - self.lo), -jnp.inf)

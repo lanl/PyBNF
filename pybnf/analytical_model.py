@@ -82,6 +82,48 @@ class AnalyticalModel(Model):
         m._pset = pset
         return m
 
+    def nll_jax(self):
+        """Return a JAX-traceable ``f(theta) -> NLL`` for this target (ADR-0059).
+
+        The gradient-based reference sampler (``job_type = hmc``) differentiates
+        this through ``jax.grad`` to drive blackjax NUTS. It is the JAX peer of
+        :meth:`_compute_nll` -- same closed form, same precomputed constants
+        (``_mean``/``_inv_var``/``_prec``), so the numpy ``execute()`` score path
+        and the JAX log-density share one source of truth. ``theta`` is a JAX
+        array of the parameter values in the order the sampler binds them.
+
+        This first HMC slice hand-writes only the two closed-form-truth oracle
+        targets -- ``gaussian`` (a diagonal quadratic form) and
+        ``rotated_gaussian`` (a full-precision quadratic form). The remaining
+        targets (banana / rotated_quartic / multimodal) and the BYO
+        ``expression`` sympy->jax lambdify path are later slices, so they raise a
+        pointed error here rather than silently differentiating nothing."""
+        import jax.numpy as jnp
+        if self.target_type == 'gaussian':
+            mean = jnp.asarray(self._mean)
+            inv_var = jnp.asarray(self._inv_var)
+
+            def nll(theta):
+                diff = theta - mean
+                return 0.5 * jnp.sum(diff * diff * inv_var)
+            return nll
+        if self.target_type == 'rotated_gaussian':
+            mean = jnp.asarray(self._mean)
+            prec = jnp.asarray(self._prec)
+
+            def nll(theta):
+                diff = theta - mean
+                return 0.5 * (diff @ prec @ diff)
+            return nll
+        from .printing import PybnfError
+        raise PybnfError(
+            "job_type = hmc has no JAX log-density for the analytical target %r yet "
+            "(ADR-0059). This first HMC slice supports only the closed-form 'gaussian' "
+            "and 'rotated_gaussian' targets (the analytic-truth oracle); banana, "
+            "rotated_quartic, multimodal, and bring-your-own 'expression' targets are a "
+            "later slice. Run a gradient-free sampler (am / dream / p_dream) on this "
+            "target instead." % self.target_type)
+
     def save(self, file_prefix, **kwargs):
         pass
 
