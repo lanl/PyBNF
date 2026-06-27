@@ -82,12 +82,11 @@ class TruncatedPrior(Prior):
         then masks, so ``jax.grad`` stays finite (``0``) outside the box (the same
         autodiff guard the positive-support families use).
 
-        This is the *density* of the truncated prior; like :class:`Uniform`, the
-        first HMC slice samples it correctly only when the retained mass sits well
-        inside the bounds (so NUTS never reaches the walls). Divergence-free sampling
-        *at* a truncation boundary is the deferred unconstraining-bijection follow-on
-        (ADR-0059 item 5); until then HMC's own divergence/R-hat gate flags a run that
-        leans on the walls."""
+        This is the *density* of the truncated prior; like :class:`Uniform`, the ``hmc``
+        sampler reparameterizes the box ``u = lo_u + (hi_u-lo_u) sigmoid(z)``
+        (:mod:`pybnf.priors.bijector`), so NUTS samples an unbounded ``z`` and a truncation
+        wall is unreachable -- the retained mass is sampled divergence-free even when it
+        leans against a bound (ADR-0059 item 5)."""
         import jax.numpy as jnp
         inside = (u >= self.lo_u) & (u <= self.hi_u)
         su = jnp.where(inside, u, 0.5 * (self.lo_u + self.hi_u))

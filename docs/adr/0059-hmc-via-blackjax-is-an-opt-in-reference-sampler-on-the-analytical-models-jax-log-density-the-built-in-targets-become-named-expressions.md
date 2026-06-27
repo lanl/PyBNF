@@ -106,12 +106,23 @@ sampling of constrained supports* is a separate concern (next).
 The positive-support families (`gamma`/`exponential`/`chisquare`/`rayleigh`/`weibull`/`inv_gamma`/the
 half-* priors), `beta`'s `[0,1]`, and explicit truncation (ADR-0047) are sampled by the gradient-free
 methods with **reflecting bounds** — a Metropolis device with no HMC analogue. NUTS at a `-inf` wall
-diverges. The correct fix is an **unconstraining bijection** (log / logit / softplus) so HMC samples
-an unbounded reparameterization; the families already expose `support()` / `support_lo_u` /
-`has_bounded_support`, which is exactly the information a support-aware bijector needs. The JAX logpdf
-mapping (item 4) is complete now; the **bijection layer is a bounded sub-decision** (Open questions) —
-the first pass supports unbounded and box priors (which the benchmark targets use) and errors clearly,
-not silently, on a constrained prior it cannot yet reparameterize.
+diverges. The fix is an **unconstraining bijection** so HMC samples an unbounded `z` and the target
+gains the change-of-variables term `log|b'(z)|`; `b(z)` lands strictly inside the open support for
+every finite `z`, so the `-inf` wall (and the divergence) is unreachable.
+
+**Resolved (shipped): the full bijection layer, keyed on `support()`.** Rather than a partial first
+pass that errors on the constrained families, HMC ships all three standard transforms at once
+(`pybnf/priors/bijector.py`): a finite-endpoint classification of `support()` selects identity
+(`(-∞,∞)`), `u = lo + exp(z)` (`(lo,∞)`, `log|b'| = z`), `u = hi − exp(z)` (`(-∞,hi)`), or
+`u = lo + (hi−lo)·sigmoid(z)` (`(lo,hi)`, `log|b'| = log(hi−lo) + logσ(z) + logσ(−z)`). The transform
+is a property of the support *shape*, not the family — so one support-keyed module (the `truncated.py`
+ethos) covers the whole catalog with no per-family code, completing item 4's densities to *samplable*.
+The **log-scale half** ships with it: `Scale.inverse_jax` (identity / `10**u` / `exp(u)`) makes the
+`u → θ` map JAX-traceable, so a `lognormal_var` (normal prior in `u`, identity bijection) and a
+`loguniform_var` (uniform box in `log10`-`u`, box bijection) sample cleanly. Diagnostics and the
+samples file report `u` (the gradient-free samplers' coordinate; the recorded `Ln_probability` is
+un-Jacobianed to `log π(u)`), and PyBNF's R̂/ESS are rank-normalized, hence invariant to the monotone
+`z ↔ u` map — so the unconstrained reparameterization is invisible to the comparison machinery.
 
 ### 6. The built-in target menu becomes named expressions with explicit constants
 
@@ -160,7 +171,8 @@ under evaluation use.
 - **Model layer** — `logdensity_jax()` on the BYO/analytical models (item 2): expression targets
   lambdify to JAX from the shared sympy expression; structured targets carry a small JAX impl.
 - **`pybnf/priors/`** — a `logpdf_jax(u)` per family (item 4), oracle-checked against the scipy `logpdf`;
-  a support-aware unconstraining bijection seam (item 5, bounded follow-on).
+  the support-aware unconstraining bijection (item 5, shipped as `bijector.py`, keyed on `support()`)
+  and the JAX-traceable `Scale.inverse_jax` for log-scaled parameters.
 - **`pybnf/config.py` / `pybnf/parse.py`** — the named-target-with-constants objective grammar (item 6,
   reusing the `noise_model` field grammar); constants echoed at run start.
 - **Dependencies** — `jax`, `jaxlib`, `blackjax` are a **new optional extra `pybnf[jax]`** (mirroring
@@ -198,9 +210,12 @@ under evaluation use.
 
 ## Open questions
 
-- **Constrained-support bijection (item 5):** the per-family support-aware unconstraining transform
-  (log / logit / softplus) and its Jacobian term; whether the first pass restricts to unbounded + box
-  priors and errors on the rest, or ships the bijection layer immediately.
+- **Constrained-support bijection (item 5):** ~~whether the first pass restricts to unbounded + box
+  priors and errors on the rest, or ships the bijection layer immediately.~~ **Resolved — ships the
+  full layer immediately** (item 5 above): a support-keyed `bijector.py` (log / logit / box-sigmoid,
+  with the log-scale `Scale.inverse_jax` half), so every family in the item-4 catalog samples
+  divergence-free, not just unbounded + box. The transform keys on `support()` finiteness, so it
+  needs no per-family code.
 - **blackjax adaptation defaults:** window length, target acceptance, diagonal vs dense mass matrix,
   number of chains/warmup — pick Stan-like defaults; expose a minimal knob set as method config keys
   (ADR-0013 schema).

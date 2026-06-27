@@ -35,6 +35,18 @@ class Scale:
         """Map a sampling-space value ``u`` back to a stored value ``theta``."""
         raise NotImplementedError
 
+    def inverse_jax(self, u):
+        """JAX-traceable peer of :meth:`inverse` (the ``u -> theta`` map, ADR-0059).
+
+        The gradient-based ``hmc`` sampler evaluates the model's NLL at
+        ``theta = scale.inverse(u)`` and needs that step inside the autodiff graph,
+        so a log-scaled parameter composes with NUTS. ``10.0 ** u`` already traces
+        under JAX, but ``np.exp`` / ``np.log10`` do not, so each scale supplies a
+        ``jnp`` peer. No change-of-variables Jacobian is added for this transform --
+        the prior is defined in ``u`` (ADR-0010), so ``theta`` enters only through the
+        likelihood. The default raises, mirroring :meth:`inverse`."""
+        raise NotImplementedError
+
 
 class Linear(Scale):
     is_log = False
@@ -44,6 +56,9 @@ class Linear(Scale):
         return theta
 
     def inverse(self, u):
+        return u
+
+    def inverse_jax(self, u):
         return u
 
 
@@ -57,6 +72,11 @@ class Log10(Scale):
     def inverse(self, u):
         return 10.0 ** u
 
+    def inverse_jax(self, u):
+        # 10.0 ** u traces unchanged under JAX (no jnp needed), and matches
+        # ``inverse`` bit-for-bit -- kept as an explicit peer for symmetry.
+        return 10.0 ** u
+
 
 class Ln(Scale):
     is_log = True
@@ -67,6 +87,10 @@ class Ln(Scale):
 
     def inverse(self, u):
         return np.exp(u)
+
+    def inverse_jax(self, u):
+        import jax.numpy as jnp
+        return jnp.exp(u)
 
 
 LINEAR = Linear()

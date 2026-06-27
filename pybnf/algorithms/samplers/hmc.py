@@ -17,23 +17,29 @@ writes the draws in the **standard samples format** so the ArviZ bridge (ADR-005
 LOO/WAIC sidecar machinery, and the rank-normalized split-R-hat / bulk-tail ESS diagnostics
 all work unchanged.
 
-It samples in sampling space ``u`` (ADR-0010), with target
+It samples an **unconstrained** ``z in R^d`` (ADR-0059 item 5), mapped to sampling space ``u``
+(ADR-0010) by a per-parameter support-aware bijection ``u = b(z)`` (:mod:`pybnf.priors.bijector`),
+with target
 
-    log pi(u) = sum_i prior_i.logpdf_jax(u_i)  +  ( -NLL( scale.inverse(u) ) )
+    log pi(z) = sum_i [ prior_i.logpdf_jax(b_i(z_i)) + log|b_i'(z_i)| ]  +  ( -NLL( scale.inverse(b(z)) ) )
 
-and NO change-of-variables Jacobian -- the prior is *defined* in ``u``, so this is exactly
-the density ``am`` samples, now differentiated w.r.t. ``u`` (keeping HMC and the
-gradient-free samplers comparable on the *same* posterior).
+The prior is *defined* in ``u`` (ADR-0010), so there is no ``theta <-> u`` Jacobian -- the only
+change-of-variables term is the unconstraining bijection's ``log|b'(z)|``. For an unbounded prior
+``b`` is the identity (``z == u``) and this is exactly the density ``am`` samples, now
+differentiated; for a positive/bounded/truncated prior ``b`` is a log/logit reparameterization that
+lands strictly inside the open support for every finite ``z``, so the ``-inf`` support wall (and the
+NUTS divergence it once caused) is unreachable. Diagnostics and the samples file report ``u`` (the
+recorded ``Ln_probability`` is un-Jacobianed back to ``log pi(u)``), so HMC stays comparable to the
+gradient-free samplers on the *same* posterior coordinate.
 
 It samples the closed-form-truth and stress-geometry menu targets (``gaussian`` /
-``rotated_gaussian`` / ``banana`` / ``multimodal``) and the **full edition-2 prior catalog**
--- every family now supplies a hand-written, scipy-``logpdf``-oracle-checked
-``logpdf_jax`` (ADR-0059 item 4) -- on the linear scale. The work still deferred to later
-slices raises a pointed error rather than sampling a silently-wrong target: the sympy->jax
-expression path (BYO ``expression`` targets) and ``rotated_quartic``, the log-scale and
-constrained-support unconstraining bijections (item 5 -- the positive/bounded-support and
-truncated priors evaluate as correct *densities* now, but HMC quality *at* a hard support
-edge awaits the bijection, and the divergence/R-hat gate flags it honestly until then).
+``rotated_gaussian`` / ``banana`` / ``multimodal``), the **full edition-2 prior catalog** -- every
+family supplies a hand-written, scipy-``logpdf``-oracle-checked ``logpdf_jax`` (ADR-0059 item 4),
+sampled divergence-free on *any* support via the bijection (item 5) -- and **log-scaled parameters**
+(``lognormal_var`` / ``loguniform_var``), whose ``u -> theta`` inverse traces through JAX
+(``Scale.inverse_jax``). The work still deferred to later slices raises a pointed error rather than
+sampling a silently-wrong target: the sympy->jax expression path (BYO ``expression`` targets) and
+``rotated_quartic``.
 
 ``jax``/``blackjax`` are the optional ``pybnf[jax]`` extra (ADR-0019): only this module (and
 the lazily-imported ``nll_jax`` / ``logpdf_jax``) touches them, and a missing install
@@ -47,6 +53,7 @@ import numpy as np
 from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...analytical_model import AnalyticalModel
 from ...printing import print0, print1, print2, PybnfError
+from ...priors import bijector_for_support
 from ...registry import register_fit_type
 
 # Preserve the shared sampler logging channel.
@@ -161,43 +168,41 @@ class HMCSampler(BayesianAlgorithm):
         coord_names = model.coordinate_order(var_names)
         return [var_names.index(cn) for cn in coord_names]
 
-    def _build_logdensity(self, jnp, nll_fn, coord_perm):
-        """Compose the JAX target ``log pi(u)`` HMC samples (ADR-0059).
+    def _build_logdensity(self, jnp, nll_fn, coord_perm, bijectors):
+        """Compose the JAX target ``log pi(z)`` HMC samples in the unconstrained space
+        (ADR-0059 items 3 + 5).
 
-        ``log pi(u) = sum_i prior_i.logpdf_jax(u_i) + (-NLL(scale.inverse(u)))``. The prior
-        is defined in ``u`` (ADR-0010), so there is no change-of-variables Jacobian -- this
-        is exactly the density the gradient-free samplers target, now differentiable.
+        ``log pi(z) = sum_i [prior_i.logpdf_jax(u_i) + log|b_i'(z_i)|] + (-NLL(scale.inverse(u)))``
+        with ``u_i = b_i(z_i)``. Three transforms compose, per parameter:
 
-        ``coord_perm`` reorders ``u`` (``self.variables`` order) into the target's coordinate
-        order before the NLL, so HMC binds parameters to coordinates by name exactly as the
-        score path does (:meth:`_coordinate_permutation`). The prior sum stays in
-        ``self.variables`` order (each ``prior_i`` already pairs with ``u_i`` by that order).
+        * ``u_i = bijectors[i].to_constrained_jax(z_i)`` -- the support-aware unconstraining
+          bijection (identity for an unbounded prior; log/logit for a positive/bounded/truncated
+          one), so NUTS samples an unbounded ``z`` and the ``-inf`` support wall is unreachable.
+          Its Jacobian ``log|b'(z)|`` is the *only* change-of-variables term (the prior is defined
+          in ``u``, ADR-0010, so there is no ``theta <-> u`` Jacobian).
+        * ``prior_i.logpdf_jax(u_i)`` -- the family log-density, in ``u`` where it is defined.
+        * ``theta_i = v.from_sampling_space_jax(u_i)`` -- the ``u -> theta`` scale inverse
+          (identity / ``10**u`` / ``exp(u)``), so a log-scaled parameter composes; ``theta`` enters
+          only through the likelihood.
 
-        This slice supports only the linear scale (``scale.inverse`` is the identity, so
-        ``theta = u``); a log-scaled parameter would need a JAX ``10**u`` / ``exp(u)`` and
-        its Jacobian, which is deferred, so it raises here. The per-family JAX prior gap is
-        caught by ``Prior.logpdf_jax`` (it raises for an unsupported family), surfaced
-        eagerly by the probe in :meth:`run`."""
-        log_scaled = [v.name for v in self.variables if v.log_space]
-        if log_scaled:
-            raise PybnfError(
-                "job_type = hmc supports only linearly-scaled parameters in this slice "
-                "(ADR-0059); parameter(s) %s are log-scaled. A log scale needs a "
-                "JAX-traceable 10**u / exp(u) inverse and its Jacobian, which is a later "
-                "slice. Declare them with a linear prior (uniform_var / normal_var) or run "
-                "a gradient-free sampler." % log_scaled)
-        priors = [self.prior.get(v.name) for v in self.variables]
+        ``coord_perm`` reorders ``theta`` (``self.variables`` order) into the target's coordinate
+        order before the NLL, so HMC binds parameters to coordinates by name exactly as the score
+        path does (:meth:`_coordinate_permutation`); the prior + Jacobian sums stay in
+        ``self.variables`` order (each pairs with ``z_i`` by that order). The per-family JAX prior
+        gap is caught by ``Prior.logpdf_jax`` (it raises for an unsupported family), surfaced eagerly
+        by the probe in :meth:`run`."""
         perm = jnp.asarray(coord_perm)
 
-        def logdensity_fn(u):
-            # Linear scale: theta == u. Prior contributions sum in u-space (self.variables
-            # order); the model's NLL is evaluated in theta-space -- reordered to the target's
-            # coordinate order by `perm` (bind-by-name) -- and negated into the log-density.
+        def logdensity_fn(z):
             lp = jnp.asarray(0.0)
-            for i, var in enumerate(priors):
-                if var is not None:
-                    lp = lp + var.prior_logpdf_jax(u[i])
-            return lp - nll_fn(u[perm])
+            thetas = []
+            for i, v in enumerate(self.variables):
+                b = bijectors[i]
+                u_i = b.to_constrained_jax(z[i])
+                lp = lp + b.logdet_jax(z[i]) + v.prior_logpdf_jax(u_i)
+                thetas.append(v.from_sampling_space_jax(u_i))
+            theta = jnp.stack(thetas)
+            return lp - nll_fn(theta[perm])
 
         return logdensity_fn
 
@@ -215,23 +220,29 @@ class HMCSampler(BayesianAlgorithm):
         model = self._resolve_analytical_model()
         nll_fn = model.nll_jax()                       # f(theta) -> NLL (pointed error if unsupported target)
         coord_perm = self._coordinate_permutation(model)
-        logdensity_fn = self._build_logdensity(jnp, nll_fn, coord_perm)
+        # One support-aware unconstraining bijector per parameter (ADR-0059 item 5): keyed on
+        # the prior's u-space support, so a positive/bounded/truncated prior is reparameterized
+        # onto the unbounded space NUTS samples and the -inf support wall is unreachable.
+        bijectors = [bijector_for_support(*v.prior_support()) for v in self.variables]
+        logdensity_fn = self._build_logdensity(jnp, nll_fn, coord_perm, bijectors)
 
         print2('Running Hamiltonian Monte Carlo (blackjax NUTS) on %i independent chain(s): '
                '%i warmup + %i draws each, target acceptance %.2f.'
                % (self.num_parallel, self.num_warmup, self.num_samples, self.target_accept))
 
         # start_run sets up Results/ + the samples.txt header and returns one starting pset
-        # per chain (latin-hypercube / random, per `initialization`); reuse its u-vector as
-        # the NUTS initial position so HMC and the gradient-free samplers seed the same way.
+        # per chain (latin-hypercube / random, per `initialization`); reuse its u-vector as the
+        # seed, mapped through each bijector to the unconstrained space z NUTS actually samples
+        # (so HMC and the gradient-free samplers seed from the same start point).
         first_psets = self.start_run(setup_samples=True)
-        init_us = [self._param_vec(p) for p in first_psets]
+        init_zs = [np.array([bijectors[i].to_unconstrained(u_i) for i, u_i in enumerate(self._param_vec(p))])
+                   for p in first_psets]
 
         # Eager probe at the first chain's start so an unsupported prior family raises its
         # pointed PybnfError here, before the (slower) warmup, rather than from inside
         # blackjax. logpdf_jax is the only place an unsupported family can surface.
         try:
-            float(logdensity_fn(jnp.asarray(init_us[0])))
+            float(logdensity_fn(jnp.asarray(init_zs[0])))
         except PybnfError:
             raise
         except Exception:
@@ -241,14 +252,20 @@ class HMCSampler(BayesianAlgorithm):
         self.divergences = []
         for c in range(self.num_parallel):
             positions, logdens, n_divergent = self._run_one_chain(
-                jax, jnp, blackjax, logdensity_fn, init_us[c], c)
+                jax, jnp, blackjax, logdensity_fn, init_zs[c], c)
             self.divergences.append(n_divergent)
             for d in range(self.num_samples):
-                u = np.asarray(positions[d], dtype=float)
+                z = np.asarray(positions[d], dtype=float)
+                # Map the unconstrained NUTS draw z back to sampling space u (b(z)), and
+                # un-Jacobian the recorded log-density to log pi(u) -- the samples file and the
+                # diagnostics report u (the gradient-free samplers' coordinate), not z, so the
+                # Ln_probability column and R-hat/ESS stay comparable across samplers. (R-hat and
+                # bulk/tail ESS are rank-normalized, hence invariant to the monotone z<->u map, so
+                # u-space diagnostics also remain the honest measure of NUTS mixing.)
+                u = np.array([bijectors[i].to_constrained(z[i]) for i in range(len(self.variables))])
+                logdet = sum(bijectors[i].logdet(z[i]) for i in range(len(self.variables)))
                 pset = self._pset_from_u(u, name='iter%irun%i' % (d, c))
-                self.sample_pset(pset, float(logdens[d]), chain_index=c)
-                # Diagnostics operate in sampling space u (split-R-hat / ESS); record the
-                # raw NUTS draw, not the reflected pset, so they see the true chain.
+                self.sample_pset(pset, float(logdens[d]) - logdet, chain_index=c)
                 self.chain_history[c].append(u)
             print1('Completed HMC chain %i of %i (%i draws, %i divergent transitions)'
                    % (c + 1, self.num_parallel, self.num_samples, n_divergent))
@@ -271,9 +288,9 @@ class HMCSampler(BayesianAlgorithm):
         print0('HMC sampling complete: %i chains x %i draws written to %s'
                % (self.num_parallel, self.num_samples, self.samples_file))
 
-    def _run_one_chain(self, jax, jnp, blackjax, logdensity_fn, init_u, chain_index):
+    def _run_one_chain(self, jax, jnp, blackjax, logdensity_fn, init_z, chain_index):
         """Window-adapt then sample one NUTS chain; return ``(positions, logdensities,
-        n_divergent)``.
+        n_divergent)`` in the unconstrained space ``z`` (ADR-0059 item 5).
 
         The chain's JAX PRNG key is seeded from this chain's own ``np.random.Generator``
         (itself spawned from the run's resolved ``random_seed``), so the whole run is
@@ -281,10 +298,11 @@ class HMCSampler(BayesianAlgorithm):
         give. Warmup is blackjax window adaptation (dual-averaging step size + diagonal mass
         matrix); the post-warmup draws are collected with ``jax.lax.scan`` over the tuned
         kernel. The scan also carries out each step's ``info.is_divergent`` flag, summed into
-        the chain's post-warmup divergent-transition count (the NUTS reliability signal)."""
+        the chain's post-warmup divergent-transition count (the NUTS reliability signal).
+        ``run`` maps the returned ``z`` positions back to ``u = b(z)`` before writing."""
         seed = int(self.chain_rngs[chain_index].integers(0, 2 ** 31 - 1))
         warmup_key, sample_key = jax.random.split(jax.random.PRNGKey(seed))
-        init_position = jnp.asarray(init_u)
+        init_position = jnp.asarray(init_z)
 
         warmup = blackjax.window_adaptation(
             blackjax.nuts, logdensity_fn, target_acceptance_rate=self.target_accept)

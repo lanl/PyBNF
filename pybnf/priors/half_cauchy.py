@@ -38,8 +38,9 @@ class HalfCauchy(FrozenPrior):
         ``frozen.logpdf`` on ``[0, inf)``:
         ``log 2 - log(pi) - log(scale) - log(1 + (u/scale)^2)``. The body (a
         ``log1p`` of ``u^2``) has a finite gradient everywhere, so the ``where`` only
-        adds the ``-inf`` wall below ``0`` (masked-out gradient stays ``0``). HMC at
-        the ``u=0`` boundary awaits item 5's bijection."""
+        adds the ``-inf`` wall below ``0`` (masked-out gradient stays ``0``). The
+        ``hmc`` sampler reparameterizes ``u = exp(z)`` so the ``u=0`` boundary is
+        sampled divergence-free (ADR-0059 item 5)."""
         import jax.numpy as jnp
         sig = self.hc_scale
         z = u / sig

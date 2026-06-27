@@ -40,8 +40,9 @@ class HalfNormal(FrozenPrior):
         ``frozen.logpdf`` on ``[0, inf)``:
         ``0.5 log(2/pi) - log(scale) - u^2/(2 scale^2)``. The body has no ``log u``,
         so its gradient is finite everywhere; the ``where`` only adds the ``-inf``
-        wall below ``0`` and the masked-out gradient stays ``0`` (no NaN). HMC at the
-        ``u=0`` boundary awaits item 5's bijection."""
+        wall below ``0`` and the masked-out gradient stays ``0`` (no NaN). The ``hmc``
+        sampler reparameterizes ``u = exp(z)`` so the ``u=0`` boundary is sampled
+        divergence-free (ADR-0059 item 5)."""
         import jax.numpy as jnp
         sig = self.hn_scale
         val = 0.5 * jnp.log(2.0 / jnp.pi) - jnp.log(sig) - (u * u) / (2.0 * sig * sig)

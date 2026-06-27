@@ -15,6 +15,7 @@ no-prior keywords (Simplex start points), mapped to ``NoPrior``.
 
 from ..registry import PRIOR_FAMILY_REGISTRY
 from .base import FrozenPrior, NoPrior, Prior
+from .bijector import Bijector, bijector_for_support
 from .scale import LINEAR, LN, LOG10, Linear, Ln, Log10, Scale
 from .truncated import TruncatedPrior
 
@@ -115,4 +116,5 @@ def var_keyword_grammar():
 __all__ = [
     'Prior', 'NoPrior', 'FrozenPrior', 'TruncatedPrior', 'Scale', 'Linear', 'Log10', 'Ln',
     'LINEAR', 'LOG10', 'LN', 'PRIOR_KEYWORD_MAP', 'build_prior', 'var_keyword_grammar',
+    'Bijector', 'bijector_for_support',
 ]

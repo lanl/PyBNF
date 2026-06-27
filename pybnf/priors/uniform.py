@@ -51,11 +51,10 @@ class Uniform(Prior):
         no NaN gradient (the standard ``where`` autodiff pitfall is avoided because
         neither branch depends on ``u``).
 
-        This first HMC slice supports the box prior as a *flat* prior over a wide
-        support -- the closed-form benchmark posteriors sit far inside the box, so
-        NUTS never reaches the walls. Divergence-free sampling *at* a constrained
-        boundary (the unconstraining bijection) is the deferred follow-on (ADR-0059
-        item 5)."""
+        The ``hmc`` sampler reparameterizes the box ``u = lo + (hi-lo) sigmoid(z)``
+        (:mod:`pybnf.priors.bijector`), so NUTS samples an unbounded ``z`` and both walls
+        are unreachable -- a tight box is sampled divergence-free, not just a wide one whose
+        posterior sits far inside (ADR-0059 item 5)."""
         import jax.numpy as jnp
         inside = (u >= self.lo) & (u <= self.hi)
         return jnp.where(inside, -jnp.log(self.hi - self.lo), -jnp.inf)

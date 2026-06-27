@@ -34,7 +34,8 @@ class Exponential(FrozenPrior):
         ``frozen.logpdf`` on ``(0, inf)``: ``-u/scale - log(scale)``. The body is
         linear in ``u`` (no ``log u``), so its gradient is finite everywhere; the
         ``where`` only injects the ``-inf`` wall outside the support, and the
-        ``where`` autodiff rule keeps the masked-out gradient at ``0`` (no NaN). HMC
-        behaviour at the ``u=0`` boundary awaits item 5's bijection."""
+        ``where`` autodiff rule keeps the masked-out gradient at ``0`` (no NaN). The
+        ``hmc`` sampler reparameterizes ``u = exp(z)`` so the ``u=0`` boundary is
+        sampled divergence-free (ADR-0059 item 5)."""
         import jax.numpy as jnp
         return jnp.where(u > 0.0, -u / self.exp_scale - jnp.log(self.exp_scale), -jnp.inf)

@@ -371,17 +371,207 @@ def test_hmc_unsupported_target_raises_pointed_error(tmp_path):
         H.drive(alg)
 
 
-def test_hmc_log_scaled_param_raises_pointed_error(tmp_path):
-    """A log-scaled parameter (loguniform_var) is out of this slice — it needs a
-    JAX-traceable 10**u inverse + Jacobian — so HMC errors clearly rather than sampling a
-    silently wrong target."""
-    from pybnf.printing import PybnfError
-    conf = _hmc_config(tmp_path, H.gaussian_spec([0.0], [1.0]), 1, num_chains=1,
-                       num_warmup=20, num_samples=20,
-                       var_type='loguniform_var', bounds=(0.01, 100.0))
+# --------------------------------------------------------------------------- #
+# Item 5: the unconstraining bijection + log-scale -- constrained-support and
+# log-scaled priors now SAMPLE divergence-free (they could not before this slice)
+# --------------------------------------------------------------------------- #
+def _recover_prior(tmp_path, var_type, bounds, *, n_params=1, target_accept=0.9,
+                   num_warmup=1000, num_samples=2500, num_chains=4, **overrides):
+    """Run HMC on a near-flat (variance 1e6) Gaussian likelihood so the posterior IS the
+    prior, and return ``(samples, alg)``.
+
+    The 1-D Gaussian NLL is effectively constant over the prior's mass, so ``p(u) ~ prior(u)``
+    and the recovered draws must match the prior's analytic moments -- the item-4 oracle
+    pattern, now exercising the item-5 bijection (a positive/bounded/truncated/log-scaled prior
+    that NUTS could not sample before)."""
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0], [1.0e6]))
+    conf = H.make_config(tmp_path, 'hmc', tgt, exp, n_params, var_type=var_type, bounds=bounds,
+                         population_size=num_chains, num_warmup=num_warmup,
+                         num_samples=num_samples, max_iterations=num_samples,
+                         target_accept=target_accept, random_seed=20260627, **overrides)
     alg = algorithms.HMCSampler(conf)
-    with pytest.raises(PybnfError, match='log-scaled'):
-        H.drive(alg)
+    H.drive(alg)
+    samples = H.read_samples(conf.config['output_dir'], n_params)
+    assert samples.shape[0] == num_chains * num_samples
+    assert np.all(np.isfinite(samples))
+    return samples, alg
+
+
+def _assert_clean_reference(alg, samples, *, min_ess=350):
+    """HMC's own reliability gate: well-mixed (R-hat < 1.05), healthy ESS, and -- the whole
+    point of the bijection -- exactly zero divergent transitions (the constrained-support
+    families diverged at the -inf wall before item 5)."""
+    rhat = alg.compute_rhat()
+    bulk_ess, _tail = alg.compute_ess()
+    assert rhat is not None and np.nanmax(rhat) < 1.05
+    assert np.nanmin(bulk_ess) > min_ess
+    assert sum(alg.divergences) == 0, 'the bijection must make the constrained prior divergence-free'
+
+
+@pytest.mark.parametrize('var_type,bounds,true_mean,true_var', [
+    # half_normal(scale s): mean = s*sqrt(2/pi), var = s^2 (1 - 2/pi). Support (0, inf) ->
+    # log bijection u = exp(z). (p2 is ignored by the one-parameter family.)
+    ('half_normal_var', (2.0, 2.0), 2.0 * np.sqrt(2.0 / np.pi), 4.0 * (1.0 - 2.0 / np.pi)),
+    # gamma(shape k, scale theta): mean = k*theta, var = k*theta^2. Support (0, inf) -> log
+    # bijection. A genuine right-skew the wall used to make NUTS diverge on.
+    ('gamma_var', (2.5, 1.3), 2.5 * 1.3, 2.5 * 1.3 ** 2),
+])
+def test_hmc_recovers_positive_support_prior(tmp_path, var_type, bounds, true_mean, true_var):
+    """A positive-support prior (gamma / half_normal) now samples divergence-free: the log
+    bijection u = exp(z) puts the u=0 wall out of reach, so NUTS recovers the closed-form
+    moments instead of diverging at the support edge (ADR-0059 item 5)."""
+    samples, alg = _recover_prior(tmp_path, var_type, bounds)
+    np.testing.assert_allclose(samples.mean(axis=0)[0], true_mean, rtol=0.06)
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1)[0], true_var, rtol=0.12)
+    _assert_clean_reference(alg, samples)
+
+
+def test_hmc_recovers_beta_prior(tmp_path):
+    """A bounded [0, 1] prior (beta) now samples divergence-free via the logit bijection
+    u = sigmoid(z): NUTS recovers the closed-form beta moments mean = a/(a+b),
+    var = ab/((a+b)^2 (a+b+1)) without diverging at either wall (ADR-0059 item 5)."""
+    a, b = 2.0, 3.0
+    true_mean = a / (a + b)
+    true_var = a * b / ((a + b) ** 2 * (a + b + 1.0))
+    samples, alg = _recover_prior(tmp_path, 'beta_var', (a, b))
+    np.testing.assert_allclose(samples.mean(axis=0)[0], true_mean, atol=0.02)
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1)[0], true_var, rtol=0.12)
+    _assert_clean_reference(alg, samples)
+
+
+def test_hmc_samples_lognormal_log_scaled_param(tmp_path):
+    """A log-scaled parameter now SAMPLES instead of raising (this slice removes the
+    'log-scaled' error): lognormal_var places a normal prior on u = log10(theta) (real
+    support -> identity bijection) and evaluates the likelihood at theta = 10**u through the
+    JAX-traceable Scale.inverse_jax. The recovered log10(theta) must match the prior's
+    normal moments, and -- no constrained support -- it is divergence-free (ADR-0059 item 5,
+    half A)."""
+    mu, sigma = 0.5, 0.3
+    samples, alg = _recover_prior(tmp_path, 'lognormal_var', (mu, sigma))
+    log10_theta = np.log10(samples[:, 0])
+    np.testing.assert_allclose(log10_theta.mean(), mu, atol=0.02)
+    np.testing.assert_allclose(log10_theta.var(ddof=1), sigma ** 2, rtol=0.12)
+    _assert_clean_reference(alg, samples, min_ess=400)
+
+
+def test_hmc_samples_loguniform_tight_box(tmp_path):
+    """A log-scaled BOX prior (loguniform_var) over a TIGHT range now samples divergence-free:
+    the box bijection u = lo + (hi-lo) sigmoid(z) operates in log10 space and theta = 10**u,
+    composing the item-5 bijection with the log scale. log10(theta) must recover the uniform
+    box's moments (mean = midpoint, var = width^2/12) with no divergences -- the tight box is
+    the case the item-4 '-inf walls, mass far inside' caveat could not handle."""
+    lo, hi = 0.5, 5.0                       # theta box; log10 box is (log10 lo, log10 hi)
+    llo, lhi = np.log10(lo), np.log10(hi)
+    samples, alg = _recover_prior(tmp_path, 'loguniform_var', (lo, hi))
+    log10_theta = np.log10(samples[:, 0])
+    np.testing.assert_allclose(log10_theta.mean(), 0.5 * (llo + lhi), atol=0.03)
+    np.testing.assert_allclose(log10_theta.var(ddof=1), (lhi - llo) ** 2 / 12.0, rtol=0.12)
+    # Every draw is strictly inside the box (the bijection cannot leave it).
+    assert np.all((samples[:, 0] > lo) & (samples[:, 0] < hi))
+    _assert_clean_reference(alg, samples, min_ess=400)
+
+
+def test_hmc_recovers_tight_truncated_normal(tmp_path):
+    """A TIGHT truncated normal -- N(0,1) confined to [1.5, 2.5], mass piled against the lower
+    wall -- now samples divergence-free through the box bijection on the TruncatedPrior's
+    support (ADR-0059 item 5). This is the case the item-4 caveat flagged: the retained mass
+    leans on a bound, so the old -inf wall made NUTS diverge; the bijection puts the wall out
+    of reach and NUTS recovers the truncated moments. Declared via the new-era parameter:
+    record (the only surface that carries truncation bounds, ADR-0043/0020)."""
+    from scipy import stats
+    a, b = 1.5, 2.5
+    truth = stats.truncnorm(a=a, b=b, loc=0.0, scale=1.0)   # standardized bounds == theta here
+    tgt, exp = H.write_target(tmp_path, H.gaussian_spec([0.0], [1.0e6]))
+    # edition 2 is required for the parameter: record, so the run selector and objective use
+    # the modern keys (job_type / objective = score); the internal models/exp_data form is the
+    # harness's already-resolved shape (not edition-gated).
+    base = {
+        'output_dir': str(tmp_path) + '/out',
+        'models': {tgt}, tgt: [exp], 'exp_data': {exp},
+        'objective': 'score', 'job_type': 'hmc', 'initialization': 'lh',
+        'delete_old_files': 1, 'verbosity': 0, 'wall_time_sim': 0, 'random_seed': 20260627,
+        'edition': 2, 'population_size': 4, 'num_warmup': 1000, 'num_samples': 2500,
+        'max_iterations': 2500, 'target_accept': 0.9,
+        ('parameter', 'p1'): {'prior': 'normal', 'mean': '0', 'sd': '1',
+                              'lower': str(a), 'upper': str(b)},
+    }
+    conf = H.config.Configuration(base)
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 1)
+    assert np.all(np.isfinite(samples)) and np.all((samples[:, 0] > a) & (samples[:, 0] < b))
+    np.testing.assert_allclose(samples.mean(axis=0)[0], truth.mean(), atol=0.03)
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1)[0], truth.var(), rtol=0.15)
+    _assert_clean_reference(alg, samples, min_ess=400)
+
+
+# --------------------------------------------------------------------------- #
+# Bijection unit oracles: round-trip, Jacobian == finite difference, and a finite
+# composed-target gradient exactly where the item-4 -inf wall used to be
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize('lo,hi,u0', [
+    (-np.inf, np.inf, 0.7),     # identity
+    (0.0, np.inf, 1.3),         # lower-bounded (positive families)
+    (-np.inf, 3.0, 1.1),        # upper-bounded
+    (-2.0, 5.0, 1.9),           # finite box (uniform / loguniform / beta / truncated)
+], ids=['identity', 'lower', 'upper', 'box'])
+def test_bijector_round_trip_and_logdet(lo, hi, u0):
+    """Each support-aware bijector is a clean inverse pair (``b(b^{-1}(u)) == u``) and its
+    analytic ``log|b'(z)|`` matches a central finite difference of the constrained map -- the
+    Jacobian the HMC target adds. The numpy and JAX log-determinants agree (float32 tol)."""
+    import jax
+    import jax.numpy as jnp
+    from pybnf.priors.bijector import bijector_for_support
+
+    b = bijector_for_support(lo, hi)
+    z = b.to_unconstrained(u0)
+    assert b.to_constrained(z) == pytest.approx(u0, abs=1e-6)        # round-trip
+
+    h = 1e-4
+    fd = np.log(abs((b.to_constrained(z + h) - b.to_constrained(z - h)) / (2 * h)))
+    assert b.logdet(z) == pytest.approx(fd, abs=1e-3)               # logdet == |db/dz|
+    assert float(b.logdet_jax(jnp.asarray(z))) == pytest.approx(b.logdet(z), abs=1e-4)
+    assert float(b.to_constrained_jax(jnp.asarray(z))) == pytest.approx(u0, abs=1e-5)
+    # The constrained map is differentiable everywhere (no NaN), so jax.grad of the target
+    # composes.
+    g = float(jax.grad(lambda zz: b.to_constrained_jax(zz))(jnp.asarray(z)))
+    assert np.isfinite(g)
+
+
+def test_bijection_removes_the_item4_support_wall(tmp_path):
+    """The load-bearing item-5 guarantee: composing a constrained prior's ``logpdf_jax`` with
+    its bijector gives a target whose ``jax.grad`` is FINITE for every finite z -- including the
+    z that map u right onto the old support edge, where item 4's ``-inf`` wall produced the
+    divergences this slice removes.
+
+    Checks both a positive family (gamma, lower wall at u=0) and a tight TruncatedPrior (both
+    walls): ``b(z)`` lands strictly inside the open support for all finite z, so
+    ``prior.logpdf_jax(b(z))`` never reaches ``-inf`` and the gradient stays finite where the
+    bare density's did not."""
+    import jax
+    import jax.numpy as jnp
+    from pybnf.priors.bijector import bijector_for_support
+    from pybnf.priors.gamma import Gamma
+    from pybnf.priors.normal import Normal
+    from pybnf.priors.truncated import TruncatedPrior
+
+    for prior in (Gamma(shape=2.5, gamma_scale=1.3),
+                  TruncatedPrior(Normal(0.0, 1.0), 1.5, 2.5)):
+        lo, hi = prior.support()
+        b = bijector_for_support(lo, hi)
+
+        def target(z, _b=b, _p=prior):
+            return _p.logpdf_jax(_b.to_constrained_jax(z)) + _b.logdet_jax(z)
+
+        grad = jax.grad(target)
+        # z spanning deep into both tails: large |z| drives u arbitrarily close to a support
+        # edge (the item-4 wall) -- the composed gradient must stay finite throughout.
+        for z in np.linspace(-12.0, 12.0, 41):
+            val = float(target(jnp.asarray(z)))
+            g = float(grad(jnp.asarray(z)))
+            assert np.isfinite(val) and np.isfinite(g), \
+                f'{type(prior).__name__}: non-finite target/grad at z={z}'
 
 
 # --------------------------------------------------------------------------- #

@@ -37,7 +37,8 @@ class Weibull(FrozenPrior):
         ``log u`` and the fractional power ``(u/scale)^c`` are undefined for
         ``u <= 0``, so the safe-``u`` double-``where`` evaluates at ``1.0`` outside
         and masks to ``-inf``, keeping ``jax.grad`` finite (``0``) there (ADR-0059
-        item 4). HMC at the ``u=0`` boundary awaits item 5's bijection."""
+        item 4). The ``hmc`` sampler reparameterizes ``u = exp(z)`` so the ``u=0``
+        boundary is sampled divergence-free (ADR-0059 item 5)."""
         import jax.numpy as jnp
         c, lam = self.shape, self.wb_scale
         inside = u > 0.0

@@ -44,8 +44,9 @@ class Beta(FrozenPrior):
         ``[0, 1]`` support uses the safe-``u`` double-``where`` -- evaluate at the
         in-support midpoint ``0.5`` outside, then mask -- so neither ``log u`` nor
         ``log(1-u)`` ever sees an out-of-support argument and ``jax.grad`` stays
-        finite (``0``) outside (ADR-0059 item 4). HMC at the ``0``/``1`` boundaries
-        awaits item 5's bijection."""
+        finite (``0``) outside (ADR-0059 item 4). The ``hmc`` sampler reparameterizes
+        ``u = sigmoid(z)`` so the ``0``/``1`` boundaries are sampled divergence-free
+        (ADR-0059 item 5)."""
         import jax.numpy as jnp
         from jax.scipy.special import betaln
         al, be = self.alpha, self.beta

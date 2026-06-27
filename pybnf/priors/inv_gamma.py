@@ -37,7 +37,8 @@ class InvGamma(FrozenPrior):
         Both ``log u`` and ``scale/u`` blow up at ``u <= 0``, so the safe-``u``
         double-``where`` evaluates the body at ``1.0`` outside the support and masks
         it to ``-inf``, keeping ``jax.grad`` finite (``0``) there (ADR-0059 item 4).
-        HMC at the ``u=0`` boundary awaits item 5's bijection."""
+        The ``hmc`` sampler reparameterizes ``u = exp(z)`` so the ``u=0`` boundary is
+        sampled divergence-free (ADR-0059 item 5)."""
         import jax.numpy as jnp
         from jax.scipy.special import gammaln
         a, scale = self.shape, self.ig_scale

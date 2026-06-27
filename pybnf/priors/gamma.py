@@ -38,9 +38,9 @@ class Gamma(FrozenPrior):
         The half-line support uses the safe-``u`` double-``where`` -- evaluate the
         body at an in-support stand-in (``1.0``) outside the support, then mask to
         ``-inf`` -- so ``log u`` never sees ``u <= 0`` and ``jax.grad`` stays finite
-        (``0``) outside, which NUTS leapfrog steps require (ADR-0059 item 4). HMC
-        quality *at* the hard ``u=0`` boundary awaits the unconstraining bijection
-        (item 5); until then the divergence/R-hat gate flags it honestly."""
+        (``0``) outside, which NUTS leapfrog steps require (ADR-0059 item 4). The
+        ``hmc`` sampler reparameterizes ``u = exp(z)`` so the hard ``u=0`` boundary is
+        sampled divergence-free (the unconstraining bijection, ADR-0059 item 5)."""
         import jax.numpy as jnp
         from jax.scipy.special import gammaln
         a, scale = self.shape, self.gamma_scale

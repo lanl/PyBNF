@@ -34,7 +34,8 @@ class Rayleigh(FrozenPrior):
         ``log u - 2 log(scale) - u^2/(2 scale^2)``. The half-line support uses the
         safe-``u`` double-``where`` so ``log u`` never sees ``u <= 0`` and
         ``jax.grad`` stays finite (``0``) outside the support (ADR-0059 item 4); the
-        ``u=0`` boundary awaits item 5's bijection."""
+        ``hmc`` sampler reparameterizes ``u = exp(z)`` so the ``u=0`` boundary is
+        sampled divergence-free (ADR-0059 item 5)."""
         import jax.numpy as jnp
         sig = self.ray_scale
         inside = u > 0.0

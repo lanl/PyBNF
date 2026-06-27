@@ -1955,6 +1955,30 @@ class FreeParameter:
         ``exp10`` helper, which raises a configuration hint on overflow (#412)."""
         return self._scale.inverse(u)
 
+    def from_sampling_space_jax(self, u):
+        """JAX-traceable peer of :meth:`from_sampling_space` (the ``u -> theta`` map,
+        ADR-0059).
+
+        The gradient-based ``hmc`` sampler evaluates the model's NLL at
+        ``theta = scale.inverse(u)`` inside ``jax.grad``, so a log-scaled parameter
+        composes with NUTS. Delegates to ``Scale.inverse_jax`` (``10**u`` / ``exp(u)`` /
+        identity), keeping the sampler off the private ``_scale``; no Jacobian is added
+        here -- the prior is defined in ``u`` (ADR-0010), so ``theta`` enters only through
+        the likelihood."""
+        return self._scale.inverse_jax(u)
+
+    def prior_support(self):
+        """The prior family's ``(lo, hi)`` support in **sampling space** ``u`` (ADR-0010).
+
+        The information a support-aware unconstraining bijector keys on (ADR-0059 item 5):
+        the gradient-based ``hmc`` sampler builds one bijector per parameter from this to
+        reparameterize a constrained prior onto the unbounded space NUTS samples. Delegates
+        to ``Prior.support`` -- e.g. ``(-inf, inf)`` for a normal, ``(0, inf)`` for a positive
+        family, ``(lo, hi)`` for a uniform/``loguniform`` box or a truncated prior -- so the
+        bijection respects the parameter's scale automatically (a ``loguniform`` box is finite
+        in ``log10`` space, where its prior and proposal arithmetic already live)."""
+        return self._prior.support()
+
     def set_value(self, new_value, reflect=True):
         """
         Creates a copy of the parameter with the given value
