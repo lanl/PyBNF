@@ -3,10 +3,14 @@
 # After cloning, run once:
 #   pre-commit install --hook-type pre-push
 #
-# Two complementary hooks run before every `git push`:
-#   1. pytest-bngsim    -- the bngsim (mac-only) tests CI *cannot* run, since the
+# Three complementary hooks run before every `git push`:
+#   1. ruff-ci-mirror   -- the *exact* lint command CI's lint.yml runs (pinned
+#      `ruff@0.15.14 check .`). Runs FIRST and takes seconds, so a lint failure
+#      aborts the push immediately instead of after the slow pytest gates (the
+#      pytest hooks do NOT run ruff -- that gap let an F401 reach CI once).
+#   2. pytest-bngsim    -- the bngsim (mac-only) tests CI *cannot* run, since the
 #      private bngsim wheel is absent on hosted runners.
-#   2. pytest-ci-mirror -- the *exact* command CI runs (`PYBNF_NO_BNGSIM=1 pytest
+#   3. pytest-ci-mirror -- the *exact* command CI runs (`PYBNF_NO_BNGSIM=1 pytest
 #      -m "not slow" -n auto`), so any bngsim-less regression CI would flag is
 #      caught locally first.
 #
@@ -17,6 +21,16 @@
 repos:
   - repo: local
     hooks:
+      - id: ruff-ci-mirror
+        name: ruff check (CI mirror)
+        # Mirror lint.yml exactly, pinned ruff version and all, so "green here =>
+        # green in CI's lint job". uvx fetches the pinned ruff without touching the
+        # project env. First in the list => fails fast (seconds) before the pytest gates.
+        entry: uvx ruff@0.15.14 check .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
       - id: pytest-bngsim
         name: pytest (bngsim test suite)
         # Scoped to bngsim-area tests only: bngsim is mac-only and absent in CI,
