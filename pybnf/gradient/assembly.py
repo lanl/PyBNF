@@ -89,6 +89,18 @@ MEDIAN or, layer G, the MEAN) and the noise scale (linear or log, layer E) compo
 ``objective.has_least_squares_residual`` routes each column. An all-Gaussian fit never touches
 ``data_fit_gradient`` (it stays zero), so that path is byte-identical. The negative-binomial
 family is gated pending #458 (its median CDF-inversion implicit derivative).
+
+Constraint / qualitative penalties (layer I, #456)
+--------------------------------------------------
+A fit may add qualitative / inequality constraints (BPSL ``.con`` / ``.prop`` files) whose
+penalty is added to the objective. :func:`assemble_constraint_gradient` is the sibling assembler:
+each constraint's penalty is a piecewise (static) or Gaussian-CDF (likelihood) function of an at-/
+between-time readout ``q1 - q2``, so its gradient is that readout's forward sensitivity (read via
+a ``(model, suffix, observable)``-keyed accessor over the #447 tensor + #448 routing) times the
+local penalty slope (:meth:`~pybnf.constraint.Constraint.penalty_gradient`). Like an estimated-
+noise normalizer, a penalty is not a sum of squares, so it lives on the scalar gradient only: a
+fit with active constraints is not ``least_squares_exact``, and #386 adds this term to the
+objective gradient.
 """
 
 from dataclasses import dataclass
@@ -488,6 +500,11 @@ def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
                 % (observable, model, suffix))
         if observable == sim_data.indvar:
             return np.zeros(n_param)
+        if (model, suffix) not in routings:
+            raise GradientNotSupported(
+                "Constraint reads observable '%s' from model '%s' suffix '%s', but no routing "
+                "was supplied for it; provide an ExperimentRouting for every (model, suffix) a "
+                "constraint reads (routings[(model, suffix)])." % (observable, model, suffix))
         routing = routings[(model, suffix)]
         selector = _selector_for(sens, observable)
         vec = np.zeros(n_param)

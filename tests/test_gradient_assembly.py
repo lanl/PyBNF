@@ -1709,3 +1709,13 @@ def test_fd_acceptance_gate_constraint(model_kind):
     con_grad = assemble_constraint_gradient(
         [make_cset()], {model_name: {'tc': sim}}, {(model_name, 'tc'): route_wt}, free)
     np.testing.assert_allclose(obj_grad + con_grad, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+def test_constraint_gradient_refuses_missing_routing():
+    """A constraint reading a (model, suffix) with no routing supplied raises a pointed
+    GradientNotSupported (not a bare KeyError), so a caller can fall back to a gradient-free step."""
+    sdd, _routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    with pytest.raises(GradientNotSupported, match='routing'):
+        assemble_constraint_gradient([cset], sdd, {}, free)   # no routing for ('m', 'tc')
