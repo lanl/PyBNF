@@ -146,11 +146,13 @@ class AnalyticalModel(Model):
         ``multimodal`` (a separated-mode mixture) -- so HMC can serve as the
         reference yardstick that scores the gradient-free samplers on the hard
         cases (ADR-0059's stated purpose). Each JAX branch mirrors its numpy peer
-        (``_nll_banana`` / ``_nll_multimodal``) term for term off the *same*
-        precomputed constants, so the score path and the JAX log-density stay one
-        source of truth. ``rotated_quartic`` and the BYO ``expression``
-        sympy->jax lambdify path are still later slices, so they raise a pointed
-        error here rather than silently differentiating nothing."""
+        (``_nll_banana`` / ``_nll_multimodal`` / ``_nll_rotated_quartic``) term for
+        term off the *same* precomputed constants, so the score path and the JAX
+        log-density stay one source of truth. Every menu ``target_type`` now has a
+        JAX branch (ADR-0059 item 2 added ``rotated_quartic``); the BYO ``expression``
+        target carries its own ``nll_jax`` on :class:`ExpressionModel`. The trailing
+        ``raise`` is therefore a defensive guard for an unrecognized ``target_type``,
+        not a deferred-slice boundary."""
         import jax.numpy as jnp
         if self.target_type == 'gaussian':
             mean = jnp.asarray(self._mean)
@@ -192,13 +194,26 @@ class AnalyticalModel(Model):
                     for log_w, mu, inv_var in modes])
                 return -logsumexp(log_components)
             return nll
-        from .printing import PybnfError
+        if self.target_type == 'rotated_quartic':
+            # k1 * r1^4 + k2 * r2^2 with r = R(angle) (x - mu) -- the jnp peer of
+            # _nll_rotated_quartic term for term (quartic along the first rotated axis,
+            # quadratic along the second), off the same precomputed rotation / coeffs.
+            mean = jnp.asarray(self._mean)
+            rot = jnp.asarray(self._rot)
+            k1, k2 = self._coeff
+
+            def nll(theta):
+                r = rot @ (theta - mean)
+                return k1 * r[0] ** 4 + k2 * r[1] ** 2
+            return nll
+        # Defensive fallback: every menu target_type above has a JAX branch, and the BYO
+        # expression target carries its own nll_jax (ExpressionModel), so this is reachable
+        # only for an unrecognized target_type (config validates the menu names upstream).
         raise PybnfError(
-            "job_type = hmc has no JAX log-density for the analytical target %r yet "
-            "(ADR-0059). HMC supports the closed-form 'gaussian' and 'rotated_gaussian' "
-            "oracle targets and the 'banana' / 'multimodal' stress geometries; "
-            "rotated_quartic and bring-your-own 'expression' targets are a later slice. "
-            "Run a gradient-free sampler (am / dream / p_dream) on this target instead."
+            "job_type = hmc has no JAX log-density for the analytical target %r (ADR-0059). "
+            "The supported menu targets are 'gaussian', 'rotated_gaussian', 'banana', "
+            "'multimodal', and 'rotated_quartic'; a bring-your-own 'expression' target carries "
+            "its own JAX log-density. Run a gradient-free sampler (am / dream / p_dream) instead."
             % self.target_type)
 
     def save(self, file_prefix, **kwargs):
@@ -402,9 +417,10 @@ class ExpressionModel(Model):
     seam, not in the model class.
 
     Holds the *expression string* (picklable) and the ordered free-symbol names; the lambdified
-    callable is **not** picklable, so it is compiled lazily and dropped from the pickle state
-    (recompiled once per dask worker). HMC for an expression target (sympy->jax) is a later
-    ADR-0059 slice; there is no ``nll_jax`` here yet.
+    callables are **not** picklable, so they are compiled lazily and dropped from the pickle state
+    (recompiled once per dask worker). For ``job_type = hmc`` it also exposes :meth:`nll_jax` --
+    the *same* sympy expression lambdified with the JAX backend (ADR-0059 item 2), so HMC
+    ``jax.grad``s a user's bring-your-own log-density exactly as it does the built-in menu targets.
     """
 
     def __init__(self, formula, ordered_names, name, *, pset=None):
@@ -420,10 +436,12 @@ class ExpressionModel(Model):
         self.has_observables = True
         self.param_names = set()  # All params come from the config, not a model file
         self._pset = pset
-        # The lambdify-generated callable is not picklable (no importable qualname), so it is
+        # The lambdify-generated callables are not picklable (no importable qualname), so each is
         # compiled on first use and re-derived after unpickling rather than carried across the
-        # dask boundary -- see _compiled() and __getstate__.
+        # dask boundary -- see _compiled() / nll_jax() and __getstate__. `_func` is the numpy
+        # score-path callable; `_jax_func` the JAX peer the HMC gradient path uses.
         self._func = None
+        self._jax_func = None
 
     def _compiled(self):
         """The numpy callable for the expression, compiled lazily and memoized.
@@ -437,11 +455,54 @@ class ExpressionModel(Model):
             self._func, _ = compile_objective_expression(self.formula, self._ordered_names)
         return self._func
 
+    def coordinate_order(self, param_names):
+        """The expression's free-symbol names, in the order :meth:`nll_jax` consumes them
+        (ADR-0059 item 2 / ADR-0034 bind-by-name).
+
+        For an expression the coordinates *are* the named free symbols, so this is simply
+        ``_ordered_names`` -- the symbol order the lambdified callable expects positionally. The
+        gradient-based ``hmc`` sampler permutes its ``self.variables``-order ``u`` into this order
+        (``HMCSampler._coordinate_permutation``) so a parameter binds to the symbol of the same
+        name, not by declaration position. A declared parameter the expression does not reference
+        is simply absent (the likelihood is flat in it; its prior still samples it). Every name is
+        a declared free parameter (config validated), so ``param_names`` only sanity-bounds them."""
+        missing = [n for n in self._ordered_names if n not in set(param_names)]
+        if missing:                                     # defensive: config load already guarantees this
+            raise PybnfError(
+                f"The objective expression references {missing}, which are not among the declared "
+                f"free parameters {sorted(param_names)} (ADR-0050 bind-by-name).")
+        return list(self._ordered_names)
+
+    def nll_jax(self):
+        """Return a JAX-traceable ``f(theta) -> NLL`` for the expression (ADR-0059 item 2).
+
+        The JAX peer of :meth:`_compiled`: the *same* sympy expression, lambdified with the JAX
+        backend (``compile_objective_expression(..., backend='jax')``), so the numpy score path and
+        the differentiable HMC log-density are one source of truth -- they cannot drift, sharing the
+        parse, the validation, and the bind-by-name ``_ordered_names`` ordering. ``theta`` is a JAX
+        array of the referenced symbols' values in ``_ordered_names`` (= :meth:`coordinate_order`)
+        order, which is exactly what the HMC permutation delivers; it is unpacked into the callable's
+        positional scalar arguments. Compiled once and memoized (HMC runs in-process, so this never
+        crosses the dask boundary)."""
+        if self._jax_func is None:
+            from .petab.formula import compile_objective_expression
+            self._jax_func, _ = compile_objective_expression(
+                self.formula, self._ordered_names, backend='jax')
+        jax_func = self._jax_func
+        n = len(self._ordered_names)
+
+        def nll(theta):
+            return jax_func(*(theta[i] for i in range(n)))
+        return nll
+
     def __getstate__(self):
-        # Drop the lambdified callable (unpicklable); _compiled() rebuilds it from the
-        # picklable formula string + ordered_names on the worker.
+        # Drop the lambdified callables (unpicklable); _compiled() / nll_jax() rebuild them from
+        # the picklable formula string + ordered_names on the worker. (HMC keeps the model
+        # in-process, so _jax_func is only ever built there; dropped here for the de/am/dream
+        # dask path's safety.)
         state = self.__dict__.copy()
         state['_func'] = None
+        state['_jax_func'] = None
         return state
 
     def copy_with_param_set(self, pset):

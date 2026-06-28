@@ -37,9 +37,11 @@ It samples the closed-form-truth and stress-geometry menu targets (``gaussian`` 
 family supplies a hand-written, scipy-``logpdf``-oracle-checked ``logpdf_jax`` (ADR-0059 item 4),
 sampled divergence-free on *any* support via the bijection (item 5) -- and **log-scaled parameters**
 (``lognormal_var`` / ``loguniform_var``), whose ``u -> theta`` inverse traces through JAX
-(``Scale.inverse_jax``). The work still deferred to later slices raises a pointed error rather than
-sampling a silently-wrong target: the sympy->jax expression path (BYO ``expression`` targets) and
-``rotated_quartic``.
+(``Scale.inverse_jax``). It samples every built-in menu target (``rotated_quartic`` included now)
+**and bring-your-own ``expression`` targets** -- a user's own PEtab-math NLL lambdified to JAX
+(``ExpressionModel.nll_jax``, ADR-0059 item 2), so HMC is a reference sampler on arbitrary
+closed-form log-densities, not just the canned menu. The only HMC work still deferred is the Python
+``callable = module:func`` BYO form (a general callable is not JAX-traceable; ADR-0050).
 
 ``jax``/``blackjax`` are the optional ``pybnf[jax]`` extra (ADR-0019): only this module (and
 the lazily-imported ``nll_jax`` / ``logpdf_jax``) touches them, and a missing install
@@ -51,7 +53,7 @@ import logging
 import numpy as np
 
 from .base import BayesianAlgorithm, MCMCFamilyConfig
-from ...analytical_model import AnalyticalModel
+from ...analytical_model import AnalyticalModel, ExpressionModel
 from ...printing import print0, print1, print2, PybnfError
 from ...priors import bijector_for_support
 from ...registry import register_fit_type
@@ -131,13 +133,14 @@ class HMCSampler(BayesianAlgorithm):
     # Building the JAX target log-density
     # ------------------------------------------------------------------ #
     def _resolve_analytical_model(self):
-        """The single :class:`AnalyticalModel` this run samples, or a pointed error.
+        """The single analytical / BYO-expression model this run samples, or a pointed error.
 
-        HMC needs a gradient, and only the analytical / BYO log-density model exposes one
-        (``nll_jax``). A simulator model (BNGL/SBML), or more than one model, gets a clear
-        error pointing at the ADR rather than a cryptic ``AttributeError`` later."""
+        HMC needs a gradient, and only the JAX-capable log-density models expose one (``nll_jax``):
+        the built-in menu :class:`AnalyticalModel` and the bring-your-own :class:`ExpressionModel`
+        (ADR-0059 item 2). A simulator model (BNGL/SBML), or more than one model, gets a clear error
+        pointing at the ADR rather than a cryptic ``AttributeError`` later."""
         models = list(self.config.models.values())
-        analytical = [m for m in models if isinstance(m, AnalyticalModel)]
+        analytical = [m for m in models if isinstance(m, (AnalyticalModel, ExpressionModel))]
         if not analytical:
             raise PybnfError(
                 "job_type = hmc requires an analytical/expression objective; the model(s) "

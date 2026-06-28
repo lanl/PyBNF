@@ -231,9 +231,9 @@ def compile_petab_formula(formula, allowed_symbols, *, detail=None):
     return func, names
 
 
-def compile_objective_expression(formula, free_params):
-    """Compile a bring-your-own objective ``expression`` to ``(numpy_callable, ordered_names)``
-    (ADR-0050).
+def compile_objective_expression(formula, free_params, *, backend='numpy'):
+    """Compile a bring-your-own objective ``expression`` to ``(callable, ordered_names)``
+    (ADR-0050; the JAX backend is ADR-0059 item 2).
 
     The fourth direction of the translator: the user writes a closed-form negative
     log-likelihood (or cost) as PEtab math over the *declared free parameters* --
@@ -251,6 +251,14 @@ def compile_objective_expression(formula, free_params):
     (``callable(*[pset[name] for name in ordered_names])``); a declared parameter the expression
     does not reference is simply absent from the list (a likelihood flat in that direction).
 
+    ``backend`` selects the lambdify target: ``'numpy'`` (the default) feeds the gradient-free
+    ``score``-column path (``de`` / ``am`` / ``dream``); ``'jax'`` produces a JAX-traceable callable
+    so ``job_type = hmc`` can ``jax.grad`` the user's expression (ADR-0059 item 2). The parse,
+    symbol validation, and ``ordered_names`` are backend-independent (one sympy expression, one
+    sorted free-symbol set), so the numpy and JAX callables bind their arguments **identically** --
+    the bind-by-name contract holds across both, exactly as the prior families' numpy/JAX logpdfs
+    agree by construction.
+
     Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable expression, or a free
     symbol that is not a declared free parameter."""
     sympify_petab = _require_petab_math()
@@ -266,7 +274,7 @@ def compile_objective_expression(formula, free_params):
         detail=f"Declared free parameters: {sorted(allowed)}.")
     import sympy as sp
     names = sorted(str(s) for s in expr.free_symbols)
-    func = sp.lambdify([sp.Symbol(n) for n in names], expr, modules='numpy')
+    func = sp.lambdify([sp.Symbol(n) for n in names], expr, modules=backend)
     return func, names
 
 

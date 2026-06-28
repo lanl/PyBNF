@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from . import integration_harness as H
-from .context import algorithms
+from .context import algorithms, config, parse
 
 # Guard the whole module on the optional pybnf[jax] extra (ADR-0059): no jax/blackjax ->
 # no gradient-based sampler to exercise. find_spec avoids importing the heavy stack just to
@@ -27,6 +27,12 @@ from .context import algorithms
 _HAS_JAX = all(importlib.util.find_spec(m) is not None for m in ('jax', 'blackjax'))
 pytestmark = pytest.mark.skipif(
     not _HAS_JAX, reason='requires the optional pybnf[jax] extra (jax + blackjax)')
+
+# The bring-your-own ``expression`` target compiles PEtab math via sympy, so its tests also need
+# the optional pybnf[petab] extra (ADR-0059 item 2); skip just those when it is absent.
+_HAS_PETAB = importlib.util.find_spec('petab') is not None
+_requires_petab = pytest.mark.skipif(
+    not _HAS_PETAB, reason='objective = expression needs the optional pybnf[petab] extra')
 
 
 def _hmc_config(tmp_path, spec, n_params, *, num_chains=4, num_warmup=800,
@@ -358,17 +364,43 @@ def test_hmc_reference_agrees_with_dream_on_banana(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Pointed errors at the slice boundaries (fail clearly, never silently)
 # --------------------------------------------------------------------------- #
-def test_hmc_unsupported_target_raises_pointed_error(tmp_path):
-    """A target with no JAX NLL yet (rotated_quartic) errors clearly, naming the supported
-    set — not a silent wrong answer or a bare AttributeError (ADR-0059 deferred-work
-    boundary). banana / multimodal moved *into* the supported set this slice, so the
-    boundary check now stands on rotated_quartic, which is still a later slice."""
-    from pybnf.printing import PybnfError
-    spec = H.rotated_quartic_spec([0.0, 0.0], angle=np.pi / 6, coeff=[0.01, 1.0])
-    conf = _hmc_config(tmp_path, spec, 2, num_chains=1, num_warmup=20, num_samples=20)
+def test_hmc_samples_rotated_quartic(tmp_path):
+    """rotated_quartic now has a JAX NLL (ADR-0059 item 2) and samples instead of raising. Its
+    potential ``k1 r1^4 + k2 r2^2`` with ``r = R(angle)(x-mu)`` is even in ``r`` (``r1^4``,
+    ``r2^2``), so ``exp(-NLL)`` is symmetric about ``mu`` and the posterior mean is exactly ``mu``
+    -- a clean closed-form oracle for the recovered centre even though the spread is non-Gaussian.
+    The completes-the-menu check that replaces the old 'rotated_quartic raises' boundary test."""
+    mu = [0.5, -0.3]
+    spec = H.rotated_quartic_spec(mu, angle=np.pi / 6, coeff=[1.0, 1.0])
+    conf = _hmc_config(tmp_path, spec, 2, num_chains=4, num_warmup=1000, num_samples=2500,
+                       target_accept=0.9, bounds=(-12.0, 12.0))
     alg = algorithms.HMCSampler(conf)
-    with pytest.raises(PybnfError, match='rotated_quartic'):
-        H.drive(alg)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 2)
+    assert samples.shape[0] == conf.config['population_size'] * conf.config['num_samples']
+    assert np.all(np.isfinite(samples))
+    np.testing.assert_allclose(samples.mean(axis=0), mu, atol=0.1)   # symmetric -> mean == mu
+
+    rhat = alg.compute_rhat()
+    bulk_ess, _tail = alg.compute_ess()
+    assert rhat is not None and np.nanmax(rhat) < 1.05
+    assert np.nanmin(bulk_ess) > 350
+    assert sum(alg.divergences) < 0.01 * samples.shape[0]
+
+
+def test_hmc_unknown_target_type_raises_pointed_error(tmp_path):
+    """The trailing ``raise`` in ``AnalyticalModel.nll_jax`` is now a defensive guard, not a
+    deferred-slice boundary (every menu target has a JAX branch). An unrecognized ``target_type``
+    -- which config validation precludes, so this fabricates one -- still fails clearly, naming the
+    supported set, rather than returning a silently-wrong density."""
+    from pybnf.analytical_model import AnalyticalModel
+    from pybnf.printing import PybnfError
+    tgt, _ = H.write_target(tmp_path, H.gaussian_spec([0.0, 0.0], [1.0, 1.0]))
+    model = AnalyticalModel(tgt)
+    model.target_type = 'no_such_target'
+    with pytest.raises(PybnfError, match='no_such_target'):
+        model.nll_jax()
 
 
 # --------------------------------------------------------------------------- #
@@ -688,6 +720,8 @@ def test_family_logpdf_jax_matches_scipy_and_grad_is_finite(prior):
     H.banana_spec(a=0.5, b=20.0),
     H.multimodal_spec([(0.5, [-4.0, -4.0], [0.5, 0.5]), (0.5, [4.0, 4.0], [1.0, 2.0])]),
     H.multimodal_spec([(0.3, [0.0, 0.0], [1.0, 1.0]), (0.7, [3.0, -2.0], [0.5, 2.0])]),
+    # rotated_quartic: its JAX NLL (ADR-0059 item 2) must equal _nll_rotated_quartic term for term.
+    H.rotated_quartic_spec([0.5, -0.3], angle=np.pi / 6, coeff=[0.01, 1.0]),
 ])
 def test_nll_jax_matches_numpy_nll(tmp_path, spec):
     """Every supported HMC target's JAX NLL must equal its numpy ``_compute_nll`` peer at
@@ -707,3 +741,87 @@ def test_nll_jax_matches_numpy_nll(tmp_path, spec):
         got = float(nll(jnp.asarray(x)))
         want = float(model._compute_nll(x))
         assert got == pytest.approx(want, rel=1e-5, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# Item 2 (remainder): HMC samples a bring-your-own ``expression`` target -- the
+# user's own PEtab-math NLL lambdified to JAX (ADR-0059 item 2 / ADR-0050)
+# --------------------------------------------------------------------------- #
+def _build_expr_config(tmp_path, body):
+    """Build a real Configuration from an ``edition = 2`` config body (the fileless
+    ``objective = expression`` surface), appending the output dir + wall-time tail."""
+    text = body + f'\noutput_dir = {tmp_path}/out\nwall_time_sim = 0\n'
+    return config.Configuration(parse.ploop(text.splitlines(keepends=True)))
+
+
+# A diagonal Gaussian written as PEtab math: NLL = 0.5[(p1-2)^2/1 + (p2+1)^2/4], so with a flat
+# prior the posterior is N(mean=[2,-1], var=[1,4]) -- a closed-form oracle, with distinct per-coord
+# means/vars so a mis-binding is visible. (PEtab math: ^ for power, not **.)
+_EXPR_GAUSSIAN = 'expression = 0.5*((p1 - 2)^2 + (p2 + 1)^2/4)'
+
+
+@_requires_petab
+def test_hmc_samples_expression_gaussian(tmp_path):
+    """The headline of ADR-0059 item 2: ``job_type = hmc`` samples a bring-your-own
+    ``objective = expression`` target -- no model file, no menu enum -- by ``jax.grad``-ing the
+    user's PEtab-math NLL (``ExpressionModel.nll_jax``, the JAX peer of the numpy score path). The
+    expression is a diagonal Gaussian, so the flat-prior posterior is closed form and HMC must
+    recover its mean and variance, divergence-free, exactly as it does the built-in menu targets."""
+    body = ('edition = 2\nobjective = expression\n' + _EXPR_GAUSSIAN + '\n'
+            'job_type = hmc\n'
+            'uniform_var = p1 -12 12\nuniform_var = p2 -12 12\n'
+            'population_size = 4\nnum_warmup = 800\nnum_samples = 1500\n'
+            'max_iterations = 1500\nrandom_seed = 20260627\n')
+    conf = _build_expr_config(tmp_path, body)
+    assert list(conf.models) == ['expression']      # fileless ExpressionModel synthesized
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 2)
+    assert samples.shape[0] == 4 * 1500 and np.all(np.isfinite(samples))
+    np.testing.assert_allclose(samples.mean(axis=0), [2.0, -1.0], atol=0.1)
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1), [1.0, 4.0], rtol=0.12)
+
+    rhat = alg.compute_rhat()
+    bulk_ess, _tail = alg.compute_ess()
+    assert rhat is not None and np.nanmax(rhat) < 1.05
+    assert np.nanmin(bulk_ess) > 400
+    assert sum(alg.divergences) == 0
+
+
+@_requires_petab
+def test_hmc_expression_binds_coordinates_by_name(tmp_path):
+    """Bind-by-name through the expression HMC path (ADR-0050 §4 / ADR-0034): the expression names
+    its own variables, so declaring them in REVERSE order must not swap which coordinate each binds
+    to. ``ExpressionModel.coordinate_order`` returns the symbol order and ``HMCSampler`` permutes
+    ``u`` into it, so ``p1`` recovers the term written for ``p1`` (mean 2) and ``p2`` the term for
+    ``p2`` (mean -1) despite ``p2`` being declared first -- a positional binding would swap them."""
+    body = ('edition = 2\nobjective = expression\n' + _EXPR_GAUSSIAN + '\n'
+            'job_type = hmc\n'
+            'uniform_var = p2 -12 12\nuniform_var = p1 -12 12\n'   # p2 declared BEFORE p1
+            'population_size = 4\nnum_warmup = 800\nnum_samples = 1500\n'
+            'max_iterations = 1500\nrandom_seed = 20260627\n')
+    conf = _build_expr_config(tmp_path, body)
+    assert [v.name for v in conf.variables] == ['p2', 'p1']   # declaration order really is reversed
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 2)   # columns ordered p1, p2 by name
+    np.testing.assert_allclose(samples.mean(axis=0), [2.0, -1.0], atol=0.12)   # p1->2, p2->-1
+
+
+@_requires_petab
+def test_expression_nll_jax_matches_numpy(tmp_path):
+    """``ExpressionModel.nll_jax`` (the HMC gradient path) must equal its numpy ``_compiled``
+    callable (the score path) at arbitrary points -- one sympy expression, two lambdify backends,
+    so the differentiable log-density cannot silently drift from the sampler-of-record (the
+    expression analog of the menu's nll_jax<->numpy and the priors' logpdf_jax<->scipy oracles)."""
+    import jax.numpy as jnp
+    from pybnf.analytical_model import ExpressionModel
+    model = ExpressionModel('0.5*((p1 - 2)^2 + (p2 + 1)^2/4) + sin(p1)', ['p1', 'p2'], 'expr')
+    nll = model.nll_jax()
+    numf = model._compiled()
+    rng = np.random.default_rng(0)
+    for _ in range(12):
+        x = rng.normal(size=2) * 3.0
+        assert float(nll(jnp.asarray(x))) == pytest.approx(float(numf(*x)), rel=1e-5, abs=1e-6)
