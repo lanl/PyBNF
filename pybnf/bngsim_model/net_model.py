@@ -310,6 +310,15 @@ class BngsimModel(NetModel):
                         self.name, pname, self.param_set[pname],
                     )
 
+        # Re-derive species initial concentrations from the just-applied params.
+        # A flattened .net materializes species ICs as concrete numbers at load,
+        # and set_param touches only the parameter table / rate laws -- so a free
+        # parameter that *only* seeds a species IC (e.g. ``S() <- S0``) would be a
+        # silent no-op without this sync (#450). No-op (and byte-unchanged) for
+        # models with no param-driven species initializers; the scan paths already
+        # sync via _prepare_scan_point_model.
+        self._sync_species_initial_concentrations(model)
+
         model.reset()
         self._pybnf_current_action_info = None
         try:

@@ -295,12 +295,10 @@ def _decay_run(k_eff, s0_eff, with_sensitivities):
     tensor attached when ``with_sensitivities``).
 
     ``S0`` is the bare initializer of species ``S()`` (``S() <- S0``), so #448 routes it to
-    the initial-condition axis. A normal time-course ``execute`` does **not** re-evaluate
-    species initializers from the current parameters -- only the scan path
-    (``_prepare_scan_point_model``) does -- so we sync them here (and ``save_concentrations``
-    so the value survives ``execute``'s ``reset()``), exactly as a gradient-driven IC fit
-    must. This makes ``S0`` genuinely live, so PyBNF's loss responds to it and the FD
-    reference matches the assembled initial-condition gradient."""
+    the initial-condition axis. ``execute`` re-derives species initializers from the current
+    parameters (#450), so ``S0`` is genuinely live and PyBNF's loss responds to it exactly as
+    a gradient-driven IC fit requires -- which is what lets the FD reference match the assembled
+    initial-condition gradient."""
     import pybnf.bngsim_model as bngsim_model
     net = FIXTURES / 'e2e_ode_decay.net'
     model = bngsim_model.BngsimModel(
@@ -309,10 +307,6 @@ def _decay_run(k_eff, s0_eff, with_sensitivities):
         FreeParameter('k', 'uniform_var', 0.0, 100.0, value=k_eff),
         FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=s0_eff),
     ])
-    engine = model._engine_model
-    engine.set_param('k', k_eff)
-    engine.set_param('S0', s0_eff)
-    model._sync_species_initial_concentrations(engine)   # S() <- S0 becomes live
     if with_sensitivities:
         model.enable_output_sensitivities(params=['k'], ic=['S()'])
     return model.execute('/tmp', 'fd', 60)['tc']

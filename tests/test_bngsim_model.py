@@ -10,10 +10,14 @@ embedded copy; this file pins the lanl/PyBNF behavioral contract.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 import pybnf.bngsim_model as bngsim_model
+
+FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
 
 
 def test_classifier_accepts_interleaved_scan_and_concentration_expression():
@@ -165,3 +169,42 @@ def test_rint_diverges_from_python_round_on_ties():
     assert ns['rint'](2.5) == 3   # round(2.5) == 2
     assert ns['rint'](0.5) == 1   # round(0.5) == 0
     assert ns['rint'](-1.5) == -1  # round(-1.5) == -2
+
+
+# --------------------------------------------------------------------------- #
+# execute() must re-derive species initial concentrations from current params
+# (#450): a free parameter that only seeds a species IC must move the model.
+# --------------------------------------------------------------------------- #
+def _run_decay_for_s0(s0):
+    """Run the analytic-decay net (``S() <- S0``) at the given ``S0`` and return Stot(t)."""
+    from pybnf.pset import FreeParameter, PSet
+
+    net = FIXTURES / 'e2e_ode_decay.net'
+    model = bngsim_model.BngsimModel(
+        net.stem,
+        ['simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>10,suffix=>"tc"})'],
+        [('simulate', 'tc')], [], nf=str(net))
+    model.param_set = PSet([
+        FreeParameter('k', 'uniform_var', 0.0, 100.0, value=0.4),
+        FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=s0),
+    ])
+    d = model.execute('/tmp', 'x', 60)['tc']
+    return d.data[:, d.cols['Stot']]
+
+
+@pytest.mark.bngsim
+def test_execute_resyncs_ic_only_free_parameter():
+    """A free parameter whose *only* role is to seed a species' initial concentration
+    (``S() <- S0``, with ``S0`` absent from the ODE RHS) must change the simulation on the
+    bngsim net backend. A flattened .net materializes species ICs as concrete numbers at
+    load and ``set_param`` touches only the parameter table -- so without execute()'s
+    initializer re-sync this knob was a silent no-op (a confidently wrong fit). See #450."""
+    low = _run_decay_for_s0(100.0)
+    high = _run_decay_for_s0(200.0)
+
+    # Stot(0) tracks S0 exactly, and the whole decay trajectory scales with it.
+    assert low[0] == pytest.approx(100.0)
+    assert high[0] == pytest.approx(200.0)
+    assert not np.allclose(low, high)
+    # Pure linear decay from a bare IC seed: doubling S0 doubles every point.
+    assert high == pytest.approx(2.0 * low)
