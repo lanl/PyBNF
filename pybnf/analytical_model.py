@@ -462,12 +462,30 @@ class ExpressionModel(Model):
     (recompiled once per dask worker). For ``job_type = hmc`` it also exposes :meth:`nll_jax` --
     the *same* sympy expression lambdified with the JAX backend (ADR-0059 item 2), so HMC
     ``jax.grad``s a user's bring-your-own log-density exactly as it does the built-in menu targets.
+
+    **Data binding (ADR-0050 data follow-up).** With a ``data = curve.exp`` key the expression
+    becomes a **per-observation** NLL contribution over the free parameters *and* the data columns
+    (``expression = 0.5*((y - vmax*x/(km+x))/sigma)^2`` references the parameters ``vmax``/``km``/
+    ``sigma`` and the columns ``x``/``y`` of the bound ``.exp``): :meth:`execute` evaluates it once
+    per data row -- parameters bound to scalars, columns to the row's arrays -- and **sums** the
+    result over every row and every bound experiment, the ``Σ per-point NLL`` taxonomy (#424). Data
+    columns are *not* coordinates the sampler varies, so :meth:`coordinate_order` returns only the
+    parameter symbols; :meth:`nll_jax` closes over the column arrays as constants and sums, so the
+    gradient path differentiates a data-bound curve fit exactly as the numpy path scores it. The
+    bound data (a name->:class:`~pybnf.data.Data` map) travels with the model to the dask workers
+    and is **kept** in the pickle state (only the lambdified callables are dropped). With no ``data``
+    key ``_data_columns`` is empty and the expression is a pure function of the parameters, scored
+    once -- the original contract, unchanged. Arbitrary (non-per-observation) reductions are the
+    :class:`CallableModel`'s job; the expression is the per-observation common case.
     """
 
-    def __init__(self, formula, ordered_names, name, *, pset=None):
+    def __init__(self, formula, ordered_names, name, *, data=None, data_columns=(), pset=None):
         """``formula`` is the PEtab-math NLL string; ``ordered_names`` the sorted free-symbol
         names it expects positionally (from :func:`compile_objective_expression`); ``name`` the
-        synthesized model id (also the per-evaluation file prefix -- there is no file)."""
+        synthesized model id (also the per-evaluation file prefix -- there is no file). ``data`` is
+        the optional bound experimental data (a name->:class:`~pybnf.data.Data` map, one entry per
+        ``.exp`` file) and ``data_columns`` the subset of ``ordered_names`` that are its data-column
+        symbols (vs. free parameters) -- both empty for a pure-parameter expression."""
         self.formula = formula
         self._ordered_names = list(ordered_names)
         self.name = name
@@ -477,6 +495,14 @@ class ExpressionModel(Model):
         self.has_observables = True
         self.param_names = set()  # All params come from the config, not a model file
         self._pset = pset
+        # Data binding (ADR-0050 follow-up): the bound experimental data (name->Data, or None) and
+        # the data-column symbols among ordered_names. _param_names is the complementary subset --
+        # the free-parameter symbols, in ordered_names order -- which is what the HMC sampler
+        # varies (coordinate_order) and the per-point evaluation binds to scalars. The data is kept
+        # across the dask boundary (numpy-backed Data pickles fine), unlike the callables below.
+        self._data = data
+        self._data_columns = set(data_columns)
+        self._param_names = [n for n in self._ordered_names if n not in self._data_columns]
         # The lambdify-generated callables are not picklable (no importable qualname), so each is
         # compiled on first use and re-derived after unpickling rather than carried across the
         # dask boundary -- see _compiled() / nll_jax() and __getstate__. `_func` is the numpy
@@ -500,19 +526,21 @@ class ExpressionModel(Model):
         """The expression's free-symbol names, in the order :meth:`nll_jax` consumes them
         (ADR-0059 item 2 / ADR-0034 bind-by-name).
 
-        For an expression the coordinates *are* the named free symbols, so this is simply
-        ``_ordered_names`` -- the symbol order the lambdified callable expects positionally. The
-        gradient-based ``hmc`` sampler permutes its ``self.variables``-order ``u`` into this order
-        (``HMCSampler._coordinate_permutation``) so a parameter binds to the symbol of the same
-        name, not by declaration position. A declared parameter the expression does not reference
-        is simply absent (the likelihood is flat in it; its prior still samples it). Every name is
-        a declared free parameter (config validated), so ``param_names`` only sanity-bounds them."""
-        missing = [n for n in self._ordered_names if n not in set(param_names)]
+        For an expression the coordinates *are* the named free-**parameter** symbols (``_param_names``
+        -- ``_ordered_names`` minus any bound data columns, which the sampler does not vary), in the
+        order :meth:`nll_jax` consumes ``theta``. The gradient-based ``hmc`` sampler permutes its
+        ``self.variables``-order ``u`` into this order (``HMCSampler._coordinate_permutation``) so a
+        parameter binds to the symbol of the same name, not by declaration position. A declared
+        parameter the expression does not reference is simply absent (the likelihood is flat in it;
+        its prior still samples it). Every parameter symbol is a declared free parameter (config
+        validated), so ``param_names`` only sanity-bounds them. For a pure-parameter expression
+        ``_param_names == _ordered_names``, so this is unchanged from before data binding."""
+        missing = [n for n in self._param_names if n not in set(param_names)]
         if missing:                                     # defensive: config load already guarantees this
             raise PybnfError(
                 f"The objective expression references {missing}, which are not among the declared "
                 f"free parameters {sorted(param_names)} (ADR-0050 bind-by-name).")
-        return list(self._ordered_names)
+        return list(self._param_names)
 
     def nll_jax(self):
         """Return a JAX-traceable ``f(theta) -> NLL`` for the expression (ADR-0059 item 2).
@@ -520,20 +548,43 @@ class ExpressionModel(Model):
         The JAX peer of :meth:`_compiled`: the *same* sympy expression, lambdified with the JAX
         backend (``compile_objective_expression(..., backend='jax')``), so the numpy score path and
         the differentiable HMC log-density are one source of truth -- they cannot drift, sharing the
-        parse, the validation, and the bind-by-name ``_ordered_names`` ordering. ``theta`` is a JAX
-        array of the referenced symbols' values in ``_ordered_names`` (= :meth:`coordinate_order`)
-        order, which is exactly what the HMC permutation delivers; it is unpacked into the callable's
-        positional scalar arguments. Compiled once and memoized (HMC runs in-process, so this never
-        crosses the dask boundary)."""
+        parse, the validation, and the bind-by-name ordering. ``theta`` is a JAX array of the
+        free-parameter values in ``_param_names`` (= :meth:`coordinate_order`) order, which is
+        exactly what the HMC permutation delivers. Compiled once and memoized (HMC runs in-process,
+        so this never crosses the dask boundary).
+
+        Pure-parameter case: the parameters are the only symbols, so ``theta`` is unpacked straight
+        into the callable's positional arguments. **Data-bound case** (a ``data = ...`` curve fit):
+        the callable's arguments are the parameters *and* the data columns; this closes over each
+        bound experiment's column arrays as JAX constants, binds the parameters from ``theta``, and
+        **sums** the per-row callable over every row and experiment -- the differentiable peer of the
+        numpy per-observation sum in :meth:`execute`, so HMC ``jax.grad``s a data-bound curve fit
+        exactly as the score path evaluates it."""
         if self._jax_func is None:
             from .petab.formula import compile_objective_expression
             self._jax_func, _ = compile_objective_expression(
                 self.formula, self._ordered_names, backend='jax')
         jax_func = self._jax_func
-        n = len(self._ordered_names)
+        if not self._data_columns:
+            n = len(self._ordered_names)
+
+            def nll(theta):
+                return jax_func(*(theta[i] for i in range(n)))
+            return nll
+        import jax.numpy as jnp
+        param_index = {name: i for i, name in enumerate(self._param_names)}
+        # Stage each experiment's referenced column arrays as JAX constants once (outside the
+        # traced nll); theta supplies the parameter scalars at trace time.
+        experiments = [{c: jnp.asarray(d[c]) for c in self._data_columns}
+                       for d in self._data.values()]
 
         def nll(theta):
-            return jax_func(*(theta[i] for i in range(n)))
+            total = jnp.asarray(0.0)
+            for cols in experiments:
+                args = [cols[name] if name in cols else theta[param_index[name]]
+                        for name in self._ordered_names]
+                total = total + jnp.sum(jax_func(*args))
+            return total
         return nll
 
     def __getstate__(self):
@@ -559,27 +610,60 @@ class ExpressionModel(Model):
 
     def execute(self, folder, filename, timeout):
         """Evaluate the expression NLL at the current parameter set (bind-by-name) and return
-        it in a one-cell ``score`` column, mirroring :meth:`AnalyticalModel.execute`."""
+        it in a one-cell ``score`` column, mirroring :meth:`AnalyticalModel.execute`.
+
+        Pure-parameter expression: evaluate once over the parameter scalars. **Data-bound**
+        expression (a ``data = ...`` curve fit): evaluate the per-observation contribution once per
+        bound experiment with the parameters bound to scalars and the data columns to the rows'
+        arrays, then **sum** over every row and experiment -- the ``Σ per-point NLL`` taxonomy."""
         # Small delay to prevent dask race condition with instant-completion tasks (the
         # integration harness patches this module's time.sleep to a no-op).
         time.sleep(0.01)
         if self._pset is None:
             raise ValueError('ExpressionModel has no parameter set')
         func = self._compiled()
-        try:
-            args = [self._pset[name] for name in self._ordered_names]
-        except KeyError as e:
-            # Defensive: config-time validation already guarantees every free symbol is a
-            # declared free parameter (hence present in the PSet), so this should be unreachable.
-            raise PybnfError(
-                f"The objective expression references free parameter {e}, which is not in the "
-                f"parameter set. Declared free parameters bind to the expression's symbols by "
-                f"name (ADR-0050).")
-        score = float(func(*args))
+        if not self._data_columns:
+            try:
+                args = [self._pset[name] for name in self._ordered_names]
+            except KeyError as e:
+                # Defensive: config-time validation already guarantees every free symbol is a
+                # declared free parameter (hence present in the PSet), so this should be unreachable.
+                raise PybnfError(
+                    f"The objective expression references free parameter {e}, which is not in the "
+                    f"parameter set. Declared free parameters bind to the expression's symbols by "
+                    f"name (ADR-0050).")
+            score = float(func(*args))
+        else:
+            score = self._score_data_bound(func)
         data = Data(arr=np.array([[0.0, score]]))
         data.cols = {'index': 0, 'score': 1}
         data.headers = {0: 'index', 1: 'score'}
         return {self.suffixes[0]: data}
+
+    def _score_data_bound(self, func):
+        """Sum the per-observation expression over every row of every bound experiment (the
+        data-binding follow-up). Parameters bind to scalars (by name from the PSet), data columns
+        to the experiment's row arrays (by header from the :class:`~pybnf.data.Data`); ``func``
+        broadcasts the scalars over the arrays to a per-row vector, which ``np.sum`` reduces."""
+        if not self._data:                              # defensive: columns imply bound data at config load
+            raise ValueError('Data-bound ExpressionModel has no experimental data')
+        total = 0.0
+        for exp_name, d in self._data.items():
+            args = []
+            for name in self._ordered_names:
+                if name in self._data_columns:
+                    try:
+                        args.append(d[name])
+                    except KeyError:
+                        raise PybnfError(
+                            f"The objective expression references data column '{name}', which is "
+                            f"not in experiment '{exp_name}'.",
+                            f"Its columns are {sorted(d.cols)}. Every bound experiment must carry "
+                            f"every data column the expression references (ADR-0050 data binding).")
+                else:
+                    args.append(self._pset[name])
+            total += float(np.sum(func(*args)))
+        return total
 
 
 def resolve_callable_entry_point(entry_point):

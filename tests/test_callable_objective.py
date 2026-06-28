@@ -440,14 +440,14 @@ def test_callable_data_stem_collision_errors(tmp_path):
         _build(tmp_path, body)
 
 
-def test_data_key_without_callable_objective_errors(tmp_path):
-    # The data key is callable-only; a stray data key under another objective is a pointed error,
-    # not a silent no-op.
-    body = ('edition = 2\nobjective = expression\nexpression = (x1 - 3)^2\n'
+def test_data_key_with_non_analytical_objective_errors(tmp_path):
+    # The data key is for bring-your-own analytical objectives (expression/callable) only; a stray
+    # data key under a menu target (or any other objective) is a pointed error, not a silent no-op.
+    body = ('edition = 2\nobjective = banana, a = 1, b = 100\n'
             f'data = {_write_exp(tmp_path, "line", _LINE_ROWS)}\njob_type = de\n'
             'uniform_var = x1 -5 5\nuniform_var = x2 -5 5\n'
             'population_size = 5\nmax_iterations = 3\n')
-    with pytest.raises(PybnfError, match="only valid with 'objective = callable'"):
+    with pytest.raises(PybnfError, match="only valid with 'objective = expression'"):
         _build(tmp_path, body)
 
 

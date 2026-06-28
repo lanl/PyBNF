@@ -811,6 +811,36 @@ def test_hmc_expression_binds_coordinates_by_name(tmp_path):
 
 
 @_requires_petab
+def test_hmc_samples_data_bound_expression(tmp_path):
+    """ADR-0050 data binding through the HMC gradient path -- a data-bound ``objective = expression``
+    curve fit. The per-observation Gaussian NLL ``0.5*(y - (p1*x + p2))^2`` over data exactly on the
+    line ``y = 2x + 1`` (with x **centered**, so the design matrix is diagonal) has a closed-form
+    flat-prior posterior: ``theta ~ N(theta_LS, (XᵀX)⁻¹)`` = ``N((2, 1), diag(0.2, 0.25))``. HMC must
+    recover that mean and (axis-aligned) variance, divergence-free -- ``ExpressionModel.nll_jax``
+    closes over the data columns as JAX constants and sums the per-row NLL, the differentiable peer
+    of the numpy ``execute`` per-observation sum, so ``jax.grad`` drives NUTS on a curve fit."""
+    exp = tmp_path / 'line.exp'
+    exp.write_text('# x y\n-1.5 -2\n-0.5 0\n0.5 2\n1.5 4\n')   # y = 2x + 1, x centered (Σx = 0)
+    body = ('edition = 2\nobjective = expression\n'
+            'expression = 0.5*(y - (p1*x + p2))^2\n'
+            f'data = {exp}\njob_type = hmc\n'
+            'uniform_var = p1 -12 12\nuniform_var = p2 -12 12\n'
+            'population_size = 4\nnum_warmup = 1000\nnum_samples = 2000\n'
+            'max_iterations = 2000\nrandom_seed = 20260627\n')
+    conf = _build_expr_config(tmp_path, body)
+    assert list(conf.models) == ['expression']          # fileless data-bound ExpressionModel
+    assert conf.models['expression']._data_columns == {'x', 'y'}
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 2)
+    assert samples.shape[0] == 4 * 2000 and np.all(np.isfinite(samples))
+    np.testing.assert_allclose(samples.mean(axis=0), [2.0, 1.0], atol=0.1)       # theta_LS
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1), [0.2, 0.25], rtol=0.15)  # (XᵀX)⁻¹
+    assert sum(alg.divergences) == 0
+
+
+@_requires_petab
 def test_expression_nll_jax_matches_numpy(tmp_path):
     """``ExpressionModel.nll_jax`` (the HMC gradient path) must equal its numpy ``_compiled``
     callable (the score path) at arbitrary points -- one sympy expression, two lambdify backends,

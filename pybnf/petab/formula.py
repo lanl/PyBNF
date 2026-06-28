@@ -231,9 +231,9 @@ def compile_petab_formula(formula, allowed_symbols, *, detail=None):
     return func, names
 
 
-def compile_objective_expression(formula, free_params, *, backend='numpy'):
+def compile_objective_expression(formula, free_params, *, data_columns=(), backend='numpy'):
     """Compile a bring-your-own objective ``expression`` to ``(callable, ordered_names)``
-    (ADR-0050; the JAX backend is ADR-0059 item 2).
+    (ADR-0050; the JAX backend is ADR-0059 item 2; data columns are the data-binding follow-up).
 
     The fourth direction of the translator: the user writes a closed-form negative
     log-likelihood (or cost) as PEtab math over the *declared free parameters* --
@@ -246,10 +246,18 @@ def compile_objective_expression(formula, free_params, *, backend='numpy'):
     terms (naming it). PEtab math uses ``^`` for exponentiation (not ``**``); a ``**`` surfaces
     as a clear parse error here.
 
-    ``free_params`` is the set/iterable of declared free-parameter names. Returns the callable
-    and the **sorted** free-symbol names it expects positionally
-    (``callable(*[pset[name] for name in ordered_names])``); a declared parameter the expression
-    does not reference is simply absent from the list (a likelihood flat in that direction).
+    ``free_params`` is the set/iterable of declared free-parameter names. ``data_columns`` is the
+    set/iterable of experimental-data column names *also* allowed as symbols when the objective
+    binds measurements (``data = curve.exp``; the data-binding follow-up): a data-bound expression
+    is a **per-observation** NLL contribution over the parameters *and* the row's data columns
+    (``(y - vmax*x/(km+x))^2`` references the free parameters ``vmax``/``km`` and the data columns
+    ``x``/``y``), which the model evaluates per row and sums (``ExpressionModel.execute``). With no
+    bound data ``data_columns`` is empty and the contract is unchanged.
+
+    Returns the callable and the **sorted** free-symbol names it expects positionally
+    (``callable(*[binding[name] for name in ordered_names])``, where a parameter name binds to a
+    scalar and a data-column name to that column's array); a declared parameter the expression does
+    not reference is simply absent from the list (a likelihood flat in that direction).
 
     ``backend`` selects the lambdify target: ``'numpy'`` (the default) feeds the gradient-free
     ``score``-column path (``de`` / ``am`` / ``dream``); ``'jax'`` produces a JAX-traceable callable
@@ -260,18 +268,22 @@ def compile_objective_expression(formula, free_params, *, backend='numpy'):
     agree by construction.
 
     Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable expression, or a free
-    symbol that is not a declared free parameter."""
+    symbol that is neither a declared free parameter nor a bound data column."""
     sympify_petab = _require_petab_math()
     expr = _parse(sympify_petab, formula, source='objective expression')
-    allowed = set(free_params)
+    params, columns = set(free_params), set(data_columns)
+    allowed = params | columns
+    column_hint = (f" or a bound data column ({sorted(columns)})" if columns else "")
     _check_symbols(
         expr, allowed,
         unknown=lambda name: (
             f"The objective expression references '{name}', which is not a declared free "
-            f"parameter. An inline 'objective = expression' may reference only parameters you "
-            f"declare (uniform_var / normal_var / a 'parameter:' record); '{name}' is not "
-            f"declared (ADR-0050). Either declare it as a free parameter or fix the typo."),
-        detail=f"Declared free parameters: {sorted(allowed)}.")
+            f"parameter{column_hint}. An inline 'objective = expression' may reference only "
+            f"parameters you declare (uniform_var / normal_var / a 'parameter:' record)"
+            f"{' and the columns of its bound data files' if columns else ''}; '{name}' is "
+            f"neither (ADR-0050). Either declare it as a free parameter or fix the typo."),
+        detail=f"Declared free parameters: {sorted(params)}." +
+               (f" Bound data columns: {sorted(columns)}." if columns else ""))
     import sympy as sp
     names = sorted(str(s) for s in expr.free_symbols)
     func = sp.lambdify([sp.Symbol(n) for n in names], expr, modules=backend)

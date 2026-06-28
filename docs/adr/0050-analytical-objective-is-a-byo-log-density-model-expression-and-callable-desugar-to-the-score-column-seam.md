@@ -5,20 +5,24 @@ fileless. The **expression** form (`objective = expression` + `expression = <PEt
 synthesized `ExpressionModel` (numpy via the sympy `compile_objective_expression` backend; bind-by-
 name; ADR-0059 item 2 adds the JAX `nll_jax` so HMC differentiates it). The **callable** form
 (`objective = callable` + `callable = module:func` *or* `path/to/file.py:func`) is a synthesized
-`CallableModel` resolving `f(params, data=None) -> float` — both a dotted `importlib.import_module`
+`CallableModel` resolving `f(params, data) -> float` — both a dotted `importlib.import_module`
 and a `spec_from_file_location` file path are accepted, validated at config load (fail fast). The
 callable is gradient-free (not JAX-traceable), so `job_type = hmc` rejects it with a pointed error.
-All three open questions are now settled. (1) The expression form **reuses** the `pybnf[petab]`
-sympy grammar (one grammar; gated behind the extra). (2) **Callable data binding:** experimental
-data is declared with a top-level `data = f1.exp, f2.exp` key (callable-only — a pointed error under
-any other objective) and presented to the callable as a **name→`Data` mapping keyed by file stem**
-(`f(params, data)` where `data = {'f1': Data, 'f2': Data}`, one entry per experiment) — multi-
-experiment data is keyed by name exactly as `params` is, the symmetric answer. The data is loaded at
-config load (fail-fast) and bound onto the `CallableModel`, travelling with it to the dask workers
-(numpy-backed `Data` pickles fine); with no `data` key the callable is invoked `data=None` (the
-pure-analytical case). The NLL stays **model-side** (decision §1), so this binds data onto the model,
-not through the objective. Both forms drop the dummy `.exp` and compose with the prior catalog for
-free.
+All open questions are settled. (1) The expression form **reuses** the `pybnf[petab]` sympy grammar
+(one grammar; gated behind the extra). (2) **Data binding** (both forms): experimental data is
+declared with a top-level `data = f1.exp, f2.exp` key — valid only with `objective = expression` or
+`callable` (a pointed error otherwise) — each `.exp` loaded as one experiment into a **name→`Data`
+mapping keyed by file stem**, the data kept *model-side* (decision §1: the NLL is computed in the
+Model, not the objective) and travelling with it to the dask workers (numpy-backed `Data` pickles
+fine). The two forms differ in how they consume it: a **callable** receives the whole mapping as its
+second argument (`f(params, data)` with `data = {'f1': Data, …}` or `None`) and reduces it however it
+likes; an **expression** becomes a **per-observation** NLL over the parameters *and* the bound data
+columns (`0.5*(y - vmax*x/(km+x))^2` references columns `x`/`y`), which the model evaluates per row
+and **sums** over every row and experiment (the `Σ per-point NLL` taxonomy, #424) — data columns are
+not coordinates, so `coordinate_order`/`nll_jax` vary only the parameter symbols and close over the
+columns as constants, making a **data-bound curve fit fully gradient-based under `job_type = hmc`**.
+Arbitrary (non-per-observation) reductions are the callable's job; the expression covers the common
+per-observation case. Both forms drop the dummy `.exp` and compose with the prior catalog for free.
 
 A user can fit or sample an arbitrary closed-form objective — a negative
 log-likelihood, an engineered cost, an analytical test function — **without a BNGL or SBML model
@@ -187,13 +191,15 @@ to `build_named_objective`'s dispatch (`pybnf/objective.py`) the same way `score
 - **Exact config spelling:** ~~`objective = expression` + `expression =` vs. a dedicated key; how the
   canned targets are named.~~ **Resolved:** `objective = expression` + a companion `expression =` key
   (and `objective = callable` + `callable =`); the canned targets are named inline on the objective
-  line (`objective = banana, a = 1, b = 100`; ADR-0059 item 6). *Still open (separate follow-up):* a
-  **data-bound expression** referencing `.exp` columns — only the callable form binds data so far.
+  line (`objective = banana, a = 1, b = 100`; ADR-0059 item 6). A **data-bound expression** references
+  `.exp` columns directly (`expression = 0.5*(y - vmax*x/(km+x))^2` + `data = curve.exp`): the column
+  headers join the parameters in the compile namespace and the expression is summed per observation —
+  the same `data =` key the callable uses.
 - **Callable signature & data binding:** ~~the precise `(params, data)` contract and how multi-
   experiment data is presented.~~ **Resolved:** `f(params, data)` where `params` is a name→value
   dict and `data` is a name→`Data` mapping keyed by file stem (`None` when no data is bound),
-  declared with the callable-only `data = f1.exp, f2.exp` key — multi-experiment data is keyed by
-  name exactly as parameters are.
+  declared with the `data = f1.exp, f2.exp` key (valid for `expression`/`callable`) — multi-
+  experiment data is keyed by name exactly as parameters are.
 
 ## Boundaries (in code — the seams this builds on / where new surface lands)
 
