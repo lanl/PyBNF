@@ -1,0 +1,43 @@
+# Gradient pre-equilibration FD-oracle fixture (issue #457, layer J of #385).
+# Birth-death with a SWITCHABLE production (mirrors recovery_models/m09_preequilibration):
+#   0 -> A at rate k_prod*Production_isOn,  A -> 0 at rate k_deg.
+# Equilibrating with Production_isOn=1 settles A to A_ss = k_prod/k_deg; switching production
+# OFF (Production_isOn=0) then makes A decay as A(t) = (k_prod/k_deg)*exp(-k_deg*t). The
+# measurement's t=0 value is ENTIRELY the equilibration steady state, so the gradient of the
+# measured trajectory w.r.t. k_prod flows ENTIRELY through the steady-state sensitivity seed
+# (k_prod is absent from the measurement-phase RHS) -- the sharpest possible test of the
+# pre-equilibration sensitivity continuity (ADR-0052 / bngsim GH #210).
+begin model
+
+begin parameters
+  k_prod           3.0   # production rate
+  k_deg            2.0   # degradation rate
+  Production_isOn  1      # 0/1 flag: equilibrate ON, measure OFF (set inline via setParameter)
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  0
+end seed species
+
+begin observables
+  Molecules  A_tot  A()
+end observables
+
+begin functions
+  prod_rate()  k_prod * Production_isOn
+end functions
+
+begin reaction rules
+  birth: 0 -> A()    prod_rate()
+  death: A() -> 0    k_deg
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+end actions

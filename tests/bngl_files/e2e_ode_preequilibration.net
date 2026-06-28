@@ -1,0 +1,19 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k_prod           3.0  # Constant
+    2 k_deg            2.0  # Constant
+    3 Production_isOn  1  # Constant
+end parameters
+begin functions
+    1 prod_rate() k_prod*Production_isOn
+end functions
+begin species
+    1 A() 0
+end species
+begin reactions
+    1 0 1 prod_rate #birth
+    2 1 0 k_deg #death
+end reactions
+begin groups
+    1 A_tot                1
+end groups

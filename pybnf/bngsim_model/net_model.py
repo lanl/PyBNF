@@ -68,11 +68,21 @@ class _SimulateActionState:
     the running model time for ``continue=>1``. This bundles that shared state so
     the duplicated simulate() handling can live in one place
     (``_prepare_simulate_run``).
+
+    ``carried_state`` mirrors bngsim's own "the persistent simulator was advanced
+    by a prior ``run()`` with no reset since" notion (the gradient pre-equilibration
+    seam, GH #210 / #457): ``True`` once a simulate has run on the current
+    ``sim``, cleared by a ``resetConcentrations()`` (``model.reset()``) or a
+    simulator (re)creation. On the gradient path it is the trigger for
+    ``carry_sensitivities=True`` so the measurement phase's forward-sensitivity
+    ICs are seeded from the equilibration steady-state sensitivity ``dx_ss/dθ``
+    instead of zero (ADR-0052).
     """
     sim: object
     method: str = 'ode'
     poplevel: object = None
     current_time: float = 0.0
+    carried_state: bool = False
 
 
 @dataclass
@@ -423,6 +433,7 @@ class BngsimModel(NetModel):
                 })
                 result = self._run_prepared_simulate(plan, stop_log_label='stop_if triggered')
                 state.current_time = plan.t_end
+                state.carried_state = True   # the simulator now holds an advanced state
                 ds[plan.suffix] = self._result_to_data(result, print_functions=plan.print_funcs)
                 continue
 
@@ -441,6 +452,7 @@ class BngsimModel(NetModel):
 
             if _is_reset_concentrations(line):
                 model.reset()
+                state.carried_state = False   # reset clears the carried-over state
                 concentration_overrides.clear()
                 continue
 
@@ -556,6 +568,7 @@ class BngsimModel(NetModel):
                 last_result = self._run_prepared_simulate(
                     plan, stop_log_label='protocol stop_if triggered')
                 state.current_time = plan.t_end
+                state.carried_state = True   # the simulator now holds an advanced state
                 continue
 
             # ── setConcentration() ──
@@ -595,6 +608,7 @@ class BngsimModel(NetModel):
             # ── resetConcentrations() ──
             if _is_reset_concentrations(line):
                 model.reset()
+                state.carried_state = False   # reset clears the carried-over state
                 continue
 
             # ── saveConcentrations() ──
@@ -625,6 +639,7 @@ class BngsimModel(NetModel):
                     model, method=state.method,
                     **self._codegen_kwargs(state.method),
                     **self._sensitivity_request_kwargs(state.method))
+                state.carried_state = False   # a fresh simulator carries no state
                 continue
 
             logger.debug("protocol: skipping unrecognized command: %s", line)
@@ -725,12 +740,31 @@ class BngsimModel(NetModel):
                 )
                 state.method = 'psa'
                 state.poplevel = poplevel
+                state.carried_state = False   # a fresh simulator carries no state
         elif state.method != method:
             state.sim = _runtime.bngsim.Simulator(
                 model, method=method,
                 **self._codegen_kwargs(method), **self._sensitivity_request_kwargs(method))
             state.method = method
             state.poplevel = None
+            state.carried_state = False       # a fresh simulator carries no state
+
+        # Pre-equilibration sensitivity continuity (ADR-0052, GH #210 / #457): on the
+        # gradient path, a measurement-phase simulate that continues a carried-over species
+        # state (a prior run() on this same persistent simulator, no reset since -- e.g. the
+        # steady-state equilibration phase) must seed its forward-sensitivity ICs from that
+        # phase's final sensitivity ``dx_ss/dθ`` rather than zero. bngsim does the implicit-
+        # function-theorem seeding when ``carry_sensitivities=True``; it *requires*
+        # sensitivity_params and *raises* if sensitivities are requested on a carried-over
+        # state without the flag (and, conversely, if the flag is set on a fresh run), so the
+        # condition below mirrors bngsim's own carried-state notion exactly. The scalar path
+        # (no _sensitivity_request) never sets it -- byte-identical pre-equilibration there.
+        # carry_sensitivities requires sensitivity_params (an initial-condition column cannot be
+        # carried across a stable steady state -- ∂x*/∂x(0) = 0 -- and the backend refuses it),
+        # so the parameter axis is what gates the flag; an IC-only request never reaches here.
+        req = self._sensitivity_request
+        if req is not None and req.params and method == 'ode' and state.carried_state:
+            run_kwargs['carry_sensitivities'] = True
 
         if stop_if:
             state.sim.add_stop_condition(stop_if, label=stop_if)

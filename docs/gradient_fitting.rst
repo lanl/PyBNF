@@ -248,6 +248,39 @@ observable) needs no measurement model — it scores that column directly throug
 sensitivity.
 
 
+Pre-equilibration / steady state
+--------------------------------
+
+A **pre-equilibration** experiment (``preequilibrate:``) runs the model unmeasured to steady state,
+switches a condition, then measures the transient from that equilibrated state — one simulation,
+two phases, species state carried over with no reset between them (ADR-0052). The measured
+trajectory's initial condition *is* the steady state :math:`x^\*(\theta)`, which itself depends on
+the free parameters, so the measurement phase's forward sensitivities must start not from zero but
+from the **steady-state sensitivity** :math:`\partial x^\*/\partial\theta`:
+
+.. math::
+
+   \frac{\partial x^\*}{\partial\theta}
+   = -\Bigl(\frac{\partial f}{\partial x}\Bigr)^{-1}\frac{\partial f}{\partial\theta},
+   \qquad f(x^\*,\theta) = 0,
+
+the implicit-function-theorem derivative of the steady-state condition. The backend computes this
+seed and threads it across the pre-equilibration boundary (it integrates the equilibration phase's
+sensitivities to their steady value and uses that as the measurement phase's initial sensitivity),
+so the assembly reads the measurement-phase tensor exactly as for any other experiment — no
+special case in the objective math. The effect is sharp where a parameter sets the equilibrium but
+is *switched out of* the measurement-phase dynamics: its entire measured-trajectory gradient flows
+through the seed, and would read identically zero without it.
+
+This is handled automatically: when the gradient path is active, the measurement phase of a
+pre-equilibration protocol seeds its (parameter-axis) sensitivities from the equilibration phase's
+steady-state sensitivity. The equilibration phase is a deterministic ODE run requesting the same
+parameter sensitivities (which the gradient path does by construction). A free parameter bound
+*only* to an **initial condition** is not carried across the boundary — a stable steady state is
+independent of its initial conditions (its steady-state sensitivity is zero), so there is nothing to
+seed; that combination is refused rather than reported as a (degenerate) zero.
+
+
 The capability gate (what is supported)
 ---------------------------------------
 
@@ -268,11 +301,11 @@ derivative. Not yet supported (each a separate, additive follow-up):
 * an estimated noise scale given by an **expression** over several free parameters, or a row-varying
   per-measurement σ (the formula chain rule is a later sub-layer);
 * a **mean** prediction on a **log** scale *together with* an estimated noise parameter (there the
-  moment correction depends on the noise parameter, coupling the estimated-scale column); and
-* **pre-equilibration / steady-state** sensitivities.
+  moment correction depends on the noise parameter, coupling the estimated-scale column).
 
-Every other objective continues to fit exactly as before; the gradient path is purely additive
-and inactive unless explicitly enabled.
+**Pre-equilibration / steady-state** sensitivities *are* supported (see above). Every other
+objective continues to fit exactly as before; the gradient path is purely additive and inactive
+unless explicitly enabled.
 
 
 Enabling sensitivities

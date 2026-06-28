@@ -1959,3 +1959,101 @@ def test_fd_acceptance_gate_sbml_measurement():
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
     assert res.least_squares_exact is True
+
+
+# ============================ FD acceptance: pre-equilibration (layer J, #457) ===
+
+PREEQUIL_TIMES = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+
+# The two-phase action block ADR-0052 synthesizes for a ``preequilibrate:`` experiment
+# (mirrors test_recovery.py::test_de_recovers_preequilibration's emitted actions): equilibrate
+# under Production_isOn=1 to steady state (unmeasured ``*_preequil`` suffix), switch production
+# OFF, then measure -- NO resetConcentrations between, so the equilibrated state carries over.
+PREEQUIL_ACTIONS = [
+    'resetConcentrations()',
+    'setParameter("Production_isOn",1)',
+    'simulate({method=>"ode",steady_state=>1,t_start=>0,t_end=>1000000,n_steps=>1,'
+    'suffix=>"relax_preequil"})',
+    'setParameter("Production_isOn",0)',
+    'simulate({method=>"ode",t_start=>0,sample_times=>[%s],suffix=>"relax"})'
+    % ','.join(repr(t) for t in PREEQUIL_TIMES),
+]
+
+
+def _preequil_run(k_prod_eff, k_deg_eff, with_sensitivities):
+    """Run the switchable birth-death net through the ADR-0052 two-phase pre-equilibration
+    protocol, optionally on the gradient path.
+
+    Equilibrating with ``Production_isOn=1`` settles ``A`` to ``A_ss = k_prod/k_deg``; switching
+    production OFF then makes ``A`` decay as ``A(t) = (k_prod/k_deg) exp(-k_deg t)`` from that
+    steady state. With ``with_sensitivities`` the measurement ``relax`` :class:`Data` carries the
+    forward-sensitivity tensor seeded across the equilibration boundary (``carry_sensitivities``,
+    GH #210 / #457): ``∂A/∂k_prod`` flows *entirely* through the steady-state seed (k_prod is
+    absent from the measurement-phase RHS), so a missing seed would read identically zero."""
+    import pybnf.bngsim_model as bngsim_model
+    net = FIXTURES / 'e2e_ode_preequilibration.net'
+    model = bngsim_model.BngsimModel(
+        net.stem, list(PREEQUIL_ACTIONS), [('simulate', 'relax')], [], nf=str(net))
+    model.param_set = PSet([
+        FreeParameter('k_prod', 'uniform_var', 0.0, 100.0, value=k_prod_eff),
+        FreeParameter('k_deg', 'uniform_var', 0.0, 100.0, value=k_deg_eff),
+    ])
+    if with_sensitivities:
+        model.enable_output_sensitivities(params=['k_prod', 'k_deg'])
+    return model.execute('/tmp', 'fd', 60)['relax']
+
+
+def _exp_relax(sim, sigma):
+    """Pre-equilibration experimental Data from a run's exact (time, A_tot) grid, with a
+    constant ``A_tot_SD`` column for the chi_sq fixed-sigma source."""
+    t = sim.data[:, sim.cols['time']]
+    obs = sim.data[:, sim.cols['A_tot']]
+    return Data.from_columns(np.column_stack([t, obs, np.full(len(obs), sigma)]),
+                             ['time', 'A_tot', 'A_tot_SD'])
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
+def test_fd_acceptance_gate_preequilibration(k_type):
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the two-phase
+    pre-equilibration net -- the #457 acceptance gate, layer J of the #385 epic.
+
+    The measured trajectory's initial condition IS the equilibration steady state ``A_ss(θ) =
+    k_prod/k_deg``, so the forward sensitivities of the measurement phase must be seeded from the
+    steady-state sensitivity ``∂A_ss/∂θ`` (the implicit-function-theorem seed bngsim supplies via
+    ``carry_sensitivities``, ADR-0052). This is the sharpest possible probe of that seam:
+    ``∂A(t)/∂k_prod`` is *entirely* the seed contribution -- k_prod sets the equilibrium but is
+    switched out of the measurement-phase RHS (``Production_isOn=0``), so without the carried-over
+    seed the assembled k_prod column would be identically zero while the true gradient is
+    ``(1/k_deg) exp(-k_deg t) ≠ 0``. ``k_deg`` exercises a seed term *and* a measurement-RHS term.
+    The ``loguniform_var`` variant adds the native->sampling transform on both columns."""
+    if k_type == 'loguniform_var':
+        pytest.importorskip('jax')
+
+    obj = ChiSquareObjective()
+    free = [FreeParameter('k_prod', k_type, 0.01, 100.0, value=2.5),
+            FreeParameter('k_deg', k_type, 0.01, 100.0, value=1.6)]
+    names = [p.name for p in free]
+
+    # Synthetic data at the *true* params (a different point than the evaluation point, so the
+    # residuals -- and hence the gradient -- are non-trivial), on the model's exact time grid.
+    k_prod_true, k_deg_true, sigma = 3.0, 2.0, 0.2
+    exp = _exp_relax(_preequil_run(k_prod_true, k_deg_true, False), sigma)
+
+    # No condition perturbs the free parameters: ``Production_isOn`` (the control flag the two
+    # phases switch inline) is not a free parameter, so both k_prod and k_deg route to the
+    # parameter sensitivity axis with factor 1 (wildtype routing).
+    params, species = ['k_prod', 'k_deg', 'Production_isOn'], []
+    routing = route_experiment(names, params, species, None)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        return obj.evaluate(_preequil_run(theta['k_prod'], theta['k_deg'], False), exp)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim = _preequil_run(free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    # Fixed sigma, all-Gaussian: the residual/Jacobian is the whole objective.
+    assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
