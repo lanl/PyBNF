@@ -436,3 +436,64 @@ def _require_jax():
             "with only linear-scale parameters needs no extra."
         ) from e
     return jax
+
+
+# ============================== constraint penalty gradient (layer I, #456) ===
+
+def assemble_constraint_gradient(constraint_sets, sim_data_dict, routings, free_params):
+    """The scalar gradient of the total constraint penalty w.r.t. the free parameters (layer I,
+    #456/#385), in **sampling space** -- the term #386 adds to the objective gradient for a fit
+    with active constraints.
+
+    ``constraint_sets`` is an iterable of :class:`~pybnf.constraint.ConstraintSet`; each
+    constraint's penalty is a piecewise (static) or Gaussian-CDF (likelihood) function of an at-/
+    between-time readout, so its gradient is that readout's forward sensitivity times the local
+    penalty slope (:meth:`~pybnf.constraint.Constraint.penalty_gradient`). ``sim_data_dict`` is the
+    ``{model: {suffix: Data}}`` the penalties are scored on, each ``Data`` carrying the #447
+    sensitivity tensor; ``routings`` maps ``(model, suffix) -> ExperimentRouting`` (#448) so a
+    readout's sensitivity is factor-folded into the free-parameter axes exactly as the objective's
+    is. ``free_params`` fixes the parameter (column) order and supplies the native->sampling
+    transform applied once at the end.
+
+    A penalty is not a sum of squares, so -- like an estimated noise normalizer (layer D) -- it
+    lives on the scalar gradient only: a fit with active constraints is not ``least_squares_exact``,
+    and #386 must consume the scalar gradient. Returns a ``(n_param,)`` vector (zeros for an empty
+    constraint set)."""
+    names = [p.name for p in free_params]
+    index = {name: j for j, name in enumerate(names)}
+    n_param = len(free_params)
+    raw_sens = _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param)
+    grad = np.zeros(n_param)
+    for cset in constraint_sets:
+        for constraint in cset.constraints:
+            grad += constraint.penalty_gradient(sim_data_dict, raw_sens, index, n_param)
+    return grad * _sampling_scale_factors(free_params)
+
+
+def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):
+    """Build ``raw_sens(model, suffix, observable, row) -> (n_param,)``: the native-space forward
+    sensitivity of one constraint readout, routing-factor-folded (#448), with a pinned (factor 0)
+    or model-unbound (``NONE``) parameter left at 0 -- the constraint counterpart of the
+    objective's ``raw_sens``, keyed by the full ``(model, suffix, observable)`` since a constraint
+    may read any simulation's output. The independent variable does not move with theta
+    (sensitivity 0); a constant operand is handled by the constraint (it never calls this)."""
+    def raw_sens(model, suffix, observable, row):
+        sim_data = sim_data_dict[model][suffix]
+        sens = sim_data.output_sensitivities
+        if sens is None:
+            raise GradientNotSupported(
+                "Constraint reads observable '%s' from model '%s' suffix '%s', whose simulation "
+                "carries no forward-sensitivity tensor; enable the gradient path (apply_routing) "
+                "on every model a constraint reads before assembling the constraint gradient."
+                % (observable, model, suffix))
+        if observable == sim_data.indvar:
+            return np.zeros(n_param)
+        routing = routings[(model, suffix)]
+        selector = _selector_for(sens, observable)
+        vec = np.zeros(n_param)
+        for name, route in routing.routes.items():
+            if route.factor == 0.0 or route.target == NONE:
+                continue
+            vec[index[name]] = route.factor * _sensitivity(sens, selector, route, row)
+        return vec
+    return raw_sens

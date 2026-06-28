@@ -188,6 +188,35 @@ own derivative so it stays exact.
   the cumulative/per-measurement transform on top, exactly as scoring does).
 
 
+Constraint penalties
+--------------------
+
+A fit may add **qualitative / inequality constraints** (a ``.prop`` / ``.con`` file) whose penalty
+is added to the objective — *"Stot > 90 at time = 2"*, *"A < B always"*, and the like. A
+constraint penalty is a piecewise (``weight``) or Gaussian-CDF (``confidence`` / ``tolerance``)
+function of an at-/between-time **readout** :math:`q_1 - q_2`, evaluated at the worst-case point
+:math:`i^\*` of its enforcement interval, so its gradient is that readout's forward sensitivity
+times the local penalty slope:
+
+.. math::
+
+   \frac{\partial(\text{penalty})}{\partial\theta}
+   = \underbrace{f'(\Delta)}_{\text{local slope}}\;
+     \Bigl(\frac{\partial q_{1}}{\partial\theta} - \frac{\partial q_{2}}{\partial\theta}\Bigr)_{i^\*},
+   \qquad \Delta = \max_i\,(q_{1,i} - q_{2,i}),
+
+evaluated at the achieving row :math:`i^\*` (Danskin's theorem; the *best* point if the constraint
+is enforced ``once``). For the **static** model :math:`f' = \text{weight}` where the constraint is
+violated and **0** where it is satisfied or pinned to a ``min_penalty`` floor (the non-smooth
+boundary takes the subgradient 0, like the Laplace kink). For the **likelihood** model
+:math:`f'(\Delta) = (p_\max - p_\min)\,\phi(-\Delta/k)/(k\,p_{\text{adj}})` — smooth everywhere.
+A constant operand contributes no sensitivity. PyBNF assembles the summed constraint gradient
+(:func:`~pybnf.gradient.assemble_constraint_gradient`), in sampling space, ready to add to the
+objective gradient. Like an estimated-σ normalizer, a penalty is **not** a sum of squares, so a fit
+with active constraints is not ``least_squares_exact`` (its gradient is consumed on the scalar
+path).
+
+
 The capability gate (what is supported)
 ---------------------------------------
 
@@ -209,7 +238,7 @@ additive follow-up):
 * a **mean** prediction on a **log** scale *together with* an estimated noise parameter (there the
   moment correction depends on the noise parameter, coupling the estimated-scale column);
 * an **SBML / measurement-model** observable layer; and
-* **constraint** penalties.
+* **pre-equilibration / steady-state** sensitivities.
 
 Every other objective continues to fit exactly as before; the gradient path is purely additive
 and inactive unless explicitly enabled.

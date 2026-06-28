@@ -27,10 +27,11 @@ import pytest
 
 from pybnf.data import Data, OutputSensitivities
 from pybnf.gradient import (
-    assemble_gaussian_gradient, GradientNotSupported, PARAM, IC, NONE,
-    ExperimentRouting, ParamRoute, route_experiment,
+    assemble_constraint_gradient, assemble_gaussian_gradient, GradientNotSupported,
+    PARAM, IC, NONE, ExperimentRouting, ParamRoute, route_experiment,
 )
 from pybnf.gradient.assembly import _sampling_scale_factors
+from pybnf.constraint import AlwaysConstraint, AtConstraint, ConstraintSet
 from pybnf.noise import (
     ConstantSigma, DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, Laplace,
     LN, LOG10, MEAN, MEDIAN, NegBinomial, StudentT,
@@ -1563,3 +1564,148 @@ def test_fd_acceptance_gate_mean_logscale_gaussian():
 
     assert res.least_squares_exact is True
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+# =========================================== constraint penalty gradient (layer I, #456) ===
+
+def _constraint_sim(stot, dk, ds0, model='m', suffix='tc'):
+    """A ``{model: {suffix: Data}}`` carrying a hand-built dStot/dk + dStot/dS0 tensor, with the
+    matching routing and free params -- for constraint-gradient unit checks."""
+    times = np.arange(len(stot), dtype=float)
+    sim = Data.from_columns(np.column_stack([times, np.asarray(stot, float)]), ['time', 'Stot'])
+    sim.output_sensitivities = OutputSensitivities(
+        selectors=['observable:Stot'], param_names=['k'], ic_species=['S()'],
+        d_param=np.asarray(dk, float).reshape(len(stot), 1, 1),
+        d_ic=np.asarray(ds0, float).reshape(len(stot), 1, 1))
+    sdd = {model: {suffix: sim}}
+    routings = {(model, suffix): ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0), 'S0': ParamRoute('S0', IC, 'S()', 1.0)})}
+    free = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0))
+    return sdd, routings, free
+
+
+_C_STOT = [100.0, 74.0, 55.0, 41.0]
+_C_DK = [0.0, -74.0, -110.0, -123.0]
+_C_DS0 = [1.0, 0.74, 0.55, 0.41]
+
+
+def test_constraint_static_penalty_gradient():
+    """A static constraint penalty ``weight * max(0, difference)`` gradient is
+    ``weight * d(difference)/d theta`` at the achieving row -- the readout's forward sensitivity
+    times the slope. 'Stot > 90 at time=2' normalizes to ``90 < Stot`` (difference = 90 - Stot),
+    violated at row 2, so the gradient reads dStot at row 2."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    assert cset.total_penalty(sdd) == pytest.approx(2.0 * (90.0 - _C_STOT[2]))
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    # d/d theta of weight*(90 - Stot(row2)) = -weight * dStot(row2)
+    np.testing.assert_allclose(g, [-2.0 * _C_DK[2], -2.0 * _C_DS0[2]])
+
+
+def test_constraint_satisfied_has_zero_gradient():
+    """A satisfied constraint contributes no penalty and no gradient (the penalty is flat 0 in the
+    satisfied region; the boundary kink takes the subgradient 0)."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AtConstraint('Stot', '<', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)  # 55<90 -> ok
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    assert cset.total_penalty(sdd) == 0.0
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    np.testing.assert_allclose(g, 0.0)
+
+
+def test_constraint_min_penalty_floor_is_flat():
+    """When a violation is smaller than the ``min_penalty`` floor, the penalty is pinned to the
+    (parameter-independent) floor, so it is locally flat and contributes zero gradient."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    # difference = 90 - 55 = 35 < min_penalty 50 -> floored at 50 (constant) -> zero gradient.
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=0.01, atvar=None, atval=2.0, minpenalty=50.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    np.testing.assert_allclose(g, 0.0)
+
+
+def test_constraint_likelihood_penalty_gradient():
+    """The likelihood penalty ``-log((pmax-pmin) Phi(-difference/k) + pmin)`` is smooth; its
+    gradient is the local slope ``(pmax-pmin) phi(-difference/k)/(k * adjusted_prob)`` times the
+    readout's forward sensitivity."""
+    from math import erf
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    pmin, pmax, tol = 0.01, 0.99, 10.0
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=None, atvar=None, atval=2.0,
+                     pmin=pmin, pmax=pmax, tolerance=tol)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    diff = 90.0 - _C_STOT[2]
+    x = -diff / tol
+    phi = np.exp(-0.5 * x * x) / np.sqrt(2.0 * np.pi)
+    prob = (1.0 + erf(x / np.sqrt(2.0))) / 2.0
+    slope = (pmax - pmin) * phi / (tol * ((pmax - pmin) * prob + pmin))
+    np.testing.assert_allclose(g, [slope * (-_C_DK[2]), slope * (-_C_DS0[2])])
+
+
+def test_constraint_always_reads_the_worst_miss_row():
+    """An 'always' constraint is enforced at its worst point over the whole column; the gradient
+    therefore reads the sensitivity at the argmax (worst-miss) row -- Danskin's theorem. For
+    'Stot > 60 always' on a decay, the worst miss of ``60 - Stot`` is the last (smallest-Stot) row."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AlwaysConstraint('Stot', '>', 60.0, 'm', 'tc', weight=1.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    worst = int(np.argmax(60.0 - np.array(_C_STOT)))   # the last row here
+    np.testing.assert_allclose(g, [-_C_DK[worst], -_C_DS0[worst]])
+
+
+def test_constraint_gradient_sums_across_a_set():
+    """The constraint gradient sums every constraint in every set -- two constraints add their
+    columns."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c1 = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)
+    c2 = AlwaysConstraint('Stot', '>', 60.0, 'm', 'tc', weight=1.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c1, c2]
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    worst = int(np.argmax(60.0 - np.array(_C_STOT)))
+    expected = np.array([-2.0 * _C_DK[2], -2.0 * _C_DS0[2]]) + np.array([-_C_DK[worst], -_C_DS0[worst]])
+    np.testing.assert_allclose(g, expected)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('model_kind', ['static', 'likelihood'])
+def test_fd_acceptance_gate_constraint(model_kind):
+    """Central differences of (loss + constraint penalty)(u) vs the assembled (objective gradient +
+    constraint gradient)(u) on the decay net (layer I, #456). One 'Stot > 80 at time=2' constraint,
+    violated at the evaluation point so the penalty and its gradient are nonzero and -- away from
+    the kink -- locally smooth (the 'at' crossing row is fixed by the time grid). Both penalty
+    models: the static ``weight * max(0, diff)`` and the smooth Gaussian-CDF likelihood. Two free
+    params (k parameter axis + S0 initial-condition axis)."""
+    obj = ChiSquareObjective()
+    sigma = 5.0
+    model_name = 'e2e_ode_decay'
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+
+    def make_cset():
+        if model_kind == 'static':
+            c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=0.7, atvar=None, atval=2.0)
+        else:
+            c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=None, atvar=None,
+                             atval=2.0, pmin=0.02, pmax=0.98, tolerance=40.0)
+        cset = ConstraintSet(model_name, 'tc'); cset.constraints = [c]
+        return cset
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim = _decay_run(theta['k'], theta['S0'], False)
+        return obj.evaluate(sim, exp_wt) + make_cset().total_penalty({model_name: {'tc': sim}})
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim = _decay_run(free[0].value, free[1].value, True)
+    obj_grad = assemble_gaussian_gradient(obj, [(sim, exp_wt, route_wt)], free).gradient
+    con_grad = assemble_constraint_gradient(
+        [make_cset()], {model_name: {'tc': sim}}, {(model_name, 'tc'): route_wt}, free)
+    np.testing.assert_allclose(obj_grad + con_grad, grad_fd, rtol=1e-4, atol=1e-4)

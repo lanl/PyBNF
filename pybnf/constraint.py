@@ -582,29 +582,142 @@ class Constraint:
     def penalty(self, sim_data_dict):
         """
         penalty function for violating the constraint. Returns 0 if constraint is satisfied, or a positive value
-        if the constraint is violated. Implementation depends on the type of constraint.
+        if the constraint is violated.
+
+        Shared across subclasses: each subclass declares the enforcement interval(s) it checks
+        via :meth:`_penalty_intervals` (its "at" / "between" / "always" / "once" logic), and the
+        penalty is the sum of :meth:`get_penalty` over them (the static or likelihood model).
+        Factored from the per-subclass inline loops so :meth:`penalty_gradient` differentiates
+        exactly the same intervals (#456/#385).
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
         """
+        return sum((self.get_penalty(sim_data_dict, **interval)
+                    for interval in self._penalty_intervals(sim_data_dict)), 0.)
 
-        raise NotImplementedError('Subclasses of Constraint must override penalty()')
+    def _penalty_intervals(self, sim_data_dict):
+        """The enforcement interval(s) this constraint checks -- a list of keyword-argument dicts
+        for :meth:`get_penalty` / :meth:`get_penalty_gradient` (``imin``, ``imax``, and optionally
+        ``once`` / ``require_length`` / ``imin2`` / ``imax2``). Each subclass's "at" / "between" /
+        "always" / "once" enforcement logic lives here, so ``penalty`` and ``penalty_gradient``
+        evaluate identical intervals by construction; the data keys are resolved on first use (the
+        lazy ``find_keys``)."""
+        raise NotImplementedError('Subclasses of Constraint must override _penalty_intervals()')
 
-    def penalty_gradient(self, sim_data_dict):
-        """The gradient of this constraint's penalty w.r.t. the free parameters --
-        the constraint counterpart of the objective's residual seam (#449/#385).
+    def _difference_argmax(self, sim_data_dict, imin, imax, once=False, require_length=None,
+                           imin2=None, imax2=None):
+        """The signed constraint difference ``max_i(q1_i - q2_i)`` (or ``min`` if ``once``) over
+        the interval -- the same value :meth:`get_difference` returns -- plus the offset ``a`` of
+        the achieving point within the sliced interval, which is where the gradient reads the
+        readout's forward sensitivity (Danskin's theorem: the gradient of a max over a set is the
+        gradient of the achieving term). The achieving rows in the full column are ``imin + a``
+        for ``q1`` and ``imin2 + a`` for ``q2``."""
+        if imin2 is None:
+            imin2 = imin
+        if imax2 is None:
+            imax2 = imax
+        q1 = self.index(sim_data_dict, self.qkeys1)[imin:imax] if isinstance(self.quant1, str) else self.quant1
+        q2 = self.index(sim_data_dict, self.qkeys2)[imin2:imax2] if isinstance(self.quant2, str) else self.quant2
+        diffs = np.atleast_1d(np.asarray(q1, dtype=float) - np.asarray(q2, dtype=float))
+        a = int(np.argmin(diffs)) if once else int(np.argmax(diffs))
+        return float(diffs[a]), a
 
-        A constraint penalty is a piecewise function of an at-/between-time
-        observable readout, so its gradient is the readout's forward sensitivity
-        times the local penalty slope -- a distinct chain from the per-point
-        likelihood residual. That is layer I of #385 (not yet implemented), so the
-        stub raises :class:`GradientNotSupported`: a gradient fit with active
-        constraints falls back to a gradient-free step rather than silently dropping
-        the constraint's contribution to the gradient."""
-        from .gradient.errors import GradientNotSupported
-        raise GradientNotSupported(
-            "Constraint gradients are layer I of #385 (not yet implemented); run a "
-            "gradient-free fit, or drop constraints from the gradient-based fit.")
+    def _readout_gradient(self, raw_sens, n_param, keys1, quant1, row1, keys2, quant2, row2):
+        """``d(q1 - q2)/d theta`` at the given rows: each operand's forward sensitivity row from
+        ``raw_sens(model, suffix, observable, row)``, or 0 for a constant operand."""
+        s1 = raw_sens(*keys1, row1) if isinstance(quant1, str) else np.zeros(n_param)
+        s2 = raw_sens(*keys2, row2) if isinstance(quant2, str) else np.zeros(n_param)
+        return s1 - s2
+
+    def get_penalty_gradient(self, sim_data_dict, raw_sens, index, n_param, imin, imax,
+                             once=False, require_length=None, imin2=None, imax2=None):
+        """The gradient of this interval's penalty w.r.t. the free parameters (#456/#385) --
+        the constraint counterpart of the objective's per-point gradient. Dispatches to the
+        static or likelihood model, mirroring :meth:`get_penalty`. Both reduce to ``local penalty
+        slope * d(readout)/d theta`` at the interval's achieving point: the penalty is a piecewise
+        (static) or Gaussian-CDF (likelihood) function of the at-/between-time readout ``q1 - q2``,
+        so its gradient is that readout's forward sensitivity times the model's local slope."""
+        if self.penalty_model == 'static':
+            return self._static_penalty_gradient(sim_data_dict, raw_sens, n_param,
+                                                 imin, imax, once, imin2)
+        elif self.penalty_model == 'likelihood':
+            return self._likelihood_penalty_gradient(sim_data_dict, raw_sens, n_param,
+                                                    imin, imax, once, require_length, imin2, imax2)
+        raise ValueError(f'Invalid penalty model: {self.penalty_model}')
+
+    def _static_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once, imin2):
+        """Gradient of the static penalty ``weight * max(0, difference)`` (#456), mirroring
+        :meth:`get_static_penalty` branch for branch. Zero in the satisfied region and in the flat
+        ``min_penalty`` floor (the penalty is locally constant there); ``weight * d(readout)/d
+        theta`` where the (alt) difference exceeds the floor. The kink at ``difference == 0`` (and
+        at the floor) takes the subgradient 0 -- the satisfied-side value, documented like the
+        Laplace kink (#454)."""
+        difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, imin2=imin2)
+        if not (difference > 0 or (difference == 0. and not self.or_equal)):
+            return np.zeros(n_param)   # constraint satisfied -> penalty 0, flat
+        if self.alt1:
+            alt_diff, alt_a = self._alt_difference_argmax(sim_data_dict, imin, imax, once)
+            if max(0., alt_diff) <= self.min_penalty:
+                return np.zeros(n_param)   # alt satisfied or floored at min_penalty -> flat
+            row = imin + alt_a
+            return self.weight * self._readout_gradient(
+                raw_sens, n_param, self.akeys1, self.alt1, row, self.akeys2, self.alt2, row)
+        if difference <= self.min_penalty:
+            return np.zeros(n_param)   # floored at min_penalty -> flat
+        imin2_eff = imin if imin2 is None else imin2
+        return self.weight * self._readout_gradient(
+            raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
+            self.qkeys2, self.quant2, imin2_eff + a)
+
+    def _alt_difference_argmax(self, sim_data_dict, imin, imax, once):
+        """The alt-penalty difference ``max/min(alt1 - alt2)`` over ``[imin:imax]`` and the
+        achieving offset (mirroring :meth:`get_static_penalty`'s altpenalty branch)."""
+        a1 = self.index(sim_data_dict, self.akeys1)[imin:imax] if isinstance(self.alt1, str) else self.alt1
+        a2 = self.index(sim_data_dict, self.akeys2)[imin:imax] if isinstance(self.alt2, str) else self.alt2
+        diffs = np.atleast_1d(np.asarray(a1, dtype=float) - np.asarray(a2, dtype=float))
+        idx = int(np.argmin(diffs)) if once else int(np.argmax(diffs))
+        return float(diffs[idx]), idx
+
+    def _likelihood_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once,
+                                     require_length, imin2, imax2):
+        """Gradient of the likelihood penalty ``-log((pmax-pmin) * Phi(-difference/k) + pmin)``
+        (#456). The Gaussian-CDF model is smooth, with local slope
+        ``d/d difference = (pmax-pmin) * phi(-difference/k) / (k * adjusted_prob)`` (> 0: a larger
+        difference is a worse violation, a larger penalty), times ``d(readout)/d theta``. A zero
+        tolerance is a step function (flat almost everywhere) -> zero gradient, matching the
+        non-differentiable edge case :meth:`get_log_likelihood` special-cases."""
+        difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        if self.tolerance == 0:
+            return np.zeros(n_param)
+        k = self.tolerance
+        x = -difference / k
+        phi = np.exp(-0.5 * x * x) / np.sqrt(2. * np.pi)
+        prob = (1. + erf(x / np.sqrt(2.))) / 2.
+        adjusted = (self.pmax - self.pmin) * prob + self.pmin
+        slope = (self.pmax - self.pmin) * phi / (k * adjusted)
+        imin2_eff = imin if imin2 is None else imin2
+        return slope * self._readout_gradient(
+            raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
+            self.qkeys2, self.quant2, imin2_eff + a)
+
+    def penalty_gradient(self, sim_data_dict, raw_sens, index, n_param):
+        """The gradient of this constraint's total penalty w.r.t. the free parameters (layer I,
+        #456/#385) -- ``raw_sens(model, suffix, observable, row)`` supplies each readout's native-
+        space forward sensitivity row (the #447 tensor, factor-folded per #448 routing), ``index``
+        maps a free-parameter name to its column. Sums :meth:`get_penalty_gradient` over the same
+        enforcement intervals :meth:`penalty` sums :meth:`get_penalty` over, so the gradient
+        differentiates exactly the penalty PyBNF scores.
+
+        Lives on the **scalar-gradient path only**: a penalty is a piecewise / CDF function, not a
+        sum of squares, so (like an estimated noise normalizer, #451) it cannot enter the residual-
+        Jacobian -- a fit with active constraints is not ``least_squares_exact``. The static model
+        is non-smooth at the constraint boundary and at the ``min_penalty`` floor; the subgradient
+        0 is taken there (documented like the Laplace kink, #454)."""
+        grad = np.zeros(n_param)
+        for interval in self._penalty_intervals(sim_data_dict):
+            grad += self.get_penalty_gradient(sim_data_dict, raw_sens, index, n_param, **interval)
+        return grad
 
 
 class AtConstraint(Constraint):
@@ -636,11 +749,10 @@ class AtConstraint(Constraint):
         """Resolve the 'at' condition variable, defaulting to the indvar."""
         self.atkeys = self._atvar_key(self.atvar, sim_data_dict)
 
-    def penalty(self, sim_data_dict):
-        """
-        Compute the penalty
-        """
-
+    def _penalty_intervals(self, sim_data_dict):
+        """Each "at" crossing of the condition variable is a single-row interval (the next/before
+        row, per the equal/``before`` adjustments) -- one per crossing if ``repeat``, else the
+        first only."""
         # Load the keys if we haven't yet done so
         if not self.atkeys:
             self.find_keys(sim_data_dict)
@@ -655,7 +767,7 @@ class AtConstraint(Constraint):
         if not self.repeat:
             flip_inds = flip_inds[:1]
 
-        penalty = 0.
+        intervals = []
         for fi in flip_inds:
             # Make sure we pick the correct end of the interval if there's a point equal to the "at"
             if np.isclose(atdata[fi+1], self.atval, atol=0.) and not (np.isclose(atdata[fi], self.atval, atol=0.)):
@@ -663,10 +775,10 @@ class AtConstraint(Constraint):
             # If constraint was declared with "before", go back 1.
             if self.before and fi > 0:
                 fi -= 1
-            penalty += self.get_penalty(sim_data_dict, fi, fi+1, require_length=len(at_col))
+            intervals.append(dict(imin=fi, imax=fi+1, require_length=len(at_col)))
             # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
 
-        return penalty
+        return intervals
 
 class SplitAtConstraint(Constraint):
     def __init__(self, quant1, atvar1, atval1, sign, quant2, atvar2, atval2, base_model, base_suffix,
@@ -714,11 +826,9 @@ class SplitAtConstraint(Constraint):
         self.atkeys1 = self._atvar_key(self.atvar1, sim_data_dict)
         self.atkeys2 = self._atvar_key(self.atvar2, sim_data_dict)
 
-    def penalty(self, sim_data_dict):
-        """
-        Compute the penalty
-        """
-
+    def _penalty_intervals(self, sim_data_dict):
+        """A single split interval: ``q1`` at its "at" crossing vs ``q2`` at its own "at"
+        crossing (the ``imin2``/``imax2`` second readout). Empty if either condition is unmet."""
         # Load the keys if we haven't yet done so
         if not self.atkeys1:
             self.find_keys(sim_data_dict)
@@ -738,7 +848,7 @@ class SplitAtConstraint(Constraint):
 
         if len(flip_inds1) == 0 or len(flip_inds2) == 0:
             # One of the at conditions was not met, so constraint is not enforced.
-            return 0.
+            return []
 
         fi1 = flip_inds1[0]
         fi2 = flip_inds2[0]
@@ -753,10 +863,8 @@ class SplitAtConstraint(Constraint):
             fi1 -= 1
         if self.before2 and fi2 > 0:
             fi2 -= 1
-        penalty = self.get_penalty(sim_data_dict, fi1, fi1+1, require_length=len(at_col1), imin2=fi2, imax2=fi2+1)
         # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
-
-        return penalty
+        return [dict(imin=fi1, imax=fi1+1, require_length=len(at_col1), imin2=fi2, imax2=fi2+1)]
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
@@ -793,11 +901,9 @@ class BetweenConstraint(Constraint):
         self.startkeys = self._atvar_key(self.startvar, sim_data_dict)
         self.endkeys = self._atvar_key(self.endvar, sim_data_dict)
 
-    def penalty(self, sim_data_dict):
-        """
-        Compute the penalty
-        """
-
+    def _penalty_intervals(self, sim_data_dict):
+        """A single interval ``[start, end]`` bounded by the start/end condition crossings, over
+        which the constraint is enforced at its worst point (or, if ``once``, its best)."""
         if not self.startkeys:
             self.find_keys(sim_data_dict)
 
@@ -807,7 +913,7 @@ class BetweenConstraint(Constraint):
         start = np.nonzero(startcol[:-1] != startcol[1:])[0]
         if len(start) == 0:
             # Interval never started
-            return 0.
+            return []
         else:
             start = start[0]
             # If a point is exactly equal, make sure we pick the right end of the interval
@@ -832,9 +938,7 @@ class BetweenConstraint(Constraint):
                 and not (np.isclose(enddat[end], self.endval, atol=0.)):
             end += 1
 
-        penalty = self.get_penalty(sim_data_dict, start, end+1, require_length=len(endcol), once=self.once)
-
-        return penalty
+        return [dict(imin=start, imax=end+1, require_length=len(endcol), once=self.once)]
 
 
 class AlwaysConstraint(Constraint):
@@ -850,18 +954,13 @@ class AlwaysConstraint(Constraint):
                          tolerance)
         logger.debug(f"Created 'always' constraint {self.quant1}<{self.quant2}")
 
-    def penalty(self, sim_data_dict):
-        """
-        Compute the always penalty
-        The penalty is given by the worst miss of the constraint over the entire data column
-        """
+    def _penalty_intervals(self, sim_data_dict):
+        """The whole data column (worst miss over all time) is the single enforcement interval."""
         if not self.qkeys1 and not self.qkeys2:
             self.find_keys(sim_data_dict)
-
         # Todo - if q1 and q2 are on different time scales
-        penalty = self.get_penalty(sim_data_dict, 0, None)  # Note: Indexing by 0:None takes the entire column
-
-        return penalty
+        # Note: Indexing by 0:None takes the entire column
+        return [dict(imin=0, imax=None)]
 
 
 class OnceConstraint(Constraint):
@@ -877,14 +976,9 @@ class OnceConstraint(Constraint):
                          tolerance)
         logger.debug(f"Created 'once' constraint {self.quant1}<{self.quant2}")
 
-    def penalty(self, sim_data_dict):
-        """
-        Compute the penalty
-        """
+    def _penalty_intervals(self, sim_data_dict):
+        """The whole data column is the interval, enforced ``once`` (the best point must satisfy)."""
         if not self.qkeys1 and not self.qkeys2:
             self.find_keys(sim_data_dict)
-
         # Note: Indexing by 0:None takes the entire column
-        penalty = self.get_penalty(sim_data_dict, 0, None, once=True)
-
-        return penalty
+        return [dict(imin=0, imax=None, once=True)]

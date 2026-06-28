@@ -24,7 +24,7 @@ from .routing import (
     route_for_model,
     apply_routing,
 )
-from .assembly import GradientResult, assemble_gaussian_gradient
+from .assembly import GradientResult, assemble_constraint_gradient, assemble_gaussian_gradient
 
 __all__ = [
     'GradientNotSupported',
@@ -40,4 +40,5 @@ __all__ = [
     'apply_routing',
     'GradientResult',
     'assemble_gaussian_gradient',
+    'assemble_constraint_gradient',
 ]
