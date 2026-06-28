@@ -58,6 +58,7 @@ repos:
           tests/test_bngsim_parsing.py
           tests/test_bngsim_runtime_seam.py
           tests/test_bngsim_output_sensitivities.py
+          tests/test_gradient_routing.py
           tests/test_network_free_bngsim_supported.py
           tests/test_stochastic_seed_policy.py
           tests/test_packaging_metadata.py

@@ -240,6 +240,24 @@ class BngsimModel(NetModel):
             params=list(params or []), ic=list(ic or []),
         )
 
+    def sensitivity_entity_namespace(self):
+        """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
+
+        Returns ``(param_ids, species_initializers)``:
+
+        * ``param_ids`` -- the model's ``begin parameters`` namespace (the engine's
+          ``param_names``), the kinetic/global ids a free parameter binds to via ``set_param``
+          and thus routes to ``Simulator(sensitivity_params=)``;
+        * ``species_initializers`` -- the ``(species, initial-expr)`` pairs
+          (``_parse_net_species_initializers``); a free parameter that is a species' bare
+          initial-value expression binds to ``Simulator(sensitivity_ic=)`` keyed by the
+          species (an IC parameter is absent from the ODE RHS, so the parameter axis is zero).
+
+        This is the only model coupling :mod:`pybnf.gradient.routing` needs, so the routing
+        core stays backend-agnostic. No simulation -- both namespaces are known at build time.
+        """
+        return list(self._engine_model.param_names), list(self._net_species_initializers)
+
     def _sensitivity_request_kwargs(self, method):
         """Simulator kwargs requesting forward sensitivities on the gradient path.
 
