@@ -42,6 +42,29 @@ def offset_nll(params, data=None):
     return (params["z"] - 4.0) ** 2 + (params["a"] - 1.0) ** 2
 
 
+def line_sse(params, data):
+    # Sum of squares of a line y = m*x + b against the single bound "line" experiment.
+    d = data["line"]
+    pred = params["m"] * d["x"] + params["b"]
+    return 0.5 * float(((d["y"] - pred) ** 2).sum())
+
+
+def pooled_sse(params, data):
+    # SSE POOLED across ALL bound experiments (multi-experiment): one shared slope/intercept.
+    total = 0.0
+    for d in data.values():
+        pred = params["m"] * d["x"] + params["b"]
+        total += float(((d["y"] - pred) ** 2).sum())
+    return 0.5 * total
+
+
+def names_of_data(params, data):
+    # Returns 0 always but ASSERTS the data arg is the name->Data mapping we expect; lets a test
+    # observe what the callable actually receives without a side channel.
+    assert sorted(data) == ["expA", "expB"], sorted(data)
+    return 0.0
+
+
 not_a_function = 42
 '''
 
@@ -56,6 +79,19 @@ def _write_target(tmp_path, name='callable_target'):
     path = tmp_path / f'{name}.py'
     path.write_text(_TARGET_SRC)
     return str(path)
+
+
+def _write_exp(tmp_path, name, rows, headers=('x', 'y')):
+    """Write a minimal ``.exp`` file (a '# h1 h2' header + whitespace rows) and return its path."""
+    path = tmp_path / f'{name}.exp'
+    lines = ['# ' + ' '.join(headers)]
+    lines += [' '.join(repr(float(v)) for v in row) for row in rows]
+    path.write_text('\n'.join(lines) + '\n')
+    return str(path)
+
+
+# Points exactly on y = 2x + 1, so the least-squares mode is (m, b) = (2, 1) with SSE 0.
+_LINE_ROWS = [(0, 1), (1, 3), (2, 5), (3, 7)]
 
 
 def _build(tmp_path, body):
@@ -268,3 +304,155 @@ def test_callable_rejected_by_hmc(tmp_path):
     alg = algorithms.HMCSampler(c)
     with pytest.raises(PybnfError, match='gradient-free'):
         alg._resolve_analytical_model()
+
+
+# --------------------------------------------------------------------------- #
+# Data binding (ADR-0050 follow-up): the ``data = f.exp, ...`` key feeds the
+# callable a name->Data mapping keyed by file stem (mirrors the params map)
+# --------------------------------------------------------------------------- #
+def _line_body(tmp_path, entry_func='line_sse', data_files=('line',)):
+    entry = f'{_write_target(tmp_path)}:{entry_func}'
+    data_paths = [_write_exp(tmp_path, name, _LINE_ROWS) for name in data_files]
+    return (f'edition = 2\nobjective = callable\ncallable = {entry}\n'
+            f'data = {", ".join(data_paths)}\njob_type = de\n'
+            'uniform_var = m -5 5\nuniform_var = b -5 5\n'
+            'population_size = 5\nmax_iterations = 3\n')
+
+
+def test_callable_no_data_key_passes_none(tmp_path):
+    # The pure-analytical case is unchanged: no data key -> the model carries None, callable
+    # invoked f(params, data=None).
+    c = _build(tmp_path, _gaussian_body(tmp_path))
+    assert c.models['callable']._data is None
+
+
+def test_callable_binds_single_experiment_keyed_by_stem(tmp_path):
+    c = _build(tmp_path, _line_body(tmp_path))
+    m = c.models['callable']
+    from pybnf.data import Data
+    assert set(m._data) == {'line'}            # keyed by file stem, one entry per experiment
+    assert isinstance(m._data['line'], Data)
+    # The loaded Data exposes the file's columns to the callable.
+    assert list(m._data['line']['y']) == [1.0, 3.0, 5.0, 7.0]
+
+
+def test_callable_data_evaluates_against_measurements(tmp_path):
+    from pybnf.pset import PSet, FreeParameter
+    c = _build(tmp_path, _line_body(tmp_path))
+    m = c.models['callable']
+    # SSE is 0 at the true (m, b) = (2, 1) and positive off it.
+    pset_true = PSet([FreeParameter('m', 'uniform_var', -5, 5, value=2.0),
+                      FreeParameter('b', 'uniform_var', -5, 5, value=1.0)])
+    out = m.copy_with_param_set(pset_true).execute('', '', 0)
+    assert out['callable'].data[0, out['callable'].cols['score']] == pytest.approx(0.0)
+    pset_off = PSet([FreeParameter('m', 'uniform_var', -5, 5, value=0.0),
+                     FreeParameter('b', 'uniform_var', -5, 5, value=0.0)])
+    out_off = m.copy_with_param_set(pset_off).execute('', '', 0)
+    assert out_off['callable'].data[0, out_off['callable'].cols['score']] > 0.0
+
+
+def test_callable_multi_experiment_pooled(tmp_path):
+    # Two .exp files -> two named entries; the callable pools its NLL across both. The pieces of
+    # y = 2x + 1 are split across the files, so the pooled mode is still (2, 1) with SSE 0.
+    entry = f'{_write_target(tmp_path)}:pooled_sse'
+    a = _write_exp(tmp_path, 'expA', [(0, 1), (1, 3)])
+    b = _write_exp(tmp_path, 'expB', [(2, 5), (3, 7)])
+    body = (f'edition = 2\nobjective = callable\ncallable = {entry}\n'
+            f'data = {a}, {b}\njob_type = de\n'
+            'uniform_var = m -5 5\nuniform_var = b -5 5\n'
+            'population_size = 5\nmax_iterations = 3\n')
+    c = _build(tmp_path, body)
+    m = c.models['callable']
+    assert set(m._data) == {'expA', 'expB'}
+    from pybnf.pset import PSet, FreeParameter
+    pset_true = PSet([FreeParameter('m', 'uniform_var', -5, 5, value=2.0),
+                      FreeParameter('b', 'uniform_var', -5, 5, value=1.0)])
+    out = m.copy_with_param_set(pset_true).execute('', '', 0)
+    assert out['callable'].data[0, out['callable'].cols['score']] == pytest.approx(0.0)
+
+
+def test_callable_receives_name_keyed_mapping(tmp_path):
+    # The callable asserts internally that it receives {'expA': Data, 'expB': Data}; a clean
+    # execute proves the multi-experiment presentation is by name.
+    from pybnf.pset import PSet, FreeParameter
+    entry = f'{_write_target(tmp_path)}:names_of_data'
+    a = _write_exp(tmp_path, 'expA', _LINE_ROWS)
+    b = _write_exp(tmp_path, 'expB', _LINE_ROWS)
+    body = (f'edition = 2\nobjective = callable\ncallable = {entry}\n'
+            f'data = {a}, {b}\njob_type = de\n'
+            'uniform_var = m -5 5\nuniform_var = b -5 5\n'
+            'population_size = 5\nmax_iterations = 3\n')
+    c = _build(tmp_path, body)
+    m = c.models['callable']
+    pset = PSet([FreeParameter('m', 'uniform_var', -5, 5, value=0.0),
+                 FreeParameter('b', 'uniform_var', -5, 5, value=0.0)])
+    out = m.copy_with_param_set(pset).execute('', '', 0)   # the internal assert must not raise
+    assert out['callable'].data[0, out['callable'].cols['score']] == pytest.approx(0.0)
+
+
+def test_callable_data_pickles_with_model(tmp_path):
+    import pickle
+    c = _build(tmp_path, _line_body(tmp_path))
+    m = c.models['callable']
+    restored = pickle.loads(pickle.dumps(m))
+    # The bound data travels with the model (unlike _func, which is dropped + re-imported).
+    assert set(restored._data) == {'line'}
+    assert list(restored._data['line']['x']) == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_callable_data_de_recovers_line_fit(tmp_path):
+    body = (f'edition = 2\nobjective = callable\n'
+            f'callable = {_write_target(tmp_path)}:line_sse\n'
+            f'data = {_write_exp(tmp_path, "line", _LINE_ROWS)}\njob_type = de\n'
+            'uniform_var = m -5 5\nuniform_var = b -5 5\n'
+            'population_size = 20\nmax_iterations = 300\nrandom_seed = 42')
+    c = _build(tmp_path, body)
+    alg = algorithms.DifferentialEvolution(c)
+    H.drive(alg)
+    bf = alg.trajectory.best_fit()
+    assert bf['m'] == pytest.approx(2.0, abs=0.1)
+    assert bf['b'] == pytest.approx(1.0, abs=0.1)
+    assert alg.trajectory.best_score() == pytest.approx(0.0, abs=0.05)
+
+
+def test_callable_data_missing_file_errors(tmp_path):
+    entry = f'{_write_target(tmp_path)}:line_sse'
+    body = (f'edition = 2\nobjective = callable\ncallable = {entry}\n'
+            f'data = {tmp_path}/nope.exp\njob_type = de\n'
+            'uniform_var = m -5 5\nuniform_var = b -5 5\n'
+            'population_size = 5\nmax_iterations = 3\n')
+    with pytest.raises(PybnfError, match='not found'):
+        _build(tmp_path, body)
+
+
+def test_callable_data_stem_collision_errors(tmp_path):
+    # Two files with the same stem in different dirs would map to the same experiment name.
+    entry = f'{_write_target(tmp_path)}:pooled_sse'
+    sub = tmp_path / 'sub'
+    sub.mkdir()
+    a = _write_exp(tmp_path, 'curve', _LINE_ROWS)
+    b = _write_exp(sub, 'curve', _LINE_ROWS)
+    body = (f'edition = 2\nobjective = callable\ncallable = {entry}\n'
+            f'data = {a}, {b}\njob_type = de\n'
+            'uniform_var = m -5 5\nuniform_var = b -5 5\n'
+            'population_size = 5\nmax_iterations = 3\n')
+    with pytest.raises(PybnfError, match='same experiment name'):
+        _build(tmp_path, body)
+
+
+def test_data_key_without_callable_objective_errors(tmp_path):
+    # The data key is callable-only; a stray data key under another objective is a pointed error,
+    # not a silent no-op.
+    body = ('edition = 2\nobjective = expression\nexpression = (x1 - 3)^2\n'
+            f'data = {_write_exp(tmp_path, "line", _LINE_ROWS)}\njob_type = de\n'
+            'uniform_var = x1 -5 5\nuniform_var = x2 -5 5\n'
+            'population_size = 5\nmax_iterations = 3\n')
+    with pytest.raises(PybnfError, match="only valid with 'objective = callable'"):
+        _build(tmp_path, body)
+
+
+def test_callable_data_echoes_at_run_start(tmp_path, caplog):
+    with caplog.at_level(logging.INFO):
+        _build(tmp_path, _line_body(tmp_path))
+    assert any('line' in r.message and 'data' in r.message.lower()
+               for r in caplog.records), 'the bound data must be echoed at run start'

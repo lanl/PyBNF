@@ -674,15 +674,24 @@ class CallableModel(Model):
     ``CallableModel`` with a pointed error (:meth:`HMCSampler._resolve_analytical_model`); use
     ``objective = expression`` or a menu target for HMC.
 
-    Data binding (the ``data=`` arg) is deferred: this MVP passes ``data=None`` -- the epic's pure
-    analytical use case (no ``.exp``). How multi-experiment data is presented to a callable is
-    ADR-0050's stated open question, left for a follow-up.
+    **Data binding (ADR-0050 follow-up).** Experimental data declared with the ``data =
+    f1.exp, f2.exp`` config key is loaded at config load and bound onto the model as a
+    name->:class:`~pybnf.data.Data` mapping keyed by file stem (``{'f1': Data, 'f2': Data}``) --
+    one entry per experiment. It is the second argument to the callable
+    (``f(params, data)``), mirroring ``params`` (a name->value map): multi-experiment data is
+    presented by name, exactly as parameters are, resolving ADR-0050's open question. The data
+    travels with the model across the dask boundary (numpy-backed Data pickles fine), so it is
+    **kept** in the pickle state (only the resolved ``_func`` is dropped). When no ``data`` key is
+    declared the model carries ``None`` and the callable is invoked ``f(params, data=None)`` --
+    the pure-analytical case (a closed-form target with no measurements), unchanged.
     """
 
-    def __init__(self, entry_point, name, *, pset=None):
+    def __init__(self, entry_point, name, *, data=None, pset=None):
         """``entry_point`` is the ``module:func`` (or ``path/to/file.py:func``) reference string;
         ``name`` the synthesized model id (also the per-evaluation file prefix -- there is no
-        file)."""
+        file). ``data`` is the optional bound experimental data -- a name->:class:`~pybnf.data.Data`
+        mapping (one entry per ``.exp`` file) passed straight to the callable, or ``None`` for a
+        pure-analytical target with no measurements."""
         self.entry_point = entry_point
         self.name = name
         self.file_path = name
@@ -691,6 +700,9 @@ class CallableModel(Model):
         self.has_observables = True
         self.param_names = set()  # All params come from the config, not a model file
         self._pset = pset
+        # The bound experimental data (name->Data, or None). Travels with the model to dask
+        # workers -- numpy-backed Data pickles fine -- so it is NOT dropped in __getstate__.
+        self._data = data
         # The resolved function is re-imported on first use and after unpickling rather than carried
         # across the dask boundary (a file-loaded function is not picklable), mirroring
         # ExpressionModel's lazily-recompiled callable -- see _resolved() and __getstate__.
@@ -734,8 +746,9 @@ class CallableModel(Model):
         if self._pset is None:
             raise ValueError('CallableModel has no parameter set')
         func = self._resolved()
-        # Bind-by-name: pass the whole {name: value} map (data deferred -- see the class docstring).
-        score = float(func(dict(self._pset), data=None))
+        # Bind-by-name: pass the whole {name: value} param map plus the bound experimental data
+        # (a name->Data map, or None for a pure-analytical target -- see the class docstring).
+        score = float(func(dict(self._pset), data=self._data))
         data = Data(arr=np.array([[0.0, score]]))
         data.cols = {'index': 0, 'score': 1}
         data.headers = {0: 'index', 1: 'score'}

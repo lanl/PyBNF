@@ -8,10 +8,17 @@ name; ADR-0059 item 2 adds the JAX `nll_jax` so HMC differentiates it). The **ca
 `CallableModel` resolving `f(params, data=None) -> float` — both a dotted `importlib.import_module`
 and a `spec_from_file_location` file path are accepted, validated at config load (fail fast). The
 callable is gradient-free (not JAX-traceable), so `job_type = hmc` rejects it with a pointed error.
-The two settled open questions: the expression form **reuses** the `pybnf[petab]` sympy grammar (one
-grammar; gated behind the extra), and the callable's **`data=` arg is deferred** — the MVP passes
-`data=None` (the pure-analytical use case); multi-experiment data presentation to a callable remains
-the one open follow-up. Both forms drop the dummy `.exp` and compose with the prior catalog for free.
+All three open questions are now settled. (1) The expression form **reuses** the `pybnf[petab]`
+sympy grammar (one grammar; gated behind the extra). (2) **Callable data binding:** experimental
+data is declared with a top-level `data = f1.exp, f2.exp` key (callable-only — a pointed error under
+any other objective) and presented to the callable as a **name→`Data` mapping keyed by file stem**
+(`f(params, data)` where `data = {'f1': Data, 'f2': Data}`, one entry per experiment) — multi-
+experiment data is keyed by name exactly as `params` is, the symmetric answer. The data is loaded at
+config load (fail-fast) and bound onto the `CallableModel`, travelling with it to the dask workers
+(numpy-backed `Data` pickles fine); with no `data` key the callable is invoked `data=None` (the
+pure-analytical case). The NLL stays **model-side** (decision §1), so this binds data onto the model,
+not through the objective. Both forms drop the dummy `.exp` and compose with the prior catalog for
+free.
 
 A user can fit or sample an arbitrary closed-form objective — a negative
 log-likelihood, an engineered cost, an analytical test function — **without a BNGL or SBML model
@@ -172,15 +179,21 @@ to `build_named_objective`'s dispatch (`pybnf/objective.py`) the same way `score
 - A standalone modelling DSL / `.stan`-style language. The surface is the existing config + the two
   authoring forms, not a new language.
 
-## Open questions (to settle in implementation / the #425 thread)
+## Open questions (all RESOLVED as built — see the Status note)
 
-- **Expression dependency boundary:** reuse the `pybnf[petab]` sympy grammar (one grammar, but a
-  heavyweight optional dep on the analytical path) vs. a small dependency-free evaluator (core stays
-  numpy/scipy, but a second math grammar to own).
-- **Exact config spelling:** `objective = expression` + `expression =` vs. a dedicated key; how a
-  data-bound expression references `.exp` columns; how the canned targets are named.
-- **Callable signature & data binding:** the precise `(params, data)` contract and how multi-
-  experiment data is presented to a callable.
+- **Expression dependency boundary:** ~~reuse the `pybnf[petab]` sympy grammar vs. a dependency-free
+  evaluator.~~ **Resolved:** reuse the `pybnf[petab]` sympy grammar (one grammar; the analytical path
+  gates behind the optional extra, the core stays numpy/scipy).
+- **Exact config spelling:** ~~`objective = expression` + `expression =` vs. a dedicated key; how the
+  canned targets are named.~~ **Resolved:** `objective = expression` + a companion `expression =` key
+  (and `objective = callable` + `callable =`); the canned targets are named inline on the objective
+  line (`objective = banana, a = 1, b = 100`; ADR-0059 item 6). *Still open (separate follow-up):* a
+  **data-bound expression** referencing `.exp` columns — only the callable form binds data so far.
+- **Callable signature & data binding:** ~~the precise `(params, data)` contract and how multi-
+  experiment data is presented.~~ **Resolved:** `f(params, data)` where `params` is a name→value
+  dict and `data` is a name→`Data` mapping keyed by file stem (`None` when no data is bound),
+  declared with the callable-only `data = f1.exp, f2.exp` key — multi-experiment data is keyed by
+  name exactly as parameters are.
 
 ## Boundaries (in code — the seams this builds on / where new surface lands)
 

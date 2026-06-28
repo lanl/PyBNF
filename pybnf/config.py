@@ -154,6 +154,10 @@ STRUCTURAL_PASSTHROUGH = frozenset({
     # by _add_inline_callable_target (which synthesizes the CallableModel), not the typed schema
     # -- a legitimate non-schema key like 'expression', never an unused-key warning.
     'callable',
+    # Experimental data bound to a callable objective (ADR-0050 data follow-up): the ``data =
+    # f.exp, ...`` files _add_inline_callable_target loads onto the CallableModel. A legitimate
+    # non-schema key consumed only on the callable path; never an unused-key warning.
+    'data',
 })
 
 
@@ -1009,10 +1013,28 @@ class Configuration:
         :meth:`_add_inline_expression_target`, swapping "compile an expression" for "import a
         function".
 
+        Experimental data is optional and bound by the ``data = f1.exp, f2.exp`` key (ADR-0050
+        data follow-up): each ``.exp`` file is loaded into a :class:`~pybnf.data.Data` and handed
+        to the callable as a name->Data mapping keyed by file stem (``f(params, data)``), one entry
+        per experiment -- so multi-experiment data is presented by name, mirroring ``params``. With
+        no ``data`` key the callable is invoked ``data=None`` (the pure-analytical case). The
+        ``data`` key is callable-only; with any other objective it is a pointed error.
+
         Edition-2 gated. Gradient-free (a general callable is not JAX-traceable), so
         ``job_type = hmc`` rejects the resulting model with a pointed error
         (:meth:`HMCSampler._resolve_analytical_model`). No-op unless ``objective = callable``."""
+        data_files = self.config.get('data') or []
         if str(self.config.get('objective', '')).lower() != 'callable':
+            # The data key binds measurements to a callable's NLL; nothing else consumes it, so a
+            # data key under any other objective is a misconfiguration -- fail fast and point at
+            # the cause rather than silently ignoring the measurements.
+            if data_files:
+                raise PybnfError(
+                    "the 'data' key is only valid with 'objective = callable'",
+                    "You declared 'data = %s' but the objective is not 'callable'. A callable "
+                    "objective's NLL scores its own measurements (ADR-0050); other objectives bind "
+                    "experimental data through a model / experiment, not the top-level 'data' key."
+                    % ', '.join(map(str, data_files)))
             return
         ed = edition.resolve_edition(self.config.get('edition'))
         edition.require_edition(ed, 2, "the 'objective = callable' bring-your-own objective")
@@ -1030,7 +1052,13 @@ class Configuration:
         # pointed error -- not mid-run on a dask worker. (The resolved function is re-imported
         # lazily on the worker; here we only fail-fast on a broken reference.)
         resolve_callable_entry_point(entry_point)
-        model = CallableModel(entry_point, name='callable')
+        # Load the bound experimental data (if any) into a name->Data map keyed by file stem -- one
+        # entry per experiment, the multi-experiment presentation handed to the callable. Loaded
+        # eagerly here (fail fast on a missing/unreadable file) and carried on the model to the
+        # workers, NOT routed through self.exp_data: a callable scores its own NLL, so its data is
+        # never suffix-matched to a model action (DirectPassObjective ignores exp_data entirely).
+        model_data = self._load_callable_data(data_files)
+        model = CallableModel(entry_point, name='callable', data=model_data)
         if model.name in md:
             raise PybnfError(
                 f'The inline objective callable model "{model.name}" collides with a declared '
@@ -1042,8 +1070,41 @@ class Configuration:
         # also repurposes the 'callable' config slot (which held the entry-point string, already
         # captured on the model) as that empty exp list.
         self.config[model.file_path] = []
-        print1(f'Objective: bring-your-own callable NLL = {entry_point} (params-only; data unbound).')
-        logger.info(f'Inline callable objective: {entry_point!r}')
+        if model_data:
+            bound = ', '.join(sorted(model_data))
+            print1(f'Objective: bring-your-own callable NLL = {entry_point} '
+                   f'[data: {bound}].')
+        else:
+            print1(f'Objective: bring-your-own callable NLL = {entry_point} '
+                   f'(params-only; no data bound).')
+        logger.info(f'Inline callable objective: {entry_point!r} '
+                    f'with data {sorted(model_data) if model_data else None}')
+
+    def _load_callable_data(self, data_files):
+        """Load the ``data = f1.exp, ...`` files for a callable objective into a name->Data map
+        keyed by file stem (ADR-0050 data follow-up), or ``None`` when no data is declared.
+
+        Each ``.exp`` file is one experiment; the stem (``curve1.exp`` -> ``curve1``) is its name,
+        so the callable indexes its measurements by experiment exactly as it indexes parameters by
+        name. Loaded eagerly (a missing/unreadable file is a pointed config-load error, not a
+        mid-run worker failure); two files sharing a stem collide with a pointed error (the name
+        would be ambiguous). Returns ``None`` (not an empty dict) for the no-data case so the
+        callable's ``data=None`` default and the pure-analytical contract are preserved exactly."""
+        if not data_files:
+            return None
+        model_data = {}
+        for ef in data_files:
+            key = self._file_prefix(ef)
+            if key in model_data:
+                raise PybnfError(
+                    f"Two callable data files map to the same experiment name '{key}'.",
+                    "A callable's data files are keyed by their stem (the name before '.exp'), so "
+                    "each must have a distinct stem; rename one of the colliding files.")
+            try:
+                model_data[key] = Data(file_name=self._absolute(ef))
+            except FileNotFoundError:
+                raise PybnfError(f"Callable objective data file '{ef}' was not found.")
+        return model_data
 
     def _load_mutants(self):
 

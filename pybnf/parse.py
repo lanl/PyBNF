@@ -284,6 +284,16 @@ def parse(s):
     callable_value = pp.Regex(r'[^#\n]+').set_parse_action(lambda t: t[0].strip())
     callable_gram = callable_key - equals - callable_value - comment
 
+    # Optional experimental data bound to a bring-your-own callable objective (ADR-0050 data
+    # follow-up):
+    #   data = curve1.exp, curve2.exp
+    # A comma list of ``.exp`` files -- each is ONE experiment, presented to the callable as a
+    # name->Data mapping keyed by file stem (``{'curve1': Data, ...}``), mirroring how the params
+    # dict is keyed by name. Reuses the comma ``exp_file`` list the model/mutant lines use. Valid
+    # ONLY with ``objective = callable`` (config.py errors otherwise -- nothing else consumes it).
+    data_key = pp.CaselessLiteral('data')
+    data_gram = data_key - equals - _DelimitedList(exp_file) - comment
+
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
     mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
@@ -420,7 +430,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -690,6 +700,17 @@ def ploop(ls):  # parse loop
                                          f"multiple times")
                     fields[fname] = vals[0] if len(vals) == 1 else vals
                 d.setdefault(('objective_modes', None), []).append(fields)
+            elif l[0] == 'data':
+                # Top-level experimental-data binding for a callable objective (ADR-0050 data
+                # follow-up): a comma list of .exp files, each ONE experiment. Stored as a plain
+                # list under 'data'; config._add_inline_callable_target loads them into the
+                # CallableModel keyed by file stem. NOT added to the exp_data set -- a callable
+                # scores its own NLL, so its data is never suffix-matched to a model action (the
+                # whole point of the fileless seam), and joining exp_data would wrongly enlist it
+                # in normalization / correspondence machinery.
+                if 'data' in d:
+                    raise PybnfError("Config key 'data' is specified multiple times")
+                d['data'] = list(l[1:])
             elif l[0] == 'postprocess':
                 if len(values) < 2:
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "
