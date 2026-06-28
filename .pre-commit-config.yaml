@@ -1,18 +1,25 @@
-# Pre-push hooks: catch CI failures before they reach GitHub.
+# Pre-push hooks: catch the failures CI can't, fast, before they reach GitHub.
 #
 # After cloning, run once:
 #   pre-commit install --hook-type pre-push
 #
-# Three complementary hooks run before every `git push`:
-#   1. ruff-ci-mirror   -- the *exact* lint command CI's lint.yml runs (pinned
+# Two complementary hooks run before every `git push`:
+#   1. ruff-ci-mirror -- the *exact* lint command CI's lint.yml runs (pinned
 #      `ruff@0.15.14 check .`). Runs FIRST and takes seconds, so a lint failure
-#      aborts the push immediately instead of after the slow pytest gates (the
-#      pytest hooks do NOT run ruff -- that gap let an F401 reach CI once).
-#   2. pytest-bngsim    -- the bngsim (mac-only) tests CI *cannot* run, since the
-#      private bngsim wheel is absent on hosted runners.
-#   3. pytest-ci-mirror -- the *exact* command CI runs (`PYBNF_NO_BNGSIM=1 pytest
-#      -m "not slow" -n auto`), so any bngsim-less regression CI would flag is
-#      caught locally first.
+#      aborts the push immediately instead of after the pytest gate (the pytest
+#      hook does NOT run ruff -- that gap let an F401 reach CI once).
+#   2. pytest-bngsim -- the bngsim (mac-only) tests CI *cannot* run, since the
+#      private bngsim wheel is absent on hosted runners. This is the gate's
+#      unique value: every other test already runs in CI. Run with `-n auto`
+#      so the whole gate finishes in well under a minute.
+#
+# Deliberately NOT here: the bngsim-less suite (`PYBNF_NO_BNGSIM=1 pytest
+# -m "not slow" -n auto`). CI's tests.yml runs that exact command on every push,
+# so mirroring it locally added minutes to the gate for zero extra coverage --
+# and a multi-minute pre-push hook holds the push's SSH connection idle long
+# enough for GitHub to reap it ("Connection to github.com closed by remote
+# host"), so the push silently never lands. Keeping the gate fast is what makes
+# `git push` actually complete. Bngsim-less regressions still surface in CI.
 #
 # `uv run --no-sync` uses the project's interpreter without touching the
 # environment -- the .venv is already populated and uv.lock isn't fully
@@ -25,7 +32,7 @@ repos:
         name: ruff check (CI mirror)
         # Mirror lint.yml exactly, pinned ruff version and all, so "green here =>
         # green in CI's lint job". uvx fetches the pinned ruff without touching the
-        # project env. First in the list => fails fast (seconds) before the pytest gates.
+        # project env. First in the list => fails fast (seconds) before the pytest gate.
         entry: uvx ruff@0.15.14 check .
         language: system
         pass_filenames: false
@@ -33,10 +40,11 @@ repos:
         stages: [pre-push]
       - id: pytest-bngsim
         name: pytest (bngsim test suite)
-        # Scoped to bngsim-area tests only: bngsim is mac-only and absent in CI,
-        # so these run nowhere else. Add files here as bngsim coverage expands.
+        # Every bngsim-area test file: bngsim is mac-only and absent in CI, so
+        # these run nowhere else. `-n auto` parallelizes across cores to keep the
+        # gate fast. Add files here as bngsim coverage expands.
         entry: >-
-          uv run --no-sync pytest -m "not bionetgen"
+          uv run --no-sync pytest -m "not bionetgen" -n auto
           tests/test_bngsim_bridge.py
           tests/test_bngsim_sbml_bridge.py
           tests/test_bngsim_antimony_bridge.py
@@ -44,20 +52,16 @@ repos:
           tests/test_bngsim_bngl_e2e.py
           tests/test_bngsim_nf_e2e.py
           tests/test_bngsim_ssa_replaces_rr.py
+          tests/test_bngsim_model.py
+          tests/test_bngsim_scan.py
+          tests/test_bngsim_expressions.py
+          tests/test_bngsim_parsing.py
+          tests/test_bngsim_runtime_seam.py
+          tests/test_bngsim_output_sensitivities.py
+          tests/test_network_free_bngsim_supported.py
           tests/test_stochastic_seed_policy.py
           tests/test_packaging_metadata.py
           tests/test_failed_sim_handling.py
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      - id: pytest-ci-mirror
-        name: pytest (CI mirror -- bngsim-less)
-        # Reproduce CI's tests.yml command: PYBNF_NO_BNGSIM=1 makes conftest
-        # auto-skip bngsim/nfsim/sbml tests, so this is the same ~1539-test
-        # bngsim-less suite the hosted runners execute. Green here => green in CI.
-        #
-        entry: bash -c 'PYBNF_NO_BNGSIM=1 uv run --no-sync pytest -m "not slow" -n auto'
         language: system
         pass_filenames: false
         always_run: true
