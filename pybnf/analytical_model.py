@@ -25,11 +25,21 @@ Two non-simulator :class:`~pybnf.pset.Model` subclasses share the ``score``-colu
   (``pybnf.petab.formula.compile_objective_expression``) and its free symbols bind to PSet
   values **by name** (``x1``, ``x2``) -- the bind-by-name fix the menu's sorted-positional
   convention did not need.
+
+* :class:`CallableModel` -- the bring-your-own **callable** target (ADR-0050), the expression
+  form's sibling and the escape hatch for densities the math grammar cannot express (logsumexp
+  mixtures, loops over groups, ``scipy.stats``): the user points ``objective = callable`` +
+  ``callable = mymodule:negative_log_likelihood`` at a Python entry point
+  ``f(params, data=None) -> float``. Gradient-free (a general callable is not JAX-traceable), so
+  ``job_type = hmc`` rejects it; use the expression or a menu target for HMC.
 """
 
 import copy
+import importlib
+import importlib.util
 import json
 import logging
+import os
 import re
 import time
 import numpy as np
@@ -566,6 +576,166 @@ class ExpressionModel(Model):
                 f"parameter set. Declared free parameters bind to the expression's symbols by "
                 f"name (ADR-0050).")
         score = float(func(*args))
+        data = Data(arr=np.array([[0.0, score]]))
+        data.cols = {'index': 0, 'score': 1}
+        data.headers = {0: 'index', 1: 'score'}
+        return {self.suffixes[0]: data}
+
+
+def resolve_callable_entry_point(entry_point):
+    """Resolve a ``module:func`` (or ``path/to/file.py:func``) reference to the callable it names
+    (ADR-0050 callable form).
+
+    The reference is ``<module-or-file>:<attribute>``, split on the **last** ``:`` so the attribute
+    is unambiguous. The left side is loaded as an importable dotted module
+    (``pkg.sub.mod`` via :func:`importlib.import_module`) unless it looks like a **file path** -- it
+    ends in ``.py`` or contains an OS path separator -- in which case it is loaded from that file via
+    the same ``spec_from_file_location`` loader the ``postprocess`` scripts use
+    (``config._load_postprocessing``). The right side is the callable attribute on that module.
+
+    Imports / executes user Python, consistent with PyBNF's existing trust model (the config already
+    names model files PyBNF imports and ``postprocess`` scripts it ``exec``s -- ADR-0050); there is
+    no sandbox. Raises a pointed :class:`~pybnf.printing.PybnfError` for a malformed reference (no
+    ``:``, an empty module or attribute), an unimportable module / unreadable file, a missing
+    attribute, or a non-callable attribute -- the resolver runs at config load, so the failure is
+    immediate, not mid-run on a dask worker."""
+    if ':' not in entry_point:
+        raise PybnfError(
+            f"Malformed callable entry point '{entry_point}' (ADR-0050).",
+            "objective = callable takes a 'module:func' reference -- an importable dotted module "
+            "and the callable's name separated by a colon, e.g. 'mypkg.mymodule:negative_log_"
+            "likelihood', or a file path 'path/to/file.py:negative_log_likelihood'.")
+    module_ref, _, attr = entry_point.rpartition(':')
+    module_ref, attr = module_ref.strip(), attr.strip()
+    if not module_ref or not attr:
+        raise PybnfError(
+            f"Malformed callable entry point '{entry_point}' (ADR-0050).",
+            "Both sides of the colon are required: '<module-or-file>:<func>', e.g. "
+            "'mymodule:negative_log_likelihood'.")
+    is_file = module_ref.endswith('.py') or os.sep in module_ref or '/' in module_ref
+    if is_file:
+        path = os.path.abspath(module_ref)
+        try:
+            spec = importlib.util.spec_from_file_location('pybnf_callable_target', path)
+            if spec is None or spec.loader is None:
+                raise PybnfError(
+                    f"Could not load the callable target file '{module_ref}'. Make sure it is a "
+                    "Python file (.py).")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except (OSError, ImportError) as e:
+            raise PybnfError(
+                f"Could not load the callable target file '{module_ref}' (ADR-0050).", str(e))
+    else:
+        try:
+            module = importlib.import_module(module_ref)
+        except ImportError as e:
+            raise PybnfError(
+                f"Could not import the callable target module '{module_ref}' (ADR-0050).",
+                f"{e}. The module must be importable (installed or on PYTHONPATH); for an ad-hoc "
+                f"script use a file path instead, e.g. 'path/to/file.py:{attr}'.")
+    try:
+        func = getattr(module, attr)
+    except AttributeError:
+        raise PybnfError(
+            f"The callable target module '{module_ref}' has no attribute '{attr}' (ADR-0050).",
+            f"Define a function '{attr}(params, data=None) -> float' there, or fix the name in "
+            f"the 'callable' key.")
+    if not callable(func):
+        raise PybnfError(
+            f"The callable target '{entry_point}' resolves to a non-callable {type(func).__name__} "
+            "(ADR-0050).",
+            f"'{attr}' must be a function f(params, data=None) -> float returning the negative "
+            "log-likelihood.")
+    return func
+
+
+class CallableModel(Model):
+    """A bring-your-own analytical objective supplied as a **Python callable** (ADR-0050) -- the
+    escape hatch for everything the inline :class:`ExpressionModel` grammar cannot express: a
+    ``logsumexp`` mixture, a loop over replicate groups, a ``scipy.stats`` density, a hand-rolled
+    hierarchical pooling term.
+
+    A sibling of :class:`ExpressionModel` -- another non-simulator :class:`~pybnf.pset.Model` whose
+    :meth:`execute` emits a one-cell ``score`` column the ``DirectPassObjective`` reads straight
+    through (so no new objective, sampler, or run-loop code), swapping "lambdify an expression" for
+    "import a function". The user points ``callable = pkg.module:func`` (or
+    ``path/to/file.py:func``) at an entry point resolving to
+    ``f(params: Mapping[str, float], data: Data | None = None) -> float`` returning the scalar
+    negative log-likelihood. :meth:`execute` evaluates it at the current pset, passing the
+    parameters **by name** (``dict(self._pset)``) -- the bind-by-name contract (ADR-0050 §4), here
+    trivial because the callable receives the whole name->value map and indexes it itself.
+
+    Holds the ``module:func`` reference *string* (picklable) and resolves it lazily; the resolved
+    function is **not** assumed picklable (a file-loaded function has no importable qualname), so it
+    is dropped from the pickle state and re-imported once per dask worker -- exactly as
+    :class:`ExpressionModel` drops its lambdified callable. **Gradient-free:** a general Python
+    callable is not JAX-traceable, so there is no ``nll_jax`` and ``job_type = hmc`` rejects a
+    ``CallableModel`` with a pointed error (:meth:`HMCSampler._resolve_analytical_model`); use
+    ``objective = expression`` or a menu target for HMC.
+
+    Data binding (the ``data=`` arg) is deferred: this MVP passes ``data=None`` -- the epic's pure
+    analytical use case (no ``.exp``). How multi-experiment data is presented to a callable is
+    ADR-0050's stated open question, left for a follow-up.
+    """
+
+    def __init__(self, entry_point, name, *, pset=None):
+        """``entry_point`` is the ``module:func`` (or ``path/to/file.py:func``) reference string;
+        ``name`` the synthesized model id (also the per-evaluation file prefix -- there is no
+        file)."""
+        self.entry_point = entry_point
+        self.name = name
+        self.file_path = name
+        self.suffixes = ['callable']
+        self.stochastic = False
+        self.has_observables = True
+        self.param_names = set()  # All params come from the config, not a model file
+        self._pset = pset
+        # The resolved function is re-imported on first use and after unpickling rather than carried
+        # across the dask boundary (a file-loaded function is not picklable), mirroring
+        # ExpressionModel's lazily-recompiled callable -- see _resolved() and __getstate__.
+        self._func = None
+
+    def _resolved(self):
+        """The user's callable, imported lazily and memoized.
+
+        The real resolution + validation (importable module / file, attribute present, callable)
+        happened once at config load (config._add_inline_callable_target); this re-imports on the
+        worker. One import per process; ``copy_with_param_set`` shares the memoized function, so a
+        fit's many per-pset copies do not re-import."""
+        if self._func is None:
+            self._func = resolve_callable_entry_point(self.entry_point)
+        return self._func
+
+    def __getstate__(self):
+        # Drop the resolved function (a file-loaded callable is not picklable); _resolved() rebuilds
+        # it from the picklable entry_point string on the worker.
+        state = self.__dict__.copy()
+        state['_func'] = None
+        return state
+
+    def copy_with_param_set(self, pset):
+        m = copy.copy(self)
+        m._pset = pset
+        return m
+
+    def save(self, file_prefix, **kwargs):
+        pass
+
+    def get_suffixes(self):
+        return self.suffixes
+
+    def execute(self, folder, filename, timeout):
+        """Evaluate the user's callable NLL at the current parameter set (bind-by-name) and return
+        it in a one-cell ``score`` column, mirroring :meth:`ExpressionModel.execute`."""
+        # Small delay to prevent dask race condition with instant-completion tasks (the
+        # integration harness patches this module's time.sleep to a no-op).
+        time.sleep(0.01)
+        if self._pset is None:
+            raise ValueError('CallableModel has no parameter set')
+        func = self._resolved()
+        # Bind-by-name: pass the whole {name: value} map (data deferred -- see the class docstring).
+        score = float(func(dict(self._pset), data=None))
         data = Data(arr=np.array([[0.0, score]]))
         data.cols = {'index': 0, 'score': 1}
         data.headers = {0: 'index', 1: 'score'}

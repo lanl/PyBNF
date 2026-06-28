@@ -1,6 +1,17 @@
 # HMC via blackjax is an opt-in *reference* sampler on the analytical model's JAX log-density; the built-in targets become named expressions with explicit constants (issue #425)
 
-**Status: Proposed.** PyBNF gains a gradient-based sampler — `job_type = hmc` (blackjax NUTS) —
+**Status: Accepted.** *As built (#425):* `job_type = hmc` ships as a blackjax-NUTS reference sampler
+on the analytical / BYO-expression model's JAX log-density (gaussian / rotated_gaussian / banana /
+multimodal / rotated_quartic menu targets and the bring-your-own `expression` form all carry an
+`nll_jax`), gated behind the optional `pybnf[jax]` extra, with the unconstraining bijection +
+log-scale path, the full 16-family JAX prior logpdf, divergence-count reliability signal, and the
+HMC-vs-DREAM cross-check. The named-target inline grammar (`objective = banana, a=1, b=100`) and the
+conf-only menu (no `.target` sidecar) landed too. This ADR's sibling **ADR-0050 is now fully built**:
+its remaining `callable` form shipped, and — being a general Python callable rather than a sympy
+expression — it is **gradient-free**, so `_resolve_analytical_model` rejects a `CallableModel` for
+`job_type = hmc` with a pointed error (use `objective = expression` or a menu target for HMC).
+
+PyBNF gains a gradient-based sampler — `job_type = hmc` (blackjax NUTS) —
 that runs **only on the analytical / bring-your-own-log-density model** (ADR-0050), never on a
 simulator (BNGL/SBML) model. Its purpose is **evaluating PyBNF's own gradient-free samplers**
 (`am`, `dream`, `p_dream`, and any future addition) against a reference-grade NUTS on the canonical

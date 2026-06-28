@@ -53,7 +53,7 @@ import logging
 import numpy as np
 
 from .base import BayesianAlgorithm, MCMCFamilyConfig
-from ...analytical_model import AnalyticalModel, ExpressionModel
+from ...analytical_model import AnalyticalModel, CallableModel, ExpressionModel
 from ...printing import print0, print1, print2, PybnfError
 from ...priors import bijector_for_support
 from ...registry import register_fit_type
@@ -140,6 +140,18 @@ class HMCSampler(BayesianAlgorithm):
         (ADR-0059 item 2). A simulator model (BNGL/SBML), or more than one model, gets a clear error
         pointing at the ADR rather than a cryptic ``AttributeError`` later."""
         models = list(self.config.models.values())
+        # A bring-your-own CALLABLE target (objective = callable) is gradient-free -- a general
+        # Python callable is not JAX-traceable, so it carries no nll_jax. Catch it before the
+        # generic "no usable gradient" error to point at the actual fix (ADR-0050).
+        callables = [m for m in models if isinstance(m, CallableModel)]
+        if callables:
+            raise PybnfError(
+                "job_type = hmc cannot sample a callable objective: a general Python callable "
+                "(objective = callable) is gradient-free -- not JAX-traceable, so there is no "
+                "log-density gradient to drive NUTS (ADR-0050/0059). Use 'objective = expression' "
+                "(an inline PEtab-math NLL, which IS differentiated) or a built-in menu target for "
+                "job_type = hmc, or run a gradient-free sampler (am / dream / p_dream) on the "
+                "callable.")
         analytical = [m for m in models if isinstance(m, (AnalyticalModel, ExpressionModel))]
         if not analytical:
             raise PybnfError(

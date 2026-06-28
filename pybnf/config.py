@@ -150,6 +150,10 @@ STRUCTURAL_PASSTHROUGH = frozenset({
     # schema, so it is a legitimate non-schema key like 'postprocess' -- never an unused-key
     # warning.
     'expression',
+    # The bring-your-own objective callable (ADR-0050, the expression form's sibling): consumed
+    # by _add_inline_callable_target (which synthesizes the CallableModel), not the typed schema
+    # -- a legitimate non-schema key like 'expression', never an unused-key warning.
+    'callable',
 })
 
 
@@ -192,18 +196,18 @@ class Configuration:
             d = dict()
             
         # An inline analytical objective -- a named target (ADR-0059: ``objective = banana,
-        # ...``) or a bring-your-own expression (ADR-0050: ``objective = expression`` +
-        # ``expression = ...``) -- synthesizes its own model from the config line, so it needs
-        # no ``model`` / ``model:`` declaration: that is the whole point of the no-sidecar
-        # surface.
+        # ...``) or a bring-your-own expression / callable (ADR-0050: ``objective = expression``
+        # + ``expression = ...``, or ``objective = callable`` + ``callable = mod:func``) --
+        # synthesizes its own model from the config line, so it needs no ``model`` / ``model:``
+        # declaration: that is the whole point of the no-sidecar surface.
         _obj = d.get('objective')
-        # An inline analytical/expression objective synthesizes its own model. Orphan ``mode:``
-        # lines (``('objective_modes', None)`` with no objective target) count here too, so the
-        # model-presence guard does not pre-empt the pointed "you wrote mode: lines but no
+        # An inline analytical/expression/callable objective synthesizes its own model. Orphan
+        # ``mode:`` lines (``('objective_modes', None)`` with no objective target) count here too,
+        # so the model-presence guard does not pre-empt the pointed "you wrote mode: lines but no
         # 'objective = multimodal'" error _add_inline_analytical_target gives.
         has_inline_target = (('objective_target', None) in d
                              or ('objective_modes', None) in d
-                             or (isinstance(_obj, str) and _obj.lower() == 'expression'))
+                             or (isinstance(_obj, str) and _obj.lower() in ('expression', 'callable')))
         if (('models' not in d or len(d['models']) == 0) and not has_inline_target):
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
         # Edition-gate the new-era `model:` declaration syntax (ADR-0028) before the
@@ -763,6 +767,7 @@ class Configuration:
 
         self._add_inline_analytical_target(md)
         self._add_inline_expression_target(md)
+        self._add_inline_callable_target(md)
 
         for model in md.values():
             if isinstance(model, BNGLModel) and not model.has_observables:
@@ -990,6 +995,55 @@ class Configuration:
         bound = ', '.join(ordered_names) if ordered_names else '(no free parameters)'
         print1(f'Objective: bring-your-own expression NLL = {formula} [binds {bound}].')
         logger.info(f'Inline expression objective: {formula!r} binding {ordered_names}')
+
+    def _add_inline_callable_target(self, md):
+        """Synthesize the :class:`CallableModel` for a bring-your-own callable objective (ADR-0050).
+
+        ``objective = callable`` + ``callable = mymodule:negative_log_likelihood`` points at a
+        Python entry point computing the user's negative log-likelihood -- the escape hatch for
+        densities the inline ``expression`` grammar cannot express (logsumexp mixtures, loops,
+        ``scipy.stats``). The entry point is resolved + validated **at config load** (fail fast --
+        a missing module / bad attribute / non-callable errors here, not mid-run on a dask worker)
+        and the synthesized model is injected straight into the model dict ``md`` -- the same
+        fileless synthesis / injection / score path as the sibling
+        :meth:`_add_inline_expression_target`, swapping "compile an expression" for "import a
+        function".
+
+        Edition-2 gated. Gradient-free (a general callable is not JAX-traceable), so
+        ``job_type = hmc`` rejects the resulting model with a pointed error
+        (:meth:`HMCSampler._resolve_analytical_model`). No-op unless ``objective = callable``."""
+        if str(self.config.get('objective', '')).lower() != 'callable':
+            return
+        ed = edition.resolve_edition(self.config.get('edition'))
+        edition.require_edition(ed, 2, "the 'objective = callable' bring-your-own objective")
+        entry_point = self.config.get('callable')
+        if not entry_point or not str(entry_point).strip():
+            raise PybnfError(
+                "objective = callable requires a 'callable' key",
+                "You set 'objective = callable' but did not supply the entry point itself. Add a "
+                "companion line, e.g. 'callable = mymodule:negative_log_likelihood', a "
+                "'module:func' (or 'path/to/file.py:func') reference to a Python callable "
+                "f(params, data=None) -> float returning your negative log-likelihood (ADR-0050).")
+        entry_point = str(entry_point).strip()
+        from .analytical_model import CallableModel, resolve_callable_entry_point
+        # Resolve + validate now (at config load) so a bad reference surfaces immediately with a
+        # pointed error -- not mid-run on a dask worker. (The resolved function is re-imported
+        # lazily on the worker; here we only fail-fast on a broken reference.)
+        resolve_callable_entry_point(entry_point)
+        model = CallableModel(entry_point, name='callable')
+        if model.name in md:
+            raise PybnfError(
+                f'The inline objective callable model "{model.name}" collides with a declared '
+                f'model of the same name. Rename the model file.')
+        md[model.name] = model
+        self._data_map[model.name] = []   # bring-your-own analytical target: no experimental data
+        # _check_actions reads the per-model exp list at self.config[model.file_path]; mirror the
+        # named-target/expression path's empty list (there is no file, so file_path == name). This
+        # also repurposes the 'callable' config slot (which held the entry-point string, already
+        # captured on the model) as that empty exp list.
+        self.config[model.file_path] = []
+        print1(f'Objective: bring-your-own callable NLL = {entry_point} (params-only; data unbound).')
+        logger.info(f'Inline callable objective: {entry_point!r}')
 
     def _load_mutants(self):
 
@@ -2318,7 +2372,7 @@ class Configuration:
         direction goes away and the config -> model direction resolves against each
         model's full parameter namespace. The legacy body below is unchanged.
         """
-        from .analytical_model import AnalyticalModel, ExpressionModel
+        from .analytical_model import AnalyticalModel, CallableModel, ExpressionModel
 
         if edition.is_modern(edition.resolve_edition(self.config.get('edition'))):
             self._check_variable_correspondence_modern()
@@ -2329,7 +2383,7 @@ class Configuration:
         # hasattr clause future-proofs against a model type that never sets
         # param_names (which would otherwise AttributeError in the union below).
         for m in self.models.values():
-            if isinstance(m, (AnalyticalModel, ExpressionModel)) or not hasattr(m, 'param_names'):
+            if isinstance(m, (AnalyticalModel, ExpressionModel, CallableModel)) or not hasattr(m, 'param_names'):
                 return
 
         model_vars = set()
@@ -2374,14 +2428,14 @@ class Configuration:
         across models, so multi-model fits work (a variable valid in any one model
         passes), mirroring the legacy union.
         """
-        from .analytical_model import AnalyticalModel, ExpressionModel
+        from .analytical_model import AnalyticalModel, CallableModel, ExpressionModel
 
         # Param-agnostic models (the analytical menu's AnalyticalModel, the bring-your-own
-        # ExpressionModel) take their parameters from the .conf -- and the expression binds its
-        # free symbols to them by name itself -- so nothing can be proven a typo against them:
-        # skip the whole check, exactly as the legacy branch does.
+        # ExpressionModel / CallableModel) take their parameters from the .conf -- and the
+        # expression/callable binds them by name itself -- so nothing can be proven a typo against
+        # them: skip the whole check, exactly as the legacy branch does.
         for m in self.models.values():
-            if isinstance(m, (AnalyticalModel, ExpressionModel)) or not hasattr(m, 'param_names'):
+            if isinstance(m, (AnalyticalModel, ExpressionModel, CallableModel)) or not hasattr(m, 'param_names'):
                 return
 
         model_ids = set()

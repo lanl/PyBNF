@@ -270,6 +270,20 @@ def parse(s):
     expression_value = pp.Regex(r'[^#\n]+').set_parse_action(lambda t: t[0].strip())
     expression_gram = expression_key - equals - expression_value - comment
 
+    # bring-your-own analytical objective callable (ADR-0050, the expression form's sibling):
+    #   objective = callable
+    #   callable  = mymodule:negative_log_likelihood
+    # ``objective = callable`` selects it (a plain ``objective`` string value -- not a named
+    # target -- so it flows through ``strgram``), and the companion ``callable`` key carries the
+    # entry point: a ``module:func`` (or ``path/to/file.py:func``) reference. The value grammar is
+    # the same permissive rest-of-line ``expression_value`` uses, because the entry point carries
+    # ``:`` / ``.`` / ``/`` (and ``strkeys`` does not list ``callable``), which the plain
+    # ``string`` token would split; config.py resolves and validates it (a missing module / bad
+    # attribute / non-callable gives a pointed error there, not a parse failure).
+    callable_key = pp.CaselessLiteral('callable')
+    callable_value = pp.Regex(r'[^#\n]+').set_parse_action(lambda t: t[0].strip())
+    callable_gram = callable_key - equals - callable_value - comment
+
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
     mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
@@ -406,7 +420,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line

@@ -1,6 +1,19 @@
 # An analytical / user-defined objective is a bring-your-own log-density **Model**, not a new objective; an expression and a callable desugar to the existing `score`-column seam (issue #425, "Tier 1")
 
-**Status: Proposed.** A user can fit or sample an arbitrary closed-form objective — a negative
+**Status: Accepted.** *As built (#425):* both authoring forms ship behind the `score`-column seam,
+fileless. The **expression** form (`objective = expression` + `expression = <PEtab math NLL>`) is a
+synthesized `ExpressionModel` (numpy via the sympy `compile_objective_expression` backend; bind-by-
+name; ADR-0059 item 2 adds the JAX `nll_jax` so HMC differentiates it). The **callable** form
+(`objective = callable` + `callable = module:func` *or* `path/to/file.py:func`) is a synthesized
+`CallableModel` resolving `f(params, data=None) -> float` — both a dotted `importlib.import_module`
+and a `spec_from_file_location` file path are accepted, validated at config load (fail fast). The
+callable is gradient-free (not JAX-traceable), so `job_type = hmc` rejects it with a pointed error.
+The two settled open questions: the expression form **reuses** the `pybnf[petab]` sympy grammar (one
+grammar; gated behind the extra), and the callable's **`data=` arg is deferred** — the MVP passes
+`data=None` (the pure-analytical use case); multi-experiment data presentation to a callable remains
+the one open follow-up. Both forms drop the dummy `.exp` and compose with the prior catalog for free.
+
+A user can fit or sample an arbitrary closed-form objective — a negative
 log-likelihood, an engineered cost, an analytical test function — **without a BNGL or SBML model
 file**, by declaring the target directly in the config in one of two authoring forms: an inline
 **math expression** over the free parameters, or a **Python callable** (dotted entry point). Both

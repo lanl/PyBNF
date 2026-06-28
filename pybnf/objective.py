@@ -1105,6 +1105,12 @@ def build_named_objective(config, token):
         # config._load_models compiles + synthesizes from the ``expression`` key -- no model
         # file, no .exp.
         return DirectPassObjective()
+    if token == 'callable':
+        # A bring-your-own callable objective (ADR-0050, the expression form's sibling:
+        # ``objective = callable`` + ``callable = mod:func``). Same score passthrough as
+        # ``score``; the user's NLL is supplied by a CallableModel that config._load_models
+        # resolves + synthesizes from the ``callable`` key -- no model file, no .exp.
+        return DirectPassObjective()
     from .analytical_model import INLINE_TARGET_TYPES
     if token in INLINE_TARGET_TYPES:
         # A named built-in analytical target (ADR-0059 item 6: ``objective = banana, ...``).
