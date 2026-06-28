@@ -197,7 +197,12 @@ class Configuration:
         # no ``model`` / ``model:`` declaration: that is the whole point of the no-sidecar
         # surface.
         _obj = d.get('objective')
+        # An inline analytical/expression objective synthesizes its own model. Orphan ``mode:``
+        # lines (``('objective_modes', None)`` with no objective target) count here too, so the
+        # model-presence guard does not pre-empt the pointed "you wrote mode: lines but no
+        # 'objective = multimodal'" error _add_inline_analytical_target gives.
         has_inline_target = (('objective_target', None) in d
+                             or ('objective_modes', None) in d
                              or (isinstance(_obj, str) and _obj.lower() == 'expression'))
         if (('models' not in d or len(d['models']) == 0) and not has_inline_target):
             raise UnspecifiedConfigurationKeyError("'model' must be specified in the configuration file.")
@@ -799,33 +804,69 @@ class Configuration:
     def _add_inline_analytical_target(self, md):
         """Synthesize the AnalyticalModel for an inline named objective (ADR-0059 item 6).
 
-        ``objective = banana, a = 1, b = 100`` carries the target *and* its constants on the
-        objective line, with no ``.target`` JSON file -- the parser leaves a structural
-        ``('objective_target', None)`` = ``(name, {const: value})`` for this method to turn
-        into an in-memory :class:`AnalyticalModel`. The model is injected straight into the
-        model dict ``md`` (so the run executes it like any other model and DirectPassObjective
-        reads its ``score``); no experimental data is needed (``_data_map`` entry is empty).
+        The whole off-the-shelf analytical menu is declarable inline in an edition-2 config now --
+        no ``.target`` JSON sidecar for any of them::
 
-        Edition-2 gated like the rest of the modern surface. Constants default to the
-        documented values and are **echoed** at run start, so the geometry is never silently
-        assumed (the #425 discoverability footgun). The matrix/mixture targets are not inline
-        (they keep a ``.target`` sidecar), so an unknown name or constant errors clearly."""
+            objective = gaussian,        mean = 0 0,  variance = 1 1
+            objective = rotated_gaussian, mean = 0 0, variances = 2 0.5, angle = 0.5236
+            objective = rotated_quartic, mean = 0 0,  angle = 0.5236, coeff = 0.01 1
+            objective = banana,          a = 1, b = 100
+            objective = multimodal                       # components on separate mode: lines
+            mode: weight = 0.5, mean = -4 -4, variance = 0.5 0.5
+            mode: weight = 0.5, mean =  4  4, variance = 0.5 0.5
+
+        The parser leaves a structural ``('objective_target', None)`` = ``(name, {field: value})``
+        (and, for multimodal, a ``('objective_modes', None)`` list of component dicts); this method
+        validates them against the target's field schema, builds the same ``target_def`` dict a
+        ``.target`` file would (deriving ``rotated_gaussian``'s covariance from variances + angle),
+        and injects an in-memory :class:`AnalyticalModel` into the model dict ``md`` -- so the run
+        executes it like any other model and ``DirectPassObjective`` reads its ``score``; no
+        experimental data is needed.
+
+        Edition-2 gated. Fields default to the documented values and are **echoed** at run start so
+        the geometry is never silently assumed (the #425 discoverability footgun); an unknown name,
+        an unknown/duplicate/missing field, or a scalar-vs-vector mismatch errors clearly."""
         spec = self.config.get(('objective_target', None))
+        modes_raw = self.config.get(('objective_modes', None))
         if spec is None:
+            if modes_raw:
+                raise PybnfError(
+                    "'mode:' line(s) were given without an inline 'objective = multimodal' target. "
+                    "A mode: record declares one mixture component of a multimodal objective.")
             return
-        from .analytical_model import AnalyticalModel, INLINE_TARGET_DEFAULTS
+        from .analytical_model import (AnalyticalModel, INLINE_TARGET_SCHEMAS,
+                                       MULTIMODAL_MODE_SCHEMA, build_rotated_covariance)
         ed = edition.resolve_edition(self.config.get('edition'))
         edition.require_edition(
-            ed, 2, "the 'objective = <target>, <constant> = <value>' named-target syntax")
-        target_name, user_consts = spec
-        defaults = INLINE_TARGET_DEFAULTS[target_name]   # parser only emits known names
-        unknown = sorted(set(user_consts) - set(defaults))
-        if unknown:
+            ed, 2, "the inline 'objective = <target>, <field> = <value>' named-target syntax")
+        target_name, user_fields = spec
+        schema = INLINE_TARGET_SCHEMAS[target_name]   # parser only emits known names
+        consts = self._coerce_inline_target_fields(target_name, schema, user_fields,
+                                                   where=f"objective '{target_name}'")
+
+        if target_name == 'multimodal':
+            if not modes_raw:
+                raise PybnfError(
+                    "'objective = multimodal' needs at least one mixture component. Add a "
+                    "'mode: weight = .., mean = .. .., variance = .. ..' line per mode.")
+            consts['modes'] = [self._coerce_inline_target_fields(
+                                   'multimodal', MULTIMODAL_MODE_SCHEMA, m, where='a mode: record')
+                               for m in modes_raw]
+        elif modes_raw:
             raise PybnfError(
-                f"Unknown constant(s) {unknown} for inline objective '{target_name}'.",
-                f"The '{target_name}' target takes constant(s) {sorted(defaults)} "
-                f"(defaults {defaults}); got unexpected {unknown}.")
-        consts = {**defaults, **user_consts}
+                f"'mode:' line(s) are only valid with 'objective = multimodal', not "
+                f"'objective = {target_name}'.")
+
+        if target_name == 'rotated_gaussian':
+            # Sugar: derive the covariance matrix the model consumes from the conf-friendly
+            # principal-variances + angle form (2-D), then drop the friendly fields.
+            variances, angle = consts.pop('variances'), consts.pop('angle')
+            if len(variances) != 2:
+                raise PybnfError(
+                    "Inline 'objective = rotated_gaussian' is 2-D (a single angle defines a planar "
+                    f"rotation); 'variances' needs exactly 2 values, got {variances}.")
+            consts['covariance'] = build_rotated_covariance(variances, angle)
+
         model = AnalyticalModel(target_def={'type': target_name, **consts}, name=target_name)
         if model.name in md:
             raise PybnfError(
@@ -836,20 +877,68 @@ class Configuration:
         # _check_actions reads the per-model exp list at self.config[model.file_path];
         # mirror the .target path's empty list (there is no file, so file_path == name).
         self.config[model.file_path] = []
-        # Eager bind-by-name validation (ADR-0034): an inline ``objective = banana`` line is
-        # unambiguously an analytical fit whose declared free parameters ARE the target's
-        # coordinates, so validate them here -- a pointed config-load error (the #425 footgun
-        # example), not a swallowed failed-simulation at run. (The file ``.target`` path stays
-        # lazy: there a param-agnostic ``AnalyticalModel`` may be a throwaway vehicle for an
-        # unrelated config feature, so its coordinates are checked only when a fit binds them
-        # in ``execute``.) Declared ids come from the config keys -- the same source
-        # _load_variables reads, which has not run yet (it follows _load_models).
+        # Eager bind-by-name validation (ADR-0034): an inline objective line is unambiguously an
+        # analytical fit whose declared free parameters ARE the target's coordinates, so validate
+        # them here -- a pointed config-load error (the #425 footgun example), not a swallowed
+        # failed-simulation at run. (The file ``.target`` path stays lazy: there a param-agnostic
+        # ``AnalyticalModel`` may be a throwaway vehicle for an unrelated config feature.) Declared
+        # ids come from the config keys -- the same source _load_variables reads, which has not run
+        # yet (it follows _load_models).
         declared = sorted(k[1] for k in self.config.keys() if self._is_free_param_key(k))
         if declared:
             model.coordinate_order(declared)   # raises a pointed PybnfError on a bad name set
-        echoed = ', '.join(f'{k} = {consts[k]}' for k in defaults)
-        print1(f'Objective: analytical {target_name} target ({echoed}).')
+        print1(f'Objective: analytical {target_name} target ({self._echo_inline_target(consts)}).')
         logger.info(f'Inline analytical objective: {target_name} with {consts}')
+
+    @staticmethod
+    def _coerce_inline_target_fields(target_name, schema, user_fields, *, where):
+        """Validate the parsed inline fields against a target/mode field ``schema`` and coerce each
+        to its declared kind (ADR-0059 item 6 completion).
+
+        ``schema`` maps ``field -> (kind, default)`` (``kind`` ``'scalar'``/``'vector'``, ``default``
+        ``None`` = required). Unknown, duplicate (already caught by the parser), or missing-required
+        fields, and a scalar-where-vector (or vice-versa) value, all raise a pointed ``PybnfError``
+        naming ``where``. A 1-D vector parsed as a bare scalar (``mean = 0``) is wrapped back into a
+        one-element list; a scalar field keeps its single number. Returns the coerced ``{field:
+        value}`` dict (vectors as ``list``, scalars as ``float``)."""
+        unknown = sorted(set(user_fields) - set(schema))
+        if unknown:
+            raise PybnfError(
+                f"Unknown field(s) {unknown} for {where}.",
+                f"It takes field(s) {sorted(schema)}; got unexpected {unknown}.")
+        coerced = {}
+        for field, (kind, default) in schema.items():
+            if field not in user_fields:
+                if default is None:
+                    raise PybnfError(
+                        f"{where[0].upper() + where[1:]} is missing the required field '{field}' "
+                        f"({kind}). Required fields: "
+                        f"{sorted(f for f, (_, d) in schema.items() if d is None)}.")
+                coerced[field] = default
+                continue
+            value = user_fields[field]
+            is_list = isinstance(value, list)
+            if kind == 'scalar':
+                if is_list:
+                    raise PybnfError(
+                        f"In {where}, field '{field}' takes a single number, got {value}.")
+                coerced[field] = float(value)
+            else:   # vector: accept a 1-element bare scalar as a 1-D vector
+                coerced[field] = [float(x) for x in (value if is_list else [value])]
+        return coerced
+
+    @staticmethod
+    def _echo_inline_target(consts):
+        """A compact, deterministic echo of an inline target's resolved fields for the run-start
+        banner (the #425 'never silently assume the geometry' principle). Modes are summarized by
+        count; scalars/vectors print as given."""
+        parts = []
+        for k in sorted(consts):
+            if k == 'modes':
+                parts.append(f'{len(consts[k])} modes')
+            else:
+                parts.append(f'{k} = {consts[k]}')
+        return ', '.join(parts)
 
     def _add_inline_expression_target(self, md):
         """Synthesize the :class:`ExpressionModel` for a bring-your-own objective (ADR-0050).

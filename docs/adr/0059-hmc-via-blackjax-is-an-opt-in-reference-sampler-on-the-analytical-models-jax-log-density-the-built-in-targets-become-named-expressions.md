@@ -131,20 +131,37 @@ expressions / a keyword target)"* into a concrete surface, and resolves its "how
 are named" open question. A menu target is a **named, pre-packaged expression**, not a closed JSON
 enum:
 
-- **Simple targets** (banana, axis-aligned gaussian) — a named built-in with **explicit constants on
-  the objective line**, mirroring the existing `noise_model = <family>, <param> = <verb> <arg>` grammar
-  (ADR-0021/0031):
+- **Named built-ins with fields on the objective line** — a named target plus its constants, mirroring
+  the existing `noise_model = <family>, <param> = <verb> <arg>` grammar (ADR-0021/0031). A field value is
+  one or more numbers, so it carries a **scalar** (`a = 1`) or a **vector** (`mean = 0 0`):
 
   ```
-  objective = banana, a = 1, b = 100      # constants optional; defaults documented and echoed at run start
+  objective = banana,          a = 1, b = 100        # fields optional; defaults documented + echoed
+  objective = gaussian,        mean = 0 0, variance = 1 1
+  objective = rotated_gaussian, mean = 0 0, variances = 2 0.5, angle = 0.5236
+  objective = rotated_quartic, mean = 0 0, angle = 0.5236, coeff = 0.01 1
   ```
 
 - **Bring-your-own** — `objective = expression` + `expression = …` (ADR-0050), the user's own math.
 
-- **Structured targets** (`rotated_gaussian` with a full covariance matrix; `multimodal` with a list of
-  modes) — a covariance matrix / mode list does not fit a config line or a scalar expression, so these
-  **keep a JSON sidecar** (`objective = rotated_gaussian` + a `.target`), carrying a small hand-written
-  JAX log-density.
+- **`multimodal`** — the one list-structured target (a variable-length mixture); its components are
+  repeated, order-preserving **`mode:` records**, the edition-2 idiom (cf. the `parameter:` /
+  `experiment:` records):
+
+  ```
+  objective = multimodal
+  mode: weight = 0.5, mean = -4 -4, variance = 0.5 0.5
+  mode: weight = 0.5, mean =  4  4, variance = 0.5 0.5
+  ```
+
+**Resolved (shipped): the whole off-the-shelf menu is conf-only — no `.target` JSON sidecar for any
+target.** The original cut kept `rotated_gaussian` / `multimodal` on a sidecar ("a covariance matrix /
+mode list does not fit a config line"); completing the deferred **vector-field grammar** (`mean = 0 0`)
+and adding the **`mode:` record** closes that gap. `rotated_gaussian` takes the conf-friendly principal-
+`variances` + rotation-`angle` form (config derives `Σ = R diag(v) Rᵀ`, 2-D); the inline grammar is sugar
+that builds the *same* `target_def` dict a sidecar would, so the model code is unchanged. The `.target`
+JSON path stays supported as a back-compat / advanced escape hatch (e.g. a fully general covariance), but
+it is no longer required for any standard target.
 
 Across all forms, **coordinates bind by name** (the user writes `x1`, `x2`, declared as `uniform_var` /
 `parameter:`), per ADR-0050 §4 / ADR-0034 — eliminating `AnalyticalModel._get_param_values`'s

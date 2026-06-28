@@ -825,3 +825,28 @@ def test_expression_nll_jax_matches_numpy(tmp_path):
     for _ in range(12):
         x = rng.normal(size=2) * 3.0
         assert float(nll(jnp.asarray(x))) == pytest.approx(float(numf(*x)), rel=1e-5, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# The full off-the-shelf menu is conf-only now (ADR-0059 item 6 completion): HMC
+# samples an inline target with NO .target sidecar, exactly as it does a file one.
+# --------------------------------------------------------------------------- #
+def test_hmc_samples_inline_gaussian_no_sidecar(tmp_path):
+    """HMC on a fully *inline* analytical target -- ``objective = gaussian, mean = .., variance = ..``
+    with no ``.target`` JSON file of any kind -- recovers the closed-form moments. Proves the
+    conf-only menu surface reaches the gradient sampler, not just the gradient-free fitters."""
+    body = ('edition = 2\nobjective = gaussian, mean = 2 -1, variance = 1 4\n'
+            'job_type = hmc\nuniform_var = p1 -12 12\nuniform_var = p2 -12 12\n'
+            'population_size = 4\nnum_warmup = 800\nnum_samples = 1500\n'
+            'max_iterations = 1500\nrandom_seed = 20260627\n')
+    conf = _build_expr_config(tmp_path, body)
+    assert list(conf.models) == ['gaussian']        # fileless AnalyticalModel synthesized
+    alg = algorithms.HMCSampler(conf)
+    H.drive(alg)
+
+    samples = H.read_samples(conf.config['output_dir'], 2)
+    assert samples.shape[0] == 4 * 1500 and np.all(np.isfinite(samples))
+    np.testing.assert_allclose(samples.mean(axis=0), [2.0, -1.0], atol=0.1)
+    np.testing.assert_allclose(samples.var(axis=0, ddof=1), [1.0, 4.0], rtol=0.12)
+    rhat = alg.compute_rhat()
+    assert rhat is not None and np.nanmax(rhat) < 1.05

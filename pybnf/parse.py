@@ -227,13 +227,32 @@ def parse(s):
     # literal here to avoid an import cycle), so a *bare* token like ``objective = score`` is
     # NOT a target and backtracks -- via the leading ``+`` -- to the plain strgram. Constants
     # are optional; their defaults are documented and echoed at run start (config.py).
+    # The full off-the-shelf analytical menu is declarable inline now (ADR-0059 item 6 completion):
+    # the scalar-constant ``banana`` plus the vector-field ``gaussian`` / ``rotated_gaussian`` /
+    # ``rotated_quartic`` (and ``multimodal`` via the repeated ``mode:`` record below), so no target
+    # needs a ``.target`` JSON sidecar. A field value is now ONE OR MORE numbers -- a scalar
+    # (``a = 1``) or a vector (``mean = 0 0``) -- and config.py coerces per the target's field
+    # schema. Names kept literal here (canonical home: analytical_model.INLINE_TARGET_TYPES) to
+    # avoid an import cycle; a bare ``objective = score`` is not a target and backtracks (leading
+    # ``+``) to the plain strgram.
     objective_key = pp.CaselessLiteral('objective')
-    objective_target_name = _one_of('banana', caseless=True)
-    obj_const_field = pp.Group(nm_token + equals + num)
+    objective_target_name = _one_of('banana gaussian rotated_gaussian rotated_quartic multimodal',
+                                    caseless=True)
+    obj_const_field = pp.Group(nm_token + equals + pp.OneOrMore(num))
     objective_target_gram = (objective_key + equals + objective_target_name
                              + pp.Optional(pp.Suppress(',') + _DelimitedList(obj_const_field))
                              - comment)
     objective_target_gram.set_parse_action(lambda t: ['objective_spec'] + list(t)[1:])
+
+    # A single mixture component of an inline ``objective = multimodal`` target (ADR-0059 item 6
+    # completion): ``mode: weight = 0.5, mean = -4 -4, variance = 0.5 0.5``. Repeated, id-less, and
+    # order-preserving -- the one menu target whose data (a variable-length list of weighted
+    # Gaussians) does not fit a single objective line, so it gets a record per component instead of
+    # a ``.target`` sidecar. Same vector-valued ``<name> = <num>+`` fields as the objective line;
+    # config.py accumulates the modes and validates them against the mixture-component schema.
+    mode_field = pp.Group(nm_token + equals + pp.OneOrMore(num))
+    mode_gram = (pp.CaselessLiteral('mode') + colon - _DelimitedList(mode_field) - comment)
+    mode_gram.set_parse_action(lambda t: ['mode'] + list(t)[1:])
 
     # bring-your-own analytical objective expression (ADR-0050):
     #   objective   = expression
@@ -387,7 +406,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | expression_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -628,15 +647,35 @@ def ploop(ls):  # parse loop
                 target_name = l[1]
                 consts = {}
                 for field in l[2:]:
-                    cname, cval = field[0], field[1]
+                    cname = field[0]
+                    # One or more numbers per field: a scalar (a = 1) stays scalar, a vector
+                    # (mean = 0 0) becomes a list. config.py coerces per the target's field schema
+                    # (and wraps a 1-D vector scalar back into a list), so banana's scalar
+                    # constants are unchanged while gaussian/rotated_* carry mean/variance vectors.
+                    vals = [float(x) for x in field[1:]]
                     if cname in consts:
                         raise PybnfError(f"In 'objective = {target_name}', constant "
                                          f"'{cname}' is specified multiple times")
-                    consts[cname] = float(cval)
+                    consts[cname] = vals[0] if len(vals) == 1 else vals
                 if 'objective' in d or ('objective_target', None) in d:
                     raise PybnfError("The 'objective' key is specified multiple times")
                 d['objective'] = target_name
                 d[('objective_target', None)] = (target_name, consts)
+            elif l[0] == 'mode':
+                # A mixture component of an inline ``objective = multimodal`` target (ADR-0059
+                # item 6 completion): ['mode', [field, num...], ...]. id-less and order-preserving,
+                # so accumulate into an ordered list under the structural ('objective_modes', None)
+                # key (the tuple-key pattern the other structural records use, exempt from the
+                # unused-key check); config.py validates each against the mixture-component schema.
+                fields = {}
+                for grp in l[1:]:
+                    fname = grp[0]
+                    vals = [float(x) for x in grp[1:]]
+                    if fname in fields:
+                        raise PybnfError(f"In a 'mode:' line, field '{fname}' is specified "
+                                         f"multiple times")
+                    fields[fname] = vals[0] if len(vals) == 1 else vals
+                d.setdefault(('objective_modes', None), []).append(fields)
             elif l[0] == 'postprocess':
                 if len(values) < 2:
                     raise PybnfError("Config key 'postprocess' should specify a python file, followed by one or more "

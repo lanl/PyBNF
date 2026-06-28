@@ -41,16 +41,47 @@ from .printing import PybnfError
 
 logger = logging.getLogger(__name__)
 
-#: Built-in analytical targets that can be declared *inline* on the objective line
-#: (ADR-0059 item 6: ``objective = banana, a = 1, b = 100``), mapped to their constants'
-#: documented defaults (applied + echoed at run start when the user omits them). These are
-#: the scalar-constant targets; the matrix/mixture targets (rotated_gaussian / multimodal)
-#: do not fit a config line and keep a ``.target`` JSON sidecar. The parser (parse.py) keeps
-#: the names literal to avoid an import cycle; this dict is the canonical home.
-INLINE_TARGET_DEFAULTS = {
-    'banana': {'a': 1.0, 'b': 100.0},
+#: The field schema for every built-in analytical target declarable *inline* in an edition-2
+#: config -- the whole off-the-shelf menu now, so none needs a ``.target`` JSON sidecar (ADR-0059
+#: item 6 completion). Each field maps to ``(kind, default)``: ``kind`` is ``'scalar'`` (one
+#: number, e.g. ``a = 1``) or ``'vector'`` (a coordinate/value list, e.g. ``mean = 0 0``);
+#: ``default`` is the documented default applied + echoed at run start, or ``None`` for a required
+#: field. ``multimodal`` carries no objective-line fields -- its mixture components come from
+#: repeated ``mode:`` records (see :data:`MULTIMODAL_MODE_SCHEMA`). config.py validates + coerces
+#: the parsed numbers against this schema; the parser (parse.py) keeps the names literal to avoid
+#: an import cycle, so this dict is the canonical home.
+INLINE_TARGET_SCHEMAS = {
+    'banana': {'a': ('scalar', 1.0), 'b': ('scalar', 100.0)},
+    'gaussian': {'mean': ('vector', None), 'variance': ('vector', None)},
+    # rotated_gaussian's covariance is given as principal-axis variances + a rotation angle (the
+    # conf-friendly form of Sigma = R(angle) diag(variances) R(angle)^T); config derives the matrix.
+    'rotated_gaussian': {'mean': ('vector', None), 'variances': ('vector', None),
+                         'angle': ('scalar', 0.0)},
+    'rotated_quartic': {'mean': ('vector', None), 'angle': ('scalar', 0.0),
+                        'coeff': ('vector', None)},
+    'multimodal': {},
 }
-INLINE_TARGET_TYPES = frozenset(INLINE_TARGET_DEFAULTS)
+#: The field schema for one ``mode:`` record -- a single weighted-Gaussian mixture component of an
+#: inline ``objective = multimodal`` target (ADR-0059 item 6 completion).
+MULTIMODAL_MODE_SCHEMA = {'weight': ('scalar', 1.0), 'mean': ('vector', None),
+                         'variance': ('vector', None)}
+INLINE_TARGET_TYPES = frozenset(INLINE_TARGET_SCHEMAS)
+
+
+def build_rotated_covariance(variances, angle):
+    """The 2-D covariance ``Sigma = R(angle) diag(variances) R(angle)^T`` from principal-axis
+    variances and a rotation angle (radians) -- the conf-friendly parameterization of an inline
+    ``rotated_gaussian`` (ADR-0059 item 6 completion).
+
+    Returns a nested list (JSON-shaped) so it drops straight into the ``target_def`` the model's
+    existing ``covariance`` path consumes -- the inline grammar is sugar that builds the same dict a
+    ``.target`` sidecar would, leaving the model unchanged. 2-D only: a single angle defines a
+    rotation only in the plane, which is exactly the off-the-shelf rotated-Gaussian stress geometry
+    (config raises a pointed error on a non-2-D ``variances``)."""
+    c, s = np.cos(angle), np.sin(angle)
+    rot = np.array([[c, -s], [s, c]])
+    cov = rot @ np.diag(np.asarray(variances, dtype=float)) @ rot.T
+    return cov.tolist()
 
 
 class AnalyticalModel(Model):

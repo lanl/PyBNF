@@ -1,13 +1,15 @@
 """Named analytical objective targets on the config line (ADR-0059 item 6, #425).
 
 ``objective = banana, a = 1, b = 100`` declares a built-in closed-form objective and its
-scalar constants on the objective line -- no ``.target`` JSON sidecar, no placeholder
-``.exp`` file, no separate ``model:`` declaration. The grammar mirrors the ``noise_model``
-field surface (a target name plus ``<const> = <number>`` fields); constants are optional and
-their documented defaults are applied + echoed at run start, closing the silent-geometry
-footgun #425 names. The matrix/mixture targets (rotated_gaussian / multimodal) are not inline
--- they keep a ``.target`` JSON file -- so an unknown target name simply parses as a plain
-objective token and an unknown constant errors clearly.
+constants on the objective line -- no ``.target`` JSON sidecar, no placeholder ``.exp`` file,
+no separate ``model:`` declaration. The *whole* off-the-shelf menu is inline now (ADR-0059
+item 6 completion): the scalar ``banana`` plus the **vector-field** ``gaussian`` /
+``rotated_gaussian`` / ``rotated_quartic`` (``mean = 0 0``) and ``multimodal`` (its mixture
+components on repeated ``mode:`` records). Fields are optional where a default is documented and
+are applied + echoed at run start, closing the silent-geometry footgun #425 names; an unknown
+target name parses as a plain objective token, and an unknown/missing/mistyped field errors
+clearly. ``rotated_gaussian`` takes the conf-friendly principal-``variances`` + ``angle`` form
+(config derives the covariance matrix).
 
 These tests exercise the real parser (``ploop``) + ``Configuration`` + the fitting algorithm
 end to end against the analytical truth, using the in-process fakes from ``integration_harness``.
@@ -107,7 +109,7 @@ def test_inline_target_echoes_constants(tmp_path, caplog):
 
 
 def test_inline_target_unknown_constant_errors(tmp_path):
-    with pytest.raises(PybnfError, match='Unknown constant'):
+    with pytest.raises(PybnfError, match='Unknown field'):
         _build(tmp_path, 'edition = 2\nobjective = banana, c = 3\n' + _DE_TAIL)
 
 
@@ -162,3 +164,102 @@ def test_target_file_scores_without_placeholder_exp(tmp_path):
     bf = alg.trajectory.best_fit()
     assert bf['p1'] == pytest.approx(1.0, abs=0.2)
     assert bf['p2'] == pytest.approx(-1.0, abs=0.2)
+
+
+# --------------------------------------------------------------------------- #
+# The full off-the-shelf menu is inline now (ADR-0059 item 6 completion):
+# vector-field gaussian / rotated_gaussian / rotated_quartic, and multimodal via
+# repeated mode: records -- no .target JSON sidecar for any target.
+# --------------------------------------------------------------------------- #
+def _model_for(tmp_path, body):
+    """Build a Configuration from an edition-2 inline-objective body + a 2-D DE tail, and return
+    the synthesized AnalyticalModel."""
+    conf = _build(tmp_path, 'edition = 2\n' + body + '\n' + _DE_TAIL)
+    name = conf.config['objective']
+    return conf, conf.models[name]
+
+
+@pytest.mark.parametrize('body,target_type,checks', [
+    ('objective = gaussian, mean = 2 -1, variance = 1 4', 'gaussian',
+     lambda m: (list(m._mean) == [2.0, -1.0] and list(m._var) == [1.0, 4.0])),
+    ('objective = rotated_quartic, mean = 0 0, angle = 0.5236, coeff = 0.01 1', 'rotated_quartic',
+     lambda m: (list(m._mean) == [0.0, 0.0] and list(m._coeff) == [0.01, 1.0])),
+])
+def test_inline_vector_field_target_builds_model(tmp_path, body, target_type, checks):
+    """A vector-field objective line (``mean = 0 0``) synthesizes the AnalyticalModel with the
+    right per-coordinate vectors -- the deferred vector-field grammar, now shipped."""
+    _conf, m = _model_for(tmp_path, body)
+    assert isinstance(m, AnalyticalModel) and m.target_type == target_type
+    assert checks(m)
+
+
+def test_inline_rotated_gaussian_matches_covariance_form(tmp_path):
+    """Inline ``rotated_gaussian`` takes principal variances + angle; config derives
+    ``Sigma = R diag(v) R^T``. The synthesized model's precision must equal that of a model built
+    from the explicit covariance matrix -- the sugar is exact, the model code path unchanged."""
+    import numpy as np
+    from pybnf.analytical_model import build_rotated_covariance
+    _conf, m = _model_for(
+        tmp_path, 'objective = rotated_gaussian, mean = 0 0, variances = 2 0.5, angle = 0.5236')
+    cov = build_rotated_covariance([2.0, 0.5], 0.5236)
+    ref = AnalyticalModel(target_def={'type': 'rotated_gaussian', 'mean': [0.0, 0.0],
+                                      'covariance': cov}, name='ref')
+    np.testing.assert_allclose(m._prec, ref._prec)
+    assert abs(cov[0][1]) > 0.4   # the derived matrix really is correlated (non-trivial rotation)
+
+
+def test_inline_multimodal_builds_modes_from_records(tmp_path):
+    """``objective = multimodal`` plus repeated ``mode:`` records synthesizes the mixture model --
+    the one list-structured target, conf-only via a record per component (no .target sidecar)."""
+    import numpy as np
+    body = ('objective = multimodal\n'
+            'mode: weight = 0.5, mean = -4 -4, variance = 0.5 0.5\n'
+            'mode: weight = 0.5, mean =  4  4, variance = 1 2')
+    _conf, m = _model_for(tmp_path, body)
+    assert m.target_type == 'multimodal' and len(m._modes) == 2
+    # _modes entries are (log_w, mu, inv_var); order is preserved from the mode: lines.
+    (lw0, mu0, iv0), (lw1, mu1, iv1) = m._modes
+    np.testing.assert_allclose(mu0, [-4.0, -4.0]); np.testing.assert_allclose(mu1, [4.0, 4.0])
+    np.testing.assert_allclose(iv1, [1.0, 0.5])   # variance [1, 2] -> inv_var [1, 0.5]
+    assert lw0 == pytest.approx(np.log(0.5))
+
+
+def test_inline_gaussian_de_recovers_mode(tmp_path):
+    """End to end through the real fitter: DE on a fully-inline ``objective = gaussian`` (no files
+    of any kind) finds the mode at the mean -- the conf-only analytical surface actually fits."""
+    import numpy as np
+    body = ('edition = 2\nobjective = gaussian, mean = 2 -1, variance = 1 4\n'
+            'job_type = de\nuniform_var = p1 -5 5\nuniform_var = p2 -5 5\n'
+            'population_size = 20\nmax_iterations = 60\nrandom_seed = 7')
+    conf = _build(tmp_path, body)
+    alg = algorithms.DifferentialEvolution(conf)
+    H.drive(alg)
+    best = np.array([alg.trajectory.best_fit()['p%d' % i] for i in (1, 2)])
+    np.testing.assert_allclose(best, [2.0, -1.0], atol=0.3)
+
+
+# --------------------------------------------------------------------------- #
+# Pointed errors at the inline-menu boundaries (fail clearly, never silently)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize('body,match', [
+    # missing a required field
+    ('objective = gaussian, mean = 0 0', 'missing the required field'),
+    # scalar given where a vector is expected, and vice versa
+    ('objective = banana, a = 1 2', 'takes a single number'),
+    # rotated_gaussian is 2-D (single planar angle)
+    ('objective = rotated_gaussian, mean = 0 0 0, variances = 1 1 1, angle = 0', 'is 2-D'),
+    # mode: lines without a multimodal objective
+    ('objective = gaussian, mean = 0 0, variance = 1 1\nmode: weight = 1, mean = 0 0, variance = 1 1',
+     "only valid with 'objective = multimodal'"),
+    # multimodal with no mode: records
+    ('objective = multimodal', 'needs at least one mixture component'),
+])
+def test_inline_menu_pointed_errors(tmp_path, body, match):
+    with pytest.raises(PybnfError, match=match):
+        _build(tmp_path, 'edition = 2\n' + body + '\n' + _DE_TAIL)
+
+
+def test_inline_mode_without_objective_errors(tmp_path):
+    """A bare ``mode:`` line with no objective at all is a clear error, not a silent no-op."""
+    with pytest.raises(PybnfError, match='without an inline'):
+        _build(tmp_path, 'edition = 2\nmode: weight = 1, mean = 0 0, variance = 1 1\n' + _DE_TAIL)
