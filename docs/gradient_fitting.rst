@@ -107,8 +107,51 @@ objective returns a non-finite score for the same out-of-support point. That kee
 consistent with the objective it differentiates and gives a trust-region step its usual signal to
 reject the point, rather than aborting the whole assembly.
 
-A **mean** (rather than median) location on a log scale adds the family's moment correction and is
-a separate follow-up (layer G).
+A **mean** (rather than median) prediction adds the family's moment correction; it is now
+supported too (see *Asymmetric and non-Gaussian families* below).
+
+
+Asymmetric and non-Gaussian families
+------------------------------------
+
+Only a Gaussian has :math:`\text{data fit} = \tfrac12\rho^2`, so only a Gaussian column yields an
+exact least-squares residual/Jacobian. The robust families — **Laplace** (``noise_model =
+laplace``) and **Student-t** (``noise_model = student_t``) — have a data fit that is *not* a sum of
+squares, so the gradient is assembled from the **universal** scalar form
+
+.. math::
+
+   \nabla F = \sum_i w_i \,\frac{\partial\,\text{data fit}_i}{\partial\hat y_i}\,
+              \frac{\partial\hat y_i}{\partial\theta},
+
+with the per-family slope
+
+.. math::
+
+   \text{Laplace:}\quad \frac{\partial\,\text{data fit}}{\partial\hat y}
+     = \frac{\operatorname{sign}(\hat y - y)}{b}\,f'(\hat y),
+   \qquad
+   \text{Student-t:}\quad \frac{\partial\,\text{data fit}}{\partial\hat y}
+     = \frac{(\nu+1)\,z}{\nu + z^2}\,\frac{f'(\hat y)}{\sigma},\ \ z=\frac{\hat y - y}{\sigma}.
+
+The Laplace data fit is non-smooth at the kink (:math:`\hat y = y`); PyBNF takes the **subgradient
+0** there (the symmetric least-absolute-deviation choice). The Student-t factor
+:math:`(\nu+1)/(\nu+z^2)` is the IRLS weight that downweights an outlier. Because neither carries a
+least-squares residual, the result's ``least_squares_exact`` flag is ``False`` (the residual /
+Jacobian then model only the Gaussian columns, if any) — the signal that a trust-region step must
+consume the scalar gradient. An **estimated** noise parameter composes here exactly as for the
+Gaussian: Laplace's scale :math:`b`, and Student-t's :math:`\sigma` **and** :math:`\nu` (the first
+two-parameter estimated-noise gradient), each adding a scalar column for its retained normalizer.
+
+**Mean centering.** The prediction may be interpreted as the distribution's **mean** rather than
+the median (``location = mean``); the gradient subtracts the family's moment correction in additive
+space. The correction is prediction-independent, so it is free on the derivative side and a no-op
+on the linear scale (where mean = median for these symmetric families). It bites only on a log
+scale, where a mean prediction models the original-space mean of a log-normal / log-Laplace.
+
+The **negative-binomial** family is the one asymmetric family not yet differentiable: its default
+median centering inverts a continuous CDF for the distribution mean (a root-find), so its gradient
+needs implicit differentiation through that inversion — a named follow-up (issue #458).
 
 
 Trajectory transforms and normalization
@@ -148,21 +191,23 @@ own derivative so it stays exact.
 The capability gate (what is supported)
 ---------------------------------------
 
-The gradient is assembled only for the configuration whose derivative is unambiguous and
-exact today — the **default Gaussian noise family with the prediction interpreted as the
-median**, additive on **any noise scale** (linear, or a log scale — log10 / natural log; see
-*Log / lognormal noise scale* above), and with the σ either **fixed** (read from the data / a
-constant) or estimated as a **single free parameter** (``sigma = fit <param>``; see *Estimated
-σ* above) — and the prediction formed through any of the per-observable **trajectory transforms**
-(cumulative→incident, a per-measurement scale/offset, or normalization; see *Trajectory transforms
-and normalization* above). Any other configuration raises a clear ``GradientNotSupported`` naming
-what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong
-derivative. Not yet supported (each a separate, additive follow-up):
+The gradient is assembled only for a configuration whose derivative is unambiguous and exact
+today — a **Gaussian, Laplace, or Student-t noise family** with the prediction interpreted as the
+**median or the mean**, additive on **any noise scale** (linear, or a log scale — log10 / natural
+log; see *Log / lognormal noise scale* above), with each noise parameter either **fixed** (read
+from the data / a constant) or estimated as a **single free parameter** (see *Estimated σ* and
+*Asymmetric and non-Gaussian families* above), and the prediction formed through any of the
+per-observable **trajectory transforms** (cumulative→incident, a per-measurement scale/offset, or
+normalization; see *Trajectory transforms and normalization* above). Any other configuration raises
+a clear ``GradientNotSupported`` naming what is missing, so a caller can fall back to a
+gradient-free step rather than trust a wrong derivative. Not yet supported (each a separate,
+additive follow-up):
 
-* an estimated σ given by an **expression** over several free parameters, or a row-varying
+* the **negative-binomial** family (its median CDF-inversion implicit derivative — issue #458);
+* an estimated noise scale given by an **expression** over several free parameters, or a row-varying
   per-measurement σ (the formula chain rule is a later sub-layer);
-* a **mean** (rather than median) location (its moment correction is layer G);
-* an **asymmetric** family (Laplace, negative-binomial, Student-t, …);
+* a **mean** prediction on a **log** scale *together with* an estimated noise parameter (there the
+  moment correction depends on the noise parameter, coupling the estimated-scale column);
 * an **SBML / measurement-model** observable layer; and
 * **constraint** penalties.
 

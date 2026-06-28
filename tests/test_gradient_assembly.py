@@ -32,8 +32,10 @@ from pybnf.gradient import (
 )
 from pybnf.gradient.assembly import _sampling_scale_factors
 from pybnf.noise import (
-    DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, LN, LOG10, MEDIAN,
+    ConstantSigma, DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, Laplace,
+    LN, LOG10, MEAN, MEDIAN, NegBinomial, StudentT,
 )
+from scipy.special import digamma
 from pybnf.measurement.base import PerMeasurementModel
 from pybnf.objective import (
     ChiSquareObjective, LikelihoodObjective, LogNormalObjective, SumOfSquaresObjective,
@@ -63,6 +65,27 @@ def _logscale_objective(scale=LOG10, source=None):
     the D-composes-with-E estimated-on-log-scale case."""
     return LikelihoodObjective(noise=Gaussian(additive_on=scale, location=MEDIAN),
                                sigma_sources={'sigma': source or DataColumnSigma()})
+
+
+def _laplace_objective(scale_source=None):
+    """An edition-2 Laplace likelihood -- the ``noise_model = laplace`` surface, the heavy-
+    tailed / outlier-robust family (ADR-0011/0021). Built through the noise-model spec, not the
+    legacy :class:`LaplaceObjective` subclass. ``scale_source`` defaults to a fixed ``_SD`` data
+    column (the scale ``b``); pass a :class:`FreeParameterSigma` for an estimated ``b``."""
+    return LikelihoodObjective(noise=Laplace(),
+                               sigma_sources={'scale': scale_source or DataColumnSigma()})
+
+
+def _student_t_objective(sigma_source=None, df_source=None):
+    """An edition-2 Student-t likelihood -- the ``noise_model = student_t`` surface, the first
+    two-parameter family (ADR-0058), scale ``sigma`` + shape ``df`` independently sourced. Built
+    through the noise-model spec, not a legacy subclass. Defaults: a fixed ``_SD`` column for
+    ``sigma`` and the fixed default ``df`` (4); pass :class:`FreeParameterSigma` for either to
+    estimate it."""
+    return LikelihoodObjective(
+        noise=StudentT(),
+        sigma_sources={'sigma': sigma_source or DataColumnSigma(),
+                       'df': df_source or ConstantSigma(StudentT.DEFAULT_DF)})
 
 
 FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
@@ -657,6 +680,289 @@ def test_capability_gate_refuses_composite_estimated_sigma():
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
 
 
+# =================================== asymmetric / non-Gaussian families (layer G, #454) ===
+
+@pytest.mark.parametrize('family, extra', [
+    (Gaussian(), None),
+    (Gaussian(additive_on=LOG10, location=MEAN), None),   # offset present (mean on a log scale)
+    (Laplace(), None),
+    (Laplace(additive_on=LOG10), None),
+    (StudentT(), {'df': 5.0}),
+], ids=['gaussian', 'gaussian_log_mean', 'laplace', 'laplace_log', 'student_t'])
+def test_family_prediction_derivative_matches_finite_difference(family, extra):
+    """``NoiseModel.d_data_fit_d_prediction`` is the exact slope of the family's own
+    ``data_fit`` -- validated against a central difference of ``data_fit`` (an oracle
+    independent of any closed form), across scales and a mean-on-log offset. The point is
+    chosen with ``pred != obs`` (Laplace is non-smooth only at the kink)."""
+    pred, obs, noise, h = 7.3, 5.1, 0.6, 1e-6
+    ana = family.d_data_fit_d_prediction(pred, obs, noise, extra)
+    num = (family.data_fit(pred + h, obs, noise, extra)
+           - family.data_fit(pred - h, obs, noise, extra)) / (2.0 * h)
+    np.testing.assert_allclose(ana, num, rtol=1e-5)
+
+
+@pytest.mark.parametrize('family, extra, param', [
+    (Gaussian(), None, 'sigma'),
+    (Laplace(), None, 'scale'),
+    (StudentT(), {'df': 5.0}, 'sigma'),
+    (StudentT(), {'df': 5.0}, 'df'),
+], ids=['gaussian_sigma', 'laplace_scale', 'student_t_sigma', 'student_t_df'])
+def test_family_noise_param_derivative_matches_finite_difference(family, extra, param):
+    """``NoiseModel.d_nll_d_noise_params[param]`` is the exact derivative of (``data_fit`` +
+    that parameter's normalizer) w.r.t. the parameter -- validated against a central difference,
+    the term an estimated noise parameter contributes. Covers Student-t's two parameters (the
+    df column folds in the digamma-laden df-block normalizer)."""
+    pred, obs, sigma, nu, h = 7.3, 5.1, 1.7, 5.0, 1e-6
+    ana = family.d_nll_d_noise_params(pred, obs, sigma, extra)[param]
+
+    def loss(noise_val, ex):
+        return family.data_fit(pred, obs, noise_val, ex) + family.param_normalizers(noise_val, ex)[param]
+
+    if param == 'df':
+        num = (loss(sigma, {'df': nu + h}) - loss(sigma, {'df': nu - h})) / (2.0 * h)
+    else:
+        num = (loss(sigma + h, extra) - loss(sigma - h, extra)) / (2.0 * h)
+    np.testing.assert_allclose(ana, num, rtol=1e-5)
+
+
+def test_laplace_scalar_data_fit_gradient():
+    """A Laplace observable carries no least-squares residual (its data fit ``|pred-obs|/b`` is
+    not a sum of squares), so the assembly routes it through the SCALAR data-fit gradient
+    ``sum_i sign(pred_i - obs_i)/b * d pred_i/d theta`` and flags the result not
+    least_squares_exact. The residual/Jacobian are empty (no Gaussian column); the whole
+    gradient is on the scalar path. Data is chosen away from the kink (pred != obs)."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])   # pred != obs at every point (away from the kink)
+    b = 2.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+
+    obj = _laplace_objective()                   # fixed scale b from the _SD column
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, b)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)            # no least-squares residual row
+    assert res.jacobian.shape == (0, 1)
+    expected = np.sum(np.sign(pred - obs) / b * dk)
+    np.testing.assert_allclose(res.gradient[0], expected)
+
+
+def test_laplace_kink_takes_the_zero_subgradient():
+    """At the Laplace kink (pred == obs exactly) PyBNF takes the subgradient 0, so a point
+    sitting on the kink contributes nothing to the gradient (``np.sign(0) == 0``). With every
+    point on the kink the whole data-fit gradient is zero."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obj = _laplace_objective()
+    sim = _sim_with_sensitivities(pred, d_param=[10.0, -74.0, -110.0, -123.0])
+    exp = _exp(pred, 2.0)                          # obs == pred everywhere -> every point a kink
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.gradient, 0.0)
+    assert res.least_squares_exact is False
+
+
+def test_student_t_scalar_data_fit_gradient():
+    """A fixed-scale Student-t observable routes through the scalar data-fit gradient
+    ``sum_i (nu+1) z_i/(nu + z_i**2) / sigma * d pred_i/d theta`` with ``z = (pred-obs)/sigma``
+    -- the IRLS weighting downweighting an outlier. No least-squares residual; flag is False."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 5.0
+    nu = 4.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+
+    obj = _student_t_objective()                  # fixed sigma (_SD), default df=4
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)
+    z = (pred - obs) / sigma
+    expected = np.sum((nu + 1.0) * z / (nu + z * z) / sigma * dk)
+    np.testing.assert_allclose(res.gradient[0], expected)
+
+
+def test_student_t_estimated_sigma_and_df_columns():
+    """Student-t is the first MULTI-parameter estimated-noise gradient (ADR-0058): estimating
+    both ``sigma`` (noise_sd) and ``df`` (nu_free) adds two scalar gradient columns alongside
+    the model column. Each estimated noise parameter routes NONE (no model column), so the
+    Jacobian is empty and the whole gradient is on the scalar path."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 5.0
+    nu = 6.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+
+    obj = _student_t_objective(FreeParameterSigma('noise_sd'), FreeParameterSigma('nu_free'))
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)                            # no _SD: sigma & df are free parameters
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+        'nu_free': ParamRoute('nu_free', NONE, None, 1.0),
+    })
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('noise_sd', 'uniform_var', 0.01, 100.0, sigma),
+                 ('nu_free', 'uniform_var', 2.0, 100.0, nu))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    z = (pred - obs) / sigma
+    # model column: the data-fit gradient through d pred/d k
+    np.testing.assert_allclose(res.gradient[0], np.sum((nu + 1.0) * z / (nu + z * z) / sigma * dk))
+    # sigma column: nu (1 - z**2) / (sigma (nu + z**2)), summed
+    np.testing.assert_allclose(res.gradient[1], np.sum(nu * (1.0 - z * z) / (sigma * (nu + z * z))))
+    # df column: the data fit's nu-dependence + the df-block (digamma) normalizer, summed
+    d_df = (0.5 * np.log1p(z * z / nu) - (nu + 1.0) * z * z / (2.0 * nu * (nu + z * z))
+            + 0.5 * (digamma(nu / 2.0) - digamma((nu + 1.0) / 2.0) + 1.0 / nu))
+    np.testing.assert_allclose(res.gradient[2], np.sum(d_df))
+
+
+def test_laplace_estimated_scale_column():
+    """An estimated Laplace scale ``b`` (the ``laplace`` objfunc's ``b__FREE``, here a freely-
+    named free parameter) adds a scalar column ``sum_i -|pred-obs|/b**2 + 1/b`` -- the
+    ``log(2 b)`` normalizer that keeps a free Laplace scale from running to infinity (#451/#454)."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    b = 3.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+
+    obj = _laplace_objective(FreeParameterSigma('b_free'))
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'b_free': ParamRoute('b_free', NONE, None, 1.0),
+    })
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('b_free', 'uniform_var', 0.01, 100.0, b))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient[0], np.sum(np.sign(pred - obs) / b * dk))
+    np.testing.assert_allclose(res.gradient[1], np.sum(-np.abs(pred - obs) / b ** 2 + 1.0 / b))
+
+
+def test_mixed_gaussian_and_laplace_objective():
+    """A mixed objective -- one observable Gaussian, another Laplace (per-observable noise_model
+    overrides, ADR-0058) -- assembles a residual/Jacobian for ONLY the Gaussian column and a
+    scalar data-fit gradient for the Laplace one. The scalar ``gradient`` is complete
+    (``J^T rho`` over the Gaussian point + the Laplace data-fit column); least_squares_exact is
+    False because the residual no longer models the whole objective."""
+    # Two observables on one experiment: A scored Gaussian (fixed sigma), B scored Laplace.
+    times = np.array([0.0, 1.0])
+    sim = Data.from_columns(np.column_stack([times, [100.0, 60.0], [50.0, 30.0]]),
+                            ['time', 'A', 'B'])
+    # The (2-observable) sensitivity tensor: dA/dk and dB/dk per time row -- shape (time, sel, param).
+    dA = np.array([-10.0, -20.0])
+    dB = np.array([-5.0, -8.0])
+    sim.output_sensitivities = OutputSensitivities(
+        selectors=['observable:A', 'observable:B'], param_names=['k'], ic_species=[],
+        d_param=np.stack([dA, dB], axis=1).reshape(2, 2, 1), d_ic=None)
+    exp = Data.from_columns(
+        np.column_stack([times, [98.0, 62.0], [48.0, 33.0], [4.0, 4.0]]),
+        ['time', 'A', 'B', 'A_SD'])
+    b = 2.0
+    obj = LikelihoodObjective(
+        noise=Gaussian(), sigma_sources={'sigma': DataColumnSigma()},
+        overrides={'B': (Laplace(), {'scale': ConstantSigma(b)})})
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    # Gaussian column A is scored at both rows -> two residual rows, rho=(sim-exp)/4, J=dA/4.
+    rho_A = (np.array([100.0, 60.0]) - np.array([98.0, 62.0])) / 4.0
+    np.testing.assert_allclose(res.residual, rho_A)
+    np.testing.assert_allclose(res.jacobian, (dA / 4.0).reshape(2, 1))
+    # Laplace column B (off the kink): scalar data-fit gradient sum_i sign(sim-exp)/b * dB.
+    lap = np.sum(np.sign(np.array([50.0, 30.0]) - np.array([48.0, 33.0])) / b * dB)
+    # The scalar gradient is complete: J^T rho over the Gaussian rows + the Laplace data fit.
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual + lap)
+
+
+def test_capability_gate_now_accepts_laplace_and_student_t():
+    """Layer G (#454): the asymmetric families assemble a gradient (scalar-only, flag False,
+    finite) rather than raising -- the family clause that once refused them is gone."""
+    sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
+    exp = _exp([100, 70, 60, 40], 5.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    for obj in (_laplace_objective(), _student_t_objective()):
+        res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+        assert res.least_squares_exact is False
+        assert np.all(np.isfinite(res.gradient))
+
+
+def test_capability_gate_still_refuses_negative_binomial():
+    """Negative-binomial stays gated (layer G defers it): its data-fit derivative needs implicit
+    differentiation through the median CDF-inversion root-find -- the named follow-up #458, which
+    the error message points at."""
+    obj = LikelihoodObjective(noise=NegBinomial(),
+                              sigma_sources={'dispersion': ConstantSigma(5.0)})
+    sim = _sim_with_sensitivities([10, 7, 5, 4], d_param=[0, -7, -11, -12])
+    exp = _exp_dyn([10, 6, 6, 4])
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    with pytest.raises(GradientNotSupported, match='458'):
+        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
+def test_capability_gate_refuses_mean_on_log_scale_with_estimated_noise():
+    """The one corner layer G defers: a MEAN prediction on a LOG scale together with an estimated
+    noise parameter -- there the mean's moment correction depends on the noise parameter, coupling
+    the estimated-scale column. A MEAN prediction is otherwise differentiable."""
+    obj = LikelihoodObjective(noise=Gaussian(additive_on=LOG10, location=MEAN),
+                              sigma_sources={'sigma': FreeParameterSigma('noise_sd')})
+    sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
+    exp = _exp_dyn([100, 70, 60, 40])
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+    })
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('noise_sd', 'uniform_var', 0.01, 100.0, 0.1))
+    with pytest.raises(GradientNotSupported):
+        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
+def test_mean_location_on_linear_scale_matches_median():
+    """Lifting the MEAN clause is a strict generalization: for a symmetric family on the LINEAR
+    scale mean == median (the moment correction is 0), so a MEAN-centered Gaussian produces the
+    exact same residual/Jacobian/gradient a MEDIAN one does -- the offset-aware ``residual_point``
+    collapses byte-for-byte when the offset is 0."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 5.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    mean_obj = LikelihoodObjective(noise=Gaussian(location=MEAN),
+                                   sigma_sources={'sigma': DataColumnSigma()})
+    median_obj = ChiSquareObjective()
+    res_mean = assemble_gaussian_gradient(mean_obj, [(sim, exp, routing)], free)
+    res_median = assemble_gaussian_gradient(median_obj, [(sim, exp, routing)], free)
+    np.testing.assert_array_equal(res_mean.residual, res_median.residual)
+    np.testing.assert_array_equal(res_mean.jacobian, res_median.jacobian)
+    np.testing.assert_array_equal(res_mean.gradient, res_median.gradient)
+    assert res_mean.least_squares_exact is True
+
+
 def test_routed_key_absent_from_tensor_refuses():
     """A routing that requests a parameter the simulation's tensor never computed (the
     matching sensitivity request was not applied to the model) raises a pointed error
@@ -1126,4 +1432,134 @@ def test_fd_acceptance_gate_normalized(method):
     # Normalization couples rows (a quotient/chain rule), so the objective's higher-order
     # curvature is larger than the plain LINEAR oracle's -- the central difference's O(h^2)
     # truncation is correspondingly larger, so this oracle uses a looser tolerance.
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_laplace():
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay net
+    with a **Laplace** observable (layer G, #454): the data fit ``|Stot - obs|/b`` is not a sum of
+    squares, so the gradient is the scalar ``sum_i sign(Stot_i - obs_i)/b * d Stot_i/d theta`` --
+    no least-squares residual (``least_squares_exact`` is False). Two free params (k parameter axis
+    + S0 IC axis), wildtype + a ``k*4`` condition; fixed scale ``b`` from the ``_SD`` column. The
+    data is the trajectory at *shifted* params so every point sits away from the kink (residuals
+    well clear of 0), where the loss is locally smooth and the central difference is valid."""
+    obj = _laplace_objective()
+    b = 2.0
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    # True params well away from the evaluation point so |Stot - obs| stays clear of the kink.
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), b)
+    exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), b)
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)   # an asymmetric family carries no least-squares residual
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
+def test_fd_acceptance_gate_student_t(k_type):
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **Student-t** observable estimating BOTH noise parameters (layer G/D, #454/#451): scale
+    ``sigma`` (noise_sd) and shape ``df`` (nu_free), the first multi-parameter estimated-noise
+    gradient (ADR-0058). Four free params -- k (parameter axis), S0 (IC axis), noise_sd and
+    nu_free (free noise parameters, NONE-routed) -- so the FD exercises the scalar data-fit
+    gradient (model columns), the sigma column ``nu(1-z^2)/(sigma(nu+z^2))``, and the df column
+    (the data fit's nu-dependence + the df-block's digamma derivative), plus the cross-experiment
+    sum and -- for ``loguniform_var`` -- k's native->sampling transform. No least-squares residual.
+    A heavy-tailed family has larger higher-order curvature than the Gaussian oracle, so this uses
+    a looser FD tolerance."""
+    if k_type == 'loguniform_var':
+        pytest.importorskip('jax')
+
+    obj = _student_t_objective(FreeParameterSigma('noise_sd'), FreeParameterSigma('nu_free'))
+    free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('noise_sd', 'uniform_var', 0.01, 100.0, value=6.0),
+            FreeParameter('nu_free', 'uniform_var', 2.0, 100.0, value=6.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay_no_sd(_decay_run(k_true, s0_true, False))
+    exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        obj._pset_values = theta   # the free sigma + df read their values here (ADR-0021)
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_mean_logscale_gaussian():
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **MEAN** prediction on a **log** scale (layer G, #454): ``noise_model = lognormal, location =
+    mean``, where the Gaussian moment correction ``ln(10) sigma^2/2`` is subtracted in additive
+    space. This is the case the MEAN lift actually exercises (on the linear scale mean == median);
+    the offset is prediction-independent, so it enters the value and the sigma weighting but not
+    ``d rho/d pred``. A Gaussian stays least-squares exact (fixed sigma), so the residual form is
+    the whole objective and the FD matches it. Two free params (k + S0); the decay net is strictly
+    positive so the log scale is in support throughout. Looser tolerance for the log scale."""
+    obj = LikelihoodObjective(noise=Gaussian(additive_on=LOG10, location=MEAN),
+                              sigma_sources={'sigma': DataColumnSigma()})
+    sigma = 0.3
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
+    exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is True
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)

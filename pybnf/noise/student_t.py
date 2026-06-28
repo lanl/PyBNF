@@ -1,7 +1,7 @@
 """Student-t observation noise (ADR-0058) -- the robust-regression likelihood."""
 
 import numpy as np
-from scipy.special import loggamma
+from scipy.special import digamma, loggamma
 
 from ..printing import PybnfError
 from .base import NoiseModel
@@ -80,6 +80,41 @@ class StudentT(NoiseModel):
         sigma, nu = noise, extra['df']
         z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
         return (nu + 1.) / 2. * np.log1p(z * z / nu)
+
+    def d_data_fit_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(data_fit)/d(prediction) = (nu+1) z/(nu + z**2) * forward'(pred)/sigma`` (#454),
+        with ``z = (mu - forward(obs))/sigma``. The factor ``(nu+1)/(nu + z**2)`` is the IRLS
+        weight ``w(z)`` that downweights an outlier (large ``z``); ``w(z)*z`` is the
+        robustified residual. PyBNF emits **only** this scalar data-fit gradient for Student-t
+        (no least-squares residual; the IRLS pseudo-residual is a possible later trust-region
+        refinement). The location offset is prediction-independent, so MEAN and MEDIAN agree
+        on ``d/d pred``; ``forward'(pred) = 1`` on the linear scale."""
+        sigma, nu = noise, extra['df']
+        z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
+        return (nu + 1.) * z / (nu + z * z) * self.additive_on.dforward(prediction) / sigma
+
+    def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
+        """The estimated-scale gradient columns ``{'sigma': ..., 'df': ...}`` (#451/#454/#385) --
+        the first **multi-parameter** estimated-noise gradient (ADR-0058). Each is the derivative
+        of ``data_fit`` plus that parameter's own normalizer (``log sigma`` for sigma, the df-block
+        for df); the normalizers depend only on their own parameter, so the cross terms vanish.
+        With ``z = (mu - forward(obs))/sigma``::
+
+            d loss/d sigma = nu (1 - z**2) / (sigma (nu + z**2))
+            d loss/d nu    = 1/2 log1p(z**2/nu) - (nu+1) z**2 / (2 nu (nu + z**2))
+                             + 1/2 (digamma(nu/2) - digamma((nu+1)/2) + 1/nu)
+
+        The sigma column folds ``d(log sigma)/d sigma = 1/sigma`` into ``d(data_fit)/d sigma``
+        and reduces to Gaussian's ``(1 - z**2)/sigma`` as ``nu -> inf``; the df column folds the
+        data fit's nu-dependence with the df-block's digamma derivative -- the term that keeps a
+        free df honest. The location offset is noise-independent off the gated mean-on-log corner
+        (Student-t has no finite mean on a log scale, so mean-centering there raises anyway)."""
+        sigma, nu = noise, extra['df']
+        z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
+        d_sigma = nu * (1. - z * z) / (sigma * (nu + z * z))
+        d_data_fit_d_nu = 0.5 * np.log1p(z * z / nu) - (nu + 1.) * z * z / (2. * nu * (nu + z * z))
+        d_block_d_nu = 0.5 * (digamma(nu / 2.) - digamma((nu + 1.) / 2.) + 1. / nu)
+        return {'sigma': d_sigma, 'df': d_data_fit_d_nu + d_block_d_nu}
 
     def param_normalizers(self, noise, extra=None):
         sigma, nu = noise, extra['df']

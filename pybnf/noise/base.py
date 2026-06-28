@@ -103,6 +103,37 @@ class NoiseModel(ABC):
         raise NotImplementedError(
             f'{type(self).__name__} has no additive mean offset')
 
+    def d_data_fit_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(data_fit)/d(prediction)`` for one point -- the per-point loss slope the
+        gradient path chains through ``d(prediction)/d(theta)`` (layer G, #454/#385).
+
+        This is the **universal** scalar-gradient seam: an asymmetric family (Laplace,
+        Student-t) whose ``data_fit`` is not a sum of squares carries no least-squares
+        residual, so its objective gradient is assembled as
+        ``sum_i w_i * d(data_fit_i)/d(prediction_i) * d(prediction_i)/d(theta)`` rather than
+        from a residual-Jacobian. Overridden by the differentiable location-scale families
+        (Gaussian / Laplace / Student-t); the base raises, as the count family's gradient
+        (its median CDF-inversion implicit derivative) is a deferred follow-up (#458)."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no prediction gradient on the noise-model gradient '
+            f'path (#454); the count family is the deferred #458 follow-up')
+
+    def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
+        """``{param_name: d(data_fit + that parameter's normalizer)/d param}`` for each noise
+        parameter -- the estimated-scale gradient columns (layer D/G, #451/#454/#385).
+
+        The objective sums each entry into the scalar gradient **iff that parameter is
+        estimated** (a free parameter), exactly as ``eval_point`` adds each parameter's
+        normalizer iff estimated -- so the returned derivative folds in the parameter's own
+        normalizer (Gaussian's ``log sigma``, Student-t's df-block), which is the term that
+        keeps a free scale from running away. Each family's normalizers depend only on their
+        own parameter, so the cross terms vanish and a per-parameter entry suffices.
+        Overridden by the differentiable location-scale families; the base raises (the count
+        family's estimated dispersion is part of the deferred #458)."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no noise-parameter gradient on the gradient path '
+            f'(#454); the count family is the deferred #458 follow-up')
+
     def nll(self, prediction, observation, noise, extra=None):
         """The full per-point negative log-likelihood (data fit + every parameter's
         normalizer)."""

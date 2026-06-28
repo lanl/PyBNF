@@ -65,5 +65,26 @@ class Laplace(NoiseModel):
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
         return abs(residual) / noise
 
+    def d_data_fit_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(data_fit)/d(prediction) = sign(mu - forward(obs))/b * forward'(pred)`` (#454).
+
+        The Laplace data fit ``|mu - forward(obs)|/b`` is non-smooth where ``mu == forward(obs)``;
+        PyBNF takes the **subgradient 0** there -- ``np.sign(0) == 0``, the symmetric least-
+        absolute-deviation choice -- documented like layer E's positivity decision. The
+        derivative is undefined at the kink, so the optimizer must not rely on it being exactly
+        the slope of a finite difference straddling the kink; an FD acceptance oracle therefore
+        evaluates away from it (data offset from the prediction). ``forward'(pred) = 1`` on the
+        linear scale, and the offset is prediction-independent, so MEAN and MEDIAN agree."""
+        residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
+        return np.sign(residual) / noise * self.additive_on.dforward(prediction)
+
+    def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
+        """``{'scale': -|mu - forward(obs)|/b**2 + 1/b}`` -- the estimated-scale gradient
+        column (#451/#454). ``d(data_fit)/d b = -|mu - forward(obs)|/b**2`` (the offset is
+        b-independent off the gated mean-on-log corner) plus ``d(log(2 b))/d b = 1/b`` -- the
+        ``log(2 b)`` term that keeps a free Laplace scale from running to infinity."""
+        residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
+        return {'scale': -abs(residual) / noise ** 2. + 1. / noise}
+
     def log_normalizer(self, noise):
         return np.log(2. * noise)

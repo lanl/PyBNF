@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
+from .noise import (LINEAR, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
                     PerMeasurementFormulaSigma, RelativeSigma, StudentT)
 from .printing import PybnfError, print1
@@ -215,6 +215,30 @@ class ObjectiveFunction:
         ``residual_point`` seam (whose base refuses, since the assembly reaches that
         first and gates the whole configuration there)."""
         return {}
+
+    def has_least_squares_residual(self, col_name):
+        """Whether one scored column contributes an **exact** least-squares residual/Jacobian
+        (a Gaussian, whose ``data_fit`` is ``1/2 rho**2``) vs only the scalar data-fit gradient
+        an asymmetric family carries (Laplace / Student-t, layer G of #385). The assembly routes
+        a True column through :meth:`residual_point` (the residual-Jacobian form) and a False one
+        through :meth:`data_fit_grad_point` (the scalar accumulator).
+
+        ``True`` on the base, where :meth:`residual_point` itself refuses an unsupported
+        objective -- so a non-likelihood / unsupported objective still raises
+        :class:`GradientNotSupported` there rather than being silently routed elsewhere. Only
+        :class:`LikelihoodObjective` overrides this to distinguish its families."""
+        return True
+
+    def data_fit_grad_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """``d(data_fit)/d(prediction)`` for one scored point -- the scalar-gradient seam for an
+        asymmetric family whose data fit is not a sum of squares (layer G, #454/#385). The base
+        raises :class:`GradientNotSupported` (it is reached only when
+        :meth:`has_least_squares_residual` is False, which the base never reports). Only
+        :class:`LikelihoodObjective` overrides it."""
+        from .gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "Objective %s has no differentiable data-fit gradient on the gradient path (#385)."
+            % type(self).__name__)
 
 
 class SummationObjective(ObjectiveFunction):
@@ -808,19 +832,23 @@ class LikelihoodObjective(SummationObjective):
         """The standardized residual ``rho`` and its derivative ``d rho/d pred`` for one
         scored point (#449/#385/#452).
 
-        Defined for the cut-1 configuration -- the default Gaussian family, prediction
-        as the MEDIAN, additive on **any** scale (LINEAR, or a log scale: LOG10 / LN,
-        the ``lognormal`` surface, #452). The residual lives in that additive (log)
-        space, ``rho = (forward(pred) - forward(obs))/sigma`` with
-        ``forward = additive_on.forward`` (``log10`` / ``ln``), so its derivative picks
-        up the scale's chain factor, ``d rho/d pred = forward'(pred)/sigma`` (``forward'
-        = additive_on.dforward``: ``1`` on the linear scale, ``1/(pred*ln10*sigma)`` for
-        log10, ``1/(pred*sigma)`` for ln). A median prediction has offset 0
-        (``location.py``), so ``mu = forward(pred)`` exactly and ``data_fit =
-        (forward(pred) - forward(obs))**2/(2 sigma**2) = 1/2 rho**2``: this returns the
-        same data-fit loss ``eval_point`` does, now in residual form. The LINEAR scale
-        has ``forward(x) = x`` and ``forward'(x) = 1``, so it collapses to the historical
-        ``(pred - obs)/sigma`` / ``1/sigma`` byte-for-byte.
+        The Gaussian least-squares residual (the family whose ``data_fit`` is exactly
+        ``1/2 rho**2``); the assembly routes only a Gaussian column here, an asymmetric
+        family through :meth:`data_fit_grad_point` instead (:meth:`has_least_squares_residual`
+        decides). Defined for the prediction as the MEDIAN **or** the MEAN (layer G, #454),
+        additive on **any** scale (LINEAR, or a log scale: LOG10 / LN, the ``lognormal``
+        surface, #452). The residual lives in that additive (log) space,
+        ``rho = (mu - forward(obs))/sigma`` with ``mu = forward(pred) - location offset`` and
+        ``forward = additive_on.forward`` (``log10`` / ``ln``), so its derivative picks up the
+        scale's chain factor, ``d rho/d pred = forward'(pred)/sigma`` (``forward' =
+        additive_on.dforward``: ``1`` on the linear scale, ``1/(pred*ln10*sigma)`` for log10,
+        ``1/(pred*sigma)`` for ln). The location offset is prediction-independent: a MEDIAN
+        prediction (any scale) and a MEAN on the linear scale have offset 0, so ``mu =
+        forward(pred)`` and the LINEAR/MEDIAN case collapses to the historical
+        ``(pred - obs)/sigma`` / ``1/sigma`` byte-for-byte; a MEAN on a log scale subtracts the
+        Gaussian moment correction. Either way ``data_fit = (mu - forward(obs))**2/(2 sigma**2)
+        = 1/2 rho**2``, so this returns the same data-fit loss ``eval_point`` does in residual
+        form.
 
         ``sigma`` may be fixed (``chi_sq`` / ``lognormal``) or an estimated free
         parameter (``chi_sq_dynamic``); the residual is identical either way -- an
@@ -850,42 +878,44 @@ class LikelihoodObjective(SummationObjective):
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         sigma, _extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
         scale = family.additive_on
-        rho = (scale.forward(prediction) - scale.forward(observation)) / sigma
+        # The additive-space location parameter mu = forward(pred) - location offset; the
+        # offset is 0 for the MEDIAN (any scale) and for a symmetric family on the linear
+        # scale, so this collapses to forward(pred) byte-for-byte there, and is the family's
+        # moment correction for a MEAN prediction on a log scale (layer G, #454). The offset
+        # is prediction-independent, so d rho/d pred = forward'(pred)/sigma either way.
+        mu = family._mu(prediction, sigma)
+        rho = (mu - scale.forward(observation)) / sigma
         return rho, scale.dforward(prediction) / sigma
 
     def noise_grad_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """The per-point gradient of the loss w.r.t. each *estimated free* noise
         parameter at one scored point -- ``{free_param_name: d loss/d param}`` (layer
-        D, #451/#385).
+        D/G, #451/#454/#385).
 
-        Empty for a fixed-sigma point (chi_sq's data column, a constant, a relative
+        Empty for a fixed-noise point (chi_sq's data column, a constant, a relative
         scale): no noise parameter is estimated, so the loss carries no normalizer and
-        the noise scale adds no gradient column. For the cut-1 + estimated case -- the
-        Gaussian family the gate restricts to, with the scale a single
-        :class:`FreeParameterSigma` -- the retained ``+log sigma`` normalizer makes the
-        loss depend on sigma directly::
+        the noise scale adds no gradient column. Otherwise each estimated noise parameter
+        contributes ``d(data_fit + its own normalizer)/d param``, the column that keeps a
+        free scale from running away. The per-parameter derivatives are the family's own
+        (:meth:`~pybnf.noise.base.NoiseModel.d_nll_d_noise_params`):
 
-            loss          = 1/2 rho**2 + log sigma,   rho = (forward(pred) - forward(obs))/sigma
-            d loss/dsigma = -rho**2 / sigma + 1/sigma = (1 - rho**2) / sigma
+        * Gaussian's single sigma: ``(1 - rho**2)/sigma`` (the ``+log sigma`` normalizer,
+          layer D) -- ``rho`` the additive-space residual, so it composes with a log scale
+          (#452); on the linear scale it is the historical closed form byte-for-byte.
+        * Laplace's scale ``b``: ``-|residual|/b**2 + 1/b`` (the ``log(2 b)`` normalizer).
+        * Student-t's ``sigma`` **and** ``df`` -- the first multi-parameter estimated-noise
+          gradient (ADR-0058); each independently sourced and gated.
 
-        where ``forward = additive_on.forward`` is the identity on the linear scale and
-        ``log10`` / ``ln`` on a log scale (#452). ``rho`` is the **log-space** residual
-        on a log scale, so ``d loss/d sigma`` (which depends on sigma only through
-        ``rho``, with ``rho = A/sigma`` and ``A`` sigma-free) is ``(1 - rho**2)/sigma``
-        unchanged once ``rho`` is read in additive space -- so D (estimated sigma)
-        composes with E (log scale): an estimated sigma on the ``lognormal`` surface
-        stays correct. The free parameter *is* sigma (factor 1), so ``d loss/d param =
-        d loss/dsigma``. Read through the same ``_prediction`` / ``_noise_values`` seams
-        ``eval_point`` and ``residual_point`` use, so the sigma gradient differentiates
-        exactly the loss PyBNF reports; the closed form is exact because the gate
-        (:meth:`_require_gradient_supported`) has already restricted the family to a
-        MEDIAN Gaussian -- a sibling to ``residual_point``'s closed-form rho.
+        Read through the same ``_prediction`` / ``_noise_values`` seams ``eval_point`` and
+        ``residual_point`` use, so the noise gradient differentiates exactly the loss PyBNF
+        reports. Each free parameter *is* the noise parameter (factor 1), so the column maps
+        straight to the source's free-parameter name.
 
-        Lives on the **scalar-gradient (L-BFGS) path only**: ``+log sigma`` is not a sum
-        of squares, so the trust-region residual form cannot represent it. The assembly
-        adds this straight to the scalar gradient (and flags the residual form's
-        least-squares model inexact); the per-point bootstrap weight is applied there,
-        not here -- mirroring ``residual_point``."""
+        Lives on the **scalar-gradient (L-BFGS) path only**: a normalizer like ``+log sigma``
+        is not a sum of squares, so the trust-region residual form cannot represent it. The
+        assembly adds this straight to the scalar gradient (and flags the residual form's
+        least-squares model inexact); the per-point bootstrap weight is applied there, not
+        here -- mirroring ``residual_point``."""
         family, sources = self._spec_for(col_name)
         estimated = {name: src for name, src in sources.items() if src.estimated}
         if not estimated:
@@ -893,20 +923,51 @@ class LikelihoodObjective(SummationObjective):
         self._require_gradient_supported(col_name, family, sources)
         prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
-        sigma, _extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
-        scale = family.additive_on
-        rho = (scale.forward(prediction) - scale.forward(observation)) / sigma
-        dloss_dsigma = (1.0 - rho ** 2) / sigma
-        # The gate restricts the family to single-parameter Gaussian, so ``estimated``
-        # holds exactly the sigma scale; its required free parameter is the column the
-        # derivative lands in (a FreeParameterSigma's name -> dloss/dsigma).
-        return {source.required_free_param(): dloss_dsigma for source in estimated.values()}
+        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        # The family owns the per-noise-parameter derivative of (data_fit + that parameter's
+        # normalizer); the gate has restricted the configuration so the closed form is exact
+        # (and, off the deferred mean-on-log corner, the offset is noise-independent). Each
+        # estimated source's required free parameter is the column its derivative lands in.
+        per_param = family.d_nll_d_noise_params(prediction, observation, primary, extra)
+        return {src.required_free_param(): per_param[name] for name, src in estimated.items()}
+
+    def data_fit_grad_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """``d(data_fit)/d(prediction)`` for one scored point -- the scalar-gradient seam an
+        asymmetric family (Laplace / Student-t) routes through, whose data fit is **not** a sum
+        of squares so it carries no least-squares residual (layer G, #454/#385).
+
+        The assembly accumulates ``sum_i w_i * data_fit_grad_point_i * d(prediction_i)/d theta``
+        directly into the scalar gradient and flags the result not ``least_squares_exact`` --
+        the universal form a quasi-Newton (L-BFGS) step consumes. Reads the prediction through
+        the same ``_prediction`` seam and the noise through the same ``_noise_values`` mapping
+        ``eval_point`` uses, so it differentiates exactly the data fit PyBNF scores; the
+        per-family slope is :meth:`~pybnf.noise.base.NoiseModel.d_data_fit_d_prediction`. The
+        per-point bootstrap weight is applied by the assembly, not here -- mirroring
+        ``residual_point``. (A Gaussian observable is routed through ``residual_point`` instead;
+        :meth:`has_least_squares_residual` decides.)"""
+        family, sources = self._spec_for(col_name)
+        self._require_gradient_supported(col_name, family, sources)
+        prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        return family.d_data_fit_d_prediction(prediction, observation, primary, extra)
+
+    def has_least_squares_residual(self, col_name):
+        """Whether this observable contributes an **exact** least-squares residual/Jacobian
+        (layer G, #454/#385). ``True`` for a Gaussian, whose ``data_fit`` is ``1/2 rho**2`` on
+        any scale and either location, so the assembly routes it through ``residual_point``;
+        ``False`` for an asymmetric family (Laplace / Student-t), whose data fit is not a sum
+        of squares, so its gradient goes through the scalar ``data_fit_grad_point`` path and
+        the result is not ``least_squares_exact``."""
+        family, _sources = self._spec_for(col_name)
+        return isinstance(family, Gaussian)
 
     def _require_gradient_supported(self, col_name, family, sources):
-        """Raise :class:`GradientNotSupported` unless this observable is the cut-1
-        Gaussian/MEDIAN case the gradient path differentiates -- on any additive-noise
-        scale (linear, or a log scale: LOG10/LN, #452) and with sigma fixed or a single
-        free parameter (#451).
+        """Raise :class:`GradientNotSupported` unless this observable is a configuration the
+        gradient path differentiates: a Gaussian / Laplace / Student-t family (layer G, #454),
+        with the prediction the MEDIAN or MEAN (layer G), additive on any scale (linear, or a
+        log scale: LOG10/LN, layer E #452), and the noise parameters fixed or single free
+        parameters (layer D, #451).
 
         The gate is per observable (each column may carry its own ``noise_model``
         override, ADR-0058) plus the whole-objective precondition a sensitivity tensor
@@ -922,22 +983,35 @@ class LikelihoodObjective(SummationObjective):
             raise GradientNotSupported(
                 "Gradient path does not yet support a measurement-model layer "
                 "(SBML/expression observables, layer H of #385).")
-        if not isinstance(family, Gaussian):
+        # The negative-binomial family's data-fit derivative needs implicit differentiation
+        # through its median CDF-inversion root-find (_mean_for_median), a named follow-up; it
+        # is matched before the catch-all so the message points at the right issue.
+        if isinstance(family, NegBinomial):
             raise GradientNotSupported(
-                "Gradient path supports only the Gaussian noise family so far "
-                "(observable '%s' uses %s); later layers add the others."
+                "Gradient path does not yet support the negative-binomial family (observable "
+                "'%s'); its data-fit derivative needs implicit differentiation through the "
+                "median CDF-inversion root-find -- a named follow-up, #458." % col_name)
+        if not isinstance(family, (Gaussian, Laplace, StudentT)):
+            raise GradientNotSupported(
+                "Gradient path supports the Gaussian, Laplace, and Student-t noise families so "
+                "far (observable '%s' uses %s); later layers add the others."
                 % (col_name, type(family).__name__))
-        # The additive-noise scale (LINEAR, or a log scale LOG10/LN -- the lognormal
-        # surface) is differentiable for a MEDIAN Gaussian (#452): the residual lives in
-        # the additive space, rho = (forward(pred) - forward(obs))/sigma, and the only
-        # per-point change is d rho/d pred = forward'(pred)/sigma (residual_point). No
-        # scale clause gates here -- a non-MEDIAN log scale still trips the location
-        # clause below (the mean's moment correction is layer G of #385).
-        if family.location is not MEDIAN:
+        # The additive-noise scale (LINEAR, or a log scale LOG10/LN) and the prediction's
+        # location (MEDIAN or MEAN) are both differentiable (#452/#454): the residual / data fit
+        # lives in the additive space with the location offset subtracted, and the only per-point
+        # change is d/d pred picking up the scale's chain factor (residual_point /
+        # d_data_fit_d_prediction) -- the offset is prediction-independent, so MEAN is free there.
+        # The one corner the *estimated-scale* column cannot yet form: a MEAN prediction on a LOG
+        # scale, where the moment correction itself depends on the noise parameter and so couples
+        # the column. Differentiating it is a deferred sub-layer (Student-t has no finite mean on
+        # a log scale at all, so its mean-centering there raises regardless).
+        has_estimated = any(source.estimated for source in sources.values())
+        if family.location is MEAN and family.additive_on is not LINEAR and has_estimated:
             raise GradientNotSupported(
-                "Gradient path supports only the MEDIAN location so far (observable "
-                "'%s' uses the mean, whose moment correction is layer G of #385)."
-                % col_name)
+                "Gradient path does not yet support a MEAN prediction on a log scale together "
+                "with an estimated noise parameter (observable '%s'): the mean's moment "
+                "correction depends on the noise parameter there, coupling the estimated-scale "
+                "gradient column -- a deferred sub-layer of #385." % col_name)
         for param_name, source in sources.items():
             # An estimated noise scale is supported (layer D, #451) only as a *single
             # free parameter*: a FreeParameterSigma (chi_sq_dynamic's sigma__FREE, or a
