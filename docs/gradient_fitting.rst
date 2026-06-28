@@ -43,10 +43,34 @@ exactly the quantity ``chi_sq`` already sums. PyBNF assembles, summed across eve
 * the **scalar gradient** :math:`\nabla F = J^{\mathsf T}\rho` — the form a quasi-Newton method
   (L-BFGS-B) consumes.
 
-Because both forms are built from the *same* :math:`\rho` and :math:`J`, they agree by
-construction: the optimizer walks precisely the surface PyBNF reports, with the same
-:math:`\sigma`-weighting, the same column selection, and the same per-point bootstrap weights as
-the scalar objective.
+With a **fixed** σ the data fit is the whole objective, so both forms are built from the
+*same* :math:`\rho` and :math:`J` and agree by construction: the optimizer walks precisely the
+surface PyBNF reports, with the same :math:`\sigma`-weighting, the same column selection, and the
+same per-point bootstrap weights as the scalar objective.
+
+
+Estimated σ (a free-parameter noise scale)
+------------------------------------------
+
+A **fitted** σ — the edition-2 ``noise_model = normal, sigma = fit <param>`` surface, where
+``<param>`` is an ordinary free parameter declared by id (no legacy ``__FREE`` marker) — keeps
+the Gaussian normalizer, so the per-point loss is :math:`(\hat y_i - y_i)^2/(2\sigma^2) +
+\log\sigma` and the gradient gains a column for the noise parameter:
+
+.. math::
+
+   \frac{\partial\,\text{loss}}{\partial\sigma}
+   = -\frac{(\hat y_i - y_i)^2}{\sigma^3} + \frac{1}{\sigma}
+   = \frac{1 - \rho_i^2}{\sigma}.
+
+The free σ carries no model column (it is unbound from the simulation), so this column comes
+entirely from the normalizer and the σ-dependence of the data fit — never from the sensitivity
+tensor. Because :math:`\log\sigma` is **not** a sum of squares, it cannot be represented in the
+residual/Jacobian form; PyBNF therefore folds the σ column into the **scalar gradient only** and
+leaves the residual Jacobian a faithful least-squares model of the data fit alone. The result's
+``least_squares_exact`` flag is ``False`` whenever an estimated σ is present — the signal that a
+trust-region least-squares step must consume the scalar gradient (quasi-Newton / L-BFGS) rather
+than the bare residual form. A fixed-σ fit is unaffected (the flag stays ``True``).
 
 
 The capability gate (what is supported)
@@ -54,13 +78,14 @@ The capability gate (what is supported)
 
 The gradient is assembled only for the configuration whose derivative is unambiguous and
 exact today — the **default Gaussian noise family, additive on the linear scale, with the
-prediction interpreted as the median and a fixed (non-estimated) σ** (``chi_sq``, or a
-``noise_model = normal`` line whose σ is read from the data / a constant). Any other
-configuration raises a clear ``GradientNotSupported`` naming what is missing, so a caller can
-fall back to a gradient-free step rather than trust a wrong derivative. Not yet supported (each
-a separate, additive follow-up):
+prediction interpreted as the median**, and the σ either **fixed** (read from the data / a
+constant) or estimated as a **single free parameter** (``sigma = fit <param>``; see *Estimated
+σ* above). Any other configuration raises a clear ``GradientNotSupported`` naming
+what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong
+derivative. Not yet supported (each a separate, additive follow-up):
 
-* an **estimated σ** (a free-parameter noise scale);
+* an estimated σ given by an **expression** over several free parameters, or a row-varying
+  per-measurement σ (the formula chain rule is a later sub-layer);
 * a **log / lognormal** noise scale, or a **mean** (rather than median) location;
 * an **asymmetric** family (Laplace, negative-binomial, Student-t, …);
 * a per-observable **trajectory transform** — cumulative→incident differencing, or a

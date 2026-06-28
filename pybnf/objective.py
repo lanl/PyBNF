@@ -200,8 +200,20 @@ class ObjectiveFunction:
         from .gradient.errors import GradientNotSupported
         raise GradientNotSupported(
             "Objective %s has no differentiable residual on the gradient path "
-            "(#385); only a Gaussian/LINEAR/fixed-sigma likelihood does."
+            "(#385); only a Gaussian/LINEAR likelihood does."
             % type(self).__name__)
+
+    def noise_grad_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The per-point gradient of the loss w.r.t. each estimated free noise
+        parameter -- ``{free_param: d loss/d param}`` (layer D, #451).
+
+        Empty on the base: a non-likelihood objective (least-squares, distance,
+        pass-through) estimates no noise parameter, so its scale contributes no gradient
+        column. Only :class:`LikelihoodObjective` overrides it, and only for the cut-1
+        Gaussian case with a free-parameter scale -- the noise twin of the per-point
+        ``residual_point`` seam (whose base refuses, since the assembly reaches that
+        first and gates the whole configuration there)."""
+        return {}
 
 
 class SummationObjective(ObjectiveFunction):
@@ -763,13 +775,16 @@ class LikelihoodObjective(SummationObjective):
         """The standardized residual ``rho = (pred - obs)/sigma`` and its derivative
         ``d rho/d pred = 1/sigma`` for one scored point (#449/#385).
 
-        Defined only for the cut-1 configuration -- the default Gaussian family,
-        additive on the LINEAR scale, prediction as the MEDIAN, sigma **fixed** (not
-        estimated) -- where ``mu = pred`` exactly (``gaussian.py``), so
-        ``data_fit = (pred - obs)**2/(2 sigma**2) = 1/2 rho**2``: this returns the same
-        loss ``eval_point`` does, now in residual form. Any other per-observable
-        configuration raises :class:`GradientNotSupported` (the capability gate);
-        later layers extend it.
+        Defined for the cut-1 configuration -- the default Gaussian family, additive on
+        the LINEAR scale, prediction as the MEDIAN -- where ``mu = pred`` exactly
+        (``gaussian.py``), so ``data_fit = (pred - obs)**2/(2 sigma**2) = 1/2 rho**2``:
+        this returns the same data-fit loss ``eval_point`` does, now in residual form.
+        ``sigma`` may be fixed (``chi_sq``) or an estimated free parameter
+        (``chi_sq_dynamic``); the residual is identical either way -- an estimated
+        scale's *own* gradient column (its retained ``+log sigma`` normalizer, which is
+        not a square) is emitted separately by :meth:`noise_grad_point` (layer D, #451).
+        Any other per-observable configuration raises :class:`GradientNotSupported`
+        (the capability gate); later layers extend it.
 
         Reads the prediction through the same ``_prediction`` seam and sigma through
         the same ``_noise_values`` mapping ``eval_point`` uses, so the residual is the
@@ -783,6 +798,48 @@ class LikelihoodObjective(SummationObjective):
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         sigma, _extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
         return (prediction - observation) / sigma, 1.0 / sigma
+
+    def noise_grad_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The per-point gradient of the loss w.r.t. each *estimated free* noise
+        parameter at one scored point -- ``{free_param_name: d loss/d param}`` (layer
+        D, #451/#385).
+
+        Empty for a fixed-sigma point (chi_sq's data column, a constant, a relative
+        scale): no noise parameter is estimated, so the loss carries no normalizer and
+        the noise scale adds no gradient column. For the cut-1 + estimated case -- the
+        Gaussian family the gate restricts to, with the scale a single
+        :class:`FreeParameterSigma` -- the retained ``+log sigma`` normalizer makes the
+        loss depend on sigma directly::
+
+            loss          = (pred - obs)**2 / (2 sigma**2) + log sigma
+            d loss/dsigma = -(pred - obs)**2 / sigma**3 + 1/sigma = (1 - rho**2) / sigma
+
+        The free parameter *is* sigma (factor 1), so ``d loss/d param = d loss/dsigma``.
+        Read through the same ``_prediction`` / ``_noise_values`` seams ``eval_point``
+        and ``residual_point`` use, so the sigma gradient differentiates exactly the
+        loss PyBNF reports; the closed form is exact because the gate
+        (:meth:`_require_gradient_supported`) has already restricted the family to
+        Gaussian / LINEAR / MEDIAN -- a sibling to ``residual_point``'s closed-form rho.
+
+        Lives on the **scalar-gradient (L-BFGS) path only**: ``+log sigma`` is not a sum
+        of squares, so the trust-region residual form cannot represent it. The assembly
+        adds this straight to the scalar gradient (and flags the residual form's
+        least-squares model inexact); the per-point bootstrap weight is applied there,
+        not here -- mirroring ``residual_point``."""
+        family, sources = self._spec_for(col_name)
+        estimated = {name: src for name, src in sources.items() if src.estimated}
+        if not estimated:
+            return {}
+        self._require_gradient_supported(col_name, family, sources)
+        prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        sigma, _extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        rho = (prediction - observation) / sigma
+        dloss_dsigma = (1.0 - rho ** 2) / sigma
+        # The gate restricts the family to single-parameter Gaussian, so ``estimated``
+        # holds exactly the sigma scale; its required free parameter is the column the
+        # derivative lands in (a FreeParameterSigma's name -> dloss/dsigma).
+        return {source.required_free_param(): dloss_dsigma for source in estimated.values()}
 
     def _require_gradient_supported(self, col_name, family, sources):
         """Raise :class:`GradientNotSupported` unless this observable is the cut-1
@@ -820,11 +877,19 @@ class LikelihoodObjective(SummationObjective):
                 "'%s' uses the mean, whose moment correction is layer G of #385)."
                 % col_name)
         for param_name, source in sources.items():
-            if source.estimated:
+            # An estimated noise scale is supported (layer D, #451) only as a *single
+            # free parameter*: a FreeParameterSigma (chi_sq_dynamic's sigma__FREE, or a
+            # per-observable __FREE scale) IS sigma, so its gradient is the closed-form
+            # d loss/d sigma (noise_grad_point). A composite estimated source -- an
+            # expression over several free parameters (FormulaSigma) or a row-varying
+            # per-measurement sigma (PerMeasurementFormulaSigma) -- needs the formula's
+            # chain rule and is a later sub-layer.
+            if source.estimated and not isinstance(source, FreeParameterSigma):
                 raise GradientNotSupported(
-                    "Gradient path supports only fixed sigma so far (observable '%s' "
-                    "estimates the noise parameter '%s' -- estimated sigma is layer D "
-                    "of #385)." % (col_name, param_name))
+                    "Gradient path supports an estimated noise scale only as a single "
+                    "free parameter so far (observable '%s' sources its scale '%s' from "
+                    "an expression -- a formula / per-measurement sigma's gradient is a "
+                    "later sub-layer of #385)." % (col_name, param_name))
 
     def required_free_noise_params(self):
         """The free-parameter names this objective's noise sources estimate (default

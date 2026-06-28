@@ -36,6 +36,24 @@ is one autodiff of each parameter's scale ``inverse_jax`` (``priors/scale.py``) 
 hand-written per-scale derivative. A LINEAR parameter has ``d theta/d u = 1`` and is
 short-circuited, so the common (all-linear) path needs no jax; only a log-scaled
 parameter pulls in the optional ``pybnf[jax]`` extra (the house pattern, ADR-0019).
+
+Estimated noise scale (layer D, #451)
+-------------------------------------
+An estimated sigma -- the edition-2 ``noise_model = normal, sigma = fit <param>`` surface
+(ADR-0021/0034), a freely-named free parameter; equivalently ``chi_sq_dynamic``'s legacy
+``sigma__FREE`` default -- keeps the Gaussian normalizer, so the per-point loss is
+``(pred-obs)**2/(2 sigma**2) + log sigma`` and gains a sigma column ``d loss/d sigma =
+-(pred-obs)**2/sigma**3 + 1/sigma`` (``objective.noise_grad_point``). The routing binds
+that free parameter by id (ADR-0034); estimated noise is matched by source *type*
+(``FreeParameterSigma``), never by a name convention. ``+log sigma`` is **not** a sum
+of squares, so it cannot live in the residual/Jacobian form: this assembly adds the
+sigma column straight to the **scalar** gradient and leaves the residual-Jacobian a
+faithful least-squares model of the *data fit* alone -- flagged by
+``GradientResult.least_squares_exact`` (``False`` once any estimated scale is present),
+so #386's trust-region path knows to use the scalar gradient (L-BFGS) for an
+estimated-sigma fit. The free sigma routes to ``NONE`` in #448 (no model column), so
+its gradient comes entirely from this normalizer + the sigma-dependence of the data
+fit, never from the sensitivity tensor.
 """
 
 from dataclasses import dataclass
@@ -55,21 +73,32 @@ class GradientResult:
     observation across all experiments, ``sqrt(weight)``-folded). ``jacobian`` is the
     matching ``(n_obs, n_param)`` residual-Jacobian **in sampling space** (the
     ``d theta/d u`` transform already applied). ``gradient`` is the scalar
-    ``dF/d u = J^T rho`` over the free parameters, in ``param_names`` order. The two
-    forms agree by construction: ``gradient == jacobian.T @ residual``.
+    ``dF/d u`` over the free parameters, in ``param_names`` order.
+
+    With a **fixed** sigma the data fit IS the whole objective, so the residual and
+    scalar forms agree by construction (``gradient == jacobian.T @ residual``,
+    ``0.5||rho||**2 == evaluate``) and ``least_squares_exact`` is ``True``. With an
+    **estimated** sigma (layer D, #451) the retained ``+log sigma`` normalizer is not a
+    square: it is folded into the scalar ``gradient`` only (``gradient == jacobian.T @
+    residual + the noise columns``), the residual-Jacobian stays a model of the data fit
+    alone (so ``0.5||rho||**2`` omits the normalizer and the sigma columns of
+    ``jacobian`` are zero), and ``least_squares_exact`` is ``False`` -- the signal that
+    a trust-region least-squares step must instead consume the scalar ``gradient``.
     """
     residual: np.ndarray      # (n_obs,)
     jacobian: np.ndarray      # (n_obs, n_param), sampling space
-    gradient: np.ndarray      # (n_param,) = J^T rho
+    gradient: np.ndarray      # (n_param,) = J^T rho + estimated-noise columns
     param_names: list         # free-parameter order of the columns / gradient
+    least_squares_exact: bool = True   # False once an estimated sigma is present
 
 
 def assemble_gaussian_gradient(objective, experiments, free_params):
     """Assemble the scalar gradient and residual-Jacobian, summed across experiments.
 
     ``objective`` is the fit's :class:`~pybnf.objective.LikelihoodObjective`; it
-    supplies each point's residual through ``residual_point`` (which gates the
-    Gaussian/LINEAR/MEDIAN/fixed-sigma cut-1 case, raising
+    supplies each point's residual through ``residual_point`` and any estimated-noise
+    gradient column through ``noise_grad_point`` (which gate the Gaussian/LINEAR/MEDIAN
+    cut-1 case -- fixed or single-free-parameter sigma -- raising
     :class:`GradientNotSupported` otherwise). ``experiments`` is an iterable of
     ``(sim_data, exp_data, routing)`` triples -- one per scored model/condition; each
     ``sim_data`` must carry the #447 ``output_sensitivities`` payload (the gradient
@@ -88,32 +117,52 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     index = {name: j for j, name in enumerate(names)}
     n_param = len(free_params)
 
+    # An estimated free noise scale (a free sigma) reads its value from the objective's
+    # per-evaluation pset map (ADR-0021); seed it from the current free-parameter point
+    # so the loss is scored at u. Merged over any existing map so a prior evaluate's
+    # fixed parameters survive (a fixed-sigma fit never reads it -- harmless there).
+    existing = getattr(objective, '_pset_values', None) or {}
+    objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+
     rho_rows = []
     jac_rows = []
+    # The estimated-noise (sigma) columns of the scalar gradient -- accumulated apart
+    # from the residual-Jacobian because the normalizer ``+log sigma`` is not a square
+    # (layer D, #451). Zero for a fixed-sigma fit.
+    noise_gradient = np.zeros(n_param)
+    least_squares_exact = True
     for sim_data, exp_data, routing in experiments:
-        _accumulate_experiment(objective, sim_data, exp_data, routing,
-                               index, n_param, rho_rows, jac_rows)
+        if _accumulate_experiment(objective, sim_data, exp_data, routing,
+                                  index, n_param, rho_rows, jac_rows, noise_gradient):
+            least_squares_exact = False
 
     rho = np.asarray(rho_rows, dtype=float)
     jac = np.asarray(jac_rows, dtype=float).reshape(len(rho_rows), n_param)
 
-    # Native -> sampling space, applied exactly once (ADR-0029): rho is invariant,
-    # each Jacobian column scales by d theta_j/d u_j at the current value.
-    jac = jac * _sampling_scale_factors(free_params)[np.newaxis, :]
+    # Native -> sampling space, applied exactly once (ADR-0029): rho is invariant, each
+    # Jacobian column scales by d theta_j/d u_j at the current value, and the scalar
+    # noise gradient (a free sigma's column) takes the same per-parameter chain factor.
+    factors = _sampling_scale_factors(free_params)
+    jac = jac * factors[np.newaxis, :]
+    noise_gradient = noise_gradient * factors
 
-    gradient = jac.T @ rho
-    return GradientResult(residual=rho, jacobian=jac, gradient=gradient, param_names=names)
+    gradient = jac.T @ rho + noise_gradient
+    return GradientResult(residual=rho, jacobian=jac, gradient=gradient,
+                          param_names=names, least_squares_exact=least_squares_exact)
 
 
 def _accumulate_experiment(objective, sim_data, exp_data, routing,
-                           index, n_param, rho_rows, jac_rows):
-    """Append one experiment's per-point residual and native-space Jacobian rows.
+                           index, n_param, rho_rows, jac_rows, noise_gradient):
+    """Append one experiment's per-point residual and native-space Jacobian rows, and
+    accumulate any estimated-noise (sigma) gradient columns into ``noise_gradient``.
 
     Mirrors ``SummationObjective.evaluate``'s point loop exactly -- same independent
     variable, same comparable-column intersection, same NaN skip, same
     ``_sim_row_for`` row match -- so the gradient is assembled over precisely the
     points PyBNF scores. Columns are walked in sorted order for a deterministic
-    observation axis (matching ``evaluate_pointwise``)."""
+    observation axis (matching ``evaluate_pointwise``). Returns ``True`` iff this
+    experiment contributed an estimated-noise column (so the caller can clear the
+    ``least_squares_exact`` flag)."""
     sens = sim_data.output_sensitivities
     if sens is None:
         raise GradientNotSupported(
@@ -125,6 +174,7 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing,
     compare_cols = set(exp_data.cols).intersection(comparable)
     compare_cols.discard(indvar)
 
+    had_estimated_noise = False
     for rownum in range(exp_data.data.shape[0]):
         sim_row = objective._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
         for col_name in sorted(compare_cols):
@@ -132,20 +182,36 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing,
             if np.isnan(observation):
                 continue
             rho, drho_dpred = objective.residual_point(sim_data, exp_data, sim_row, rownum, col_name)
-            sqrt_w = np.sqrt(exp_data.weights[rownum, exp_data.cols[col_name]])
+            weight = exp_data.weights[rownum, exp_data.cols[col_name]]
+            sqrt_w = np.sqrt(weight)
             selector = _selector_for(sens, col_name)
             jac_row = np.zeros(n_param)
             for name, route in routing.routes.items():
                 # A pinned (factor 0) parameter and a model-unbound nuisance (a free
-                # sigma; layer D) carry no column for this point -- their gradient
-                # entry stays 0, which is the exact derivative here (a fixed-sigma
-                # objective does not depend on an unbound parameter).
+                # sigma; layer D) carry no residual-Jacobian column for this point --
+                # the data fit's dependence on a model-unbound parameter is 0, and an
+                # estimated sigma's own column is handled below on the scalar path.
                 if route.factor == 0.0 or route.target == NONE:
                     continue
                 dpred_dtheta = route.factor * _sensitivity(sens, selector, route, sim_row)
                 jac_row[index[name]] += sqrt_w * drho_dpred * dpred_dtheta
+            # Layer D (#451): an estimated free noise scale contributes d loss/d sigma
+            # straight to the scalar gradient (the +log sigma normalizer is not a square,
+            # so it stays off the residual-Jacobian). Weighted by the full per-point
+            # weight, exactly as ``evaluate`` weights the per-point loss.
+            for pname, dloss_dparam in objective.noise_grad_point(
+                    sim_data, exp_data, sim_row, rownum, col_name).items():
+                if pname not in index:
+                    raise GradientNotSupported(
+                        "Observable '%s' estimates its noise scale as free parameter "
+                        "'%s', but '%s' is not among the gradient's free parameters "
+                        "(%s). An estimated noise scale must be a declared free "
+                        "parameter." % (col_name, pname, pname, ', '.join(index) or '(none)'))
+                noise_gradient[index[pname]] += weight * dloss_dparam
+                had_estimated_noise = True
             rho_rows.append(sqrt_w * rho)
             jac_rows.append(jac_row)
+    return had_estimated_noise
 
 
 def _sensitivity(sens, selector, route, sim_row):
