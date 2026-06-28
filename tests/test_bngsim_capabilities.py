@@ -118,6 +118,27 @@ def test_features_propagate_from_bngsim_capabilities(monkeypatch):
         _restore_caps()
 
 
+def test_output_sensitivities_flag_tracks_feature(monkeypatch):
+    """BNGSIM_HAS_OUTPUT_SENS mirrors the backend feature, defaulting False (#447)."""
+    # Feature present -> flag True.
+    present = _make_fake_bngsim(features={'output_sensitivities': True})
+    try:
+        caps = _reload_caps_with(monkeypatch, present)
+        assert caps.BNGSIM_HAS_OUTPUT_SENS is True
+    finally:
+        _restore_caps()
+
+    # Feature absent from a build (older bngsim that still passes the version
+    # floor): flag defaults False without raising the floor.
+    absent = _make_fake_bngsim(features={'nfsim': True})
+    try:
+        caps = _reload_caps_with(monkeypatch, absent)
+        assert caps.BNGSIM_AVAILABLE is True
+        assert caps.BNGSIM_HAS_OUTPUT_SENS is False
+    finally:
+        _restore_caps()
+
+
 def test_missing_libsbml_produces_actionable_sbml_error(monkeypatch):
     fake = _make_fake_bngsim(
         features={

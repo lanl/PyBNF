@@ -16,8 +16,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import _runtime
-from ..data import Data
+from ..data import Data, OutputSensitivities
 from ..pset import NetModel
+from ..printing import PybnfError
 from .._seed import resolve_action_seed
 from .parsing import (
     _collapse_action_line_continuations,
@@ -121,6 +122,20 @@ class _ScanSettings:
     scan_eval_timeout: object
 
 
+@dataclass
+class _SensitivityRequest:
+    """The forward-sensitivity request that activates a model's gradient path.
+
+    Set by :meth:`BngsimModel.enable_output_sensitivities` (#385/#447); ``None``
+    on the scalar path. ``params`` are native model parameter ids routed to
+    ``Simulator(sensitivity_params=)`` and ``ic`` are species initial values
+    routed to ``Simulator(sensitivity_ic=)`` (the routing lists themselves are
+    populated by #448). Native parameter space throughout -- no transform here.
+    """
+    params: list   # native model parameter ids -> sensitivity_params
+    ic: list       # species initial-value names -> sensitivity_ic
+
+
 def _try_prepare_codegen(net_path):
     """Attempt to compile ODE RHS to a shared library for faster simulation.
 
@@ -139,6 +154,12 @@ def _try_prepare_codegen(net_path):
 
 class BngsimModel(NetModel):
     """In-process simulation model using the optional bngsim engine."""
+
+    # Gradient path (#385/#447): None on the scalar path, a _SensitivityRequest
+    # once enable_output_sensitivities() activates forward sensitivities. A class
+    # attribute (not only an __init__ assignment) so the scalar path stays intact
+    # for instances built via object.__new__ (test fakes, pickling).
+    _sensitivity_request = None
 
     def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None,
                  save_files=False):
@@ -193,6 +214,60 @@ class BngsimModel(NetModel):
             )
         return seed_value
 
+    def enable_output_sensitivities(self, *, params=None, ic=None):
+        """Activate the gradient path: request forward sensitivities ∂g/∂θ.
+
+        Routes ``params`` (native model parameter ids) to
+        ``Simulator(sensitivity_params=)`` and ``ic`` (species initial-value
+        names) to ``Simulator(sensitivity_ic=)`` at every subsequent ODE run,
+        carrying the resulting tensor onto each simulated :class:`Data`. The
+        routing lists themselves come from #448; this method only stores them.
+
+        Gates on the backend capability (#447): a build without forward output
+        sensitivities refuses here with an actionable message rather than letting
+        a gradient-based fit start and fail deep in the backend. The version floor
+        is unaffected -- scalar (metaheuristic) fits never call this.
+        """
+        if not _runtime.BNGSIM_HAS_OUTPUT_SENS:
+            reason = _runtime.feature_missing_reason('output_sensitivities')
+            raise PybnfError(
+                "Gradient-based fitting needs forward output sensitivities, which "
+                "this bngsim build does not provide (%s). Install a bngsim build "
+                "with the 'output_sensitivities' feature, or run a gradient-free "
+                "fit." % (reason or 'feature unavailable')
+            )
+        self._sensitivity_request = _SensitivityRequest(
+            params=list(params or []), ic=list(ic or []),
+        )
+
+    def _sensitivity_request_kwargs(self, method):
+        """Simulator kwargs requesting forward sensitivities on the gradient path.
+
+        Returns ``{}`` on the scalar path (request inactive), so the Simulator
+        construction is byte-identical to before this feature existed. On the
+        gradient path it returns ``sensitivity_params=``/``sensitivity_ic=`` for an
+        ODE Simulator, and refuses cleanly for any non-ODE method -- forward
+        sensitivities are deterministic-ODE only (#447), so a stochastic (ssa/psa)
+        action under a gradient fit is a PyBNF-level error, not a backend traceback.
+        """
+        req = self._sensitivity_request
+        if req is None:
+            return {}
+        if method != 'ode':
+            raise PybnfError(
+                "Model %s: gradient-based fitting requires deterministic ODE "
+                "integration, but a simulate() action requests method=%r. Forward "
+                "output sensitivities are available only for the ODE backend; run a "
+                "gradient-free fit for stochastic/network-free simulation."
+                % (self.name, method)
+            )
+        kwargs = {}
+        if req.params:
+            kwargs['sensitivity_params'] = list(req.params)
+        if req.ic:
+            kwargs['sensitivity_ic'] = list(req.ic)
+        return kwargs
+
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all simulation actions in-process using bngsim."""
         from ..pset import FailedSimulationError
@@ -221,6 +296,10 @@ class BngsimModel(NetModel):
         self._pybnf_current_action_info = None
         try:
             ds = self._execute_actions(model, timeout=timeout)
+        except PybnfError:
+            # Clean PyBNF-level refusal (e.g. a stochastic action on the gradient
+            # path) -- surface it as-is, no failure report or generic wrapping.
+            raise
         except Exception as exc:
             write_failure_report(
                 folder, filename,
@@ -239,6 +318,18 @@ class BngsimModel(NetModel):
                     float(getattr(exc, 'elapsed', 0.0) or 0.0),
                 )
                 raise FailedSimulationError(str(exc)) from exc
+            if self._sensitivity_request is not None:
+                # On the gradient path a backend raise (e.g. bngsim rejecting
+                # forward sensitivities for a model with discrete events) must
+                # surface as an actionable PyBNF-level message, not a raw
+                # backend traceback. The original is chained for diagnostics.
+                raise PybnfError(
+                    "Model %s: simulation failed while computing forward output "
+                    "sensitivities for gradient-based fitting. The model may use "
+                    "discrete events or otherwise non-differentiable dynamics that "
+                    "preclude forward sensitivities; run a gradient-free fit. "
+                    "Backend error: %s" % (self.name, exc)
+                ) from exc
             raise
 
         if self.save_files:
@@ -264,7 +355,9 @@ class BngsimModel(NetModel):
         """Interpret and execute action lines using bngsim."""
         ds = {}
         state = _SimulateActionState(
-            sim=_runtime.bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
+            sim=_runtime.bngsim.Simulator(
+                model, method='ode',
+                **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')))
 
         base_params = {}
         for pname in model.param_names:
@@ -408,7 +501,9 @@ class BngsimModel(NetModel):
         protocol contains no simulate actions.
         """
         state = _SimulateActionState(
-            sim=_runtime.bngsim.Simulator(model, method='ode', **self._codegen_kwargs()))
+            sim=_runtime.bngsim.Simulator(
+                model, method='ode',
+                **self._codegen_kwargs(), **self._sensitivity_request_kwargs('ode')))
         last_result = None
 
         # Baseline saved parameters (used by saveParameters/resetParameters)
@@ -499,7 +594,10 @@ class BngsimModel(NetModel):
                     except Exception:
                         logger.debug(
                             "protocol: resetParameters could not restore %s=%s", pname, pval)
-                state.sim = _runtime.bngsim.Simulator(model, method=state.method, **self._codegen_kwargs(state.method))
+                state.sim = _runtime.bngsim.Simulator(
+                    model, method=state.method,
+                    **self._codegen_kwargs(state.method),
+                    **self._sensitivity_request_kwargs(state.method))
                 continue
 
             logger.debug("protocol: skipping unrecognized command: %s", line)
@@ -596,11 +694,14 @@ class BngsimModel(NetModel):
                     model,
                     method='psa',
                     poplevel=poplevel,
+                    **self._sensitivity_request_kwargs('psa'),
                 )
                 state.method = 'psa'
                 state.poplevel = poplevel
         elif state.method != method:
-            state.sim = _runtime.bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
+            state.sim = _runtime.bngsim.Simulator(
+                model, method=method,
+                **self._codegen_kwargs(method), **self._sensitivity_request_kwargs(method))
             state.method = method
             state.poplevel = None
 
@@ -663,8 +764,11 @@ class BngsimModel(NetModel):
                 model,
                 method='psa',
                 poplevel=poplevel,
+                **self._sensitivity_request_kwargs('psa'),
             )
-        return _runtime.bngsim.Simulator(model, method=method, **self._codegen_kwargs(method))
+        return _runtime.bngsim.Simulator(
+            model, method=method,
+            **self._codegen_kwargs(method), **self._sensitivity_request_kwargs(method))
 
     def _sync_species_initial_concentrations(self, model):
         """Re-evaluate .net species initializers using the model's current params."""
@@ -1324,8 +1428,14 @@ class BngsimModel(NetModel):
         return row, obs_names, expr_names
 
     @staticmethod
-    def _result_to_data(result, print_functions=False):
-        """Convert a bngsim Result to a PyBNF Data object."""
+    def _build_data(result, print_functions=False):
+        """Convert a bngsim Result to a PyBNF Data object (time + obs + expr).
+
+        The pure scalar-path conversion: no sensitivities. Kept static and
+        unchanged so the network-free backend (``nf_model``) can reuse it and so
+        the scalar-path :class:`Data` stays byte-identical to before the gradient
+        path existed. :meth:`_result_to_data` layers sensitivities on top.
+        """
         obs_names = list(result.observable_names)
         n_times = result.n_times
         n_obs = result.n_observables
@@ -1348,6 +1458,52 @@ class BngsimModel(NetModel):
 
         headers = ['time'] + obs_names + expr_names
         return Data.from_columns(arr, headers)
+
+    def _result_to_data(self, result, print_functions=False):
+        """Convert a bngsim Result to a PyBNF Data object.
+
+        Scalar path: returns :meth:`_build_data` verbatim (``output_sensitivities``
+        stays ``None``). Gradient path (``_sensitivity_request`` active): also
+        attaches the native-space forward-sensitivity tensor keyed by the same
+        observable/expression selectors as the Data columns (#385/#447). The
+        attachment never perturbs the value columns -- it is read off the same
+        Result -- so a gradient-path Data's numeric trajectory is whatever bngsim
+        integrated; only the scalar path is guaranteed byte-identical to before.
+        """
+        data = self._build_data(result, print_functions=print_functions)
+        if self._sensitivity_request is not None and getattr(
+                result, 'has_sensitivities', False):
+            data.output_sensitivities = self._extract_output_sensitivities(
+                result, print_functions)
+        return data
+
+    @staticmethod
+    def _extract_output_sensitivities(result, print_functions):
+        """Read the native-space ∂g/∂θ tensor off a sensitivity-bearing Result.
+
+        Selectors mirror the Data columns -- ``observable:<name>`` for every
+        observable, plus ``expression:<name>`` for each expression when
+        ``print_functions`` is on and the backend computed expression
+        sensitivities. The ``parameter`` axis is read whenever sensitivity params
+        were requested; the ``ic`` axis whenever IC species were.
+        """
+        selectors = ['observable:%s' % name for name in result.observable_names]
+        if print_functions and getattr(result, 'has_sensitivities_expressions', False):
+            selectors += ['expression:%s' % name for name in result.expression_names]
+        param_names = list(result.sensitivity_params)
+        ic_species = list(result.sensitivity_ic_species)
+        d_param = None
+        if param_names:
+            d_param = np.asarray(
+                result.output_sensitivities(selectors, axis='parameter'), dtype=float)
+        d_ic = None
+        if ic_species:
+            d_ic = np.asarray(
+                result.output_sensitivities(selectors, axis='ic'), dtype=float)
+        return OutputSensitivities(
+            selectors=selectors, param_names=param_names, ic_species=ic_species,
+            d_param=d_param, d_ic=d_ic,
+        )
 
     def _get_mutant_model_bngsim(self, mut):
         """Create a mutant copy using a cloned engine model."""

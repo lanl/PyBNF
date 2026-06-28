@@ -1823,13 +1823,13 @@ class TestPrintFunctions:
 
     def test_default_excludes_functions(self):
         result = self._make_result_with_expressions()
-        data = bngsim_model.BngsimModel._result_to_data(result)
+        data = bngsim_model.BngsimModel._build_data(result)
         assert 'func1' not in data.cols
         assert data.data.shape[1] == 2  # time + obs1
 
     def test_print_functions_true_includes_functions(self):
         result = self._make_result_with_expressions()
-        data = bngsim_model.BngsimModel._result_to_data(result, print_functions=True)
+        data = bngsim_model.BngsimModel._build_data(result, print_functions=True)
         assert 'func1' in data.cols
         assert data.data.shape[1] == 3  # time + obs1 + func1
         assert data.data[0, 2] == 10.0

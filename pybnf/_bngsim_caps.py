@@ -75,6 +75,7 @@ def _empty_capabilities():
             'sbml_psa': False,
             'antimony_import': False,
             'codegen': False,
+            'output_sensitivities': False,
         },
         'missing': {},
     }
@@ -124,6 +125,11 @@ BNGSIM_HAS_ANTIMONY_PY = bool(BNGSIM_FEATURES.get('antimony', False))
 BNGSIM_HAS_SBML = bool(BNGSIM_FEATURES.get('sbml_import', False))
 BNGSIM_HAS_ANTIMONY = bool(BNGSIM_FEATURES.get('antimony_import', False))
 BNGSIM_HAS_CODEGEN = bool(BNGSIM_FEATURES.get('codegen', False))
+# Forward output sensitivities (∂g/∂θ) from the ODE backend, consumed by the
+# gradient-plumbing path (#385/#447). Gates the gradient *path*, not the install:
+# the version floor stays 0.5.0, so a build without this feature still runs every
+# scalar (metaheuristic) fit unchanged -- only gradient-based fitting refuses.
+BNGSIM_HAS_OUTPUT_SENS = bool(BNGSIM_FEATURES.get('output_sensitivities', False))
 
 
 def feature_missing_reason(name):

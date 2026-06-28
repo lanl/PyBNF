@@ -18,6 +18,7 @@ import numpy as np
 
 from . import _runtime
 from ..data import Data
+from ..printing import PybnfError
 from ..pset import Model, _stage_and_rewrite_tfun_files
 from .._seed import resolve_action_seed
 from .net_model import BngsimModel
@@ -243,7 +244,21 @@ class BngsimNfModel(Model):
     @staticmethod
     def _result_to_data(result, print_functions=False):
         """Convert a bngsim Result to a PyBNF Data object."""
-        return BngsimModel._result_to_data(result, print_functions=print_functions)
+        return BngsimModel._build_data(result, print_functions=print_functions)
+
+    def enable_output_sensitivities(self, *, params=None, ic=None):
+        """Refuse the gradient path: network-free models have no forward sensitivities.
+
+        Forward output sensitivities are a deterministic-ODE capability; an
+        NFsim/RuleMonkey model can never provide them (#447). Surface that as an
+        actionable PyBNF-level error rather than letting a gradient-based fit
+        start against a model that cannot supply ∂g/∂θ.
+        """
+        raise PybnfError(
+            "Model %s is network-free (NFsim/RuleMonkey); forward output "
+            "sensitivities require deterministic ODE integration and are "
+            "unavailable. Run a gradient-free fit for this model." % self.name
+        )
 
     def execute(self, folder, filename, timeout, with_mutants=True):
         """Execute all NF actions in-process using XML-backed network-free sessions.

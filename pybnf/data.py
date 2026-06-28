@@ -4,10 +4,57 @@
 import logging
 import numpy as np
 import re
+from dataclasses import dataclass
+from typing import Optional
 from .printing import PybnfError
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class OutputSensitivities:
+    """Forward output sensitivities (∂g/∂θ) attached to a simulated :class:`Data`.
+
+    Carried through from the bngsim ``Result.output_sensitivities`` tensor on the
+    gradient path (#385/#447), in **native parameter space** (no log/scale
+    transform -- PyBNF owns that, ADR-0029). Purely additive: a scalar-path
+    ``Data`` leaves :attr:`Data.output_sensitivities` ``None`` and is byte-identical
+    to before this feature existed.
+
+    The ``d_param`` / ``d_ic`` tensors have shape ``(n_times, n_selectors, n_axis)``,
+    aligned column-for-column with :attr:`selectors` (typed selectors matching the
+    observable/expression columns of the owning ``Data``). The third axis is labelled
+    by :attr:`param_names` (for ``d_param``) or :attr:`ic_species` (for ``d_ic``).
+    Consumers (#449) address a column by selector via :meth:`slice_for`.
+    """
+
+    selectors: list           # typed selectors, e.g. ['observable:Atot', ...]
+    param_names: list         # axis labels for d_param (sensitivity_params order)
+    ic_species: list          # axis labels for d_ic (sensitivity_ic_species order)
+    d_param: Optional[np.ndarray] = None   # (n_times, n_selectors, n_params) or None
+    d_ic: Optional[np.ndarray] = None      # (n_times, n_selectors, n_ic) or None
+
+    def slice_for(self, selector, axis='parameter'):
+        """Return the ``(n_times, n_axis)`` sensitivity slice for one selector.
+
+        ``axis='parameter'`` reads :attr:`d_param`; ``axis='ic'`` reads
+        :attr:`d_ic`. Raises ``KeyError`` if the selector was not requested and
+        ``ValueError`` if the requested axis was not computed.
+        """
+        try:
+            col = self.selectors.index(selector)
+        except ValueError:
+            raise KeyError(selector)
+        if axis == 'parameter':
+            tensor = self.d_param
+        elif axis == 'ic':
+            tensor = self.d_ic
+        else:
+            raise ValueError("axis must be 'parameter' or 'ic', got %r" % (axis,))
+        if tensor is None:
+            raise ValueError("sensitivity axis %r was not computed" % (axis,))
+        return tensor[:, col, :]
 
 
 class Data:
@@ -26,6 +73,9 @@ class Data:
         self._observers = []  # For implementing the observer pattern
         self.weights = None  # Numpy array for bootstrapping weights
         self.indvar = None  # Name of the independent variable
+        # Forward output sensitivities (#385/#447): None on the scalar path,
+        # an OutputSensitivities payload on the gradient path. Additive only.
+        self.output_sensitivities = None
         self.bind_to(self.update_weights)
         if file_name is not None:
             self.load_data(file_name)

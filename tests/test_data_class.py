@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import numpy.testing as npt
+import pytest
 from .context import data, algorithms, printing, raises
 import copy
 
@@ -330,3 +331,44 @@ class TestData:
         npt.assert_allclose(sim.data[:, 1], np.array([3./4, 2./4, 4./4]))
         # obs3 should be untouched — this is the key assertion for issue #276
         npt.assert_allclose(sim.data[:, 3], original_obs3)
+
+
+class TestOutputSensitivities:
+    """The gradient-path payload attached to a simulated Data (#385/#447)."""
+
+    @staticmethod
+    def _payload():
+        # n_times=2, two selectors, two params; distinct values per cell so a
+        # mis-sliced column is caught.
+        d_param = np.arange(2 * 2 * 2, dtype=float).reshape(2, 2, 2)
+        return data.OutputSensitivities(
+            selectors=['observable:A', 'observable:B'],
+            param_names=['k1', 'k2'],
+            ic_species=[],
+            d_param=d_param,
+            d_ic=None,
+        )
+
+    def test_default_data_has_no_sensitivities(self):
+        # A plain Data carries the additive attribute, defaulting None (scalar path).
+        assert data.Data().output_sensitivities is None
+
+    def test_slice_for_selects_the_right_column(self):
+        payload = self._payload()
+        npt.assert_array_equal(payload.slice_for('observable:A'),
+                               payload.d_param[:, 0, :])
+        npt.assert_array_equal(payload.slice_for('observable:B'),
+                               payload.d_param[:, 1, :])
+
+    def test_slice_for_unknown_selector_raises_keyerror(self):
+        with pytest.raises(KeyError):
+            self._payload().slice_for('observable:missing')
+
+    def test_slice_for_uncomputed_axis_raises_valueerror(self):
+        # IC axis was never computed for this payload.
+        with pytest.raises(ValueError):
+            self._payload().slice_for('observable:A', axis='ic')
+
+    def test_slice_for_rejects_bad_axis(self):
+        with pytest.raises(ValueError):
+            self._payload().slice_for('observable:A', axis='bogus')
