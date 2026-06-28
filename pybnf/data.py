@@ -57,6 +57,45 @@ class OutputSensitivities:
         return tensor[:, col, :]
 
 
+@dataclass
+class NormalizationRecord:
+    """How one column of a simulated :class:`Data` was normalized (#453/#385).
+
+    :meth:`Data.normalize` rescales a *predicted* observable before scoring (``init`` /
+    ``peak`` / ``zero`` / ``unit``, ADR-0053) -- a θ-dependent transform of the moving
+    trajectory, so the gradient path must thread the normalizer's own derivative through
+    ``∂(raw/N)/∂θ`` (a quotient/chain rule that couples rows). The transform happens at the
+    ``Data`` level and overwrites the raw column in place, so the few facts the chain rule
+    needs -- the divisor ``N`` and the reference row(s) it is read from -- are recorded here
+    at normalize time, before the raw values are gone. Purely additive: a ``Data`` that is
+    never normalized leaves :attr:`Data.normalization` ``None`` and is byte-identical, and
+    recording changes no data value (only this sidecar). The chain-rule *interpretation*
+    lives in :mod:`pybnf.gradient.assembly` (this is a plain fact holder; ``data.py`` knows
+    no gradient math).
+
+    Every method's ``∂(normalized_i)/∂θ`` is a function of the **raw** per-row sensitivity
+    ``s_k = ∂raw_k/∂θ`` (the #447 tensor, untouched by normalization) and the **normalized**
+    column values ``n_k`` (read back from the now-rescaled ``Data``):
+
+    * ``peak``/``init``: ``n_i = raw_i / N`` with ``N`` the column max (``ref_row`` =
+      argmax) or the initial value (``ref_row`` = 0) -- ``∂n_i/∂θ = (s_i - n_i·s_ref)/N``.
+    * ``unit``: ``n_i = (raw_i - raw_0)/N`` (baseline-subtracted, ``baseline_row`` = 0) with
+      ``N`` the max-after-baseline (``sign`` = +1, ``ref_row`` = argmax) or, in the
+      degenerate max==baseline branch, ``|min|`` (``sign`` = -1, ``ref_row`` = argmin) --
+      ``∂n_i/∂θ = ((s_i - s_base) - sign·n_i·(s_ref - s_base))/N``.
+    * ``zero`` (z-score): ``n_i = (raw_i - μ)/σ`` couples **all** rows through ``σ`` --
+      ``scale`` = ``σ`` (0 when std is 0, where ``Data`` leaves the column un-divided) and
+      ``ddof`` carries the ``K - ddof`` denominator of ``∂σ/∂θ``.
+    """
+
+    method: str                          # 'peak' | 'init' | 'zero' | 'unit'
+    scale: float                         # the divisor N (peak: max; init: raw_0; zero: std; unit: max/|min|)
+    ref_row: Optional[int] = None        # the row N is read from (peak/init/unit); None for zero
+    baseline_row: Optional[int] = None   # unit subtracts this row first (0); None for peak/init/zero
+    sign: float = 1.0                    # unit-min branch flips the reference term's sign
+    ddof: int = 0                        # zero: the K - ddof denominator of the std derivative
+
+
 class Data:
     """Top level class for managing data"""
 
@@ -76,6 +115,10 @@ class Data:
         # Forward output sensitivities (#385/#447): None on the scalar path,
         # an OutputSensitivities payload on the gradient path. Additive only.
         self.output_sensitivities = None
+        # Per-column normalization records (#453/#385): None until normalize() runs,
+        # then {col_name: NormalizationRecord}. The gradient path reads it to thread the
+        # normalizer's own derivative; absent -> byte-identical. Additive only.
+        self.normalization = None
         self.bind_to(self.update_weights)
         if file_name is not None:
             self.load_data(file_name)
@@ -336,6 +379,11 @@ class Data:
                 cols = list(range(self.data.shape[1]))
                 cols.remove(idx)
             for c in cols:
+                column = self.data[:, c]
+                # Record N = peak and its row before the in-place divide overwrites them
+                # (#453): the gradient threads d(raw/N)/d theta. Additive, value-preserving.
+                self._record_normalization(c, NormalizationRecord(
+                    'peak', float(np.max(column)), ref_row=int(np.argmax(column))))
                 self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
 
     def normalize_to_init(self, idx=0, cols='all'):
@@ -354,6 +402,10 @@ class Data:
                 cols = list(range(self.data.shape[1]))
                 cols.remove(idx)
             for c in cols:
+                # Record N = initial value before the in-place divide overwrites row 0
+                # (#453): ref_row 0 is the divisor's source row for the gradient chain rule.
+                self._record_normalization(c, NormalizationRecord(
+                    'init', float(self.data[0, c]), ref_row=0))
                 self.data[:, c] = self.data[:, c] / self.data[0, c]
 
     def normalize_to_zero(self, idx=0, bc=True, cols='all'):
@@ -380,6 +432,11 @@ class Data:
                 if std != 0:
                     col /= std
                 self.data[:, c] = col
+                # Record the z-score scale (std; 0 means the column was left un-divided) and
+                # the K - ddof denominator the gradient's d std/d theta uses (#453). z-score
+                # couples every row, so only these scalars are recorded -- the per-row mean of
+                # the sensitivities is recomputed from the tensor at gradient time.
+                self._record_normalization(c, NormalizationRecord('zero', float(std), ddof=ddof))
 
     def _subtract_baseline(self, idx=0, cols='all'):
         if cols == 'all':
@@ -408,8 +465,18 @@ class Data:
         for c in cols:
             cmax = np.max(self.data[:, c])
             if cmax == 0.0:
+                # Degenerate branch: the baseline-subtracted column tops out at 0, so it is
+                # scaled by |min| instead. The divisor N = |min| depends on raw, so its row's
+                # sensitivity enters with a flipped sign (#453); the baseline is still row 0.
+                self._record_normalization(c, NormalizationRecord(
+                    'unit', float(np.abs(np.min(self.data[:, c]))),
+                    ref_row=int(np.argmin(self.data[:, c])), baseline_row=0, sign=-1.0))
                 self.data[:, c] = self.data[:, c] / np.abs(np.min(self.data[:, c]))
             else:
+                # N = the max-after-baseline; ref_row is its argmax, baseline is row 0 (#453).
+                self._record_normalization(c, NormalizationRecord(
+                    'unit', float(cmax), ref_row=int(np.argmax(self.data[:, c])),
+                    baseline_row=0, sign=1.0))
                 self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
 
     @staticmethod
@@ -431,6 +498,20 @@ class Data:
         output.indvar = datas[0].indvar
         output.data = np.mean(np.stack([d.data for d in datas]), axis=0)
         return output
+
+    def _record_normalization(self, col_index, record):
+        """Stash how column ``col_index`` was normalized, keyed by its header name (#453).
+
+        The gradient path reads :attr:`normalization` to thread the normalizer's own
+        derivative through ``∂(raw/N)/∂θ``; every other path ignores it. Keyed by **name**
+        (stable identifier) rather than index, mirroring how the gradient assembly addresses a
+        scored column. Lazily creates the dict, so a never-normalized ``Data`` keeps
+        ``normalization is None`` (byte-identical)."""
+        if self.normalization is None:
+            self.normalization = {}
+        # Key by header name when known (the gradient looks up a scored column by name); fall
+        # back to the index for a headerless Data (no gradient path reads it -- just no crash).
+        self.normalization[self.headers.get(col_index, col_index)] = record
 
     def normalize(self, method):
         """

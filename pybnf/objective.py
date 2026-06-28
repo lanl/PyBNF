@@ -357,6 +357,38 @@ class SummationObjective(ObjectiveFunction):
         (the strict-superset guarantee ADR-0021 left for this follow-up)."""
         return col_name in self._cumulative_cols
 
+    def prediction_sensitivity(self, sim_data, sim_row, col_name, exp_data, exp_row, raw_sens, index):
+        """``∂pred/∂θ`` (a native-space ``(n_param,)`` vector) for one matched point -- the
+        gradient seam mirroring :meth:`_prediction` (#453/#385), branch for branch.
+
+        ``_prediction`` forms the scored value from the simulation through up to one
+        trajectory transform; this returns that value's parameter sensitivity, so the assembly
+        differentiates exactly what it scores. ``raw_sens(column_name, row)`` is the sensitivity
+        of a sim column **as ``_prediction`` reads it** -- the #447 tensor with any ``Data``-level
+        normalization (ADR-0053) already folded in (so a normalized fit threads the normalizer's
+        own derivative, and the transforms below compose on top of it exactly as scoring applies
+        normalize -> ``_prediction``). ``index`` maps a free-parameter name to its column.
+
+        * **Plain** (the default, byte-identical to the raw observable): ``raw_sens(col, row)``.
+        * **Cumulative -> incident** (ADR-0051): the prediction is ``raw_i - raw_{i-1}`` (row 0
+          keeps its raw value), so ``∂pred_i/∂θ = raw_sens(col, i) - raw_sens(col, i-1)`` -- a
+          difference of sensitivity rows (row 0 keeps the plain value).
+        * **Per-measurement scale/offset** (ADR-0045): a general PEtab formula, so its sensitivity
+          is the formula's symbolic gradient chained through each referenced column's
+          ``raw_sens`` plus any estimated placeholder/parameter it names
+          (:meth:`~pybnf.measurement.base.PerMeasurementModel.prediction_sensitivity`).
+
+        A per-measurement model takes priority and the two are mutually exclusive, exactly as in
+        :meth:`_prediction`; both default off, so a plain job returns the raw observable's
+        sensitivity unchanged."""
+        model = self._per_measurement_models.get(col_name)
+        if model is not None:
+            return model.prediction_sensitivity(
+                sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values, raw_sens, index)
+        if sim_row != 0 and self._is_cumulative(col_name):
+            return raw_sens(col_name, sim_row) - raw_sens(col_name, sim_row - 1)
+        return raw_sens(col_name, sim_row)
+
     def _check_columns(self, exp_cols, compare_cols):
         """
         Check that all exp_cols are being read in compare_cols; give a warning if not.
@@ -877,21 +909,19 @@ class LikelihoodObjective(SummationObjective):
         free parameter (#451).
 
         The gate is per observable (each column may carry its own ``noise_model``
-        override, ADR-0058) plus the two whole-objective preconditions a sensitivity
-        tensor cannot yet see through: a measurement-model materialization layer
-        (ADR-0036, layer H) and a trajectory transform -- a per-measurement
-        observable (ADR-0045) or a cumulative->incident difference (ADR-0051,
-        layer F) -- which would make ``d pred/d theta`` differ from the raw
-        observable sensitivity #447 carries."""
+        override, ADR-0058) plus the whole-objective precondition a sensitivity tensor
+        cannot yet see through: a measurement-model materialization layer (ADR-0036,
+        layer H). A per-observable **trajectory transform** -- a per-measurement
+        observable (ADR-0045) or a cumulative->incident difference (ADR-0051) -- is now
+        differentiated through the :meth:`prediction_sensitivity` seam (layer F, #453),
+        and ``Data``-level normalization (ADR-0053) through the assembly's ``raw_sens``
+        chain rule, so neither gates here; the assembly raises cleanly if it cannot form a
+        particular transform's derivative."""
         from .gradient.errors import GradientNotSupported
         if self.measurement is not None:
             raise GradientNotSupported(
                 "Gradient path does not yet support a measurement-model layer "
                 "(SBML/expression observables, layer H of #385).")
-        if col_name in self._per_measurement_models or self._is_cumulative(col_name):
-            raise GradientNotSupported(
-                "Observable '%s' uses a trajectory transform (per-measurement scaling "
-                "or cumulative differencing); its gradient is layer F of #385." % col_name)
         if not isinstance(family, Gaussian):
             raise GradientNotSupported(
                 "Gradient path supports only the Gaussian noise family so far "

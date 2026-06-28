@@ -54,6 +54,21 @@ so #386's trust-region path knows to use the scalar gradient (L-BFGS) for an
 estimated-sigma fit. The free sigma routes to ``NONE`` in #448 (no model column), so
 its gradient comes entirely from this normalizer + the sigma-dependence of the data
 fit, never from the sensitivity tensor.
+
+Trajectory transforms + normalization (layer F, #453)
+-----------------------------------------------------
+``_prediction`` may form the scored value from the raw observable through a per-observable
+transform: a **cumulative -> incident** difference (ADR-0051), a **per-measurement** scale/
+offset formula (ADR-0045), or an upstream ``Data``-level **normalization** (ADR-0053). Each
+makes ``∂pred/∂θ`` differ from the raw observable sensitivity, so the assembly reads a
+``raw_sens(col, row)`` accessor (the #447 tensor, routing-factor-folded, with normalization's
+own quotient/chain rule threaded in -- ``_normalized_sensitivity``) and hands it to the
+objective's :meth:`~pybnf.objective.SummationObjective.prediction_sensitivity` seam, which
+mirrors ``_prediction`` branch for branch (cumulative differences sensitivity rows; a per-
+measurement formula chains its symbolic gradient through each referenced column's sensitivity
+plus any estimated placeholder it names -- which, unlike a free σ, *does* enter ``∂pred/∂θ`` and
+so lands in the residual-Jacobian). A plain column collapses to the raw sensitivity, so the
+no-transform path is byte-identical.
 """
 
 from dataclasses import dataclass
@@ -174,6 +189,14 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing,
     compare_cols = set(exp_data.cols).intersection(comparable)
     compare_cols.discard(indvar)
 
+    # The per-column sensitivity accessor (#453): ∂(column as _prediction sees it)/∂θ -- the
+    # #447 tensor read at a row, routing-factor-folded, NONE/pinned parameters at 0, with any
+    # Data-level normalization chain rule (ADR-0053) folded in. The objective's
+    # prediction_sensitivity seam threads each trajectory transform (cumulative / per-
+    # measurement) on top of it; for a plain column it returns exactly the per-parameter
+    # Jacobian this loop built inline before (byte-identical), now vectorised.
+    raw_sens = _raw_sensitivity_accessor(sim_data, sens, routing, index, n_param, indvar)
+
     had_estimated_noise = False
     for rownum in range(exp_data.data.shape[0]):
         sim_row = objective._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
@@ -184,17 +207,14 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing,
             rho, drho_dpred = objective.residual_point(sim_data, exp_data, sim_row, rownum, col_name)
             weight = exp_data.weights[rownum, exp_data.cols[col_name]]
             sqrt_w = np.sqrt(weight)
-            selector = _selector_for(sens, col_name)
-            jac_row = np.zeros(n_param)
-            for name, route in routing.routes.items():
-                # A pinned (factor 0) parameter and a model-unbound nuisance (a free
-                # sigma; layer D) carry no residual-Jacobian column for this point --
-                # the data fit's dependence on a model-unbound parameter is 0, and an
-                # estimated sigma's own column is handled below on the scalar path.
-                if route.factor == 0.0 or route.target == NONE:
-                    continue
-                dpred_dtheta = route.factor * _sensitivity(sens, selector, route, sim_row)
-                jac_row[index[name]] += sqrt_w * drho_dpred * dpred_dtheta
+            # ∂pred/∂θ through the objective's transform seam (plain / cumulative / per-
+            # measurement; #453), so the Jacobian row differentiates exactly what is scored.
+            # A pinned (factor 0) parameter and a model-unbound nuisance (a free sigma; layer
+            # D) carry 0 in raw_sens, so this row stays the data fit's dependence alone -- an
+            # estimated sigma's own column is handled below on the scalar path.
+            dpred_dtheta = objective.prediction_sensitivity(
+                sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
+            jac_row = sqrt_w * drho_dpred * dpred_dtheta
             # Layer D (#451): an estimated free noise scale contributes d loss/d sigma
             # straight to the scalar gradient (the +log sigma normalizer is not a square,
             # so it stays off the residual-Jacobian). Weighted by the full per-point
@@ -232,6 +252,81 @@ def _sensitivity(sens, selector, route, sim_row):
             % (route.free_param, axis, route.key, ', '.join(map(str, labels)) or '(none)'))
     column = sens.slice_for(selector, axis=axis)   # (n_times, n_axis)
     return column[sim_row, labels.index(route.key)]
+
+
+def _raw_sensitivity_accessor(sim_data, sens, routing, index, n_param, indvar):
+    """Build ``raw_sens(col_name, row) -> (n_param,)``: native-space ``∂(that column as
+    ``_prediction`` reads it)/∂θ`` (#453), the seam the objective's
+    :meth:`~pybnf.objective.SummationObjective.prediction_sensitivity` composes transforms on.
+
+    The base is the #447 forward tensor read at one row, each routed parameter's column scaled
+    by its condition factor, with a pinned (factor 0) or model-unbound (``NONE``, e.g. a free
+    σ) parameter left at 0 -- exactly the per-parameter Jacobian the assembly built inline
+    before, now vectorised. The independent variable is θ-independent (sensitivity 0). When the
+    column was normalized (ADR-0053), the normalizer's own θ-dependence is threaded here so the
+    caller sees ``∂(normalized column)/∂θ`` and every downstream transform composes correctly
+    (scoring applies normalize -> ``_prediction``)."""
+    norm = sim_data.normalization or {}
+
+    def tensor_sens(col_name, row):
+        if col_name == indvar:
+            return np.zeros(n_param)   # the independent variable does not move with θ
+        vec = np.zeros(n_param)
+        selector = _selector_for(sens, col_name)
+        for name, route in routing.routes.items():
+            if route.factor == 0.0 or route.target == NONE:
+                continue
+            vec[index[name]] = route.factor * _sensitivity(sens, selector, route, row)
+        return vec
+
+    def raw_sens(col_name, row):
+        record = norm.get(col_name)
+        if record is None:
+            return tensor_sens(col_name, row)
+        return _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens)
+
+    return raw_sens
+
+
+def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):
+    """Thread a per-column normalizer's own derivative into ``∂(normalized col)/∂θ`` (ADR-0053).
+
+    ``normalization`` rescales the predicted column by a θ-dependent ``N(θ)`` read off the
+    moving trajectory, so ``∂(raw/N)/∂θ`` is a quotient/chain rule coupling the scored row with
+    the row(s) ``N`` is read from. The raw per-row sensitivities ``s_k`` come from the
+    (un-normalized) #447 tensor; the normalized values ``n_k`` are read back from the now-
+    rescaled ``Data`` (so the raw values need not be retained). See
+    :class:`~pybnf.data.NormalizationRecord` for each method's closed form."""
+    normed = sim_data.data[:, sim_data.cols[col_name]]
+    s_i = tensor_sens(col_name, row)
+    if record.method == 'zero':
+        return _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i)
+    # peak / init / unit: a two-row (+ optional baseline) quotient rule.
+    s_base = (tensor_sens(col_name, record.baseline_row)
+              if record.baseline_row is not None else 0.0)
+    s_ref = tensor_sens(col_name, record.ref_row)
+    n_i = normed[row]
+    return ((s_i - s_base) - record.sign * n_i * (s_ref - s_base)) / record.scale
+
+
+def _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i):
+    """``∂/∂θ`` of a z-score-normalized column (subtract mean μ, divide by std σ) -- the one
+    method that couples **every** row through σ (ADR-0053). With ``s_bar`` the per-row mean of
+    the raw sensitivities and σ = ``record.scale``::
+
+        ∂n_i/∂θ = (s_i - s_bar)/σ - n_i·(∂σ/∂θ)/σ,
+        ∂σ/∂θ  = Σ_k n_k (s_k - s_bar)/(K - ddof)
+
+    (``n_k = (raw_k - μ)/σ`` is the recorded normalized value, so ``(raw_k - μ) = σ·n_k``
+    cancels the σ in ``∂σ/∂θ``). A σ of 0 means ``Data`` left the column un-divided
+    (``n_i = raw_i - μ``), so ``∂n_i/∂θ = s_i - s_bar``."""
+    nrows = len(normed)
+    all_s = np.array([tensor_sens(col_name, k) for k in range(nrows)])   # (K, n_param)
+    s_bar = all_s.mean(axis=0)
+    if record.scale == 0.0:
+        return s_i - s_bar
+    dsigma = (normed[:, np.newaxis] * (all_s - s_bar)).sum(axis=0) / (nrows - record.ddof)
+    return (s_i - s_bar) / record.scale - normed[row] * dsigma / record.scale
 
 
 def _selector_for(sens, col_name):

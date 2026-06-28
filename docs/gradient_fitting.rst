@@ -111,6 +111,40 @@ A **mean** (rather than median) location on a log scale adds the family's moment
 a separate follow-up (layer G).
 
 
+Trajectory transforms and normalization
+---------------------------------------
+
+The scored prediction need not be the raw simulated observable: PyBNF can form it through a
+per-observable **trajectory transform** before scoring, and the gradient threads each transform's
+own derivative so it stays exact.
+
+* **Cumulative → incident** (``cumulative``): a cumulative count is differenced to its
+  per-interval increment, :math:`\hat p_i = \hat y_i - \hat y_{i-1}` (row 0 keeps its raw value),
+  so the sensitivity is the matching difference of sensitivity rows,
+  :math:`\partial\hat p_i/\partial\theta = \partial\hat y_i/\partial\theta -
+  \partial\hat y_{i-1}/\partial\theta`.
+
+* **Per-measurement scale/offset**: a row-varying ``observableParameters`` measurement model is a
+  general formula :math:`\hat p_i = f(\hat y_i,\dots;\,a,\dots)` over sim-output columns and
+  per-row scale/offset tokens. Its sensitivity is the formula's exact symbolic gradient, chained
+  through each referenced column's sensitivity plus any **estimated** scale/offset parameter it
+  names. Unlike an estimated σ (which lands only on the scalar gradient), such a parameter genuinely
+  enters :math:`\partial\hat p/\partial\theta`, so it has a real residual-Jacobian column (a square),
+  and the residual form stays exact.
+
+* **Normalization** (``normalization`` — ``init`` / ``peak`` / ``zero`` / ``unit``): the predicted
+  column is rescaled by a normalizer :math:`N(\theta)` read off the moving trajectory (its peak,
+  initial value, z-score, or unit range), so :math:`\partial(\hat y_i/N)/\partial\theta` is a
+  quotient/chain rule that **couples rows** — e.g. for ``peak``,
+  :math:`\partial(\hat y_i/N)/\partial\theta = (\partial\hat y_i/\partial\theta -
+  n_i\,\partial\hat y_p/\partial\theta)/N` with :math:`p` the peak row and :math:`n_i` the
+  normalized value. The transform is applied at the data level (it overwrites the raw column), so
+  the few facts the chain rule needs — the divisor and its reference row(s) — are recorded when the
+  column is normalized; ``zero`` couples *every* row through the standard deviation. All four are
+  threaded, and any combination of these transforms composes (normalization is applied first, then
+  the cumulative/per-measurement transform on top, exactly as scoring does).
+
+
 The capability gate (what is supported)
 ---------------------------------------
 
@@ -119,7 +153,9 @@ exact today — the **default Gaussian noise family with the prediction interpre
 median**, additive on **any noise scale** (linear, or a log scale — log10 / natural log; see
 *Log / lognormal noise scale* above), and with the σ either **fixed** (read from the data / a
 constant) or estimated as a **single free parameter** (``sigma = fit <param>``; see *Estimated
-σ* above). Any other configuration raises a clear ``GradientNotSupported`` naming
+σ* above) — and the prediction formed through any of the per-observable **trajectory transforms**
+(cumulative→incident, a per-measurement scale/offset, or normalization; see *Trajectory transforms
+and normalization* above). Any other configuration raises a clear ``GradientNotSupported`` naming
 what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong
 derivative. Not yet supported (each a separate, additive follow-up):
 
@@ -127,8 +163,6 @@ derivative. Not yet supported (each a separate, additive follow-up):
   per-measurement σ (the formula chain rule is a later sub-layer);
 * a **mean** (rather than median) location (its moment correction is layer G);
 * an **asymmetric** family (Laplace, negative-binomial, Student-t, …);
-* a per-observable **trajectory transform** — cumulative→incident differencing, or a
-  per-measurement scale/offset;
 * an **SBML / measurement-model** observable layer; and
 * **constraint** penalties.
 

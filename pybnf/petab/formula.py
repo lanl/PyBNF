@@ -231,6 +231,56 @@ def compile_petab_formula(formula, allowed_symbols, *, detail=None):
     return func, names
 
 
+def compile_petab_formula_derivatives(formula, allowed_symbols, *, detail=None):
+    """Compile the **partial derivatives** of a PEtab ``observableFormula`` -> ``({name:
+    d_callable}, ordered_names)`` (#453/#385, the gradient sibling of
+    :func:`compile_petab_formula`).
+
+    A per-measurement measurement model (ADR-0045) is a general PEtab formula over sim-output
+    columns + per-row scale/offset placeholders, applied in ``_prediction``; its contribution to
+    ``∂pred/∂θ`` is the symbolic gradient of that formula chained through each referenced
+    column's sensitivity and any estimated placeholder/parameter it names. ``sympy.diff`` gives
+    the partials exactly (the formula is already a parsed ``sympy`` tree), so the chain rule is
+    the *exact* derivative of the same callable :func:`compile_petab_formula` builds -- not a
+    finite difference.
+
+    Returns ``derivs`` -- a ``{free_symbol_name: numpy_callable}`` map, one entry per free symbol
+    of the formula -- and the **sorted** ``ordered_names`` the value callable expects. **Every
+    derivative callable takes the same positional arguments in the same ``ordered_names`` order**
+    as :func:`compile_petab_formula`'s value callable, so the caller binds one argument list once
+    and evaluates ``f`` and every ``∂f/∂symbol`` from it (a derivative that does not depend on a
+    given symbol simply ignores that slot). Same parse + symbol validation as the value compiler
+    (so an unknown symbol is the same error and a placeholder is admitted identically).
+
+    Raises ``PybnfError`` on a missing ``petab`` extra, an unparseable formula, or an unknown
+    free symbol; ``NotImplementedError`` on a per-measurement placeholder symbol the value
+    compiler would also reject (it does not, for a registered :class:`PerMeasurementModel`)."""
+    sympify_petab = _require_petab_math()
+    expr = _parse(sympify_petab, formula, source='observableFormula')
+    allowed = set(allowed_symbols)
+    _check_symbols(
+        expr, allowed,
+        unknown=lambda name: (
+            f"The observableFormula references '{name}', which is not a known model entity "
+            f"(species / parameter / observable / function). A measurement-model expression "
+            f"may only reference existing model entities (ADR-0036); an unknown symbol is an "
+            f"error, not a new free parameter."),
+        detail=detail or f"Known model symbols: {sorted(allowed)}.")
+    import sympy as sp
+    # Differentiate against the ACTUAL free-symbol objects: petab tags symbols with assumptions
+    # (real/positive), so a plain ``sp.Symbol(name)`` is a different object and ``sp.diff`` would
+    # yield 0 (the same gotcha :func:`inline_constants` / :func:`substitute_placeholders` guard).
+    by_name = {str(s): s for s in expr.free_symbols}
+    names = sorted(by_name)
+    syms = [by_name[n] for n in names]
+    # One lambdified partial per free symbol, all sharing the value callable's argument vector
+    # (lambdify over the full `syms` list, even for a partial that drops some -- the caller binds
+    # args once in `names` order and reuses them for f and every derivative). ``names`` matches
+    # :func:`compile_petab_formula`'s sorted free-symbol order, so one binding feeds both.
+    derivs = {n: sp.lambdify(syms, sp.diff(expr, by_name[n]), modules='numpy') for n in names}
+    return derivs, names
+
+
 def compile_objective_expression(formula, free_params, *, data_columns=(), backend='numpy'):
     """Compile a bring-your-own objective ``expression`` to ``(callable, ordered_names)``
     (ADR-0050; the JAX backend is ADR-0059 item 2; data columns are the data-binding follow-up).

@@ -35,6 +35,15 @@ from ..printing import PybnfError
 _PLACEHOLDER = re.compile(r'(?:observable|noise)Parameter\d')
 
 
+def _is_number(token):
+    """Whether a per-measurement binding token is a numeric literal (vs a parameter id)."""
+    try:
+        float(token)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 class MeasurementModel:
     """One named PEtab measurement model: ``observable_id`` = ``formula`` evaluated post-sim.
 
@@ -139,10 +148,12 @@ class PerMeasurementModel:
         self.allowed_symbols = frozenset(allowed_symbols)
         self.constants = dict(constants or {})
         self._compiled = None  # (callable, ordered_names); lazy, not pickled
+        self._dcompiled = None  # ({name: d_callable}, ordered_names); lazy, not pickled (#453)
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_compiled'] = None  # a lambdify callable is not picklable; recompile worker-side
+        state['_dcompiled'] = None  # the partials are lambdify callables too; recompile worker-side
         return state
 
     def _compile(self):
@@ -154,6 +165,19 @@ class PerMeasurementModel:
                         f"model's species/parameters/observables/functions, the fit's free "
                         f"parameters, and the row-varying observableParameters placeholder(s)."))
         return self._compiled
+
+    def _compile_derivatives(self):
+        """The partials ``{symbol: ∂formula/∂symbol}``, sharing :meth:`_compile`'s argument
+        order, for the gradient path (#453). Lazy + not pickled, the same compile-once-per-
+        worker pattern as the value callable (ADR-0036 §5)."""
+        if self._dcompiled is None:
+            from ..petab.formula import compile_petab_formula_derivatives
+            self._dcompiled = compile_petab_formula_derivatives(
+                self.formula, self.allowed_symbols,
+                detail=(f"Per-measurement model '{self.observable_id}': known symbols are the "
+                        f"model's species/parameters/observables/functions, the fit's free "
+                        f"parameters, and the row-varying observableParameters placeholder(s)."))
+        return self._dcompiled
 
     def value(self, sim_data, sim_row, exp_data, exp_row, col_name, pset_values):
         """The measurement-model prediction for one matched data point -- a scalar.
@@ -183,6 +207,69 @@ class PerMeasurementModel:
                     f"nor a fit/model parameter. The measurement model cannot be evaluated.")
         return float(func(*args))
 
+    def prediction_sensitivity(self, sim_data, sim_row, exp_data, exp_row, col_name, pset_values,
+                               raw_sens, index):
+        """The native-space ``∂pred/∂θ`` (an ``(len(index),)`` vector) of this per-measurement
+        measurement model at one matched point (#453/#385) -- the gradient sibling of
+        :meth:`value`, resolving each symbol the same way.
+
+        ``raw_sens(column_name, sim_row)`` supplies ``∂(that sim column as ``_prediction`` sees
+        it)/∂θ`` (the #447 sensitivity tensor, with any ``Data``-level normalization already
+        folded in); ``index`` maps a free-parameter name to its column in the returned vector.
+        The prediction is ``f(symbol values)``, so by the chain rule ``∂pred/∂θ = Σ_symbol
+        (∂f/∂symbol)·(∂symbol/∂θ)``:
+
+        * a **sim-output column** symbol chains through its sensitivity (``∂f/∂col · raw_sens``);
+        * a **placeholder bound to a free-parameter id**, or a directly-named **free
+          parameter**, contributes ``∂f/∂symbol`` straight to that parameter's column -- a
+          per-row estimated nuisance / scale (ADR-0034). Unlike a free σ (layer D, which is
+          model-unbound and lands only on the scalar path), such a parameter genuinely enters
+          ``∂pred/∂θ``, so it belongs in the residual-Jacobian (the column it lands in is a
+          square);
+        * a **numeric token**, a **fixed model constant**, or the independent variable
+          contributes nothing.
+
+        Both paths sum, so a free parameter that appears in the formula **and** moves the
+        simulation (named directly while also driving a referenced column) gets both its
+        explicit ``∂f/∂param`` term and the indirect ``∂f/∂col·∂col/∂param`` terms -- the
+        complete total derivative."""
+        derivs, names = self._compile_derivatives()   # names match :meth:`value`'s arg order
+        bindings = self._row_bindings(exp_data, col_name)
+        args, contribs = [], []   # contribs[k] = (kind, payload) parallel to names[k]
+        for name in names:
+            if _PLACEHOLDER.match(name):
+                token = self._token_at(bindings, name, exp_row, col_name)
+                args.append(self._token_value(token, pset_values))
+                # a numeric token is a constant (no parameter); a parameter id chains to it
+                contribs.append(('param', None if _is_number(token) else token))
+            elif name in sim_data.cols:
+                args.append(float(sim_data.data[sim_row, sim_data.cols[name]]))
+                contribs.append(('column', name))
+            elif name in pset_values:
+                args.append(float(pset_values[name]))
+                contribs.append(('param', name))
+            elif name in self.constants:
+                args.append(float(self.constants[name]))
+                contribs.append(('constant', None))
+            else:
+                # Validation at compile time should make this unreachable; keep it pointed.
+                raise PybnfError(
+                    f"Per-measurement model '{self.observable_id}' references '{name}', which "
+                    f"is neither a placeholder, a simulation-output column ({sorted(sim_data.cols)}), "
+                    f"nor a fit/model parameter. The measurement model cannot be differentiated.")
+        grad = np.zeros(len(index))
+        for name, (kind, payload) in zip(names, contribs):
+            if kind == 'constant':
+                continue
+            partial = float(derivs[name](*args))
+            if partial == 0.0:
+                continue
+            if kind == 'column':
+                grad = grad + partial * raw_sens(name, sim_row)
+            elif payload is not None and payload in index:
+                grad[index[payload]] += partial
+        return grad
+
     @staticmethod
     def _row_bindings(exp_data, col_name):
         table = getattr(exp_data, 'measurement_params', None)
@@ -194,17 +281,29 @@ class PerMeasurementModel:
         return table[col_name]
 
     @staticmethod
-    def _resolve_token(bindings, placeholder, exp_row, col_name, pset_values):
+    def _token_at(bindings, placeholder, exp_row, col_name):
+        """The raw per-row token (a numeric literal or a parameter id) for ``placeholder`` at
+        data row ``exp_row`` -- the shared lookup behind :meth:`_resolve_token` (the value) and
+        :meth:`prediction_sensitivity` (which also needs the token's *kind*)."""
         try:
-            token = bindings[placeholder][exp_row]
+            return bindings[placeholder][exp_row]
         except (KeyError, IndexError):
             raise PybnfError(
                 f"The per-measurement binding table for '{col_name}' has no value for "
                 f"placeholder '{placeholder}' at data row {exp_row} (ADR-0045).")
+
+    @staticmethod
+    def _token_value(token, pset_values):
+        """Resolve a raw token to its numeric value: a numeric literal inlines, a parameter id
+        resolves from the PSet (a per-row estimated nuisance, ADR-0034)."""
         try:
             return float(token)                 # a per-row numeric token, inlined
         except (TypeError, ValueError):
             return pset_values[token]           # a per-row parameter id, from the PSet
+
+    @classmethod
+    def _resolve_token(cls, bindings, placeholder, exp_row, col_name, pset_values):
+        return cls._token_value(cls._token_at(bindings, placeholder, exp_row, col_name), pset_values)
 
 
 class MeasurementLayer:

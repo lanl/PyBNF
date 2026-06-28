@@ -34,6 +34,7 @@ from pybnf.gradient.assembly import _sampling_scale_factors
 from pybnf.noise import (
     DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, LN, LOG10, MEDIAN,
 )
+from pybnf.measurement.base import PerMeasurementModel
 from pybnf.objective import (
     ChiSquareObjective, LikelihoodObjective, LogNormalObjective, SumOfSquaresObjective,
 )
@@ -431,6 +432,183 @@ def test_logscale_nonpositive_point_propagates_nonfinite(pred, obs):
     assert score is None or not np.isfinite(score)
 
 
+# ============================================ trajectory transforms (layer F, #453) ===
+
+def _per_measurement_objective(formula='observableParameter1_y * Stot + observableParameter2_y'):
+    """A chi_sq objective whose observable ``y`` is a **per-measurement** measurement model
+    (ADR-0045): the general PEtab formula ``scale*Stot + offset`` evaluated per data point, with
+    the row-varying scale/offset bound from the experiment's binding table. Registered on the
+    objective's ``_per_measurement_models`` (a *virtual* comparable column -- not in the sim
+    output), exactly as ``config.py`` registers a row-varying observable."""
+    obj = ChiSquareObjective()
+    obj._per_measurement_models = {
+        'y': PerMeasurementModel(
+            'y', formula, ['Stot', 'observableParameter1_y', 'observableParameter2_y'])}
+    return obj
+
+
+def _exp_pm(obs, sigma, scale_token, offset_token):
+    """Experimental ``Data`` (time, y, y_SD) for the per-measurement observable ``y`` plus the
+    per-row binding table for its scale (``observableParameter1_y``) and offset
+    (``observableParameter2_y``). A token is a number (inlined) or a free-parameter id."""
+    exp = Data.from_columns(np.column_stack([TIMES, np.asarray(obs, float), np.full(len(obs), sigma)]),
+                            ['time', 'y', 'y_SD'])
+    exp.measurement_params = {'y': {'observableParameter1_y': [scale_token] * len(obs),
+                                    'observableParameter2_y': [offset_token] * len(obs)}}
+    return exp
+
+
+def test_cumulative_prediction_sensitivity_differences_rows():
+    """Cumulative->incident (ADR-0051): ``_prediction`` scores ``raw_i - raw_{i-1}`` (row 0 keeps
+    its raw value), so ``∂pred_i/∂θ = sens_i - sens_{i-1}`` -- a difference of sensitivity rows.
+    The Jacobian is that difference / sigma; the loss-agreement invariant ``1/2||rho||^2 ==
+    evaluate`` holds because ``evaluate`` differences through the same ``_prediction`` seam."""
+    pred = np.array([100., 74., 55., 41.])    # raw cumulative counts
+    obs = np.array([100., 22., 18., 15.])     # incident observations
+    sigma = 5.0
+    dk = np.array([0., -74., -110., -123.])   # d(raw Stot)/d k per time
+    obj = ChiSquareObjective()
+    obj._cumulative_cols = frozenset({'Stot'})
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    incident = np.array([pred[0], pred[1] - pred[0], pred[2] - pred[1], pred[3] - pred[2]])
+    d_incident = np.array([dk[0], dk[1] - dk[0], dk[2] - dk[1], dk[3] - dk[2]])
+    rho = (incident - obs) / sigma
+    np.testing.assert_allclose(res.residual, rho)
+    np.testing.assert_allclose(res.jacobian[:, 0], d_incident / sigma)
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+    assert res.least_squares_exact is True
+
+
+def test_per_measurement_scale_offset_chain_rule():
+    """Per-measurement scale/offset (ADR-0045): ``pred = scale*Stot + offset`` with ``scale`` an
+    estimated free parameter (a NONE-routed observation-layer nuisance) and ``offset`` a numeric
+    token. The formula's symbolic gradient chains ``∂pred/∂k = scale·(∂Stot/∂k)`` through the
+    referenced column's sensitivity, and contributes ``∂pred/∂scale = Stot`` **directly** to the
+    scale column -- unlike a free sigma (layer D, scalar-path only), a per-measurement scale
+    enters ``∂pred/∂θ`` and so lands in the residual-Jacobian (a square), keeping
+    ``least_squares_exact`` True."""
+    pred = np.array([100., 74., 55., 41.])
+    obs = np.array([200., 150., 120., 90.])
+    sigma = 5.0
+    dk = np.array([0., -74., -110., -123.])
+    scale = 2.0
+
+    obj = _per_measurement_objective()
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_pm(obs, sigma, scale_token='scale', offset_token=3.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
+                                        'scale': ParamRoute('scale', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('scale', 'uniform_var', 0.0, 10.0, scale))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    rho = (scale * pred + 3.0 - obs) / sigma
+    np.testing.assert_allclose(res.residual, rho)
+    np.testing.assert_allclose(res.jacobian[:, 0], (scale * dk) / sigma)   # k: chained through Stot
+    np.testing.assert_allclose(res.jacobian[:, 1], pred / sigma)           # scale: direct, a square
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+    assert res.least_squares_exact is True
+
+
+def test_per_measurement_numeric_tokens_only_touch_model_axis():
+    """When both the scale and offset are **numeric** tokens (no free-parameter placeholder),
+    the per-measurement formula's only θ-dependence is through the referenced sim column, so the
+    gradient touches only the model-parameter axis -- the constant-token reduction of the same
+    chain rule."""
+    pred = np.array([100., 74., 55., 41.])
+    dk = np.array([0., -74., -110., -123.])
+    obj = _per_measurement_objective()
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_pm([200., 150., 120., 90.], 5.0, scale_token=2.0, offset_token=3.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.jacobian[:, 0], (2.0 * dk) / 5.0)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+
+
+def test_normalization_peak_closed_form():
+    """Normalization (ADR-0053) is a θ-dependent divide by ``N(θ)`` read off the moving
+    trajectory, so ``∂(raw_i/N)/∂θ`` is a quotient rule coupling the scored row with N's row:
+    for ``peak`` (``N`` = max, row ``p`` = argmax) ``∂(raw_i/N)/∂θ = (sens_i - n_i·sens_p)/N``.
+    The sensitivity tensor is the raw (un-normalized) one; ``n_i`` is read back from the rescaled
+    Data."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    sigma = 1.0
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    sim.normalize('peak')                      # rescales Stot in place, records (N, ref_row)
+    exp = _exp(np.zeros(4), sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj := ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    N = np.max(raw)
+    p = int(np.argmax(raw))
+    normed = raw / N
+    expected = (dk - normed * dk[p]) / N
+    np.testing.assert_allclose(res.jacobian[:, 0], expected / sigma)
+    assert obj is not None
+
+
+@pytest.mark.parametrize('method', ['peak', 'init', 'zero', 'unit'])
+def test_normalization_chain_rule_matches_finite_difference(method):
+    """Every normalization method's threaded derivative ``∂(normalize(raw))/∂θ`` matches a
+    central finite difference of PyBNF's own ``Data.normalize`` applied to the raw column
+    perturbed along its sensitivity -- an implementation-independent oracle (the analytic chain
+    rule vs the actual reduction). Covers the row-coupling each method introduces: ``peak``/
+    ``init`` (one reference row), ``unit`` (baseline + max), and ``zero`` (every row, through σ)."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    dk = np.array([0.5, -2.0, 1.3, -0.7])
+    sigma = 1.0
+    sim = _sim_with_sensitivities(raw.copy(), d_param=dk)
+    sim.normalize(method)
+    exp = _exp(np.zeros(4), sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+    def normed_of(column):
+        d = Data.from_columns(np.column_stack([TIMES, column]), ['time', 'Stot'])
+        d.normalize(method)
+        return d.data[:, 1]
+
+    h = 1e-6
+    fd = (normed_of(raw + h * dk) - normed_of(raw - h * dk)) / (2.0 * h)
+    np.testing.assert_allclose(res.jacobian[:, 0], fd / sigma, rtol=1e-5, atol=1e-7)
+
+
+def test_capability_gate_now_accepts_trajectory_transforms():
+    """Layer F (#453): a cumulative observable and a per-measurement observable -- the two
+    ``_prediction`` transforms once refused by the gate -- now assemble a residual/Jacobian like
+    any other MEDIAN Gaussian (the trajectory-transform gate clause is gone)."""
+    sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    cum = ChiSquareObjective()
+    cum._cumulative_cols = frozenset({'Stot'})
+    res = assemble_gaussian_gradient(cum, [(sim, _exp([90, 20, 14, 12], 5.0), routing)], free)
+    assert np.all(np.isfinite(res.gradient))
+
+    pm = _per_measurement_objective()
+    exp = _exp_pm([200, 150, 120, 90], 5.0, scale_token=2.0, offset_token=3.0)
+    res = assemble_gaussian_gradient(pm, [(sim, exp, routing)], free)
+    assert np.all(np.isfinite(res.gradient))
+
+
 @pytest.mark.parametrize('factory', [
     SumOfSquaresObjective,        # not a likelihood at all
 ])
@@ -793,3 +971,159 @@ def test_fd_acceptance_gate_estimated_sigma(k_type):
     # (model columns + the sigma normalizer column) is what matches finite differences.
     assert res.least_squares_exact is False
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+def _fd_gradient(loss_at, free, h=1e-5):
+    """Central-difference gradient of ``loss_at`` over a free-parameter list's sampling space."""
+    u0 = np.array([p.to_sampling_space(p.value) for p in free])
+    grad_fd = np.zeros(len(free))
+    for j in range(len(free)):
+        up, um = u0.copy(), u0.copy()
+        up[j] += h
+        um[j] -= h
+        grad_fd[j] = (loss_at(up) - loss_at(um)) / (2.0 * h)
+    return grad_fd
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_cumulative():
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay net
+    with a **cumulative->incident** observable (ADR-0051, layer F #453): ``_prediction`` scores
+    ``Stot_i - Stot_{i-1}`` (row 0 raw), so the Jacobian differences the sensitivity rows. Two
+    free params (k parameter axis + S0 initial-condition axis), wildtype + a ``k*4`` condition --
+    the LINEAR oracle's setup, only the cumulative flag added. Fixed sigma, so the residual form
+    is exact."""
+    obj = ChiSquareObjective()
+    obj._cumulative_cols = frozenset({'Stot'})
+    sigma = 5.0
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
+    exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_per_measurement():
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **per-measurement** observable ``y = scale*Stot + offset`` (ADR-0045, layer F #453). Three
+    free params: k (parameter axis) + S0 (IC axis) drive Stot, and ``scale`` is an estimated
+    observation-layer nuisance (NONE-routed) that enters ``∂pred/∂θ`` directly -- so it lands in
+    the residual-Jacobian (a square), and the FD must agree on its column too. ``offset`` is a
+    numeric token. Fixed sigma, residual form exact."""
+    obj = _per_measurement_objective()
+    sigma, offset = 5.0, 3.0
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('scale', 'uniform_var', 0.0, 10.0, value=2.5)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true, scale_true = 0.3, 100.0, 2.0
+
+    def _exp_pm_decay(sim):
+        t = sim.data[:, sim.cols['time']]
+        stot = sim.data[:, sim.cols['Stot']]
+        y = scale_true * stot + offset
+        exp = Data.from_columns(np.column_stack([t, y, np.full(len(y), sigma)]),
+                                ['time', 'y', 'y_SD'])
+        exp.measurement_params = {'y': {'observableParameter1_y': ['scale'] * len(y),
+                                        'observableParameter2_y': [offset] * len(y)}}
+        return exp
+
+    exp_wt = _exp_pm_decay(_decay_run(k_true, s0_true, False))
+    exp_hi = _exp_pm_decay(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        obj._pset_values = theta   # the per-row scale reads its value here (ADR-0034)
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('method', ['peak', 'init', 'zero', 'unit'])
+def test_fd_acceptance_gate_normalized(method):
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **normalized** predicted observable (ADR-0053, layer F #453). The normalizer N(theta) is read
+    off the moving trajectory, so the assembly threads its own derivative (a quotient/chain rule
+    coupling rows) through the ``raw_sens`` accessor. The sim is normalized -- exactly as
+    ``Result.normalize`` does before scoring -- before both the FD's ``evaluate`` and the
+    assembly, so the two see the same rescaled column. On the monotone decay net ``peak``/``init``
+    read N at row 0, ``unit`` hits its max==baseline (``|min|``) branch, and ``zero`` couples
+    every row through sigma -- the four row-coupling shapes. Two free params (k + S0)."""
+    obj = ChiSquareObjective()
+    sigma = 0.05   # a normalized-scale sigma (the peak/init column tops out at 1)
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+
+    def _exp_norm(k_eff, s0):
+        gen = _decay_run(k_eff, s0, False)
+        gen.normalize(method)
+        return _exp_decay(gen, sigma)
+
+    exp_wt = _exp_norm(k_true, s0_true)
+    exp_hi = _exp_norm(k_factor * k_true, s0_true)
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_wt.normalize(method)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        sim_hi.normalize(method)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_wt.normalize(method)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    sim_hi.normalize(method)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is True
+    # Normalization couples rows (a quotient/chain rule), so the objective's higher-order
+    # curvature is larger than the plain LINEAR oracle's -- the central difference's O(h^2)
+    # truncation is correspondingly larger, so this oracle uses a looser tolerance.
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
