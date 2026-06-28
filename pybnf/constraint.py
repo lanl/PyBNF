@@ -590,6 +590,22 @@ class Constraint:
 
         raise NotImplementedError('Subclasses of Constraint must override penalty()')
 
+    def penalty_gradient(self, sim_data_dict):
+        """The gradient of this constraint's penalty w.r.t. the free parameters --
+        the constraint counterpart of the objective's residual seam (#449/#385).
+
+        A constraint penalty is a piecewise function of an at-/between-time
+        observable readout, so its gradient is the readout's forward sensitivity
+        times the local penalty slope -- a distinct chain from the per-point
+        likelihood residual. That is layer I of #385 (not yet implemented), so the
+        stub raises :class:`GradientNotSupported`: a gradient fit with active
+        constraints falls back to a gradient-free step rather than silently dropping
+        the constraint's contribution to the gradient."""
+        from .gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "Constraint gradients are layer I of #385 (not yet implemented); run a "
+            "gradient-free fit, or drop constraints from the gradient-based fit.")
+
 
 class AtConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,

@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
+from .noise import (LINEAR, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
                     PerMeasurementFormulaSigma, RelativeSigma, StudentT)
 from .printing import PybnfError, print1
@@ -179,6 +179,29 @@ class ObjectiveFunction:
         per-point likelihood. The base is that no-op; ``LikelihoodObjective``
         overrides it (and flips ``supports_pointwise_log_likelihood``)."""
         return None
+
+    def residual_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The standardized residual ``rho`` and its derivative ``d rho/d prediction``
+        for one scored point -- the per-point seam the gradient path differentiates
+        (#449/#385).
+
+        ``rho`` and ``d rho/d pred`` are defined so that this point's contribution to
+        the loss is ``1/2 rho**2`` and ``d(loss)/d pred = rho * d rho/d pred`` -- the
+        residual form ``scipy.least_squares`` minimizes, agreeing with the scalar
+        gradient by construction. The assembly multiplies ``d rho/d pred`` by the
+        forward sensitivity ``d pred/d theta`` (routed through #448's chain-rule
+        factor) to build the residual-Jacobian column.
+
+        The base raises :class:`GradientNotSupported`: only a per-point likelihood
+        (:class:`LikelihoodObjective`) defines a residual, and only for the cut-1
+        Gaussian/LINEAR/MEDIAN/fixed-sigma configuration. Every other objective
+        (least-squares, distance, pass-through) and every later layer raises until
+        its support lands -- so #386 can fall back to a gradient-free step."""
+        from .gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "Objective %s has no differentiable residual on the gradient path "
+            "(#385); only a Gaussian/LINEAR/fixed-sigma likelihood does."
+            % type(self).__name__)
 
 
 class SummationObjective(ObjectiveFunction):
@@ -735,6 +758,73 @@ class LikelihoodObjective(SummationObjective):
             if source.estimated:
                 term += normalizers[name]
         return term
+
+    def residual_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The standardized residual ``rho = (pred - obs)/sigma`` and its derivative
+        ``d rho/d pred = 1/sigma`` for one scored point (#449/#385).
+
+        Defined only for the cut-1 configuration -- the default Gaussian family,
+        additive on the LINEAR scale, prediction as the MEDIAN, sigma **fixed** (not
+        estimated) -- where ``mu = pred`` exactly (``gaussian.py``), so
+        ``data_fit = (pred - obs)**2/(2 sigma**2) = 1/2 rho**2``: this returns the same
+        loss ``eval_point`` does, now in residual form. Any other per-observable
+        configuration raises :class:`GradientNotSupported` (the capability gate);
+        later layers extend it.
+
+        Reads the prediction through the same ``_prediction`` seam and sigma through
+        the same ``_noise_values`` mapping ``eval_point`` uses, so the residual is the
+        exact derivative of the loss PyBNF reports -- same sigma-weighting, same
+        column selection. The per-point bootstrap weight is **not** applied here (the
+        assembly folds ``sqrt(weight)`` into both ``rho`` and the Jacobian, exactly as
+        ``evaluate`` multiplies ``eval_point`` by the weight)."""
+        family, sources = self._spec_for(col_name)
+        self._require_gradient_supported(col_name, family, sources)
+        prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        sigma, _extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        return (prediction - observation) / sigma, 1.0 / sigma
+
+    def _require_gradient_supported(self, col_name, family, sources):
+        """Raise :class:`GradientNotSupported` unless this observable is the cut-1
+        Gaussian/LINEAR/MEDIAN/fixed-sigma case the gradient path differentiates.
+
+        The gate is per observable (each column may carry its own ``noise_model``
+        override, ADR-0058) plus the two whole-objective preconditions a sensitivity
+        tensor cannot yet see through: a measurement-model materialization layer
+        (ADR-0036, layer H) and a trajectory transform -- a per-measurement
+        observable (ADR-0045) or a cumulative->incident difference (ADR-0051,
+        layer F) -- which would make ``d pred/d theta`` differ from the raw
+        observable sensitivity #447 carries."""
+        from .gradient.errors import GradientNotSupported
+        if self.measurement is not None:
+            raise GradientNotSupported(
+                "Gradient path does not yet support a measurement-model layer "
+                "(SBML/expression observables, layer H of #385).")
+        if col_name in self._per_measurement_models or self._is_cumulative(col_name):
+            raise GradientNotSupported(
+                "Observable '%s' uses a trajectory transform (per-measurement scaling "
+                "or cumulative differencing); its gradient is layer F of #385." % col_name)
+        if not isinstance(family, Gaussian):
+            raise GradientNotSupported(
+                "Gradient path supports only the Gaussian noise family so far "
+                "(observable '%s' uses %s); later layers add the others."
+                % (col_name, type(family).__name__))
+        if family.additive_on is not LINEAR:
+            raise GradientNotSupported(
+                "Gradient path supports only LINEAR-scale Gaussian noise so far "
+                "(observable '%s' is additive on a log scale -- lognormal is layer E "
+                "of #385)." % col_name)
+        if family.location is not MEDIAN:
+            raise GradientNotSupported(
+                "Gradient path supports only the MEDIAN location so far (observable "
+                "'%s' uses the mean, whose moment correction is layer G of #385)."
+                % col_name)
+        for param_name, source in sources.items():
+            if source.estimated:
+                raise GradientNotSupported(
+                    "Gradient path supports only fixed sigma so far (observable '%s' "
+                    "estimates the noise parameter '%s' -- estimated sigma is layer D "
+                    "of #385)." % (col_name, param_name))
 
     def required_free_noise_params(self):
         """The free-parameter names this objective's noise sources estimate (default

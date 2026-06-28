@@ -28,6 +28,7 @@ To get started using PyBNF, follow the :ref:`installation <installation>` instru
    config_keys
    algorithms
    analytical_objectives
+   gradient_fitting
    advanced
    algorithm_development
    cluster
