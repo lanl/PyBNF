@@ -67,10 +67,12 @@ class MeasurementModel:
         self.allowed_symbols = frozenset(allowed_symbols)
         self.constants = dict(constants or {})
         self._compiled = None  # (callable, ordered_names); lazy, not pickled
+        self._dcompiled = None  # ({name: d_callable}, ordered_names); lazy, not pickled (#455)
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state['_compiled'] = None  # a lambdify callable is not picklable; recompile worker-side
+        state['_dcompiled'] = None  # the partials are lambdify callables too; recompile worker-side
         return state
 
     def _compile(self):
@@ -82,6 +84,19 @@ class MeasurementModel:
                         f"model's species/parameters/observables/functions and the fit's "
                         f"free parameters."))
         return self._compiled
+
+    def _compile_derivatives(self):
+        """The partials ``{symbol: ∂formula/∂symbol}``, sharing :meth:`_compile`'s argument
+        order, for the gradient path (#455). Lazy + not pickled, the same compile-once-per-
+        worker pattern as the value callable (ADR-0036 §5)."""
+        if self._dcompiled is None:
+            from ..petab.formula import compile_petab_formula_derivatives
+            self._dcompiled = compile_petab_formula_derivatives(
+                self.formula, self.allowed_symbols,
+                detail=(f"Measurement model '{self.observable_id}': known symbols are the "
+                        f"model's species/parameters/observables/functions and the fit's "
+                        f"free parameters."))
+        return self._dcompiled
 
     def materialize(self, data, pset_values):
         """Evaluate this measurement model over one trajectory ``data`` -> a column vector.
@@ -113,6 +128,61 @@ class MeasurementModel:
             # A constant-valued (all-scalar) formula returns a scalar; broadcast it.
             column = np.full(nrows, float(column))
         return column
+
+    def prediction_sensitivity(self, data, sim_row, pset_values, raw_sens, index):
+        """The native-space ``∂(materialized column)/∂θ`` (a ``(len(index),)`` vector) of this
+        measurement model at one trajectory row (#455/#385) -- the gradient sibling of
+        :meth:`materialize`, resolving each symbol the same way.
+
+        A materialized observable is ``f(symbol values)`` over sim-output columns + the PSet, so
+        by the chain rule ``∂(col)/∂θ = Σ_symbol (∂f/∂symbol)·(∂symbol/∂θ)``:
+
+        * a **sim-output column** symbol chains through its sensitivity, ``∂f/∂col · raw_sens(col,
+          row)`` -- ``raw_sens(column_name, row)`` is the #447 tensor read at that row with any
+          ``Data``-level normalization already folded in (the assembly's accessor), so a formula
+          over the raw species/observables of *any* backend (SBML/Antimony species, ADR-0036)
+          differentiates through their forward sensitivities;
+        * a **directly-named free parameter** (a free symbol resolved from the PSet that the fit
+          declares) contributes ``∂f/∂param`` straight to that parameter's column -- a parameter
+          that enters the *observation* model, e.g. a scale/offset estimated as a fit parameter;
+        * a **fixed model constant** (a snapshotted numeric parameter) and the independent
+          variable contribute nothing.
+
+        Both paths sum, so a parameter that both appears in the formula **and** moves the
+        simulation gets its explicit ``∂f/∂param`` term plus the indirect ``∂f/∂col·∂col/∂param``
+        terms -- the complete total derivative. Mirrors
+        :meth:`PerMeasurementModel.prediction_sensitivity` (the row-varying sibling), without the
+        per-row placeholder branch a constant-per-observable model never has."""
+        derivs, names = self._compile_derivatives()   # names match :meth:`materialize`'s order
+        args, contribs = [], []   # contribs[k] = (kind, payload) parallel to names[k]
+        for name in names:
+            if name in data.cols:
+                args.append(float(data.data[sim_row, data.cols[name]]))
+                contribs.append(('column', name))
+            elif name in pset_values:
+                args.append(float(pset_values[name]))
+                contribs.append(('param', name))
+            elif name in self.constants:
+                args.append(float(self.constants[name]))
+                contribs.append(('constant', None))
+            else:
+                # Validation at compile time should make this unreachable; keep it pointed.
+                raise PybnfError(
+                    f"Measurement model '{self.observable_id}' references '{name}', which is "
+                    f"neither a simulation-output column ({sorted(data.cols)}) nor a fit/model "
+                    f"parameter. The measurement model cannot be differentiated.")
+        grad = np.zeros(len(index))
+        for name, (kind, payload) in zip(names, contribs):
+            if kind == 'constant':
+                continue
+            partial = float(derivs[name](*args))
+            if partial == 0.0:
+                continue
+            if kind == 'column':
+                grad = grad + partial * raw_sens(name, sim_row)
+            elif payload in index:
+                grad[index[payload]] += partial
+        return grad
 
 
 class PerMeasurementModel:

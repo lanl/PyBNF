@@ -970,19 +970,15 @@ class LikelihoodObjective(SummationObjective):
         parameters (layer D, #451).
 
         The gate is per observable (each column may carry its own ``noise_model``
-        override, ADR-0058) plus the whole-objective precondition a sensitivity tensor
-        cannot yet see through: a measurement-model materialization layer (ADR-0036,
-        layer H). A per-observable **trajectory transform** -- a per-measurement
-        observable (ADR-0045) or a cumulative->incident difference (ADR-0051) -- is now
+        override, ADR-0058). A per-observable **trajectory transform** -- a per-measurement
+        observable (ADR-0045) or a cumulative->incident difference (ADR-0051) -- is
         differentiated through the :meth:`prediction_sensitivity` seam (layer F, #453),
-        and ``Data``-level normalization (ADR-0053) through the assembly's ``raw_sens``
-        chain rule, so neither gates here; the assembly raises cleanly if it cannot form a
-        particular transform's derivative."""
+        ``Data``-level normalization (ADR-0053) through the assembly's ``raw_sens`` chain rule,
+        and a **measurement-model materialization layer** (ADR-0036, the SBML/Antimony /
+        expression-``observableFormula`` path) through the same accessor (layer H, #455), so
+        none gate here; the assembly raises cleanly if it cannot form a particular transform's
+        derivative (e.g. a referenced column with no forward-sensitivity column)."""
         from .gradient.errors import GradientNotSupported
-        if self.measurement is not None:
-            raise GradientNotSupported(
-                "Gradient path does not yet support a measurement-model layer "
-                "(SBML/expression observables, layer H of #385).")
         # The negative-binomial family's data-fit derivative needs implicit differentiation
         # through its median CDF-inversion root-find (_mean_for_median), a named follow-up; it
         # is matched before the catch-all so the message points at the right issue.

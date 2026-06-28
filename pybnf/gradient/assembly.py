@@ -101,6 +101,20 @@ local penalty slope (:meth:`~pybnf.constraint.Constraint.penalty_gradient`). Lik
 noise normalizer, a penalty is not a sum of squares, so it lives on the scalar gradient only: a
 fit with active constraints is not ``least_squares_exact``, and #386 adds this term to the
 objective gradient.
+
+Measurement-model layer (layer H, #455)
+---------------------------------------
+A scored observable may be a materialized **measurement-model** column (ADR-0036): an expression
+``observableFormula`` the objective's :class:`~pybnf.measurement.base.MeasurementLayer` adds to the
+trajectory before scoring (the SBML/Antimony / new-era PEtab path, where the SBML backend exposes
+the same ``species:`` forward sensitivities the net backend does for observables). Such a column is
+not in the #447 tensor, so the ``raw_sens`` accessor recognizes it and delegates to the model's
+:meth:`~pybnf.measurement.base.MeasurementModel.prediction_sensitivity` -- the formula's exact chain
+rule over each referenced column's sensitivity (read back through this same accessor, so routing /
+normalization fold in) plus any fit parameter the formula names directly (an observation-model
+scale/offset, which -- like a per-measurement scale -- enters ``∂pred/∂θ`` and lands in the
+residual-Jacobian). A plain (non-measurement) column collapses to the tensor/normalized sensitivity,
+so the no-measurement path is byte-identical.
 """
 
 from dataclasses import dataclass
@@ -240,11 +254,12 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
 
     # The per-column sensitivity accessor (#453): ∂(column as _prediction sees it)/∂θ -- the
     # #447 tensor read at a row, routing-factor-folded, NONE/pinned parameters at 0, with any
-    # Data-level normalization chain rule (ADR-0053) folded in. The objective's
-    # prediction_sensitivity seam threads each trajectory transform (cumulative / per-
-    # measurement) on top of it; for a plain column it returns exactly the per-parameter
-    # Jacobian this loop built inline before (byte-identical), now vectorised.
-    raw_sens = _raw_sensitivity_accessor(sim_data, sens, routing, index, n_param, indvar)
+    # Data-level normalization chain rule (ADR-0053) folded in, and any materialized
+    # measurement-model column (ADR-0036, layer H #455) differentiated through its formula's
+    # chain rule. The objective's prediction_sensitivity seam threads each trajectory transform
+    # (cumulative / per-measurement) on top of it; for a plain column it returns exactly the
+    # per-parameter Jacobian this loop built inline before (byte-identical), now vectorised.
+    raw_sens = _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar)
 
     inexact = False
     for rownum in range(exp_data.data.shape[0]):
@@ -316,7 +331,7 @@ def _sensitivity(sens, selector, route, sim_row):
     return column[sim_row, labels.index(route.key)]
 
 
-def _raw_sensitivity_accessor(sim_data, sens, routing, index, n_param, indvar):
+def _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar):
     """Build ``raw_sens(col_name, row) -> (n_param,)``: native-space ``∂(that column as
     ``_prediction`` reads it)/∂θ`` (#453), the seam the objective's
     :meth:`~pybnf.objective.SummationObjective.prediction_sensitivity` composes transforms on.
@@ -327,8 +342,21 @@ def _raw_sensitivity_accessor(sim_data, sens, routing, index, n_param, indvar):
     before, now vectorised. The independent variable is θ-independent (sensitivity 0). When the
     column was normalized (ADR-0053), the normalizer's own θ-dependence is threaded here so the
     caller sees ``∂(normalized column)/∂θ`` and every downstream transform composes correctly
-    (scoring applies normalize -> ``_prediction``)."""
+    (scoring applies normalize -> ``_prediction``).
+
+    A **materialized measurement-model column** (ADR-0036, layer H #455) -- an expression
+    ``observableFormula`` the objective's :class:`~pybnf.measurement.base.MeasurementLayer`
+    added to the trajectory before scoring (the SBML/Antimony / new-era PEtab path) -- is not in
+    the sensitivity tensor; its derivative is the formula's chain rule over the raw columns it
+    references, so it is delegated to the model's ``prediction_sensitivity``, which calls back
+    into this same accessor for each referenced column (a species/observable that *is* in the
+    tensor, normalization-folded). A plain column has no measurement model and collapses to the
+    tensor/normalized sensitivity, so the no-measurement path is byte-identical."""
     norm = sim_data.normalization or {}
+    measurement = getattr(objective, 'measurement', None)
+    measurement_models = ({mm.observable_id: mm for mm in measurement.models}
+                          if measurement else {})
+    pset_values = getattr(objective, '_pset_values', None) or {}
 
     def tensor_sens(col_name, row):
         if col_name == indvar:
@@ -342,6 +370,9 @@ def _raw_sensitivity_accessor(sim_data, sens, routing, index, n_param, indvar):
         return vec
 
     def raw_sens(col_name, row):
+        model = measurement_models.get(col_name)
+        if model is not None:
+            return model.prediction_sensitivity(sim_data, row, pset_values, raw_sens, index)
         record = norm.get(col_name)
         if record is None:
             return tensor_sens(col_name, row)
@@ -394,12 +425,13 @@ def _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i):
 def _selector_for(sens, col_name):
     """The typed sensitivity selector for an objective column name.
 
-    A scored column is a model observable (``observable:<name>``) or, with
-    ``print_functions``, an expression (``expression:<name>``); the sensitivity
-    tensor labels its columns the same way (#447). Raises
-    :class:`GradientNotSupported` if neither was computed -- the gradient path needs a
-    sensitivity column for every scored observable."""
-    for prefix in ('observable:', 'expression:'):
+    A scored (or measurement-formula-referenced) column is a BNGL model observable
+    (``observable:<name>``), an ``expression:<name>`` global function (with
+    ``print_functions``), or -- on the SBML/Antimony backend (layer H #455) -- a
+    ``species:<name>``; the sensitivity tensor labels its columns the same way (#447/#455).
+    Raises :class:`GradientNotSupported` if none was computed -- the gradient path needs a
+    sensitivity column for every scored observable (or column a measurement formula reads)."""
+    for prefix in ('observable:', 'expression:', 'species:'):
         selector = prefix + col_name
         if selector in sens.selectors:
             return selector

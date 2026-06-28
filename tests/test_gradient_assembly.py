@@ -37,7 +37,7 @@ from pybnf.noise import (
     LN, LOG10, MEAN, MEDIAN, NegBinomial, StudentT,
 )
 from scipy.special import digamma
-from pybnf.measurement.base import PerMeasurementModel
+from pybnf.measurement.base import MeasurementLayer, MeasurementModel, PerMeasurementModel
 from pybnf.objective import (
     ChiSquareObjective, LikelihoodObjective, LogNormalObjective, SumOfSquaresObjective,
 )
@@ -559,6 +559,102 @@ def test_per_measurement_numeric_tokens_only_touch_model_axis():
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
     np.testing.assert_allclose(res.jacobian[:, 0], (2.0 * dk) / 5.0)
     np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+
+
+# ============================ measurement-model layer (ADR-0036, layer H, #455) ===
+
+def _measurement_objective(formula='w * Stot + 3', allowed=('Stot', 'w')):
+    """A chi_sq objective whose scored observable ``obs`` is a **materialized measurement-model**
+    column (ADR-0036, the SBML/Antimony / expression-``observableFormula`` path): the formula
+    ``w*Stot + 3`` the :class:`MeasurementLayer` adds to the trajectory *before* scoring, with
+    ``w`` a fit parameter that enters the observation model and ``Stot`` the raw simulated
+    observable. Layer H (#455) differentiates that column through its formula's chain rule."""
+    obj = ChiSquareObjective()
+    obj.measurement = MeasurementLayer([MeasurementModel('obs', formula, list(allowed))])
+    return obj
+
+
+def _materialize(obj, sim, pset_values):
+    """Materialize the objective's measurement layer into ``sim`` in place -- what scoring does
+    before the by-name match, and what #386 will do (simulate -> apply the layer -> assemble).
+    Seeds ``_pset_values`` so a directly-named observation parameter resolves."""
+    obj._pset_values = dict(pset_values)
+    obj.measurement.apply({'m': {'tc': sim}}, obj._pset_values)
+    return sim
+
+
+def _exp_obs(obs, sigma):
+    """Experimental Data (time, obs, obs_SD) for the materialized measurement column ``obs``."""
+    sd = np.full(len(obs), sigma, float)
+    return Data.from_columns(np.column_stack([TIMES, np.asarray(obs, float), sd]),
+                             ['time', 'obs', 'obs_SD'])
+
+
+def test_measurement_model_chain_rule():
+    """A measurement-model observable ``obs = w*Stot + 3`` (ADR-0036, layer H): the materialized
+    column is not in the sensitivity tensor, so its ``∂obs/∂θ`` is the formula's chain rule --
+    ``∂obs/∂k = w·(∂Stot/∂k)`` through the referenced column's sensitivity, and ``∂obs/∂w = Stot``
+    **directly** into ``w``'s column. Like a per-measurement scale (and unlike a free sigma), ``w``
+    enters the prediction, so it lands in the residual-Jacobian (a square) and the fit stays
+    ``least_squares_exact``."""
+    pred = np.array([100., 74., 55., 41.])
+    dk = np.array([0., -74., -110., -123.])
+    sigma, w = 5.0, 1.5
+
+    obj = _measurement_objective('w * Stot + 3', ('Stot', 'w'))
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    _materialize(obj, sim, {'w': w})                    # adds obs = w*Stot + 3 into sim
+    obs_pred = w * pred + 3.0
+    exp = _exp_obs(obs_pred - 10.0, sigma)              # a constant 10-unit miss -> non-zero rho
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
+                                        'w': ParamRoute('w', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('w', 'uniform_var', 0.0, 10.0, w))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    rho = (obs_pred - (obs_pred - 10.0)) / sigma        # 10/sigma at every point
+    np.testing.assert_allclose(res.residual, rho)
+    np.testing.assert_allclose(res.jacobian[:, 0], (w * dk) / sigma)   # k: chained through Stot
+    np.testing.assert_allclose(res.jacobian[:, 1], pred / sigma)       # w: direct ∂obs/∂w = Stot
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+    assert res.least_squares_exact is True
+
+
+def test_measurement_model_numeric_only_touches_model_axis():
+    """A measurement formula with no fit parameter of its own (``obs = 2*Stot + 3``): its only
+    θ-dependence is through the referenced sim column, so the gradient touches only the model
+    axis -- the constant-coefficient reduction of the same chain rule (``∂obs/∂k = 2·∂Stot/∂k``)."""
+    pred = np.array([100., 74., 55., 41.])
+    dk = np.array([0., -74., -110., -123.])
+    obj = _measurement_objective('2 * Stot + 3', ('Stot',))
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    _materialize(obj, sim, {})
+    exp = _exp_obs(2.0 * pred + 3.0 - 8.0, 5.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.jacobian[:, 0], (2.0 * dk) / 5.0)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+    assert res.least_squares_exact is True
+
+
+def test_capability_gate_now_accepts_measurement_layer():
+    """Layer H (#455): a measurement-model materialization layer -- once a whole-objective gate
+    clause refusing the gradient outright -- now assembles a finite residual/Jacobian like any
+    other MEDIAN Gaussian (the measurement-layer gate clause is gone)."""
+    obj = _measurement_objective('w * Stot + 3', ('Stot', 'w'))
+    sim = _sim_with_sensitivities([100., 74., 55., 41.], d_param=[0., -74., -110., -123.])
+    _materialize(obj, sim, {'w': 1.5})
+    exp = _exp_obs([150., 110., 80., 60.], 5.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0),
+                                        'w': ParamRoute('w', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3), ('w', 'uniform_var', 0.0, 10.0, 1.5))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    assert np.all(np.isfinite(res.gradient))
 
 
 def test_normalization_peak_closed_form():
@@ -1719,3 +1815,147 @@ def test_constraint_gradient_refuses_missing_routing():
     cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
     with pytest.raises(GradientNotSupported, match='routing'):
         assemble_constraint_gradient([cset], sdd, {}, free)   # no routing for ('m', 'tc')
+
+
+# ===================== measurement-model FD oracles (ADR-0036, layer H, #455) ===
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_measurement_net():
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) for a
+    **measurement-model observable** ``obs = w*Stot + 5`` on the analytic-decay net (layer H,
+    #455) -- the materialized expression column differentiated through its chain rule. Isolates the
+    measurement derivative on the well-exercised net backend (whose ``∂Stot/∂θ`` tensor is the
+    #447/#449 reference): three free params -- ``k`` (parameter axis) and ``S0`` (initial-condition
+    axis) move the simulation, ``w`` is the observation-model scale that enters the prediction
+    directly (a square, so the fit stays least_squares_exact)."""
+    sigma, w_true = 5.0, 1.5
+
+    def make_obj():
+        obj = ChiSquareObjective()
+        obj.measurement = MeasurementLayer([MeasurementModel('obs', 'w * Stot + 5', ['Stot', 'w'])])
+        return obj
+
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('w', 'uniform_var', 0.0, 10.0, value=w_true)]
+    names = [p.name for p in free]
+
+    # Experimental obs from the true-parameter trajectory with the true scale, then perturbed so
+    # residuals at the evaluation point are non-zero -> a non-trivial gradient.
+    gen = _decay_run(0.3, 100.0, False)
+    seed = make_obj(); seed._pset_values = {'w': w_true}
+    seed.measurement.apply({'m': {'tc': gen}}, seed._pset_values)
+    t = gen.data[:, gen.cols['time']]
+    obs = gen.data[:, gen.cols['obs']] * 0.85
+    exp = Data.from_columns(np.column_stack([t, obs, np.full(len(obs), sigma)]),
+                            ['time', 'obs', 'obs_SD'])
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim = _decay_run(theta['k'], theta['S0'], False)
+        pset = PSet([FreeParameter(n, 'uniform_var', 0.0, 1000.0, value=theta[n]) for n in names])
+        return make_obj().evaluate_multiple({'m': {'tc': sim}}, {'m': {'tc': exp}}, pset)
+
+    grad_fd = _fd_gradient(loss_at, free)
+
+    sim = _decay_run(free[0].value, free[1].value, True)
+    obj = make_obj()
+    obj.measurement.apply({'m': {'tc': sim}}, {p.name: p.value for p in free})
+    route = route_experiment(names, ['S0', 'k'], [('S()', 'S0')], None)
+    res = assemble_gaussian_gradient(obj, [(sim, exp, route)], free)
+
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+    assert res.least_squares_exact is True
+
+
+_ABC_XML = FIXTURES / 'abc.xml'
+_ABC_ACTION = {'time': '2', 'step': '0.5'}   # stepnumber = round(2/0.5) = 4 -> 5 output rows
+
+
+def _abc_run(kAB, free=None):
+    """Run the SBML ``abc.xml`` model (species A,B,C; global params kAB,kBA,kBC,kCB) at the given
+    ``kAB``, on the gradient path when ``free`` is supplied (#455). Returns ``(Data, routing)`` --
+    the routing built from the model's own bind-by-id namespace, so a free parameter named for a
+    global param routes to the parameter axis (an observation-model parameter like ``w`` routes to
+    NONE -- no model column)."""
+    from pybnf.bngsim_sbml_model import BngsimSbmlModelNoTimeout
+    from pybnf.pset import TimeCourse
+    from pybnf.gradient import route_for_model, apply_routing
+    model = BngsimSbmlModelNoTimeout(
+        str(_ABC_XML), str(_ABC_XML.resolve()), actions=(TimeCourse(dict(_ABC_ACTION)),))
+    model.param_set = PSet([FreeParameter('kAB', 'uniform_var', 0.0, 10.0, value=kAB)])
+    routing = None
+    if free is not None:
+        routing = route_for_model(model, [p.name for p in free])
+        apply_routing(model, routing)
+    return model.execute('/tmp', 'sbml_fd', 60)['time_course'], routing
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_sbml_species():
+    """The SBML/Antimony backend's forward sensitivities (#455, piece 1): central differences of
+    PyBNF's loss(u) vs the assembled gradient(u) scoring a **bare species** ``A`` of the SBML
+    ``abc.xml`` model with ``kAB`` a fit parameter. Exercises the ``species:`` sensitivity selector
+    and the SBML Simulator's ``sensitivity_params`` path with no measurement layer, isolating the
+    backend capability the net-backend FD oracles cannot reach."""
+    sigma = 0.5
+    free = [FreeParameter('kAB', 'uniform_var', 0.05, 10.0, value=1.0)]
+    names = [p.name for p in free]
+
+    gen, _ = _abc_run(1.3)
+    t = gen.data[:, gen.cols['time']]
+    a = gen.data[:, gen.cols['A']]
+    exp = Data.from_columns(np.column_stack([t, a, np.full(len(a), sigma)]), ['time', 'A', 'A_SD'])
+
+    def loss_at(u_vec):
+        kAB = free[0].from_sampling_space(u_vec[0])
+        sim, _ = _abc_run(kAB)
+        return ChiSquareObjective().evaluate(sim, exp)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim, routing = _abc_run(free[0].value, free)
+    res = assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_sbml_measurement():
+    """The full layer-H seam end to end (#455): a small **SBML model fit** with a
+    **measurement-model observable** ``obs = w*A + B`` over the species of ``abc.xml``, ``kAB`` a
+    model parameter and ``w`` an observation-model scale. Central differences of PyBNF's loss(u)
+    vs the assembled gradient(u) -- the SBML ``species:`` sensitivities (piece 1) chained through
+    the measurement formula's derivative (piece 2), exactly the SBML/Antimony measurement-model
+    seam the gate clause once refused (the issue's 'FD oracle: a small SBML model fit')."""
+    sigma, w_true = 0.5, 2.0
+
+    def make_obj():
+        obj = ChiSquareObjective()
+        obj.measurement = MeasurementLayer([MeasurementModel('obs', 'w * A + B', ['A', 'B', 'w'])])
+        return obj
+
+    free = [FreeParameter('kAB', 'uniform_var', 0.05, 10.0, value=1.0),
+            FreeParameter('w', 'uniform_var', 0.0, 10.0, value=w_true)]
+    names = [p.name for p in free]
+
+    gen, _ = _abc_run(1.3)
+    seed = make_obj(); seed._pset_values = {'w': w_true}
+    seed.measurement.apply({'m': {'time_course': gen}}, seed._pset_values)
+    t = gen.data[:, gen.cols['time']]
+    obs = gen.data[:, gen.cols['obs']] * 0.85
+    exp = Data.from_columns(np.column_stack([t, obs, np.full(len(obs), sigma)]),
+                            ['time', 'obs', 'obs_SD'])
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim, _ = _abc_run(theta['kAB'])
+        pset = PSet([FreeParameter(n, 'uniform_var', 0.0, 10.0, value=theta[n]) for n in names])
+        return make_obj().evaluate_multiple({'m': {'time_course': sim}},
+                                            {'m': {'time_course': exp}}, pset)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim, routing = _abc_run(free[0].value, free)
+    obj = make_obj()
+    obj.measurement.apply({'m': {'time_course': sim}}, {p.name: p.value for p in free})
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+    assert res.least_squares_exact is True

@@ -273,6 +273,53 @@ def test_make_simulator_omits_strict_ssa_for_ode_method(monkeypatch):
     assert captured['kwargs'] == {'method': 'ode'}
 
 
+def test_sensitivity_entity_namespace_global_params_and_species_ic():
+    """The gradient router's bind-by-id namespace (#448/#455): the SBML backend reports its
+    global model parameters as the parameter axis and each species as its own bare initializer,
+    so a free parameter named for a global param routes to ``sensitivity_params`` and one named
+    for a species routes to ``sensitivity_ic`` keyed by that species."""
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    model._global_param_names = ('kAB', 'kBA')
+    model._species_names = ('A', 'B', 'C')
+
+    param_ids, species_initializers = model.sensitivity_entity_namespace()
+
+    assert param_ids == ['kAB', 'kBA']
+    assert species_initializers == [('A', 'A'), ('B', 'B'), ('C', 'C')]
+
+
+def test_make_simulator_threads_sensitivity_request_for_ode(monkeypatch):
+    """On the gradient path the SBML Simulator is built with the request's
+    ``sensitivity_params`` / ``sensitivity_ic`` (#455); the scalar path (no request) is
+    byte-identical (the prior tests pin the empty case)."""
+    captured = {}
+
+    class _FakeSimulator:
+        def __init__(self, model, **kwargs):
+            captured['kwargs'] = kwargs
+
+    monkeypatch.setattr(bngsim_sbml_model, 'bngsim',
+                        types.SimpleNamespace(Simulator=_FakeSimulator, SsaValidationError=None))
+
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    model._sensitivity_request = bngsim_sbml_model._SensitivityRequest(params=['kAB'], ic=['A'])
+    model._make_simulator(object(), 'ode')
+
+    assert captured['kwargs'] == {'method': 'ode', 'sensitivity_params': ['kAB'],
+                                  'sensitivity_ic': ['A']}
+
+
+def test_sensitivity_request_refuses_stochastic_method():
+    """Forward output sensitivities are deterministic-ODE only (#447/#455): an ssa action under an
+    active gradient request is a pointed PyBNF-level error, not a backend traceback."""
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    model.name = 'm'
+    model.strict_ssa = True
+    model._sensitivity_request = bngsim_sbml_model._SensitivityRequest(params=['kAB'], ic=[])
+    with pytest.raises(printing.PybnfError, match='deterministic ODE'):
+        model._make_simulator(object(), 'ssa')
+
+
 def test_config_routes_xml_to_roadrunner_by_default():
     cfg = _model_loader_config()
 

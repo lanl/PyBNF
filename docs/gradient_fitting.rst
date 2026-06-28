@@ -217,6 +217,37 @@ with active constraints is not ``least_squares_exact`` (its gradient is consumed
 path).
 
 
+Measurement-model layer (SBML / Antimony)
+-----------------------------------------
+
+A scored observable need not be a raw simulation output. The **measurement-model layer**
+(``observableFormula``, the new-era PEtab / SBML path) materializes each observable as an
+expression :math:`g = f(\hat y_1, \dots;\,w, \dots)` over the simulation's output columns and the
+parameter set — a *post-simulation* transform, applied identically for BNGL and SBML/Antimony — so
+its sensitivity is the formula's exact symbolic gradient chained through each referenced column's
+forward sensitivity:
+
+.. math::
+
+   \frac{\partial g}{\partial\theta}
+   = \sum_{\text{columns } c} \frac{\partial f}{\partial c}\,\frac{\partial c}{\partial\theta}
+   \;+\; \sum_{\text{parameters } w} \frac{\partial f}{\partial w},
+
+with the column terms reading the same routing-folded, normalization-aware sensitivities the rest
+of the assembly uses, and a parameter named *directly* in the formula (an observation-model scale /
+offset estimated as a fit parameter) contributing its :math:`\partial f/\partial w` straight to its
+own column. Like a per-measurement scale, such a parameter genuinely enters
+:math:`\partial g/\partial\theta`, so it has a real residual-Jacobian column (a square) and the
+residual form stays exact; a fixed model constant and the independent variable contribute nothing.
+
+This is what lets a small **SBML / Antimony** model fit on the gradient path: that backend exposes
+the same forward output sensitivities as the network ODE backend (per-``species:`` and, with
+``print_functions``, per-function), and the measurement layer differentiates the
+``observableFormula`` over them. A **bare-name** observable (the formula is just one species /
+observable) needs no measurement model — it scores that column directly through its forward
+sensitivity.
+
+
 The capability gate (what is supported)
 ---------------------------------------
 
@@ -225,19 +256,19 @@ today — a **Gaussian, Laplace, or Student-t noise family** with the prediction
 **median or the mean**, additive on **any noise scale** (linear, or a log scale — log10 / natural
 log; see *Log / lognormal noise scale* above), with each noise parameter either **fixed** (read
 from the data / a constant) or estimated as a **single free parameter** (see *Estimated σ* and
-*Asymmetric and non-Gaussian families* above), and the prediction formed through any of the
+*Asymmetric and non-Gaussian families* above), the prediction formed through any of the
 per-observable **trajectory transforms** (cumulative→incident, a per-measurement scale/offset, or
-normalization; see *Trajectory transforms and normalization* above). Any other configuration raises
-a clear ``GradientNotSupported`` naming what is missing, so a caller can fall back to a
-gradient-free step rather than trust a wrong derivative. Not yet supported (each a separate,
-additive follow-up):
+normalization; see *Trajectory transforms and normalization* above), and observables materialized
+through a **measurement-model layer** (the SBML/Antimony / ``observableFormula`` path; see
+*Measurement-model layer* above). Any other configuration raises a clear ``GradientNotSupported``
+naming what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong
+derivative. Not yet supported (each a separate, additive follow-up):
 
 * the **negative-binomial** family (its median CDF-inversion implicit derivative — issue #458);
 * an estimated noise scale given by an **expression** over several free parameters, or a row-varying
   per-measurement σ (the formula chain rule is a later sub-layer);
 * a **mean** prediction on a **log** scale *together with* an estimated noise parameter (there the
-  moment correction depends on the noise parameter, coupling the estimated-scale column);
-* an **SBML / measurement-model** observable layer; and
+  moment correction depends on the noise parameter, coupling the estimated-scale column); and
 * **pre-equilibration / steady-state** sensitivities.
 
 Every other objective continues to fit exactly as before; the gradient path is purely additive
