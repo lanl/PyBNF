@@ -281,6 +281,8 @@ Compared to Metropolis-Hastings MCMC, parallel tempering offers a trade-off: Par
 
 
 
+.. _alg-am:
+
 Adaptive MCMC
 ------------------
 
@@ -380,6 +382,65 @@ chains.  Two detection methods are available via the ``outlier_method`` key:
 - ``iqr`` (default): Flags chains whose mean log-posterior (over the last 50% of history) falls below
   :math:`Q_{25} - 2 \cdot \mathrm{IQR}`.
 - ``grubbs``: Applies the Grubbs test at significance level :math:`\alpha = 0.01` to detect a single minimum outlier.
+
+
+.. _alg-hmc:
+
+
+Hamiltonian Monte Carlo (NUTS)
+------------------------------
+
+Algorithm
+^^^^^^^^^
+Hamiltonian Monte Carlo (HMC), via the No-U-Turn Sampler (NUTS) [Hoffman2014]_, is a
+**gradient-based** Bayesian sampler. Where the other samplers propose moves blindly and accept or
+reject them, HMC follows the gradient of the log-posterior, so it mixes far more efficiently on
+correlated, curved, or high-dimensional posteriors. PyBNF drives NUTS through the
+`blackjax <https://blackjax-devs.github.io/blackjax/>`_ library and uses HMC as a **reference
+sampler** — a gradient-quality yardstick against which the gradient-free samplers (``am`` /
+``dream`` / ``p_dream``) are benchmarked on hard geometries.
+
+HMC needs a differentiable log-density, so it runs **only on a closed-form analytical objective**:
+a built-in target (``objective = banana, …``) or an inline ``objective = expression`` (see
+:ref:`Analytical and user-defined objectives <analytical_objectives>`), including a data-bound
+curve fit. It does **not** run on a simulator (BNGL / SBML) model, nor on ``objective = callable``
+(a general Python callable is not differentiable); those cases raise a clear error pointing back to
+the gradient-free samplers. Select it with ``job_type = hmc`` (requires :ref:`edition <edition>`
+``>= 2``).
+
+The same closed-form objective is automatically differentiated with `JAX <https://jax.dev>`_:
+the expression compiled for the score path is also lambdified to a JAX function whose gradient
+``jax.grad`` produces exactly, so the sampler and the score path can never drift. The full prior
+catalog composes — each family contributes a JAX log-density — and constrained parameters
+(positive, bounded, log-scaled) are sampled through an unconstraining bijection, so NUTS explores an
+unbounded space and never hits a support wall.
+
+Each chain runs an independent NUTS run with window adaptation (dual-averaging step size + mass
+matrix) over ``num_warmup`` steps, then keeps ``num_samples`` near-independent draws; the draws are
+written in the standard samples format, so the convergence diagnostics, the credible-interval
+output, and the :ref:`ArviZ bridge <output_inference_data>` all apply unchanged.
+
+Parallelization
+^^^^^^^^^^^^^^^
+``population_size`` sets the number of independent chains. Each analytical NUTS chain is a tight
+in-process numeric loop, so the chains run as independent blackjax runs rather than through the
+per-evaluation dask dispatch the simulator samplers use.
+
+Reliability
+^^^^^^^^^^^
+Alongside the rank-normalized split-:math:`\hat{R}` and bulk/tail ESS shared with the other samplers
+([Vehtari2021]_), HMC reports the **number of divergent transitions** per chain — a NUTS-specific
+signal that the integrator could not traverse a region (too sharp a curvature for the tuned step
+size). A nonzero divergence count, like a high :math:`\hat{R}`, means the draws are not yet
+trustworthy: tighten ``target_accept`` (e.g. to 0.95, which shrinks the step size) and re-run.
+
+Installation
+^^^^^^^^^^^^
+HMC needs the optional gradient stack (JAX + blackjax)::
+
+    pip install pybnf[jax]
+
+The gradient-free samplers need no extra. Requires Python with JAX support.
 
 
 .. _alg-sim:
@@ -537,6 +598,7 @@ distribution's spread. As a refiner the start is always the injected best fit.
 
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.
+.. [Hoffman2014] Hoffman, M. D.; Gelman, A. The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo. J. Mach. Learn. Res. 2014, 15 (1), 1593–1623.
 .. [Hansen2001] Hansen, N.; Ostermeier, A. Completely Derandomized Self-Adaptation in Evolution Strategies. Evol. Comput. 2001, 9 (2), 159–195.
 .. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.

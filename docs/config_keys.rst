@@ -168,6 +168,7 @@ Required Keys
     * ``am`` - :ref:`Adaptive MCMC <alg-am>`
     * ``dream`` - :ref:`DREAM <alg-dream>`
     * ``p_dream`` - :ref:`DREAM <alg-dream>` with preconditioning (P-DREAM)
+    * ``hmc`` - :ref:`Hamiltonian Monte Carlo (NUTS) <alg-hmc>` (analytical / ``expression`` objectives only; requires ``edition >= 2`` and the ``pybnf[jax]`` extra)
     * ``check`` - Run :ref:`model checking <model_check>` instead of fitting
 
 
@@ -182,8 +183,9 @@ Required Keys
   taking the same values as :ref:`fit_type <fit_type>` above. It replaces ``fit_type``
   because that name was a misnomer -- the key selects across point-estimate
   *optimizers* (``de`` / ``ade`` / ``pso`` / ``ss`` / ``sim`` / ``powell`` / ``cmaes``
-  / ``sa``), Bayesian *samplers* (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``),
-  and the model *checker* (``check``), not just fitting. The value names the specific
+  / ``sa``), Bayesian *samplers* (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``, and the
+  gradient-based :ref:`hmc <alg-hmc>` for analytical objectives), and the model *checker*
+  (``check``), not just fitting. The value names the specific
   procedure; the key names the kind of job. Requires :ref:`edition <edition>` ``>= 2``,
   and like the modern objective surface there is **no implicit default** -- the run
   must be named. Under a modern edition the legacy ``fit_type`` key is rejected.
@@ -239,6 +241,14 @@ Required Keys
   only the reported objective value is halved. Column-joint objectives (``kl`` /
   ``wasserstein``) go under :ref:`profile_objective <profile_objective_key>` instead.
 
+  The ``objective`` key also names a **closed-form analytical objective** with no model
+  file or simulator (see :ref:`Analytical and user-defined objectives
+  <analytical_objectives>`): a built-in target (``objective = banana, a = 1, b = 100`` and
+  the ``gaussian`` / ``rotated_gaussian`` / ``rotated_quartic`` / ``multimodal`` menu), an
+  inline math :ref:`expression <expression_key>` (``objective = expression``), or a Python
+  :ref:`callable <callable_key>` (``objective = callable``). These read no experimental data
+  unless a :ref:`data <data_key>` key binds it.
+
   Per-observable :ref:`noise_model <noise_model_key>` overrides may accompany an
   ``objective``. Specify exactly one of ``objective`` / a whole-fit ``noise_model`` /
   ``profile_objective`` per fit (there is no implicit default under a modern edition).
@@ -247,6 +257,63 @@ Required Keys
 
     * ``edition = 2``
     * ``objective = sos``
+
+
+.. _expression_key:
+
+**expression**
+  The companion to ``objective = expression`` (requires :ref:`edition <edition>` ``>= 2``):
+  a closed-form negative log-likelihood (or cost) written as **PEtab math** over the declared
+  free parameters, with no model file and no simulator. The symbols bind to the free
+  parameters **by name**; PEtab math uses ``^`` for exponentiation (not ``**``). With a
+  :ref:`data <data_key>` key the expression also references the bound ``.exp`` column headers
+  and is summed per data row (a per-observation NLL). Requires the optional PEtab/sympy extra
+  (``pip install pybnf[petab]``). See :ref:`Analytical and user-defined objectives
+  <analytical_objectives>`.
+
+  Example:
+
+    * ``objective = expression``
+    * ``expression = 0.5*((1 - x1)^2 + 100*(x2 - x1^2)^2)``
+
+
+.. _callable_key:
+
+**callable**
+  The companion to ``objective = callable`` (requires :ref:`edition <edition>` ``>= 2``): a
+  ``<module>:<function>`` entry point to a Python callable computing the objective, the escape
+  hatch for densities a single expression cannot express. The left side is an importable dotted
+  module (``mypkg.mymodule``) or a file path (``path/to/model.py``); the right side is the
+  function name. The function has the signature ``f(params, data=None) -> float`` -- ``params``
+  is the ``{name: value}`` parameter dict (bind-by-name), ``data`` the bound experimental data
+  (see :ref:`data <data_key>`) or ``None`` -- and returns the scalar cost. The entry point is
+  resolved and validated at config load. A general callable is not differentiable, so this works
+  with the gradient-free algorithms but not :ref:`hmc <alg-hmc>`. See :ref:`Analytical and
+  user-defined objectives <analytical_objectives>`.
+
+  Example:
+
+    * ``objective = callable``
+    * ``callable = mymodule:negative_log_likelihood``
+    * ``callable = path/to/model.py:negative_log_likelihood``
+
+
+.. _data_key:
+
+**data**
+  Binds experimental data to a bring-your-own analytical objective (``objective = expression``
+  or ``objective = callable``; requires :ref:`edition <edition>` ``>= 2``). The value is a comma
+  list of ``.exp`` files, **each one experiment**, presented to the objective as a
+  ``{experiment_name: Data}`` mapping keyed by file stem. A ``callable`` receives the whole
+  mapping as its ``data`` argument and reduces it however it likes; an ``expression`` references
+  the data columns by header and is summed per row over every experiment. The ``data`` key is
+  valid only with these two objectives (any other objective binds data through a model /
+  experiment). See :ref:`Analytical and user-defined objectives <analytical_objectives>`.
+
+  Examples:
+
+    * ``data = dose_response.exp``
+    * ``data = replicate1.exp, replicate2.exp``
 
 
 .. _profile_objective_key:
@@ -802,6 +869,8 @@ Output Options
   Example:
 
     * ``smooth_plot_points = 500``
+
+.. _output_inference_data:
 
 **output_inference_data**
   Opt-in, MCMC fits only (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``). When 1, the end of a Bayesian sampler run also writes ``Results/inference_data.nc`` -- an `ArviZ <https://python.arviz.org>`_ ``InferenceData`` built from the saved ``Results/samples.txt`` (ADR-0055) -- so the posterior is ready for the ArviZ / bayesplot / loo ecosystem (trace, rank, forest, pair plots, ``az.summary``, ``az.compare``) with no extra step. Load it with ``arviz.from_netcdf("Results/inference_data.nc")``, or build one post-hoc from any finished run with ``pybnf.inference_data.from_pybnf("path/to/Results")``. Log-scaled parameters are emitted in their sampling space (``log10`` / ``ln``, e.g. ``log10_k``), the space PyBNF samples and computes R-hat/ESS in; the ``posterior`` group carries one variable per parameter and ``sample_stats`` carries ``lp`` (the log-posterior). Because ``samples.txt`` is the thinned (by ``sample_every``), post-burn-in saved sample, ArviZ recomputes diagnostics on fewer draws than ``Results/diagnostics.txt``, so ``az.ess`` reads lower by design (PyBNF's own final R-hat/ESS ride along in the object's attributes); lower ``sample_every`` for denser ArviZ diagnostics. **For LOO/WAIC model comparison** (ADR-0056), when the fit uses a per-point likelihood objfunc (``chi_sq`` / ``chi_sq_dynamic`` / ``lognormal`` / ``laplace`` / ``neg_bin`` / ``neg_bin_dynamic``, or the ``objective`` / ``noise_model`` surface), the run also records ``Results/log_likelihood.txt`` and the InferenceData gains a ``log_likelihood`` group, so ``az.loo`` / ``az.waic`` / ``az.compare`` work directly on it. Its values are genuine, *unweighted* per-observation log-densities (not ``-score``). With a non-likelihood objfunc (least-squares, ``kl``, ``direct_pass``, ...) there is no normalized density, so no sidecar is written, the group is omitted, and a one-time note explains that LOO/WAIC needs a likelihood objfunc. Requires the optional ArviZ extra (``pip install pybnf[arviz]``); a no-op (with a log note) if the extra is absent, and on a non-sampler fit.
@@ -1677,3 +1746,44 @@ For DREAM
   number of computations and keeps the cost roughly linear; the diagnostic value reported at any
   given iteration is unchanged. Set to 0 (the default) to auto-scale as ``max(10, max_iterations //
   100)`` (~100 reports per run); set a positive value to force a fixed cadence. Default: 0 (auto)
+
+
+For Hamiltonian Monte Carlo (HMC)
+"""""""""""""""""""""""""""""""""
+
+The :ref:`HMC sampler <alg-hmc>` (``job_type = hmc``) uses window adaptation in place of the
+shared MCMC ``burn_in`` / ``sample_every`` thinning (NUTS draws are near-independent, so every
+post-warmup draw is kept), and ``population_size`` as the number of independent chains. It adds
+three keys. Requires :ref:`edition <edition>` ``>= 2`` and the ``pybnf[jax]`` extra.
+
+**num_warmup**
+  Window-adaptation (warmup) steps per chain -- NUTS tunes its step size (dual averaging) and mass
+  matrix over these, then discards them.
+
+  Default: 1000
+
+  Example:
+
+    * ``num_warmup = 800``
+
+**num_samples**
+  Post-warmup draws kept per chain (each becomes one row of the samples file). With ``population_size``
+  chains the total sample count is ``population_size * num_samples``.
+
+  Default: 1000
+
+  Example:
+
+    * ``num_samples = 2000``
+
+**target_accept**
+  The NUTS dual-averaging target acceptance probability (Stan's default is 0.8). Raising it toward 1
+  shrinks the step size, which traverses sharp curvature more reliably -- the fix for divergent
+  transitions on a hard geometry (e.g. a tight banana) -- at the cost of more gradient evaluations per
+  draw.
+
+  Default: 0.8
+
+  Example:
+
+    * ``target_accept = 0.95``
