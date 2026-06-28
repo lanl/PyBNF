@@ -31,7 +31,9 @@ from pybnf.gradient import (
     ExperimentRouting, ParamRoute, route_experiment,
 )
 from pybnf.gradient.assembly import _sampling_scale_factors
-from pybnf.noise import FormulaSigma, FreeParameterSigma, Gaussian
+from pybnf.noise import (
+    DataColumnSigma, FormulaSigma, FreeParameterSigma, Gaussian, LN, LOG10, MEDIAN,
+)
 from pybnf.objective import (
     ChiSquareObjective, LikelihoodObjective, LogNormalObjective, SumOfSquaresObjective,
 )
@@ -47,6 +49,19 @@ def _free_sigma_objective(param='sigma'):
     ``FreeParameterSigma`` type, never the parameter's name."""
     return LikelihoodObjective(noise=Gaussian(),
                                sigma_sources={'sigma': FreeParameterSigma(param)})
+
+
+def _logscale_objective(scale=LOG10, source=None):
+    """An edition-2 lognormal-style likelihood: the Gaussian family additive on a **log
+    scale** with the prediction as the MEDIAN (ADR-0011/0022, the ``noise_model =
+    lognormal`` surface for ``LOG10``). Built through the noise-model spec, not the legacy
+    :class:`LogNormalObjective` subclass, so the test exercises the edition-2 surface. The
+    ``LN`` variant is constructed directly with ``additive_on=LN`` -- there is no ``ln``
+    config token, which is fine for a unit/FD test. ``source`` defaults to a fixed
+    :class:`DataColumnSigma` (the ``_SD`` column); pass a :class:`FreeParameterSigma` for
+    the D-composes-with-E estimated-on-log-scale case."""
+    return LikelihoodObjective(noise=Gaussian(additive_on=scale, location=MEDIAN),
+                               sigma_sources={'sigma': source or DataColumnSigma()})
 
 
 FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
@@ -297,13 +312,132 @@ def test_estimated_sigma_gradient_sums_across_experiments():
     np.testing.assert_allclose(both.gradient[1], expected)
 
 
+# =============================================== log / lognormal scale (layer E, #452) ===
+
+@pytest.mark.parametrize('scale, forward, dforward', [
+    (LOG10, np.log10, lambda x: 1.0 / (x * np.log(10.0))),
+    (LN, np.log, lambda x: 1.0 / x),
+], ids=['log10', 'ln'])
+def test_logscale_residual_is_in_additive_space(scale, forward, dforward):
+    """On a log scale the standardized residual lives in the additive (log) space:
+    ``rho = (forward(pred) - forward(obs))/sigma`` with the per-point derivative
+    ``d rho/d pred = forward'(pred)/sigma`` (``1/(pred*ln10*sigma)`` for log10,
+    ``1/(pred*sigma)`` for ln). The Jacobian column is that derivative times the model
+    sensitivity; the loss-agreement invariant ``1/2||rho||^2 == evaluate`` holds for the
+    fixed-sigma lognormal (no normalizer), and the residual form stays exact."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 0.1   # a log-scale standard deviation
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+
+    obj = _logscale_objective(scale)
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    rho = (forward(pred) - forward(obs)) / sigma
+    expected_J = ((dforward(pred) / sigma) * dk).reshape(-1, 1)
+    np.testing.assert_allclose(res.residual, rho)
+    np.testing.assert_allclose(res.jacobian, expected_J)
+    np.testing.assert_allclose(res.gradient, expected_J.T @ rho)
+    # Loss-agreement: the log-space residual form reproduces PyBNF's reported objective.
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+    assert res.least_squares_exact is True
+
+
+def test_log_scale_collapses_to_linear_when_linear():
+    """The scale generalization is strict: a LINEAR-scale Gaussian still produces the exact
+    ``rho=(pred-obs)/sigma`` / ``d rho/d pred = 1/sigma`` it always did -- forward'(x)=1 on
+    the linear scale, so chi_sq is byte-for-byte unchanged by the layer-E generalization."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 5.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(res.residual, (pred - obs) / sigma)
+    np.testing.assert_allclose(res.jacobian[:, 0], (1.0 / sigma) * dk)
+
+
+def test_estimated_sigma_on_log_scale_composes_d_with_e():
+    """D (estimated sigma) composes with E (log scale): an estimated, freely-named free
+    sigma on a log scale -- the ``noise_model = lognormal, sigma = fit noise_sd`` surface.
+    The sigma column uses the LOG-space residual ``rho=(log10 pred - log10 obs)/sigma``, so
+    ``d loss/d sigma = (1-rho^2)/sigma`` with the log-space rho; the residual form is still
+    inexact (an estimated sigma keeps +log sigma), the sigma column of the Jacobian is zero,
+    and the loss-agreement needs the normalizer restored: 1/2||rho||^2 + N log sigma =="""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 0.1
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+
+    obj = _logscale_objective(LOG10, FreeParameterSigma('noise_sd'))
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)   # no _SD column: sigma is the free parameter, not the data
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
+    })
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    rho = (np.log10(pred) - np.log10(obs)) / sigma   # the LOG-space residual
+    dforward = 1.0 / (pred * np.log(10.0))           # d log10(pred)/d pred
+    np.testing.assert_allclose(res.residual, rho)
+    np.testing.assert_allclose(res.jacobian[:, 0], (dforward / sigma) * dk)
+    np.testing.assert_allclose(res.jacobian[:, 1], 0.0)     # sigma carries no model column
+    np.testing.assert_allclose(res.gradient[0], ((dforward / sigma) * dk) @ rho)
+    expected_dsigma = np.sum((1.0 - rho ** 2) / sigma)
+    np.testing.assert_allclose(res.gradient[1], expected_dsigma)
+    assert res.least_squares_exact is False
+    # Loss agreement with the normalizer restored (evaluate keeps +log sigma per point).
+    np.testing.assert_allclose(
+        0.5 * res.residual @ res.residual + len(obs) * np.log(sigma), obj.evaluate(sim, exp))
+
+
+@pytest.mark.parametrize('pred, obs', [
+    ([100.0, 0.0, 55.0, 41.0], [100.0, 70.0, 60.0, 40.0]),    # non-positive prediction
+    ([100.0, 74.0, 55.0, 41.0], [100.0, -1.0, 60.0, 40.0]),   # non-positive observation
+], ids=['nonpositive_pred', 'nonpositive_obs'])
+def test_logscale_nonpositive_point_propagates_nonfinite(pred, obs):
+    """Positivity of support: on a log scale ``forward = log10`` requires ``x > 0``. PyBNF's
+    gradient path does NOT raise on a non-positive prediction/observation; it propagates a
+    non-finite value -- exactly how ``evaluate`` treats the same out-of-support point (it
+    returns a non-finite score, not an exception) -- the optimizer's existing signal to
+    reject the step. (Documented in ``residual_point``.)"""
+    sigma = 0.1
+    obj = _logscale_objective(LOG10)
+    sim = _sim_with_sensitivities(np.array(pred, float), d_param=[0.0, -74.0, -110.0, -123.0])
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    with np.errstate(all='ignore'):
+        res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+        score = obj.evaluate(sim, exp, show_warnings=False)
+    # The gradient path does not raise -- it goes non-finite, just as the scalar score does.
+    assert not np.all(np.isfinite(res.residual))
+    assert not np.all(np.isfinite(res.gradient))
+    assert score is None or not np.isfinite(score)
+
+
 @pytest.mark.parametrize('factory', [
-    LogNormalObjective,           # log-scale Gaussian (layer E)
     SumOfSquaresObjective,        # not a likelihood at all
 ])
 def test_capability_gate_refuses_unsupported_objectives(factory):
-    """The cut-1 gate accepts Gaussian/LINEAR/MEDIAN (fixed or single-free-parameter
-    sigma); everything else raises GradientNotSupported naming its deferred layer."""
+    """The cut-1 gate accepts a MEDIAN Gaussian on any scale (linear or log; fixed or
+    single-free-parameter sigma); everything else raises GradientNotSupported naming its
+    deferred layer."""
     obj = factory()
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
@@ -311,6 +445,21 @@ def test_capability_gate_refuses_unsupported_objectives(factory):
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
     with pytest.raises(GradientNotSupported):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
+def test_capability_gate_now_accepts_log_scale_gaussian():
+    """Layer E (#452): the ``lognormal`` log-scale Gaussian -- both the legacy
+    :class:`LogNormalObjective` subclass and the edition-2 noise-model spec -- is no longer
+    gated; it assembles a residual/Jacobian like any other MEDIAN Gaussian (the scale clause
+    that once refused it is gone)."""
+    sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
+    exp = _exp([100, 70, 60, 40], 0.1)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    for obj in (LogNormalObjective(), _logscale_objective(LOG10)):
+        res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+        assert res.least_squares_exact is True
+        assert np.all(np.isfinite(res.gradient))
 
 
 def test_capability_gate_refuses_composite_estimated_sigma():
@@ -495,6 +644,64 @@ def _exp_decay(sim, sigma):
     obs = sim.data[:, sim.cols['Stot']]
     sd = np.full(len(obs), sigma, float)
     return Data.from_columns(np.column_stack([t, obs, sd]), ['time', 'Stot', 'Stot_SD'])
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('scale', [LOG10, LN], ids=['log10', 'ln'])
+def test_fd_acceptance_gate_logscale(scale):
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on the decay
+    net with a **log / lognormal-scale** Gaussian (layer E, #452): the standardized residual
+    lives in log space ``rho = (forward(pred) - forward(obs))/sigma`` with the per-point
+    derivative ``forward'(pred)/sigma`` (``log10`` for the ``lognormal`` surface, ``ln`` for
+    the natural-log variant). Fixed sigma via the data's ``Stot_SD`` column, so the residual
+    form is exact. Exactly mirrors the LINEAR FD oracle -- two free params, k (parameter
+    axis) + S0 (initial-condition axis), wildtype + a ``k*4`` condition -- only the additive
+    noise scale differs; the decay net stays strictly positive, so the log scale is in
+    support throughout."""
+    obj = _logscale_objective(scale)
+    sigma = 0.3   # a log-scale standard deviation (moderate so residuals stay well-scaled)
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0   # the 'hi' condition: k * 4
+
+    # Synthetic data: each experiment's own simulated trajectory at the *true* params, so
+    # residuals at the evaluation point are non-zero -> a non-trivial gradient.
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
+    exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
+
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    u0 = np.array([p.to_sampling_space(p.value) for p in free])
+    h = 1e-5
+    grad_fd = np.zeros(len(free))
+    for j in range(len(free)):
+        up, um = u0.copy(), u0.copy()
+        up[j] += h
+        um[j] -= h
+        grad_fd[j] = (loss_at(up) - loss_at(um)) / (2.0 * h)
+
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is True
+    # A log scale weighs every decade of the decaying trajectory equally, so the late-time
+    # points (which span many decades) give the objective much larger higher-order curvature
+    # than the linear oracle -- the central difference's O(h^2) truncation error is
+    # correspondingly larger, so this FD oracle uses a looser tolerance than the LINEAR one.
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
 
 
 def _exp_decay_no_sd(sim):

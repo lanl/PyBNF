@@ -39,6 +39,19 @@ class AdditiveNoiseScale:
         """Transform an original-space value into the additive space."""
         raise NotImplementedError
 
+    def dforward(self, x):
+        """``d forward(x)/dx`` -- the plain first derivative of the scale transform,
+        the per-point seam a gradient needs (#452): the standardized residual on a log
+        scale is ``rho = (forward(pred) - forward(obs))/sigma``, so ``d rho/d pred =
+        forward'(pred)/sigma``. ``1`` on the linear scale (identity), ``1/(x ln 10)`` on
+        log10, ``1/x`` on natural log -- so the linear short-circuits to the historical
+        ``1/sigma`` byte-for-byte. ``forward``'s sibling for the optimizer, as
+        :meth:`log_abs_dforward` is for a normalized density: this is the *signed*
+        derivative the chain rule multiplies, that one the *log-absolute* change-of-
+        variables term a density carries; deliberately the Additive Noise Scale axis,
+        not a parameter's ``priors.Scale`` (the CONTEXT.md glossary keeps them apart)."""
+        raise NotImplementedError
+
     def log_abs_dforward(self, x):
         """``log|d forward(x)/dx|`` -- the change-of-variables Jacobian term that
         turns an additive-space log-density into the original-space (data-space)
@@ -58,6 +71,10 @@ class _Linear(AdditiveNoiseScale):
     def forward(self, x):
         return x
 
+    def dforward(self, x):
+        # Identity transform: d x/d x = 1.
+        return 1.0
+
     def log_abs_dforward(self, x):
         # Identity transform: |d x/d x| = 1, log 1 = 0.
         return 0.0
@@ -69,6 +86,10 @@ class _Log10(AdditiveNoiseScale):
     def forward(self, x):
         return np.log10(x)
 
+    def dforward(self, x):
+        # d log10(x)/dx = 1/(x ln 10).
+        return 1.0 / (x * _LN10)
+
     def log_abs_dforward(self, x):
         # d log10(x)/dx = 1/(x ln 10); log|.| = -log(x) - log(ln 10).
         return -np.log(x) - np.log(_LN10)
@@ -79,6 +100,10 @@ class _Ln(AdditiveNoiseScale):
 
     def forward(self, x):
         return np.log(x)
+
+    def dforward(self, x):
+        # d ln(x)/dx = 1/x.
+        return 1.0 / x
 
     def log_abs_dforward(self, x):
         # d ln(x)/dx = 1/x; log|.| = -log(x).

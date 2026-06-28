@@ -73,12 +73,51 @@ trust-region least-squares step must consume the scalar gradient (quasi-Newton /
 than the bare residual form. A fixed-σ fit is unaffected (the flag stays ``True``).
 
 
+Log / lognormal noise scale
+---------------------------
+
+The Gaussian noise can be additive on a **log scale** rather than the linear one — the
+edition-2 ``noise_model = lognormal`` surface (log10) — modelling multiplicative error. The
+gradient handles it as a strict generalization: with the prediction taken to be the **median**,
+the standardized residual simply lives in the additive (log) space,
+
+.. math::
+
+   \rho_i = \frac{f(\hat y_i) - f(y_i)}{\sigma_i},
+   \qquad f = \log_{10}\ (\text{or}\ \ln),
+
+so :math:`\tfrac12\rho_i^2` is still the per-point data fit. The native sensitivity
+:math:`\partial\hat y_i/\partial\theta` is unchanged; only the per-point residual derivative
+picks up the scale's chain factor,
+
+.. math::
+
+   \frac{\partial\rho_i}{\partial\hat y_i} = \frac{f'(\hat y_i)}{\sigma_i}
+   = \frac{1}{\hat y_i\,\sigma_i\,\ln b},
+
+with :math:`b = 10` for log10 and :math:`b = e` for the natural-log variant. The linear scale is
+the :math:`f' = 1` special case, so an ordinary additive-error fit is byte-for-byte unchanged. A
+log scale composes with an estimated σ (``noise_model = lognormal, sigma = fit <param>``): the
+σ column :math:`(1-\rho_i^2)/\sigma` is identical once :math:`\rho` is read in log space.
+
+A log scale only has support for **positive** values (:math:`f = \log_{10}` requires
+:math:`\hat y_i > 0` and :math:`y_i > 0`). At a non-positive prediction or observation the
+gradient path does **not** raise — it propagates a non-finite value, exactly as the scalar
+objective returns a non-finite score for the same out-of-support point. That keeps the gradient
+consistent with the objective it differentiates and gives a trust-region step its usual signal to
+reject the point, rather than aborting the whole assembly.
+
+A **mean** (rather than median) location on a log scale adds the family's moment correction and is
+a separate follow-up (layer G).
+
+
 The capability gate (what is supported)
 ---------------------------------------
 
 The gradient is assembled only for the configuration whose derivative is unambiguous and
-exact today — the **default Gaussian noise family, additive on the linear scale, with the
-prediction interpreted as the median**, and the σ either **fixed** (read from the data / a
+exact today — the **default Gaussian noise family with the prediction interpreted as the
+median**, additive on **any noise scale** (linear, or a log scale — log10 / natural log; see
+*Log / lognormal noise scale* above), and with the σ either **fixed** (read from the data / a
 constant) or estimated as a **single free parameter** (``sigma = fit <param>``; see *Estimated
 σ* above). Any other configuration raises a clear ``GradientNotSupported`` naming
 what is missing, so a caller can fall back to a gradient-free step rather than trust a wrong
@@ -86,7 +125,7 @@ derivative. Not yet supported (each a separate, additive follow-up):
 
 * an estimated σ given by an **expression** over several free parameters, or a row-varying
   per-measurement σ (the formula chain rule is a later sub-layer);
-* a **log / lognormal** noise scale, or a **mean** (rather than median) location;
+* a **mean** (rather than median) location (its moment correction is layer G);
 * an **asymmetric** family (Laplace, negative-binomial, Student-t, …);
 * a per-observable **trajectory transform** — cumulative→incident differencing, or a
   per-measurement scale/offset;
