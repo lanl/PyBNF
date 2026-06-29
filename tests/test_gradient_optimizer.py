@@ -1,9 +1,16 @@
 """Gradient-based local optimizers: end-to-end parameter recovery + gates (#386).
 
-The primary gradient method is ``trf`` -- the trust-region / Levenberg–Marquardt
-least-squares optimizer that consumes #385's residual Jacobian (assembled from
-bngsim's forward output sensitivities) inside PyBNF's async propose/score loop. This
-module proves it end to end:
+Two gradient methods share #385's assembly (``optimizers/gradient_base.py``): the
+primary ``trf`` -- the trust-region / Levenberg–Marquardt least-squares optimizer that
+consumes the residual Jacobian -- and ``lbfgs`` -- the projected-gradient L-BFGS
+fallback that consumes the scalar gradient and so fits the objectives TRF refuses (an
+estimated noise scale, Laplace/count, constraints). Both run inside PyBNF's async
+propose/score loop. This module proves each end to end (the L-BFGS tests are grouped
+after the TRF ones below).
+
+The TRF case, on a trust-region/Levenberg–Marquardt least-squares optimizer that
+consumes #385's residual Jacobian (assembled from bngsim's forward output
+sensitivities):
 
 * **parameter recovery through the real bngsim backend** (``recovery`` tier, opt-in):
   a single-species first-order decay ``S(t) = S0·exp(-k·t)`` -- the model *is* its own
@@ -41,17 +48,23 @@ TRUE_K = 0.3
 TRUE_S0 = 100.0
 
 
-def _write_decay_exp(path, *, n=21, t_end=10.0, sd=2.0):
-    """Write a zero-noise analytic decay ``.exp`` (columns ``time Stot Stot_SD``).
+def _write_decay_exp(path, *, n=21, t_end=10.0, sd=2.0, with_sd=True):
+    """Write a zero-noise analytic decay ``.exp`` (columns ``time Stot [Stot_SD]``).
 
     ``Stot(t) = S0·exp(-k·t)`` is exactly the model's ODE solution, so a fit at the
-    true ``(k, S0)`` reproduces it and the objective floors at ~0. The constant
-    ``Stot_SD`` makes the chi-square objective a fixed-scale Gaussian -- an exact
-    least-squares residual, the TRF path's target."""
+    true ``(k, S0)`` reproduces it and the objective floors at ~0. With ``with_sd`` the
+    constant ``Stot_SD`` column makes the chi-square objective a **fixed**-scale Gaussian
+    -- an exact least-squares residual, the TRF path's target. With ``with_sd=False`` the
+    SD column is omitted: an **estimated** noise scale (``chi_sq_dynamic``) reads its
+    sigma from a free parameter, not the data, so the data carries no ``_SD`` column."""
     t = np.linspace(0.0, t_end, n)
     obs = TRUE_S0 * np.exp(-TRUE_K * t)
-    lines = ['#\ttime\tStot\tStot_SD']
-    lines += ['%.12g\t%.12g\t%.12g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    if with_sd:
+        lines = ['#\ttime\tStot\tStot_SD']
+        lines += ['%.12g\t%.12g\t%.12g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    else:
+        lines = ['#\ttime\tStot']
+        lines += ['%.12g\t%.12g' % (ti, oi) for ti, oi in zip(t, obs)]
     Path(path).write_text('\n'.join(lines) + '\n')
     return str(path)
 
@@ -180,3 +193,116 @@ def test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs(tmp_path, mon
     alg = H.build(conf, 'trf')
     with pytest.raises(PybnfError, match='(?i)lbfgs'):
         H.drive(alg)
+
+
+# --------------------------------------------------------------------------- #
+# L-BFGS (projected-gradient) -- the scalar-gradient fallback (#386)
+# --------------------------------------------------------------------------- #
+# Where TRF consumes the residual Jacobian and is restricted to an exact
+# least-squares objective, the projected-gradient L-BFGS leaf (``fit_type = lbfgs``)
+# consumes only the *scalar* gradient #385 assembles, so it fits the very objectives
+# TRF refuses. These prove (a) it recovers a fixed-scale fit just like TRF, and (b)
+# the distinguishing case -- a fit with an *estimated* noise scale, which TRF rejects
+# (``least_squares_exact == False``) but L-BFGS optimizes through the scalar gradient.
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_recovers_decay_rate_and_initial_condition(tmp_path, monkeypatch):
+    """``fit_type = lbfgs`` recovers both the rate ``k`` (parameter axis) and the
+    initial amount ``S0`` (initial-condition axis) of an exponential decay, from the box
+    center, through the real bngsim forward-sensitivity path -- the end-to-end proof that
+    the *scalar* gradient drives the async projected-gradient L-BFGS loop to the optimum
+    (the sibling of the TRF recovery test on the same model)."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=100)
+
+    alg = H.build(conf, 'lbfgs')
+    H.drive(alg)
+
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.02, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.02, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+    # Zero-noise data -> the chi-square objective floors near 0 at the optimum.
+    assert alg.trajectory.best_score() < 1e-3, \
+        'best objective %g not ~0' % alg.trajectory.best_score()
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_fits_estimated_noise_scale_that_trf_refuses(tmp_path, monkeypatch):
+    """The distinguishing case. With an **estimated** noise scale (``chi_sq_dynamic``'s
+    free ``sigma__FREE``), the objective keeps a ``+log σ`` normalizer that is not a
+    square, so ``least_squares_exact`` is ``False`` and TRF refuses the fit (see
+    ``test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs``). L-BFGS consumes
+    the scalar gradient -- normalizer column folded in -- so it optimizes the same fit
+    and still recovers the rate / initial condition. Zero-noise data drives the residuals
+    to zero, where the σ column pins σ at its lower bound and the ``k`` / ``S0`` gradient
+    vanishes, so the truth is the optimum for any feasible σ."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    # No _SD column: chi_sq_dynamic reads its sigma from the free parameter, not the data.
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sigma__FREE': ('uniform_var', 0.1, 50.0)},
+        'decay', 'lbfgs', objective='chi_sq_dynamic', random_seed=1234,
+        population_size=1, max_iterations=250)
+
+    alg = H.build(conf, 'lbfgs')
+    H.drive(alg)   # must NOT raise -- this is the path TRF refuses
+
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.03, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.03, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_is_picklable_across_a_run(tmp_path, monkeypatch):
+    """``Algorithm.backup`` pickles the optimizer mid-run, so the L-BFGS state machine
+    must round-trip both before and after a run -- all state is plain numpy/float/list
+    (the point, scalar gradient, the (s, y) curvature history, line-search scratch),
+    exactly like Powell / CMA-ES / TRF (ADR-0007)."""
+    import pickle
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=10)
+    alg = H.build(conf, 'lbfgs')
+    pickle.loads(pickle.dumps(alg))     # constructed state round-trips
+    H.drive(alg)
+    pickle.loads(pickle.dumps(alg))     # state after a completed run round-trips
+
+
+def test_lbfgs_refuses_legacy_edition_before_building_models(tmp_path):
+    """A gradient fit on a legacy (edition-1) config is refused at construction with a
+    clear, actionable message -- the edition gate is inherited from GradientOptimizer and
+    fires before any model is built, so no BNG2.pl / bngsim is needed here (mirrors the
+    TRF gate test)."""
+    from pybnf.algorithms.optimizers.lbfgs import LBFGSAlgorithm
+    import types
+    conf = types.SimpleNamespace(config={'edition': None})
+    with pytest.raises(PybnfError, match='(?i)edition'):
+        LBFGSAlgorithm(conf)

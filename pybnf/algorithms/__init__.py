@@ -50,10 +50,13 @@ from .optimizers.simulated_annealing import SimulatedAnnealing as SimulatedAnnea
 from .optimizers.powell import PowellAlgorithm as PowellAlgorithm
 from .optimizers.cmaes import CMAESAlgorithm as CMAESAlgorithm
 # Gradient-based local optimizers (#386): trf (trust-region least-squares /
-# Levenberg–Marquardt, primary) and the L-BFGS-B fallback to follow. Each is a
-# GradientOptimizer (optimizers/gradient_base.py) consuming #385's residual
-# Jacobian / scalar gradient. Importing the leaf runs its @register_fit_type.
+# Levenberg–Marquardt, primary) consumes #385's residual Jacobian; lbfgs (bounded
+# limited-memory BFGS, the scalar-gradient fallback) consumes the scalar gradient and
+# so handles the objectives trf refuses (estimated noise scale, Laplace/count,
+# constraints). Each is a GradientOptimizer (optimizers/gradient_base.py); importing
+# the leaf runs its @register_fit_type.
 from .optimizers.trf import TRFAlgorithm as TRFAlgorithm
+from .optimizers.lbfgs import LBFGSAlgorithm as LBFGSAlgorithm
 from .samplers.dream import DreamAlgorithm as DreamAlgorithm
 from .samplers.pdream import PDreamAlgorithm as PDreamAlgorithm
 from .samplers.basic_mcmc import BasicBayesMCMCAlgorithm as BasicBayesMCMCAlgorithm

@@ -1,9 +1,9 @@
-"""Shared scaffolding for the gradient-based local optimizers (TRF/LM + L-BFGS-B, #386).
+"""Shared scaffolding for the gradient-based local optimizers (TRF/LM + L-BFGS, #386).
 
 The metaheuristic fit types (de, pso, ss, cmaes, …) only ever ask each evaluated
 ``PSet`` for its scalar objective value. A **gradient** optimizer instead consumes
 the residual vector + residual-Jacobian (TRF / Levenberg–Marquardt) or the scalar
-gradient (L-BFGS-B) that #385 assembles from bngsim's forward output-sensitivity
+gradient (projected-gradient L-BFGS) that #385 assembles from bngsim's forward output-sensitivity
 tensor. :class:`GradientOptimizer` factors out everything a new gradient method
 needs so a leaf (``trf.py``, ``lbfgs.py``) implements only its step math --
 mirroring how :class:`StartPointOptimizer` factors the start-point / ``u``↔PSet
@@ -74,7 +74,7 @@ class GradientOptimizer(StartPointOptimizer):
     """Base for the gradient-based local optimizers (#386).
 
     A leaf subclass implements its own ``start_run`` / ``got_result`` step machine
-    (Levenberg–Marquardt for ``trf``, L-BFGS-B for ``lbfgs``) and calls
+    (Levenberg–Marquardt for ``trf``, projected-gradient L-BFGS for ``lbfgs``) and calls
     :meth:`_setup_gradient_path` once from ``start_run`` and :meth:`gradient_at` on
     each completed Result. It must set :attr:`START_POINT_KEY` like any
     :class:`StartPointOptimizer`.

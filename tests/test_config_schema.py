@@ -325,11 +325,12 @@ class TestRegistrySchemaSeam:
         # Stage (b) migrates one method/family per step: pso (Step 1), de+ade
         # (Step 2), ss (Step 3), sim (Step 4), the whole MCMC family (Step 5).
         # powell + cmaes land co-located with their own schemas (#403/ADR-0015).
-        # trf -- the gradient-based trust-region least-squares optimizer -- lands
-        # with its own TRFConfig (#386). Only 'check' remains unmigrated. Each step
+        # The gradient-based optimizers (#386) land with their own schemas: trf
+        # (trust-region least-squares) with TRFConfig and lbfgs (projected-gradient
+        # L-BFGS) with LBFGSConfig. Only 'check' remains unmigrated. Each step
         # extends this set -- a ratchet.
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
         assert migrated == {'pso', 'de', 'ade', 'ss', 'sim', 'powell', 'cmaes',
-                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc', 'trf'}
+                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc', 'trf', 'lbfgs'}
         assert FIT_TYPE_REGISTRY['check'].schema is None

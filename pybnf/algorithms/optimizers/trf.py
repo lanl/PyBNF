@@ -42,8 +42,8 @@ Scope (this cut). TRF consumes the **exact least-squares residual** -- the Gauss
 (any scale/location) and the Student-t (#459). A fit whose objective is not an exact
 sum of squares (an estimated noise scale, a Laplace / count family, active
 constraints; ``GradientResult.least_squares_exact == False``) has no faithful
-residual model, so this optimizer refuses it with a pointer to the L-BFGS-B path
-(``fit_type = lbfgs``, #386's fallback). Multi-start orchestration and full TRF
+residual model, so this optimizer refuses it with a pointer to the projected-gradient
+L-BFGS path (``fit_type = lbfgs``, #386's fallback). Multi-start orchestration and full TRF
 reflective transformations are tracked as the follow-ups in #386.
 
 All state is plain ``numpy`` / ``float`` (the point, residual, Jacobian, damping) --
@@ -250,8 +250,8 @@ class TRFAlgorithm(GradientOptimizer):
         """Assemble the gradient at ``res`` and require an **exact** least-squares
         residual. TRF models the objective as ``½‖r‖²``; an objective that is not an
         exact sum of squares (estimated scale, Laplace/count family, constraints) has
-        no faithful residual, so refuse it with a pointer to the L-BFGS-B fallback
-        rather than silently optimizing the wrong surface."""
+        no faithful residual, so refuse it with a pointer to the projected-gradient
+        L-BFGS fallback rather than silently optimizing the wrong surface."""
         grad = self.gradient_at(res)
         if not grad.least_squares_exact:
             raise PybnfError(

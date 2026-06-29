@@ -48,6 +48,7 @@ _ALGORITHMS = {
     'de': algorithms.DifferentialEvolution,
     'am': algorithms.Adaptive_MCMC,
     'trf': algorithms.TRFAlgorithm,   # gradient-based least-squares optimizer (#386)
+    'lbfgs': algorithms.LBFGSAlgorithm,   # gradient-based scalar quasi-Newton fallback (#386)
 }
 
 

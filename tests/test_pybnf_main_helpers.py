@@ -52,6 +52,7 @@ _DISPATCH = [
     ('powell', 'PowellAlgorithm'),
     ('cmaes', 'CMAESAlgorithm'),
     ('trf', 'TRFAlgorithm'),
+    ('lbfgs', 'LBFGSAlgorithm'),
     ('ade', 'AsynchronousDifferentialEvolution'),
     ('dream', 'DreamAlgorithm'),
     ('p_dream', 'PDreamAlgorithm'),
@@ -90,27 +91,27 @@ def test_only_mh_and_sa_are_deprecated():
 
 def test_families_partition_the_codes():
     fam = {code: e.family for code, e in FIT_TYPE_REGISTRY.items()}
-    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa', 'powell', 'cmaes', 'trf'}
+    assert {c for c, f in fam.items() if f == 'optimizer'} == {'pso', 'de', 'ade', 'ss', 'sim', 'sa', 'powell', 'cmaes', 'trf', 'lbfgs'}
     assert {c for c, f in fam.items() if f == 'sampler'} == {'mh', 'pt', 'am', 'dream', 'p_dream', 'hmc'}
     assert {c for c, f in fam.items() if f == 'checker'} == {'check'}
 
 
 def test_refiners_are_the_start_point_optimizers():
     """The ``refiner`` flag (refine_method targets, #403/ADR-0015) marks the
-    start-point local optimizers: Simplex, Powell, CMA-ES, and -- the gradient-based
-    trust-region least-squares method (#386) -- TRF."""
-    assert {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner} == {'sim', 'powell', 'cmaes', 'trf'}
+    start-point local optimizers: Simplex, Powell, CMA-ES, and the gradient-based
+    methods (#386) -- TRF (trust-region least-squares) and L-BFGS-B (scalar quasi-Newton)."""
+    assert {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner} == {'sim', 'powell', 'cmaes', 'trf', 'lbfgs'}
 
 
 def test_box_start_optimizers_are_a_subset_of_refiners():
     """The ``start_from_box`` flag (#404/ADR-0017) marks the start-point optimizers
     that may *also* run as a standalone search over a bounded-prior box: CMA-ES (the
-    global derivative-free search) and TRF (the bounded least-squares method, whose
-    box IS the parameter bounds it reflects into, #386). It is a strict subset of the
-    refiners: a box optimizer is a refiner that learned a second start mode."""
+    global derivative-free search) and the bounded gradient methods (#386) -- TRF and
+    L-BFGS-B, whose box IS the parameter bounds they project/reflect into. It is a strict
+    subset of the refiners: a box optimizer is a refiner that learned a second start mode."""
     box = {c for c, e in FIT_TYPE_REGISTRY.items() if e.start_from_box}
     refiners = {c for c, e in FIT_TYPE_REGISTRY.items() if e.refiner}
-    assert box == {'cmaes', 'trf'}
+    assert box == {'cmaes', 'trf', 'lbfgs'}
     assert box <= refiners
 
 
