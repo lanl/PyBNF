@@ -2,11 +2,10 @@
 
 Two gradient methods share #385's assembly (``optimizers/gradient_base.py``): the
 primary ``trf`` -- the trust-region / Levenberg–Marquardt least-squares optimizer that
-consumes the residual Jacobian -- and ``lbfgs`` -- the projected-gradient L-BFGS
-fallback that consumes the scalar gradient and so fits the objectives TRF refuses (an
-estimated noise scale, Laplace/count, constraints). Both run inside PyBNF's async
-propose/score loop. This module proves each end to end (the L-BFGS tests are grouped
-after the TRF ones below).
+consumes the residual Jacobian -- and ``lbfgs`` -- the L-BFGS-B fallback that consumes
+the scalar gradient and so fits the objectives TRF refuses (an estimated noise scale,
+Laplace/count, constraints). Both run inside PyBNF's async propose/score loop. This
+module proves each end to end (the L-BFGS-B tests are grouped after the TRF ones below).
 
 The TRF case, on a trust-region/Levenberg–Marquardt least-squares optimizer that
 consumes #385's residual Jacobian (assembled from bngsim's forward output
@@ -196,14 +195,16 @@ def test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs(tmp_path, mon
 
 
 # --------------------------------------------------------------------------- #
-# L-BFGS (projected-gradient) -- the scalar-gradient fallback (#386)
+# L-BFGS-B -- the scalar-gradient fallback (#386)
 # --------------------------------------------------------------------------- #
 # Where TRF consumes the residual Jacobian and is restricted to an exact
-# least-squares objective, the projected-gradient L-BFGS leaf (``fit_type = lbfgs``)
-# consumes only the *scalar* gradient #385 assembles, so it fits the very objectives
-# TRF refuses. These prove (a) it recovers a fixed-scale fit just like TRF, and (b)
-# the distinguishing case -- a fit with an *estimated* noise scale, which TRF rejects
-# (``least_squares_exact == False``) but L-BFGS optimizes through the scalar gradient.
+# least-squares objective, the L-BFGS-B leaf (``fit_type = lbfgs``) consumes only the
+# *scalar* gradient #385 assembles, so it fits the very objectives TRF refuses. These
+# prove (a) it recovers a fixed-scale fit just like TRF, (b) the distinguishing case --
+# a fit with an *estimated* noise scale, which TRF rejects (``least_squares_exact ==
+# False``) but L-BFGS-B optimizes through the scalar gradient, and (c) a bound-active
+# fit where the generalized Cauchy point / subspace minimization holds a parameter at
+# its bound while recovering the rest.
 
 
 @pytest.mark.recovery
@@ -213,8 +214,8 @@ def test_lbfgs_recovers_decay_rate_and_initial_condition(tmp_path, monkeypatch):
     """``fit_type = lbfgs`` recovers both the rate ``k`` (parameter axis) and the
     initial amount ``S0`` (initial-condition axis) of an exponential decay, from the box
     center, through the real bngsim forward-sensitivity path -- the end-to-end proof that
-    the *scalar* gradient drives the async projected-gradient L-BFGS loop to the optimum
-    (the sibling of the TRF recovery test on the same model)."""
+    the *scalar* gradient drives the async L-BFGS-B loop to the optimum (the sibling of
+    the TRF recovery test on the same model)."""
     H.require_bng2pl()
     H.install(monkeypatch)
     model = _decay_model(tmp_path)
@@ -294,6 +295,54 @@ def test_lbfgs_is_picklable_across_a_run(tmp_path, monkeypatch):
     pickle.loads(pickle.dumps(alg))     # constructed state round-trips
     H.drive(alg)
     pickle.loads(pickle.dumps(alg))     # state after a completed run round-trips
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_recovers_with_a_bound_active_at_the_optimum(tmp_path, monkeypatch):
+    """The case that exercises full L-BFGS-B's active-set machinery (generalized Cauchy
+    point + subspace minimization), not just a projected line search. The rate ``k`` is
+    boxed to ``[0.01, 0.2]`` -- its true value ``0.3`` sits **outside** the box, so the
+    constrained optimum pins ``k`` at the upper bound ``0.2`` (a strictly active bound,
+    with the gradient pushing further out) while ``S0`` stays interior. The optimizer
+    must hold ``k`` at its bound and minimize the model over the free ``S0`` only, which
+    is exactly what the Cauchy point (active-set identification) + subspace minimization
+    do.
+
+    With ``k`` pinned at ``0.2`` the fit is linear in ``S0`` (the model is
+    ``S0·exp(-k·t)``), so the conditional least-squares optimum ``S0*`` is closed-form on
+    the data grid -- we assert the optimizer recovers both the active bound and that
+    analytic ``S0*``."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')   # zero-noise data at the true (k, S0)
+
+    K_BOUND = 0.2     # upper bound on k, below the true 0.3 -> active at the optimum
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, K_BOUND), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=100)
+
+    alg = H.build(conf, 'lbfgs')
+    H.drive(alg)
+
+    # Conditional LS optimum for S0 with k held at the bound (constant-SD chi-square ->
+    # the SD cancels): S0* = Σ m_i o_i / Σ m_i², m_i = exp(-k_bound t_i), o_i = truth.
+    t = np.linspace(0.0, 10.0, 21)
+    m = np.exp(-K_BOUND * t)
+    o = TRUE_S0 * np.exp(-TRUE_K * t)
+    s0_star = float(np.sum(m * o) / np.sum(m * m))
+
+    rec = H.best_params(alg, ('k', 'S0'))
+    # k is held at its (active) upper bound, not driven to the infeasible truth.
+    assert abs(rec['k'] - K_BOUND) < 1e-3, \
+        'k recovered %g, expected the active bound ~%g' % (rec['k'], K_BOUND)
+    # S0 recovers the conditional least-squares optimum on the active face.
+    assert abs(rec['S0'] - s0_star) / s0_star < 0.01, \
+        'S0 recovered %g, expected conditional optimum ~%g' % (rec['S0'], s0_star)
 
 
 def test_lbfgs_refuses_legacy_edition_before_building_models(tmp_path):
