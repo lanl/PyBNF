@@ -10,10 +10,9 @@ through to the objective. This is the foundation a gradient-based optimizer (qua
 trust-region least-squares) stands on: it lets the fit follow the true downhill direction
 instead of probing it parameter-by-parameter.
 
-This page describes the gradient *plumbing* available today — what it computes, the one
-objective configuration it supports so far, how to enable it, and what it costs. The
-gradient-based optimizer that consumes it is being added separately; until it lands, the
-machinery here is exercised through PyBNF's test suite and the :mod:`pybnf.gradient` API.
+This page describes the gradient *plumbing* — what it computes, the objective
+configurations it supports, how to enable it, and what it costs — and the two
+gradient-based optimizers that consume it (see *Running a gradient fit* below).
 
 .. note::
 
@@ -22,6 +21,46 @@ machinery here is exercised through PyBNF's test suite and the :mod:`pybnf.gradi
    It is computed in PyBNF's native parameter space and then transformed once into the sampling
    space the optimizer walks (see *Parameter scales* below), so a log-scaled parameter composes
    for free.
+
+
+Running a gradient fit
+----------------------
+
+Two optimizers consume the gradient, both opt-in via ``fit_type``:
+
+* ``fit_type = trf`` — a **trust-region least-squares** (Levenberg–Marquardt) optimizer. It
+  consumes the residual vector + residual Jacobian and approximates the Hessian as
+  :math:`J^{\mathsf T}J`, which is far better-conditioned on a least-squares problem than feeding a
+  scalar gradient to a generic quasi-Newton method. This is the workhorse for the common Gaussian /
+  sum-of-squares case. It requires an **exact least-squares residual** (a Gaussian or fixed-scale
+  Student-t objective, no constraints); a fit whose objective is not an exact sum of squares is
+  refused with a pointer to ``lbfgs``.
+
+* ``fit_type = lbfgs`` — a bounded limited-memory quasi-Newton optimizer (**L-BFGS-B**,
+  Byrd–Lu–Nocedal–Zhu). It consumes the **scalar** gradient, so it handles precisely the objectives
+  ``trf`` refuses: an estimated noise scale, the Laplace / count families, and active constraint
+  penalties.
+
+Both run natively inside PyBNF's distributed propose/score loop (one objective evaluation is one
+scheduler job) rather than through a blocking ``scipy`` driver, so backup/resume work exactly as for
+every other ``fit_type``. They are also registered as **refiners** (``refine_method = trf`` / ``lbfgs``),
+so a gradient step can polish a metaheuristic's best fit.
+
+**Local multi-start.** A gradient method is purely *local*: it descends into whatever basin its
+start point lands in. To guard against a bad basin on a multimodal or bound-active landscape, a
+standalone gradient fit over a bounded-prior box runs **N independent starts concurrently** and
+keeps the global best. ``N`` reuses ``population_size`` (consistent with the metaheuristics, where it
+is the parallel-population size):
+
+* ``population_size = 1`` — a single start from the box center (the historical behavior).
+* ``population_size = N`` — start 0 is the box center; the remaining ``N − 1`` are Latin-hypercube
+  samples drawn across the prior box from the seeded ``random_seed``, so the scatter is reproducible.
+
+The N starts run as N concurrent jobs (matching every other method's parallelism), each advancing its
+own step machine, and the best fit found across all of them is the result. Multi-start applies only
+to a standalone box-start fit: when the optimizer runs as a **refiner** (an explicit start point is
+injected) it always runs a single start, since the job there is to polish the one best fit, not to
+re-scatter. ``max_iterations`` is the per-start iteration budget.
 
 
 What it computes

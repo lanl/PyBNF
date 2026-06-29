@@ -15,10 +15,14 @@ these, so the same gradient seam drives both methods; only the step math differs
 Why native (not ``scipy.optimize.minimize(method='L-BFGS-B')``): scipy is a *blocking*
 driver that calls ``fun``/``jac`` synchronously, so it cannot farm its evaluations to
 PyBNF's distributed propose/score loop (the same incompatibility ``powell.py`` and
-``trf.py`` document). The method is reimplemented as an explicit, *picklable* state
-machine inside the run-loop contract -- ``start_run`` / ``got_result`` only, no
-``run()`` override (ADR-0007) -- so backup/resume work like every other method and one
-evaluation is one scheduler job.
+``trf.py`` document). The method is reimplemented as an explicit, *picklable* step
+machine -- here a headless :class:`~pybnf.algorithms.optimizers.gradient_base.GradientRunner`
+(:class:`_LBFGSRunner`) that :class:`~pybnf.algorithms.optimizers.gradient_base.GradientOptimizer`
+drives inside the run-loop contract, no ``run()`` override (ADR-0007) -- so backup/resume
+work like every other method and one evaluation is one scheduler job. Factoring the step
+machine into a per-start runner is also what lets a fit run ``N`` of them concurrently
+(local multi-start, the orchestration the base owns); the runner itself is pure ``u``-space
+``numpy``, so its math is unit-testable offline against a scipy oracle with no backend.
 
 The method (L-BFGS-B: Cauchy point + subspace min + line search)
 ---------------------------------------------------------------
@@ -64,24 +68,20 @@ its first breakpoint and the subspace minimization runs over every variable, so 
 reduces exactly to the unconstrained limited-memory quasi-Newton step ``−B⁻¹g``; the
 active-set machinery only bites when bounds are active at the optimum.
 
-All state is plain ``numpy`` / ``float`` / ``list`` (the point, gradient, the ``(s, y)``
-history, the line-search scratch) -- picklable, so ``Algorithm.backup`` checkpoints the
-optimizer mid-run, exactly like Powell / CMA-ES / TRF (ADR-0007). ``B`` and the Cauchy /
-subspace work are recomputed per iteration from the cached pairs, so no dense matrix
-joins the persisted state.
+All runner state is plain ``numpy`` / ``float`` / ``list`` (the point, gradient, the
+``(s, y)`` history, the line-search scratch) -- picklable, so ``Algorithm.backup``
+checkpoints the optimizer (and its list of runners) mid-run, exactly like Powell /
+CMA-ES / TRF (ADR-0007). ``B`` and the Cauchy / subspace work are recomputed per
+iteration from the cached pairs, so no dense matrix joins the persisted state.
 """
 
-import logging
 from typing import ClassVar
 
 import numpy as np
 
-from .gradient_base import GradientOptimizer
+from .gradient_base import DONE, GradientOptimizer, GradientRunner
 from ...config_schema import PyBNFConfigModel
-from ...printing import print1, print2
 from ...registry import register_fit_type
-
-logger = logging.getLogger('pybnf.algorithms')
 
 
 class LBFGSConfig(PyBNFConfigModel):
@@ -113,21 +113,17 @@ class LBFGSConfig(PyBNFConfigModel):
 @register_fit_type('lbfgs', family='optimizer', display_name='L-BFGS-B',
                    schema=LBFGSConfig, refiner=True, start_from_box=True)
 class LBFGSAlgorithm(GradientOptimizer):
-    """Bounded limited-memory BFGS (L-BFGS-B) as a picklable reactor state machine."""
+    """Bounded limited-memory BFGS (L-BFGS-B): a method-agnostic multi-start
+    orchestrator (:class:`GradientOptimizer`) over per-start :class:`_LBFGSRunner`
+    step machines."""
 
     #: Message label + refiner start-point key (see StartPointOptimizer).
     fit_type = 'lbfgs'
     START_POINT_KEY = 'lbfgs_start_point'
-
-    #: Safety cap on objective evaluations per backtracking line search. With a
-    #: descent direction the Armijo step is found in a handful of backtracks, so this
-    #: is essentially never reached; on exhaustion the line search falls back to
-    #: steepest descent and, failing that, the run stops at the (stalled) minimum.
-    _MAX_LINE_EVALS = 30
+    _method_label = 'L-BFGS-B'
 
     def __init__(self, config, refine=False):
         super().__init__(config, refine=refine)
-        self.n = len(self.variables)
         self.grad_tol = config.config['lbfgs_grad_tol']
         self.step_tol = config.config['lbfgs_step_tol']
         self.history = config.config['lbfgs_history']
@@ -137,20 +133,46 @@ class LBFGSAlgorithm(GradientOptimizer):
             self.max_iterations = config.config['lbfgs_max_iterations']
         else:
             self.max_iterations = config.config['max_iterations']
-        self._u_lower, self._u_upper = self._u_bounds()
-        self.start_pset = self._resolve_start_pset()
-        self._init_state()
 
-    def _init_state(self):
-        """(Re)initialize the mutable L-BFGS state. Filled in by start_run / got_result;
-        all plain float / ndarray / list so the optimizer pickles for backup/resume."""
-        self.point = None          # current accepted iterate (u-space)
-        self.fval = None           # objective F(point) (== res.score)
-        self.grad = None           # scalar gradient ∇F(point) (u-space), from #385
+    def _start_banner(self):
+        return ("Running L-BFGS-B for up to %i iterations from %i start point(s)"
+                % (self.max_iterations, self.n_starts))
+
+    def _make_runner(self, u0):
+        """One L-BFGS-B step machine seeded at ``u0`` (sampling space), carrying this
+        fit's box + tunables. The orchestrator builds one per start."""
+        return _LBFGSRunner(u0, self._u_lower, self._u_upper, self.max_iterations,
+                            grad_tol=self.grad_tol, step_tol=self.step_tol,
+                            history=self.history, c1=self.c1, backtrack=self.backtrack)
+
+
+class _LBFGSRunner(GradientRunner):
+    """One L-BFGS-B start: the picklable step machine, in sampling space ``u``.
+
+    Holds the iterate, the limited-memory curvature history, and the backtracking
+    line-search scratch; consumes ``(u_point, score, grad)`` and returns the next ``u``
+    to evaluate (or :data:`DONE`). Pure ``numpy`` -- no PSets, objective, or backend (see
+    :class:`GradientRunner`). The step math is the full Byrd–Lu–Nocedal–Zhu (1995)
+    L-BFGS-B described in the module docstring; the orchestrator
+    (:class:`LBFGSAlgorithm` / :class:`GradientOptimizer`) supplies the assembled scalar
+    gradient and does the reporting."""
+
+    #: Safety cap on objective evaluations per backtracking line search. With a
+    #: descent direction the Armijo step is found in a handful of backtracks, so this
+    #: is essentially never reached; on exhaustion the line search falls back to
+    #: steepest descent and, failing that, the run stops at the (stalled) minimum.
+    _MAX_LINE_EVALS = 30
+
+    def __init__(self, u0, lower, upper, max_iterations, *,
+                 grad_tol, step_tol, history, c1, backtrack):
+        super().__init__(u0, lower, upper, max_iterations)
+        self.grad_tol = grad_tol
+        self.step_tol = step_tol
+        self.history = history
+        self.c1 = c1
+        self.backtrack = backtrack
         self.s_list = []           # recent s = xₖ₊₁ - xₖ (limited-memory history)
         self.y_list = []           # recent y = gₖ₊₁ - gₖ
-        self.iteration = 0
-        self.phase = None          # 'init' | 'line'
         # Backtracking line-search scratch (one 1-D search at a time).
         self.ls_base = None        # the iterate the line search departs from
         self.ls_fbase = None       # F(ls_base)
@@ -159,54 +181,27 @@ class LBFGSAlgorithm(GradientOptimizer):
         self.ls_alpha = None       # current trial step length α
         self.ls_evals = 0          # backtracks taken in this line search
         self.ls_steepest = False   # is this line search the steepest-descent fallback?
-        self.trial_u = None        # the u-vector currently out for evaluation
-        self.probe_counter = 0
 
-    def reset(self, bootstrap=None):
-        super().reset(bootstrap)
-        self._u_lower, self._u_upper = self._u_bounds()
-        self.start_pset = self._resolve_start_pset()
-        self._init_state()
+    def progress_detail(self):
+        return '%i curvature pair(s)' % len(self.s_list)
 
-    def add_iterations(self, n):
-        self.max_iterations += n
-
-    # --- batch plumbing ---------------------------------------------------- #
-    def _submit(self, u, phase):
-        """Queue the single objective evaluation at ``u`` and advance to ``phase``
-        once it returns. L-BFGS is serial -- one evaluation (the line trial) per
-        scheduler batch."""
-        self.phase = phase
-        self.trial_u = np.array(u, dtype=float)
-        self.probe_counter += 1
-        name = 'lbfgs_%i' % self.probe_counter
-        return [self._pset_from_u(u, name=name)]
-
-    def got_result(self, res):
+    def got(self, u_point, score, grad):
         if self.phase == 'init':
-            return self._after_init(res)
+            return self._after_init(u_point, score, grad)
         if self.phase == 'line':
-            return self._after_line(res)
-        raise RuntimeError(f'Internal error in LBFGSAlgorithm: phase {self.phase!r}')
+            return self._after_line(u_point, score, grad)
+        raise RuntimeError(f'Internal error in _LBFGSRunner: phase {self.phase!r}')
 
     # --- state machine ----------------------------------------------------- #
-    def start_run(self):
-        print2("Running L-BFGS-B for up to %i iterations" % self.max_iterations)
-        # Activate the gradient path (enable sensitivities + build routings) before
-        # the model scatter; start from the resolved start point / box center.
-        self._setup_gradient_path()
-        self.point = self._u_from_pset(self.start_pset)
-        return self._submit(self.point, 'init')
-
-    def _after_init(self, res):
+    def _after_init(self, u_point, score, grad):
         """Seed the state from the start-point evaluation: objective + scalar gradient,
         empty curvature history (so the first step is steepest descent)."""
-        self.point = self._u_from_pset(res.pset)
-        self.fval = float(res.score)
-        self.grad = self.gradient_at(res).gradient
+        self.point = np.array(u_point, dtype=float)
+        self.fval = score
+        self.grad = grad.gradient
         if self._gradient_converged():
-            logger.info('L-BFGS-B converged at the start point (projected gradient already flat)')
-            return 'STOP'
+            self.stop_reason = 'projected gradient already flat at the start point'
+            return DONE
         return self._begin_line_search()
 
     def _begin_line_search(self, steepest=False):
@@ -222,8 +217,8 @@ class LBFGSAlgorithm(GradientOptimizer):
             if not steepest:
                 self.s_list, self.y_list = [], []
                 return self._begin_line_search(steepest=True)
-            logger.info('L-BFGS-B stopping: no descent direction (gradient flat)')
-            return 'STOP'
+            self.stop_reason = 'no descent direction (gradient flat)'
+            return DONE
         self.ls_base = self.point.copy()
         self.ls_fbase = self.fval
         self.ls_grad = self.grad.copy()
@@ -234,15 +229,15 @@ class LBFGSAlgorithm(GradientOptimizer):
         return self._submit_trial()
 
     def _submit_trial(self):
-        """Project the current trial step onto the box and submit its evaluation."""
-        trial = np.clip(self.ls_base + self.ls_alpha * self.ls_dir,
-                        self._u_lower, self._u_upper)
-        return self._submit(trial, 'line')
+        """Project the current trial step onto the box and return it for evaluation."""
+        self.phase = 'line'
+        return np.clip(self.ls_base + self.ls_alpha * self.ls_dir,
+                       self._u_lower, self._u_upper)
 
-    def _after_line(self, res):
+    def _after_line(self, u_point, score, grad):
         """Apply the projected Armijo test to the trial; accept it or backtrack."""
-        f_new = float(res.score)
-        trial_point = self._u_from_pset(res.pset)
+        f_new = score
+        trial_point = np.array(u_point, dtype=float)
         disp = trial_point - self.ls_base
         # Projected Armijo sufficient-decrease (Bertsekas): test the *actual*
         # displacement gᵀ(P[x+αd]-x), so a coordinate clamped to a bound is handled
@@ -251,7 +246,7 @@ class LBFGSAlgorithm(GradientOptimizer):
         # displacement out of descent.
         armijo_rhs = self.ls_fbase + self.c1 * float(self.ls_grad @ disp)
         if np.isfinite(f_new) and f_new <= armijo_rhs and f_new < self.ls_fbase:
-            return self._accept(res, trial_point, f_new, disp)
+            return self._accept(grad, trial_point, f_new, disp)
         self.ls_evals += 1
         self.ls_alpha *= self.backtrack
         if (self.ls_evals >= self._MAX_LINE_EVALS or self.ls_alpha <= 1e-20
@@ -266,27 +261,26 @@ class LBFGSAlgorithm(GradientOptimizer):
         if not self.ls_steepest:
             self.s_list, self.y_list = [], []
             return self._begin_line_search(steepest=True)
-        logger.info('L-BFGS-B stopping: line search could not reduce the objective '
-                    '(converged or stalled at a minimum)')
-        return 'STOP'
+        self.stop_reason = ('line search could not reduce the objective '
+                            '(converged or stalled at a minimum)')
+        return DONE
 
-    def _accept(self, res, trial_point, f_new, disp):
+    def _accept(self, grad, trial_point, f_new, disp):
         """Accept the trial: fold the realized curvature pair into the history, step to
         it, and either propose the next line search or stop. The accepted trial's own
         gradient (assembled from its simdata) becomes the next iterate's, so no
         re-evaluation is needed."""
-        new_grad = self.gradient_at(res).gradient
+        new_grad = grad.gradient
         self._store_pair(disp, new_grad - self.ls_grad)
         step_norm = float(np.linalg.norm(disp))
         self.point = trial_point
         self.fval = f_new
         self.grad = new_grad
         self.iteration += 1
-        self._report()
         stop = self._stop_reason(step_norm)
         if stop is not None:
-            logger.info('L-BFGS-B stopping: %s', stop)
-            return 'STOP'
+            self.stop_reason = stop
+            return DONE
         return self._begin_line_search()
 
     # --- limited-memory linear algebra (L-BFGS-B) -------------------------- #
@@ -440,7 +434,7 @@ class LBFGSAlgorithm(GradientOptimizer):
         xbar = self._subspace_min(b, xc, free_mask)
         return xbar - self.point
 
-    # --- convergence / reporting ------------------------------------------- #
+    # --- convergence ------------------------------------------------------- #
     def _projected_gradient_norm(self):
         """The first-order optimality measure ``‖P[x-g]-x‖∞``: the ordinary ``‖g‖∞`` in
         the box interior, and zero along a bound the gradient pushes against (a
@@ -461,10 +455,3 @@ class LBFGSAlgorithm(GradientOptimizer):
         if self.iteration >= self.max_iterations:
             return 'reached max_iterations (%i)' % self.max_iterations
         return None
-
-    def _report(self):
-        if self.iteration % self.config.config['output_every'] == 0:
-            self.output_results()
-        msg = 'Completed %i of %i L-BFGS-B iterations' % (self.iteration, self.max_iterations)
-        (print1 if self.iteration % 10 == 0 else print2)(msg)
-        print2('Current best objective: %f, %i curvature pair(s)' % (self.fval, len(self.s_list)))

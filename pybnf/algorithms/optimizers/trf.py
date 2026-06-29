@@ -11,10 +11,13 @@ least-squares problem. This is the D2D (Data2Dynamics) workhorse step; see
 Why native (not ``scipy.optimize.least_squares``): scipy is a *blocking* driver that
 calls ``fun``/``jac`` synchronously, so it cannot farm its evaluations to PyBNF's
 distributed propose/score loop (the same incompatibility ``powell.py`` documents).
-The method is reimplemented as an explicit, *picklable* state machine inside the
-run-loop contract -- ``start_run`` / ``got_result`` only, no ``run()`` override
-(ADR-0007) -- so backup/resume work like every other method and one evaluation is
-one scheduler job.
+The method is reimplemented as an explicit, *picklable* step machine -- here a headless
+:class:`~pybnf.algorithms.optimizers.gradient_base.GradientRunner` (:class:`_TRFRunner`)
+that :class:`~pybnf.algorithms.optimizers.gradient_base.GradientOptimizer` drives inside
+the run-loop contract, no ``run()`` override (ADR-0007) -- so backup/resume work like
+every other method and one evaluation is one scheduler job. Factoring the step machine
+into a per-start runner is also what lets a fit run ``N`` of them concurrently (local
+multi-start, the orchestration the base owns).
 
 The method (Levenberg–Marquardt, Madsen–Nielsen damping)
 --------------------------------------------------------
@@ -43,24 +46,23 @@ Scope (this cut). TRF consumes the **exact least-squares residual** -- the Gauss
 sum of squares (an estimated noise scale, a Laplace / count family, active
 constraints; ``GradientResult.least_squares_exact == False``) has no faithful
 residual model, so this optimizer refuses it with a pointer to the L-BFGS-B path
-(``fit_type = lbfgs``, #386's fallback). Multi-start orchestration and full TRF
-reflective transformations are tracked as the follow-ups in #386.
+(``fit_type = lbfgs``, #386's fallback). Full TRF reflective transformations remain a
+follow-up in #386; local multi-start is provided by :class:`GradientOptimizer` (the base
+runs ``N`` independent :class:`_TRFRunner` starts concurrently and keeps the global best).
 
-All state is plain ``numpy`` / ``float`` (the point, residual, Jacobian, damping) --
-picklable, so ``Algorithm.backup`` checkpoints the optimizer mid-run.
+All runner state is plain ``numpy`` / ``float`` (the point, residual, Jacobian, damping)
+-- picklable, so ``Algorithm.backup`` checkpoints the optimizer (and its list of runners)
+mid-run.
 """
 
-import logging
 from typing import ClassVar
 
 import numpy as np
 
-from .gradient_base import GradientOptimizer
+from .gradient_base import DONE, GradientOptimizer, GradientRunner
 from ...config_schema import PyBNFConfigModel
-from ...printing import PybnfError, print1, print2
+from ...printing import PybnfError
 from ...registry import register_fit_type
-
-logger = logging.getLogger('pybnf.algorithms')
 
 
 class TRFConfig(PyBNFConfigModel):
@@ -87,15 +89,17 @@ class TRFConfig(PyBNFConfigModel):
 @register_fit_type('trf', family='optimizer', display_name='Trust-Region Least-Squares',
                    schema=TRFConfig, refiner=True, start_from_box=True)
 class TRFAlgorithm(GradientOptimizer):
-    """Bounded Levenberg–Marquardt least-squares as a picklable reactor state machine."""
+    """Bounded Levenberg–Marquardt least-squares: a method-agnostic multi-start
+    orchestrator (:class:`GradientOptimizer`) over per-start :class:`_TRFRunner` step
+    machines."""
 
     #: Message label + refiner start-point key (see StartPointOptimizer).
     fit_type = 'trf'
     START_POINT_KEY = 'trf_start_point'
+    _method_label = 'TRF'
 
     def __init__(self, config, refine=False):
         super().__init__(config, refine=refine)
-        self.n = len(self.variables)
         self.grad_tol = config.config['trf_grad_tol']
         self.step_tol = config.config['trf_step_tol']
         self.tau = config.config['trf_tau']
@@ -103,99 +107,89 @@ class TRFAlgorithm(GradientOptimizer):
             self.max_iterations = config.config['trf_max_iterations']
         else:
             self.max_iterations = config.config['max_iterations']
-        self._u_lower, self._u_upper = self._u_bounds()
-        self.start_pset = self._resolve_start_pset()
-        self._init_state()
 
-    def _init_state(self):
-        """(Re)initialize the mutable LM state. Filled in by start_run / got_result;
-        all plain float / ndarray so the optimizer pickles for backup/resume."""
-        self.point = None          # current accepted iterate (u-space)
-        self.fval = None           # objective F(point) (== res.score)
+    def _start_banner(self):
+        return ("Running trust-region least-squares (Levenberg–Marquardt) for up to "
+                "%i iterations from %i start point(s)" % (self.max_iterations, self.n_starts))
+
+    def _make_runner(self, u0):
+        """One Levenberg–Marquardt step machine seeded at ``u0`` (sampling space),
+        carrying this fit's box + tunables. The orchestrator builds one per start."""
+        return _TRFRunner(u0, self._u_lower, self._u_upper, self.max_iterations,
+                          grad_tol=self.grad_tol, step_tol=self.step_tol, tau=self.tau)
+
+
+class _TRFRunner(GradientRunner):
+    """One trust-region/Levenberg–Marquardt start: the picklable step machine, in
+    sampling space ``u``.
+
+    Holds the iterate, the Gauss–Newton model (``A = JᵀJ``, ``g = Jᵀr``), and the LM
+    damping; consumes ``(u_point, score, grad)`` and returns the next ``u`` to evaluate
+    (or :data:`DONE`). Pure ``numpy`` -- no PSets, objective, or backend (see
+    :class:`GradientRunner`). The orchestrator (:class:`TRFAlgorithm` /
+    :class:`GradientOptimizer`) supplies the assembled :class:`GradientResult` and does
+    the reporting; this runner requires it to be an **exact** least-squares residual
+    (:meth:`_require_exact`)."""
+
+    def __init__(self, u0, lower, upper, max_iterations, *, grad_tol, step_tol, tau):
+        super().__init__(u0, lower, upper, max_iterations)
+        self.grad_tol = grad_tol
+        self.step_tol = step_tol
+        self.tau = tau
         self.A = None              # JᵀJ at point (n, n)
         self.g = None              # Jᵀr at point (n,)
         self.mu = None             # LM damping
         self.nu = 2.0              # Nielsen reject-acceleration factor
-        self.iteration = 0
-        self.phase = None          # 'init' | 'step'
-        self.trial_u = None        # the u-vector currently out for evaluation
-        self.trial_delta = None    # the (box-projected) step that produced trial_u
-        self.probe_counter = 0
+        self.trial_delta = None    # the (box-projected) step currently out for evaluation
 
-    def reset(self, bootstrap=None):
-        super().reset(bootstrap)
-        self._u_lower, self._u_upper = self._u_bounds()
-        self.start_pset = self._resolve_start_pset()
-        self._init_state()
+    def progress_detail(self):
+        return 'damping mu %g' % self.mu
 
-    def add_iterations(self, n):
-        self.max_iterations += n
-
-    # --- batch plumbing ---------------------------------------------------- #
-    def _submit(self, u, phase):
-        """Queue the single objective evaluation at ``u`` and advance to ``phase``
-        once it returns. LM is serial -- one evaluation (the trial) per iteration."""
-        self.phase = phase
-        self.trial_u = np.array(u, dtype=float)
-        self.probe_counter += 1
-        name = 'trf_%i' % self.probe_counter
-        return [self._pset_from_u(u, name=name)]
-
-    def got_result(self, res):
+    def got(self, u_point, score, grad):
         if self.phase == 'init':
-            return self._after_init(res)
+            return self._after_init(u_point, score, grad)
         if self.phase == 'step':
-            return self._after_step(res)
-        raise RuntimeError(f'Internal error in TRFAlgorithm: phase {self.phase!r}')
+            return self._after_step(u_point, score, grad)
+        raise RuntimeError(f'Internal error in _TRFRunner: phase {self.phase!r}')
 
     # --- state machine ----------------------------------------------------- #
-    def start_run(self):
-        print2("Running trust-region least-squares (Levenberg–Marquardt) for up to "
-               "%i iterations" % self.max_iterations)
-        # Activate the gradient path (enable sensitivities + build routings) before
-        # the model scatter; start from the resolved start point / box center.
-        self._setup_gradient_path()
-        self.point = self._u_from_pset(self.start_pset)
-        return self._submit(self.point, 'init')
-
-    def _after_init(self, res):
+    def _after_init(self, u_point, score, grad):
         """Seed the LM state from the start-point evaluation: residual/Jacobian,
         Gauss–Newton model, and the initial damping ``μ₀``."""
-        grad = self._least_squares_gradient(res)
-        self.point = self._u_from_pset(res.pset)
-        self.fval = float(res.score)
-        self._set_model(grad)
+        gr = self._require_exact(grad)
+        self.point = np.array(u_point, dtype=float)
+        self.fval = score
+        self._set_model(gr)
         self.mu = self.tau * float(np.max(np.diag(self.A))) if self.n else 0.0
         if self._gradient_converged():
-            logger.info('TRF converged at the start point (gradient already flat)')
-            return 'STOP'
+            self.stop_reason = 'gradient already flat at the start point'
+            return DONE
         return self._propose_step()
 
-    def _after_step(self, res):
+    def _after_step(self, u_point, score, grad):
         """Accept or reject the trial by its gain ratio, adapt the damping, and either
         propose the next step or stop."""
-        f_new = float(res.score)
+        f_new = score
         delta = self.trial_delta
         predicted = self._predicted_reduction(delta)
         actual = self.fval - f_new
         rho = actual / predicted if predicted > 0.0 else (1.0 if actual > 0.0 else -1.0)
 
         if rho > 0.0:
-            # Accept: the trial's own residual/Jacobian (assembled here) become the
-            # next iterate's, so no re-evaluation is needed.
-            grad = self._least_squares_gradient(res)
+            # Accept: the trial's own residual/Jacobian (assembled by the orchestrator)
+            # become the next iterate's, so no re-evaluation is needed.
+            gr = self._require_exact(grad)
             step_norm = float(np.linalg.norm(delta))
-            self.point = self._u_from_pset(res.pset)
+            self.point = np.array(u_point, dtype=float)
             self.fval = f_new
-            self._set_model(grad)
+            self._set_model(gr)
             self.mu *= max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0) ** 3)
             self.nu = 2.0
             self.iteration += 1
-            self._report()
             stop = self._stop_reason(step_norm)
             if stop is not None:
-                logger.info('TRF stopping: %s', stop)
-                return 'STOP'
+                self.stop_reason = stop
+                return DONE
             return self._propose_step()
 
         # Reject: grow the damping (shorter, more gradient-like step) and re-solve
@@ -205,18 +199,19 @@ class TRFAlgorithm(GradientOptimizer):
         self.nu *= 2.0
         self.iteration += 1
         if not np.isfinite(self.mu) or self.iteration >= self.max_iterations:
-            logger.info('TRF stopping: %s', 'damping diverged' if not np.isfinite(self.mu)
-                        else 'reached max_iterations (%i)' % self.max_iterations)
-            return 'STOP'
+            self.stop_reason = ('damping diverged' if not np.isfinite(self.mu)
+                                else 'reached max_iterations (%i)' % self.max_iterations)
+            return DONE
         return self._propose_step()
 
     def _propose_step(self):
-        """Solve the damped normal equations, project the step into the box, and
-        submit the trial evaluation."""
+        """Solve the damped normal equations, project the step into the box, and return
+        the trial point for evaluation."""
         delta = self._solve_lm_step()
         trial = np.clip(self.point + delta, self._u_lower, self._u_upper)
         self.trial_delta = trial - self.point   # the actually-taken (clamped) step
-        return self._submit(trial, 'step')
+        self.phase = 'step'
+        return trial
 
     # --- linear algebra ---------------------------------------------------- #
     def _solve_lm_step(self):
@@ -246,13 +241,12 @@ class TRFAlgorithm(GradientOptimizer):
         self.A = J.T @ J
         self.g = J.T @ r
 
-    def _least_squares_gradient(self, res):
-        """Assemble the gradient at ``res`` and require an **exact** least-squares
-        residual. TRF models the objective as ``½‖r‖²``; an objective that is not an
-        exact sum of squares (estimated scale, Laplace/count family, constraints) has
-        no faithful residual, so refuse it with a pointer to the L-BFGS-B fallback
-        rather than silently optimizing the wrong surface."""
-        grad = self.gradient_at(res)
+    def _require_exact(self, grad):
+        """Require an **exact** least-squares residual from the assembled gradient. TRF
+        models the objective as ``½‖r‖²``; an objective that is not an exact sum of
+        squares (estimated scale, Laplace/count family, constraints) has no faithful
+        residual, so refuse it with a pointer to the L-BFGS-B fallback rather than
+        silently optimizing the wrong surface."""
         if not grad.least_squares_exact:
             raise PybnfError(
                 "fit_type = trf needs an exact least-squares residual (a Gaussian or "
@@ -263,7 +257,7 @@ class TRFAlgorithm(GradientOptimizer):
                 "Laplace / count families, and constraint penalties.")
         return grad
 
-    # --- convergence / reporting ------------------------------------------- #
+    # --- convergence ------------------------------------------------------- #
     def _gradient_converged(self):
         return bool(self.n) and float(np.max(np.abs(self.g))) <= self.grad_tol
 
@@ -277,10 +271,3 @@ class TRFAlgorithm(GradientOptimizer):
         if self.iteration >= self.max_iterations:
             return 'reached max_iterations (%i)' % self.max_iterations
         return None
-
-    def _report(self):
-        if self.iteration % self.config.config['output_every'] == 0:
-            self.output_results()
-        msg = 'Completed %i of %i TRF iterations' % (self.iteration, self.max_iterations)
-        (print1 if self.iteration % 10 == 0 else print2)(msg)
-        print2('Current best objective: %f, damping mu %g' % (self.fval, self.mu))

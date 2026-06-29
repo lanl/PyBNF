@@ -1,0 +1,44 @@
+# Gradient multi-start fixture (#386 follow-up).
+# Two independent first-order decays observed as their SUM:
+#   Stot(t) = A*exp(-k1*t) + B*exp(-k2*t).
+# With A == B the sum-of-squares surface in (k1, k2) is symmetric under k1<->k2,
+# so the diagonal k1 == k2 (where the model collapses to a single exponential
+# (A+B)*exp(-k*t)) is an invariant manifold of the gradient flow: a single start
+# from the box center (k1 == k2) is trapped at the best single-exponential fit,
+# a strict non-global minimum, while an off-diagonal start recovers the true,
+# well-separated rates. The multimodal target that makes local multi-start's win
+# visible. k1 / k2 are bare parameter ids (bind by id to the rate, parameter axis).
+begin model
+
+begin parameters
+  A   50
+  B   50
+  k1  0.1
+  k2  2.0
+end parameters
+
+begin molecule types
+  P()
+  Q()
+end molecule types
+
+begin seed species
+  P()  A
+  Q()  B
+end seed species
+
+begin observables
+  Molecules Stot P() Q()
+end observables
+
+begin reaction rules
+  P() -> 0  k1
+  Q() -> 0  k2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>40,suffix=>"tc"})
+end actions

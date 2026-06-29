@@ -54,9 +54,72 @@ from ...gradient import (
     assemble_gaussian_gradient,
     route_for_model,
 )
-from ...printing import PybnfError
+from ...printing import PybnfError, print1, print2
 
 logger = logging.getLogger('pybnf.algorithms')
+
+
+#: Sentinel a :class:`GradientRunner`'s ``got`` returns when that start has
+#: converged or otherwise terminated (no further evaluation to propose). It is
+#: only ever returned synchronously into :meth:`GradientOptimizer.got_result` and
+#: never stored in pickled state, so a plain module-level object (identity-checked)
+#: is enough.
+DONE = object()
+
+
+class GradientRunner:
+    """Headless, picklable per-start step machine in sampling space ``u`` (#386).
+
+    A gradient leaf's step math, factored out of the optimizer so a single fit can
+    run ``N`` of them **concurrently** -- local multi-start, the diversity a purely
+    local gradient method otherwise lacks (it only ever descends into the one basin
+    its start lands in). A runner owns one start's entire mutable state -- the
+    iterate, the curvature / trust-region model, the reflecting box, the tunables --
+    and is pure ``numpy``: it knows nothing about :class:`~pybnf.pset.PSet`\\ s, the
+    objective, routing, backup, or dask. :class:`GradientOptimizer` drives it::
+
+        u0 = runner.start()                       # the first point to evaluate
+        nxt = runner.got(u_point, score, grad)    # consume one completed evaluation
+
+    where ``u_point`` is the realized (box-projected) ``u``-vector of the completed
+    evaluation, ``score`` its objective value, and ``grad`` the assembled
+    :class:`~pybnf.gradient.assembly.GradientResult` at it; ``got`` returns the next
+    ``u`` to evaluate, or the :data:`DONE` sentinel. Because a runner holds only
+    plain ``float`` / ``ndarray`` / ``list``, the optimizer that owns the list of
+    runners pickles for backup/resume exactly like the single-start machine did
+    (ADR-0007). Being backend-free, a runner is also unit-testable offline by feeding
+    it scores + gradients from an analytic function (no bngsim) -- how the step math
+    is validated against a scipy oracle and how the multi-start win is demonstrated.
+
+    A leaf subclass (``trf.py`` / ``lbfgs.py``) sets up its own model state in
+    ``__init__`` and implements :meth:`got`; the orchestrator only ever calls
+    :meth:`start`, :meth:`got`, and reads :attr:`iteration` / :attr:`fval` /
+    :attr:`stop_reason` / :meth:`progress_detail` for reporting.
+    """
+
+    def __init__(self, u0, lower, upper, max_iterations):
+        self.point = np.array(u0, dtype=float)   # current iterate (u-space)
+        self._u_lower = lower                    # reflecting box (constant per fit)
+        self._u_upper = upper
+        self.n = len(self.point)
+        self.max_iterations = max_iterations
+        self.iteration = 0          # accepted steps so far (drives reporting / budget)
+        self.phase = 'init'         # 'init' until the start point is evaluated
+        self.fval = None            # objective F(point)
+        self.grad = None            # scalar gradient dF/du at point (u-space)
+        self.stop_reason = None     # set to a human string when got() returns DONE
+
+    def start(self):
+        """The first ``u``-point to evaluate (the start point)."""
+        return self.point
+
+    def got(self, u_point, score, grad):
+        """Consume one completed evaluation and return the next ``u`` or :data:`DONE`."""
+        raise NotImplementedError
+
+    def progress_detail(self):
+        """A short method-specific status suffix for the per-iteration report."""
+        return ''
 
 
 # The one-line suggestion every gradient-path refusal ends with, so a user whose
@@ -73,17 +136,35 @@ _FALLBACK_HINT = (
 class GradientOptimizer(StartPointOptimizer):
     """Base for the gradient-based local optimizers (#386).
 
-    A leaf subclass implements its own ``start_run`` / ``got_result`` step machine
-    (Levenberg–Marquardt for ``trf``, L-BFGS-B for ``lbfgs``) and calls
-    :meth:`_setup_gradient_path` once from ``start_run`` and :meth:`gradient_at` on
-    each completed Result. It must set :attr:`START_POINT_KEY` like any
-    :class:`StartPointOptimizer`.
+    A leaf subclass supplies only its per-start step math as a :class:`GradientRunner`
+    (Levenberg–Marquardt for ``trf``, L-BFGS-B for ``lbfgs``) via :meth:`_make_runner`;
+    this base owns the whole ``start_run`` / ``got_result`` orchestration -- seeding the
+    runners, the ``u``<->PSet plumbing, :meth:`gradient_at` assembly, name-tagging /
+    routing, reporting, and the multi-start ``STOP`` coordination. The leaf must set
+    :attr:`START_POINT_KEY` like any :class:`StartPointOptimizer`, plus
+    :attr:`_method_label` and :meth:`_start_banner` for its messages.
+
+    Local multi-start (#386). A box-start gradient fit runs ``N`` independent starts
+    concurrently (``N`` reuses ``population_size``) -- start 0 from the box center
+    (preserving the deterministic single-start behavior), the rest from Latin-hypercube
+    samples across the prior box -- and keeps the global best. The async run loop already
+    supports this without change: ``start_run`` returns a list of ``N`` initial PSets,
+    each ``got_result`` advances just the start that owns the returned Result (routed by
+    PSet name through :attr:`pending`) and returns that start's next PSet (or ``[]`` once
+    it converges), and ``'STOP'`` fires only when the **last** start finishes. Every
+    evaluated PSet across all starts lands in the trajectory (``add_to_trajectory`` runs
+    before ``got_result``), so ``trajectory.best_fit()`` is the global best for free --
+    each runner only tracks its own best for its own convergence test.
     """
 
     #: Keep objective scoring on the master so every Result returns with its
     #: simdata (the sensitivity tensors the gradient assembly reads); see
     #: ``Algorithm.run``. Without this the worker path nulls ``res.simdata``.
     requires_master_scoring = True
+
+    #: Human label for the method in the per-iteration progress messages; set by
+    #: each leaf (e.g. ``'L-BFGS-B'`` / ``'TRF'``).
+    _method_label = 'gradient'
 
     def __init__(self, config, refine=False):
         # Cheapest gate first, before the (expensive) network generation in
@@ -99,10 +180,124 @@ class GradientOptimizer(StartPointOptimizer):
         # Backend gate: every model must expose bngsim's forward-sensitivity hooks
         # (the capability gate itself fires later, at apply_routing).
         self._require_sensitivity_backend()
+        # Multi-start setup: the reflecting box, the start-point count + the start
+        # PSets, and the (empty) orchestration state. The per-start runners are built
+        # lazily in start_run (they need the leaf's tunables, read after this returns).
+        self.n = len(self.variables)
+        self._u_lower, self._u_upper = self._u_bounds()
+        self.n_starts = self._resolve_n_starts()
+        self.start_psets = self._resolve_start_psets()
+        self._init_orchestration()
 
     def reset(self, bootstrap=None):
         super().reset(bootstrap)
         self._routings = None
+        self._u_lower, self._u_upper = self._u_bounds()
+        self.n_starts = self._resolve_n_starts()
+        self.start_psets = self._resolve_start_psets()
+        self._init_orchestration()
+
+    # --- multi-start orchestration ----------------------------------------- #
+    def _resolve_n_starts(self):
+        """The number of independent start points for this fit.
+
+        Local multi-start (#386) reuses ``population_size`` as the start count --
+        consistent with the metaheuristics, where it is the parallel-population size,
+        and ``population_size = 1`` reproduces the historical single start. A
+        point-start or refiner-injected start has no prior box to scatter across, so it
+        always runs a single start (the refiner polishes the one best fit, it does not
+        re-scatter). :meth:`_is_box_start` is exactly that test (no injected start +
+        every variable bounded)."""
+        if not self._is_box_start():
+            return 1
+        return max(1, int(self.config.config.get('population_size', 1)))
+
+    def _resolve_start_psets(self):
+        """The ``n_starts`` start PSets: the box center first (start 0, preserving the
+        deterministic single-start behavior and the parity tests), then ``n_starts - 1``
+        Latin-hypercube samples across the prior box drawn from the seeded ``self.rng``
+        (so the scatter reproduces from ``random_seed``). With ``n_starts == 1`` no
+        sample is drawn -- the rng is untouched -- so a single-start fit is byte-for-byte
+        unchanged."""
+        start0 = self._resolve_start_pset()
+        if self.n_starts <= 1:
+            return [start0]
+        return [start0] + self.random_latin_hypercube_psets(self.n_starts - 1)
+
+    def _init_orchestration(self):
+        """(Re)initialize the multi-start bookkeeping -- all plain list/dict/int, so the
+        optimizer pickles for backup/resume (ADR-0007). The per-start runners are built
+        lazily in :meth:`start_run` (they need the leaf's tunables, set after
+        ``super().__init__``); until then ``runners`` is empty, so a freshly constructed
+        optimizer still round-trips through pickle."""
+        self.runners = []        # one GradientRunner per start (built in start_run)
+        self.pending = {}        # pset name -> owning runner index (the routing map)
+        self.probe_counter = 0   # global submission counter -> unique pset names
+        self.active = 0          # starts not yet converged/terminated
+
+    def add_iterations(self, n):
+        """Extend every start's per-start iteration budget by ``n`` (the ``-r`` resume
+        path). Runners already exist when this is called on a resumed run (they ride the
+        backup pickle), so bump each alongside the template budget."""
+        self.max_iterations += n
+        for runner in self.runners:
+            runner.max_iterations += n
+
+    def start_run(self):
+        """Seed the ``n_starts`` runners and return their initial PSets (one evaluation
+        each), so all starts run concurrently from the first scheduler batch."""
+        print2(self._start_banner())
+        # Activate the gradient path (enable sensitivities + build routings) before the
+        # model scatter, so the request rides the pickle to the workers.
+        self._setup_gradient_path()
+        self.runners = [self._make_runner(self._u_from_pset(p)) for p in self.start_psets]
+        self.active = len(self.runners)
+        self.probe_counter = 0
+        self.pending = {}
+        return [self._dispatch(idx, runner.start())
+                for idx, runner in enumerate(self.runners)]
+
+    def got_result(self, res):
+        """Route a completed Result to the start that owns it, advance just that start's
+        runner, and return its next PSet -- ``[]`` once it converges (other starts keep
+        going), or ``'STOP'`` only when the last live start finishes."""
+        idx = self.pending.pop(res.name)
+        runner = self.runners[idx]
+        u_point = self._u_from_pset(res.pset)
+        grad = self.gradient_at(res)
+        prev_iter = runner.iteration
+        nxt = runner.got(u_point, float(res.score), grad)
+        if runner.iteration > prev_iter:
+            self._report(runner)
+        if nxt is DONE:
+            logger.info('%s start %d/%d stopping: %s', self._method_label,
+                        idx + 1, len(self.runners), runner.stop_reason)
+            self.active -= 1
+            if self.active == 0:
+                return 'STOP'
+            return []
+        return [self._dispatch(idx, nxt)]
+
+    def _dispatch(self, idx, u):
+        """Wrap a runner's proposed ``u``-point as a uniquely named PSet bound to its
+        owning start in :attr:`pending`, and return it for submission. The name carries a
+        single global counter (``<fit_type>_<k>``), so a single-start fit reproduces the
+        historical ``<fit_type>_1``, ``<fit_type>_2``, … sequence exactly while every
+        name stays unique across concurrent starts (the routing key)."""
+        self.probe_counter += 1
+        name = '%s_%i' % (self.fit_type, self.probe_counter)
+        self.pending[name] = idx
+        return self._pset_from_u(u, name=name)
+
+    def _report(self, runner):
+        """Per-iteration progress for one start (mirrors the single-start report); the
+        method-specific suffix comes from the runner."""
+        if runner.iteration % self.config.config['output_every'] == 0:
+            self.output_results()
+        msg = 'Completed %i of %i %s iterations' % (
+            runner.iteration, runner.max_iterations, self._method_label)
+        (print1 if runner.iteration % 10 == 0 else print2)(msg)
+        print2('Current best objective: %f, %s' % (runner.fval, runner.progress_detail()))
 
     # --- gates ------------------------------------------------------------- #
     # The gradient path is gated in three places, each as early as it can be:

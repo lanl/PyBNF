@@ -5,7 +5,11 @@ primary ``trf`` -- the trust-region / Levenberg–Marquardt least-squares optimi
 consumes the residual Jacobian -- and ``lbfgs`` -- the L-BFGS-B fallback that consumes
 the scalar gradient and so fits the objectives TRF refuses (an estimated noise scale,
 Laplace/count, constraints). Both run inside PyBNF's async propose/score loop. This
-module proves each end to end (the L-BFGS-B tests are grouped after the TRF ones below).
+module proves each end to end (the L-BFGS-B tests are grouped after the TRF ones below),
+plus **local multi-start** (#386 follow-up): ``GradientOptimizer`` runs ``N`` independent
+box-sampled starts concurrently and keeps the global best, the diversity a purely local
+gradient method otherwise lacks (the offline, backend-free proof of the same step math +
+multi-start win is ``test_gradient_runner.py``).
 
 The TRF case, on a trust-region/Levenberg–Marquardt least-squares optimizer that
 consumes #385's residual Jacobian (assembled from bngsim's forward output
@@ -75,6 +79,35 @@ def _decay_model(tmp_path):
     the rate (parameter axis), ``S0`` to the ``S()`` seed (initial-condition axis)."""
     return H.strip_actions_block(BNGL_DIR / 'e2e_ode_decay.bngl',
                                  tmp_path / 'decay_v2.bngl')
+
+
+# Truth for the bi-exponential multimodal fixture (the multi-start target). Equal
+# amplitudes make the (k1, k2) sum-of-squares surface symmetric under k1<->k2, so the
+# diagonal k1 == k2 -- where the model collapses to a single exponential -- is a trap
+# the box center sits on; see e2e_ode_biexp.bngl.
+BIEXP_AMP = 50.0
+BIEXP_K1, BIEXP_K2 = 0.1, 2.0
+
+
+def _write_biexp_exp(path, *, n=41, t_end=10.0, sd=3.0):
+    """Write a zero-noise bi-exponential ``.exp`` (columns ``time Stot Stot_SD``):
+    ``Stot(t) = A·exp(-k1·t) + B·exp(-k2·t)`` at the true, well-separated rates. The
+    constant ``Stot_SD`` makes the chi-square a **fixed**-scale Gaussian (exact least
+    squares), and the zero-noise data floors the objective at ~0 at the truth."""
+    t = np.linspace(0.0, t_end, n)
+    obs = BIEXP_AMP * np.exp(-BIEXP_K1 * t) + BIEXP_AMP * np.exp(-BIEXP_K2 * t)
+    lines = ['#\ttime\tStot\tStot_SD']
+    lines += ['%.12g\t%.12g\t%.12g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    Path(path).write_text('\n'.join(lines) + '\n')
+    return str(path)
+
+
+def _biexp_model(tmp_path):
+    """The new-era bi-exponential model (``e2e_ode_biexp.bngl``, actions stripped). ``k1``
+    and ``k2`` are bare ``begin parameters`` ids, each binding by id to one decay rate
+    (parameter axis)."""
+    return H.strip_actions_block(BNGL_DIR / 'e2e_ode_biexp.bngl',
+                                 tmp_path / 'biexp_v2.bngl')
 
 
 @pytest.mark.recovery
@@ -355,3 +388,107 @@ def test_lbfgs_refuses_legacy_edition_before_building_models(tmp_path):
     conf = types.SimpleNamespace(config={'edition': None})
     with pytest.raises(PybnfError, match='(?i)edition'):
         LBFGSAlgorithm(conf)
+
+
+# --------------------------------------------------------------------------- #
+# Local multi-start (#386 follow-up)
+# --------------------------------------------------------------------------- #
+# A gradient method is purely local -- it descends into whatever basin its single start
+# lands in. Local multi-start runs N independent starts concurrently (start 0 = box
+# center, the rest Latin-hypercube samples across the prior box; N reuses
+# population_size) and keeps the global best. These prove the win is visible end to end
+# through the real bngsim backend (the offline, backend-free step-math proof of the same
+# win is test_gradient_runner.py) and that an injected refiner start collapses to a
+# single start.
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_lbfgs_multistart_escapes_a_basin_a_single_start_is_trapped_in(tmp_path, monkeypatch):
+    """The case local multi-start exists for. The bi-exponential fixture has equal
+    amplitudes, so its (k1, k2) sum-of-squares surface is symmetric under k1<->k2 and the
+    diagonal k1 == k2 (where the model is a single exponential) is an invariant manifold
+    of the gradient flow. A SINGLE start from the box center (k1 == k2) is therefore
+    trapped at the best single-exponential fit -- a strict, non-global minimum -- while
+    scattering several starts lets one break the symmetry and recover the true,
+    well-separated rates. The global best is kept automatically: every start's evaluations
+    feed the one trajectory, so trajectory.best_fit() is the global best across starts."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _biexp_model(tmp_path)
+    free = {'k1': ('uniform_var', 0.01, 3.0), 'k2': ('uniform_var', 0.01, 3.0)}
+
+    # Single start (population_size = 1): the historical behavior -- box center only,
+    # trapped on the diagonal at the (poor) single-exponential fit.
+    exp1 = _write_biexp_exp(tmp_path / 'biexp.exp')
+    conf1 = H.make_newera_config(tmp_path, model, exp1, free, 'biexp', 'lbfgs',
+                                 objective='chi_sq', random_seed=1234,
+                                 population_size=1, max_iterations=200)
+    single = H.build(conf1, 'lbfgs')
+    assert single.n_starts == 1
+    H.drive(single)
+    rec1 = H.best_params(single, ('k1', 'k2'))
+    trapped_score = single.trajectory.best_score()
+    assert abs(rec1['k1'] - rec1['k2']) < 1e-2, \
+        'single start should be trapped on the k1==k2 diagonal, got %s' % rec1
+    assert trapped_score > 100.0, \
+        'single start should sit at the (poor) single-exponential fit, score %g' % trapped_score
+
+    # Multi-start (population_size = 8): start 0 is still the deterministic box center,
+    # the rest are Latin-hypercube samples across the box. One escapes the diagonal.
+    tmp2 = tmp_path / 'multi'
+    tmp2.mkdir()
+    exp2 = _write_biexp_exp(tmp2 / 'biexp.exp')
+    conf2 = H.make_newera_config(tmp2, model, exp2, free, 'biexp', 'lbfgs',
+                                 objective='chi_sq', random_seed=1234,
+                                 population_size=8, max_iterations=200)
+    multi = H.build(conf2, 'lbfgs')
+    assert multi.n_starts == 8
+    # Start 0 is the box center (preserving single-start behavior), here on the diagonal.
+    center = multi.start_psets[0]
+    assert abs(center['k1'] - center['k2']) < 1e-9, 'start 0 must be the (diagonal) box center'
+    H.drive(multi)
+    # The orchestration ran all N starts to termination.
+    assert multi.active == 0 and len(multi.runners) == 8 and \
+        all(r.stop_reason for r in multi.runners), 'every start should run to termination'
+
+    rec2 = sorted(H.best_params(multi, ('k1', 'k2')).values())
+    best_score = multi.trajectory.best_score()
+    assert np.allclose(rec2, [BIEXP_K1, BIEXP_K2], rtol=0.05), \
+        'multi-start should recover the well-separated rates, got %s' % rec2
+    assert best_score < 1e-3, \
+        'multi-start should reach the true optimum, score %g' % best_score
+    # The visible win: scattering escapes the basin the single (center) start cannot.
+    assert best_score < trapped_score / 100.0
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_gradient_multistart_collapses_to_one_start_for_a_refiner(tmp_path, monkeypatch):
+    """Multi-start scatters across the prior box; a refiner instead polishes the one best
+    fit it is handed, so an injected start point (``START_POINT_KEY``, what
+    ``pybnf._refine_best_fit`` writes) forces a single start regardless of
+    ``population_size``. Construct in box-start mode (population_size starts), then inject
+    a refiner start and re-resolve -- the scatter collapses to that one start."""
+    from pybnf.pset import PSet
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'lbfgs', objective='chi_sq', random_seed=1234,
+        population_size=8, max_iterations=10)
+    alg = H.build(conf, 'lbfgs')
+    # Box-start mode: population_size starts, start 0 the box center.
+    assert alg.n_starts == 8 and len(alg.start_psets) == 8
+
+    # Inject a refiner start point (mirrors pybnf._refine_best_fit) and re-resolve.
+    alg.config.config['lbfgs_start_point'] = PSet(
+        [v.value_from_quantile(0.3) for v in alg.variables])
+    alg.reset()
+    assert alg.n_starts == 1 and len(alg.start_psets) == 1, \
+        'an injected refiner start must disable multi-start (got %d)' % alg.n_starts
