@@ -129,6 +129,44 @@ class NoiseModel(ABC):
             f'{type(self).__name__} has no prediction gradient on the noise-model gradient '
             f'path (#454/#458)')
 
+    def residual(self, prediction, observation, noise, extra=None):
+        """The signed **square-root-loss residual** ``r`` for one point -- the least-squares
+        residual form a trust-region solver (LM / TRF, #386) minimizes (layer G follow-up, #459).
+
+        Defined so that ``1/2 r**2 == data_fit`` *and* ``r * d_residual_d_prediction ==
+        d_data_fit_d_prediction`` -- i.e. ``r`` reproduces both this point's loss and its
+        prediction gradient, so ``scipy.least_squares`` minimizes the **true** objective (not a
+        frozen-weight IRLS surrogate). The canonical form is ``r = sign(z) * sqrt(2 * data_fit)``
+        with ``z = (mu - forward(obs))/sigma`` the additive-space residual: for a **Gaussian**
+        this is exactly the standardized residual ``rho`` (its data fit is ``1/2 rho**2``); for
+        **Student-t** the sqrt-loss residual is smooth through ``z=0`` (``r ~ sqrt((nu+1)/nu) z``)
+        and downweights the tails, a clean exact least-squares reformulation (#459).
+
+        Only a family whose data fit reformulates as a *smooth* half-square overrides this
+        (Gaussian, Student-t); the base raises. **Laplace** stays scalar-only -- its data fit
+        ``|z|/b`` has a cusp at ``z=0`` (``sqrt(2*data_fit) ~ sqrt|z|``, infinite slope), so L1 /
+        least-absolute-deviation is inherently not cleanly least-squares (it overrides this with a
+        pointed raise). The count family (NegBinomial) likewise has no least-squares residual. A
+        family the base refuses is routed through the scalar :meth:`d_data_fit_d_prediction`
+        instead; :meth:`~pybnf.objective.LikelihoodObjective.has_least_squares_residual` decides."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no least-squares residual on the gradient path; its '
+            f'data fit is not a smooth sum of squares, so it rides the scalar data-fit gradient '
+            f'(#459)')
+
+    def d_residual_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(residual)/d(prediction)`` for one point -- the residual-Jacobian seam, paired with
+        :meth:`residual` (#459). The assembly multiplies it by the forward sensitivity
+        ``d pred/d theta`` to build the residual-Jacobian column, exactly as for a Gaussian.
+
+        Equal to ``d_data_fit_d_prediction / residual`` away from ``z=0``; at the residual zero
+        both numerator and denominator vanish, so the override supplies the **smooth limit** (for
+        Student-t, ``sqrt((nu+1)/nu) * forward'(pred)/sigma``). Overridden by exactly the families
+        that override :meth:`residual` (Gaussian, Student-t); the base raises."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no least-squares residual Jacobian on the gradient path '
+            f'(#459)')
+
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
         """``{param_name: d(data_fit + that parameter's normalizer)/d param}`` for each noise
         parameter -- the estimated-scale gradient columns (layer D/G, #451/#454/#385).

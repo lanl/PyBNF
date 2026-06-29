@@ -70,24 +70,35 @@ plus any estimated placeholder it names -- which, unlike a free σ, *does* enter
 so lands in the residual-Jacobian). A plain column collapses to the raw sensitivity, so the
 no-transform path is byte-identical.
 
-Asymmetric / non-Gaussian families (layer G, #454)
---------------------------------------------------
-Only a Gaussian has ``data_fit = 1/2 rho**2``, so only a Gaussian column yields an exact
-least-squares residual/Jacobian. An asymmetric family -- **Laplace** or **Student-t** -- has a
-data fit that is not a sum of squares (Laplace's ``|·|/b``; Student-t's
-``(ν+1)/2 log(1+z²/ν)``), so it carries no residual. Its objective gradient is assembled from
-the **universal** scalar form ``sum_i w_i · d(data_fit_i)/d(pred_i) · d(pred_i)/d θ`` -- the
-per-family slope ``d(data_fit)/d(pred)`` (``objective.data_fit_grad_point`` ->
-``NoiseModel.d_data_fit_d_prediction``) chained through the same layer-F
-``prediction_sensitivity`` ``d pred/d θ``, accumulated into a separate ``data_fit_gradient``
-vector exactly as the estimated-noise column accumulates into ``noise_gradient``. The result is
-flagged not ``least_squares_exact`` (the residual/Jacobian then model only the Gaussian columns,
-if any), the signal #386's trust-region path uses the scalar gradient (L-BFGS). The estimated-
-noise column generalizes per family too: Laplace's ``b``, and Student-t's ``sigma`` **and**
-``df`` (the first multi-parameter estimated-noise gradient, ADR-0058). The prediction (the
-MEDIAN or, layer G, the MEAN) and the noise scale (linear or log, layer E) compose throughout;
-``objective.has_least_squares_residual`` routes each column. An all-Gaussian fit never touches
-``data_fit_gradient`` (it stays zero), so that path is byte-identical. The **negative-binomial**
+Asymmetric / non-Gaussian families (layer G, #454; least-squares residual #459)
+-------------------------------------------------------------------------------
+A family yields an **exact least-squares residual/Jacobian** iff its data fit reformulates as a
+*smooth* half-square. Two do: the **Gaussian** (``data_fit = 1/2 rho**2``) and -- the #459
+follow-up -- the **Student-t**, whose exact square-root-loss residual ``r = sign(z) sqrt(2
+data_fit) = sign(z) sqrt((ν+1) log1p(z²/ν))`` satisfies both ``1/2 r² == data_fit`` *and*
+``r · d r/d pred == d(data_fit)/d pred`` and is smooth through ``z=0`` (``r ~ sqrt((ν+1)/ν) z``,
+downweighting the tails). Both route through ``residual_point`` (``NoiseModel.residual`` /
+``d_residual_d_prediction``), contributing a residual row + native Jacobian row, so a fixed-scale
+Student-t fit is ``least_squares_exact`` -- the Gaussian's exact-least-squares status recovered
+for the robust family, and #386's LM/TRF can fit it directly.
+
+**Laplace** has no such clean residual: its L1 data fit ``|·|/b`` gives ``sqrt(2 data_fit) ~
+sqrt|z|``, a cusp with infinite slope at ``z=0``, so it stays scalar-only (the count family
+likewise). Such a family's objective gradient is assembled from the **universal** scalar form
+``sum_i w_i · d(data_fit_i)/d(pred_i) · d(pred_i)/d θ`` -- the per-family slope ``d(data_fit)/d(pred)``
+(``objective.data_fit_grad_point`` -> ``NoiseModel.d_data_fit_d_prediction``) chained through the
+same layer-F ``prediction_sensitivity`` ``d pred/d θ``, accumulated into a separate
+``data_fit_gradient`` vector exactly as the estimated-noise column accumulates into
+``noise_gradient``; the result is flagged not ``least_squares_exact`` (the residual/Jacobian then
+model only the Gaussian/Student-t columns, if any), the signal #386's trust-region path uses the
+scalar gradient (L-BFGS). The estimated-noise column generalizes per family throughout: Laplace's
+``b``, and Student-t's ``sigma`` **and** ``df`` (the first multi-parameter estimated-noise
+gradient, ADR-0058) -- a retained normalizer is never a square, so an estimated-scale fit is
+inexact for *any* family (its data-fit residual, if it has one, still stacks; the normalizer
+column rides ``noise_gradient``). The prediction (the MEDIAN or, layer G, the MEAN) and the noise
+scale (linear or log, layer E) compose throughout; ``objective.has_least_squares_residual`` routes
+each column. An all-Gaussian fit never touches ``data_fit_gradient`` (it stays zero), so that path
+is byte-identical. The **negative-binomial**
 count family rides the same scalar ``data_fit_gradient`` path (#458): its prediction slope is the
 NB score chained through the median CDF-inversion implicit derivative, and its estimated dispersion
 ``r`` -- self-normalizing PMF, so the whole column is in the data fit -- the ``noise_gradient``
@@ -141,21 +152,25 @@ class GradientResult:
     ``d theta/d u`` transform already applied). ``gradient`` is the scalar
     ``dF/d u`` over the free parameters, in ``param_names`` order.
 
-    With an all-Gaussian, **fixed** sigma fit the data fit IS the whole objective, so the
-    residual and scalar forms agree by construction (``gradient == jacobian.T @ residual``,
-    ``0.5||rho||**2 == evaluate``) and ``least_squares_exact`` is ``True``. It is ``False``
-    once the residual-Jacobian is no longer the whole story:
+    With a **fixed**-scale fit whose families all carry an exact least-squares residual -- the
+    **Gaussian** (any scale/location) and, #459, the **Student-t** (its smooth square-root-loss
+    residual) -- the data fit IS the whole objective, so the residual and scalar forms agree by
+    construction (``gradient == jacobian.T @ residual``, ``0.5||rho||**2 == evaluate``) and
+    ``least_squares_exact`` is ``True``. It is ``False`` once the residual-Jacobian is no longer
+    the whole story:
 
     * an **estimated** noise parameter (layer D/G, #451/#454) -- its retained normalizer
       (``+log sigma``, ``log(2 b)``, the df-block) is not a square, so it is folded into the
       scalar ``gradient`` only and the residual-Jacobian models the data fit alone; or
-    * an **asymmetric family** (Laplace / Student-t, layer G, #454) -- its data fit is not a
-      sum of squares, so it carries no residual at all and its whole data-fit gradient is on
-      the scalar path.
+    * a family with **no clean least-squares residual** (Laplace, whose L1 data fit is the cusp
+      ``sqrt|z|``; the count family, layer G #454/#459) -- its data fit is not a smooth sum of
+      squares, so it carries no residual at all and its whole data-fit gradient is on the scalar
+      path.
 
-    Either way the scalar ``gradient`` is complete (``jacobian.T @ residual`` over the Gaussian
-    columns, if any, plus the data-fit and noise columns), and ``least_squares_exact = False``
-    is the signal that #386's trust-region step must consume it rather than the bare residual.
+    Either way the scalar ``gradient`` is complete (``jacobian.T @ residual`` over the
+    residual-bearing columns -- Gaussian / Student-t -- if any, plus the data-fit and noise
+    columns), and ``least_squares_exact = False`` is the signal that #386's trust-region step must
+    consume it rather than the bare residual.
     """
     residual: np.ndarray      # (n_obs,)
     jacobian: np.ndarray      # (n_obs, n_param), sampling space
@@ -168,12 +183,14 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     """Assemble the scalar gradient and residual-Jacobian, summed across experiments.
 
     ``objective`` is the fit's :class:`~pybnf.objective.LikelihoodObjective`; it supplies
-    each Gaussian point's residual through ``residual_point``, each asymmetric (Laplace /
-    Student-t) point's data-fit gradient through ``data_fit_grad_point`` (routed by
+    each residual-bearing point's residual through ``residual_point`` (a Gaussian or, #459, a
+    Student-t -- the families whose data fit is a smooth half-square), each no-residual (Laplace /
+    count) point's data-fit gradient through ``data_fit_grad_point`` (routed by
     ``has_least_squares_residual``), and any estimated-noise gradient column through
     ``noise_grad_point`` (each gating the supported configuration -- a Gaussian / Laplace /
-    Student-t family, MEDIAN or MEAN, any noise scale, noise fixed or single free parameters --
-    raising :class:`GradientNotSupported` otherwise). ``experiments`` is an iterable of
+    Student-t / negative-binomial family, MEDIAN or MEAN, any noise scale, noise fixed or single
+    free parameters -- raising :class:`GradientNotSupported` otherwise). ``experiments`` is an
+    iterable of
     ``(sim_data, exp_data, routing)`` triples -- one per scored model/condition; each
     ``sim_data`` must carry the #447 ``output_sensitivities`` payload (the gradient
     path active), and ``routing`` is that experiment's
@@ -204,10 +221,10 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
     # from the residual-Jacobian because the normalizer ``+log sigma`` is not a square
     # (layer D, #451). Zero for a fixed-sigma fit.
     noise_gradient = np.zeros(n_param)
-    # The asymmetric-family data-fit gradient (layer G, #454): a Laplace / Student-t
-    # column has no least-squares residual, so its data fit contributes its scalar
-    # gradient ``sum_i w_i * d(data_fit_i)/d(pred_i) * d(pred_i)/d theta`` straight here.
-    # Zero for an all-Gaussian fit (the byte-identical path).
+    # The no-residual-family data-fit gradient (layer G, #454/#459): a Laplace (its L1 data
+    # fit is the cusp sqrt|z|) or count column has no least-squares residual, so its data fit
+    # contributes its scalar gradient ``sum_i w_i * d(data_fit_i)/d(pred_i) * d(pred_i)/d theta``
+    # straight here. Zero for an all-Gaussian / Student-t fit (the residual-bearing path).
     data_fit_gradient = np.zeros(n_param)
     least_squares_exact = True
     for sim_data, exp_data, routing in experiments:
@@ -235,17 +252,17 @@ def assemble_gaussian_gradient(objective, experiments, free_params):
 def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_param,
                            rho_rows, jac_rows, noise_gradient, data_fit_gradient):
     """Append one experiment's per-point residual and native-space Jacobian rows (for a
-    least-squares Gaussian column), accumulate any estimated-noise gradient columns into
-    ``noise_gradient``, and accumulate an asymmetric family's scalar data-fit gradient into
-    ``data_fit_gradient`` (layer G, #454).
+    least-squares column -- Gaussian or Student-t, #459), accumulate any estimated-noise gradient
+    columns into ``noise_gradient``, and accumulate a no-residual family's scalar data-fit gradient
+    into ``data_fit_gradient`` (layer G, #454).
 
     Mirrors ``SummationObjective.evaluate``'s point loop exactly -- same independent
     variable, same comparable-column intersection, same NaN skip, same
     ``_sim_row_for`` row match -- so the gradient is assembled over precisely the
     points PyBNF scores. Columns are walked in sorted order for a deterministic
     observation axis (matching ``evaluate_pointwise``). Returns ``True`` iff this
-    experiment made the result not ``least_squares_exact`` -- an estimated-noise column or an
-    asymmetric (non-least-squares) family was present (so the caller can clear the flag)."""
+    experiment made the result not ``least_squares_exact`` -- an estimated-noise column or a
+    no-residual (Laplace / count) family was present (so the caller can clear the flag)."""
     sens = sim_data.output_sensitivities
     if sens is None:
         raise GradientNotSupported(
@@ -297,18 +314,19 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
                 noise_gradient[index[pname]] += weight * dloss_dparam
                 inexact = True
             if objective.has_least_squares_residual(col_name):
-                # A Gaussian: data_fit = 1/2 rho**2, so it contributes an exact residual
-                # row + native Jacobian row (sqrt(w)-folded), and its data-fit gradient comes
-                # from J^T rho. Byte-identical to the pre-layer-G path.
+                # A family whose data fit is a smooth half-square -- a Gaussian (data_fit =
+                # 1/2 rho**2) or a Student-t (its exact sqrt-loss residual, #459): it contributes
+                # an exact residual row + native Jacobian row (sqrt(w)-folded), and its data-fit
+                # gradient comes from J^T rho. The Gaussian path is byte-identical to pre-layer-G.
                 rho, drho_dpred = objective.residual_point(
                     sim_data, exp_data, sim_row, rownum, col_name)
                 rho_rows.append(sqrt_w * rho)
                 jac_rows.append(sqrt_w * drho_dpred * dpred_dtheta)
             else:
-                # An asymmetric family (Laplace / Student-t; layer G, #454): its data fit is
-                # not a sum of squares, so it carries no least-squares residual -- its data-fit
-                # gradient goes straight to the scalar accumulator (full per-point weight), and
-                # the result is not least_squares_exact.
+                # A family with no clean least-squares residual (Laplace, whose L1 data fit is the
+                # cusp sqrt|z|; the count family; layer G, #454/#459): its data-fit gradient goes
+                # straight to the scalar accumulator (full per-point weight), and the result is not
+                # least_squares_exact.
                 dfit_dpred = objective.data_fit_grad_point(
                     sim_data, exp_data, sim_row, rownum, col_name)
                 data_fit_gradient += weight * dfit_dpred * dpred_dtheta

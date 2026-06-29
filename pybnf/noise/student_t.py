@@ -93,6 +93,45 @@ class StudentT(NoiseModel):
         z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
         return (nu + 1.) * z / (nu + z * z) * self.additive_on.dforward(prediction) / sigma
 
+    def residual(self, prediction, observation, noise, extra=None):
+        """The exact **square-root-loss residual** ``r = sign(z) * sqrt(2 * data_fit) =
+        sign(z) * sqrt((nu+1) * log1p(z**2/nu))`` with ``z = (mu - forward(obs))/sigma`` (#459) --
+        the least-squares residual #386's LM/TRF solver minimizes.
+
+        Unlike the IRLS pseudo-residual ``sqrt(w(z)) z``, this satisfies **both** invariants:
+        ``1/2 r**2 == data_fit`` (so ``scipy.least_squares`` minimizes the *true* Student-t loss,
+        not a frozen-weight reweighted surrogate) **and** ``r * d_residual_d_prediction ==
+        d_data_fit_d_prediction`` (so its residual-Jacobian reproduces the objective gradient).
+        It is **smooth through z=0**: ``r ~ sqrt((nu+1)/nu) z`` near the origin (an odd, C-infinity
+        function of ``z``), behaving like a Gaussian residual at the center and downweighting the
+        tails as ``z`` grows -- which is why a fixed-scale Student-t fit is ``least_squares_exact``,
+        the Gaussian's exact-least-squares status recovered for the robust family (#459). (Laplace
+        has no such clean form -- ``sqrt(2*data_fit) ~ sqrt|z|`` is a cusp -- so it stays
+        scalar-only.) ``sign(0) == 0`` makes the residual exactly 0 at ``z=0``."""
+        sigma, nu = noise, extra['df']
+        z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
+        return np.sign(z) * np.sqrt((nu + 1.) * np.log1p(z * z / nu))
+
+    def d_residual_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(r)/d(prediction) = (d r/d z) * forward'(pred)/sigma`` (#459), the residual-Jacobian
+        seam paired with :meth:`residual`. With ``u = z**2/nu``::
+
+            d r/d z = sqrt((nu+1)/nu) * sqrt(u / log1p(u)) / (1 + u)
+
+        the closed form of ``d_data_fit_d_prediction / r`` that stays finite at the residual zero:
+        as ``z -> 0`` the factor ``sqrt(u/log1p(u)) -> 1``, so ``d r/d z -> sqrt((nu+1)/nu)`` (the
+        slope of the linear ``r ~ sqrt((nu+1)/nu) z`` core) -- the smooth ``z->0`` limit, where the
+        naive ``(d data_fit/d pred)/r`` is ``0/0``. The tiny-``u`` cusp of ``u/log1p(u)`` is
+        series-guarded (``1 + u/2``). ``forward'(pred) = 1`` on the linear scale, the scale's chain
+        factor on a log scale; the offset is prediction-independent, so MEAN and MEDIAN agree."""
+        sigma, nu = noise, extra['df']
+        z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
+        u = z * z / nu
+        # sqrt(u / log1p(u)): the 0/0 limit at z=0 is 1 (log1p(u) ~ u); series-guard the tiny-u cusp.
+        ratio = u / np.log1p(u) if u > 1e-8 else 1. + u / 2.
+        d_r_d_z = np.sqrt((nu + 1.) / nu) * np.sqrt(ratio) / (1. + u)
+        return d_r_d_z * self.additive_on.dforward(prediction) / sigma
+
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
         """The estimated-scale gradient columns ``{'sigma': ..., 'df': ...}`` (#451/#454/#385) --
         the first **multi-parameter** estimated-noise gradient (ADR-0058). Each is the derivative

@@ -95,6 +95,31 @@ class Laplace(NoiseModel):
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
         return np.sign(residual) / noise * self.additive_on.dforward(prediction)
 
+    def residual(self, prediction, observation, noise, extra=None):
+        """**Laplace has no exact least-squares residual -- it stays scalar-only** (#459).
+
+        The sqrt-loss residual ``sign(z) * sqrt(2 * data_fit) = sign(z) * sqrt(2|z|/b)`` (``z = mu -
+        forward(obs)``) is ``~ sqrt|z|`` near the residual zero: a **cusp with infinite slope at
+        z=0** (and the IRLS weight ``1/|z| -> inf`` there too). L1 / least-absolute-deviation is
+        *inherently* not cleanly least-squares, so -- unlike Student-t, whose sqrt-loss residual is
+        smooth through 0 (#459) -- Laplace carries no residual a trust-region solver could minimize.
+        Its gradient rides the scalar :meth:`d_data_fit_d_prediction` path instead
+        (:meth:`~pybnf.objective.LikelihoodObjective.has_least_squares_residual` returns False for
+        Laplace, so this is never reached on the normal path); a smoothed pseudo-Huber surrogate
+        would be a separate, explicitly opt-in approximation of the loss, not exposed here."""
+        raise NotImplementedError(
+            'Laplace has no exact least-squares residual: sqrt(2*data_fit) ~ sqrt|z| is a cusp '
+            'with infinite slope at z=0 (L1 / least-absolute-deviation is not cleanly '
+            'least-squares), so a Laplace observable rides the scalar data-fit gradient, not the '
+            'residual-Jacobian (#459). Use the L-BFGS-B path for a Laplace objective.')
+
+    def d_residual_d_prediction(self, prediction, observation, noise, extra=None):
+        """Laplace has no least-squares residual Jacobian (the residual itself has an infinite-slope
+        cusp at ``z=0``); it stays scalar-only -- see :meth:`residual` (#459)."""
+        raise NotImplementedError(
+            'Laplace has no least-squares residual Jacobian; it rides the scalar data-fit '
+            'gradient (#459). See Laplace.residual.')
+
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
         """``{'scale': -sign(R) * d(offset)/d b / b - |R|/b**2 + 1/b}`` with ``R = mu -
         forward(obs)`` -- the estimated-scale gradient column (#451/#454/#385). The

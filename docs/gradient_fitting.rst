@@ -114,34 +114,57 @@ supported too (see *Asymmetric and non-Gaussian families* below).
 Asymmetric and non-Gaussian families
 ------------------------------------
 
-Only a Gaussian has :math:`\text{data fit} = \tfrac12\rho^2`, so only a Gaussian column yields an
-exact least-squares residual/Jacobian. The robust families — **Laplace** (``noise_model =
-laplace``) and **Student-t** (``noise_model = student_t``) — have a data fit that is *not* a sum of
-squares, so the gradient is assembled from the **universal** scalar form
+A noise family yields an **exact least-squares residual/Jacobian** — the form a trust-region
+solver (Levenberg–Marquardt / TRF) minimizes directly — exactly when its data fit reformulates as
+a *smooth* half-square. The Gaussian does (:math:`\text{data fit} = \tfrac12\rho^2`). Among the
+robust families, **Student-t** (``noise_model = student_t``) does too, but **Laplace**
+(``noise_model = laplace``) does not.
+
+**Student-t: an exact square-root-loss residual** (issue #459). With :math:`z=(\hat y-y)/\sigma`,
+the signed residual
+
+.. math::
+
+   r = \operatorname{sign}(z)\,\sqrt{2\,\text{data fit}}
+     = \operatorname{sign}(z)\,\sqrt{(\nu+1)\,\log\!\bigl(1+z^2/\nu\bigr)}
+
+satisfies **both** :math:`\tfrac12 r^2 = \text{data fit}` (so ``scipy.least_squares`` minimizes the
+*true* Student-t loss, not a frozen-weight IRLS surrogate) **and**
+:math:`r\,\partial r/\partial\hat y = \partial\,\text{data fit}/\partial\hat y` (so its
+residual-Jacobian reproduces the objective gradient). It is **smooth through** :math:`z=0`
+(:math:`r\sim\sqrt{(\nu+1)/\nu}\,z` near the origin — an odd, infinitely differentiable function of
+:math:`z` — behaving like a Gaussian residual at the center and downweighting the tails as
+:math:`z` grows), with :math:`\partial r/\partial\hat y = \sqrt{(\nu+1)/\nu}\,f'(\hat y)/\sigma` at
+the center. So a **fixed-scale Student-t fit is** ``least_squares_exact`` — the Gaussian's
+exact-least-squares status recovered for the robust family, and the LM/TRF path fits it directly.
+
+**Laplace stays scalar-only.** Its L1 data fit :math:`|z|/b` gives
+:math:`\sqrt{2\,\text{data fit}}\sim\sqrt{|z|}`, a **cusp with infinite slope at** :math:`z=0` (and
+the IRLS weight :math:`1/|z|\to\infty` there), so least-absolute-deviation is *inherently* not
+cleanly least-squares — no residual a trust-region solver could minimize. (A smoothed pseudo-Huber
+surrogate would be a separate, explicitly opt-in approximation of the loss, not exposed here.) The
+count family likewise has no least-squares residual. Such a family's gradient is assembled from the
+**universal** scalar form
 
 .. math::
 
    \nabla F = \sum_i w_i \,\frac{\partial\,\text{data fit}_i}{\partial\hat y_i}\,
               \frac{\partial\hat y_i}{\partial\theta},
-
-with the per-family slope
-
-.. math::
-
+   \qquad
    \text{Laplace:}\quad \frac{\partial\,\text{data fit}}{\partial\hat y}
      = \frac{\operatorname{sign}(\hat y - y)}{b}\,f'(\hat y),
-   \qquad
-   \text{Student-t:}\quad \frac{\partial\,\text{data fit}}{\partial\hat y}
-     = \frac{(\nu+1)\,z}{\nu + z^2}\,\frac{f'(\hat y)}{\sigma},\ \ z=\frac{\hat y - y}{\sigma}.
 
-The Laplace data fit is non-smooth at the kink (:math:`\hat y = y`); PyBNF takes the **subgradient
-0** there (the symmetric least-absolute-deviation choice). The Student-t factor
-:math:`(\nu+1)/(\nu+z^2)` is the IRLS weight that downweights an outlier. Because neither carries a
-least-squares residual, the result's ``least_squares_exact`` flag is ``False`` (the residual /
-Jacobian then model only the Gaussian columns, if any) — the signal that a trust-region step must
-consume the scalar gradient. An **estimated** noise parameter composes here exactly as for the
-Gaussian: Laplace's scale :math:`b`, and Student-t's :math:`\sigma` **and** :math:`\nu` (the first
-two-parameter estimated-noise gradient), each adding a scalar column for its retained normalizer.
+non-smooth at the kink (:math:`\hat y = y`), where PyBNF takes the **subgradient 0** (the symmetric
+least-absolute-deviation choice). A no-residual family makes the result's ``least_squares_exact``
+flag ``False`` (the residual/Jacobian then model only the Gaussian / Student-t columns, if any) —
+the signal that a trust-region step must consume the scalar gradient.
+
+An **estimated** noise parameter composes for every family: Laplace's scale :math:`b`, and
+Student-t's :math:`\sigma` **and** :math:`\nu` (the first two-parameter estimated-noise gradient),
+each adding a scalar column for its retained normalizer. A normalizer is never a square, so an
+estimated-scale fit is ``least_squares_exact`` ``False`` for *any* family — including Student-t,
+whose data-fit residual still stacks while its :math:`\log\sigma` / df-block normalizer columns
+ride the scalar gradient.
 
 **Mean centering.** The prediction may be interpreted as the distribution's **mean** rather than
 the median (``location = mean``); the gradient subtracts the family's moment correction in additive

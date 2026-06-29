@@ -819,6 +819,69 @@ def test_family_prediction_derivative_matches_finite_difference(family, extra):
     np.testing.assert_allclose(ana, num, rtol=1e-5)
 
 
+# ===================== exact square-root-loss least-squares residual (layer G follow-up, #459) ===
+
+@pytest.mark.parametrize('family, extra', [
+    (Gaussian(), None),
+    (Gaussian(additive_on=LOG10, location=MEAN), None),
+    (StudentT(), {'df': 5.0}),
+    (StudentT(additive_on=LOG10), {'df': 3.0}),   # log-scale Student-t (MEDIAN; no log-scale mean)
+], ids=['gaussian', 'gaussian_log_mean', 'student_t', 'student_t_log'])
+def test_residual_reproduces_loss_and_gradient(family, extra):
+    """A residual-bearing family's ``residual`` satisfies the two defining invariants (#459):
+    ``1/2 r**2 == data_fit`` (loss) and ``r * d_residual_d_prediction == d_data_fit_d_prediction``
+    (gradient). The second is what lets ``scipy.least_squares`` minimize the true objective with a
+    correct gradient; checked here directly against each family's own ``data_fit`` /
+    ``d_data_fit_d_prediction`` (no closed-form re-derivation). Point chosen with ``pred != obs``."""
+    pred, obs, noise = 7.3, 5.1, 0.6
+    r = family.residual(pred, obs, noise, extra)
+    dr = family.d_residual_d_prediction(pred, obs, noise, extra)
+    np.testing.assert_allclose(0.5 * r * r, family.data_fit(pred, obs, noise, extra), rtol=1e-12)
+    np.testing.assert_allclose(r * dr, family.d_data_fit_d_prediction(pred, obs, noise, extra),
+                               rtol=1e-10)
+
+
+@pytest.mark.parametrize('z_offset', [3.4, 0.7, 1e-3, 0.0, -1e-3, -0.9, -4.2])
+def test_student_t_residual_derivative_matches_finite_difference(z_offset):
+    """``StudentT.d_residual_d_prediction`` is the exact slope of ``StudentT.residual`` --
+    validated against a central difference of the residual, including **through ``z=0``** where
+    the naive ``(d data_fit/d pred)/r`` is ``0/0`` (#459). The smooth limit at the center is
+    ``sqrt((nu+1)/nu) * 1/sigma``; the residual itself is exactly 0 there."""
+    nu, sigma = 4.0, 0.6
+    obs = 5.1
+    pred = obs + z_offset * sigma   # z = z_offset
+    extra = {'df': nu}
+    ana = StudentT().d_residual_d_prediction(pred, obs, sigma, extra)
+    if z_offset == 0.0:
+        assert StudentT().residual(pred, obs, sigma, extra) == 0.0
+        np.testing.assert_allclose(ana, np.sqrt((nu + 1.0) / nu) / sigma)
+    else:
+        h = 1e-7
+        num = (StudentT().residual(pred + h, obs, sigma, extra)
+               - StudentT().residual(pred - h, obs, sigma, extra)) / (2.0 * h)
+        np.testing.assert_allclose(ana, num, rtol=1e-5)
+
+
+def test_laplace_has_no_least_squares_residual():
+    """Laplace stays scalar-only (#459): its L1 data fit gives the cusp ``sqrt|z|``, infinite slope
+    at ``z=0``, so it carries no least-squares residual. Both residual seams raise with a pointed
+    message; the assembly never calls them because ``has_least_squares_residual`` is False."""
+    with pytest.raises(NotImplementedError, match='no exact least-squares residual'):
+        Laplace().residual(7.3, 5.1, 2.0, None)
+    with pytest.raises(NotImplementedError, match='no least-squares residual Jacobian'):
+        Laplace().d_residual_d_prediction(7.3, 5.1, 2.0, None)
+
+
+def test_has_least_squares_residual_routes_per_family():
+    """The router flips True for the families with an exact least-squares residual -- Gaussian and
+    (now, #459) Student-t -- and False for the no-residual families (Laplace, negative-binomial),
+    which ride the scalar data-fit gradient."""
+    assert _student_t_objective().has_least_squares_residual('Stot') is True
+    assert ChiSquareObjective().has_least_squares_residual('Stot') is True
+    assert _laplace_objective().has_least_squares_residual('Stot') is False
+    assert _neg_bin_objective().has_least_squares_residual('Stot') is False
+
+
 @pytest.mark.parametrize('family, extra, param', [
     (Gaussian(), None, 'sigma'),
     (Laplace(), None, 'scale'),
@@ -916,10 +979,14 @@ def test_laplace_kink_takes_the_zero_subgradient():
     assert res.least_squares_exact is False
 
 
-def test_student_t_scalar_data_fit_gradient():
-    """A fixed-scale Student-t observable routes through the scalar data-fit gradient
-    ``sum_i (nu+1) z_i/(nu + z_i**2) / sigma * d pred_i/d theta`` with ``z = (pred-obs)/sigma``
-    -- the IRLS weighting downweighting an outlier. No least-squares residual; flag is False."""
+def test_student_t_exact_sqrt_loss_residual():
+    """A fixed-scale Student-t observable carries an EXACT least-squares residual (#459): the
+    square-root-loss residual ``r = sign(z) sqrt((nu+1) log1p(z**2/nu))``, routed through
+    ``residual_point`` like a Gaussian. It reproduces BOTH the loss (``0.5||r||**2 == evaluate``)
+    and the objective gradient (``gradient == jac.T @ r``), so a fixed-scale Student-t fit is
+    ``least_squares_exact`` -- #386's LM/TRF can fit it directly. The scalar gradient is identical
+    to the pre-#459 IRLS-weighting value ``sum_i (nu+1) z_i/(nu+z_i**2)/sigma * d pred_i/d k``
+    (that is the whole point: ``r dr/dpred == d data_fit/d pred``)."""
     pred = np.array([100.0, 74.0, 55.0, 41.0])
     obs = np.array([100.0, 70.0, 60.0, 40.0])
     sigma = 5.0
@@ -934,18 +1001,57 @@ def test_student_t_scalar_data_fit_gradient():
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
 
-    assert res.least_squares_exact is False
-    assert res.residual.shape == (0,)
+    # An exact least-squares residual now -- a residual row per scored point, flag True.
+    assert res.least_squares_exact is True
+    assert res.residual.shape == (4,)
     z = (pred - obs) / sigma
-    expected = np.sum((nu + 1.0) * z / (nu + z * z) / sigma * dk)
-    np.testing.assert_allclose(res.gradient[0], expected)
+    expected_r = np.sign(z) * np.sqrt((nu + 1.0) * np.log1p(z * z / nu))
+    np.testing.assert_allclose(res.residual, expected_r)
+    # Loss-agreement: the residual form reproduces PyBNF's reported Student-t objective.
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
+    # Gradient-agreement: J^T r equals the scalar gradient, and both equal the IRLS-weighted form.
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual)
+    expected_grad = np.sum((nu + 1.0) * z / (nu + z * z) / sigma * dk)
+    np.testing.assert_allclose(res.gradient[0], expected_grad)
+
+
+def test_student_t_residual_jacobian_smooth_through_zero():
+    """The Student-t sqrt-loss residual is smooth through ``z=0`` (#459): at a point where pred ==
+    obs the residual is exactly 0 and its derivative takes the finite limit
+    ``sqrt((nu+1)/nu) * 1/sigma`` (not the ``0/0`` of ``(d data_fit/d pred)/r``). A row sitting
+    exactly on the center contributes a zero residual but a NONZERO Jacobian row -- unlike the
+    Laplace kink, which contributes nothing."""
+    pred = np.array([100.0, 70.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])   # rows 0,1 are exactly on the center (z=0)
+    sigma = 5.0
+    nu = 4.0
+    dk = np.array([7.0, -74.0, -110.0, -123.0])
+
+    obj = _student_t_objective()
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is True
+    # z=0 rows: residual exactly 0, Jacobian the smooth limit sqrt((nu+1)/nu)/sigma * dk (finite).
+    assert res.residual[0] == 0.0 and res.residual[1] == 0.0
+    limit_slope = np.sqrt((nu + 1.0) / nu) / sigma
+    np.testing.assert_allclose(res.jacobian[0, 0], limit_slope * dk[0])
+    np.testing.assert_allclose(res.jacobian[1, 0], limit_slope * dk[1])
+    assert np.all(np.isfinite(res.jacobian))
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, obj.evaluate(sim, exp))
 
 
 def test_student_t_estimated_sigma_and_df_columns():
     """Student-t is the first MULTI-parameter estimated-noise gradient (ADR-0058): estimating
     both ``sigma`` (noise_sd) and ``df`` (nu_free) adds two scalar gradient columns alongside
-    the model column. Each estimated noise parameter routes NONE (no model column), so the
-    Jacobian is empty and the whole gradient is on the scalar path."""
+    the model column. The data-fit part still rides the exact sqrt-loss residual (#459), so the
+    model column comes from ``jac.T @ r``; the two estimated noise parameters route NONE (no
+    model column) and their retained normalizers -- not squares -- are folded into the scalar
+    gradient, making the fit not ``least_squares_exact``."""
     pred = np.array([100.0, 74.0, 55.0, 41.0])
     obs = np.array([100.0, 70.0, 60.0, 40.0])
     sigma = 5.0
@@ -966,10 +1072,12 @@ def test_student_t_estimated_sigma_and_df_columns():
 
     res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
 
-    assert res.least_squares_exact is False
+    assert res.least_squares_exact is False    # an estimated normalizer is not a square
+    assert res.residual.shape == (4,)          # ...but the data fit still stacks an exact residual
     z = (pred - obs) / sigma
-    # model column: the data-fit gradient through d pred/d k
+    # model column: the data-fit gradient (jac.T @ r), equal to the IRLS-weighted form
     np.testing.assert_allclose(res.gradient[0], np.sum((nu + 1.0) * z / (nu + z * z) / sigma * dk))
+    np.testing.assert_allclose(res.gradient[0], (res.jacobian.T @ res.residual)[0])
     # sigma column: nu (1 - z**2) / (sigma (nu + z**2)), summed
     np.testing.assert_allclose(res.gradient[1], np.sum(nu * (1.0 - z * z) / (sigma * (nu + z * z))))
     # df column: the data fit's nu-dependence + the df-block (digamma) normalizer, summed
@@ -1127,15 +1235,17 @@ def test_neg_bin_estimated_dispersion_column():
 
 
 def test_capability_gate_now_accepts_laplace_and_student_t():
-    """Layer G (#454): the asymmetric families assemble a gradient (scalar-only, flag False,
-    finite) rather than raising -- the family clause that once refused them is gone."""
+    """Layer G (#454): the asymmetric families assemble a finite gradient rather than raising --
+    the family clause that once refused them is gone. Fixed-scale **Laplace** stays scalar-only
+    (no clean least-squares residual -- flag False), while fixed-scale **Student-t** carries the
+    exact sqrt-loss residual (#459) and so is ``least_squares_exact`` True."""
     sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
     exp = _exp([100, 70, 60, 40], 5.0)
     routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
-    for obj in (_laplace_objective(), _student_t_objective()):
+    for obj, expect_exact in ((_laplace_objective(), False), (_student_t_objective(), True)):
         res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
-        assert res.least_squares_exact is False
+        assert res.least_squares_exact is expect_exact
         assert np.all(np.isfinite(res.gradient))
 
 
@@ -1770,11 +1880,12 @@ def test_fd_acceptance_gate_student_t(k_type):
     ``sigma`` (noise_sd) and shape ``df`` (nu_free), the first multi-parameter estimated-noise
     gradient (ADR-0058). Four free params -- k (parameter axis), S0 (IC axis), noise_sd and
     nu_free (free noise parameters, NONE-routed) -- so the FD exercises the scalar data-fit
-    gradient (model columns), the sigma column ``nu(1-z^2)/(sigma(nu+z^2))``, and the df column
-    (the data fit's nu-dependence + the df-block's digamma derivative), plus the cross-experiment
-    sum and -- for ``loguniform_var`` -- k's native->sampling transform. No least-squares residual.
-    A heavy-tailed family has larger higher-order curvature than the Gaussian oracle, so this uses
-    a looser FD tolerance."""
+    gradient (model columns, now via the exact sqrt-loss residual ``jac.T @ r``, #459), the sigma
+    column ``nu(1-z^2)/(sigma(nu+z^2))``, and the df column (the data fit's nu-dependence + the
+    df-block's digamma derivative), plus the cross-experiment sum and -- for ``loguniform_var`` --
+    k's native->sampling transform. The estimated normalizers are not squares, so the fit is not
+    ``least_squares_exact``. A heavy-tailed family has larger higher-order curvature than the
+    Gaussian oracle, so this uses a looser FD tolerance."""
     if k_type == 'loguniform_var':
         pytest.importorskip('jax')
 
@@ -1807,6 +1918,53 @@ def test_fd_acceptance_gate_student_t(k_type):
         obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
 
     assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
+def test_fd_acceptance_gate_student_t_fixed_residual(k_type):
+    """A **fixed-scale** Student-t on the decay net carries an EXACT least-squares residual (#459):
+    the assembled residual reproduces PyBNF's own loss (``0.5||rho||^2 == evaluate``), the gradient
+    equals both the central-difference gradient and ``jac.T @ rho``, and the fit is
+    ``least_squares_exact`` -- the signal #386's LM/TRF uses to consume the residual form directly.
+    Two free params (k parameter axis + S0 IC axis), wildtype + a ``k*4`` condition; fixed sigma
+    and df (default 4) read from the data, so nothing rides the scalar normalizer path. A
+    heavy-tailed family has larger higher-order curvature, so the FD tolerance is looser than the
+    Gaussian oracle."""
+    if k_type == 'loguniform_var':
+        pytest.importorskip('jax')
+
+    obj = _student_t_objective()                 # fixed sigma (_SD column), default df=4
+    sigma = 6.0
+    free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
+    exp_hi = _exp_decay(_decay_run(k_factor * k_true, s0_true, False), sigma)
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is True
+    loss = obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+    np.testing.assert_allclose(0.5 * res.residual @ res.residual, loss)
+    np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual)
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
 
 

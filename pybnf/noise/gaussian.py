@@ -69,6 +69,22 @@ class Gaussian(NoiseModel):
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
         return residual / noise ** 2. * self.additive_on.dforward(prediction)
 
+    def residual(self, prediction, observation, noise, extra=None):
+        """The Gaussian standardized residual ``rho = (mu - forward(obs))/sigma`` -- the
+        least-squares residual the assembly stacks (#449/#459). The Gaussian is the one family
+        whose ``data_fit`` is exactly ``1/2 rho**2``, so ``rho`` is already the signed
+        square-root-loss residual (``sign(z) sqrt(2 data_fit) == rho`` identically); it is
+        returned directly (not through the sqrt round-trip) so the historical path is
+        byte-identical. The offset is prediction-independent: 0 for the MEDIAN (any scale) and a
+        MEAN on the linear scale, the family's moment correction for a MEAN on a log scale."""
+        return (self._mu(prediction, noise) - self.additive_on.forward(observation)) / noise
+
+    def d_residual_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(rho)/d(prediction) = forward'(pred)/sigma`` (#449/#459): ``1`` on the linear scale,
+        ``1/(pred*ln10*sigma)`` for log10, ``1/(pred*sigma)`` for ln -- the scale's chain factor.
+        The offset is prediction-independent, so MEAN and MEDIAN agree."""
+        return self.additive_on.dforward(prediction) / noise
+
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
         """``{'sigma': (1 - rho**2)/sigma - rho * d(offset)/d sigma / sigma}`` -- the estimated-sigma
         gradient column (#451/#454/#385). ``d(data_fit)/d sigma`` has the symmetric ``-rho**2/sigma``
