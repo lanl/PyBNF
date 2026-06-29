@@ -2,10 +2,27 @@
 
 import numpy as np
 from scipy.optimize import brentq
-from scipy.special import betainc, loggamma
+from scipy.special import betainc, betaln, digamma, loggamma
 
 from .base import NoiseModel
 from .location import MEDIAN
+
+
+def _d_betainc_d_b(a, b, x, rel=1e-6):
+    """``d/db`` of the regularized incomplete beta ``betainc(a, b, x) = I_x(a, b)`` w.r.t. its
+    **second** parameter, by a central finite difference (issue #458).
+
+    The median centering puts the prediction in this second parameter (``b = target + 1``, the
+    continuous CDF ``I_p(r, pred + 1)``), so the implicit derivative ``d mean/d pred`` needs
+    ``dI_x/db`` -- which is **not elementary**: it brings in the digamma function and a
+    non-elementary ``int_0^x t^(a-1)(1-t)^(b-1) ln(1-t) dt``. #458 takes the issue-sanctioned
+    *numerically-evaluated* parameter derivative -- a central difference in ``b`` with ``x`` held
+    fixed (``x = r/(r+mean)`` does not depend on ``pred``). ``b = target + 1 >= 1`` here, so the
+    relative step keeps ``b - db > 0``; at the median ``x`` is bounded away from 0 and 1, so
+    ``betainc`` is smooth and the difference is accurate to ~1e-10 (validated against the integral
+    representation ``int .../B(a,b) - I_x(a,b)(psi(b) - psi(a+b))``)."""
+    db = rel * max(abs(b), 1.0)
+    return (betainc(a, b + db, x) - betainc(a, b - db, x)) / (2.0 * db)
 
 
 def _mean_for_median(prediction, r):
@@ -91,3 +108,73 @@ class NegBinomial(NoiseModel):
         # A PMF is <= 1, so log_pmf <= 0; PyBNF minimizes the negative
         # log-likelihood -log_pmf >= 0.
         return -log_pmf
+
+    def d_data_fit_d_prediction(self, prediction, observation, noise, extra=None):
+        """``d(data_fit)/d(prediction)`` for one count point (#458, the deferred layer-G follow-up
+        of #385). The count family carries no least-squares residual (its data fit is a ``-logpmf``,
+        not a sum of squares), so PyBNF emits **only** this scalar data-fit gradient.
+
+        The chain ``d(data_fit)/d(mean) * d(mean)/d(prediction)``. The mean-slope is the closed-form
+        negative-binomial score ``r (mean - obs) / (mean (r + mean))`` (``r = noise`` the
+        dispersion); the mean-factor depends on the location interpretation:
+
+        * **MEAN**: the prediction *is* the mean, so ``d mean/d pred = 1`` and the slope is that
+          closed form directly -- the clean case (``neg_bin`` / ``neg_bin_dynamic``).
+        * **MEDIAN**: the mean is the CDF inversion ``_mean_for_median`` placing the continuous
+          median at the prediction, so ``d mean/d pred`` is the **implicit derivative** of that
+          root-find, ``-(dG/d pred) / (dG/d mean)`` with ``G(mean, pred) = betainc(r, target+1, p)
+          - 0.5`` and ``p = r/(r+mean)``. ``dG/d mean = -beta_pdf(p; r, target+1) * r/(r+mean)**2``
+          is the smooth beta-density chain rule (``F`` strictly decreasing in the mean, so this is
+          negative); ``dG/d pred`` puts the prediction in the beta's *second* parameter, so it is
+          the non-elementary ``d betainc/d b`` (:func:`_d_betainc_d_b`), times ``d target/d pred =
+          1``. The result is positive (a larger predicted median needs a larger mean).
+
+        A negative observation contributes nothing (the count-domain guard, mirroring
+        :meth:`data_fit`). A prediction clamped to the count floor (``pred <= 0``, where ``target``
+        floors at 0 and the median stops moving) has slope 0 -- a kink at ``pred == 0`` where PyBNF
+        takes the floor-side subgradient, like the Laplace kink (#454). The gradient uses the
+        un-clipped analytic form (``data_fit`` clips ``prob`` only at pathological extremes)."""
+        if observation < 0:
+            return 0.0
+        r = noise
+        mean = self._mean(prediction, r)
+        d_fit_d_mean = r * (mean - observation) / (mean * (r + mean))
+        if self.location is not MEDIAN:
+            return d_fit_d_mean   # MEAN: d mean/d pred = 1
+        if prediction <= 0.0:
+            return 0.0            # clamped to the count floor: the median stops moving
+        target = prediction
+        p = r / (r + mean)
+        # beta_pdf(p; r, target+1) = p**(r-1) (1-p)**target / B(r, target+1) -- via betaln for range.
+        beta_pdf = np.exp((r - 1.0) * np.log(p) + target * np.log1p(-p) - betaln(r, target + 1.0))
+        dG_d_mean = -beta_pdf * r / (r + mean) ** 2.
+        dG_d_pred = _d_betainc_d_b(r, target + 1.0, p)
+        d_mean_d_pred = -dG_d_pred / dG_d_mean
+        return d_fit_d_mean * d_mean_d_pred
+
+    def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
+        """``{'dispersion': d(data_fit)/d r}`` -- the estimated-dispersion gradient column for
+        ``neg_bin_dynamic``'s free ``r`` (#458, generalizing layer D/G of #385).
+
+        The negative-binomial PMF is **self-normalizing** (``log_normalizer == 0``), so -- unlike a
+        Gaussian's ``+log sigma`` or a Laplace's ``log(2 b)`` -- there is no separable normalizer:
+        the whole dispersion gradient lives in the data fit. With ``mean`` the distribution mean and
+        ``prob = r/(r+mean)`` the closed form is the negative-binomial dispersion score::
+
+            d(data_fit)/d r = psi(r) - psi(obs + r) - log(prob) - 1 + (r + obs)/(r + mean)
+
+        (``psi`` the digamma; the ``-logpmf``'s ``r``-dependence flows through both its gamma terms
+        and ``prob``). Valid where the **mean is r-independent** -- i.e. **MEAN** centering, where
+        the prediction *is* the mean. A free dispersion under **MEDIAN** centering is gated out
+        (``LikelihoodObjective._require_gradient_supported``): there the median's mean is itself
+        solved from ``r`` (the CDF inversion), coupling an extra ``d(data_fit)/d mean * d mean/d r``
+        term -- the count-family analogue of the deferred mean-on-log-scale corner (#454). A
+        negative observation contributes nothing (the count-domain guard)."""
+        if observation < 0:
+            return {'dispersion': 0.0}
+        r = noise
+        mean = self._mean(prediction, r)   # MEAN (the gated-supported case): mean == prediction
+        prob = r / (r + mean)
+        d_fit_d_r = (digamma(r) - digamma(observation + r) - np.log(prob) - 1.0
+                     + (r + observation) / (r + mean))
+        return {'dispersion': d_fit_d_r}

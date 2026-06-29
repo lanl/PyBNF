@@ -964,10 +964,13 @@ class LikelihoodObjective(SummationObjective):
 
     def _require_gradient_supported(self, col_name, family, sources):
         """Raise :class:`GradientNotSupported` unless this observable is a configuration the
-        gradient path differentiates: a Gaussian / Laplace / Student-t family (layer G, #454),
-        with the prediction the MEDIAN or MEAN (layer G), additive on any scale (linear, or a
+        gradient path differentiates: a Gaussian / Laplace / Student-t / negative-binomial family
+        (layer G, #454/#458), with the prediction the MEDIAN or MEAN (layer G; the count family's
+        MEDIAN is the CDF-inversion implicit derivative, #458), additive on any scale (linear, or a
         log scale: LOG10/LN, layer E #452), and the noise parameters fixed or single free
-        parameters (layer D, #451).
+        parameters (layer D, #451). A free count dispersion is supported only under MEAN centering
+        (a MEDIAN mean is solved from the dispersion, coupling the column -- the count analogue of
+        the deferred mean-on-log corner).
 
         The gate is per observable (each column may carry its own ``noise_model``
         override, ADR-0058). A per-observable **trajectory transform** -- a per-measurement
@@ -979,35 +982,43 @@ class LikelihoodObjective(SummationObjective):
         none gate here; the assembly raises cleanly if it cannot form a particular transform's
         derivative (e.g. a referenced column with no forward-sensitivity column)."""
         from .gradient.errors import GradientNotSupported
-        # The negative-binomial family's data-fit derivative needs implicit differentiation
-        # through its median CDF-inversion root-find (_mean_for_median), a named follow-up; it
-        # is matched before the catch-all so the message points at the right issue.
-        if isinstance(family, NegBinomial):
-            raise GradientNotSupported(
-                "Gradient path does not yet support the negative-binomial family (observable "
-                "'%s'); its data-fit derivative needs implicit differentiation through the "
-                "median CDF-inversion root-find -- a named follow-up, #458." % col_name)
-        if not isinstance(family, (Gaussian, Laplace, StudentT)):
-            raise GradientNotSupported(
-                "Gradient path supports the Gaussian, Laplace, and Student-t noise families so "
-                "far (observable '%s' uses %s); later layers add the others."
-                % (col_name, type(family).__name__))
-        # The additive-noise scale (LINEAR, or a log scale LOG10/LN) and the prediction's
-        # location (MEDIAN or MEAN) are both differentiable (#452/#454): the residual / data fit
-        # lives in the additive space with the location offset subtracted, and the only per-point
-        # change is d/d pred picking up the scale's chain factor (residual_point /
-        # d_data_fit_d_prediction) -- the offset is prediction-independent, so MEAN is free there.
-        # The one corner the *estimated-scale* column cannot yet form: a MEAN prediction on a LOG
-        # scale, where the moment correction itself depends on the noise parameter and so couples
-        # the column. Differentiating it is a deferred sub-layer (Student-t has no finite mean on
-        # a log scale at all, so its mean-centering there raises regardless).
         has_estimated = any(source.estimated for source in sources.values())
-        if family.location is MEAN and family.additive_on is not LINEAR and has_estimated:
+        # The count family (negative-binomial, #458) has no additive scale axis; it is gated on
+        # its own clause (which must run before the location-scale checks that read additive_on).
+        if isinstance(family, NegBinomial):
+            # The prediction gradient is supported for MEAN and MEDIAN alike -- the latter via the
+            # median CDF-inversion implicit derivative (d_data_fit_d_prediction). The estimated
+            # dispersion column is supported only for MEAN, where the prediction *is* the mean and
+            # so r-independent; under MEDIAN the mean is itself solved from r (the CDF inversion),
+            # coupling the estimated-dispersion column -- deferred, mirroring the mean-on-log corner.
+            if family.location is MEDIAN and has_estimated:
+                raise GradientNotSupported(
+                    "Gradient path does not yet support a MEDIAN-centered negative-binomial with an "
+                    "estimated dispersion (observable '%s'): the median's mean is solved from the "
+                    "dispersion (the CDF inversion), coupling the estimated-dispersion gradient "
+                    "column -- a deferred corner of #458. Use location = mean for a free dispersion."
+                    % col_name)
+        elif not isinstance(family, (Gaussian, Laplace, StudentT)):
             raise GradientNotSupported(
-                "Gradient path does not yet support a MEAN prediction on a log scale together "
-                "with an estimated noise parameter (observable '%s'): the mean's moment "
-                "correction depends on the noise parameter there, coupling the estimated-scale "
-                "gradient column -- a deferred sub-layer of #385." % col_name)
+                "Gradient path supports the Gaussian, Laplace, Student-t, and negative-binomial "
+                "noise families so far (observable '%s' uses %s); later layers add the others."
+                % (col_name, type(family).__name__))
+        else:
+            # The additive-noise scale (LINEAR, or a log scale LOG10/LN) and the prediction's
+            # location (MEDIAN or MEAN) are both differentiable (#452/#454): the residual / data fit
+            # lives in the additive space with the location offset subtracted, and the only per-point
+            # change is d/d pred picking up the scale's chain factor (residual_point /
+            # d_data_fit_d_prediction) -- the offset is prediction-independent, so MEAN is free there.
+            # The one corner the *estimated-scale* column cannot yet form: a MEAN prediction on a LOG
+            # scale, where the moment correction itself depends on the noise parameter and so couples
+            # the column. Differentiating it is a deferred sub-layer (Student-t has no finite mean on
+            # a log scale at all, so its mean-centering there raises regardless).
+            if family.location is MEAN and family.additive_on is not LINEAR and has_estimated:
+                raise GradientNotSupported(
+                    "Gradient path does not yet support a MEAN prediction on a log scale together "
+                    "with an estimated noise parameter (observable '%s'): the mean's moment "
+                    "correction depends on the noise parameter there, coupling the estimated-scale "
+                    "gradient column -- a deferred sub-layer of #385." % col_name)
         for param_name, source in sources.items():
             # An estimated noise scale is supported (layer D, #451) only as a *single
             # free parameter*: a FreeParameterSigma (chi_sq_dynamic's sigma__FREE, or a

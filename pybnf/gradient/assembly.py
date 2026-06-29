@@ -87,8 +87,11 @@ noise column generalizes per family too: Laplace's ``b``, and Student-t's ``sigm
 ``df`` (the first multi-parameter estimated-noise gradient, ADR-0058). The prediction (the
 MEDIAN or, layer G, the MEAN) and the noise scale (linear or log, layer E) compose throughout;
 ``objective.has_least_squares_residual`` routes each column. An all-Gaussian fit never touches
-``data_fit_gradient`` (it stays zero), so that path is byte-identical. The negative-binomial
-family is gated pending #458 (its median CDF-inversion implicit derivative).
+``data_fit_gradient`` (it stays zero), so that path is byte-identical. The **negative-binomial**
+count family rides the same scalar ``data_fit_gradient`` path (#458): its prediction slope is the
+NB score chained through the median CDF-inversion implicit derivative, and its estimated dispersion
+``r`` -- self-normalizing PMF, so the whole column is in the data fit -- the ``noise_gradient``
+path (MEAN centering; a MEDIAN free dispersion stays gated, the count analogue of mean-on-log).
 
 Constraint / qualitative penalties (layer I, #456)
 --------------------------------------------------

@@ -89,6 +89,21 @@ def _student_t_objective(sigma_source=None, df_source=None):
                        'df': df_source or ConstantSigma(StudentT.DEFAULT_DF)})
 
 
+def _neg_bin_objective(location=MEDIAN, dispersion=6.0, dispersion_source=None):
+    """An edition-2 negative-binomial likelihood -- the ``noise_model = neg_bin`` surface, the
+    count family (ADR-0011/0031), built through the noise-model spec, not the legacy
+    :class:`NegBinLikelihood` / :class:`NegBinLikelihood_Dynamic` subclasses. ``location`` defaults
+    to MEDIAN (the modern universal
+    default, ADR-0031); the legacy ``neg_bin`` / ``neg_bin_dynamic`` objfuncs pin MEAN. The
+    dispersion ``r`` is a config constant (``neg_bin_r``), so ``dispersion_source`` defaults to a
+    fixed :class:`ConstantSigma`; pass a :class:`FreeParameterSigma` for an estimated dispersion
+    (``neg_bin_dynamic``'s free ``r``). A PMF is self-normalizing, so there is no ``_SD`` column --
+    the experimental Data uses :func:`_exp_dyn` (no noise column) for every neg-bin test."""
+    return LikelihoodObjective(
+        noise=NegBinomial(location=location),
+        sigma_sources={'dispersion': dispersion_source or ConstantSigma(dispersion)})
+
+
 FIXTURES = Path(__file__).resolve().parent / 'bngl_files'
 
 TIMES = np.array([0.0, 1.0, 2.0, 3.0])
@@ -785,12 +800,18 @@ def test_capability_gate_refuses_composite_estimated_sigma():
     (Laplace(), None),
     (Laplace(additive_on=LOG10), None),
     (StudentT(), {'df': 5.0}),
-], ids=['gaussian', 'gaussian_log_mean', 'laplace', 'laplace_log', 'student_t'])
+    (NegBinomial(location=MEAN), None),
+    (NegBinomial(location=MEDIAN), None),
+], ids=['gaussian', 'gaussian_log_mean', 'laplace', 'laplace_log', 'student_t',
+        'neg_bin_mean', 'neg_bin_median'])
 def test_family_prediction_derivative_matches_finite_difference(family, extra):
     """``NoiseModel.d_data_fit_d_prediction`` is the exact slope of the family's own
     ``data_fit`` -- validated against a central difference of ``data_fit`` (an oracle
     independent of any closed form), across scales and a mean-on-log offset. The point is
-    chosen with ``pred != obs`` (Laplace is non-smooth only at the kink)."""
+    chosen with ``pred != obs`` (Laplace is non-smooth only at the kink). The count family's
+    MEDIAN case exercises the median CDF-inversion implicit derivative (#458) -- the central
+    difference re-solves the brentq inversion inside ``data_fit``, so it is fully independent
+    of the analytic implicit-function chain."""
     pred, obs, noise, h = 7.3, 5.1, 0.6, 1e-6
     ana = family.d_data_fit_d_prediction(pred, obs, noise, extra)
     num = (family.data_fit(pred + h, obs, noise, extra)
@@ -803,12 +824,15 @@ def test_family_prediction_derivative_matches_finite_difference(family, extra):
     (Laplace(), None, 'scale'),
     (StudentT(), {'df': 5.0}, 'sigma'),
     (StudentT(), {'df': 5.0}, 'df'),
-], ids=['gaussian_sigma', 'laplace_scale', 'student_t_sigma', 'student_t_df'])
+    (NegBinomial(location=MEAN), None, 'dispersion'),
+], ids=['gaussian_sigma', 'laplace_scale', 'student_t_sigma', 'student_t_df', 'neg_bin_dispersion'])
 def test_family_noise_param_derivative_matches_finite_difference(family, extra, param):
     """``NoiseModel.d_nll_d_noise_params[param]`` is the exact derivative of (``data_fit`` +
     that parameter's normalizer) w.r.t. the parameter -- validated against a central difference,
     the term an estimated noise parameter contributes. Covers Student-t's two parameters (the
-    df column folds in the digamma-laden df-block normalizer)."""
+    df column folds in the digamma-laden df-block normalizer) and the count family's dispersion
+    score (MEAN centering, where the mean is dispersion-independent; its self-normalizing PMF has
+    a zero normalizer, so the whole column is the data fit, #458)."""
     pred, obs, sigma, nu, h = 7.3, 5.1, 1.7, 5.0, 1e-6
     ana = family.d_nll_d_noise_params(pred, obs, sigma, extra)[param]
 
@@ -990,6 +1014,90 @@ def test_mixed_gaussian_and_laplace_objective():
     np.testing.assert_allclose(res.gradient, res.jacobian.T @ res.residual + lap)
 
 
+def test_neg_bin_mean_scalar_data_fit_gradient():
+    """A MEAN-centered negative-binomial (the legacy ``neg_bin`` centering) carries no least-
+    squares residual (its data fit is a ``-logpmf``, not a sum of squares), so the assembly routes
+    it through the scalar data-fit gradient ``sum_i r(pred_i - obs_i)/(pred_i (r + pred_i)) * d
+    pred_i/d theta`` -- the negative-binomial score with the prediction as the mean (#458). The
+    residual/Jacobian are empty; the flag is False."""
+    pred = np.array([10.0, 7.0, 5.0, 4.0])
+    obs = np.array([10.0, 6.0, 6.0, 4.0])
+    r = 5.0
+    dk = np.array([0.0, -7.0, -11.0, -12.0])
+    obj = _neg_bin_objective(location=MEAN, dispersion=r)
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)                            # a PMF self-normalizes: no _SD column
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)
+    assert res.jacobian.shape == (0, 1)
+    expected = np.sum(r * (pred - obs) / (pred * (r + pred)) * dk)
+    np.testing.assert_allclose(res.gradient[0], expected)
+
+
+def test_neg_bin_median_gradient_matches_prediction_finite_difference():
+    """A MEDIAN-centered negative-binomial assembles its scalar data-fit gradient through the
+    median CDF-inversion **implicit derivative** (#458) -- the headline of #458. Validated end-to-
+    end against a central difference of the objective's OWN loss w.r.t. a uniform shift of the
+    prediction: a non-circular oracle (the FD re-solves the brentq inversion inside ``evaluate``,
+    knowing nothing about the implicit-function chain). The model sensitivity is 1 at every point,
+    so the free parameter IS that uniform prediction shift and the assembled gradient equals
+    ``d(evaluate)/d(shift)``. No least-squares residual."""
+    pred = np.array([12.0, 9.0, 7.0, 5.0])
+    obs = np.array([10.0, 11.0, 6.0, 6.0])
+    r = 6.0
+    dk = np.ones(4)                               # d pred/d k = 1 -> k is a uniform prediction shift
+    obj = _neg_bin_objective(location=MEDIAN, dispersion=r)
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    def loss_at_shift(s):
+        return obj.evaluate(_sim_with_sensitivities(pred + s), exp)
+    h = 1e-6
+    grad_fd = (loss_at_shift(h) - loss_at_shift(-h)) / (2.0 * h)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)
+    np.testing.assert_allclose(res.gradient[0], grad_fd, rtol=1e-5, atol=1e-7)
+
+
+def test_neg_bin_estimated_dispersion_column():
+    """An estimated negative-binomial dispersion (``neg_bin_dynamic``'s free ``r``) adds a scalar
+    column ``sum_i psi(r) - psi(obs_i + r) - log(prob_i) - 1 + (r + obs_i)/(r + pred_i)`` -- the
+    negative-binomial dispersion score (#458). The PMF is self-normalizing, so there is no
+    separable normalizer (no Gaussian ``+log sigma`` / Laplace ``log(2 b)`` analogue): the whole
+    column lives in the data fit. MEAN centering, where the mean is dispersion-independent; the
+    dispersion routes NONE (no model column)."""
+    pred = np.array([10.0, 7.0, 5.0, 4.0])
+    obs = np.array([10.0, 6.0, 6.0, 4.0])
+    r = 5.0
+    dk = np.array([0.0, -7.0, -11.0, -12.0])
+    obj = _neg_bin_objective(location=MEAN, dispersion_source=FreeParameterSigma('r_free'))
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'r_free': ParamRoute('r_free', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('r_free', 'uniform_var', 0.01, 100.0, r))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient[0], np.sum(r * (pred - obs) / (pred * (r + pred)) * dk))
+    prob = r / (r + pred)
+    expected_r = np.sum(digamma(r) - digamma(obs + r) - np.log(prob) - 1.0 + (r + obs) / (r + pred))
+    np.testing.assert_allclose(res.gradient[1], expected_r)
+
+
 def test_capability_gate_now_accepts_laplace_and_student_t():
     """Layer G (#454): the asymmetric families assemble a gradient (scalar-only, flag False,
     finite) rather than raising -- the family clause that once refused them is gone."""
@@ -1003,16 +1111,35 @@ def test_capability_gate_now_accepts_laplace_and_student_t():
         assert np.all(np.isfinite(res.gradient))
 
 
-def test_capability_gate_still_refuses_negative_binomial():
-    """Negative-binomial stays gated (layer G defers it): its data-fit derivative needs implicit
-    differentiation through the median CDF-inversion root-find -- the named follow-up #458, which
-    the error message points at."""
-    obj = LikelihoodObjective(noise=NegBinomial(),
-                              sigma_sources={'dispersion': ConstantSigma(5.0)})
+def test_capability_gate_now_accepts_negative_binomial():
+    """Layer G follow-up (#458): the count family assembles a gradient (scalar-only, flag False,
+    finite) rather than raising -- both MEAN and MEDIAN centering, fixed dispersion. The family
+    clause that once refused every negative-binomial (pointing at #458) is gone."""
     sim = _sim_with_sensitivities([10, 7, 5, 4], d_param=[0, -7, -11, -12])
     exp = _exp_dyn([10, 6, 6, 4])
     routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    for obj in (_neg_bin_objective(location=MEAN), _neg_bin_objective(location=MEDIAN)):
+        res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+        assert res.least_squares_exact is False
+        assert res.residual.shape == (0,)
+        assert np.all(np.isfinite(res.gradient))
+
+
+def test_capability_gate_refuses_median_negative_binomial_with_estimated_dispersion():
+    """The one corner #458 defers: a MEDIAN-centered negative-binomial with an ESTIMATED dispersion.
+    There the median's mean is itself solved from the dispersion (the CDF inversion), coupling the
+    estimated-dispersion gradient column -- the count analogue of the deferred mean-on-log corner
+    (#454). A fixed dispersion (either centering) and an estimated dispersion under MEAN are fine;
+    only this coupling raises, pointing at #458."""
+    obj = _neg_bin_objective(location=MEDIAN, dispersion_source=FreeParameterSigma('r_free'))
+    sim = _sim_with_sensitivities([10, 7, 5, 4], d_param=[0, -7, -11, -12])
+    exp = _exp_dyn([10, 6, 6, 4])
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'r_free': ParamRoute('r_free', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('r_free', 'uniform_var', 0.01, 100.0, 5.0))
     with pytest.raises(GradientNotSupported, match='458'):
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
 
@@ -1618,6 +1745,98 @@ def test_fd_acceptance_gate_student_t(k_type):
         obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
 
     assert res.least_squares_exact is False
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
+def test_fd_acceptance_gate_neg_bin(k_type):
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **MEAN-centered negative-binomial** observable estimating its dispersion (the count family,
+    #458). The data fit is a ``-logpmf`` (not a sum of squares), so the gradient is scalar-only:
+    the model columns ``sum_i r(Stot_i - obs_i)/(Stot_i(r + Stot_i)) * d Stot_i/d theta`` (the NB
+    score, prediction == mean) plus the self-normalizing dispersion column ``sum_i psi(r) -
+    psi(obs_i + r) - log(prob_i) - 1 + (r + obs_i)/(r + Stot_i)``. Three free params -- k (parameter
+    axis), S0 (IC axis), r_free (the free dispersion, NONE-routed) -- the cross-experiment sum, and,
+    for ``loguniform_var``, k's native->sampling transform. No least-squares residual. The count
+    family has larger higher-order curvature than the Gaussian oracle, so a looser FD tolerance."""
+    if k_type == 'loguniform_var':
+        pytest.importorskip('jax')
+
+    r = 6.0
+    obj = _neg_bin_objective(location=MEAN, dispersion_source=FreeParameterSigma('r_free'))
+    free = [FreeParameter('k', k_type, 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('r_free', 'uniform_var', 0.5, 100.0, value=r)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay_no_sd(_decay_run(k_true, s0_true, False))     # a PMF self-normalizes: no _SD
+    exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        obj._pset_values = theta   # the free dispersion reads its value here (ADR-0021)
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)   # the count family carries no least-squares residual
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_neg_bin_median():
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **MEDIAN-centered negative-binomial** observable (#458, the headline): each point's mean is the
+    continuous CDF inversion ``_mean_for_median`` placing the median at the prediction, so the
+    gradient chains the NB score through the **implicit derivative** of that brentq root-find (the
+    non-elementary ``d betainc/d b``). The whole-loss FD re-solves the inversion inside ``evaluate``,
+    so it is an end-to-end oracle for the implicit chain on a real simulation + sensitivity tensor,
+    independent of the analytic implicit-function math. Two free params (k parameter axis + S0 IC
+    axis), wildtype + a ``k*4`` condition, fixed dispersion. The median-mean floors at a finite value
+    as the late-time prediction -> 0, so the implicit derivative stays bounded along the whole
+    decaying trajectory. A root-find inside the loss makes the central difference noisier than a
+    closed-form loss, so a looser FD tolerance."""
+    r = 6.0
+    obj = _neg_bin_objective(location=MEDIAN, dispersion=r)
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay_no_sd(_decay_run(k_true, s0_true, False))
+    exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
 
 

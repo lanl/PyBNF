@@ -111,12 +111,13 @@ class NoiseModel(ABC):
         Student-t) whose ``data_fit`` is not a sum of squares carries no least-squares
         residual, so its objective gradient is assembled as
         ``sum_i w_i * d(data_fit_i)/d(prediction_i) * d(prediction_i)/d(theta)`` rather than
-        from a residual-Jacobian. Overridden by the differentiable location-scale families
-        (Gaussian / Laplace / Student-t); the base raises, as the count family's gradient
-        (its median CDF-inversion implicit derivative) is a deferred follow-up (#458)."""
+        from a residual-Jacobian. Overridden by the location-scale families (Gaussian / Laplace /
+        Student-t) and -- via its median CDF-inversion implicit derivative (#458) -- the count
+        family (NegBinomial); the base raises for a (hypothetical) family with no prediction
+        gradient."""
         raise NotImplementedError(
             f'{type(self).__name__} has no prediction gradient on the noise-model gradient '
-            f'path (#454); the count family is the deferred #458 follow-up')
+            f'path (#454/#458)')
 
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
         """``{param_name: d(data_fit + that parameter's normalizer)/d param}`` for each noise
@@ -128,11 +129,11 @@ class NoiseModel(ABC):
         normalizer (Gaussian's ``log sigma``, Student-t's df-block), which is the term that
         keeps a free scale from running away. Each family's normalizers depend only on their
         own parameter, so the cross terms vanish and a per-parameter entry suffices.
-        Overridden by the differentiable location-scale families; the base raises (the count
-        family's estimated dispersion is part of the deferred #458)."""
+        Overridden by the location-scale families and the count family (NegBinomial's
+        self-normalizing dispersion score, #458); the base raises for a family with none."""
         raise NotImplementedError(
             f'{type(self).__name__} has no noise-parameter gradient on the gradient path '
-            f'(#454); the count family is the deferred #458 follow-up')
+            f'(#454/#458)')
 
     def nll(self, prediction, observation, noise, extra=None):
         """The full per-point negative log-likelihood (data fit + every parameter's
