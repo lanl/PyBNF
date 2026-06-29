@@ -46,9 +46,12 @@ Scope (this cut). TRF consumes the **exact least-squares residual** -- the Gauss
 sum of squares (an estimated noise scale, a Laplace / count family, active
 constraints; ``GradientResult.least_squares_exact == False``) has no faithful
 residual model, so this optimizer refuses it with a pointer to the L-BFGS-B path
-(``fit_type = lbfgs``, #386's fallback). Full TRF reflective transformations remain a
-follow-up in #386; local multi-start is provided by :class:`GradientOptimizer` (the base
-runs ``N`` independent :class:`_TRFRunner` starts concurrently and keeps the global best).
+(``fit_type = lbfgs``, #386's fallback). Bounds are handled by **clipping** the LM step
+into the box (``_propose_step``); the full Trust-Region-Reflective bound handling
+(Branch–Coleman–Li, matching ``scipy``'s ``method='trf'``), which converges cleanly at a
+bound-active optimum where clipping can stall, is tracked in #460. Local multi-start is
+provided by :class:`GradientOptimizer` (the base runs ``N`` independent
+:class:`_TRFRunner` starts concurrently and keeps the global best).
 
 All runner state is plain ``numpy`` / ``float`` (the point, residual, Jacobian, damping)
 -- picklable, so ``Algorithm.backup`` checkpoints the optimizer (and its list of runners)
