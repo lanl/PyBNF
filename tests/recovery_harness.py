@@ -47,6 +47,7 @@ RECOVERY_MODELS_DIR = Path(__file__).resolve().parent / 'recovery_models'
 _ALGORITHMS = {
     'de': algorithms.DifferentialEvolution,
     'am': algorithms.Adaptive_MCMC,
+    'trf': algorithms.TRFAlgorithm,   # gradient-based least-squares optimizer (#386)
 }
 
 

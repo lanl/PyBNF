@@ -95,6 +95,15 @@ class Algorithm(ABC):
     # base class does not reference a leaf subclass.
     _is_simplex = False
 
+    # Overridable flag, set True by the gradient optimizers (#386). When True,
+    # run() keeps objective scoring on the master (calc_future = None) so each
+    # Result returns with its full simdata -- the per-experiment forward
+    # sensitivity tensors the gradient assembly consumes (#385). The worker
+    # scoring path nulls res.simdata after scoring (core.Job.run_simulation), so
+    # a method that needs simdata back must opt out of it. The same base-class
+    # flag pattern as _is_simplex, so run() never references a leaf subclass.
+    requires_master_scoring = False
+
     def __init__(self, config):
         """
         Instantiates an Algorithm with a Configuration object.  Also initializes a
@@ -1087,8 +1096,14 @@ class Algorithm(ABC):
         if not os.path.isdir(self.failed_logs_dir):
             os.mkdir(self.failed_logs_dir)
 
+        # Decide where the objective is scored. The default offloads scoring to
+        # the workers (scatter an ObjectiveCalculator) for parallelism. A
+        # gradient optimizer instead needs every Result's simdata back on the
+        # master to assemble the residual Jacobian (#386), so it forces
+        # master-side scoring via requires_master_scoring -- the worker path
+        # would otherwise null res.simdata after scoring (#385).
         if self.config.config['local_objective_eval'] == 0 and self.config.config['smoothing'] == 1 and \
-                self.config.config['parallelize_models'] == 1:
+                self.config.config['parallelize_models'] == 1 and not self.requires_master_scoring:
             calculator = ObjectiveCalculator(self.objective, self.exp_data, self.config.constraints)
             [self.calc_future] = client.scatter([calculator], broadcast=True)
         else:
