@@ -268,3 +268,40 @@ class TestFullPipeline:
     def test_modern_requires_an_objective_key_end_to_end(self, tmp_path):
         with pytest.raises(PybnfError, match='No objective|named explicitly'):
             _full_build(tmp_path, 'edition = 2', 'job_type = de')
+
+
+class TestEstimatedScaleColumnDiagnostic:
+    """``_check_columns`` names the *cause* when a leftover per-point ``_SD`` column is
+    unaccounted for because the fit estimates its noise scale (a free parameter, not a
+    data column -- ``chi_sq_dynamic`` / ``sigma = fit``). Without the diagnostic the user
+    saw only the generic "not found in simulation output", which points at the simulation
+    rather than the contradictory data/noise spec (the common ``chi_sq`` ->
+    ``chi_sq_dynamic`` mistake of keeping the ``_SD`` column)."""
+
+    def test_estimated_sigma_orphan_sd_column_names_the_cause(self):
+        obj = _modern({'objective': 'chi_sq_dynamic'})
+        # sim has time + Stot; exp additionally carries a stale Stot_SD column.
+        with pytest.raises(PybnfError) as exc:
+            obj._check_columns({'time', 'Stot', 'Stot_SD'}, {'time', 'Stot'})
+        e = exc.value
+        assert 'Stot_SD' in e.log_message            # still names the offending column
+        assert "observable 'Stot'" in e.message      # attributes it to the observable
+        assert 'estimates' in e.message              # explains: scale is estimated
+        assert 'chi_sq' in e.message                 # points at the fixed-scale alternative
+
+    def test_unknown_column_keeps_the_generic_message(self):
+        # A genuinely unmatched column is not an estimated-scale orphan -> no false
+        # attribution; the user message is the plain (== log) generic one.
+        obj = _modern({'objective': 'chi_sq_dynamic'})
+        with pytest.raises(PybnfError) as exc:
+            obj._check_columns({'time', 'Stot', 'Bogus'}, {'time', 'Stot'})
+        e = exc.value
+        assert 'Bogus' in e.log_message
+        assert e.message == e.log_message
+        assert 'estimates' not in e.message
+
+    def test_fixed_scale_chi_sq_still_exempts_the_sd_column(self):
+        # Regression guard: a fixed-scale fit reads its sigma from the _SD column, so the
+        # column is exempt and there is no error (the historical {obs}_SD exemption).
+        obj = _modern({'objective': 'chi_sq'})
+        obj._check_columns({'time', 'Stot', 'Stot_SD'}, {'time', 'Stot'})  # no raise

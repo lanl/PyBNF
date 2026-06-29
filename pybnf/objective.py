@@ -1041,18 +1041,48 @@ class LikelihoodObjective(SummationObjective):
         """Like the base check, but exempt each observable's data-column noise source
         (e.g. ``obs_SD``): those are noise-scale columns, not unmatched observables
         (ADR-0021). With the default chi_sq spec this reduces to the historical
-        ``{obs}_SD`` exemption."""
+        ``{obs}_SD`` exemption.
+
+        When a leftover noise column is unaccounted for *because* the observable's
+        noise scale is estimated -- a free parameter, not a data column (the
+        ``sigma = fit`` surface / ``chi_sq_dynamic``) -- the error names that cause
+        instead of the generic "not found in simulation output": an estimated scale
+        reads its sigma from the free parameter, so a per-point ``_SD`` column kept
+        from a fixed-scale fit no longer has a home (the common ``chi_sq`` ->
+        ``chi_sq_dynamic`` mistake -- the SD column should be dropped)."""
         exempt = set()
+        estimated_obs = []   # observables whose scale is estimated (so it reads no data column)
         for col in compare_cols:
             _family, sources = self._spec_for(col)
             for source in sources.values():
                 column = source.exp_column(col)
                 if column is not None:
                     exempt.add(column)
+                elif source.estimated:
+                    estimated_obs.append(col)
         missed = set(exp_cols).difference(set(compare_cols).union(exempt))
-        if len(missed) > 0:
-            raise PybnfError('The following experimental data columns were not found in the simulation output: '
-                             + str(missed))
+        if not missed:
+            return
+        # Attribute each missed column that is the per-point noise column a fixed-scale
+        # fit WOULD read for an observable whose scale this fit instead estimates, so the
+        # error explains why an estimated-sigma fit cannot consume a leftover `_SD` column.
+        sd = DataColumnSigma()
+        orphans = {m: obs for m in sorted(missed)
+                   for obs in estimated_obs if m == sd.exp_column(obs)}
+        if orphans:
+            why = '; '.join(
+                "'%s' is the per-point noise column for observable '%s', whose noise scale "
+                "this fit estimates as a free parameter (e.g. sigma = fit, chi_sq_dynamic), "
+                "so sigma is read from that parameter, not the data" % (m, obs)
+                for m, obs in orphans.items())
+            raise PybnfError(
+                'The following experimental data columns were not found in the simulation '
+                'output: ' + str(missed),
+                why + '. Remove the leftover noise column(s) from the experimental data, or '
+                'use a fixed-scale objective (e.g. chi_sq) that reads the per-point scale '
+                'from the data.')
+        raise PybnfError('The following experimental data columns were not found in the simulation output: '
+                         + str(missed))
 
 
 @register_objfunc('chi_sq')
