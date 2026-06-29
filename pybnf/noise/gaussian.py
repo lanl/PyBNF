@@ -45,6 +45,12 @@ class Gaussian(NoiseModel):
         additive space (ADR-0022)."""
         return self.additive_on.ln_base * noise ** 2. / 2.
 
+    def d_mean_offset_d_noise(self, noise):
+        """``d(mean_offset)/d sigma = ln(base)*sigma`` (0 on the linear scale, where ``ln(base)``
+        is 0). The term that couples the offset to the noise scale when a free sigma centers a MEAN
+        on a log scale -- folded into the estimated-sigma gradient column (#385)."""
+        return self.additive_on.ln_base * noise
+
     def _mu(self, prediction, noise):
         """The additive-space location parameter for ``prediction``."""
         return self.additive_on.forward(prediction) - self.location.offset(self, noise)
@@ -64,12 +70,17 @@ class Gaussian(NoiseModel):
         return residual / noise ** 2. * self.additive_on.dforward(prediction)
 
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
-        """``{'sigma': (1 - rho**2)/sigma}`` -- the estimated-sigma gradient column (#451/#454).
-        ``d(data_fit)/d sigma = -(mu - forward(obs))**2/sigma**3 = -rho**2/sigma`` (the offset
-        is sigma-independent except for a mean on a log scale, the gated corner) plus
-        ``d(log sigma)/d sigma = 1/sigma``."""
+        """``{'sigma': (1 - rho**2)/sigma - rho * d(offset)/d sigma / sigma}`` -- the estimated-sigma
+        gradient column (#451/#454/#385). ``d(data_fit)/d sigma`` has the symmetric ``-rho**2/sigma``
+        part plus ``d(log sigma)/d sigma = 1/sigma`` (together ``(1 - rho**2)/sigma``), and -- when a
+        MEAN is centered on a log scale -- a coupling term: the offset ``mu = forward(pred) - offset``
+        itself depends on sigma there (``offset = ln(base)*sigma**2/2``), so ``rho`` carries an extra
+        ``-rho * (d offset/d sigma)/sigma`` with ``d offset/d sigma = ln(base)*sigma``, giving
+        ``-ln(base)*rho`` (#385). ``d(offset)/d sigma`` is 0 for the MEDIAN and on the linear scale,
+        so this reduces to ``(1 - rho**2)/sigma`` byte-for-byte off the log-mean corner."""
         rho = (self._mu(prediction, noise) - self.additive_on.forward(observation)) / noise
-        return {'sigma': (1. - rho ** 2) / noise}
+        return {'sigma': (1. - rho ** 2) / noise
+                - rho * self.location.d_offset_d_noise(self, noise) / noise}
 
     def log_normalizer(self, noise):
         return np.log(noise)

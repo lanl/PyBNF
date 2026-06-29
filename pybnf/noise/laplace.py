@@ -57,6 +57,23 @@ class Laplace(NoiseModel):
                 f"smaller Laplace scale b.")
         return -np.log(1.0 - bt ** 2.) / t
 
+    def d_mean_offset_d_noise(self, noise):
+        """``d(mean_offset)/d b = 2 b t / (1 - b**2 t**2)`` (0 on the linear scale), ``t =
+        ln(base)``. The offset's own dependence on the scale ``b``, folded into the estimated-scale
+        gradient column when a free Laplace scale centers a MEAN on a log scale (#385). Shares
+        ``mean_offset``'s ``b*ln(base) < 1`` domain (the mean exists only there); off the log-mean
+        corner (linear scale or median centering) it is 0, so the column reduces byte-for-byte."""
+        t = self.additive_on.ln_base
+        if t == 0.0:
+            return 0.0
+        bt = noise * t
+        if bt >= 1.0:
+            raise PybnfError(
+                f"log-Laplace mean-centering needs b*ln(base) < 1 for the mean to exist: got "
+                f"scale b={noise}, ln(base)={t} (b*ln(base)={bt} >= 1). Use location = median, "
+                f"or a smaller Laplace scale b.")
+        return 2. * noise * t / (1. - bt ** 2.)
+
     def _mu(self, prediction, noise):
         """The additive-space location parameter for ``prediction``."""
         return self.additive_on.forward(prediction) - self.location.offset(self, noise)
@@ -79,12 +96,17 @@ class Laplace(NoiseModel):
         return np.sign(residual) / noise * self.additive_on.dforward(prediction)
 
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
-        """``{'scale': -|mu - forward(obs)|/b**2 + 1/b}`` -- the estimated-scale gradient
-        column (#451/#454). ``d(data_fit)/d b = -|mu - forward(obs)|/b**2`` (the offset is
-        b-independent off the gated mean-on-log corner) plus ``d(log(2 b))/d b = 1/b`` -- the
-        ``log(2 b)`` term that keeps a free Laplace scale from running to infinity."""
+        """``{'scale': -sign(R) * d(offset)/d b / b - |R|/b**2 + 1/b}`` with ``R = mu -
+        forward(obs)`` -- the estimated-scale gradient column (#451/#454/#385). The
+        ``-|R|/b**2`` is ``d(data_fit)/d b`` holding the offset fixed and ``1/b`` is
+        ``d(log(2 b))/d b`` (the normalizer that keeps a free Laplace scale from running to
+        infinity); the ``-sign(R) * (d offset/d b)/b`` is the coupling that appears when a MEAN is
+        centered on a log scale, where ``mu = forward(pred) - offset`` and the offset depends on
+        ``b`` (``d offset/d b = 2 b t/(1 - b**2 t**2)``). ``d(offset)/d b`` is 0 for the MEDIAN and
+        on the linear scale, so this reduces to ``-|R|/b**2 + 1/b`` byte-for-byte off that corner."""
         residual = self._mu(prediction, noise) - self.additive_on.forward(observation)
-        return {'scale': -abs(residual) / noise ** 2. + 1. / noise}
+        return {'scale': -np.sign(residual) * self.location.d_offset_d_noise(self, noise) / noise
+                - abs(residual) / noise ** 2. + 1. / noise}
 
     def log_normalizer(self, noise):
         return np.log(2. * noise)

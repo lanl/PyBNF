@@ -103,6 +103,16 @@ class NoiseModel(ABC):
         raise NotImplementedError(
             f'{type(self).__name__} has no additive mean offset')
 
+    def d_mean_offset_d_noise(self, noise):
+        """``d(mean_offset)/d(noise parameter)`` -- how the mean's moment correction moves with
+        the noise scale, the term the estimated-scale gradient column needs when the prediction is
+        a MEAN on a log scale (#385). It is family-specific (Gaussian's ``ln(base)*sigma``,
+        Laplace's ``2 b t/(1 - b**2 t**2)``) and **0 on the linear scale** (the offset is 0 there),
+        so the estimated-scale column reduces byte-for-byte off the log-mean corner. Each
+        location-scale family overrides it; the base raises like :meth:`mean_offset`."""
+        raise NotImplementedError(
+            f'{type(self).__name__} has no additive mean offset')
+
     def d_data_fit_d_prediction(self, prediction, observation, noise, extra=None):
         """``d(data_fit)/d(prediction)`` for one point -- the per-point loss slope the
         gradient path chains through ``d(prediction)/d(theta)`` (layer G, #454/#385).

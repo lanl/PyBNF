@@ -107,8 +107,10 @@ class StudentT(NoiseModel):
         The sigma column folds ``d(log sigma)/d sigma = 1/sigma`` into ``d(data_fit)/d sigma``
         and reduces to Gaussian's ``(1 - z**2)/sigma`` as ``nu -> inf``; the df column folds the
         data fit's nu-dependence with the df-block's digamma derivative -- the term that keeps a
-        free df honest. The location offset is noise-independent off the gated mean-on-log corner
-        (Student-t has no finite mean on a log scale, so mean-centering there raises anyway)."""
+        free df honest. The location offset is noise-independent wherever Student-t's mean centering
+        is defined -- the linear scale, where the offset is 0; on a log scale Student-t has no finite
+        mean, so mean-centering raises in ``mean_offset`` regardless (no ``d_mean_offset_d_noise``
+        coupling term is needed, unlike Gaussian/Laplace on a log scale, #385)."""
         sigma, nu = noise, extra['df']
         z = (self._mu(prediction, sigma) - self.additive_on.forward(observation)) / sigma
         d_sigma = nu * (1. - z * z) / (sigma * (nu + z * z))

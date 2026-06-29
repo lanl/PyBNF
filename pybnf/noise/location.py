@@ -25,9 +25,18 @@ class LocationInterpretation:
     def offset(self, noise_model, noise):
         raise NotImplementedError
 
+    def d_offset_d_noise(self, noise_model, noise):
+        """``d(offset)/d(noise parameter)`` -- the offset's own dependence on the noise scale,
+        which the estimated-scale gradient column needs (#385). 0 for the median (its offset is
+        identically 0); the family's moment-correction derivative for the mean."""
+        raise NotImplementedError
+
 
 class _Median(LocationInterpretation):
     def offset(self, noise_model, noise):
+        return 0.0
+
+    def d_offset_d_noise(self, noise_model, noise):
         return 0.0
 
 
@@ -35,6 +44,12 @@ class _Mean(LocationInterpretation):
     def offset(self, noise_model, noise):
         # The moment correction is family-specific (#419): ask the family.
         return noise_model.mean_offset(noise)
+
+    def d_offset_d_noise(self, noise_model, noise):
+        # The mean offset depends on the noise scale on a log scale (Gaussian's ln(base)sigma^2/2,
+        # Laplace's -ln(1-b^2 t^2)/t); its derivative is family-specific, so ask the family. 0 on a
+        # linear scale (the offset is 0), so the estimated-scale column reduces byte-for-byte (#385).
+        return noise_model.d_mean_offset_d_noise(noise)
 
 
 MEDIAN = _Median()

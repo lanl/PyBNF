@@ -168,8 +168,9 @@ class NegBinomial(NoiseModel):
         the prediction *is* the mean. A free dispersion under **MEDIAN** centering is gated out
         (``LikelihoodObjective._require_gradient_supported``): there the median's mean is itself
         solved from ``r`` (the CDF inversion), coupling an extra ``d(data_fit)/d mean * d mean/d r``
-        term -- the count-family analogue of the deferred mean-on-log-scale corner (#454). A
-        negative observation contributes nothing (the count-domain guard)."""
+        term -- the count-family analogue of the mean-on-log-scale offset coupling the location-scale
+        families fold in (#385); not yet done here. A negative observation contributes nothing (the
+        count-domain guard)."""
         if observation < 0:
             return {'dispersion': 0.0}
         r = noise

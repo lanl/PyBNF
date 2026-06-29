@@ -846,6 +846,30 @@ def test_family_noise_param_derivative_matches_finite_difference(family, extra, 
     np.testing.assert_allclose(ana, num, rtol=1e-5)
 
 
+@pytest.mark.parametrize('family, param, scale_val', [
+    (Gaussian(additive_on=LOG10, location=MEAN), 'sigma', 0.4),
+    (Gaussian(additive_on=LN, location=MEAN), 'sigma', 0.3),
+    (Laplace(additive_on=LOG10, location=MEAN), 'scale', 0.3),   # b*ln(10) = 0.69 < 1
+    (Laplace(additive_on=LN, location=MEAN), 'scale', 0.5),       # b*ln(e) = 0.5  < 1
+], ids=['gaussian_log10', 'gaussian_ln', 'laplace_log10', 'laplace_ln'])
+def test_mean_on_log_scale_estimated_noise_derivative_matches_fd(family, param, scale_val):
+    """The lifted MEAN-on-log estimated-scale column (#385): on a log scale the mean's moment
+    correction (``offset``) depends on the noise scale, so ``d(data_fit + normalizer)/d(scale)``
+    gains a coupling term beyond the symmetric closed form -- Gaussian's ``-ln(base)*rho``, Laplace's
+    ``-sign(R)*2t/(1-b**2 t**2)`` (``d_mean_offset_d_noise``, folded in via ``location``). Validated
+    against a central difference of the family's own loss, which re-evaluates the offset's noise-
+    dependence inside, so the FD is independent of the analytic coupling term. Laplace's scale is
+    kept below ``1/ln(base)`` -- its log-scale mean exists only for ``b*ln(base) < 1``."""
+    pred, obs, h = 7.3, 5.1, 1e-7
+    ana = family.d_nll_d_noise_params(pred, obs, scale_val, None)[param]
+
+    def loss(s):
+        return family.data_fit(pred, obs, s, None) + family.param_normalizers(s, None)[param]
+
+    num = (loss(scale_val + h) - loss(scale_val - h)) / (2.0 * h)
+    np.testing.assert_allclose(ana, num, rtol=1e-5)
+
+
 def test_laplace_scalar_data_fit_gradient():
     """A Laplace observable carries no least-squares residual (its data fit ``|pred-obs|/b`` is
     not a sum of squares), so the assembly routes it through the SCALAR data-fit gradient
@@ -1144,22 +1168,34 @@ def test_capability_gate_refuses_median_negative_binomial_with_estimated_dispers
         assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
 
 
-def test_capability_gate_refuses_mean_on_log_scale_with_estimated_noise():
-    """The one corner layer G defers: a MEAN prediction on a LOG scale together with an estimated
-    noise parameter -- there the mean's moment correction depends on the noise parameter, coupling
-    the estimated-scale column. A MEAN prediction is otherwise differentiable."""
+def test_capability_gate_now_accepts_mean_on_log_scale_with_estimated_noise():
+    """Lifted (#385): a MEAN prediction on a LOG scale with an estimated scale now assembles rather
+    than raising -- the mean offset's noise-dependence (``d_mean_offset_d_noise``) is folded into the
+    estimated-scale column. The sigma column gains the ``-ln(base)*rho`` coupling beyond the
+    symmetric ``(1-rho**2)/sigma``; the assertion checks exactly that closed form."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 0.1
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
     obj = LikelihoodObjective(noise=Gaussian(additive_on=LOG10, location=MEAN),
                               sigma_sources={'sigma': FreeParameterSigma('noise_sd')})
-    sim = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
-    exp = _exp_dyn([100, 70, 60, 40])
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
         'k': ParamRoute('k', PARAM, 'k', 1.0),
         'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0),
     })
     free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
-                 ('noise_sd', 'uniform_var', 0.01, 100.0, 0.1))
-    with pytest.raises(GradientNotSupported):
-        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+                 ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    assert np.all(np.isfinite(res.gradient))
+    t = LOG10.ln_base
+    mu = np.log10(pred) - t * sigma ** 2 / 2.0   # MEAN offset on the log10 scale
+    rho = (mu - np.log10(obs)) / sigma
+    np.testing.assert_allclose(res.gradient[1], np.sum((1.0 - rho ** 2) / sigma - t * rho))
 
 
 def test_mean_location_on_linear_scale_matches_median():
@@ -1878,6 +1914,48 @@ def test_fd_acceptance_gate_mean_logscale_gaussian():
         obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
 
     assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_mean_logscale_estimated_sigma():
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a **MEAN**
+    prediction on a **log** scale AND an **estimated** sigma -- the corner #385 lifts. Here the mean
+    offset ``ln(10) sigma^2/2`` itself depends on the free sigma, so the estimated-sigma gradient
+    column gains the coupling term ``-ln(10)*rho`` beyond the symmetric ``(1-rho^2)/sigma`` (the
+    ``d_mean_offset_d_noise`` fold-in). Three free params -- k (parameter axis), S0 (IC axis),
+    noise_sd (the free scale, NONE-routed) -- so the FD exercises that coupled column end-to-end on a
+    real simulation. Not least-squares exact (the retained ``+log sigma`` normalizer); looser
+    tolerance for the log scale."""
+    obj = LikelihoodObjective(noise=Gaussian(additive_on=LOG10, location=MEAN),
+                              sigma_sources={'sigma': FreeParameterSigma('noise_sd')})
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('noise_sd', 'uniform_var', 0.01, 100.0, value=0.3)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay_no_sd(_decay_run(k_true, s0_true, False))   # free sigma: no _SD column
+    exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        obj._pset_values = theta   # the free sigma reads its value here (ADR-0021)
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
 
 

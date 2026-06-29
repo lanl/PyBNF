@@ -91,7 +91,8 @@ MEDIAN or, layer G, the MEAN) and the noise scale (linear or log, layer E) compo
 count family rides the same scalar ``data_fit_gradient`` path (#458): its prediction slope is the
 NB score chained through the median CDF-inversion implicit derivative, and its estimated dispersion
 ``r`` -- self-normalizing PMF, so the whole column is in the data fit -- the ``noise_gradient``
-path (MEAN centering; a MEDIAN free dispersion stays gated, the count analogue of mean-on-log).
+path (MEAN centering; a MEDIAN free dispersion stays gated, its mean-depends-on-``r`` coupling the
+count analogue of the mean-on-log column the location-scale families now fold in, #385/#458).
 
 Constraint / qualitative penalties (layer I, #456)
 --------------------------------------------------
