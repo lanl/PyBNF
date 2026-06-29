@@ -1,6 +1,6 @@
 """Classes defining various objective functions used for evaluating points in parameter space"""
 
-from .noise import (LINEAR, LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
+from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataColumnSigma,
                     FormulaSigma, FreeParameterSigma, Gaussian, Laplace, NegBinomial,
                     PerMeasurementFormulaSigma, RelativeSigma, StudentT)
 from .printing import PybnfError, print1
@@ -971,9 +971,10 @@ class LikelihoodObjective(SummationObjective):
         log scale: LOG10/LN, layer E #452), and the noise parameters fixed or single free
         parameters (layer D, #451) -- including a MEAN on a log scale with an estimated scale, whose
         moment correction's noise-dependence the location-scale families fold into the estimated-
-        scale column (``d_mean_offset_d_noise``, #385). A free count dispersion is still supported
-        only under MEAN centering (a MEDIAN mean is solved from the dispersion, coupling the column
-        by the same mechanism -- the count analogue, not yet folded in, #458).
+        scale column (``d_mean_offset_d_noise``, #385), and a MEDIAN-centered count family with a free
+        dispersion, whose mean-depends-on-``r`` coupling NegBinomial folds in via the same median CDF-
+        inversion implicit derivative (#458). The remaining gate is on a *composite* estimated scale
+        (a formula / per-measurement source), a later sub-layer.
 
         The gate is per observable (each column may carry its own ``noise_model``
         override, ADR-0058). A per-observable **trajectory transform** -- a per-measurement
@@ -985,37 +986,23 @@ class LikelihoodObjective(SummationObjective):
         none gate here; the assembly raises cleanly if it cannot form a particular transform's
         derivative (e.g. a referenced column with no forward-sensitivity column)."""
         from .gradient.errors import GradientNotSupported
-        has_estimated = any(source.estimated for source in sources.values())
-        # The count family (negative-binomial, #458) has no additive scale axis; it is gated on
-        # its own clause (which must run before the location-scale checks that read additive_on).
-        if isinstance(family, NegBinomial):
-            # The prediction gradient is supported for MEAN and MEDIAN alike -- the latter via the
-            # median CDF-inversion implicit derivative (d_data_fit_d_prediction). The estimated
-            # dispersion column is supported only for MEAN, where the prediction *is* the mean and
-            # so r-independent; under MEDIAN the mean is itself solved from r (the CDF inversion),
-            # coupling the estimated-dispersion column -- the same offset-depends-on-noise shape the
-            # location-scale families fold in for a mean on a log scale (#385), not yet done here.
-            if family.location is MEDIAN and has_estimated:
-                raise GradientNotSupported(
-                    "Gradient path does not yet support a MEDIAN-centered negative-binomial with an "
-                    "estimated dispersion (observable '%s'): the median's mean is solved from the "
-                    "dispersion (the CDF inversion), coupling the estimated-dispersion gradient "
-                    "column -- a deferred corner of #458. Use location = mean for a free dispersion."
-                    % col_name)
-        elif not isinstance(family, (Gaussian, Laplace, StudentT)):
+        # The supported families: Gaussian / Laplace / Student-t (the location-scale families, #454)
+        # and the count family negative-binomial (#458). Every prediction (MEDIAN or MEAN) and noise
+        # scale (linear, or a log scale LOG10/LN, #452) is differentiable for all four:
+        #  * a location-scale residual / data fit lives in the additive space with the location
+        #    offset subtracted; d/d pred is free (the offset is prediction-independent), and the
+        #    offset's *own* noise-dependence on a log-scale MEAN (Gaussian's ln(base)sigma^2/2,
+        #    Laplace's -ln(1-b^2 t^2)/t) is folded into the estimated-scale column via
+        #    d_mean_offset_d_noise (#385); Student-t has no finite log-scale mean, so its mean-
+        #    centering there raises in mean_offset regardless (no log Student-t surface exists).
+        #  * the count family's MEAN/MEDIAN prediction gradient and its MEAN/MEDIAN estimated
+        #    dispersion both close in NegBinomial via the median CDF-inversion implicit derivative
+        #    (the dispersion column folds in d mean/d r the same way, #458).
+        if not isinstance(family, (Gaussian, Laplace, StudentT, NegBinomial)):
             raise GradientNotSupported(
                 "Gradient path supports the Gaussian, Laplace, Student-t, and negative-binomial "
                 "noise families so far (observable '%s' uses %s); later layers add the others."
                 % (col_name, type(family).__name__))
-        # The additive-noise scale (LINEAR, or a log scale LOG10/LN) and the prediction's location
-        # (MEDIAN or MEAN) are both fully differentiable (#452/#454/#385) for the location-scale
-        # families, including a MEAN on a log scale with an estimated noise scale: the residual /
-        # data fit lives in the additive space with the location offset subtracted, the offset is
-        # prediction-independent (so d/d pred is free), and the offset's *own* dependence on the
-        # noise scale (Gaussian's ln(base)sigma^2/2, Laplace's -ln(1-b^2 t^2)/t) is folded into the
-        # estimated-scale column via d_mean_offset_d_noise (#385). Student-t has no finite mean on a
-        # log scale at all, so its mean-centering there raises in mean_offset regardless (no log
-        # Student-t config surface exists), needing no gate clause here.
         for param_name, source in sources.items():
             # An estimated noise scale is supported (layer D, #451) only as a *single
             # free parameter*: a FreeParameterSigma (chi_sq_dynamic's sigma__FREE, or a

@@ -25,6 +25,19 @@ def _d_betainc_d_b(a, b, x, rel=1e-6):
     return (betainc(a, b + db, x) - betainc(a, b - db, x)) / (2.0 * db)
 
 
+def _d_betainc_d_a(a, b, x, rel=1e-6):
+    """``d/da`` of the regularized incomplete beta ``betainc(a, b, x) = I_x(a, b)`` w.r.t. its
+    **first** parameter, by a central finite difference -- the sibling of :func:`_d_betainc_d_b`
+    (issue #458). A free dispersion under MEDIAN centering makes the median's mean depend on ``r``
+    through the first beta parameter ``a = r`` (the CDF is ``I_p(r, target+1)``), so the implicit
+    ``d mean/d r`` needs ``dI_x/da`` -- as non-elementary as the second-parameter derivative.
+    ``a = r > 0``, so the relative step keeps ``a - da > 0``; at the median ``x`` is bounded away
+    from 0 and 1, so the difference is accurate to ~1e-10 (validated against the integral
+    representation, like :func:`_d_betainc_d_b`)."""
+    da = rel * max(abs(a), 1.0)
+    return (betainc(a + da, b, x) - betainc(a - da, b, x)) / (2.0 * da)
+
+
 def _mean_for_median(prediction, r):
     """Solve for the mean ``mu`` of ``NB(mean=mu, dispersion=r)`` whose **continuous**
     0.5-quantile equals ``prediction`` -- the negative-binomial median realization
@@ -153,29 +166,45 @@ class NegBinomial(NoiseModel):
         return d_fit_d_mean * d_mean_d_pred
 
     def d_nll_d_noise_params(self, prediction, observation, noise, extra=None):
-        """``{'dispersion': d(data_fit)/d r}`` -- the estimated-dispersion gradient column for
-        ``neg_bin_dynamic``'s free ``r`` (#458, generalizing layer D/G of #385).
+        """``{'dispersion': d(data_fit)/d r}`` -- the estimated-dispersion gradient column for a free
+        ``r`` (``neg_bin_dynamic``'s ``r__FREE``; #458, generalizing layer D/G of #385).
 
         The negative-binomial PMF is **self-normalizing** (``log_normalizer == 0``), so -- unlike a
         Gaussian's ``+log sigma`` or a Laplace's ``log(2 b)`` -- there is no separable normalizer:
         the whole dispersion gradient lives in the data fit. With ``mean`` the distribution mean and
-        ``prob = r/(r+mean)`` the closed form is the negative-binomial dispersion score::
+        ``prob = r/(r+mean)`` the partial holding the mean fixed is the negative-binomial dispersion
+        score::
 
-            d(data_fit)/d r = psi(r) - psi(obs + r) - log(prob) - 1 + (r + obs)/(r + mean)
+            d(data_fit)/d r |_mean = psi(r) - psi(obs + r) - log(prob) - 1 + (r + obs)/(r + mean)
 
-        (``psi`` the digamma; the ``-logpmf``'s ``r``-dependence flows through both its gamma terms
-        and ``prob``). Valid where the **mean is r-independent** -- i.e. **MEAN** centering, where
-        the prediction *is* the mean. A free dispersion under **MEDIAN** centering is gated out
-        (``LikelihoodObjective._require_gradient_supported``): there the median's mean is itself
-        solved from ``r`` (the CDF inversion), coupling an extra ``d(data_fit)/d mean * d mean/d r``
-        term -- the count-family analogue of the mean-on-log-scale offset coupling the location-scale
-        families fold in (#385); not yet done here. A negative observation contributes nothing (the
-        count-domain guard)."""
+        (``psi`` the digamma; the ``-logpmf``'s ``r``-dependence through its gamma terms and ``prob``).
+
+        * **MEAN**: the prediction *is* the mean, r-independent, so this partial is the whole
+          derivative.
+        * **MEDIAN**: the mean is solved from ``r`` (the CDF inversion ``_mean_for_median``), so add
+          the coupling ``d(data_fit)/d mean * d mean/d r``. ``d mean/d r`` is the implicit derivative
+          of ``G(mean, r) = betainc(r, target+1, p) - 0.5 = 0`` (``p = r/(r+mean)``) holding the
+          prediction fixed, ``-(dG/d r)/(dG/d mean)``; ``dG/d r`` brings in the betainc **first**-
+          parameter derivative (``a = r``, :func:`_d_betainc_d_a`) plus ``p``'s own ``r``-dependence,
+          and ``dG/d mean`` is the same beta-density chain rule as the prediction gradient. The count
+          floor (``target = max(pred, 0)``) does not zero this -- the mean still moves with ``r`` even
+          at a clamped prediction. (Validated FD-first: the partial-only form is off 5-15%, sometimes
+          far more, on the median.)
+
+        A negative observation contributes nothing (the count-domain guard)."""
         if observation < 0:
             return {'dispersion': 0.0}
         r = noise
-        mean = self._mean(prediction, r)   # MEAN (the gated-supported case): mean == prediction
+        mean = self._mean(prediction, r)
         prob = r / (r + mean)
         d_fit_d_r = (digamma(r) - digamma(observation + r) - np.log(prob) - 1.0
                      + (r + observation) / (r + mean))
+        if self.location is MEDIAN:
+            target = max(prediction, 0.0)
+            d_fit_d_mean = r * (mean - observation) / (mean * (r + mean))
+            beta_pdf = np.exp((r - 1.0) * np.log(prob) + target * np.log1p(-prob)
+                              - betaln(r, target + 1.0))
+            dG_d_mean = -beta_pdf * r / (r + mean) ** 2.
+            dG_d_r = _d_betainc_d_a(r, target + 1.0, prob) + beta_pdf * mean / (r + mean) ** 2.
+            d_fit_d_r += d_fit_d_mean * (-dG_d_r / dG_d_mean)
         return {'dispersion': d_fit_d_r}

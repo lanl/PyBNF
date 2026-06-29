@@ -825,14 +825,18 @@ def test_family_prediction_derivative_matches_finite_difference(family, extra):
     (StudentT(), {'df': 5.0}, 'sigma'),
     (StudentT(), {'df': 5.0}, 'df'),
     (NegBinomial(location=MEAN), None, 'dispersion'),
-], ids=['gaussian_sigma', 'laplace_scale', 'student_t_sigma', 'student_t_df', 'neg_bin_dispersion'])
+    (NegBinomial(location=MEDIAN), None, 'dispersion'),
+], ids=['gaussian_sigma', 'laplace_scale', 'student_t_sigma', 'student_t_df',
+        'neg_bin_dispersion_mean', 'neg_bin_dispersion_median'])
 def test_family_noise_param_derivative_matches_finite_difference(family, extra, param):
     """``NoiseModel.d_nll_d_noise_params[param]`` is the exact derivative of (``data_fit`` +
     that parameter's normalizer) w.r.t. the parameter -- validated against a central difference,
     the term an estimated noise parameter contributes. Covers Student-t's two parameters (the
     df column folds in the digamma-laden df-block normalizer) and the count family's dispersion
-    score (MEAN centering, where the mean is dispersion-independent; its self-normalizing PMF has
-    a zero normalizer, so the whole column is the data fit, #458)."""
+    score under both centerings: MEAN (the mean is dispersion-independent) and MEDIAN (where the
+    central difference re-solves the brentq inversion at r +- h, so it captures the implicit
+    d mean/d r coupling the analytic column folds in via _d_betainc_d_a, #458). The self-normalizing
+    PMF has a zero normalizer, so the whole column is the data fit."""
     pred, obs, sigma, nu, h = 7.3, 5.1, 1.7, 5.0, 1e-6
     ana = family.d_nll_d_noise_params(pred, obs, sigma, extra)[param]
 
@@ -1150,22 +1154,44 @@ def test_capability_gate_now_accepts_negative_binomial():
         assert np.all(np.isfinite(res.gradient))
 
 
-def test_capability_gate_refuses_median_negative_binomial_with_estimated_dispersion():
-    """The one corner #458 defers: a MEDIAN-centered negative-binomial with an ESTIMATED dispersion.
-    There the median's mean is itself solved from the dispersion (the CDF inversion), coupling the
-    estimated-dispersion gradient column -- the count analogue of the deferred mean-on-log corner
-    (#454). A fixed dispersion (either centering) and an estimated dispersion under MEAN are fine;
-    only this coupling raises, pointing at #458."""
+def test_capability_gate_now_accepts_median_negative_binomial_with_estimated_dispersion():
+    """Lifted (#458): a MEDIAN-centered negative-binomial with an ESTIMATED dispersion now assembles
+    rather than raising. The median's mean is solved from the dispersion (the CDF inversion), so the
+    estimated-dispersion column folds in ``d mean/d r`` (the betainc first-parameter implicit
+    derivative) on top of the dispersion score -- the count analogue of the mean-on-log offset
+    coupling. Validated end-to-end against a central difference of the objective's own loss w.r.t.
+    a uniform prediction shift AND w.r.t. the free dispersion (a non-circular oracle re-solving the
+    brentq inversion inside ``evaluate``); the model sensitivity is 1, so the model column is that
+    uniform-shift derivative."""
+    pred = np.array([12.0, 9.0, 7.0, 5.0])
+    obs = np.array([10.0, 11.0, 6.0, 6.0])
+    r = 6.0
+    dk = np.ones(4)                               # d pred/d k = 1 -> k is a uniform prediction shift
     obj = _neg_bin_objective(location=MEDIAN, dispersion_source=FreeParameterSigma('r_free'))
-    sim = _sim_with_sensitivities([10, 7, 5, 4], d_param=[0, -7, -11, -12])
-    exp = _exp_dyn([10, 6, 6, 4])
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
     routing = ExperimentRouting(routes={
         'k': ParamRoute('k', PARAM, 'k', 1.0),
         'r_free': ParamRoute('r_free', NONE, None, 1.0)})
-    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
-                 ('r_free', 'uniform_var', 0.01, 100.0, 5.0))
-    with pytest.raises(GradientNotSupported, match='458'):
-        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3),
+                 ('r_free', 'uniform_var', 0.01, 100.0, r))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+    assert res.least_squares_exact is False
+    assert np.all(np.isfinite(res.gradient))
+    obj._pset_values = {'k': 0.3, 'r_free': r}    # the free dispersion reads its value here
+    h = 1e-6
+    # model column: d(loss)/d(uniform prediction shift)
+    grad_k_fd = (obj.evaluate(_sim_with_sensitivities(pred + h), exp)
+                 - obj.evaluate(_sim_with_sensitivities(pred - h), exp)) / (2.0 * h)
+    np.testing.assert_allclose(res.gradient[0], grad_k_fd, rtol=1e-5, atol=1e-7)
+    # dispersion column: d(loss)/d r, re-solving the median inversion inside evaluate at r +- h
+    def loss_at_r(rr):
+        obj._pset_values = {'k': 0.3, 'r_free': rr}
+        return obj.evaluate(sim, exp)
+    grad_r_fd = (loss_at_r(r + h) - loss_at_r(r - h)) / (2.0 * h)
+    np.testing.assert_allclose(res.gradient[1], grad_r_fd, rtol=1e-5, atol=1e-7)
 
 
 def test_capability_gate_now_accepts_mean_on_log_scale_with_estimated_noise():
@@ -1861,6 +1887,50 @@ def test_fd_acceptance_gate_neg_bin_median():
 
     def loss_at(u_vec):
         theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim_wt = _decay_run(theta['k'], theta['S0'], False)
+        sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
+        return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _decay_run(free[0].value, free[1].value, True)
+    sim_hi = _decay_run(k_factor * free[0].value, free[1].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    assert res.least_squares_exact is False
+    assert res.residual.shape == (0,)
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim
+def test_fd_acceptance_gate_neg_bin_median_estimated_dispersion():
+    """Central differences of loss(u) vs the assembled gradient(u) on the decay net with a
+    **MEDIAN-centered negative-binomial** observable estimating its dispersion (#458, the lifted
+    corner): the most complete count case -- the median CDF-inversion implicit prediction derivative
+    AND the estimated-dispersion column, which under MEDIAN folds in ``d mean/d r`` (the betainc
+    first-parameter implicit derivative) on top of the dispersion score. Three free params -- k
+    (parameter axis), S0 (IC axis), r_free (the free dispersion, NONE-routed). The whole-loss FD
+    re-solves the brentq inversion inside ``evaluate`` at every perturbed k, S0, and r, so it is an
+    end-to-end oracle for both implicit derivatives on a real simulation. No least-squares residual;
+    a root-find inside the loss warrants a looser FD tolerance."""
+    r = 6.0
+    obj = _neg_bin_objective(location=MEDIAN, dispersion_source=FreeParameterSigma('r_free'))
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('r_free', 'uniform_var', 0.5, 100.0, value=r)]
+    names = [p.name for p in free]
+    k_factor = 4.0
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay_no_sd(_decay_run(k_true, s0_true, False))
+    exp_hi = _exp_decay_no_sd(_decay_run(k_factor * k_true, s0_true, False))
+    cond_hi = MutationSet([Mutation('k', '*', k_factor)], 'hi')
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        obj._pset_values = theta   # the free dispersion reads its value here (ADR-0021)
         sim_wt = _decay_run(theta['k'], theta['S0'], False)
         sim_hi = _decay_run(k_factor * theta['k'], theta['S0'], False)
         return obj.evaluate(sim_wt, exp_wt) + obj.evaluate(sim_hi, exp_hi)
