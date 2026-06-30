@@ -799,3 +799,68 @@ def test_trf_multistart_smoke_on_becker_epor_sbml_measurement_layer(tmp_path, mo
     alg = H.build(conf, 'trf')
     H.drive(alg)
     _assert_becker_smoke(alg)
+
+
+@pytest.mark.recovery
+@pytest.mark.bngsim_sbml
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_trf_multistart_smoke_on_becker_epor_sbml_assignment_rule_observable(tmp_path, monkeypatch):
+    """``fit_type = trf`` on the Becker SBML model scoring the D2D ``Epo_cells`` observable by its
+    **assignment-rule name** -- ``observable: Epo_cells, formula: Epo_cells`` -- not the
+    hand-reconstructed species sum. ``Epo_cells := Epo_EpoRi + dEpoi`` is an SBML assignmentRule,
+    so the loader inlines it down to the two species (#465); the resulting layer, and therefore the
+    fit, is identical to the ``formula: Epo_EpoRi + dEpoi`` smoke above -- the ``kon``/``koff``
+    sensitivities flow through the inlined formula's chain rule into the residual Jacobian. This is
+    the issue's headline acceptance on the ``.xml`` form. A *smoke* test (#462/#465)."""
+    pytest.importorskip('petab')
+    from pybnf.bngsim_sbml_model import BngsimSbmlModelNoTimeout
+
+    H.install(monkeypatch)
+    model = SBML_DIR / 'becker_epor.xml'
+    data = _simulate_becker(tmp_path, model, BngsimSbmlModelNoTimeout)
+    # The oracle column is the rule's species sum, computed by hand (independent of inlining).
+    cells = np.asarray(data['Epo_EpoRi']) + np.asarray(data['dEpoi'])
+    exp = _write_becker_exp(tmp_path, data['time'], cells, 'Epo_cells')
+    conf = H.make_newera_config(
+        tmp_path, str(model), exp, _BECKER_FREE, 'tc', 'trf',
+        objective='chi_sq', random_seed=1234, population_size=4, max_iterations=40,
+        sbml_backend='bngsim', observables={'Epo_cells': 'Epo_cells'})
+
+    # The assignment-rule observable was inlined to its species (resolved, not rejected, #465).
+    mm = conf.obj.measurement.models[0]
+    assert mm.observable_id == 'Epo_cells' and mm.formula == 'Epo_EpoRi + dEpoi'
+    alg = H.build(conf, 'trf')
+    H.drive(alg)
+    _assert_becker_smoke(alg)
+
+
+@pytest.mark.recovery
+@pytest.mark.bngsim_antimony
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_trf_multistart_smoke_on_becker_epor_antimony_assignment_rule_observable(tmp_path, monkeypatch):
+    """The ``.ant`` peer of the assignment-rule-observable smoke (#465): the Becker Antimony model
+    scoring ``observable: Epo_cells, formula: Epo_cells``. The Antimony ``Epo_cells := Epo_EpoRi +
+    dEpoi`` converts to the same SBML assignmentRule (routed through the SBML namespace as of #463),
+    so the loader inlines it identically and the fit runs end to end -- the issue's acceptance that
+    the ``.ant`` and ``.xml`` forms resolve the convenience observable the same way. A *smoke* test
+    (#462/#465), needing the ``petab`` math extra + a bngsim output-sensitivities build."""
+    pytest.importorskip('petab')
+    from pybnf.bngsim_antimony_model import BngsimAntimonyModelNoTimeout
+
+    H.install(monkeypatch)
+    model = SBML_DIR / 'becker_epor.ant'
+    data = _simulate_becker(tmp_path, model, BngsimAntimonyModelNoTimeout)
+    cells = np.asarray(data['Epo_EpoRi']) + np.asarray(data['dEpoi'])
+    exp = _write_becker_exp(tmp_path, data['time'], cells, 'Epo_cells')
+    conf = H.make_newera_config(
+        tmp_path, str(model), exp, _BECKER_FREE, 'tc', 'trf',
+        objective='chi_sq', random_seed=1234, population_size=4, max_iterations=40,
+        sbml_backend='bngsim', observables={'Epo_cells': 'Epo_cells'})
+
+    mm = conf.obj.measurement.models[0]
+    assert mm.observable_id == 'Epo_cells' and mm.formula == 'Epo_EpoRi + dEpoi'
+    alg = H.build(conf, 'trf')
+    H.drive(alg)
+    _assert_becker_smoke(alg)

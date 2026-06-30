@@ -37,7 +37,8 @@ import pytest
 from pybnf.measurement import MeasurementLayer, MeasurementModel
 
 # The vendored BioModels EpoR fixture (Becker), whose D2D ``Epo_cells`` / ``Epo_medium``
-# observables are SBML assignment rules -- the exact #464 reproduction.
+# observables are SBML assignment rules -- the exact #464/#465 reproduction (rejected then,
+# inlined to species now).
 _BECKER_XML = Path(__file__).resolve().parent / 'sbml_files' / 'becker_epor.xml'
 _HAS_BECKER = _BECKER_XML.exists()
 
@@ -402,7 +403,8 @@ RULE_SBML = DECAY_SBML.replace(
 
 def _rule_config(tmp_path, formula):
     """Build a Configuration for ``RULE_SBML`` whose measurement formula is ``formula``.
-    Raises (the #464 path) when ``formula`` references the assignment-rule variable ``total``."""
+    A reference to the assignment-rule variable ``total`` is inlined to ``A + B`` (the #465
+    path), so the layer builds rather than rejecting (the superseded #464 path)."""
     import os
 
     from pybnf import config as config_mod
@@ -430,46 +432,47 @@ def _rule_config(tmp_path, formula):
         os.chdir(home)
 
 
-class TestAssignmentRuleFormulaRejected:
-    """A measurement formula that references an SBML assignment-rule variable is rejected
-    **at config build** with a pointed, reconstruct-from-species message -- it must not pass
-    validation and then fail mid-fit in ``MeasurementModel.materialize`` (#464)."""
+class TestAssignmentRuleFormulaResolved:
+    """A measurement formula that references an SBML assignment-rule variable is **resolved at
+    config build** by inlining the rule's RHS down to the species it is defined over (#465, the
+    option-2 successor to #464's rejection): ``observable: obs, formula: total`` becomes a layer
+    over ``A + B``, since the D2D convenience observable IS the assignment rule. The rule target
+    itself stays out of the allowed namespace (it is never bound as a symbol)."""
 
-    def test_referencing_an_assignment_rule_var_fails_fast(self, tmp_path):
+    def test_referencing_an_assignment_rule_var_inlines_to_species(self, tmp_path):
         pytest.importorskip('petab')
-        from pybnf.printing import PybnfError
-        with pytest.raises(PybnfError) as exc:
-            _rule_config(tmp_path, 'total')
-        msg = str(exc.value)
-        # Names the offending symbol, calls out the assignment-rule cause, and points at the
-        # species to rebuild from (the rule's <ci> referents).
-        assert "'total'" in msg and 'assignment-rule' in msg
-        assert 'A' in msg and 'B' in msg
-        assert '#464' in msg
+        conf = _rule_config(tmp_path, 'total')
+        mm = conf.obj.measurement.models[0]
+        assert mm.observable_id == 'obs'
+        # The rule ``total := A + B`` was inlined: the model now scores ``A + B`` ...
+        assert mm.formula == 'A + B'
+        # ... over the species the rule is defined on, and the rule target is never a symbol.
+        assert {'A', 'B'} <= mm.allowed_symbols
+        assert 'total' not in mm.allowed_symbols
 
     def test_reconstructing_from_species_still_builds(self, tmp_path):
-        # The fail-fast is targeted, not a blanket ban: the working reconstruction over the
-        # species the rule is defined on builds the layer normally, and the rule target is
-        # absent from the allowed namespace.
+        # The hand-reconstructed species formula is identical to the inlined rule: it builds the
+        # same layer, with the rule target absent from the allowed namespace.
         pytest.importorskip('petab')
         conf = _rule_config(tmp_path, 'A + B')
         mm = conf.obj.measurement.models[0]
         assert mm.observable_id == 'obs'
+        assert mm.formula == 'A + B'
         assert {'A', 'B'} <= mm.allowed_symbols
         assert 'total' not in mm.allowed_symbols
 
 
 @pytest.mark.skipif(not _HAS_BECKER, reason='becker_epor.xml fixture missing')
-class TestBeckerAssignmentRuleRejected:
+class TestBeckerAssignmentRuleResolved:
     """The issue's exact reproduction on the vendored BioModels EpoR fixture: a formula naming
-    the D2D ``Epo_cells`` assignment-rule observable is rejected at config build, naming the
-    species (``Epo_EpoRi + dEpoi``) the sibling smoke test (#462) reconstructs it from."""
+    the D2D ``Epo_cells`` assignment-rule observable now **builds**, the rule inlined to the
+    species it is defined over (``Epo_EpoRi + dEpoi``) -- the same column the sibling smoke test
+    (#462) scores via the hand-reconstructed formula (#465, superseding #464's rejection)."""
 
-    def test_becker_epo_cells_rejected_at_config_build(self, tmp_path):
+    def test_becker_epo_cells_inlines_at_config_build(self, tmp_path):
         pytest.importorskip('petab')
         from pybnf.parse import ploop
         from pybnf import config as config_mod
-        from pybnf.printing import PybnfError
         (tmp_path / 'becker_tc.exp').write_text(
             '# time\tEpo_cells\tEpo_cells_SD\n0\t1.0\t0.1\n10\t1.0\t0.1\n')
         conf_text = textwrap.dedent(f"""\
@@ -490,14 +493,16 @@ class TestBeckerAssignmentRuleRejected:
         home = os.getcwd()
         os.chdir(tmp_path)
         try:
-            with pytest.raises(PybnfError) as exc:
-                config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
+            conf = config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
         finally:
             os.chdir(home)
-        msg = str(exc.value)
-        assert "'Epo_cells'" in msg and 'assignment-rule' in msg
-        # The reconstruction hint names the underlying species of the D2D observable.
-        assert 'Epo_EpoRi' in msg and 'dEpoi' in msg
+        mm = conf.obj.measurement.models[0]
+        # The D2D ``Epo_cells := Epo_EpoRi + dEpoi`` rule was inlined to its species ...
+        assert mm.observable_id == 'Epo_cells'
+        assert mm.formula == 'Epo_EpoRi + dEpoi'
+        # ... and the rule target itself is never bound as a namespace symbol.
+        assert {'Epo_EpoRi', 'dEpoi'} <= mm.allowed_symbols
+        assert 'Epo_cells' not in mm.allowed_symbols
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +558,8 @@ class TestAntimonyConfigWiring:
     is converted to SBML at load, so its species/parameter namespace is fully available --
     building the namespace by parsing the ``.ant`` as BNGL (the old path) wrongly rejected
     every species as "not a known model entity" (#463). The routed SBML path also inherits the
-    assignment-rule exclusion (#464)."""
+    assignment-rule handling: the target is namespace-excluded, and a formula naming it is inlined
+    to species (#465)."""
 
     def test_ant_species_formula_builds_the_layer(self, tmp_path):
         pytest.importorskip('petab')
@@ -565,15 +571,16 @@ class TestAntimonyConfigWiring:
         # .ant parsed as BNGL and the species were absent, so this formula was rejected).
         assert {'A', 'B'} <= mm.allowed_symbols
 
-    def test_ant_assignment_rule_var_rejected_via_sbml_path(self, tmp_path):
-        # The Antimony ``total := A + B`` becomes an SBML assignmentRule, so routing .ant
-        # through parse_sbml carries the #464 exclusion: referencing it fails fast at load.
+    def test_ant_assignment_rule_var_inlines_via_sbml_path(self, tmp_path):
+        # The Antimony ``total := A + B`` becomes an SBML assignmentRule, so routing .ant through
+        # parse_sbml carries the #465 inlining: a formula naming it resolves to ``A + B``.
         pytest.importorskip('petab')
-        from pybnf.printing import PybnfError
-        with pytest.raises(PybnfError) as exc:
-            _ant_config(tmp_path, 'total')
-        msg = str(exc.value)
-        assert "'total'" in msg and 'assignment-rule' in msg and '#464' in msg
+        conf = _ant_config(tmp_path, 'total')
+        mm = conf.obj.measurement.models[0]
+        assert mm.observable_id == 'obs'
+        assert mm.formula == 'A + B'
+        assert {'A', 'B'} <= mm.allowed_symbols
+        assert 'total' not in mm.allowed_symbols
 
     @pytest.mark.skipif(not _HAS_BECKER_ANT, reason='becker_epor.ant fixture missing')
     def test_becker_ant_species_formula_builds(self, tmp_path):
@@ -587,7 +594,21 @@ class TestAntimonyConfigWiring:
         mm = conf.obj.measurement.models[0]
         assert mm.observable_id == 'obs_cells'
         assert {'Epo_EpoRi', 'dEpoi'} <= mm.allowed_symbols
-        # The assignment-rule observables are excluded from the .ant namespace too (#464).
+        # The assignment-rule observables are excluded from the .ant namespace (#464/#465).
+        assert 'Epo_cells' not in mm.allowed_symbols
+
+    @pytest.mark.skipif(not _HAS_BECKER_ANT, reason='becker_epor.ant fixture missing')
+    def test_becker_ant_epo_cells_rule_inlines_like_xml(self, tmp_path):
+        # The ``.ant`` parity acceptance (#465): naming the D2D ``Epo_cells`` assignment-rule
+        # observable on the Antimony form inlines to the SAME species formula as the ``.xml``
+        # peer (the Antimony ``Epo_cells := Epo_EpoRi + dEpoi`` converts to the same SBML rule).
+        pytest.importorskip('petab')
+        conf = _ant_config(
+            tmp_path, 'Epo_cells', model=str(_BECKER_ANT), model_text=None,
+            obs_col='Epo_cells', free=(('kon', 1e-5, 1e-2), ('koff', 1e-3, 1e-1)))
+        mm = conf.obj.measurement.models[0]
+        assert mm.observable_id == 'Epo_cells'
+        assert mm.formula == 'Epo_EpoRi + dEpoi'
         assert 'Epo_cells' not in mm.allowed_symbols
 
 
@@ -625,6 +646,47 @@ class TestLayerOnRoadRunnerTrace:
         # SAME trace's species (lambdify vs hand numpy -- isolates the layer from the ODE).
         np.testing.assert_allclose(
             data['obs_ratio'], SCALE * data['A'] / (data['A'] + data['B']), rtol=1e-12)
+
+
+class TestAssignmentRuleObservableMaterializesLikeSpecies:
+    """The #465 analytic oracle: a measurement formula that names an SBML assignment-rule
+    variable materializes (over a real RoadRunner trace) to the **same column** as the
+    hand-reconstructed species formula -- the rule ``total := A + B`` inlined to ``A + B``
+    equals a direct numpy ``A + B`` over the trace, so naming the convenience observable and
+    hand-writing its species form are interchangeable (the issue's acceptance test)."""
+
+    def test_inlined_rule_observable_equals_hand_species_column(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.petab._sbml import parse_model as parse_sbml
+        from pybnf.petab.formula import inline_assignment_rules
+        from pybnf.pset import FreeParameter, PSet, SbmlModelNoTimeout, TimeCourse
+
+        # RULE_SBML is DECAY_SBML + ``total := A + B``; simulate it on RoadRunner.
+        (tmp_path / 'ruled.xml').write_text(RULE_SBML)
+        ent = parse_sbml(RULE_SBML)
+        namespace = set(ent.namespace_symbols)
+        # Inline ``total`` exactly as config._load_measurement_models does, then materialize it
+        # alongside the hand-reconstructed species formula on the same trace.
+        inlined = inline_assignment_rules('total', ent.assignment_rules, observable_id='from_rule')
+        assert inlined == 'A + B'                      # the rule resolved to its species
+        assert 'total' not in namespace                # the target is never bound as a symbol
+
+        ps = PSet([FreeParameter('k1', 'uniform_var', 0, 1, value=K1_TRUE)])
+        xml = str(tmp_path / 'ruled.xml')
+        model = SbmlModelNoTimeout(xml, xml, pset=ps,
+                                   actions=(TimeCourse({'time': '4', 'step': '0.5'}),))
+        ds = model.execute(str(tmp_path), 'decay', 0)
+        MeasurementLayer([
+            MeasurementModel('from_rule', inlined, namespace, dict(ent.constants)),
+            MeasurementModel('from_species', 'A + B', namespace, dict(ent.constants)),
+        ]).apply({model.name: ds}, {'k1': K1_TRUE})
+        data = ds[next(iter(ds))]
+
+        # The inlined-rule column equals the hand species formula's column, bit for bit ...
+        np.testing.assert_allclose(data['from_rule'], data['from_species'], rtol=1e-12)
+        # ... and both equal a direct numpy A + B over the same trace (lambdify vs hand numpy).
+        np.testing.assert_allclose(
+            data['from_rule'], np.asarray(data['A']) + np.asarray(data['B']), rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------

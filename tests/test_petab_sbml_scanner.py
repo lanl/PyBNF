@@ -147,19 +147,21 @@ class TestSbmlScanner:
 
 class TestAssignmentRuleNamespace:
     """An SBML ``assignmentRule`` variable is declared as a parameter but is computed
-    algebraically -- never a simulation-output column and value-less -- so it cannot be
-    resolved by the measurement layer at fit time. The scanner records it (with the symbols
-    its rule reads) and excludes it from the formula namespace, so a formula referencing it is
-    rejected at config build instead of failing mid-fit (#464)."""
+    algebraically -- never a simulation-output column and value-less -- so it cannot be resolved
+    *as a symbol* by the measurement layer at fit time. The scanner records its RHS (serialized to
+    PEtab-math infix) and excludes the target from the formula namespace, so a formula referencing
+    it is **inlined** down to the species the rule is defined over at config build (#465), instead
+    of being rejected (#464) or failing mid-fit."""
 
-    def test_assignment_rule_target_recorded_with_referents(self):
+    def test_assignment_rule_target_recorded_with_formula(self):
         ent = parse_model(SBML_RULES)
-        # The target maps to the symbols its defining math references (the <ci> ids).
-        assert ent.assignment_rules == {'ratio': frozenset({'S1', 'S2'})}
+        # The target maps to its rule's RHS as PEtab-math infix (the inliner's source, #465).
+        assert ent.assignment_rules == {'ratio': 'S1 / S2'}
 
     def test_assignment_rule_target_excluded_from_namespace(self):
         ent = parse_model(SBML_RULES)
-        # 'ratio' is not resolvable at materialize -> not a formula symbol (#464) ...
+        # 'ratio' is not resolvable as a symbol at materialize -> not a formula symbol; a
+        # reference is inlined via its RHS instead (#465) ...
         assert 'ratio' not in ent.namespace_symbols
         # ... while the species it is computed from remain available to rebuild it from.
         assert {'S1', 'S2'} <= ent.namespace_symbols
@@ -176,3 +178,65 @@ class TestAssignmentRuleNamespace:
         ent = parse_model(SBML_RULES)
         assert 'ratio' not in ent.constants
         assert ent.constants == {'k1': 0.5, 'cell': 1.0}
+
+
+def _rule_rhs(mathml):
+    """Parse a one-rule SBML doc whose ``x``-rule body is ``mathml`` -> the recorded RHS."""
+    doc = ('<?xml version="1.0"?>'
+           '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
+           '<model id="m"><listOfRules><assignmentRule variable="x">'
+           '<math xmlns="http://www.w3.org/1998/Math/MathML">' + mathml +
+           '</math></assignmentRule></listOfRules></model></sbml>')
+    return parse_model(doc).assignment_rules['x']
+
+
+class TestAssignmentRuleSerialization:
+    """The stdlib MathML -> PEtab-math infix serializer behind ``assignment_rules`` (#465). It
+    carries the algebraic convenience observables SBML authors write (sums/differences/products/
+    quotients/powers + a few unambiguous functions) into the measurement layer, parenthesizing
+    operator operands so the result re-parses correctly; an untranslatable construct degrades to
+    ``None`` (the target stays namespace-excluded, and a reference raises at inline time)."""
+
+    def test_nary_plus(self):
+        assert _rule_rhs('<apply><plus/><ci> a </ci><ci> b </ci><ci> c </ci></apply>') == 'a + b + c'
+
+    def test_nested_operator_operand_is_parenthesized(self):
+        assert _rule_rhs(
+            '<apply><times/><ci> a </ci>'
+            '<apply><plus/><ci> b </ci><ci> c </ci></apply></apply>') == 'a * (b + c)'
+
+    def test_binary_minus_and_unary_minus(self):
+        assert _rule_rhs('<apply><minus/><ci> a </ci><ci> b </ci></apply>') == 'a - b'
+        assert _rule_rhs('<apply><minus/><ci> a </ci></apply>') == '-a'
+
+    def test_divide_and_power(self):
+        assert _rule_rhs('<apply><divide/><ci> a </ci><ci> b </ci></apply>') == 'a / b'
+        assert _rule_rhs('<apply><power/><ci> a </ci><cn>2</cn></apply>') == 'a ^ 2'
+
+    def test_function_call_is_not_parenthesized_as_operand(self):
+        assert _rule_rhs(
+            '<apply><times/><apply><exp/><ci> a </ci></apply><ci> b </ci></apply>') == 'exp(a) * b'
+
+    def test_e_notation_literal(self):
+        assert _rule_rhs(
+            '<apply><times/><ci> a </ci><cn type="e-notation">2<sep/>3</cn></apply>') == 'a * 2e3'
+
+    def test_untranslatable_construct_degrades_to_none(self):
+        # A piecewise (relational) rule has no plain-arithmetic infix here, so the RHS is None:
+        # the target is still recorded (so it stays namespace-excluded) but cannot be inlined.
+        rhs = _rule_rhs(
+            '<piecewise><piece><ci> a </ci>'
+            '<apply><lt/><ci> t </ci><cn>1</cn></apply></piece>'
+            '<otherwise><ci> b </ci></otherwise></piecewise>')
+        assert rhs is None
+        # The untranslatable rule is still recorded and excluded from the namespace.
+        doc = ('<?xml version="1.0"?>'
+               '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
+               '<model id="m"><listOfParameters><parameter id="x" constant="false"/>'
+               '</listOfParameters><listOfRules><assignmentRule variable="x">'
+               '<math xmlns="http://www.w3.org/1998/Math/MathML"><piecewise><piece>'
+               '<ci> a </ci><apply><lt/><ci> t </ci><cn>1</cn></apply></piece></piecewise>'
+               '</math></assignmentRule></listOfRules></model></sbml>')
+        ent = parse_model(doc)
+        assert ent.assignment_rules == {'x': None}
+        assert 'x' not in ent.namespace_symbols
