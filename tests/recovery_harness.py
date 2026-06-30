@@ -128,7 +128,7 @@ def strip_actions_block(model_bngl, dest):
 
 def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_name,
                        fit_type, *, objective='sos', condition=None, preequilibrate=None,
-                       **overrides):
+                       observables=None, **overrides):
     """Build a real bngsim ``Configuration`` for a recovery fit on the NEW-ERA
     ``experiment:`` / ``data:`` surface (ADR-0028, ``edition >= 2``).
 
@@ -145,6 +145,10 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
         ``condition:`` line and adds ``preequilibrate: name`` to the experiment, so the
         system equilibrates under it (unmeasured, to steady state) before the measurement
         ``condition`` perturbs and the data grid is measured (ADR-0052, #440).
+    :param observables: optional ``{obs_id: formula}`` -- emits ``observable: <id>,
+        formula: <expr>`` measurement-model lines (ADR-0036), the post-simulation
+        observation layer an SBML/Antimony model needs to score a derived column (a
+        ``observableFormula`` over species; needs the ``petab`` math extra).
     """
     scalars = {
         'edition': 2, 'job_type': fit_type, 'objective': objective,
@@ -156,6 +160,8 @@ def make_newera_config(tmp_path, model_bngl, exp_path, free_specs, experiment_na
     lines = [f'model: {model_bngl}']
     lines += [f'{k} = {v}' for k, v in scalars.items()]
     lines += [f'{vt} = {name} {lo} {hi}' for name, (vt, lo, hi) in free_specs.items()]
+    for obs_id, formula in (observables or {}).items():
+        lines.append(f'observable: {obs_id}, formula: {formula}')
     if condition is not None:
         lines.append(f'condition: {condition[0]}, perturbations: {condition[1]}')
     if preequilibrate is not None:

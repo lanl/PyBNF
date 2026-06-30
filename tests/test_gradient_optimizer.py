@@ -672,85 +672,127 @@ def test_gradient_recovers_in_far_fewer_evaluations_than_de(tmp_path, monkeypatc
 
 
 # --------------------------------------------------------------------------- #
-# Becker smoke test: the SBML/Antimony gradient path through the scheduler (#462)
+# Becker smoke tests: the SBML/Antimony gradient path through the scheduler (#462)
 # --------------------------------------------------------------------------- #
-# Every recovery fixture above is a tiny ``.bngl`` reaction network. The becker smoke test
-# closes the other half of #386 deliverable 6: it drives the SAME gradient machinery
-# through the **Antimony -> SBML forward-sensitivity path** (a verbatim BioModels EpoR
-# model, not a hand-written network) end to end through PyBNF's real scheduler -- multi-start
-# ``trf``, one scheduler job per evaluation. It mirrors ``examples/becker_d2d_gradient/`` (the
-# D2D multi-start -> trust-region-reflective reference) but driven through the scheduler, not
-# the standalone BNGsim-direct notebooks. It is a *smoke* test (ADR scope per #462): it must
-# run to completion at a sane objective, NOT a tight parameter recovery on the full EpoR model.
+# Every recovery fixture above is a tiny ``.bngl`` reaction network. The becker smoke tests
+# close the other half of #386 deliverable 6: they drive the SAME gradient machinery through
+# the **SBML / Antimony forward-sensitivity path** (a verbatim BioModels EpoR model, not a
+# hand-written network) end to end through PyBNF's real scheduler -- multi-start ``trf``, one
+# scheduler job per evaluation. They mirror ``examples/becker_d2d_gradient/`` (the D2D
+# multi-start -> trust-region-reflective reference) but driven through the scheduler, not the
+# standalone BNGsim-direct notebooks. *Smoke* scope (#462): run to completion at a sane
+# objective, NOT a tight parameter recovery on the full EpoR model.
+#
+# Two complementary cases:
+#   * the Antimony model scored on a **bare species** -- the dependency-free path (no petab),
+#     proving the forward-sensitivity gradient path runs through the scheduler on its own; and
+#   * the SBML model scored through a **measurement-model formula** (``Epo_EpoRi + dEpoi`` = the
+#     D2D "Epo_cells" observable) -- the observation layer (ADR-0036) the becker fit actually
+#     uses, where ``kon``/``koff`` sensitivities flow through the formula's chain rule into the
+#     residual Jacobian. The expression observableFormula needs the ``petab`` math extra (a
+#     ``.ant`` model has no formula-observable namespace, so this case uses the ``.xml`` form).
 
-# The Becker EpoR model's published nominal binding rates (the D2D "fast 2-parameter" subset)
-# and the SBML species we score -- the surface receptor-bound Epo complex.
+# The Becker EpoR model's published nominal binding rates (the D2D "fast 2-parameter" subset).
 _BECKER_NOMINAL = {'kon': 0.00010496, 'koff': 0.0172135}
-_BECKER_OBS = 'Epo_EpoR'
+_BECKER_FREE = {'kon': ('uniform_var', 1e-5, 1e-2), 'koff': ('uniform_var', 1e-3, 1e-1)}
 
 
-def _write_becker_data(workdir, model_path, *, t_end=120.0, n=13, rel_sd=0.02):
-    """Simulate the Becker EpoR Antimony model at its published ``kon``/``koff`` and write the
-    ``Epo_EpoR`` species trajectory as a zero-noise, fixed-SD ``.exp`` -- the smoke oracle.
+def _simulate_becker(workdir, model_path, model_cls, *, t_end=120.0, n=13):
+    """Simulate the Becker EpoR model at its published ``kon``/``koff`` -> the sim ``Data``.
 
-    Built directly through ``BngsimAntimonyModelNoTimeout`` (the same class the scheduler will
-    build from ``model: <…>.ant``), so the data is the model's own forward solution at the
-    nominal point; a fixed ``_SD`` column makes the chi-square an exact least-squares residual
-    (the path TRF takes). The Antimony -> SBML conversion needs no BNG2.pl (no network to
-    expand), so this fixture, unlike the ``.bngl`` ones, does not gate on it."""
-    from pybnf.bngsim_antimony_model import BngsimAntimonyModelNoTimeout
+    Built directly through ``model_cls`` (the same class the scheduler builds from the
+    ``model:`` line), so the smoke oracle is the model's own forward solution at the nominal
+    point. SBML/Antimony needs no BNG2.pl (no network to expand), so these fixtures, unlike the
+    ``.bngl`` ones, do not gate on it."""
     from pybnf.pset import FreeParameter, PSet, TimeCourse
 
     ps = PSet([FreeParameter(name, 'uniform_var', 0.0, 1e6, value=val)
                for name, val in _BECKER_NOMINAL.items()])
-    model = BngsimAntimonyModelNoTimeout(
-        str(model_path), str(model_path), pset=ps,
-        actions=(TimeCourse({'time': str(t_end), 'step': str(t_end / (n - 1))}),))
+    model = model_cls(str(model_path), str(model_path), pset=ps,
+                      actions=(TimeCourse({'time': str(t_end), 'step': str(t_end / (n - 1))}),))
     ds = model.execute(str(workdir), 'becker', 0)
-    data = ds[next(iter(ds))]
-    t, obs = data['time'], data[_BECKER_OBS]
-    sd = max(rel_sd * float(np.max(obs)), 1e-6)
+    return ds[next(iter(ds))]
+
+
+def _write_becker_exp(workdir, times, column, obs_id, *, rel_sd=0.02):
+    """Write the observable ``column`` as a zero-noise, fixed-SD ``.exp`` named ``obs_id``.
+    The fixed ``_SD`` makes the chi-square an exact least-squares residual (TRF's path)."""
+    sd = max(rel_sd * float(np.max(column)), 1e-6)
     exp = Path(workdir) / 'becker_tc.exp'
-    lines = ['# time\t%s\t%s_SD' % (_BECKER_OBS, _BECKER_OBS)]
-    lines += ['%.10g\t%.10g\t%.10g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    lines = ['# time\t%s\t%s_SD' % (obs_id, obs_id)]
+    lines += ['%.10g\t%.10g\t%.10g' % (ti, oi, sd) for ti, oi in zip(times, column)]
     exp.write_text('\n'.join(lines) + '\n')
     return str(exp)
+
+
+def _assert_becker_smoke(alg):
+    """The shared smoke assertion: the multi-start ran every start to termination and landed at
+    a sane objective (zero-noise data -> the chi-square descends far below its box-start value;
+    a loose finite bound, not a tight parameter assertion)."""
+    assert alg.n_starts == 4 and alg.active == 0 and len(alg.runners) == 4 and \
+        all(r.stop_reason for r in alg.runners), 'every start should run to termination'
+    best = alg.trajectory.best_score()
+    assert np.isfinite(best) and best < 1.0, \
+        'becker smoke fit should land at a sane objective, got %g' % best
 
 
 @pytest.mark.recovery
 @pytest.mark.bngsim_antimony
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
-def test_trf_multistart_smoke_through_the_scheduler_on_becker_epor(tmp_path, monkeypatch):
-    """``fit_type = trf`` with multi-start drives the Becker EpoR model (BioModels
-    ``BIOMD0000000271``, Antimony) to completion through PyBNF's real scheduler, fitting the
-    binding rates ``kon``/``koff`` to a zero-noise synthetic time course of the ``Epo_EpoR``
-    species. This exercises the **Antimony -> SBML forward-sensitivity** gradient path the
-    ``.bngl`` recovery fixtures do not: the model is carried verbatim (never edited), bngsim
-    carries output sensitivities for ``kon``/``koff`` through the ODE solve, and the assembled
-    residual Jacobian drives the async trust-region loop -- the same path the
-    ``examples/becker_d2d_gradient/`` reference walks standalone, here through the scheduler.
+def test_trf_multistart_smoke_on_becker_epor_antimony_species(tmp_path, monkeypatch):
+    """``fit_type = trf`` multi-start drives the Becker EpoR model (BioModels ``BIOMD0000000271``,
+    Antimony) to completion through PyBNF's real scheduler, fitting ``kon``/``koff`` to a
+    zero-noise time course of the ``Epo_EpoR`` species. The **dependency-free** SBML/Antimony
+    gradient smoke: the model is carried verbatim, bngsim carries output sensitivities for
+    ``kon``/``koff`` through the ODE solve, and the assembled residual Jacobian drives the async
+    trust-region loop -- no observation layer (a bare model species is scored directly), so it
+    needs no ``petab`` math extra. A *smoke* test (#462), not a tight EpoR recovery."""
+    from pybnf.bngsim_antimony_model import BngsimAntimonyModelNoTimeout
 
-    A *smoke* test (#462): it asserts the multi-start ran every start to termination and landed
-    at a sane objective, not a tight recovery of the full EpoR parameter set."""
     H.install(monkeypatch)
     model = SBML_DIR / 'becker_epor.ant'
-    exp = _write_becker_data(tmp_path, model)
+    data = _simulate_becker(tmp_path, model, BngsimAntimonyModelNoTimeout)
+    exp = _write_becker_exp(tmp_path, data['time'], data['Epo_EpoR'], 'Epo_EpoR')
     conf = H.make_newera_config(
-        tmp_path, str(model), exp,
-        {'kon': ('uniform_var', 1e-5, 1e-2), 'koff': ('uniform_var', 1e-3, 1e-1)},
-        'tc', 'trf', objective='chi_sq', random_seed=1234,
-        population_size=4, max_iterations=40)
+        tmp_path, str(model), exp, _BECKER_FREE, 'tc', 'trf',
+        objective='chi_sq', random_seed=1234, population_size=4, max_iterations=40)
 
     alg = H.build(conf, 'trf')
-    assert alg.n_starts == 4, 'population_size=4 should scatter 4 trf starts'
     H.drive(alg)
+    _assert_becker_smoke(alg)
 
-    # The scheduler ran the multi-start to completion: every start terminated, none pending.
-    assert alg.active == 0 and len(alg.runners) == 4 and \
-        all(r.stop_reason for r in alg.runners), 'every start should run to termination'
-    # ...and the fit landed at a sane objective (zero-noise data -> the chi-square descends
-    # far below its box-start value; a loose finite bound, not a tight parameter assertion).
-    best = alg.trajectory.best_score()
-    assert np.isfinite(best) and best < 1.0, \
-        'becker smoke fit should land at a sane objective, got %g' % best
+
+@pytest.mark.recovery
+@pytest.mark.bngsim_sbml
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_trf_multistart_smoke_on_becker_epor_sbml_measurement_layer(tmp_path, monkeypatch):
+    """``fit_type = trf`` multi-start drives the Becker EpoR model (SBML) to completion through
+    the scheduler, scoring a **measurement-model formula** observable -- ``Epo_cells =
+    Epo_EpoRi + dEpoi`` (the D2D internalised-Epo observable), the post-simulation observation
+    layer (ADR-0036) the becker fit actually uses. This is the full SBML gradient path #462
+    calls for: the ``kon``/``koff`` forward sensitivities flow through the formula's chain rule
+    (two species) into the residual Jacobian that drives the trust-region loop. The expression
+    ``observableFormula`` needs the ``petab`` math extra (so this skips without it) and the
+    SBML form (a ``.ant`` model exposes no formula-observable namespace). A *smoke* test (#462),
+    not a tight EpoR recovery."""
+    pytest.importorskip('petab')
+    from pybnf.bngsim_sbml_model import BngsimSbmlModelNoTimeout
+
+    H.install(monkeypatch)
+    model = SBML_DIR / 'becker_epor.xml'
+    data = _simulate_becker(tmp_path, model, BngsimSbmlModelNoTimeout)
+    # The oracle column is computed by hand from the species (independent of the layer's lambdify).
+    cells = np.asarray(data['Epo_EpoRi']) + np.asarray(data['dEpoi'])
+    exp = _write_becker_exp(tmp_path, data['time'], cells, 'Epo_cells')
+    conf = H.make_newera_config(
+        tmp_path, str(model), exp, _BECKER_FREE, 'tc', 'trf',
+        objective='chi_sq', random_seed=1234, population_size=4, max_iterations=40,
+        sbml_backend='bngsim', observables={'Epo_cells': 'Epo_EpoRi + dEpoi'})
+
+    # The measurement-model layer is built (the formula observable, not a model edit).
+    assert [m.observable_id for m in conf.obj.measurement.models] == ['Epo_cells']
+    alg = H.build(conf, 'trf')
+    H.drive(alg)
+    _assert_becker_smoke(alg)
