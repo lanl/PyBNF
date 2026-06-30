@@ -94,17 +94,39 @@ def _ls_problem(ustar):
 
 
 def test_trf_runner_matches_scipy_on_an_interior_least_squares_minimum():
-    """The TRF (Levenberg–Marquardt) runner drives a bounded least-squares quadratic
+    """The TRF (Trust-Region-Reflective) runner drives a bounded least-squares quadratic
     whose minimum is interior to the box to the same point ``scipy.least_squares`` finds
-    -- the step math is preserved by the headless extraction."""
+    -- in the interior the Coleman–Li scaling and reflection fall away, so this is an
+    ordinary trust-region least-squares step, preserved by the headless extraction."""
     ustar = np.array([1.0, -0.5, 2.0])
     r_and_jac, _ = _ls_problem(ustar)
     runner = _drive_least_squares(
-        _TRFRunner(_U0, _LOWER, _UPPER, 200, grad_tol=1e-10, step_tol=1e-12, tau=1e-3),
+        _TRFRunner(_U0, _LOWER, _UPPER, 200, grad_tol=1e-10, step_tol=1e-12),
         r_and_jac)
     oracle = least_squares(lambda u: _D @ (u - ustar), _U0, jac=lambda u: _D,
                            bounds=(_LOWER, _UPPER))
     assert np.allclose(runner.point, ustar, atol=1e-5)
+    assert np.allclose(runner.point, oracle.x, atol=1e-5)
+    assert 'gradient is flat' in runner.stop_reason
+
+
+def test_trf_runner_matches_scipy_with_several_bounds_active():
+    """The case the Trust-Region-Reflective bound handling is for (#460): the
+    unconstrained minimum lies far outside the box, so **all three** bounds are active at
+    the constrained optimum (the box corner). The reflective transformation must slide the
+    iterate cleanly onto that corner -- where plain clipping of the unconstrained step can
+    stall -- matching ``scipy.optimize.least_squares(method='trf', bounds=…)``, the offline
+    oracle for the bound-constrained least-squares step. The scaled-gradient optimality
+    test ``‖v·Jᵀr‖∞`` reads as flat there (the Coleman–Li ``v`` vanishes on every active
+    face), so the run stops on first-order optimality, not the budget."""
+    ustar = np.array([10.0, -8.0, 9.0])     # every coordinate's optimum is outside the box
+    r_and_jac, _ = _ls_problem(ustar)
+    runner = _drive_least_squares(
+        _TRFRunner(_U0, _LOWER, _UPPER, 500, grad_tol=1e-10, step_tol=1e-12),
+        r_and_jac)
+    oracle = least_squares(lambda u: _D @ (u - ustar), _U0, jac=lambda u: _D,
+                           bounds=(_LOWER, _UPPER))
+    assert np.allclose(runner.point, [3.0, -3.0, 3.0], atol=1e-6)   # the box corner
     assert np.allclose(runner.point, oracle.x, atol=1e-5)
     assert 'gradient is flat' in runner.stop_reason
 

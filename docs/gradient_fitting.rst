@@ -28,11 +28,17 @@ Running a gradient fit
 
 Two optimizers consume the gradient, both opt-in via ``fit_type``:
 
-* ``fit_type = trf`` — a **trust-region least-squares** (Levenberg–Marquardt) optimizer. It
+* ``fit_type = trf`` — a **Trust-Region-Reflective least-squares** optimizer
+  (Branch–Coleman–Li, matching ``scipy.optimize.least_squares(method="trf")``). It
   consumes the residual vector + residual Jacobian and approximates the Hessian as
   :math:`J^{\mathsf T}J`, which is far better-conditioned on a least-squares problem than feeding a
   scalar gradient to a generic quasi-Newton method. This is the workhorse for the common Gaussian /
-  sum-of-squares case. It requires an **exact least-squares residual** (a Gaussian or fixed-scale
+  sum-of-squares case. Bounds are handled by the **Coleman–Li reflective transformation**: a
+  trust-region step that would leave the box is reflected off the bound it crosses, and an affine
+  scaling :math:`D(x)` derived from the distance to the bounds keeps the model valid as the iterate
+  approaches a bound — so it converges cleanly onto a **bound-active** optimum (sliding along an
+  active face) rather than stalling against it, and its first-order optimality test reads as optimal
+  on an active face. It requires an **exact least-squares residual** (a Gaussian or fixed-scale
   Student-t objective, no constraints); a fit whose objective is not an exact sum of squares is
   refused with a pointer to ``lbfgs``.
 

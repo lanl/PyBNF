@@ -145,6 +145,55 @@ def test_trf_recovers_decay_rate_and_initial_condition(tmp_path, monkeypatch):
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
+def test_trf_recovers_with_a_bound_active_at_the_optimum(tmp_path, monkeypatch):
+    """The case that exercises the Trust-Region-Reflective bound handling (#460), not just
+    a clip into the box. The rate ``k`` is boxed to ``[0.01, 0.2]`` -- its true value
+    ``0.3`` sits **outside** the box, so the constrained least-squares optimum pins ``k``
+    at the upper bound ``0.2`` (a strictly active bound, with the gradient pushing further
+    out) while ``S0`` stays interior. The reflective transformation must slide the iterate
+    cleanly onto that active face and recover the conditional optimum over the free ``S0``,
+    where simply clipping the unconstrained LM step could stall against the bound. This is
+    the sibling of ``test_lbfgs_recovers_with_a_bound_active_at_the_optimum`` on the exact
+    least-squares (fixed-SD chi-square) path TRF takes.
+
+    With ``k`` pinned at ``0.2`` the fit is linear in ``S0`` (the model is
+    ``S0·exp(-k·t)``), so the conditional least-squares optimum ``S0*`` is closed-form on
+    the data grid -- we assert the optimizer recovers both the active bound and that
+    analytic ``S0*``."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')   # zero-noise data at the true (k, S0)
+
+    K_BOUND = 0.2     # upper bound on k, below the true 0.3 -> active at the optimum
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, K_BOUND), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'trf', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=100)
+
+    alg = H.build(conf, 'trf')
+    H.drive(alg)
+
+    # Conditional LS optimum for S0 with k held at the bound (constant-SD chi-square ->
+    # the SD cancels): S0* = Σ m_i o_i / Σ m_i², m_i = exp(-k_bound t_i), o_i = truth.
+    t = np.linspace(0.0, 10.0, 21)
+    m = np.exp(-K_BOUND * t)
+    o = TRUE_S0 * np.exp(-TRUE_K * t)
+    s0_star = float(np.sum(m * o) / np.sum(m * m))
+
+    rec = H.best_params(alg, ('k', 'S0'))
+    # k is held at its (active) upper bound, not driven to the infeasible truth.
+    assert abs(rec['k'] - K_BOUND) < 1e-3, \
+        'k recovered %g, expected the active bound ~%g' % (rec['k'], K_BOUND)
+    # S0 recovers the conditional least-squares optimum on the active face.
+    assert abs(rec['S0'] - s0_star) / s0_star < 0.01, \
+        'S0 recovered %g, expected conditional optimum ~%g' % (rec['S0'], s0_star)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
 def test_trf_is_picklable_across_a_run(tmp_path, monkeypatch):
     """``Algorithm.backup`` pickles the optimizer mid-run, so the TRF state machine
     must round-trip both before and after a run -- all LM state is plain numpy/float
