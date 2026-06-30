@@ -1789,9 +1789,9 @@ class Configuration:
             ed, 2, "the 'observable: <id>, formula: <expr>' measurement-model syntax")
 
         from .measurement import MeasurementLayer, MeasurementModel, PerMeasurementModel
-        from .petab.formula import compile_petab_formula
+        from .petab.formula import compile_petab_formula, formula_free_symbols
 
-        namespace, constants = self._model_expression_namespace()
+        namespace, constants, unresolved = self._model_expression_namespace()
         free_names = {v.name for v in self.variables}
         # Free parameters resolve from the PSet at eval time, not from the constant snapshot.
         constants = {n: val for n, val in constants.items() if n not in free_names}
@@ -1805,6 +1805,16 @@ class Configuration:
         models = []                 # constant measurement models -> pre-materialized layer
         per_measurement = {}        # row-varying ones -> bound per data point in the objective
         for obs_id, formula in specs:
+            # An SBML assignment-rule variable is declared in the model (so it would pass the
+            # namespace check if it were not excluded) but is algebraically computed -- never a
+            # simulation-output column and value-less -- so the measurement layer cannot resolve
+            # it at fit time. Catch a reference here, at load, with a message that names the
+            # species to rebuild the observable from, rather than letting the run fail late in
+            # MeasurementModel.materialize (#464).
+            if unresolved:
+                rule_refs = set(formula_free_symbols(formula)) & set(unresolved)
+                if rule_refs:
+                    self._raise_assignment_rule_formula(obs_id, sorted(rule_refs)[0], unresolved)
             # A surviving per-measurement placeholder marks a row-varying scale/offset (ADR-0045):
             # its token differs per data row, so it is bound per data point, NOT pre-materialized.
             # Admit the placeholder symbol(s) to the allowed set so the rest validates fail-fast.
@@ -1835,6 +1845,27 @@ class Configuration:
                      len(models), len(per_measurement),
                      [m.observable_id for m in models] + sorted(per_measurement))
 
+    @staticmethod
+    def _raise_assignment_rule_formula(obs_id, sym, unresolved):
+        """Reject a measurement formula that references an SBML assignment-rule variable, with
+        a reconstruct-from-species message (#464).
+
+        ``sym`` is the offending assignment-rule id; ``unresolved[sym]`` is the set of symbols
+        its rule is defined over. The rule is an algebraic function of those entities, so the
+        observable is written directly over them -- e.g. an SBML ``Epo_cells := Epo_EpoRi +
+        dEpoi`` becomes ``formula: Epo_EpoRi + dEpoi`` (the reconstruction the becker SBML
+        smoke test takes; #462)."""
+        deps = sorted(unresolved.get(sym) or ())
+        hint = (f" Its rule is defined over {', '.join(deps)}, so write the observable directly "
+                f"over those entities (e.g. 'formula: {' + '.join(deps)}')." if deps else "")
+        raise PybnfError(
+            f"Measurement model '{obs_id}': the observableFormula references '{sym}', which is "
+            f"an SBML assignment-rule variable, not a simulation-output column. An "
+            f"assignment-rule variable is computed algebraically every step and is never "
+            f"emitted by the simulator (the backends output species only), nor is it a fixed "
+            f"value, so the measurement layer cannot resolve it at fit time.{hint} (ADR-0036, "
+            f"#464.)")
+
     def _attach_per_measurement_models(self, per_measurement):
         """Register the row-varying measurement models on the objective (ADR-0045).
 
@@ -1860,17 +1891,26 @@ class Configuration:
         read from the model files directly (stdlib, simulator-free -- the same source the
         importer uses): the BNGL ``ParamList`` (parameters u observables u functions) for a
         ``.bngl`` model, species u parameters u compartments for a ``.xml`` SBML model
-        (ADR-0026/0036). Returns ``(namespace_symbols, constants)``."""
+        (ADR-0026/0036).
+
+        Returns ``(namespace_symbols, constants, unresolved)``, where ``unresolved`` maps an
+        SBML assignment-rule variable (declared as a parameter, but algebraically computed --
+        never a simulation-output column and value-less, so the measurement layer cannot
+        resolve it at ``materialize``) to the symbols its rule is defined over. Such a variable
+        is **excluded** from ``namespace_symbols``; ``unresolved`` lets the loader reject a
+        formula that references one with a pointed, reconstruct-from-species message (#464)."""
         from .petab._bngl import parse_model as parse_bngl
         from .petab._sbml import parse_model as parse_sbml
         namespace = set()
         constants = {}
+        unresolved = {}
         for mf in self.config['models']:
             text = Path(self._absolute(mf)).read_text(encoding='utf-8', errors='replace')
             if mf.endswith('.xml'):
                 ent = parse_sbml(text)
                 namespace |= ent.namespace_symbols
                 constants.update(ent.constants)
+                unresolved.update(ent.assignment_rules)
             else:  # .bngl (the BNGL ParamList; .ant antimony carries no formula observables)
                 ent = parse_bngl(text)
                 namespace |= (set(ent.parameters) | set(ent.observable_names)
@@ -1880,7 +1920,7 @@ class Configuration:
                         constants[name] = float(rhs)
                     except (TypeError, ValueError):
                         pass  # an expression-valued parameter is not a numeric constant
-        return namespace, constants
+        return namespace, constants, unresolved
 
     def _load_simulators(self):
 

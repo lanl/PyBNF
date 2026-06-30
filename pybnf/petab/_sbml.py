@@ -29,6 +29,15 @@ class SbmlEntities:
     and ``parameter_values`` maps a global parameter or compartment id to its numeric value --
     the fixed-constant snapshot a :class:`~pybnf.measurement.MeasurementModel` resolves a
     non-column, non-PSet symbol against (ADR-0036 §4).
+
+    ``assignment_rules`` maps each ``assignmentRule`` target id to the set of symbols its
+    defining math references (the rule's ``<ci>`` referents). An assignment-rule variable is
+    declared as a ``<parameter>`` (so it is *in* ``parameter_names``) but its value is a
+    computed algebraic function of other entities, recomputed every step -- it is **never** a
+    simulation-output column (the backends emit species only) and carries no fixed value, so
+    the measurement layer cannot resolve it at fit time. It is therefore excluded from
+    :attr:`namespace_symbols`; the referents are kept so the loader can point a rejected
+    formula at the species to rebuild the observable from (#464).
     """
 
     text: str
@@ -37,12 +46,17 @@ class SbmlEntities:
     compartment_names: frozenset
     species_initial: dict     # 'S1' -> 10.0
     parameter_values: dict    # 'k1' -> 0.5, 'cell' -> 1.0  (params u compartment sizes)
+    assignment_rules: dict    # 'Epo_cells' -> frozenset({'Epo_EpoRi', 'dEpoi'})  (#464)
 
     @property
     def namespace_symbols(self):
         """The symbols an ``observableFormula`` may reference: species u parameters u
-        compartments (the SBML analogue of the BNGL ``ParamList``, ADR-0026/0036)."""
-        return self.species_names | self.parameter_names | self.compartment_names
+        compartments (the SBML analogue of the BNGL ``ParamList``, ADR-0026/0036), **minus**
+        any assignment-rule variable -- which is declared as a parameter but is not resolvable
+        at ``materialize`` (not an output column, no fixed value), so advertising it would
+        green-light a formula that then fails mid-fit (#464)."""
+        return ((self.species_names | self.parameter_names | self.compartment_names)
+                - set(self.assignment_rules))
 
     @property
     def constants(self):
@@ -62,6 +76,7 @@ def parse_model(text):
 
     species, species_initial = {}, {}
     parameters, compartments = {}, {}
+    assignment_rules = {}
     for container in list(model):
         ctag = _local(container.tag)
         if ctag == 'listOfSpecies':
@@ -83,6 +98,15 @@ def parse_model(text):
                 cid = e.get('id')
                 if cid:
                     compartments[cid] = _float_or_none(e.get('size'))
+        elif ctag == 'listOfRules':
+            # An <assignmentRule variable="X"> makes X an algebraically-computed entity, not a
+            # simulation output -- record it (with the symbols its math reads) so it is dropped
+            # from the formula namespace and a reference to it fails fast at load (#464). A
+            # <rateRule> target is a genuine dynamical state, so it is left alone.
+            for e in _children(container, 'assignmentRule'):
+                var = e.get('variable')
+                if var:
+                    assignment_rules[var] = frozenset(_ci_referents(e))
 
     parameter_values = {k: v for k, v in {**parameters, **compartments}.items()
                         if v is not None}
@@ -93,6 +117,7 @@ def parse_model(text):
         compartment_names=frozenset(compartments),
         species_initial=species_initial,
         parameter_values=parameter_values,
+        assignment_rules=assignment_rules,
     )
 
 
@@ -112,6 +137,14 @@ def _find_child(parent, local_name):
 def _children(container, local_name):
     """The direct children of ``container`` whose local tag is ``local_name``."""
     return [e for e in container if _local(e.tag) == local_name]
+
+
+def _ci_referents(elem):
+    """The MathML ``<ci>`` identifiers referenced anywhere under ``elem`` (an SBML rule's
+    defining math) -- the model entities the rule is computed from. Used to point a rejected
+    assignment-rule formula at the species to reconstruct the observable from (#464)."""
+    return {ci.text.strip() for ci in elem.iter()
+            if _local(ci.tag) == 'ci' and ci.text and ci.text.strip()}
 
 
 def _species_initial(species_elem):

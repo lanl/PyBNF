@@ -36,6 +36,11 @@ import pytest
 
 from pybnf.measurement import MeasurementLayer, MeasurementModel
 
+# The vendored BioModels EpoR fixture (Becker), whose D2D ``Epo_cells`` / ``Epo_medium``
+# observables are SBML assignment rules -- the exact #464 reproduction.
+_BECKER_XML = Path(__file__).resolve().parent / 'sbml_files' / 'becker_epor.xml'
+_HAS_BECKER = _BECKER_XML.exists()
+
 # A crafted SBML L3V2 model: mass-action A -> B (rate cell*k1*A), with a fixed scale
 # parameter. A(t)=10 exp(-k1 t); A+B=10 conserved. Loads in RoadRunner and bngsim alike.
 DECAY_SBML = """\
@@ -375,6 +380,124 @@ class TestSbmlConfigWiring:
         assert mm.allowed_symbols == {'A', 'B', 'k1', 'scale', 'cell'}
         # scale + cell are fixed -> constants; k1 is free -> resolved from the PSet.
         assert mm.constants == {'scale': 100.0, 'cell': 1.0}
+
+
+# A crafted SBML model with an assignment-rule variable: ``total := A + B`` (a value-less
+# parameter assigned every step). The forward A->B kinetics are irrelevant -- the test only
+# builds the Configuration, which is where the #464 namespace check lives.
+RULE_SBML = DECAY_SBML.replace(
+    '      <parameter id="scale" value="100" constant="true"/>\n',
+    '      <parameter id="scale" value="100" constant="true"/>\n'
+    '      <parameter id="total" constant="false"/>\n').replace(
+    '    </listOfReactions>\n',
+    '    </listOfReactions>\n'
+    '    <listOfRules>\n'
+    '      <assignmentRule variable="total">\n'
+    '        <math xmlns="http://www.w3.org/1998/Math/MathML">\n'
+    '          <apply><plus/><ci> A </ci><ci> B </ci></apply>\n'
+    '        </math>\n'
+    '      </assignmentRule>\n'
+    '    </listOfRules>\n')
+
+
+def _rule_config(tmp_path, formula):
+    """Build a Configuration for ``RULE_SBML`` whose measurement formula is ``formula``.
+    Raises (the #464 path) when ``formula`` references the assignment-rule variable ``total``."""
+    import os
+
+    from pybnf import config as config_mod
+    from pybnf.parse import ploop
+    (tmp_path / 'ruled.xml').write_text(RULE_SBML)
+    (tmp_path / 'meas.exp').write_text('# time\tobs\n0\t1.0\n1\t1.0\n')
+    conf_text = textwrap.dedent(f"""\
+        edition = 2
+        job_type = de
+        objective = sos
+        sbml_backend = roadrunner
+        model: ruled.xml
+        observable: obs, formula: {formula}
+        experiment: meas, data: meas.exp
+        uniform_var = k1 0.01 10
+        population_size = 4
+        max_iterations = 1
+        verbosity = 0
+        """)
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
+    finally:
+        os.chdir(home)
+
+
+class TestAssignmentRuleFormulaRejected:
+    """A measurement formula that references an SBML assignment-rule variable is rejected
+    **at config build** with a pointed, reconstruct-from-species message -- it must not pass
+    validation and then fail mid-fit in ``MeasurementModel.materialize`` (#464)."""
+
+    def test_referencing_an_assignment_rule_var_fails_fast(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.printing import PybnfError
+        with pytest.raises(PybnfError) as exc:
+            _rule_config(tmp_path, 'total')
+        msg = str(exc.value)
+        # Names the offending symbol, calls out the assignment-rule cause, and points at the
+        # species to rebuild from (the rule's <ci> referents).
+        assert "'total'" in msg and 'assignment-rule' in msg
+        assert 'A' in msg and 'B' in msg
+        assert '#464' in msg
+
+    def test_reconstructing_from_species_still_builds(self, tmp_path):
+        # The fail-fast is targeted, not a blanket ban: the working reconstruction over the
+        # species the rule is defined on builds the layer normally, and the rule target is
+        # absent from the allowed namespace.
+        pytest.importorskip('petab')
+        conf = _rule_config(tmp_path, 'A + B')
+        mm = conf.obj.measurement.models[0]
+        assert mm.observable_id == 'obs'
+        assert {'A', 'B'} <= mm.allowed_symbols
+        assert 'total' not in mm.allowed_symbols
+
+
+@pytest.mark.skipif(not _HAS_BECKER, reason='becker_epor.xml fixture missing')
+class TestBeckerAssignmentRuleRejected:
+    """The issue's exact reproduction on the vendored BioModels EpoR fixture: a formula naming
+    the D2D ``Epo_cells`` assignment-rule observable is rejected at config build, naming the
+    species (``Epo_EpoRi + dEpoi``) the sibling smoke test (#462) reconstructs it from."""
+
+    def test_becker_epo_cells_rejected_at_config_build(self, tmp_path):
+        pytest.importorskip('petab')
+        from pybnf.parse import ploop
+        from pybnf import config as config_mod
+        from pybnf.printing import PybnfError
+        (tmp_path / 'becker_tc.exp').write_text(
+            '# time\tEpo_cells\tEpo_cells_SD\n0\t1.0\t0.1\n10\t1.0\t0.1\n')
+        conf_text = textwrap.dedent(f"""\
+            edition = 2
+            job_type = trf
+            objective = chi_sq
+            sbml_backend = roadrunner
+            model: {_BECKER_XML}
+            observable: Epo_cells, formula: Epo_cells
+            experiment: tc, data: becker_tc.exp
+            uniform_var = kon 1e-5 1e-2
+            uniform_var = koff 1e-3 1e-1
+            population_size = 4
+            max_iterations = 1
+            verbosity = 0
+            """)
+        import os
+        home = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            with pytest.raises(PybnfError) as exc:
+                config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
+        finally:
+            os.chdir(home)
+        msg = str(exc.value)
+        assert "'Epo_cells'" in msg and 'assignment-rule' in msg
+        # The reconstruction hint names the underlying species of the D2D observable.
+        assert 'Epo_EpoRi' in msg and 'dEpoi' in msg
 
 
 # ---------------------------------------------------------------------------
