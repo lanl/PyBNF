@@ -45,6 +45,7 @@ from . import recovery_harness as H
 pytestmark = [pytest.mark.bngsim]
 
 BNGL_DIR = Path(__file__).resolve().parent / 'bngl_files'
+SBML_DIR = Path(__file__).resolve().parent / 'sbml_files'
 
 # Truth for the synthetic decay data; the model's own nominal values.
 TRUE_K = 0.3
@@ -593,3 +594,163 @@ def test_gradient_multistart_collapses_to_one_start_for_a_refiner(tmp_path, monk
     alg.reset()
     assert alg.n_starts == 1 and len(alg.start_psets) == 1, \
         'an injected refiner start must disable multi-start (got %d)' % alg.n_starts
+
+
+# --------------------------------------------------------------------------- #
+# Convergence vs a metaheuristic baseline (#386 deliverable 6, #462)
+# --------------------------------------------------------------------------- #
+# The recovery tests above prove each optimizer reaches the truth; they do NOT compare it
+# to anything. #386 deliverable 6 also asks for the head-to-head a gradient method exists
+# to win: on the SAME model and data, a gradient fit (trf / lbfgs) against a metaheuristic
+# baseline (de). The selling point of a gradient method is not a lower floor -- both bottom
+# out at the zero-noise optimum -- but reaching it in **far fewer objective evaluations**
+# (each evaluation is one bngsim ODE solve / one scheduler job). So the assertion is (a)
+# both recover the truth, (b) the gradient fit's objective is at least as good, and (c) it
+# spends materially fewer evaluations getting there. Deterministic (fixed random_seed +
+# the synchronous fake client), so it is a fixed inequality, not a flaky race.
+
+
+def _run_decay_fit(tmp_dir, fit_type, **overrides):
+    """Build + drive a decay fit in its own ``output_dir`` and report what the
+    convergence-vs-baseline comparison turns on: ``(evaluations, best_score, params)``.
+
+    ``evaluations`` is the algorithm's ``success_count`` -- the number of objective
+    evaluations the fit actually spent (one bngsim solve apiece), the metric that separates
+    a gradient method from a population search. Each fit gets a fresh subdirectory so the de
+    baseline and the gradient fit never share a model build or an output tree."""
+    tmp_dir = Path(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    model = _decay_model(tmp_dir)
+    exp = _write_decay_exp(tmp_dir / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_dir, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', fit_type, objective='chi_sq', random_seed=1234, **overrides)
+    alg = H.build(conf, fit_type)
+    H.drive(alg)
+    return alg.success_count, alg.trajectory.best_score(), H.best_params(alg, ('k', 'S0'))
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+@pytest.mark.parametrize('grad_fit', ['trf', 'lbfgs'])
+def test_gradient_recovers_in_far_fewer_evaluations_than_de(tmp_path, monkeypatch, grad_fit):
+    """The #386 head-to-head: a gradient fit vs a differential-evolution baseline on the
+    same decay model. Differential evolution needs a whole population over many generations
+    to triangulate the optimum (here 12 x 40 = 480 evaluations to floor the chi-square and
+    recover the rate + initial condition); the gradient fit follows the exact
+    forward-sensitivity descent direction and reaches the same optimum in a handful of steps
+    (single start). Both recover the truth, the gradient objective is at least as good, and
+    the gradient fit spends an order of magnitude fewer evaluations -- the concrete payoff
+    of consuming the sensitivity Jacobian/gradient instead of probing the surface."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+
+    # Metaheuristic baseline: differential evolution, sized to genuinely converge here.
+    de_evals, de_score, de_rec = _run_decay_fit(
+        tmp_path / 'de', 'de', population_size=12, max_iterations=40)
+    # The gradient fit: a single local start consuming the assembled sensitivities.
+    g_evals, g_score, g_rec = _run_decay_fit(
+        tmp_path / grad_fit, grad_fit, population_size=1, max_iterations=100)
+
+    # (a) Both methods recover the known truth -- the comparison is on the same optimum.
+    for name, rec in (('de', de_rec), (grad_fit, g_rec)):
+        assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.02, \
+            '%s recovered k=%g, expected ~%g' % (name, rec['k'], TRUE_K)
+        assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.02, \
+            '%s recovered S0=%g, expected ~%g' % (name, rec['S0'], TRUE_S0)
+
+    # (b) The gradient fit reaches an at-least-as-good objective (it floors deeper here).
+    assert g_score <= de_score, \
+        '%s objective %g should be <= de objective %g' % (grad_fit, g_score, de_score)
+
+    # (c) ...in materially fewer evaluations -- the real selling point (>=10x fewer).
+    assert g_evals * 10 < de_evals, \
+        '%s used %d evaluations vs de %d -- expected an order of magnitude fewer' % (
+            grad_fit, g_evals, de_evals)
+
+
+# --------------------------------------------------------------------------- #
+# Becker smoke test: the SBML/Antimony gradient path through the scheduler (#462)
+# --------------------------------------------------------------------------- #
+# Every recovery fixture above is a tiny ``.bngl`` reaction network. The becker smoke test
+# closes the other half of #386 deliverable 6: it drives the SAME gradient machinery
+# through the **Antimony -> SBML forward-sensitivity path** (a verbatim BioModels EpoR
+# model, not a hand-written network) end to end through PyBNF's real scheduler -- multi-start
+# ``trf``, one scheduler job per evaluation. It mirrors ``examples/becker_d2d_gradient/`` (the
+# D2D multi-start -> trust-region-reflective reference) but driven through the scheduler, not
+# the standalone BNGsim-direct notebooks. It is a *smoke* test (ADR scope per #462): it must
+# run to completion at a sane objective, NOT a tight parameter recovery on the full EpoR model.
+
+# The Becker EpoR model's published nominal binding rates (the D2D "fast 2-parameter" subset)
+# and the SBML species we score -- the surface receptor-bound Epo complex.
+_BECKER_NOMINAL = {'kon': 0.00010496, 'koff': 0.0172135}
+_BECKER_OBS = 'Epo_EpoR'
+
+
+def _write_becker_data(workdir, model_path, *, t_end=120.0, n=13, rel_sd=0.02):
+    """Simulate the Becker EpoR Antimony model at its published ``kon``/``koff`` and write the
+    ``Epo_EpoR`` species trajectory as a zero-noise, fixed-SD ``.exp`` -- the smoke oracle.
+
+    Built directly through ``BngsimAntimonyModelNoTimeout`` (the same class the scheduler will
+    build from ``model: <…>.ant``), so the data is the model's own forward solution at the
+    nominal point; a fixed ``_SD`` column makes the chi-square an exact least-squares residual
+    (the path TRF takes). The Antimony -> SBML conversion needs no BNG2.pl (no network to
+    expand), so this fixture, unlike the ``.bngl`` ones, does not gate on it."""
+    from pybnf.bngsim_antimony_model import BngsimAntimonyModelNoTimeout
+    from pybnf.pset import FreeParameter, PSet, TimeCourse
+
+    ps = PSet([FreeParameter(name, 'uniform_var', 0.0, 1e6, value=val)
+               for name, val in _BECKER_NOMINAL.items()])
+    model = BngsimAntimonyModelNoTimeout(
+        str(model_path), str(model_path), pset=ps,
+        actions=(TimeCourse({'time': str(t_end), 'step': str(t_end / (n - 1))}),))
+    ds = model.execute(str(workdir), 'becker', 0)
+    data = ds[next(iter(ds))]
+    t, obs = data['time'], data[_BECKER_OBS]
+    sd = max(rel_sd * float(np.max(obs)), 1e-6)
+    exp = Path(workdir) / 'becker_tc.exp'
+    lines = ['# time\t%s\t%s_SD' % (_BECKER_OBS, _BECKER_OBS)]
+    lines += ['%.10g\t%.10g\t%.10g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    exp.write_text('\n'.join(lines) + '\n')
+    return str(exp)
+
+
+@pytest.mark.recovery
+@pytest.mark.bngsim_antimony
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_trf_multistart_smoke_through_the_scheduler_on_becker_epor(tmp_path, monkeypatch):
+    """``fit_type = trf`` with multi-start drives the Becker EpoR model (BioModels
+    ``BIOMD0000000271``, Antimony) to completion through PyBNF's real scheduler, fitting the
+    binding rates ``kon``/``koff`` to a zero-noise synthetic time course of the ``Epo_EpoR``
+    species. This exercises the **Antimony -> SBML forward-sensitivity** gradient path the
+    ``.bngl`` recovery fixtures do not: the model is carried verbatim (never edited), bngsim
+    carries output sensitivities for ``kon``/``koff`` through the ODE solve, and the assembled
+    residual Jacobian drives the async trust-region loop -- the same path the
+    ``examples/becker_d2d_gradient/`` reference walks standalone, here through the scheduler.
+
+    A *smoke* test (#462): it asserts the multi-start ran every start to termination and landed
+    at a sane objective, not a tight recovery of the full EpoR parameter set."""
+    H.install(monkeypatch)
+    model = SBML_DIR / 'becker_epor.ant'
+    exp = _write_becker_data(tmp_path, model)
+    conf = H.make_newera_config(
+        tmp_path, str(model), exp,
+        {'kon': ('uniform_var', 1e-5, 1e-2), 'koff': ('uniform_var', 1e-3, 1e-1)},
+        'tc', 'trf', objective='chi_sq', random_seed=1234,
+        population_size=4, max_iterations=40)
+
+    alg = H.build(conf, 'trf')
+    assert alg.n_starts == 4, 'population_size=4 should scatter 4 trf starts'
+    H.drive(alg)
+
+    # The scheduler ran the multi-start to completion: every start terminated, none pending.
+    assert alg.active == 0 and len(alg.runners) == 4 and \
+        all(r.stop_reason for r in alg.runners), 'every start should run to termination'
+    # ...and the fit landed at a sane objective (zero-noise data -> the chi-square descends
+    # far below its box-start value; a loose finite bound, not a tight parameter assertion).
+    best = alg.trajectory.best_score()
+    assert np.isfinite(best) and best < 1.0, \
+        'becker smoke fit should land at a sane objective, got %g' % best
