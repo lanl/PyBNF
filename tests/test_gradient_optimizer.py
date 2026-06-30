@@ -689,8 +689,10 @@ def test_gradient_recovers_in_far_fewer_evaluations_than_de(tmp_path, monkeypatc
 #   * the SBML model scored through a **measurement-model formula** (``Epo_EpoRi + dEpoi`` = the
 #     D2D "Epo_cells" observable) -- the observation layer (ADR-0036) the becker fit actually
 #     uses, where ``kon``/``koff`` sensitivities flow through the formula's chain rule into the
-#     residual Jacobian. The expression observableFormula needs the ``petab`` math extra (a
-#     ``.ant`` model has no formula-observable namespace, so this case uses the ``.xml`` form).
+#     residual Jacobian. The expression observableFormula needs the ``petab`` math extra. (As of
+#     #463 a ``.ant`` model also exposes its species namespace to a formula -- the routing is
+#     covered by ``test_petab_sbml_layer.TestAntimonyConfigWiring``; this case uses the ``.xml``
+#     form as the canonical SBML peer of the bare-species ``.ant`` case above.)
 
 # The Becker EpoR model's published nominal binding rates (the D2D "fast 2-parameter" subset).
 _BECKER_NOMINAL = {'kon': 0.00010496, 'koff': 0.0172135}
@@ -774,8 +776,9 @@ def test_trf_multistart_smoke_on_becker_epor_sbml_measurement_layer(tmp_path, mo
     layer (ADR-0036) the becker fit actually uses. This is the full SBML gradient path #462
     calls for: the ``kon``/``koff`` forward sensitivities flow through the formula's chain rule
     (two species) into the residual Jacobian that drives the trust-region loop. The expression
-    ``observableFormula`` needs the ``petab`` math extra (so this skips without it) and the
-    SBML form (a ``.ant`` model exposes no formula-observable namespace). A *smoke* test (#462),
+    ``observableFormula`` needs the ``petab`` math extra (so this skips without it); this case
+    uses the ``.xml`` SBML form (a ``.ant`` model now exposes the same formula namespace as of
+    #463, but the smoke fit is pinned to the canonical SBML peer here). A *smoke* test (#462),
     not a tight EpoR recovery."""
     pytest.importorskip('petab')
     from pybnf.bngsim_sbml_model import BngsimSbmlModelNoTimeout

@@ -1893,6 +1893,13 @@ class Configuration:
         ``.bngl`` model, species u parameters u compartments for a ``.xml`` SBML model
         (ADR-0026/0036).
 
+        An Antimony (``.ant``) model is converted to SBML at load (the same
+        ``antimony.getSBMLString`` the model loader uses) and shares the SBML branch, so its
+        species/parameter namespace is available to a measurement formula exactly as for a
+        ``.xml`` model -- ``.ant`` and ``.xml`` are interchangeable everywhere else, and a
+        formula over a ``.ant`` model's species must not be rejected as "not a known model
+        entity" just because the namespace was built by parsing the file as BNGL (#463).
+
         Returns ``(namespace_symbols, constants, unresolved)``, where ``unresolved`` maps an
         SBML assignment-rule variable (declared as a parameter, but algebraically computed --
         never a simulation-output column and value-less, so the measurement layer cannot
@@ -1906,12 +1913,19 @@ class Configuration:
         unresolved = {}
         for mf in self.config['models']:
             text = Path(self._absolute(mf)).read_text(encoding='utf-8', errors='replace')
-            if mf.endswith('.xml'):
+            if mf.endswith('.xml') or mf.endswith('.ant'):
+                if mf.endswith('.ant'):
+                    # Convert Antimony -> SBML text the same way the model loader does, so the
+                    # SBML scanner sees the model's species/parameters (#463). A .ant model
+                    # already needs the antimony package to run at all, so requiring it to
+                    # validate a .ant measurement formula is consistent.
+                    from .bngsim_antimony_model import _antimony_text_to_sbml_text
+                    text = _antimony_text_to_sbml_text(text, self._absolute(mf))
                 ent = parse_sbml(text)
                 namespace |= ent.namespace_symbols
                 constants.update(ent.constants)
                 unresolved.update(ent.assignment_rules)
-            else:  # .bngl (the BNGL ParamList; .ant antimony carries no formula observables)
+            else:  # .bngl -- the BNGL ParamList (parameters u observables u functions)
                 ent = parse_bngl(text)
                 namespace |= (set(ent.parameters) | set(ent.observable_names)
                               | set(ent.function_names))

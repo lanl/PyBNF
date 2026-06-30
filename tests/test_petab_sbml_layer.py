@@ -501,6 +501,97 @@ class TestBeckerAssignmentRuleRejected:
 
 
 # ---------------------------------------------------------------------------
+# 2c. Antimony (.ant) config wiring: the formula namespace is built from the SBML
+#     the model converts to at load, not from parsing the .ant as BNGL (#463)
+# ---------------------------------------------------------------------------
+
+# A crafted Antimony model: A -> B decay with an assignment-rule observable ``total := A + B``.
+CRAFT_ANT = """\
+model craft
+  species A = 10, B = 0;
+  k1 = 0.5;
+  J0: A -> B; k1*A;
+  total := A + B;
+end
+"""
+
+_BECKER_ANT = Path(__file__).resolve().parent / 'sbml_files' / 'becker_epor.ant'
+_HAS_BECKER_ANT = _BECKER_ANT.exists()
+
+
+def _ant_config(tmp_path, formula, *, model='craft.ant', model_text=CRAFT_ANT,
+                obs_col='obs', free=(('k1', 0.01, 10),)):
+    """Build a Configuration for an Antimony model whose measurement formula is ``formula``.
+
+    ``.ant`` is a bngsim-only path (no roadrunner-antimony loader), so callers gate on
+    ``@pytest.mark.bngsim_antimony``. Lines are assembled explicitly (not via a dedented
+    template) so a multi-line free-parameter block keeps its indentation."""
+    import os
+
+    from pybnf import config as config_mod
+    from pybnf.parse import ploop
+    if model_text is not None:
+        (tmp_path / model).write_text(model_text)
+    (tmp_path / 'meas.exp').write_text(f'# time\t{obs_col}\n0\t10\n1\t6\n')
+    lines = ['edition = 2', 'job_type = de', 'objective = sos', 'sbml_backend = bngsim',
+             f'model: {model}', f'observable: {obs_col}, formula: {formula}',
+             'experiment: meas, data: meas.exp']
+    lines += [f'uniform_var = {n} {lo} {hi}' for n, lo, hi in free]
+    lines += ['population_size = 4', 'max_iterations = 1', 'verbosity = 0']
+    conf_text = '\n'.join(lines) + '\n'
+    home = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return config_mod.Configuration(ploop(conf_text.splitlines(keepends=True)))
+    finally:
+        os.chdir(home)
+
+
+@pytest.mark.bngsim_antimony
+class TestAntimonyConfigWiring:
+    """A measurement formula over an Antimony model's species must validate: a ``.ant`` model
+    is converted to SBML at load, so its species/parameter namespace is fully available --
+    building the namespace by parsing the ``.ant`` as BNGL (the old path) wrongly rejected
+    every species as "not a known model entity" (#463). The routed SBML path also inherits the
+    assignment-rule exclusion (#464)."""
+
+    def test_ant_species_formula_builds_the_layer(self, tmp_path):
+        pytest.importorskip('petab')
+        conf = _ant_config(tmp_path, 'A + B')
+        assert conf.obj.measurement and len(conf.obj.measurement) == 1
+        mm = conf.obj.measurement.models[0]
+        assert mm.observable_id == 'obs'
+        # The species the .ant declares are in the namespace (the #463 regression: before, the
+        # .ant parsed as BNGL and the species were absent, so this formula was rejected).
+        assert {'A', 'B'} <= mm.allowed_symbols
+
+    def test_ant_assignment_rule_var_rejected_via_sbml_path(self, tmp_path):
+        # The Antimony ``total := A + B`` becomes an SBML assignmentRule, so routing .ant
+        # through parse_sbml carries the #464 exclusion: referencing it fails fast at load.
+        pytest.importorskip('petab')
+        from pybnf.printing import PybnfError
+        with pytest.raises(PybnfError) as exc:
+            _ant_config(tmp_path, 'total')
+        msg = str(exc.value)
+        assert "'total'" in msg and 'assignment-rule' in msg and '#464' in msg
+
+    @pytest.mark.skipif(not _HAS_BECKER_ANT, reason='becker_epor.ant fixture missing')
+    def test_becker_ant_species_formula_builds(self, tmp_path):
+        # The issue's exact reproduction: the becker .ant scored through a measurement formula
+        # over two of its species (the D2D Epo_cells observable, reconstructed). Before #463
+        # this raised "'Epo_EpoRi' is not a known model entity"; now it builds end to end.
+        pytest.importorskip('petab')
+        conf = _ant_config(
+            tmp_path, 'Epo_EpoRi + dEpoi', model=str(_BECKER_ANT), model_text=None,
+            obs_col='obs_cells', free=(('kon', 1e-5, 1e-2), ('koff', 1e-3, 1e-1)))
+        mm = conf.obj.measurement.models[0]
+        assert mm.observable_id == 'obs_cells'
+        assert {'Epo_EpoRi', 'dEpoi'} <= mm.allowed_symbols
+        # The assignment-rule observables are excluded from the .ant namespace too (#464).
+        assert 'Epo_cells' not in mm.allowed_symbols
+
+
+# ---------------------------------------------------------------------------
 # 3. The layer on a real RoadRunner SBML trace (core dependency; normal tier)
 # ---------------------------------------------------------------------------
 
