@@ -180,6 +180,9 @@ class GradientOptimizer(StartPointOptimizer):
         # Backend gate: every model must expose bngsim's forward-sensitivity hooks
         # (the capability gate itself fires later, at apply_routing).
         self._require_sensitivity_backend()
+        # Differentiability gate: a discrete-event model has no smooth forward
+        # sensitivity (bngsim refuses one), so refuse it now rather than mid-run (#461).
+        self._require_differentiable_dynamics()
         # Multi-start setup: the reflecting box, the start-point count + the start
         # PSets, and the (empty) orchestration state. The per-start runners are built
         # lazily in start_run (they need the leaf's tunables, read after this returns).
@@ -300,7 +303,7 @@ class GradientOptimizer(StartPointOptimizer):
         print2('Current best objective: %f, %s' % (runner.fval, runner.progress_detail()))
 
     # --- gates ------------------------------------------------------------- #
-    # The gradient path is gated in three places, each as early as it can be:
+    # The gradient path is gated in four places, each as early as it can be:
     #
     # * **edition** (:meth:`_require_edition_2`, before model build) -- the gradient
     #   consumes the edition-2 surface (bind-by-id routing, the noise-model /
@@ -308,12 +311,21 @@ class GradientOptimizer(StartPointOptimizer):
     # * **backend** (:meth:`_require_sensitivity_backend`, after model build) -- every
     #   model must expose bngsim's forward-sensitivity hooks; a non-bngsim (e.g.
     #   RoadRunner/SBML) model has no sensitivity tensor here;
+    # * **differentiability** (:meth:`_require_differentiable_dynamics`, after model
+    #   build, #461) -- a discrete-event model has no smooth forward sensitivity
+    #   (bngsim refuses one, GH #205), so refuse it here rather than fail mid-run;
     # * **capability** (deferred to :meth:`_setup_gradient_path`'s ``apply_routing``,
     #   #447) -- raises if the bngsim build lacks the ``output_sensitivities`` feature.
     #
     # The per-evaluation gate (an unsupported *objective* -- Laplace residual,
     # estimated scale, … raising :class:`GradientNotSupported`) is caught at the first
-    # assembly in :meth:`gradient_at`.
+    # assembly in :meth:`gradient_at`. A non-ODE simulation *method* (SSA / NFsim) is
+    # likewise non-differentiable, but the method is an action-level property (a model
+    # can mix actions) rather than a model-structure one, so it is not hoisted here; it
+    # keeps its existing clean per-evaluation refusal in the backend's
+    # ``_sensitivity_request_kwargs`` (a method != 'ode' under a sensitivity request
+    # raises a :class:`PybnfError`, not a raw backend traceback). Events, by contrast,
+    # are a build-time structural signal and so *can* be a pre-flight gate.
     def _require_edition_2(self, config):
         """Refuse a legacy (edition < 2) config before any model is built."""
         edition = config.config.get('edition')
@@ -335,6 +347,31 @@ class GradientOptimizer(StartPointOptimizer):
                     "Gradient-based fitting (fit_type = %s) requires the bngsim "
                     "backend's forward sensitivities, but model '%s' uses a backend "
                     "that does not provide them." % (
+                        self._fit_type_label(), getattr(model, 'name', '?')),
+                    _FALLBACK_HINT)
+
+    def _require_differentiable_dynamics(self):
+        """Refuse a discrete-event model before the run (#461).
+
+        A discrete event is a state-dependent discrete jump in the dynamics; it
+        reinitialises the integrator state discontinuously, but bngsim's CVODES
+        forward-sensitivity vectors are not reinitialised across the jump, so the
+        sensitivities go silently stale -- bngsim refuses forward output
+        sensitivities outright on such a model (GH #205). Without this gate that
+        refusal would surface only mid-run, at the first sensitivity-bearing
+        ``simulate()`` (caught and re-raised in ``BngsimModel.execute``). Fired here
+        next to :meth:`_require_sensitivity_backend`, it gives the discrete-event
+        model the same clean pre-flight "use a metaheuristic fit_type" refusal the
+        other gates give. Models whose backend exposes no event count
+        (``has_discrete_events`` absent) pass through untouched."""
+        for model in self.model_list:
+            if getattr(model, 'has_discrete_events', False):
+                raise PybnfError(
+                    "Gradient-based fitting (fit_type = %s) requires smooth, "
+                    "differentiable dynamics, but model '%s' contains discrete "
+                    "events (a state-dependent discrete jump). Forward output "
+                    "sensitivities go stale across such a jump, so bngsim cannot "
+                    "supply the gradient there." % (
                         self._fit_type_label(), getattr(model, 'name', '?')),
                     _FALLBACK_HINT)
 

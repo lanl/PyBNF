@@ -717,6 +717,29 @@ class BngsimSbmlModelNoTimeout(Model):
             params=list(params or []), ic=list(ic or []),
         )
 
+    @property
+    def has_discrete_events(self):
+        """True iff the engine model contains state-jumping discrete events (#461).
+
+        SBML ``event``\\ s reinitialise the integrator state discontinuously, but
+        bngsim's CVODES forward-sensitivity vectors are *not* reinitialised across
+        the jump, so the sensitivity columns go silently stale at and after an event
+        fires -- bngsim therefore refuses forward output sensitivities outright on
+        such a model rather than return wrong derivatives (bngsim GH #205). The
+        gradient path reads this as its pre-flight differentiability gate
+        (:meth:`GradientOptimizer._require_differentiable_dynamics`) to refuse a
+        discrete-event model **up front** -- with an actionable "use a metaheuristic
+        fit_type" message -- instead of letting the fit start and fail at the first
+        sensitivity-bearing ``simulate()``. The net backend's property documents the
+        same contract; this is its SBML twin.
+
+        Only true state-jumping events are counted (the engine core's ``n_events``).
+        ``False`` when the engine model or its event count is unavailable (an
+        older/stub backend), so the gate never blocks on a missing signal.
+        """
+        core = getattr(self._get_engine_template(), '_core', None)
+        return bool(getattr(core, 'n_events', 0))
+
     def sensitivity_entity_namespace(self):
         """The bind-by-id namespaces the gradient router classifies free parameters against (#448).
 

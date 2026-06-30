@@ -18,9 +18,15 @@ gradient-based optimizers that consume it (see *Running a gradient fit* below).
 
    The gradient path is **edition-2 only** and requires a **deterministic ODE** simulation of a
    **reaction network** (a ``.bngl`` model that generates a network, run with ``method=>"ode"``).
-   It is computed in PyBNF's native parameter space and then transformed once into the sampling
-   space the optimizer walks (see *Parameter scales* below), so a log-scaled parameter composes
-   for free.
+   These requirements are **enforced**, not merely documented: a gradient ``fit_type`` on a
+   non-edition-2 config, a non-bngsim model, or a model that bngsim cannot differentiate is
+   refused up front with an actionable message pointing back at a metaheuristic ``fit_type``. In
+   particular a model with **discrete events** (a state-dependent discrete jump in the dynamics)
+   has no smooth forward sensitivity — bngsim refuses sensitivity requests on it — so it is
+   refused at construction rather than failing mid-run; a non-ODE simulation *method* (SSA /
+   NFsim) is likewise refused (at the first sensitivity-bearing simulation). It is computed in
+   PyBNF's native parameter space and then transformed once into the sampling space the optimizer
+   walks (see *Parameter scales* below), so a log-scaled parameter composes for free.
 
 
 Running a gradient fit

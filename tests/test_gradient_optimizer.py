@@ -252,6 +252,58 @@ def test_trf_refuses_when_bngsim_lacks_output_sensitivities(tmp_path, monkeypatc
 
 
 @pytest.mark.recovery
+def test_trf_refuses_discrete_event_model_before_run(tmp_path, monkeypatch):
+    """A model with discrete events (a state-dependent discrete jump) has no smooth
+    forward sensitivity -- bngsim refuses sensitivity requests on it (its CVODES
+    sensitivity vectors are not reinitialised across the jump, GH #205). The
+    differentiability gate refuses such a model **up front**, at construction next to
+    the backend gate, with an actionable message pointing at a metaheuristic fit_type
+    -- never a mid-run backend traceback (#461). The decay fixture carries no events
+    and the net backend cannot author them (the engine's ``n_events`` is read-only), so
+    we force the signal the gate reads (``has_discrete_events``); the gate fires before
+    any simulation, so no run is driven. The real signal -- the property reading the
+    engine's event count -- is covered by
+    ``test_bngsim_model_has_discrete_events_reads_engine_event_count``."""
+    from pybnf.bngsim_model.net_model import BngsimModel
+
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'trf', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=10)
+    monkeypatch.setattr(BngsimModel, 'has_discrete_events',
+                        property(lambda self: True))
+    with pytest.raises(PybnfError, match='(?i)event'):
+        H.build(conf, 'trf')
+
+
+@pytest.mark.bngsim_antimony
+def test_bngsim_model_has_discrete_events_reads_engine_event_count():
+    """``BngsimModel.has_discrete_events`` -- the signal the gradient differentiability
+    gate refuses on -- surfaces the engine model's state-jumping-event count. A real
+    bngsim model built with a discrete event reports ``True``; the same model without one
+    reports ``False`` (#461). The net backend cannot author events, so this drives the
+    bngsim engine directly via antimony to exercise the real ``_core.n_events`` read the
+    gate depends on (no BNG2.pl / sensitivity build needed)."""
+    import bngsim
+    from pybnf.bngsim_model.net_model import BngsimModel
+
+    with_event = object.__new__(BngsimModel)
+    with_event._engine_model = bngsim.Model.from_antimony_string(
+        'model m; S = 100; k = 0.3; J0: S -> ; k*S; at (time > 5): S = S + 50; end')
+    assert with_event.has_discrete_events is True
+
+    smooth = object.__new__(BngsimModel)
+    smooth._engine_model = bngsim.Model.from_antimony_string(
+        'model m; S = 100; k = 0.3; J0: S -> ; k*S; end')
+    assert smooth.has_discrete_events is False
+
+
+@pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
 def test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs(tmp_path, monkeypatch):
