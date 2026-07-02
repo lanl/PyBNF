@@ -84,8 +84,12 @@ Profile likelihood (identifiability + confidence intervals)
 around the optimum :math:`\theta^\*` and **re-optimizes all the other parameters** at each grid
 point, tracing the profile :math:`\chi^2_{\mathrm{PL}}(\theta_k) = \min_{j\neq k}\chi^2(\theta)`.
 It shares every requirement and gate of the ``trf`` / ``lbfgs`` methods (edition 2, a deterministic
-ODE network, bngsim forward sensitivities) and, because it reuses the trust-region least-squares
-step for the re-optimizations, fits the same **exact least-squares** objectives ``trf`` does.
+ODE network, bngsim forward sensitivities). The inner re-optimizations reuse the same two engines,
+and the job picks between them automatically from the objective's structure: an **exact
+least-squares** objective (a fixed-scale Gaussian / Student-t, no constraints) profiles with the
+trust-region ``trf`` step, while any other objective (an estimated noise scale, the Laplace / count
+families, active constraint penalties) profiles with ``lbfgs`` on the scalar gradient. You do not
+choose the engine — a one-line note at the start of the run reports which was selected.
 
 The job runs in two phases:
 
@@ -103,24 +107,81 @@ The job runs in two phases:
    (default: all of them) — rather than run serially. A cap only queues the excess walks; none is
    dropped, so coverage is never silently truncated.
 
-From each finished profile the job extracts the confidence interval at the configured level and
-classifies the parameter as **identifiable** (the threshold is crossed on both sides — a finite CI),
-**practically non-identifiable** (the profile rises but does not cross on at least one side — an open
-or bound-limited CI, reported as such rather than silently clamped), or **structurally
-non-identifiable** (a flat profile — the parameter can move with no objective response). It writes
-one ``Results/profile_<name>.txt`` curve per parameter (grid value, objective, :math:`\Delta\chi^2`,
-and each grid point's re-optimization iteration count + convergence flag), a
-``Results/profile_likelihood_summary.txt`` with the CI, classification, and coverage notes for each,
-and — when matplotlib is installed (the optional ``pybnf[plot]`` extra) —
-``Results/profile_likelihood.png``, one :math:`\Delta\chi^2` panel per parameter with the threshold,
-CI, and optimum marked. Every per-point profile record rides PyBNF's ordinary backup/resume, so a
-run can be resumed or extended without recomputing a finished profile.
+**Configuring a run.** Profile likelihood is a ``job_type`` on the ordinary edition-2 surface —
+the same ``model:`` / ``experiment:`` / free-parameter lines any gradient fit uses, with the
+run-selector set to ``profile_likelihood`` and a handful of ``profile_likelihood_*`` knobs. A
+minimal config that polishes to the optimum and then profiles every free parameter::
 
-The knobs are ``profile_likelihood_confidence`` (the CI level), ``profile_likelihood_step`` /
-``profile_likelihood_min_step`` / ``profile_likelihood_max_step`` / ``profile_likelihood_dchi2_target``
-(the adaptive grid), ``profile_likelihood_max_points`` (the per-direction cap),
-``profile_likelihood_reopt_max_iterations`` (the per-grid-point re-optimization budget), and
-``profile_likelihood_max_parallel`` (the max concurrent directional walks; ``0`` = all of them).
+    edition = 2
+    model: model.bngl
+    experiment: myexp, data: mydata.exp
+    output_dir = output/pl
+
+    bngl_backend = bngsim
+    job_type = profile_likelihood
+    objective = chi_sq                 # a per-point _SD column in the .exp -> exact least squares
+
+    population_size = 20               # multi-start polish: 20 starts to locate theta*
+    max_iterations = 200               # per-start polish budget
+
+    profile_likelihood_confidence = 0.95
+    profile_likelihood_step = 0.05     # initial adaptive grid step (sampling space)
+    profile_likelihood_max_points = 40 # per-direction grid-point cap
+
+    loguniform_var = k1 1e-4 1e2       # the free parameters to profile
+    loguniform_var = k2 1e-4 1e2
+
+To profile only a subset, name them: ``profile_likelihood_params = k1, k2``. If you have **already
+fitted** the model, skip the polish by giving each parameter its optimum as an ``initial_value:`` on
+a ``parameter:`` record — the job then takes those as :math:`\theta^\*` and profiles around them
+without re-fitting::
+
+    parameter: k1, lower: 1e-4, upper: 1e2, initial_value: 0.017
+    parameter: k2, lower: 1e-4, upper: 1e2, initial_value: 3.1
+
+**Reading the results.** From each finished profile the job extracts the confidence interval at the
+configured level and assigns an identifiability class. It writes three kinds of artifact to
+``Results/``:
+
+* ``profile_likelihood_summary.txt`` — one row per parameter: the best-fit value :math:`\theta^\*_k`
+  (the centre the profile was traced around), the CI endpoints, per-endpoint *at-bound* flags, the
+  classification, and any coverage ``notes``. This is the table to read first.
+* ``profile_<name>.txt`` — the profile *curve* for one parameter: each grid point's parameter value,
+  the re-optimized objective, its :math:`\Delta\chi^2` above the optimum, and the inner
+  re-optimization's iteration count + convergence flag. Plot the :math:`\Delta\chi^2` column against
+  the parameter column to see the profile shape; where it crosses the horizontal threshold line is
+  the CI edge.
+* ``profile_likelihood.png`` — the same picture, drawn for you: one :math:`\Delta\chi^2` panel per
+  parameter with the threshold, CI, and optimum marked. Only written when matplotlib is installed
+  (the optional ``pybnf[plot]`` extra); its absence is logged and the text artifacts are unaffected.
+
+The **classification** summarizes the profile shape (Raue *et al.* 2009):
+
+* **identifiable** — the profile crosses the :math:`\Delta\chi^2` threshold on *both* sides, giving a
+  finite two-sided CI that brackets :math:`\theta^\*_k`. The parameter is pinned down by the data.
+* **practically non-identifiable** — the profile rises but does **not** cross the threshold on at
+  least one side before it runs into a parameter bound (or the point cap). The CI is *open* on that
+  side; PyBNF reports the endpoint clamped **at the bound** and flags it (``ci_low_at_bound`` /
+  ``ci_high_at_bound``) rather than silently closing the interval, so a one-sided or bound-limited CI
+  reads as exactly that. More/better-placed data — or a wider bound, if the true value may lie beyond
+  it — is what tightens such a parameter. A side that stopped only because it hit the grid-point cap
+  (not a genuine plateau) is called out in the ``notes`` column with a pointer to raise
+  ``profile_likelihood_max_points``.
+* **structurally non-identifiable** — the profile is **flat**: the parameter can move with no
+  objective response because another parameter (or combination) compensates exactly. This is a
+  property of the model + observables, not the data volume; it is resolved by adding an observable
+  that breaks the degeneracy, fixing one of the confounded parameters, or reparameterizing to the
+  identifiable combination.
+
+Every per-point profile record rides PyBNF's ordinary backup/resume, so a run can be resumed or
+extended without recomputing a finished profile.
+
+The knobs are ``profile_likelihood_confidence`` (the CI level), ``profile_likelihood_params`` (the
+subset to profile; default all), ``profile_likelihood_step`` / ``profile_likelihood_min_step`` /
+``profile_likelihood_max_step`` / ``profile_likelihood_dchi2_target`` (the adaptive grid),
+``profile_likelihood_max_points`` (the per-direction cap), ``profile_likelihood_reopt_max_iterations``
+(the per-grid-point re-optimization budget), and ``profile_likelihood_max_parallel`` (the max
+concurrent directional walks; ``0`` = all of them).
 
 
 What it computes

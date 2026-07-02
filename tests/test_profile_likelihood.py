@@ -26,6 +26,7 @@ import pytest
 from pybnf._bngsim_caps import BNGSIM_HAS_OUTPUT_SENS
 from pybnf.algorithms.optimizers.profile_likelihood import (
     ProfileLikelihoodAlgorithm,
+    _FLAT_DCHI2,
     _ProfileTrack,
     _chi2_quantile_1dof,
     _classify,
@@ -40,6 +41,15 @@ from pybnf.gradient import GradientResult
 from pybnf.parse import ploop
 
 from . import recovery_harness as H
+# The Becker EpoR fast-2p fixtures live beside the gradient smoke tests; the profile-likelihood
+# agreement test (below) profiles the SAME subset through the SAME sensitivity path.
+from .test_gradient_optimizer import (
+    _BECKER_FREE,
+    _BECKER_NOMINAL,
+    _simulate_becker,
+    _write_becker_exp,
+    SBML_DIR,
+)
 
 BNGL_DIR = Path(__file__).resolve().parent / 'bngl_files'
 # Truth for the synthetic decay data (the decay model's own nominal values).
@@ -68,6 +78,14 @@ def _write_decay_exp(path, *, n=21, t_end=10.0, sd=2.0, with_sd=True):
 
 def _decay_model(tmp_path):
     return H.strip_actions_block(BNGL_DIR / 'e2e_ode_decay.bngl', tmp_path / 'decay_v2.bngl')
+
+
+def _two_channel_decay_model(tmp_path):
+    """The two-parallel-channel decay ``S(t) = S0*exp(-(k1+k2)*t)`` -- only ``k1+k2`` is
+    observable, so ``k1`` and ``k2`` are structurally non-identifiable while ``S0`` stays
+    identifiable (see ``tests/bngl_files/e2e_ode_two_channel_decay.bngl``)."""
+    return H.strip_actions_block(BNGL_DIR / 'e2e_ode_two_channel_decay.bngl',
+                                 tmp_path / 'two_channel_v2.bngl')
 
 
 # --------------------------------------------------------------------------- #
@@ -772,6 +790,77 @@ def test_profile_likelihood_recovers_identifiable_cis(tmp_path, monkeypatch):
 @pytest.mark.recovery
 @pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
                     reason='needs a bngsim build with the output_sensitivities feature')
+def test_profile_likelihood_flags_a_structurally_nonidentifiable_parameter(tmp_path, monkeypatch):
+    """The second #468 deliverable end to end: correctly flag a *deliberately*
+    non-identifiable parameter through the real bngsim sensitivity path. The two-channel
+    decay ``S(t) = S0*exp(-(k1+k2)*t)`` makes only the sum ``k1+k2`` observable, so fixing
+    either rate and re-optimizing the other slides freely along the ``k1+k2 = const``
+    manifold at no objective cost -- each rate profiles FLAT (``Delta chi2`` stays under the
+    structural-flatness floor on the side with room to compensate), the D2D signature of
+    **structural** non-identifiability. The intercept ``S0`` is set by ``t = 0`` alone and
+    stays **identifiable**.
+
+    :math:`\\theta^\\*` is *supplied* (an ``initial_value:`` on each parameter, the canonical
+    profile-likelihood workflow -- you profile around a fit you already have). That centers the
+    profiles in the interior of the flat manifold, where a genuinely structural profile shows
+    as a broad plateau; letting the polish choose :math:`\\theta^\\*` instead would land it at
+    an arbitrary edge of the manifold (the objective is flat along it, so there is no unique
+    optimum). This is the end-to-end sibling of the offline
+    ``test_track_flags_a_structurally_non_identifiable_parameter`` (identical residual-Jacobian
+    columns), here driven by genuine forward sensitivities rather than a synthetic Jacobian."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _two_channel_decay_model(tmp_path)
+    # k1+k2 = 0.3 and S0 = 100, so the analytic decay oracle is byte-for-byte the single-channel
+    # one (TRUE_K = 0.3): the model is degenerate, the data is not.
+    exp = _write_decay_exp(tmp_path / 'decay.exp', sd=2.0)
+
+    # theta* supplied at an interior split of the manifold (0.15 + 0.15 = 0.3): each rate then
+    # has room to compensate the other in both directions, so the flat plateau is traced cleanly.
+    lines = [
+        f'model: {model}',
+        'edition = 2', 'job_type = profile_likelihood', 'objective = chi_sq',
+        f'output_dir = {Path(tmp_path) / "out"}',
+        'bngl_backend = bngsim', 'initialization = lh', 'delete_old_files = 1',
+        'verbosity = 0', 'wall_time_sim = 0', 'random_seed = 1234',
+        'population_size = 1', 'max_iterations = 100',
+        'profile_likelihood_confidence = 0.95', 'profile_likelihood_step = 0.03',
+        'profile_likelihood_max_points = 20',
+        'parameter: k1, lower: 0.001, upper: 1.0, initial_value: 0.15',
+        'parameter: k2, lower: 0.001, upper: 1.0, initial_value: 0.15',
+        f'parameter: S0, lower: 20.0, upper: 400.0, initial_value: {TRUE_S0}',
+        f'experiment: decay, data: {exp}',
+    ]
+    conf = Configuration(ploop('\n'.join(lines).splitlines(keepends=True)))
+
+    alg = H.build(conf, 'profile_likelihood')
+    H.drive(alg)
+
+    assert alg.polished is False   # theta* supplied -> profile around it, no re-fit
+
+    summary = {s['name']: s for s in alg.profile_summary}
+    for rate in ('k1', 'k2'):
+        s = summary[rate]
+        assert s['classification'] == 'structurally non-identifiable', (rate, s['classification'])
+    # S0 is pinned by the intercept -> a proper finite two-sided CI bracketing the truth.
+    s0 = summary['S0']
+    assert s0['classification'] == 'identifiable', s0['classification']
+    assert s0['ci_low'] < TRUE_S0 < s0['ci_high']
+    assert not s0['lo_at_bound'] and not s0['hi_at_bound']
+
+    # The structural label is not a lucky single-point dip: a broad plateau was traced -- most
+    # of each rate's re-optimized profile sits on the flat floor (Delta chi2 < the structural
+    # threshold), the direct numeric witness of the flat manifold.
+    ref = alg.trajectory.best_score()
+    for rate in ('k1', 'k2'):
+        dchi2 = 2.0 * (np.asarray(alg._profiles[rate]['cost'], dtype=float) - ref)
+        assert np.mean(dchi2 < _FLAT_DCHI2) >= 0.4, (rate, dchi2)
+
+
+@pytest.mark.bngsim
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
 def test_profile_likelihood_profiles_an_estimated_scale_fit_via_lbfgs(tmp_path, monkeypatch):
     """The Gap-1 deliverable end to end: ``job_type = profile_likelihood`` on an
     objective TRF *refuses* -- ``chi_sq_dynamic`` with a free ``sigma__FREE`` (an
@@ -857,3 +946,77 @@ def test_profile_likelihood_uses_supplied_initial_value_and_skips_polish(tmp_pat
         s = summary[name]
         assert s['classification'] == 'identifiable', (name, s['classification'])
         assert s['ci_low'] < truth < s['ci_high']
+
+
+# --------------------------------------------------------------------------- #
+# Agreement with examples/becker_d2d_gradient/ on the fast 2-parameter subset (#468)
+# --------------------------------------------------------------------------- #
+@pytest.mark.bngsim
+@pytest.mark.bngsim_antimony
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_profile_likelihood_agrees_with_becker_d2d_on_the_fast_2p_subset(tmp_path, monkeypatch):
+    """The third #468 deliverable: agreement with ``examples/becker_d2d_gradient/`` on a small
+    subset -- the D2D "fast 2-parameter" variant (``kon`` / ``koff`` of the Becker EpoR model,
+    BioModels ``BIOMD0000000271``). ``job_type = profile_likelihood`` drives the SAME verbatim
+    published model through the SAME real Antimony forward-sensitivity path the ``trf`` becker
+    smoke test uses (``tests/test_gradient_optimizer.py``), but profiles rather than merely
+    fitting: it polishes to the optimum, then traces a re-optimized profile per rate.
+
+    The data is a zero-noise ``Epo_EpoR`` time course generated at the published nominal rates,
+    so the polish recovers ``kon`` / ``koff`` to the nominal point (the "agreement" on the fit).
+    The identifiability structure it then reports is the D2D lesson of this subset: from this one
+    observable ``kon`` is **identifiable** (a finite, two-sided CI bracketing the optimum) while
+    ``koff`` is **practically non-identifiable** -- its profile never rises to the threshold
+    inside the prior box, so the CI is reported *open at the bounds* rather than silently pinned
+    to a spurious finite interval. (A *smoke*-scoped recovery like the sibling ``trf`` becker
+    tests: the point is the SBML/Antimony sensitivity path end to end, not a tight EpoR fit.)"""
+    from pybnf.bngsim_antimony_model import BngsimAntimonyModelNoTimeout
+
+    H.install(monkeypatch)
+    model = SBML_DIR / 'becker_epor.ant'
+    # Zero-noise Epo_EpoR time course at the published nominal kon/koff -> the oracle.
+    data = _simulate_becker(tmp_path, model, BngsimAntimonyModelNoTimeout)
+    exp = _write_becker_exp(tmp_path, data['time'], data['Epo_EpoR'], 'Epo_EpoR')
+    conf = H.make_newera_config(
+        tmp_path, str(model), exp, _BECKER_FREE, 'tc', 'profile_likelihood',
+        objective='chi_sq', random_seed=1234, population_size=4, max_iterations=60,
+        profile_likelihood_confidence=0.95, profile_likelihood_step=0.05,
+        profile_likelihood_max_points=25)
+
+    alg = H.build(conf, 'profile_likelihood')
+    H.drive(alg)
+
+    # The full SBML/Antimony sensitivity path ran to completion: an exact-least-squares fit
+    # (fixed-SD Gaussian) -> the trust-region inner runner, then two profiles.
+    assert alg.polished is True and alg._runner_kind == 'trf'
+    summary = {s['name']: s for s in alg.profile_summary}
+    assert set(summary) == {'kon', 'koff'}
+
+    # Agreement on the fit: the polish recovers the nominal fast-2p rates from the zero-noise data.
+    for name in ('kon', 'koff'):
+        assert abs(summary[name]['best'] - _BECKER_NOMINAL[name]) / _BECKER_NOMINAL[name] < 1e-2
+
+    # kon: identifiable -- a finite two-sided CI (both crossings genuine, neither at a bound)
+    # that brackets the recovered optimum.
+    kon = summary['kon']
+    assert kon['classification'] == 'identifiable', kon['classification']
+    assert kon['ci_low'] is not None and kon['ci_high'] is not None
+    assert not kon['lo_at_bound'] and not kon['hi_at_bound']
+    assert kon['ci_low'] < kon['best'] < kon['ci_high']
+
+    # koff: practically non-identifiable -- the profile stays under the threshold across the whole
+    # prior box, so the CI is reported open AT the bounds (never silently closed, #446), and the
+    # box edges are what land in the summary (not None, not a spurious finite crossing).
+    koff = summary['koff']
+    kv = next(v for v in alg.variables if v.name == 'koff')
+    assert koff['classification'] == 'practically non-identifiable', koff['classification']
+    assert koff['lo_at_bound'] and koff['hi_at_bound']
+    assert koff['ci_low'] == pytest.approx(kv.lower_bound)
+    assert koff['ci_high'] == pytest.approx(kv.upper_bound)
+
+    # The per-rate curves + the summary landed in Results/ (the #468 artifacts).
+    res = Path(conf.config['output_dir']) / 'Results'
+    assert (res / 'profile_kon.txt').is_file() and (res / 'profile_koff.txt').is_file()
+    assert (res / 'profile_likelihood_summary.txt').is_file()

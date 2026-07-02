@@ -921,7 +921,6 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         CI/classification summary table, and (when matplotlib is available) the profile
         plots -- and stop the run (#467)."""
         cost_ref = float(self.trajectory.best_score())
-        best_pset = self.trajectory.best_fit()
         summary = []
         for idx in self._profile_idxs:
             var = self.variables[idx]
@@ -934,7 +933,14 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             order = np.argsort(u)
             u, cost, nfev, success = u[order], cost[order], nfev[order], success[order]
             dchi2 = 2.0 * (cost - cost_ref)
-            u_center = float(var.to_sampling_space(best_pset[name]))
+            # Read the CI and classify around the SAME centre the profile grid was traced
+            # around -- theta* (``self._u_star``, in sampling space), not
+            # ``trajectory.best_fit()``. The two coincide for an identifiable fit, but on a
+            # flat (structurally non-identifiable) manifold the trajectory's best fit drifts to
+            # an arbitrary numerically-lowest point -- often a parameter bound -- which would
+            # split the profile at a point the grid never centred on and misclassify the
+            # parameter. ``_u_star`` is what the directional tracks actually walked outward from.
+            u_center = float(self._u_star[idx])
             lower_u = float(var.to_sampling_space(var.lower_bound)) if var.bounded else -np.inf
             upper_u = float(var.to_sampling_space(var.upper_bound)) if var.bounded else np.inf
             lo, hi, lo_at_bound, hi_at_bound = _extract_ci(

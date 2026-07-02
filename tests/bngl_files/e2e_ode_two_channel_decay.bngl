@@ -1,0 +1,40 @@
+# Structural non-identifiability fixture (#446/#468).
+# The single species S() decays through TWO parallel first-order channels, k1 and k2,
+# so the observable Stot follows S(t) = S0 * exp(-(k1 + k2) * t): only the SUM k1 + k2
+# is observable, never k1 or k2 individually. Fixing either rate and re-optimizing the
+# other (the profile-likelihood re-optimization) trivially compensates along the
+# k1 + k2 = const manifold, so each rate profiles FLAT -- the textbook signature of a
+# structurally non-identifiable parameter -- while S0 (the intercept) stays identifiable.
+# Because k1 + k2 = 0.3, the zero-noise trajectory is identical to e2e_ode_decay.bngl's
+# (S0 = 100, k = 0.3), so the same analytic decay .exp is the oracle.
+begin model
+
+begin parameters
+  S0  100
+  k1  0.15
+  k2  0.15
+end parameters
+
+begin molecule types
+  S()
+end molecule types
+
+begin seed species
+  S()  S0
+end seed species
+
+begin observables
+  Molecules Stot S()
+end observables
+
+begin reaction rules
+  S() -> 0  k1
+  S() -> 0  k2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>20,suffix=>"tc"})
+end actions
