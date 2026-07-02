@@ -34,3 +34,36 @@ jobs:
         # pyproject.toml (that would pull the private bngsim and fail). The
         # composite action already populated .venv.
         run: uv run --no-sync pytest -m "not slow" -n auto
+
+  # The PEtab v2 export oracle (ADR-0025/0026) validates emitted `language: bngl`
+  # problems at MODEL level. On the pytest job above (stock PyPI petab) that runs
+  # through the register_bngl() monkeypatch. This job installs the #420 Step B
+  # fork instead, so Problem.from_yaml loads BNGL through petab's OWN native
+  # BnglModel loader -- exercising the collapse-to-no-op path that otherwise only
+  # ever SKIPS, and keeping the upstream contribution (PEtab-dev/PEtab#436)
+  # continuously green. One Python version is enough; the loader is pure Python.
+  pytest-native-bngl:
+    runs-on: ubuntu-latest
+    name: pytest (native BNGL loader)
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-pybnf
+        with:
+          python-version: '3.12'
+          petab-spec: 'petab @ git+https://github.com/wshlavacek/libpetab-python.git@bngl_model_support'
+
+      # Fail loudly if the fork did not actually install (e.g. a resolution
+      # fallback to stock petab): the native path would silently skip otherwise.
+      - name: Assert petab has native BNGL support
+        run: |
+          uv run --no-sync python -c "import petab.v1.models as m; assert 'bngl' in m.known_model_types, 'the Step B fork is not installed: bngl is not a known petab model type'; print('native BNGL loader present')"
+
+      - name: Run the PEtab oracle through the native loader
+        env:
+          PYBNF_NO_BNGSIM: '1'
+        # The export + import oracles both drive Problem.from_yaml, which loads
+        # `language: bngl` through petab's own native BnglModel here (the
+        # register_bngl() monkeypatch collapses to a no-op). This is where the
+        # TestRegisterBngl native-no-op test actually runs instead of skipping.
+        run: uv run --no-sync pytest -m "not slow" tests/test_petab_export.py tests/test_petab_import.py

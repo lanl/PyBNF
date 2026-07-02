@@ -19,6 +19,14 @@ The grammar this reader is hardened against is the BNGL reference in the sibling
 ``BNG_vscode_extension`` repo (``docs/bngl-grammar.md``, derived from
 ``bng2/Perl2/``): block aliases (``molecules``/``species``/``rules``), the seed-
 species ``$`` clamp marker, and the observable/function/compartment line shapes.
+
+**Drift note (#420 Step B):** this reader has an upstream twin — the standalone,
+pybnf-free port in the ``bngl_model_support`` branch of ``libpetab-python``
+(``petab/v1/models/bngl_model.py``), the candidate ``BnglModel`` contribution for
+PEtab-dev/PEtab#436. The two carry the *same* entity-enumeration semantics and
+grammar hardening; any change here (e.g. a new block alias or pattern-modifier
+rule) must be ported there, guarded by the mirrored grammar-hardening tests on
+both sides.
 """
 
 import re

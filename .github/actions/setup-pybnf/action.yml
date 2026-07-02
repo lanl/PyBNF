@@ -11,6 +11,15 @@ inputs:
   python-version:
     description: Python version for the venv (e.g. "3.11", "3.12").
     required: true
+  petab-spec:
+    description: >-
+      The petab requirement to install. Defaults to stock PyPI petab. A CI leg
+      overrides it with the #420 Step B fork
+      (git+…/libpetab-python@bngl_model_support) so the exporter oracle
+      validates `language: bngl` problems through petab's OWN native BnglModel
+      loader rather than the register_bngl() monkeypatch (ADR-0026).
+    required: false
+    default: 'petab>=0.8,<1'
 
 runs:
   using: composite
@@ -59,8 +68,10 @@ runs:
         # validation runs here too) AND the runtime math translator backing the
         # expression observableFormula path (pybnf[petab], ADR-0035, petab.v2.math);
         # stock PyPI petab carries the math grammar, so one install covers both.
-        # Keep these version bounds in sync with pyproject.toml; bngsim is the only
-        # intentional omission.
+        # The exact petab requirement is the `petab-spec` input (default stock
+        # PyPI; a CI leg overrides it with the Step B fork to run the NATIVE
+        # BNGL loader). Keep these version bounds in sync with pyproject.toml;
+        # bngsim is the only intentional omission.
         uv pip install \
           'dask>=2024.1.0' \
           'distributed>=2024.1.0' \
@@ -75,7 +86,7 @@ runs:
           'pytest>=7,<10' \
           'hypothesis>=6,<7' \
           'pytest-xdist' \
-          'petab>=0.8,<1'
+          '${{ inputs.petab-spec }}'
         # Install pybnf itself without re-resolving deps (which would pull
         # bngsim and fail).
         uv pip install --no-deps .
