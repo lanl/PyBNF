@@ -17,8 +17,9 @@ functions), and compartments are *not* expression symbols (ADR-0026).
 
 The grammar this reader is hardened against is the BNGL reference in the sibling
 ``BNG_vscode_extension`` repo (``docs/bngl-grammar.md``, derived from
-``bng2/Perl2/``): block aliases (``molecules``/``species``/``rules``), the seed-
-species ``$`` clamp marker, and the observable/function/compartment line shapes.
+``bng2/Perl2/``): line continuations (a trailing ``\\``), block aliases
+(``molecules``/``species``/``rules``), the seed-species ``$`` clamp marker, and
+the observable/function/compartment line shapes.
 
 **Drift note (#420 Step B):** this reader has an upstream twin — the standalone,
 pybnf-free port in the ``bngl_model_support`` branch of ``libpetab-python``
@@ -105,12 +106,41 @@ def _names(text, block_name, extractor):
         n for n in (extractor(line) for line in _block_lines(text, block_name)) if n)
 
 
+def _logical_lines(text):
+    """The comment-stripped *logical* lines of ``text``: physical lines with BNGL
+    line continuations joined.
+
+    Mirrors BNG2.pl's ``readFile`` (``Perl2/BNGModel.pm``): strip the ``#``
+    comment first, then while the line ends with ``\\`` (as the last non-whitespace
+    character) drop that ``\\`` and append the next comment-stripped physical line
+    **directly** -- no separating space, so a token split across the break
+    (``1e\\`` + ``3`` -> ``1e3``) rejoins correctly. Without this, a continued
+    parameter / function / observable is truncated at the ``\\`` (e.g. a
+    ``k = \\`` line would read as the value ``'\\'``).
+    """
+    raw_lines = text.splitlines()
+    out = []
+    i, n = 0, len(raw_lines)
+    while i < n:
+        line = raw_lines[i].split('#', 1)[0]
+        i += 1
+        while re.search(r'\\\s*$', line):
+            line = re.sub(r'\\\s*$', '', line)
+            if i >= n:
+                break                       # a dangling continuation at EOF
+            line += raw_lines[i].split('#', 1)[0]
+            i += 1
+        out.append(line.strip())
+    return out
+
+
 def _block_lines(text, block_name):
     """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``.
 
     ``block_name`` is the canonical (long) spelling; any BNG alias for it
     (``molecules`` for ``molecule types``, ``species`` for ``seed species``,
-    ``rules`` for ``reaction rules``) opens and closes the same block.
+    ``rules`` for ``reaction rules``) opens and closes the same block. Lines are
+    logical lines (continuations already joined; see :func:`_logical_lines`).
     """
     names = '|'.join(
         re.escape(n) for n in (block_name, *_BLOCK_ALIASES.get(block_name, ())))
@@ -118,8 +148,7 @@ def _block_lines(text, block_name):
     end = re.compile(rf'^end\s+(?:{names})\b', re.I)
     lines = []
     in_block = False
-    for raw in text.splitlines():
-        line = raw.split('#', 1)[0].strip()
+    for line in _logical_lines(text):
         if begin.match(line):
             in_block = True
         elif end.match(line):

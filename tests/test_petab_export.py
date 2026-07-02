@@ -1576,6 +1576,30 @@ class TestBnglGrammarHardening:
         ent = parse_model('begin molecules\n A()\n B(x)\nend molecules\n')
         assert ent.molecule_type_names == frozenset({'A', 'B'})
 
+    def test_line_continuation_is_joined(self):
+        # A trailing `\` continues the logical line (BNG2.pl readFile). Without
+        # joining, a continued parameter reads as the value '\' (the corpus bug
+        # this closes); the join concatenates directly -- no space -- so a token
+        # split across the break rejoins (`1e\`+`3` -> `1e3`), matching BNG2.pl.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin parameters\n'
+            '  minusb = \\\n(p4-1)/(p4*(1+p2))\n'   # continued expression value
+            '  r 1e\\\n3\n'                          # token split -> 1e3, no space
+            '  a = 1+\\\n2+\\\n3\n'                  # chained continuation
+            'end parameters\n')
+        assert ent.parameters['minusb'] == '(p4-1)/(p4*(1+p2))'
+        assert ent.parameters['r'] == '1e3'
+        assert ent.parameters['a'] == '1+2+3'
+
+    def test_backslash_in_comment_is_not_a_continuation(self):
+        # BNG2.pl strips the comment before testing for a trailing `\`, so a `\`
+        # living inside a comment must not swallow the next line.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin parameters\n k 1 # note \\\n j 2\nend parameters\n')
+        assert ent.parameters == {'k': '1', 'j': '2'}
+
     def test_seed_species_block_alias(self):
         # `begin species` is BNG's short alias for `begin seed species` -- and the
         # '$' clamp is stripped under the alias spelling too.
