@@ -1,0 +1,153 @@
+begin model
+  begin parameters
+    a0	48.6399
+    a1	30.055
+    a2	12.748
+    a3	2.2283
+    a4	-0.85348
+    a5	-1.6215
+    a6	-0.17618
+    a7	-0.048662
+    a8	-1.0801
+    a9	0.2382
+    a10	-0.13038
+    a11	0.12645
+    a12	-0.22432
+    a13	0.88207
+    a14	0.22573
+    a15	0.53195
+    a16	0.32347
+    a17	0.63596
+    a18	0.16089
+    a19	0.069375
+    a20	-0.28683
+    b0	0
+    b1	21.977
+    b2	-3.3539
+    b3	-3.5048
+    b4	-0.50427
+    b5	0.21991
+    b6	-0.29889
+    b7	-0.50247
+    b8	-0.82477
+    b9	-0.17609
+    b10	0.91897
+    b11	-0.39103
+    b12	0.60965
+    b13	-0.9696
+    b14	0.98694
+    b15	-0.6184
+    b16	0.22323
+    b17	0.23272
+    b18	0.44101
+    b19	0.34473
+    b20	-0.43427
+    c0	36.6228
+    c1	16.478
+    c2	-0.69587
+    c3	-4.4809
+    c4	-5.6869
+    c5	0.36898
+    c6	4.0373
+    c7	-0.013559
+    c8	0.010601
+    c9	0.36869
+    c10	-0.89048
+    c11	0.07215
+    c12	-0.87898
+    c13	-0.51409
+    c14	0.28394
+    c15	0.13376
+    c16	0.2394
+    c17	-0.0027284
+    c18	-0.058979
+    c19	0.1159
+    c20	-0.43577
+    d0	0
+    d1	-15.286
+    d2	-10.371
+    d3	-3.3776
+    d4	-1.3665
+    d5	-1.7818
+    d6	-8.758
+    d7	7.0236
+    d8	0.44179
+    d9	0.41343
+    d10	1.5842
+    d11	0.56122
+    d12	-0.38208
+    d13	0.69121
+    d14	0.65805
+    d15	0.26396
+    d16	0.31597
+    d17	-0.20032
+    d18	-0.4028
+    d19	-0.29874
+    d20	0.32228
+    pi=2*asin(1)
+    period 464
+    m=2*pi/period
+  end parameters
+  begin molecule types
+    t
+  end molecule types
+  begin seed species
+    t 0
+  end seed species
+  begin observables
+    Species t t 
+  end observables
+  begin functions
+    X()=a0\
+      +a1*cos(m*1*t)+b1*sin(m*1*t)\
+      +a2*cos(m*2*t)+b2*sin(m*2*t)\
+      +a3*cos(m*3*t)+b3*sin(m*3*t)\
+      +a4*cos(m*4*t)+b4*sin(m*4*t)\
+      +a5*cos(m*5*t)+b5*sin(m*5*t)\
+      +a6*cos(m*6*t)+b6*sin(m*6*t)\
+      +a7*cos(m*7*t)+b7*sin(m*7*t)\
+      +a8*cos(m*8*t)+b8*sin(m*8*t)\
+      +a9*cos(m*9*t)+b9*sin(m*9*t)\
+      +a10*cos(m*10*t)+b10*sin(m*10*t)\
+      +a11*cos(m*11*t)+b11*sin(m*11*t)\
+      +a12*cos(m*12*t)+b12*sin(m*12*t)\
+      +a13*cos(m*13*t)+b13*sin(m*13*t)\
+      +a14*cos(m*14*t)+b14*sin(m*14*t)\
+      +a15*cos(m*15*t)+b15*sin(m*15*t)\
+      +a16*cos(m*16*t)+b16*sin(m*16*t)\
+      +a17*cos(m*17*t)+b17*sin(m*17*t)\
+      +a18*cos(m*18*t)+b18*sin(m*18*t)\
+      +a19*cos(m*19*t)+b19*sin(m*19*t)\
+      +a20*cos(m*20*t)+b20*sin(m*20*t)
+    Y()=c0\
+      +c1*cos(m*1*t)+d1*sin(m*1*t)\
+      +c2*cos(m*2*t)+d2*sin(m*2*t)\
+      +c3*cos(m*3*t)+d3*sin(m*3*t)\
+      +c4*cos(m*4*t)+d4*sin(m*4*t)\
+      +c5*cos(m*5*t)+d5*sin(m*5*t)\
+      +c6*cos(m*6*t)+d6*sin(m*6*t)\
+      +c7*cos(m*7*t)+d7*sin(m*7*t)\
+      +c8*cos(m*8*t)+d8*sin(m*8*t)\
+      +c9*cos(m*9*t)+d9*sin(m*9*t)\
+      +c10*cos(m*10*t)+d10*sin(m*10*t)\
+      +c11*cos(m*11*t)+d11*sin(m*11*t)\
+      +c12*cos(m*12*t)+d12*sin(m*12*t)\
+      +c13*cos(m*13*t)+d13*sin(m*13*t)\
+      +c14*cos(m*14*t)+d14*sin(m*14*t)\
+      +c15*cos(m*15*t)+d15*sin(m*15*t)\
+      +c16*cos(m*16*t)+d16*sin(m*16*t)\
+      +c17*cos(m*17*t)+d17*sin(m*17*t)\
+      +c18*cos(m*18*t)+d18*sin(m*18*t)\
+      +c19*cos(m*19*t)+d19*sin(m*19*t)\
+      +c20*cos(m*20*t)+d20*sin(m*20*t)
+  end functions
+  begin reaction rules
+    0->t 1
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({suffix=>"elephant",method=>"ode",\
+    t_start=>0,t_end=>464,n_steps=>464,\
+    print_functions=>1})
+end actions

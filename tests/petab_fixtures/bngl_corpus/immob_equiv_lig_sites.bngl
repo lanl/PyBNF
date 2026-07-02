@@ -1,0 +1,298 @@
+# filename: immob_equiv_lig_site.bngl
+
+begin model
+
+# See diffusional_slowing_v2.bngl for a version of this model that works.
+# In the diffusional_slowing_v2.bngl file, ligand sites are not equivalent.
+# Here, ligand sites are equivalent.
+# Both models are for bivalent ligand-bivalent receptor interaction with 
+#   immobilization of ligand-induced receptor aggregates when aggregates contain
+#   more than a threshold number (2 or 3) receptors.
+
+begin parameters
+
+# fraction of cell to consider in stochastic simulation
+f 0.01 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# volume of extracellular fluid surrounding a cell (on average)
+Vecf f*1e-9 # L per cell
+
+# association rate constant
+kf 1e6/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+# dissociation rate constant
+kr 0.01 # /s
+
+# forward crosslinking constant
+kpx=5000*kf
+# reverse crosslinking constant
+kmx=kr
+
+# number of receptors per cell
+RcopyNum f*3e5 # molecules per cell
+
+# ligand concentration
+Lconc_nM 1 # nM
+Lconc=Lconc_nM*1e-9 # M
+LcopyNum=Lconc*(NA*Vecf) # molecules per cell
+
+# valence of receptor
+valR 2 # integer
+
+# valence of ligand
+valL 2 # integer
+
+# threshold
+#   number of receptors is the largest mobile ligand-induced receptor aggregate
+#   Aggregates containing more than the threshold number of receptors have reduced mobility.
+T2 2 # integer
+T3 3 # integer
+
+# slowing factor, which multiplies kpx and kmx
+#   This factor characterizes the reduced mobility of aggregates above a threshold size.
+sigma 1e-4 # dimensionless, 0<sigma<=1
+
+# fast rate constants
+delta=10*max(max(kf,kpx)*valL*LcopyNum*valR*RcopyNum,max(kr,kmx)*valR*RcopyNum) # /s
+rho=delta*(1-sigma)/sigma
+
+# a small number (introduced to avoid "divide by zero" error)
+epsilon 1e-10 # dimensionless, 0<epsilon<<1
+
+end parameters
+
+begin molecule types
+
+#L0(r,r)
+#R0(l,l)
+
+L1(r,r)
+R1(l1,l2)
+
+L2(r,r)
+R2(a,b,aFlag~0~1,bFlag~0~1)
+
+#L3(r,r)
+#R3(a,b,aFlag~0~1,bFlag~0~1)
+
+end molecule types
+
+begin seed species
+
+#L0(r,r) LcopyNum
+#R0(l,l) RcopyNum
+
+L1(r,r) LcopyNum
+R1(l1,l2) RcopyNum
+
+L2(r,r) LcopyNum
+R2(a,b,aFlag~0,bFlag~0) RcopyNum
+
+#L3(r,r) LcopyNum
+#R3(a,b,aFlag~0,bFlag~0) RcopyNum
+
+end seed species
+
+begin observables
+
+#Species L0free L0(r,r)
+#Species R0free R0(l,l)
+#Molecules R0tot R0()
+#Species monomericR0 R0==1
+#Species R0_naggs R0>1
+
+Species L1free L1(r,r)
+Species R1free R1(l1,l2)
+Molecules R1tot R1()
+Species monomericR1 R1==1
+Species R1_naggs R1>1
+
+Species L2free L2(r,r)
+Species R2free R2(a,b)
+Molecules R2tot R2()
+Species monomericR2 R2==1
+Species R2_naggs R2>1
+
+#Species L3free L3(r,r)
+#Species R3free R3(a,b)
+#Molecules R3tot R3()
+#Species monomericR3 R3==1
+#Species R3_naggs R3>1
+
+# observables used in (local) indicator functions for the T2=2 and T3=3 cases
+
+########
+# T2=2 #
+########
+
+#Molecules P_T2_aR_R3L2_aaa R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4)
+#Molecules P_T2_aR_R3L2_aab R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4)
+#Molecules P_T2_aR_R3L2_aba R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4)
+#Molecules P_T2_aR_R3L2_abb R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4)
+
+#Molecules P_T2_La_R3L3_aaa R2(a!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_baa R2(b!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_aba R2(a!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_bba R2(b!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_aab R2(a!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_bab R2(b!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_abb R2(a!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+#Molecules P_T2_La_R3L3_bbb R2(b!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+
+#Molecules P_T2_Rb_R3L2_aaa R2(a!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+#Molecules P_T2_Rb_R3L2_baa R2(b!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+#Molecules P_T2_Rb_R3L2_aba R2(a!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+#Molecules P_T2_Rb_R3L2_bba R2(b!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+
+#Molecules P_T2_bL_R3L3_aaa R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6)
+#Molecules P_T2_bL_R3L3_aab R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(b!6)
+#Molecules P_T2_bL_R3L3_aba R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6)
+#Molecules P_T2_bL_R3L3_abb R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(b!6)
+#Molecules P_T2_bL_R3L3_baa R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6)
+#Molecules P_T2_bL_R3L3_bab R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(b!6)
+#Molecules P_T2_bL_R3L3_bba R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6)
+#Molecules P_T2_bL_R3L3_bbb R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(b!6)
+
+Molecules T2aS1 R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4)
+Molecules T2aS2 R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4)
+Molecules T2aS3 R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4)
+Molecules T2aS4 R2(a!+,b!1,aFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4)
+
+Molecules T2aL1 R2(a!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL2 R2(b!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL3 R2(a!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL4 R2(b!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL5 R2(a!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL6 R2(b!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL7 R2(a!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+Molecules T2aL8 R2(b!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6,b!+,aFlag~1)
+
+Molecules T2bS1 R2(a!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+Molecules T2bS2 R2(b!1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+Molecules T2bS3 R2(a!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+Molecules T2bS4 R2(b!1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!+,bFlag~1)
+
+Molecules T2bL1 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6)
+Molecules T2bL2 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(b!6)
+Molecules T2bL3 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6)
+Molecules T2bL4 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(a!2,b!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(b!6)
+Molecules T2bL5 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(a!6)
+Molecules T2bL6 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(a!4,b!5).L2(r!5,r!6).R2(b!6)
+Molecules T2bL7 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(a!6)
+Molecules T2bL8 R2(a!+,b!1,bFlag~1).L2(r!1,r!2).R2(b!2,a!3).L2(r!3,r!4).R2(b!4,a!5).L2(r!5,r!6).R2(b!6)
+
+########
+# T3=3 #
+########
+
+
+
+end observables
+
+begin functions
+
+# global functions
+
+#avg_agg_size_R0()=(R0tot-monomericR0)/(R0_naggs+epsilon)
+avg_agg_size_R1()=(R1tot-monomericR1)/(R1_naggs+epsilon)
+avg_agg_size_R2()=(R2tot-monomericR2)/(R2_naggs+epsilon)
+#avg_agg_size_R3()=(R1tot-monomericR3)/(R3_naggs+epsilon)
+
+# local functions
+
+########
+# T2=2 #
+########
+
+mobility_factor_T2(x) if(R2tot(x)>T2,0,1)
+large_T2(x) if(R2tot(x)>T2,1,0)
+
+twobigprod_T2a(x) if((T2aS1(x)>0 || T2aS2(x)>0 || T2aS3(x)>0 || T2aS4(x)>0) && \
+(T2aL1(x)>0 || T2aL2(x)>0 || T2aL3(x)>0 || T2aL4(x) >0 || T2aL5(x)>0 || T2aL6(x)>0 || T2aL7(x)>0 || T2aL8(x)>0),1,0)
+
+twobigprod_T2b(x) if((T2bS1(x)>0 || T2bS2(x)>0 || T2bS3(x)>0 || T2bS4(x)>0) && \
+(T2bL1(x)>0 || T2bL2(x)>0 || T2bL3(x)>0 || T2bL4(x) >0 || T2bL5(x)>0 || T2bL6(x)>0 || T2bL7(x)>0 || T2bL8(x)>0),1,0)
+
+########
+# T3=3 #
+########
+
+#mobility_factor_T3(x) if(R3tot(x)>T3,0,1)
+#large_T3(x) if(R3tot(x)>T3,1,0)
+
+
+
+end functions
+
+begin reaction rules
+
+###########
+# Model 0 #
+###########
+
+#L0(r,r)+R0(l)<->L0(r,r!1).R0(l!1) kf,kr
+#L0(r,r!+)+R0(l)<->L0(r!1,r!+).R0(l!1) kpx,kmx
+
+###########
+# Model 1 # - no immobilization
+###########
+
+# capture/release of free ligand
+L1(r,r)+R1(l1)<->L1(r,r!1).R1(l1!1) kf,kr
+L1(r,r)+R1(l2)<->L1(r,r!1).R1(l2!1) kf,kr
+
+# ligand-mediated receptor crosslinking
+L1(r,r!+)+R1(l1)<->L1(r!1,r!+).R1(l1!1) kpx,kmx
+L1(r,r!+)+R1(l2)<->L1(r!1,r!+).R1(l2!1) kpx,kmx
+
+###########
+# Model 2 # - immobilization of aggregates containing more than 2 receptors
+###########
+
+# capture/release of free ligand
+L2(r,r)+R2(a)<->L2(r!1,r).R2(a!1) kf,kr
+L2(r,r)+R2(b)<->L2(r,r!1).R2(b!1) kf,kr
+
+# receptor crosslinking by tethered ligand with consideration of receptor aggregate mobility
+#   reactant x is mobile or immobile; reactant y is mobile
+L2(r,r!+)+%y:R2(a)->L2(r!1,r!+).R2(a!1) kpx*mobility_factor_T2(y)
+L2(r!+,r)+%y:R2(b)->L2(r!+,r!1).R2(b!1) kpx*mobility_factor_T2(y)
+#   reactant x is mobile; reactant y is immobile
+%x:L2(r,r!+)+%y:R2(a)->L2(r!1,r!+).R2(a!1) \
+FunctionProduct("kpx*mobility_factor_T2(x)","1.0-mobility_factor_T2(y)")
+%x:L2(r!+,r)+%y:R2(b)->L2(r!+,r!1).R2(b!1) \
+FunctionProduct("kpx*mobility_factor_T2(x)","1.0-mobility_factor_T2(y)")
+#   reactant x is immobible; reactant y is immobile
+%x:L2(r,r!+)+%y:R2(a)->L2(r!1,r!+).R2(a!1) \
+FunctionProduct("sigma*kpx*large_T2(x)","large_T2(y)")
+%x:L2(r!+,r)+%y:R2(b)->L2(r!+,r!1).R2(b!1) \
+FunctionProduct("sigma*kpx*large_T2(x)","large_T2(y)")
+
+L2(r!1,r!+).R2(a!1,aFlag~0)->L2(r!1,r!+).R2(a!1,aFlag~1) kmx
+L2(r!+,r!1).R2(b!1,bFlag~0)->L2(r!+,r!1).R2(b!1,bFlag~1) kmx
+
+L2(r!1,r!+).R2(a!1,aFlag~1)->L2(r,r!+)+R2(a,aFlag~0) delta
+L2(r!+,r!1).R2(b!1,bFlag~1)->L2(r!+,r)+R2(b,bFlag~0) delta
+
+# THE LINES BELOW DO NOT WORK BECAUSE OF A BUG IN BioNetGen/NFsim:
+%z:L2(r!1,r!+).R2(a!1,aFlag~1)->L2(r!1,r!+).R2(a!1,aFlag~0) rho*twobigprod_T2a(z)
+%z:L2(r!+,r!1).R2(b!1,bFlag~1)->L2(r!+,r!1).R2(b!1,bFlag~0) rho*twobigprod_T2b(z)
+
+###########
+# Model 3 #
+###########
+
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",gml=>2000000,complex=>1,get_final_state=>0,print_functions=>1,\
+          t_start=>0,t_end=>300,n_steps=>300})
+
+end actions

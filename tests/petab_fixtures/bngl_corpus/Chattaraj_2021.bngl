@@ -1,0 +1,74 @@
+# Clustering of three signaling molecules - Nephrin, Nck and NWASP
+# References:
+# 	1. A. Chattaraj, M. L. Blinov and L. M. Loew. "The solubility product extends the buffering concept 
+#	to heterotypic biomolecular condensates." eLife 2021, Vol. 10 Pages e67176, DOI: 10.7554/eLife.67176 (Figure 6)
+#	2. A. Chattaraj and L. M. Loew. "The maximum solubility product marks the threshold for condensation 
+# 	of multivalent biomolecules". bioRxiv 2022, DOI: 10.1101/2022.10.04.510809 (Figure 6B)
+
+begin model
+
+begin parameters
+# 1: Nephrin, 2: Nck, 3: NWASP
+# Kd: binding affinity, kon: binding rate constant, koff: unbinding rate constant
+kd_12	3500   
+kd_23	3500	
+koff_23	1000
+kon_23	koff_23/kd_23
+koff_12	1000
+kon_12	koff_12/kd_12
+end parameters
+
+begin molecule types
+Nephrin(pY1,pY2,pY3)
+Nck(S1,S2,S3,Sh2)
+NWASP(p1,p2,p3,p4,p5,p6)
+end molecule types
+
+begin seed species
+1 Nephrin(pY1,pY2,pY3) 300
+2 Nck(S1,S2,S3,Sh2) 900
+3 NWASP(p1,p2,p3,p4,p5,p6)	450
+end seed species
+
+begin observables
+Molecules tot_Nck Nck()
+Molecules free_Nck Nck(S1,S2,S3,Sh2)
+Molecules tot_NWASP NWASP()
+Molecules free_NWASP NWASP(p1,p2,p3,p4,p5,p6)
+Molecules tot_Nephrin Nephrin()
+Molecules free_Nephrin Nephrin(pY1,pY2,pY3)
+Molecules fully_bound_Nephrin Nephrin(pY1!+,pY2!+,pY3!+)
+Molecules fully_bound_Nck Nck(S1!+,S2!+,S3!+,Sh2!+)
+Molecules fully_bound_NWASP NWASP(p1!+,p2!+,p3!+,p4!+,p5!+,p6!+)
+Molecules cluster_neph_nck_nw Nephrin().Nck().NWASP()
+Molecules cluster_nck_nw Nck().NWASP()
+end observables
+
+
+begin reaction rules
+_01_S1_P1:	Nck(S1) + NWASP(p1) <-> Nck(S1!1).NWASP(p1!1)		kon_23, koff_23
+_02_S2_P1:	Nck(S2) + NWASP(p1) <-> Nck(S2!1).NWASP(p1!1)		kon_23, koff_23
+_03_S3_P1:	Nck(S3) + NWASP(p1) <-> Nck(S3!1).NWASP(p1!1)		kon_23, koff_23
+_06_S3_P2:	Nck(S3) + NWASP(p2) <-> Nck(S3!1).NWASP(p2!1)		kon_23, koff_23
+_05_S2_P2:	Nck(S2) + NWASP(p2) <-> Nck(S2!1).NWASP(p2!1)		kon_23, koff_23
+_04_S1_P2:	Nck(S1) + NWASP(p2) <-> Nck(S1!1).NWASP(p2!1)		kon_23, koff_23
+_08_S2_P3:	Nck(S2) + NWASP(p3) <-> Nck(S2!1).NWASP(p3!1)		kon_23, koff_23
+_07_S1_P3:	Nck(S1) + NWASP(p3) <-> Nck(S1!1).NWASP(p3!1)		kon_23, koff_23
+_09_S3_P3:	Nck(S3) + NWASP(p3) <-> Nck(S3!1).NWASP(p3!1)		kon_23, koff_23
+_10_S1_P4:	Nck(S1) + NWASP(p4) <-> Nck(S1!1).NWASP(p4!1)		kon_23, koff_23
+_11_S2_P4:	Nck(S2) + NWASP(p4) <-> Nck(S2!1).NWASP(p4!1)		kon_23, koff_23
+_12_S3_P4:	Nck(S3) + NWASP(p4) <-> Nck(S3!1).NWASP(p4!1)		kon_23, koff_23
+_13_S1_P5:	Nck(S1) + NWASP(p5) <-> Nck(S1!1).NWASP(p5!1)		kon_23, koff_23
+_14_S2_P5:	Nck(S2) + NWASP(p5) <-> Nck(S2!1).NWASP(p5!1)		kon_23, koff_23
+_15_S3_P5:	Nck(S3) + NWASP(p5) <-> Nck(S3!1).NWASP(p5!1)		kon_23, koff_23
+_16_S1_P6:	Nck(S1) + NWASP(p6) <-> Nck(S1!1).NWASP(p6!1)		kon_23, koff_23
+_17_S3_P6:	Nck(S3) + NWASP(p6) <-> Nck(S3!1).NWASP(p6!1)		kon_23, koff_23
+_18_S2_P6:	Nck(S2) + NWASP(p6) <-> Nck(S2!1).NWASP(p6!1)		kon_23, koff_23
+_19_pY1_sh2:	Nephrin(pY1) + Nck(Sh2) <-> Nephrin(pY1!1).Nck(Sh2!1)		kon_12, koff_12
+_20_pY2_sh2:	Nephrin(pY2) + Nck(Sh2) <-> Nephrin(pY2!1).Nck(Sh2!1)		kon_12, koff_12
+_21_pY3_sh2:	Nephrin(pY3) + Nck(Sh2) <-> Nephrin(pY3!1).Nck(Sh2!1)		kon_12, koff_12
+end reaction rules
+
+end model
+
+writeXML()

@@ -1,0 +1,52 @@
+begin parameters
+kon_dimer	1.0      # units = 1/(uM.s)       
+koff_dimer	0.1      # units = 1/s             
+kon_SH2		1.0      # units = 1/(uM.s)
+koff_SH2	0.1      # units = 1/s
+kphos_slow	0.1      # units = 1/s
+kphos_fast	1.0      # units = 1/s
+Jtot            0.000014 # units = uM
+Stot            0.1      # units = uM
+end parameters
+
+begin molecule types
+S(SH2,DD)
+
+J(Y1~P,Y~U~P)
+
+end molecule types
+
+begin species
+S(SH2,DD)       Stot
+J(Y1~P,Y~U)     Jtot
+
+end species
+
+begin reaction rules
+
+# JAK2-SH2B interaction
+J(Y1~P) + S(SH2) <-> J(Y1~P!1).S(SH2!1) kon_SH2, koff_SH2
+
+# SH2B dimerization 
+S(DD) + S(DD) <-> S(DD!1).S(DD!1) kon_dimer, koff_dimer
+
+# JAK2 phosphorylation
+J(Y~U,Y1!1).S(SH2!1,DD!2).S(DD!2,SH2!3).J(Y1!3,Y~U) -> J(Y~P,Y1!1).S(SH2!1,DD!2).S(DD!2,SH2!3).J(Y1!3,Y~U) kphos_slow
+
+J(Y~U,Y1!1).S(SH2!1,DD!2).S(DD!2,SH2!3).J(Y1!3,Y~P) -> J(Y~P,Y1!1).S(SH2!1,DD!2).S(DD!2,SH2!3).J(Y1!3,Y~P) kphos_fast
+
+
+end reaction rules
+
+begin observables
+	Molecules 	J_mono    J(Y1~P)
+	Molecules 	JS       J(Y1~P!1).S(SH2!1,DD)
+	Molecules 	JSS    J(Y1~P!1).S(SH2!1,DD!2).S(SH2,DD!2)
+	Molecules 	JSSJ      J.J
+	Molecules 	J_active    J(Y~P)
+	Molecules 	J_inactive   J(Y~U)
+end observables
+
+generate_network({overwrite=>1, max_stoich=>{J=>2}});
+
+simulate_ode({t_end=>10000, n_steps=>10000,atol=>1e-08,rtol=>1e-08,sparse=>1});

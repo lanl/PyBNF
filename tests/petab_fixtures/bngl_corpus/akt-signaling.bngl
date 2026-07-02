@@ -1,0 +1,100 @@
+begin model
+begin parameters
+    # Signaling rates
+    k_bind 1e-3        # RTK-GF binding
+    k_unbind 1e-4      # GF dissociation
+    k_rtk_act 0.5      # Autophosphorylation
+    k_pi3k 0.2         # PI3K recruitment/activation
+    k_akt_t308 0.5     # PDK1-mediated T308 phos
+    k_akt_s473 0.3     # mTORC2-mediated S473 phos
+    k_mtorc1 0.4       # Akt-mediated mTORC1 activation
+    k_s6k_act 0.2      # mTORC1-mediated S6K phos
+    
+    # Negative feedback / resetting
+    k_reset 0.1        # General phosphatase/deactivation
+    k_fb 0.05          # S6K-mediated inhibition of RTK signaling
+    
+    # Total concentrations
+    GF_tot 100
+    RTK_tot 50
+    PI3K_tot 40
+    AKT_tot 100
+    mTORC2_tot 20
+    mTORC1_tot 50
+    S6K_tot 30
+end parameters
+
+begin molecule types
+    GrowthFactor(r)
+    RTK(l,state~U~P,fb_site~open~closed)
+    PI3K(state~off~on)
+    # Akt has two critical phosphorylation sites
+    AKT(t308~U~P,s473~U~P)
+    mTORC2(state~on)
+    mTORC1(state~off~on)
+    S6K(state~U~P)
+end molecule types
+
+begin seed species
+    GrowthFactor(r) GF_tot
+    RTK(l,state~U,fb_site~open) RTK_tot
+    PI3K(state~off) PI3K_tot
+    AKT(t308~U,s473~U) AKT_tot
+    mTORC2(state~on) mTORC2_tot
+    mTORC1(state~off) mTORC1_tot
+    S6K(state~U) S6K_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_RTK    RTK(state~P)              # Receptor tyrosine kinase activation
+    Molecules Active_PI3K   PI3K(state~on)           # PI3K recruitment to membrane
+    Molecules pAkt_T308     AKT(t308~P)              # PDK1-mediated phosphorylation
+    Molecules pAkt_S473     AKT(s473~P)              # mTORC2-mediated phosphorylation
+    Molecules Double_pAkt   AKT(t308~P,s473~P)       # Fully active Akt
+    Molecules Active_mTORC1 mTORC1(state~on)         # Downstream growth effector
+end observables
+
+begin reaction rules
+    ## RECEPTOR ACTIVATION & FEEDBACK
+    # Growth factor binds to open RTK
+    GrowthFactor(r) + RTK(l,fb_site~open) <-> GrowthFactor(r!1).RTK(l!1,fb_site~open) k_bind,k_unbind
+    
+    # Ligand-bound RTK becomes active
+    GrowthFactor(r!1).RTK(l!1,state~U) -> GrowthFactor(r!1).RTK(l!1,state~P) k_rtk_act
+    
+    ## PI3K / AKT PATHWAY
+    # Active RTK recruits and activates PI3K
+    RTK(state~P) + PI3K(state~off) -> RTK(state~P) + PI3K(state~on) k_pi3k
+    
+    # Active PI3K facilitates Akt phosphorylation at T308 (PDK1 proxy)
+    PI3K(state~on) + AKT(t308~U) -> PI3K(state~on) + AKT(t308~P) k_akt_t308
+    
+    # Constitutive mTORC2 phosphorylates Akt at S473
+    mTORC2() + AKT(s473~U) -> mTORC2() + AKT(s473~P) k_akt_s473
+    
+    ## MTOR SIGNALING & FEEDBACK
+    # Double-phosphorylated Akt activates mTORC1
+    AKT(t308~P,s473~P) + mTORC1(state~off) -> AKT(t308~P,s473~P) + mTORC1(state~on) k_mtorc1
+    
+    # mTORC1 activates S6K,which mediates feedback
+    mTORC1(state~on) + S6K(state~U) -> mTORC1(state~on) + S6K(state~P) k_s6k_act
+    
+    # Negative feedback: pS6K inhibits RTK ligand binding by "closing" the feedback site
+    S6K(state~P) + RTK(fb_site~open) -> S6K(state~P) + RTK(fb_site~closed) k_fb
+    
+    ## RESETTING MECHANISMS
+    RTK(state~P) -> RTK(state~U) k_reset
+    PI3K(state~on) -> PI3K(state~off) k_reset
+    AKT(t308~P) -> AKT(t308~U) k_reset
+    AKT(s473~P) -> AKT(s473~U) k_reset
+    mTORC1(state~on) -> mTORC1(state~off) k_reset
+    S6K(state~P) -> S6K(state~U) k_reset
+    RTK(fb_site~closed) -> RTK(fb_site~open) k_reset
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>500,n_steps=>250})
+end actions
+end model

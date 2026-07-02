@@ -1,0 +1,111 @@
+begin model
+begin parameters
+    # Apoptosis cascade: Integrated extrinsic and intrinsic death signaling.
+    # Advanced features: Hill kinetics for MOMP and MoveConnected for CytoC.
+    
+    # Upstream Induction
+    k_ligand 0.8       # Death ligand drive
+    
+    # Mitochondrial Decision (MOMP)
+    k_bid_trunc 1.0    # BID -> tBID
+    k_momp_max 5.0     # Final mitochondrial commitment
+    Km_tbid 150        # Threshold for MOMP
+    n_hill 4.0         # Sharp switching behavior
+    
+    # Execution
+    k_apaf_act 1.5     # CytoC/Apaf-1 assembly
+    k_c3_act 2.5       # Caspase-3 execution
+    
+    # Regulation (Survival)
+    k_xiap_bind 5.0    # XIAP sequesters C3
+    k_smac_rec 2.0     # SMAC inhibits XIAP
+    
+    # Initials
+    C8_tot 500
+    Bid_tot 400
+    MOMP_sites 100     # Mitochondrial surface proxy
+    Apaf1_tot 300
+    C3_tot 1000
+    XIAP_tot 200
+    SMAC_tot 150
+end parameters
+
+begin molecule types
+    DeathLigand()
+    Caspase8(s~U~A)
+    Bid(s~U~T)
+    Mito(state~intact~leaky,loc~mit~cyt)
+    Apaf1(s~U~A)
+    Caspase3(b,s~U~A)
+    XIAP(b1,b2)
+    SMAC(b,loc~mit~cyt)
+end molecule types
+
+begin seed species
+    DeathLigand() 10
+    Caspase8(s~U) C8_tot
+    Bid(s~U) Bid_tot
+    Mito(state~intact,loc~mit) MOMP_sites
+    Apaf1(s~U) Apaf1_tot
+    Caspase3(b,s~U) C3_tot
+    XIAP(b1,b2) XIAP_tot
+    SMAC(b,loc~mit) SMAC_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Global_Death     Caspase3(s~A)            # Executioner activity
+    Molecules Mitochondrial_Fail Mito(state~leaky)      # Irreversible commitment
+    Molecules CytoC_Released   Mito(loc~cyt)            # Spatial readout
+    Molecules Inhibitor_Sequest Caspase3(b!1).XIAP(b1!1) # Survival status
+    Molecules Mitochondria_Gate Mito(state~leaky)       # Commitment marker
+    Molecules Active_Bid      Bid(s~T)                 # Feedback driver status
+end observables
+
+begin functions
+    # Sharp switch for mitochondrial collapse (MOMP)
+    v_momp() = k_momp_max * (Active_Bid^n_hill) / (Km_tbid^n_hill + Active_Bid^n_hill)
+end functions
+
+begin reaction rules
+    ## RECEPTION & INITIATION (Extrinsic)
+    # Death ligand triggers Caspase-8
+    DeathLigand() + Caspase8(s~U) -> DeathLigand() + Caspase8(s~A) k_ligand
+    
+    # Caspase-8 truncates Bid
+    Caspase8(s~A) + Bid(s~U) -> Caspase8(s~A) + Bid(s~T) k_bid_trunc
+    
+    ## MITOCHONDRIAL COLLAPSE (Intrinsic)
+    # tBid triggers MOMP (Functional Rate - Hill)
+    Mito(state~intact) -> Mito(state~leaky) v_momp()
+    
+    # MoveConnected: CytoC and SMAC move to cytosol upon MOMP
+    Mito(state~leaky,loc~mit) -> Mito(state~leaky,loc~cyt) 10.0 MoveConnected
+    SMAC(loc~mit) + Mito(state~leaky) -> SMAC(loc~cyt) + Mito(state~leaky) 10.0
+    
+    ## EXECUTION
+    # CytoC (proxied by leaky mito) activates Apaf-1
+    Mito(state~leaky,loc~cyt) + Apaf1(s~U) -> Mito(state~leaky,loc~cyt) + Apaf1(s~A) k_apaf_act
+    
+    # Initiators (C8,Apaf-C9) activate Caspase-3
+    Caspase8(s~A) + Caspase3(s~U) -> Caspase8(s~A) + Caspase3(s~A) k_c3_act
+    Apaf1(s~A) + Caspase3(s~U) -> Apaf1(s~A) + Caspase3(s~A) k_c3_act
+    
+    ## REGULATION & SURVIVAL
+    # XIAP inhibits active C3
+    Caspase3(s~A,b) + XIAP(b1) <-> Caspase3(s~A,b!1).XIAP(b1!1) k_xiap_bind,0.1
+    
+    # SMAC inhibits XIAP,letting C3 free
+    SMAC(loc~cyt,b) + XIAP(b2) <-> SMAC(loc~cyt,b!1).XIAP(b2!1) k_smac_rec,0.1
+    
+    ## RESET (Baseline recovery - failed apoptosis case)
+    Caspase3(s~A) -> Caspase3(s~U) 0.05
+    Apaf1(s~A) -> Apaf1(s~U) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>10,n_steps=>200})
+end actions
+end model
+

@@ -1,0 +1,91 @@
+# Model: genetic_bistability_energy.bngl
+# Description: Models a bistable genetic toggle switch where two genes (A and B) repress each other.
+#              Uses Energy Patterns to model the cooperative repression (high affinity binding).
+#              Demonstrates how to build stability landscapes.
+
+begin model
+
+begin parameters
+    # Energy
+    G_Gene 0
+    G_Protein 0
+    
+    # Binding Energy (Repressor to Operator)
+    # Strong binding
+    G_bind -5.0
+    G_coop -2.0 # Dimerization/Cooperativity
+    
+    RT 1.0
+    phi 0.5
+    Ea_bind 1.0
+    
+    k_synth 10.0
+    k_deg   0.1
+end parameters
+
+begin molecule types
+    GeneA(op) # Operator site
+    GeneB(op)
+    ProtA(r,d) # Repressor domain, Dimer domain
+    ProtB(r,d)
+end molecule types
+
+begin seed species
+    # Start in unstable middle state
+    GeneA(op) 1
+    GeneB(op) 1
+    ProtA(r,d) 10
+    ProtB(r,d) 10
+end seed species
+
+begin observables
+    Molecules A ProtA()
+    Molecules B ProtB()
+    Molecules GeneA_Free GeneA(op)
+    Molecules GeneB_Free GeneB(op)
+end observables
+
+begin energy patterns
+    GeneA(op) G_Gene
+    GeneB(op) G_Gene
+    ProtA(r,d) G_Protein
+    ProtB(r,d) G_Protein
+    
+    # Specific Interactions
+    # ProtA binds GeneB
+    GeneB(op!1).ProtA(r!1) G_bind
+    # ProtB binds GeneA
+    GeneA(op!1).ProtB(r!1) G_bind
+    
+    # Dimerization (Cooperative)
+    ProtA(d!1).ProtA(d!1) G_coop
+    ProtB(d!1).ProtB(d!1) G_coop
+end energy patterns
+
+begin reaction rules
+    # 1. Synthesis
+    # Only free genes express
+    GeneA(op) -> GeneA(op) + ProtA(r,d) k_synth
+    GeneB(op) -> GeneB(op) + ProtB(r,d) k_synth
+    
+    # 2. Binding (Repression)
+    # Rates governed by Energy Patterns
+    # ProtA binds GeneB
+    GeneB(op) + ProtA(r) <-> GeneB(op!1).ProtA(r!1) Arrhenius(phi, Ea_bind)
+    # ProtB binds GeneA
+    GeneA(op) + ProtB(r) <-> GeneA(op!1).ProtB(r!1) Arrhenius(phi, Ea_bind)
+    
+    # 3. Degradation
+    ProtA() -> 0 k_deg
+    ProtB() -> 0 k_deg
+    
+    # 4. Dimerization (Optional, adds non-linearity)
+    ProtA(d) + ProtA(d) <-> ProtA(d!1).ProtA(d!1) Arrhenius(phi, 1.0)
+    ProtB(d) + ProtB(d) <-> ProtB(d!1).ProtB(d!1) Arrhenius(phi, 1.0)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>100, n_steps=>200})

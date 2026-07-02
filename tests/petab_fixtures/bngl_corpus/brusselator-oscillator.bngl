@@ -1,0 +1,95 @@
+begin model
+begin parameters
+    # The Brusselator: Auto-catalytic chemical oscillator.
+    # Advanced features: Saturable kinetics and if function for phase control.
+    
+    # Supply and Decay (Saturable/Michaelis-Menten)
+    v_supply_max 2.0   # Max input of A
+    Km_a 0.5           # Reservoir threshold
+    k_decay_max 1.5    # Max output of X
+    Km_x 1.2           # Exit threshold
+    
+    # Oscillation Drive
+    k_cross 3.0        # B + X -> Y
+    k_auto 1.0         # 2X + Y -> 3X (The Positive Feedback)
+    
+    # Environmental Control
+    k_temp_mod 1.0     # Base temp effect
+    v_temp_current 2.5
+    A_pool 100         # Reservoir
+    B_drive 2.5        # Force
+    X_init 1.0
+    Y_init 1.5
+end parameters
+
+begin molecule types
+    A()                # Feedstock
+    B()                # Driver
+    X()                # Activator
+    Y()                # Inhibitor/Substrate
+end molecule types
+
+begin seed species
+    A() A_pool
+    B() B_drive
+    X() X_init
+    Y() Y_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Activator_X     X()                      # Fast variable
+    Molecules Inhibitor_Y     Y()                      # Slow variable
+    Molecules Feed_Status     A()                      # Resource levels
+    Molecules Drive_Force     B()                      # Control parameter
+    Molecules Ratio_XY        X(),Y()                  # Phase space metrics
+    Molecules A_Level         A()                      # Function substrate status
+    Molecules X_Level         X()                      # Function substrate status
+end observables
+
+begin functions
+    # Saturable supply from reservoir A
+    v_supply() = v_supply_max * A_Level / (Km_a + A_Level)
+    
+    # Saturable decay of activator X
+    v_decay() = k_decay_max * X_Level / (Km_x + X_Level)
+    
+
+    v_auto() = k_auto * v_temp_current
+end functions
+
+begin reaction rules
+    ## ACTIVATION (Input)
+    # A -> X (Input flux)
+    0 -> X() v_supply()
+    
+    ## OSCILLATION Core
+    # B + X -> Y (Conversion to inhibitor)
+    B() + X() -> Y() k_cross
+    
+    # 2X + Y -> 3X (Auto-catalysis with "Temp" modulation)
+    # ternary rule - standard Brusselator
+    X() + X() + Y() -> X() + X() + X() v_auto()
+    
+    ## DECAY (Output)
+    # X -> 0 (Clearance)
+    X() -> 0 v_decay()
+    
+    # Slow resource depletion
+    A() -> 0 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Cool (0-20)
+    setParameter("v_temp_current", 2.5)
+    simulate({method=>"ode",t_end=>20,n_steps=>200})
+    # Phase 2: Heat Pulse (20-40)
+    setParameter("v_temp_current", 5.0)
+    simulate({method=>"ode",t_end=>40,n_steps=>200,continue=>1})
+    # Phase 3: Recovery (40-60)
+    setParameter("v_temp_current", 2.5)
+    simulate({method=>"ode",t_end=>60,n_steps=>200,continue=>1})
+end actions
+end model
+

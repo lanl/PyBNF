@@ -1,0 +1,106 @@
+begin model
+begin parameters
+    # BMP-Smad signaling: Developmental gradient relay.
+    # Advanced features: exclude_reactants for Smad6 inhibitor logic.
+    
+    # Extracellular Gating
+    k_noggin_bind 1e-3 # Noggin sequesters BMP (Sink)
+    k_bmp_bind 1.0     # BMP binds Type II R
+    
+    # Receptor Assembly
+    k_complex 2.0      # Assembly of Type II and Type I
+    k_smad_phos 3.0    # Phosphorylation of R-Smad (Smad1/5/8)
+    
+    # Feedback & Regulation
+    k_smad6_inh 5.0    # Smad6 inhibits Smad1 recruitment
+    k_smad6_synth 0.5  # Nuclear signal induces Smad6
+    
+    # Transport
+    k_import 1.0       # pSmad-Smad4 complex entry
+    k_export 0.2
+    
+    # Initials
+    BMP_tot 100
+    Noggin_init 50
+    R1_tot 150
+    R2_tot 150
+    Smad1_tot 500
+    Smad4_tot 300
+    Smad6_init 10
+end parameters
+
+begin molecule types
+    BMP(r1,r2,b)
+    Noggin(b)
+    Receptor1(l,s~U~P)
+    Receptor2(l,r,s~U~A)
+    Smad1(r,s~U~P,loc~cyt~nuc)
+    Smad4(b,loc~cyt~nuc)
+    Smad6(b)
+end molecule types
+
+begin seed species
+    BMP(r1,r2,b) BMP_tot
+    Noggin(b) Noggin_init
+    Receptor1(l,s~U) R1_tot
+    Receptor2(l,r,s~U) R2_tot
+    Smad1(r,s~U,loc~cyt) Smad1_tot
+    Smad4(b,loc~cyt) Smad4_tot
+    Smad6(b) Smad6_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules SMAD_Output      Smad1(loc~nuc)           # Transcription pool
+    Molecules Active_Nuclear_Smad1 Smad1(loc~nuc,s~P) # Feedback drive status
+    Molecules Surface_Engage   Receptor2(s~A)    # Active complex metrics
+    Molecules Noggin_Sink      BMP(b!+)                 # Sequestration status
+    Molecules Feedback_Brake   Smad6()                  # Inhibitor levels
+    Molecules Signal_Complex   Smad1(s~P!1).Smad4(b!1)  # Functional relay
+end observables
+
+begin functions
+    # Saturable Smad6 synthesis based on nuclear signal
+    v_feedback() = k_smad6_synth * (Active_Nuclear_Smad1 / (100 + Active_Nuclear_Smad1))
+end functions
+
+begin reaction rules
+    ## EXTRACELLULAR GATING
+    # Noggin sequesters BMP ligand
+    BMP(r1,r2,b) + Noggin(b) <-> BMP(r1,r2,b!1).Noggin(b!1) k_noggin_bind,0.05
+    
+    ## RECEPTION
+    # BMP binds Type II R,then recruits Type I
+    BMP(r2,b) + Receptor2(l,s~U) <-> BMP(r2!1,b).Receptor2(l!1,s~A) k_bmp_bind,0.1
+    Receptor2(l!+,r,s~A) + Receptor1(l,s~U) <-> Receptor2(l!+,r!1,s~A).Receptor1(l!1,s~P) k_complex,0.1
+    
+    ## SIGNAL RELAY
+    # Active complex phosphorylates Smad1
+    # exclude_reactants: Smad1 cannot be phosphorylated if Smad6 is present (Simplified)
+    Receptor1(s~P) + Smad1(r,s~U) -> Receptor1(s~P) + Smad1(r,s~P) k_smad_phos
+    
+    # Inhibitor Smad6 interferes (Sequestration of Smad1)
+    Smad6(b) + Smad1(r,s~U) <-> Smad6(b!1).Smad1(r!1,s~U) k_smad6_inh,0.2
+    
+    ## TRANSPORT
+    # pSmad1 dimerizes and translocates
+    Smad1(s~P,loc~cyt) + Smad4(b,loc~cyt) <-> Smad1(s~P!1,loc~cyt).Smad4(b!1,loc~cyt) 2.0,0.1
+    Smad1(loc~cyt,s~U)!+ -> Smad1(loc~nuc,s~U)!+ k_import
+    
+    ## FEEDBACK INDUCTION
+    # Nuclear factor induces Smad6
+    Smad1(loc~nuc,s~P) -> Smad1(loc~nuc,s~P) + Smad6(b) v_feedback()
+    
+    ## RESET
+    Smad1(r,loc~nuc,s~P) -> Smad1(r,loc~cyt,s~U) 0.1
+    Smad1(loc~nuc) -> Smad1(loc~cyt) k_export
+    Smad6() -> 0 0.05
+    Receptor1(s~P) -> Receptor1(s~U) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>200,n_steps=>400})
+end actions
+end model
+

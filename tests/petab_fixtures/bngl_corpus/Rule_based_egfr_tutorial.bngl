@@ -1,0 +1,55 @@
+begin model
+
+begin compartments
+c0	3	1
+end compartments
+
+begin parameters
+end parameters
+
+begin molecule types
+EGF(Site)
+EGFR(ecd,tmd,Y1~u~p,Y2~u~p)
+Grb2(sh2)
+Shc(sh3,Y~u~p)
+end molecule types
+
+begin seed species
+1 @c0:EGFR(ecd,tmd,Y1~u,Y2~u) 100.0
+2 @c0:EGF(Site) 680.0
+3 @c0:Grb2(sh2) 58.0
+4 @c0:Shc(sh3,Y~p) 0.0
+5 @c0:Shc(sh3,Y~u) 150.0
+end seed species
+
+begin observables
+Molecules O0_EGF_tot @c0:EGF()
+Molecules O0_EGFR_tot @c0:EGFR()
+Molecules O0_Grb2_tot @c0:Grb2()
+Molecules O0_Shc_tot @c0:Shc()
+Molecules Dimers @c0:EGFR(tmd!+)
+Species Dimers_s @c0:EGFR(tmd!+)
+Molecules Y1 @c0:EGFR(Y1~p!?)
+Molecules Y2 @c0:EGFR(Y2~p!?)
+Molecules Y_total @c0:EGFR(Y1~p!?) @c0:EGFR(Y2~p!?)
+end observables
+
+begin functions
+end functions
+
+begin reaction rules
+ligand_bind:	@c0:EGFR(ecd,tmd) + @c0:EGF(Site) <-> @c0:EGFR(ecd!1,tmd).EGF(Site!1)		0.003, 0.06
+dimeriz:	@c0:EGFR(ecd!+,tmd)%1 + @c0:EGFR(ecd!+,tmd)%2 <-> @c0:EGFR(ecd!+,tmd!1)%1.EGFR(ecd!+,tmd!1)%2		0.001, 0.1
+Y2_phosph:	@c0:EGFR(tmd!+,Y2~u) -> @c0:EGFR(tmd!+,Y2~p)		0.5
+Y1_phosph:	@c0:EGFR(tmd!+,Y1~u) -> @c0:EGFR(tmd!+,Y1~p)		0.5
+Y2_dephosph:	@c0:EGFR(Y2~p) -> @c0:EGFR(Y2~u)		4.5
+Y1_dephosph:	@c0:EGFR(Y1~p) -> @c0:EGFR(Y1~u)		4.5
+R_Grb2_interaction:	@c0:EGFR(Y1~p) + @c0:Grb2(sh2) <-> @c0:EGFR(Y1~p!1).Grb2(sh2!1)		0.001, 0.05
+R_ShcU_interaction:	@c0:EGFR(Y2~p) + @c0:Shc(sh3,Y~u) <-> @c0:EGFR(Y2~p!1).Shc(sh3!1,Y~u)		0.045, 0.6
+Shc_phosph:	@c0:EGFR(Y2~p!1).Shc(sh3!1,Y~u) -> @c0:EGFR(Y2~p!1).Shc(sh3!1,Y~p)		3.0
+R_ShcP_interaction:	@c0:EGFR(Y2~p) + @c0:Shc(sh3,Y~p) <-> @c0:EGFR(Y2~p!1).Shc(sh3!1,Y~p)		4.5E-4, 0.3
+end reaction rules
+
+end model
+
+generate_network({max_iter=>12,max_agg=>12,max_stoich=>{EGF=>100,EGFR=>100,Grb2=>100,Shc=>100},overwrite=>1})

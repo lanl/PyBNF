@@ -1,0 +1,85 @@
+# Model: energy_transport_pump.bngl
+# Description: Models an active transport pump (T) that moves substrate A against its chemical potential gradient.
+#              The process is driven by the hydrolysis of ATP.
+#              Overall reaction: A(out) + ATP -> A(in) + ADP + Pi
+#              Illustrates how coupling to a high-energy reaction can drive an unfavorable transition.
+
+begin model
+
+begin parameters
+    # --- Transport & Chemical Energies ---
+    # A(out) is the ground/low energy state
+    G_A_out 0
+    # A(in) is the high energy state (concentration gradient or electrical potential)
+    G_A_in 5.0 
+    
+    # ATP Hydrolysis Energies (High Energy)
+    G_ATP 10.0
+    G_ADP 0.0
+    G_Pi 0.0
+    
+    # Activation barrier for the coupled transport cycle
+    Ea_transport 2.0
+    
+    # System
+    RT 1.0
+    phi 0.5
+    
+    # --- Concentrations ---
+    Atot 100
+    ATP_conc 500 # High ATP pool
+    ADP_conc 10
+    Pi_conc 10
+end parameters
+
+begin molecule types
+    A(loc~in~out) # Substrate A with location state
+    ATP()
+    ADP()
+    Pi()
+    T(a)          # Transporter Enzyme
+end molecule types
+
+begin seed species
+    A(loc~out) Atot      # Start with all A outside
+    ATP() ATP_conc
+    ADP() ADP_conc
+    Pi() Pi_conc
+    T(a) 10              # Limited number of transporters
+end seed species
+
+begin observables
+    Molecules A_in A(loc~in)
+    Molecules A_out A(loc~out)
+    Molecules Energy_Source ATP()
+end observables
+
+begin energy patterns
+    # Define energies for reactants and products
+    A(loc~out) G_A_out
+    A(loc~in) G_A_in
+    ATP() G_ATP
+    ADP() G_ADP
+    Pi() G_Pi
+    # Transporter is catalyst, G_T cancels out on both sides
+end energy patterns
+
+begin reaction rules
+    # Coupled Transport Rule
+    # Reactants: T + A(out) + ATP
+    # Products:  T + A(in) + ADP + Pi
+    # Delta G = (G_A_in + G_ADP + G_Pi) - (G_A_out + G_ATP)
+    #         = (5 + 0 + 0) - (0 + 10) = -5.0
+    # Since Delta G is negative, the forward reaction is spontaneous.
+    T(a) + A(loc~out) + ATP() <-> T(a) + A(loc~in) + ADP() + Pi() Arrhenius(phi, Ea_transport)
+    
+    # Passive Leak Channel (Backflow)
+    # A(in) -> A(out) is favorable (Delta G = -5), but we put a high barrier to minimize it.
+    A(loc~in) <-> A(loc~out) Arrhenius(phi, 8.0)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>20, n_steps=>200})

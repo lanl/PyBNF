@@ -1,0 +1,102 @@
+begin model
+begin parameters
+    # Blood coagulation: Thrombin burst and feedback propagation.
+    # Advanced features: TotalRate for clotting and DeleteMolecules for inhibition.
+    
+    # Initiation (Tissue Factor Pathway)
+    k_tf_vii 0.1       # Tissue Factor + FVIIa
+    k_xa_act 1.0       # Initial Xa generation
+    
+    # Amplification Loop (Thrombin Burst)
+    k_v_act 1.2        # Thrombin activates FV
+    k_viii_act 1.0     # Thrombin activates FVIII
+    k_complex_va_xa 5.0 # Prothrombinase assembly
+    k_pt_burst 50.0    # Efficient Thrombin generation by complex
+    
+    # Fibrin Formation
+    k_fibrin_synth 2.0 # Thrombin converts Fibrinogen
+    Km_clot 500        # Surface limit
+    
+    # Anticoagulation (Neutralization)
+    k_at_inh 1.5       # Antithrombin-III neutralizing factors
+    k_tpi_inh 1.0      # TFPI inhibition
+    k_deg_complex 10.0 # Rapid removal of inhibited complexes
+    
+    # Initials
+    Prothrom_tot 1200
+    Fibrino_tot 2000
+    FactorX_tot 100
+    FactorV_tot 50
+    ATIII_tot 300
+    TF_sites 20        # Vascular injury signal
+end parameters
+
+begin molecule types
+    TF(b,s~active)
+    FactorX(b,s~U~A)
+    FactorV(b,s~U~A)
+    Prothrombin(s~U~A)
+    Thrombin(s~U~A)
+    Fibrinogen(s~S~F)   # Soluble vs Fibrin
+    AT(b)              # Antithrombin
+end molecule types
+
+begin seed species
+    TF(b,s~active) TF_sites
+    FactorX(b,s~U) FactorX_tot
+    FactorV(b,s~U) FactorV_tot
+    Prothrombin(s~U) Prothrom_tot
+    Fibrinogen(s~S) Fibrino_tot
+    AT(b) ATIII_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Clot_Mass       Fibrinogen(s~F)          # Final functional output
+    Molecules Active_Thrombin Thrombin(s~A)            # Feedback driver
+    Molecules Proth_Complex   FactorX(b!1).FactorV(b!1) # Assembly platform
+    Molecules Feedback_Factors FactorV(s~A)            # Priming status
+    Molecules Inhibitor_Work  AT(b!+)                  # Clearance efficiency
+end observables
+
+begin reaction rules
+    ## INITIATION Phase
+    # Tissue Factor activates Factor X
+    TF(s~active) + FactorX(s~U) -> TF(s~active) + FactorX(s~A) k_xa_act
+    
+    ## AMPLIFICATION Phase (Thrombin Burst)
+    # Initial Xa produces some Thrombin
+    FactorX(s~A) + Prothrombin(s~U) -> FactorX(s~A) + Thrombin(s~A) 0.5
+    
+    # Feedback: Thrombin activates Factor V and VIII (Amplification)
+    Thrombin(s~A) + FactorV(s~U) -> Thrombin(s~A) + FactorV(s~A) k_v_act
+    FactorX(s~A) + FactorV(s~U) -> FactorX(s~A) + FactorV(s~A) k_v_act  # Added starter_act
+    
+    # Va and Xa form Prothrombinase complex
+    FactorV(s~A,b) + FactorX(s~A,b) <-> FactorV(s~A,b!1).FactorX(s~A,b!1) k_complex_va_xa,0.5
+    
+    # Burst: Prothrombinase produces Thrombin rapidly
+    FactorV(s~A,b!1).FactorX(s~A,b!1) + Prothrombin(s~U) -> FactorV(s~A,b!1).FactorX(s~A,b!1) + Thrombin(s~A) k_pt_burst
+    
+    ## PROPAGATION Phase
+    # Thrombin converts Fibrinogen to Fibrin (TotalRate: aggregate-dependent)
+    # Wildcard: Enabled if thrombin is active (!?)
+    Fibrinogen(s~S) -> Fibrinogen(s~F) k_fibrin_synth * (Active_Thrombin/(Km_clot + Active_Thrombin)) TotalRate
+    
+    ## TERMINATION Phase (Inhibition)
+    # Antithrombin neutralizing active Thrombin
+    # Replaced DeleteMolecules with complex formation to track Inhibitor_Work
+    Thrombin(s~A) + AT(b) -> Thrombin(s~A!1).AT(b!1) k_at_inh
+    Thrombin(s~A!1).AT(b!1) -> 0 k_deg_complex
+    
+    # Factor clearing
+    FactorX(s~A) -> FactorX(s~U) 0.01
+    FactorV(s~A) -> FactorV(s~U) 0.01
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>20,n_steps=>200})
+end actions
+end model
+

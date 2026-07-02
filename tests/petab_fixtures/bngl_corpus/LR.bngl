@@ -1,0 +1,43 @@
+## title: LR.bngl
+## Simple ligand-receptor binding model expressed in cell units:
+#     time - seconds
+#     concentration - molecule number
+#     length - um, area - um^2, volume - um^3
+#     bimolecular association - um^3/s (3D), um^2/s (2D)
+## author: Jim Faeder
+## date: 05Mar2018
+
+begin model
+begin parameters
+ NaV 6.02e8 # Conversion constant: M -> #/um^3
+ Vcell 1000 # Typical eukaryotic cell volume ~ 1000 um^3
+ Vec   1000*Vcell # Volume of extracellular space around each cell (1/cell density)
+ lig_conc 1e-8 # Ligand concentration - molar 
+ L0 lig_conc*NaV*Vec # number of ligand molecules
+ R0 10000 # number of receptor molecules per cell
+ 
+ kp1 1e6/(NaV*Vec) # Forward binding rate constant for L-R
+ km1 0.01 # Reverse binding rate constant for L-R
+end parameters
+
+begin molecule types
+  L(r) # L molecule has one binding site for R
+  R(l) # R molecule has one binding site for L
+end molecule types
+
+begin species
+  L(r) L0
+  R(l) R0
+end species
+
+begin observables
+  Molecules FreeR R(l)
+  Molecules Bound L(r!1).R(l!1)
+end observables
+
+begin reaction rules
+  L(r) + R(l) <-> L(r!1).R(l!1) kp1, km1
+end reaction rules
+end model
+
+simulate({method=>"ode",t_end=>300,n_steps=>500})

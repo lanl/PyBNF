@@ -1,0 +1,112 @@
+begin model
+begin parameters
+    # BCR signaling: The B-cell antigen receptor cascade.
+    # Advanced features: Hill kinetics for calcium and DeleteMolecules for clearance.
+    
+    # Recognition & Initiation
+    k_bind_ag 1e-4     # BCR-Antigen binding
+    k_lyn_phos 2.0     # Lyn-mediated ITAM phos
+    
+    # Signal Relay (Syk/PLCg2)
+    k_syk_act 1.5      # Syk recruitment and activation
+    k_plcg_act 1.0     # PLCgamma2 activation
+    
+    # Downstream Messengers (Calcium Phase)
+    k_ca_max 10.0      # Peak calcium flux
+    Km_ca 300          # Threshold for calcium response
+    n_hill 3.0         # Sharp trigger mechanics
+    
+    # Negative Feedback (CD22/SHP-1)
+    k_shp_rec 1.2      # SHP-1 recruitment to CD22
+    k_dephos_bcr 5.0    # SHP-1 mediated dephosphorylation (Fast)
+    
+    # Clearance
+    k_endo 0.2         # Receptor internalisation
+    
+    # Initials
+    BCR_tot 500
+    Antigen_tot 50
+    Syk_tot 120
+    PLCg2_tot 100
+    CD22_tot 150
+    SHP1_tot 150
+    Ca_cyt 10          # Basal calcium
+end parameters
+
+begin molecule types
+    BCR(Y~U~P,b)
+    Antigen(b)
+    Syk(s~U~A)
+    PLCg2(s~U~A)
+    CD22(Y~U~P,b)
+    SHP1(b)
+    Calcium()
+end molecule types
+
+begin seed species
+    BCR(Y~U,b) BCR_tot
+    Antigen(b) Antigen_tot
+    Syk(s~U) Syk_tot
+    PLCg2(s~U) PLCg2_tot
+    CD22(Y~U,b) CD22_tot
+    SHP1(b) SHP1_tot
+    Calcium() Ca_cyt
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Calcium_Signal   Calcium()                   # Secondary relay status
+    Molecules Active_PLCg2     PLCg2(s~A)               # Flux driver status
+    Molecules Active_Relay     Syk(s~A)                 # Initiator kinase status
+    Molecules Effector_Load    PLCg2(s~A)               # Metabolic trigger level
+    Molecules Negative_Brake   SHP1(b!+)                # Feedback intensity
+    Molecules Sync_Antigen     Antigen(b!+)             # Engagement metrics
+end observables
+
+begin functions
+    # Sharp calcium flux (Hill kinetics)
+    v_ca() = k_ca_max * (Active_PLCg2^n_hill) / (Km_ca^n_hill + Active_PLCg2^n_hill)
+end functions
+
+begin reaction rules
+    ## ACTIVATION PHASE
+    # Antigen binds BCR and triggers ITAM phos (Syk platform)
+    BCR(b) + Antigen(b) <-> BCR(b!1).Antigen(b!1) k_bind_ag,0.1
+    BCR(Y~U,b!+) -> BCR(Y~P,b!+) k_lyn_phos
+    
+    # p-BCR recruits and activates Syk
+    BCR(Y~P) + Syk(s~U) -> BCR(Y~P) + Syk(s~A) k_syk_act
+    
+    ## EFFECTOR PHASE
+    # Syk activates PLCgamma2
+    Syk(s~A) + PLCg2(s~U) -> Syk(s~A) + PLCg2(s~A) k_plcg_act
+    
+    # PLCg2 triggers Calcium flux (Functional Rate)
+    0 -> Calcium() v_ca()
+    
+    ## NEGATIVE FEEDBACK
+    # CD22 gets phosphorylated (Slow)
+    CD22(Y~U) -> CD22(Y~P) 0.1
+    
+    # p-CD22 recruits SHP-1
+    CD22(Y~P) + SHP1(b) <-> CD22(Y~P!1).SHP1(b!1) k_shp_rec,0.2
+    
+    # SHP-1 dephosphorylates BCR ITAM (Brake)
+    SHP1(b!+) + BCR(Y~P) -> SHP1(b!+) + BCR(Y~U) k_dephos_bcr
+    
+    ## CLEARANCE
+    # DeleteMolecules: Clear signaled receptors
+    BCR(b!1).Antigen(b!1) -> 0 k_endo DeleteMolecules
+    
+    ## RESET
+    Calcium() -> 0 0.2  # Calcium pumps
+    Syk(s~A) -> Syk(s~U) 0.1
+    PLCg2(s~A) -> PLCg2(s~U) 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>80,n_steps=>160})
+end actions
+end model
+

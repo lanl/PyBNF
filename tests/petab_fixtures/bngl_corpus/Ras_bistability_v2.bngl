@@ -1,0 +1,424 @@
+# A model for Ras signaling 
+#   This model accounts for two compartments:
+#   1) plasma membrane and 2) cytosol
+#
+# Author information:
+# William S. Hlavacek
+# Theoretical Division
+# [PII REMOVED]
+#
+# Date:
+# 26-December-2013
+#
+# Platform information:
+# Mac OS X, version 10.5.8 (desktop), version 10.6.8 (laptop)
+#
+# Software information:
+# BioNetGen, version 2.2.5 (http://bionetgen.org)
+# NFsim, version 1.11
+
+
+begin model
+
+
+begin parameters
+
+# simulation parameters
+
+# fraction of a single cell to be considered in a stochastic simulation
+f  1.0 # [=] dimensionless (0<f<=1)
+
+# physical constants
+
+# Avogadro constant
+NA  6.02214e23 # [=] number of molecules per mol
+
+# compartment volumes
+
+# volume of cytoplasmic compartment
+Vcyto  f*1.0e-12 # [=] L (1 pL)
+
+# effective volume of plasma membrane compartment (derived)
+Vpm=Vcyto/350.0 # [=] L
+
+# concentrations (copy numbers)
+
+GTP_num  1.8e-4*(NA*Vcyto) # [=] M converted to molecules per cell
+GDP_num  1.8e-5*(NA*Vcyto) # [=] M converted to molecules per cell
+
+# total KRAS
+KRAS_tot_num  f*2.0e5 # [=] molecules per cell
+# fraction of KRAS mutated
+fmut  0.0 # [=] dimensionless, 0.0 or 0.5
+# amount of WT KRAS (derived)
+KRAS_WT_num=(1.0-fmut)*KRAS_tot_num # [=] molecules per cell
+# amount of mutated KRAS (derived)
+KRAS_mut_num=fmut*KRAS_tot_num # [=] molecules per cell
+
+SOS1_num  f*1.0e4 # [=] molecules per cell
+RASA1_num f*3.0e4 # [=] molecules per cell
+CRAF_num  f*2.0e5 # [=] molecules per cell
+
+# value to be varied during parameter scan
+RTK_num  f*1.0e4 # [=] molecules per cell
+
+# interaction parameters (e.g., rate constants)
+
+# NB: bimolecular association rate constants are each given in /M/s
+# and then converted to /(molecules per volume of reaction compartment)/s
+
+# binding
+
+# recruitment of GEF to plasma membrane
+kaGEF_cyto  1.0e6/(NA*Vcyto) # [=] /M/s
+kaGEF_pm  1.0e6/(NA*Vpm) # [=] /M/s
+kdGEF  0.1 # [=] /s
+
+# recruitment of GAP to plasma membrane
+kaGAP_cyto  2.0e5/(NA*Vcyto) # [=] /M/s
+kaGAP_pm  2.0e5/(NA*Vpm) # [=] /M/s
+kdGAP  0.1 # [=] /s
+
+# GDP binding to apo Ras
+# KD1 = 9.0e-12 M
+km1  2.0e-5 # [=] /s
+kp1  2.2e6/(NA*Vcyto) # [=] /M/s
+# equilibrium association constant (derived)
+K1=kp1/km1
+
+# GEF binding to apo Ras
+# KD2 = 3.3e-9 M
+km2  1.0e-3 # [=] /s
+kp2_cyto  3.3e5/(NA*Vcyto) # [=] /M/s
+kp2_pm  3.3e5/(NA*Vpm) # [=] /M/s
+
+# GEF binding to RasGDP
+# KD3 = 2.2e-4 M
+km3  5.0 # [=] /s
+kp3_cyto  2.3e4/(NA*Vcyto) # [=] /M/s
+kp3_pm  2.3e4/(NA*Vpm) # [=] /M/s
+
+# GDP binding to apo Ras-GEF complex
+# KD4 = 6.0e-7 M
+km4  3.9 # [=] /s
+kp4  6.5e6/(NA*Vcyto) # [=] /M/s
+
+# GTP binding to apo Ras
+# KD5 = 5.0e-12 M
+km5  1.0e-5 # [=] /s
+kp5  2.0e6/(NA*Vcyto) # [=] /M/s
+# equilibrium association constant (derived)
+K5=kp5/km5
+
+# GTP binding to apo Ras-GEF complex
+# KD6 = 3.0e-7 M
+km6  1.1 # [=] /s
+kp6  3.7e6/(NA*Vcyto) # [=] /M/s
+
+# GEF binding to RasGTP
+# KD7 = 2.0e-4 M
+km7  5.0 # [=] /s
+kp7_cyto  2.5e4/(NA*Vcyto) # [=] /M/s
+kp7_pm  2.5e4/(NA*Vpm) # [=] /M/s
+
+# Effector binding
+# KD = 8.0e-8 M
+kaEff  4.5e7/(NA*Vcyto) # [=] /M/s
+kdEff  3.6 # [=] /s
+
+# catalysis
+
+# GTP hyrdolysis via the intrinsic GTPase activity of Ras
+khyd  3.5e-4 # [=] /s
+
+# GAP activity via a Michaelis-Menten mechanism
+# KM = 2.3e-7 M
+kf_cyto  4.0e7/(NA*Vcyto) # [=] /M/s
+kf_pm  4.0e7/(NA*Vpm) # [=] /M/s
+kr  3.8 # [=] /s
+kcat  5.4 # [=] /s
+
+end parameters
+
+
+begin molecule types
+
+# Except as noted, proteins are named in accordance with the recommendations of
+#   the HUGO Gene Nomenclature Committee (HGNC).
+#   http://www.genenames.org
+
+# Organism information:
+# Homo sapiens (human)
+
+# small molecules
+
+## GDP ##
+################################################################################
+# guanosine diphosphate
+################################################################################
+GDP
+
+## GTP ##
+################################################################################
+# guanosine-5'-triphosphate
+################################################################################
+GTP
+
+# proteins
+
+## KRAS ##
+################################################################################
+# KRAS consists of a G domain
+# The G domain can be free (the apo form of Ras), bound to GDP, or bound to GTP.
+################################################################################
+# WT
+KRAS(G~apo~GDP~GTP)
+# G12D mutant
+KRASG12D(G~apo~GDP~GTP)
+
+## SOS1 ##
+################################################################################
+# SOS1 contains a GEF domain, REM domain
+# and constitutively associates with GRB2, which contains an SH2 domain
+################################################################################
+SOS1(GEF,REM,GRB2_SH2)
+
+## RASA1 ##
+################################################################################
+# RASA1 contains a GAP domain and two tandem SH2 domains
+################################################################################
+RASA1(tSH2,GAP)
+
+## CRAF ##
+################################################################################
+# CRAF contains an RDB (Ras binding domain)
+################################################################################
+CRAF(RBD)
+
+## RTK ##
+################################################################################
+# A generic receptor tyrosine kinase (RTK), which is taken to contain
+#   pTyr docking sites for a GEF (SOS1) and a GAP (RASA1)
+################################################################################
+RTK(pTyrGEF,pTyrGAP)
+
+end molecule types
+
+
+begin seed species
+
+# small molecules
+
+GDP  GDP_num
+GTP  GTP_num
+
+# proteins
+
+# Ras, RasGDP and RasGTP concentrations are set to near equilibrium values
+KRAS(G~apo)  KRAS_WT_num/(1.0+K1*GDP_num+K5*GTP_num)
+KRAS(G~GDP)  K1*GDP_num*KRAS_WT_num/(1.0+K1*GDP_num+K5*GTP_num)
+KRAS(G~GTP)  K5*GTP_num*KRAS_WT_num/(1.0+K1*GDP_num+K5*GTP_num)
+
+KRASG12D(G~apo)  0.0
+KRASG12D(G~GDP)  0.0
+KRASG12D(G~GTP)  KRAS_mut_num
+
+# The settings below correspond to SOS1, RASA1 and CRAF 
+#   in the cytosol at time t=0
+SOS1(GEF,REM,GRB2_SH2)  SOS1_num
+RASA1(tSH2,GAP)  RASA1_num
+CRAF(RBD)  CRAF_num
+
+# no RTK initially
+#   The number of RTKs with pTyr sites for recruitment of SOS1 and RASA1
+#   will be set to a nonzero value after the system comes to steady state
+RTK(pTyrGEF,pTyrGAP)  0.0
+
+end seed species
+
+
+begin observables
+
+Molecules RTKbndGEF RTK(pTyrGEF!+)
+Molecules RTKbndGAP RTK(pTyrGAP!+)
+Molecules RasGTP KRAS(G~GTP!?) KRASG12D(G~GTP!?)
+Molecules RasGDP KRAS(G~GDP!?) KRASG12D(G~GDP!?)
+Molecules ActiveEffector CRAF(RBD!+)
+
+# conservation laws
+Molecules KRAStot KRAS() KRASG12D()
+Molecules Gtot GDP GTP \
+          KRAS(G~GDP!?) KRAS(G~GTP!?) \
+          KRASG12D(G~GDP!?) KRASG12D(G~GTP!?)
+Molecules SOS1tot SOS1()
+Molecules RASA1tot RASA1()
+Molecules CRAFtot CRAF()
+Molecules RTKtot RTK()
+
+end observables
+
+
+begin reaction rules
+
+# reversible binding of GEF to RTK
+#   forward reaction
+#     RTK binds cytosolic SOS1
+RTK(pTyrGEF)+SOS1(GEF,REM,GRB2_SH2)->\
+RTK(pTyrGEF!1).SOS1(GEF,REM,GRB2_SH2!1) kaGEF_cyto
+#     RTK binds plasma membrane-tethered SOS1
+#       SOS1 is tethered at GEF only
+RTK(pTyrGEF)+SOS1(GEF!+,REM,GRB2_SH2)->\
+RTK(pTyrGEF!1).SOS1(GEF!+,REM,GRB2_SH2!1) kaGEF_pm
+#       SOS1 is tethered at REM only
+RTK(pTyrGEF)+SOS1(GEF,REM!+,GRB2_SH2)->\
+RTK(pTyrGEF!1).SOS1(GEF,REM!+,GRB2_SH2!1) kaGEF_pm
+#       SOS1 is tethered at both GEF and REM
+RTK(pTyrGEF)+SOS1(GEF!+,REM!+,GRB2_SH2)->\
+RTK(pTyrGEF!1).SOS1(GEF!+,REM!+,GRB2_SH2!1) kaGEF_pm
+#   reverse reaction
+RTK(pTyrGEF!1).SOS1(GRB2_SH2!1)->RTK(pTyrGEF)+SOS1(GRB2_SH2) kdGEF
+
+# reversible binding of GAP to RTK
+#   forward reaction
+#     RTK binds cytosolic RASA1
+RTK(pTyrGAP)+RASA1(tSH2,GAP)->RTK(pTyrGAP!1).RASA1(tSH2!1,GAP) kaGAP_cyto
+#     RTK binds plasma membrane-tethered RASA1
+RTK(pTyrGAP)+RASA1(tSH2,GAP!+)->RTK(pTyrGAP!1).RASA1(tSH2!1,GAP!+) kaGAP_pm
+#   reverse reaction
+RTK(pTyrGAP!1).RASA1(tSH2!1)->RTK(pTyrGAP)+RASA1(tSH2) kdGAP
+
+# To do: add rules for REM effect
+# To do: add rules for KRASG12D
+
+# GDP binds the apo form of Ras
+KRAS(G~apo)+GDP->KRAS(G~GDP) kp1
+# GDP spontaneously dissociates from Ras
+KRAS(G~GDP)->KRAS(G~apo)+GDP km1
+
+# GEF reversibly binds apo Ras
+#   cytosolic GEF binds apo Ras
+KRAS(G~apo)+SOS1(GEF,REM,GRB2_SH2)->\
+KRAS(G~apo!1).SOS1(GEF!1,REM,GRB2_SH2) kp2_cyto
+#   plasma membrane-recruited GEF binds apo Ras
+#     SOS1 is tethered at REM only
+KRAS(G~apo)+SOS1(GEF,REM!+,GRB2_SH2)->\
+KRAS(G~apo!1).SOS1(GEF!1,REM!+,GRB2_SH2) kp2_pm 
+#     SOS1 is tethered at GRB2_SH2 only
+KRAS(G~apo)+SOS1(GEF,REM,GRB2_SH2!+)->\
+KRAS(G~apo!1).SOS1(GEF!1,REM,GRB2_SH2!+) kp2_pm 
+#     SOS1 is tethered at both REM and GRB2_SH2
+KRAS(G~apo)+SOS1(GEF,REM!+,GRB2_SH2!+)->\
+KRAS(G~apo!1).SOS1(GEF!1,REM!+,GRB2_SH2!+) kp2_pm 
+#   reverse reaction
+KRAS(G~apo!1).SOS1(GEF!1)->KRAS(G~apo)+SOS1(GEF) km2
+
+# GEF reversibly binds RasGDP
+#   cytosolic GEF binds RasGDP
+KRAS(G~GDP)+SOS1(GEF,REM,GRB2_SH2)->\
+KRAS(G~GDP!1).SOS1(GEF!1,REM,GRB2_SH2) kp3_cyto
+#   plasma membrane-recruited GEF binds RasGDP
+#     SOS1 is tethered at REM only
+KRAS(G~GDP)+SOS1(GEF,REM!+,GRB2_SH2)->\
+KRAS(G~GDP!1).SOS1(GEF!1,REM!+,GRB2_SH2) kp3_pm
+#     SOS1 is tethered at GRB2_SH2 only
+KRAS(G~GDP)+SOS1(GEF,REM,GRB2_SH2!+)->\
+KRAS(G~GDP!1).SOS1(GEF!1,REM,GRB2_SH2!+) kp3_pm
+#     SOS1 is tethered at both REM and GRB2_SH2
+KRAS(G~GDP)+SOS1(GEF,REM!+,GRB2_SH2!+)->\
+KRAS(G~GDP!1).SOS1(GEF!1,REM!+,GRB2_SH2!+) kp3_pm
+#   reverse reaction
+KRAS(G~GDP!1).SOS1(GEF!1)->KRAS(G~GDP)+SOS1(GEF) km3
+
+# GDP binds apo Ras-GEF complex
+KRAS(G~apo!1).SOS1(GEF!1)+GDP->KRAS(G~GDP!1).SOS1(GEF!1) kp4
+# GDP dissociates from RasGDP-GEF complex
+KRAS(G~GDP!1).SOS1(GEF!1)->KRAS(G~apo!1).SOS1(GEF!1)+GDP km4
+
+# GTP binds the apo form of Ras
+KRAS(G~apo)+GTP->KRAS(G~GTP) kp5
+# GTP spontaneoulsy dissociates from Ras
+KRAS(G~GTP)->KRAS(G~apo)+GTP km5
+
+# GTP binds apo Ras-GEF complex
+KRAS(G~apo!1).SOS1(GEF!1)+GTP->KRAS(G~GTP!1).SOS1(GEF!1) kp6
+# GTP dissociates from RasGTP-GEF complex
+KRAS(G~GTP!1).SOS1(GEF!1)->KRAS(G~apo!1).SOS1(GEF!1)+GTP km6
+
+# GEF reversibly binds RasGTP
+#   cytosolic GEF binds RasGTP
+KRAS(G~GTP)+SOS1(GEF,REM,GRB2_SH2)->\
+KRAS(G~GTP!1).SOS1(GEF!1,REM,GRB2_SH2) kp7_cyto
+#   plasma membrane-recruited GEF binds RasGTP
+#     SOS1 is tethered at REM only
+KRAS(G~GTP)+SOS1(GEF,REM!+,GRB2_SH2)->\
+KRAS(G~GTP!1).SOS1(GEF!1,REM!+,GRB2_SH2) kp7_pm
+#     SOS1 is tethered at GRB2_SH2 only
+KRAS(G~GTP)+SOS1(GEF,REM,GRB2_SH2!+)->\
+KRAS(G~GTP!1).SOS1(GEF!1,REM,GRB2_SH2!+) kp7_pm
+#     SOS1 is tethered at both REM and GRB2_SH2
+KRAS(G~GTP)+SOS1(GEF,REM!+,GRB2_SH2!+)->\
+KRAS(G~GTP!1).SOS1(GEF!1,REM!+,GRB2_SH2!+) kp7_pm
+#   reverse reaction
+KRAS(G~GTP!1).SOS1(GEF!1)->KRAS(G~GTP)+SOS1(GEF) km7
+
+# Effector reversibly binds RasGTP
+KRAS(G~GTP)+CRAF(RBD)<->KRAS(G~GTP!1).CRAF(RBD!1) kaEff,kdEff
+
+# GTP hydrolysis via the intrinsic GTPase activity of Ras
+#   RasGTP is free
+KRAS(G~GTP)->KRAS(G~GDP) khyd
+#   RasGTP is bound to effector
+#     fast release of effector after hydrolysis
+KRAS(G~GTP!1).CRAF(RBD!1)->KRAS(G~GDP)+CRAF(RBD) khyd
+
+# GAP-assisted hydrolysis of GTP via a Michaelis-Menten mechanism
+#   Enzyme-substrate association
+#     GAP is cytosolic
+KRAS(G~GTP)+RASA1(tSH2,GAP)->KRAS(G~GTP!1).RASA1(tSH2,GAP!1) kf_cyto
+#     GAP is plasma membrane recruited
+KRAS(G~GTP)+RASA1(tSH2!+,GAP)->KRAS(G~GTP!1).RASA1(tSH2!+,GAP!1) kf_pm
+#   Enzyme-substrate dissociation (no reaction)
+KRAS(G~GTP!1).RASA1(GAP!1)->KRAS(G~GTP)+RASA1(GAP) kr
+#   Hydrolysis (reaction)
+#     fast dissoc of enzyme and product after hydrolysis
+KRAS(G~GTP!1).RASA1(GAP!1)->KRAS(G~GDP)+RASA1(GAP) kcat
+
+end reaction rules
+
+
+end model
+
+
+# actions
+
+generate_network({overwrite=>1});
+
+# equilibration 
+# simulate 6 days, report progress every 4 hours
+simulate_ode({suffix=>"equil",t_start=>-518400,t_end=>0,n_steps=>36})
+saveConcentrations()
+
+# simulate response to GEF & GAP recruitment to plasma membrane 
+
+resetConcentrations()
+setConcentration("RTK(pTyrGEF,pTyrGAP)",1.0e3)
+simulate_ode({suffix=>"1",t_start=>0,t_end=>120,n_steps=>120})
+
+resetConcentrations()
+setConcentration("RTK(pTyrGEF,pTyrGAP)",5.0e3)
+simulate_ode({suffix=>"2",t_start=>0,t_end=>120,n_steps=>120})
+
+resetConcentrations()
+setConcentration("RTK(pTyrGEF,pTyrGAP)",1.0e4)
+simulate_ode({suffix=>"3",t_start=>0,t_end=>120,n_steps=>120})
+
+resetConcentrations()
+setConcentration("RTK(pTyrGEF,pTyrGAP)",5.0e4)
+simulate_ode({suffix=>"4",t_start=>0,t_end=>120,n_steps=>120})
+
+resetConcentrations()
+setConcentration("RTK(pTyrGEF,pTyrGAP)",1.0e5)
+simulate_ode({suffix=>"5",t_start=>0,t_end=>120,n_steps=>120})
+
+
+
