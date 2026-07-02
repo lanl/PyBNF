@@ -327,10 +327,11 @@ class TestRegistrySchemaSeam:
         # powell + cmaes land co-located with their own schemas (#403/ADR-0015).
         # The gradient-based optimizers (#386) land with their own schemas: trf
         # (trust-region least-squares) with TRFConfig and lbfgs (L-BFGS-B) with
-        # LBFGSConfig. Only 'check' remains unmigrated. Each step
-        # extends this set -- a ratchet.
+        # LBFGSConfig. profile_likelihood (#446/#466) lands with ProfileLikelihoodConfig.
+        # Only 'check' remains unmigrated. Each step extends this set -- a ratchet.
         from pybnf.registry import FIT_TYPE_REGISTRY
         migrated = {c for c, e in FIT_TYPE_REGISTRY.items() if e.schema is not None}
         assert migrated == {'pso', 'de', 'ade', 'ss', 'sim', 'powell', 'cmaes',
-                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc', 'trf', 'lbfgs'}
+                            'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc', 'trf', 'lbfgs',
+                            'profile_likelihood'}
         assert FIT_TYPE_REGISTRY['check'].schema is None

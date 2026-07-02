@@ -57,6 +57,13 @@ from .optimizers.cmaes import CMAESAlgorithm as CMAESAlgorithm
 # the leaf runs its @register_fit_type.
 from .optimizers.trf import TRFAlgorithm as TRFAlgorithm
 from .optimizers.lbfgs import LBFGSAlgorithm as LBFGSAlgorithm
+# Profile likelihood (#446/#466): a standalone new-era job_type that reuses the same
+# gradient path -- a multi-start TRF polish to the optimum, then one adaptive re-optimized
+# profile per parameter for confidence intervals + identifiability. Importing the leaf runs
+# its @register_fit_type.
+from .optimizers.profile_likelihood import (
+    ProfileLikelihoodAlgorithm as ProfileLikelihoodAlgorithm,
+)
 from .samplers.dream import DreamAlgorithm as DreamAlgorithm
 from .samplers.pdream import PDreamAlgorithm as PDreamAlgorithm
 from .samplers.basic_mcmc import BasicBayesMCMCAlgorithm as BasicBayesMCMCAlgorithm

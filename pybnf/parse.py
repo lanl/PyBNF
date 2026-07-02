@@ -37,7 +37,11 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size', 'powell_max_iterations',
                'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every', 'edition',
                # HMC (job_type = hmc, ADR-0059): per-chain warmup/draw counts.
-               'num_warmup', 'num_samples']
+               'num_warmup', 'num_samples',
+               # profile likelihood (job_type = profile_likelihood, #446/#466): the polish
+               # budget, the per-direction grid-point cap, and the per-point re-opt cap.
+               'profile_likelihood_max_iterations', 'profile_likelihood_max_points',
+               'profile_likelihood_reopt_max_iterations']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
@@ -47,7 +51,14 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'rhat_threshold', 'snooker_prob',
                  'powell_step', 'powell_stop_tol', 'cmaes_sigma0', 'cmaes_stop_tol',
                  # HMC (job_type = hmc, ADR-0059): NUTS dual-averaging target acceptance.
-                 'target_accept']
+                 'target_accept',
+                 # profile likelihood (job_type = profile_likelihood, #446/#466): confidence
+                 # level, the adaptive log10-space grid step + its bounds and Delta chi2
+                 # target, and the re-optimization tolerances.
+                 'profile_likelihood_confidence', 'profile_likelihood_step',
+                 'profile_likelihood_min_step', 'profile_likelihood_max_step',
+                 'profile_likelihood_dchi2_target', 'profile_likelihood_grad_tol',
+                 'profile_likelihood_step_tol']
 multnumkeys = ['credible_intervals', 'beta', 'beta_range', 'starting_params', 'calculate_covari']
 # The prior-family var keywords are derived from the registry (ADR-0010): each
 # family yields {base}_var (linear) + log{base}_var (log10). Bounded-support
@@ -65,7 +76,10 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
               'outlier_method', 'refine_method', 'noise_location']
-multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory']
+multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory',
+               # profile likelihood (#446/#466): the subset of free parameters to profile
+               # (a list of parameter ids; absent -> profile every free parameter).
+               'profile_likelihood_params']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
 

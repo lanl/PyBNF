@@ -75,6 +75,45 @@ injected) it always runs a single start, since the job there is to polish the on
 re-scatter. ``max_iterations`` is the per-start iteration budget.
 
 
+Profile likelihood (identifiability + confidence intervals)
+-----------------------------------------------------------
+
+``job_type = profile_likelihood`` is a standalone job that turns the gradient path into a
+**Data2Dynamics-style** identifiability analysis (Raue et al., *Bioinformatics* 25(15):1923–1929,
+2009). For each fitted parameter :math:`\theta_k` it fixes :math:`\theta_k` to a grid of values
+around the optimum :math:`\theta^\*` and **re-optimizes all the other parameters** at each grid
+point, tracing the profile :math:`\chi^2_{\mathrm{PL}}(\theta_k) = \min_{j\neq k}\chi^2(\theta)`.
+It shares every requirement and gate of the ``trf`` / ``lbfgs`` methods (edition 2, a deterministic
+ODE network, bngsim forward sensitivities) and, because it reuses the trust-region least-squares
+step for the re-optimizations, fits the same **exact least-squares** objectives ``trf`` does.
+
+The job runs in two phases:
+
+#. **Find** :math:`\theta^\*`. If every parameter declares an ``initial_value:`` (the optimum from
+   a fit you already ran), those values are taken as :math:`\theta^\*` and the fit is skipped.
+   Otherwise the job first runs a multi-start trust-region **polish** over the bounded-prior box
+   (``population_size`` starts, ``max_iterations`` budget) to locate :math:`\theta^\*`.
+#. **Profile.** Each parameter is walked outward from :math:`\theta^\*` in both directions on an
+   **adaptive** ``log10``-space grid (the step shrinks where the profile steepens, grows where it is
+   flat), warm-starting each grid point's re-optimization from its neighbour. A direction stops when
+   the profile crosses the :math:`\Delta\chi^2` threshold (the :math:`\chi^2` quantile at the
+   configured confidence level, 1 dof), reaches a parameter bound, or hits a per-direction point cap.
+
+From each finished profile the job extracts the confidence interval at the configured level and
+classifies the parameter as **identifiable** (the threshold is crossed on both sides — a finite CI),
+**practically non-identifiable** (the profile rises but does not cross on at least one side — an open
+or bound-limited CI, reported as such rather than silently clamped), or **structurally
+non-identifiable** (a flat profile — the parameter can move with no objective response). It writes
+one ``Results/profile_<name>.txt`` curve per parameter and a ``Results/profile_likelihood_summary.txt``
+with the CI and classification for each. Profiling is serial across parameters in this release
+(parallelization across the independent profiles is planned).
+
+The knobs are ``profile_likelihood_confidence`` (the CI level), ``profile_likelihood_step`` /
+``profile_likelihood_min_step`` / ``profile_likelihood_max_step`` / ``profile_likelihood_dchi2_target``
+(the adaptive grid), ``profile_likelihood_max_points`` (the per-direction cap), and
+``profile_likelihood_reopt_max_iterations`` (the per-grid-point re-optimization budget).
+
+
 What it computes
 ----------------
 
