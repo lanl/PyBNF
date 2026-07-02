@@ -14,6 +14,11 @@ PEtab ``Model`` ABC (the one method that wants more, ``is_valid``, shells out to
 sets were fixed against BNG2.pl's ``Perl2/`` modules, not the PySB analogy:
 expression symbols are exactly the ``ParamList`` (parameters, observables, global
 functions), and compartments are *not* expression symbols (ADR-0026).
+
+The grammar this reader is hardened against is the BNGL reference in the sibling
+``BNG_vscode_extension`` repo (``docs/bngl-grammar.md``, derived from
+``bng2/Perl2/``): block aliases (``molecules``/``species``/``rules``), the seed-
+species ``$`` clamp marker, and the observable/function/compartment line shapes.
 """
 
 import re
@@ -21,6 +26,16 @@ from dataclasses import dataclass
 
 # The three observable keywords that open an observable declaration line.
 _OBS_KEYWORDS = frozenset({'Molecules', 'Species', 'Counter'})
+
+# Short spellings BNG accepts for a block's canonical (long) name -- the ``Aliases``
+# column of the block table in ``BNG_vscode_extension/docs/bngl-grammar.md``. Only
+# the blocks this reader enumerates need an entry; either spelling opens/closes the
+# same block.
+_BLOCK_ALIASES = {
+    'molecule types': ('molecules',),
+    'seed species': ('species',),
+    'reaction rules': ('rules',),
+}
 
 
 @dataclass(frozen=True)
@@ -83,9 +98,16 @@ def _names(text, block_name, extractor):
 
 
 def _block_lines(text, block_name):
-    """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``."""
-    begin = re.compile(rf'^begin\s+{block_name}\b', re.I)
-    end = re.compile(rf'^end\s+{block_name}\b', re.I)
+    """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``.
+
+    ``block_name`` is the canonical (long) spelling; any BNG alias for it
+    (``molecules`` for ``molecule types``, ``species`` for ``seed species``,
+    ``rules`` for ``reaction rules``) opens and closes the same block.
+    """
+    names = '|'.join(
+        re.escape(n) for n in (block_name, *_BLOCK_ALIASES.get(block_name, ())))
+    begin = re.compile(rf'^begin\s+(?:{names})\b', re.I)
+    end = re.compile(rf'^end\s+(?:{names})\b', re.I)
     lines = []
     in_block = False
     for raw in text.splitlines():
@@ -139,7 +161,15 @@ def _molecule_type_name(line):
 
 
 def _seed_species_pattern(line):
-    """The species pattern in a ``<pattern> <value>`` seed-species line (verbatim)."""
+    """The species pattern in a ``["$"] <pattern> <value>`` seed-species line.
+
+    A leading ``$`` (grammar ``SeedSpeciesDefn = ["$"], Species, WS, MathExpression``)
+    marks the concentration as fixed/clamped; it is a modifier, not part of the
+    species identity, so it is stripped -- ``$counter() 10`` enumerates the state
+    variable ``counter()``, so ``is_state_variable('counter()')`` holds either way.
+    """
+    if line.startswith('$'):
+        line = line[1:].lstrip()
     tokens = line.split()
     return tokens[0] if tokens else None
 

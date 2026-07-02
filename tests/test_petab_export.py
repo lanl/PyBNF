@@ -1553,6 +1553,61 @@ class TestCleanModelUnit:
 
 
 # ---------------------------------------------------------------------------
+# 4''. Grammar hardening (#437): the reader is pinned to the BNGL reference in
+#      BNG_vscode_extension/docs/bngl-grammar.md -- block aliases and the seed-
+#      species '$' clamp are the cases the canonical-only scanner used to miss.
+# ---------------------------------------------------------------------------
+
+class TestBnglGrammarHardening:
+
+    def test_seed_species_dollar_clamp_is_stripped(self):
+        # SeedSpeciesDefn = ["$"], Species, WS, MathExpression -- the '$' fixes the
+        # concentration but is not part of the species identity, so the enumerated
+        # state variable is the bare pattern (attached '$A()' and spaced '$ A()' both).
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin seed species\n $A() 100\n $ B() 0\n C() 5\nend seed species\n')
+        assert ent.seed_species == frozenset({'A()', 'B()', 'C()'})
+        assert '$A()' not in ent.seed_species        # the marker never leaks into the id
+
+    def test_molecule_types_block_alias(self):
+        # `begin molecules` is BNG's short alias for `begin molecule types`.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model('begin molecules\n A()\n B(x)\nend molecules\n')
+        assert ent.molecule_type_names == frozenset({'A', 'B'})
+
+    def test_seed_species_block_alias(self):
+        # `begin species` is BNG's short alias for `begin seed species` -- and the
+        # '$' clamp is stripped under the alias spelling too.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model('begin species\n $A() 100\n B() 0\nend species\n')
+        assert ent.seed_species == frozenset({'A()', 'B()'})
+
+    def test_alias_does_not_shadow_the_canonical_block(self):
+        # The `species` alias must not swallow the *other* block whose name it is a
+        # substring of: `seed species` and `molecule types` stay distinct namespaces.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin molecule types\n Counter()\nend molecule types\n'
+            'begin seed species\n $Counter() 1\nend seed species\n')
+        assert ent.molecule_type_names == frozenset({'Counter'})
+        assert ent.seed_species == frozenset({'Counter()'})
+
+    def test_bnglmodel_state_variable_ignores_the_clamp(self):
+        # The whole point at the ABC seam: a clamped seed species is still a state
+        # variable under its bare id (is_state_variable drives CheckModel's species
+        # cross-checks in petablint).
+        pytest.importorskip('petab')
+        from pybnf.petab._bngl import parse_model
+        from pybnf.petab.bngl_model import BnglModel
+        model = BnglModel(
+            parse_model('begin seed species\n $A() 100\nend seed species\n'),
+            model_id='m')
+        assert model.is_state_variable('A()')
+        assert not model.is_state_variable('$A()')
+
+
+# ---------------------------------------------------------------------------
 # 4'. The BnglModel adapter ABC, unit-tested directly (ADR-0026 -- the model-level
 #     guarantees the table oracle now checks externally, asserted method by method).
 # ---------------------------------------------------------------------------
@@ -1614,6 +1669,63 @@ class TestBnglModel:
         assert model.get_parameter_value('base') == 2.0   # numeric RHS -> float
         with pytest.raises(NotImplementedError):           # expression RHS -> confined
             model.get_parameter_value('k_on')
+
+    # -- is_valid: both contract paths pinned (#437) --------------------------
+    # The contract (ADR-0026): shell to `BNG2.pl --check` when a BNG2.pl is
+    # locatable and the model has a path; otherwise degrade to True -- never a
+    # false failure where no BNG backend is available. Both paths are exercised
+    # by faking _locate_bng2 / subprocess.run, so neither needs a real BNG2.pl.
+
+    def test_is_valid_true_when_bng2_not_locatable(self, model, monkeypatch):
+        # Degrade-to-True: no BNG2.pl on BNGPATH/PATH -> True even though `model`
+        # has a real source path to check.
+        import pybnf.petab.bngl_model as bm
+        monkeypatch.setattr(bm, '_locate_bng2', lambda: None)
+        assert model.is_valid() is True
+
+    def test_is_valid_true_when_model_has_no_path(self, monkeypatch):
+        # An in-memory BnglModel has no file to --check; degrade to True even when a
+        # BNG2.pl IS locatable (nothing to hand it).
+        pytest.importorskip('petab')
+        import pybnf.petab.bngl_model as bm
+        from pybnf.petab._bngl import parse_model
+        monkeypatch.setattr(bm, '_locate_bng2', lambda: '/fake/BNG2.pl')
+        m = bm.BnglModel(
+            parse_model('begin parameters\n k 1\nend parameters\n'), model_id='m')
+        assert m.is_valid() is True
+
+    def test_is_valid_shells_to_bng2_and_maps_returncode(self, model, monkeypatch):
+        # BNG2.pl-present path: is_valid is exactly `BNG2.pl --check <model>` exiting 0.
+        import pybnf.petab.bngl_model as bm
+        monkeypatch.setattr(bm, '_locate_bng2', lambda: '/fake/BNG2.pl')
+        seen = {}
+
+        class _Result:
+            def __init__(self, rc):
+                self.returncode = rc
+
+        def fake_run(cmd, **kwargs):
+            seen['cmd'] = cmd
+            return _Result(seen['rc'])
+
+        monkeypatch.setattr(bm.subprocess, 'run', fake_run)
+        seen['rc'] = 0
+        assert model.is_valid() is True
+        seen['rc'] = 1
+        assert model.is_valid() is False
+        assert seen['cmd'][:2] == ['/fake/BNG2.pl', '--check']   # real invocation shape
+
+    def test_is_valid_true_when_bng2_invocation_errors(self, model, monkeypatch):
+        # A tooling hiccup (OSError/SubprocessError from the subprocess) must not
+        # masquerade as an invalid model.
+        import pybnf.petab.bngl_model as bm
+        monkeypatch.setattr(bm, '_locate_bng2', lambda: '/fake/BNG2.pl')
+
+        def boom(cmd, **kwargs):
+            raise OSError('perl not found')
+
+        monkeypatch.setattr(bm.subprocess, 'run', boom)
+        assert model.is_valid() is True
 
 
 class TestRegisterBngl:
