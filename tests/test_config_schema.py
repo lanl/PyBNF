@@ -335,3 +335,69 @@ class TestRegistrySchemaSeam:
                             'mh', 'pt', 'sa', 'am', 'dream', 'p_dream', 'hmc', 'trf', 'lbfgs',
                             'profile_likelihood'}
         assert FIT_TYPE_REGISTRY['check'].schema is None
+
+
+class TestParserSchemaNumericInvariant:
+    """The two hand-maintained sources of PyBNF's config-key knowledge must agree:
+    ``parse.py``'s ``numkeys_int`` / ``numkeys_float`` lists (the *structural* parser --
+    a key absent there is rejected as "not a valid configuration key" before the schema
+    is ever consulted) and the Pydantic method schemas (the *type* layer). Every numeric
+    field a registered method schema declares therefore has to appear in the matching
+    parser list, or the key can only ever be defaulted -- never set from a ``.conf``.
+
+    This invariant guards that seam. It is the net that was missing when the ``trf_*`` /
+    ``lbfgs_*`` tunables (and ``powell_line_tol``) were added to their schemas but not to
+    ``parse.py`` -- schema-known yet unparseable (#386 follow-up)."""
+
+    @staticmethod
+    def _numeric_kind(annotation):
+        """``'int'`` / ``'float'`` for an int/float (or ``Optional`` thereof) field, else
+        ``None`` -- ``bool`` (an int subclass but not a numeric knob), ``str``, ``list``,
+        ``Any``, ``Literal``, and a union of several real types are all skipped."""
+        import types
+        import typing
+        origin = typing.get_origin(annotation)
+        if origin is typing.Union or origin is getattr(types, 'UnionType', None):
+            args = [a for a in typing.get_args(annotation) if a is not type(None)]
+            if len(args) != 1:
+                return None
+            annotation = args[0]
+        if annotation is bool:
+            return None
+        if annotation is int:
+            return 'int'
+        if annotation is float:
+            return 'float'
+        return None
+
+    def test_every_schema_numeric_field_is_in_the_matching_parser_list(self):
+        # Each int-typed field (incl. Optional[int]) must be in parse.numkeys_int and
+        # each float-typed field in parse.numkeys_float -- keyed by the field's config
+        # alias (e.g. lambda_ -> 'lambda'), which is what a .conf actually writes.
+        from pybnf import parse
+        missing = []
+        for schema in config_schema._registered_schemas():
+            for name, field in schema.model_fields.items():
+                key = field.alias or name
+                kind = self._numeric_kind(field.annotation)
+                if kind == 'int' and key not in parse.numkeys_int:
+                    missing.append((schema.__name__, key, 'numkeys_int'))
+                elif kind == 'float' and key not in parse.numkeys_float:
+                    missing.append((schema.__name__, key, 'numkeys_float'))
+        assert not missing, (
+            'schema numeric fields absent from the parse.py key lists (structurally '
+            'unparseable from a .conf, only defaultable): %s' % missing)
+
+    def test_every_max_iterations_runtime_budget_is_int_parseable(self):
+        # The *_max_iterations cycle budgets are RUNTIME_KEYS (runtime-defaulted to the
+        # global max_iterations, so not schema fields), but they are still user-settable
+        # int keys -- so they too must live in numkeys_int. The other runtime keys are
+        # internal *_start_point injections / non-numeric inputs, exempt by construction.
+        from pybnf import parse
+        missing = []
+        for schema in config_schema._registered_schemas():
+            for key in schema.runtime_keys():
+                if key.endswith('_max_iterations') and key not in parse.numkeys_int:
+                    missing.append((schema.__name__, key))
+        assert not missing, (
+            '*_max_iterations runtime budgets absent from parse.numkeys_int: %s' % missing)

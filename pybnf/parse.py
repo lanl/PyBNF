@@ -41,7 +41,11 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # profile likelihood (job_type = profile_likelihood, #446/#466): the polish
                # budget, the per-direction grid-point cap, and the per-point re-opt cap.
                'profile_likelihood_max_iterations', 'profile_likelihood_max_points',
-               'profile_likelihood_reopt_max_iterations']
+               'profile_likelihood_reopt_max_iterations',
+               # gradient optimizers (fit_type = trf / lbfgs, #386): the int-valued
+               # tunables -- L-BFGS-B's curvature-history depth and the two cycle
+               # budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
+               'lbfgs_history', 'trf_max_iterations', 'lbfgs_max_iterations']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
@@ -49,7 +53,13 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'beta_max', 'bootstrap_max_obj', 'simplex_stop_tol', 'v_stop', 'gamma_prob', 'zeta', 'lambda',
                  'constraint_scale', 'neg_bin_r', 'stablizingCov',
                  'rhat_threshold', 'snooker_prob',
-                 'powell_step', 'powell_stop_tol', 'cmaes_sigma0', 'cmaes_stop_tol',
+                 'powell_step', 'powell_line_tol', 'powell_stop_tol',
+                 'cmaes_sigma0', 'cmaes_stop_tol',
+                 # gradient optimizers (fit_type = trf / lbfgs, #386): the float-valued
+                 # tunables -- the trust-region-reflective / L-BFGS-B optimality +
+                 # step tolerances and L-BFGS-B's Armijo constant / backtrack factor.
+                 'trf_grad_tol', 'trf_step_tol', 'lbfgs_grad_tol', 'lbfgs_step_tol',
+                 'lbfgs_c1', 'lbfgs_backtrack',
                  # HMC (job_type = hmc, ADR-0059): NUTS dual-averaging target acceptance.
                  'target_accept',
                  # profile likelihood (job_type = profile_likelihood, #446/#466): confidence
