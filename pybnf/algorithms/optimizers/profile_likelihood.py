@@ -20,13 +20,22 @@ This is a self-contained ``job_type = profile_likelihood`` run selected on the m
 whole gradient path -- the edition-2 / sensitivity-backend / differentiable-dynamics gates,
 the per-experiment routing setup, and the per-evaluation :meth:`GradientOptimizer.gradient_at`
 assembly -- and depends on it exactly as ``trf`` / ``lbfgs`` do (bngsim forward
-sensitivities, ``BNGSIM_HAS_OUTPUT_SENS``). It reuses the headless
-:class:`~pybnf.algorithms.optimizers.trf._TRFRunner` step machine for every
-re-optimization, driven by :func:`~pybnf.gradient.assembly.assemble_gaussian_gradient`
-for the residual / Jacobian, so it fits the same **exact least-squares** objectives TRF
-does (a Gaussian / Student-t family with a fixed noise scale and no constraints); an
-estimated scale or a Laplace / count / constrained objective has no faithful residual and
-is refused at the first evaluation, pointing at ``job_type = lbfgs``.
+sensitivities, ``BNGSIM_HAS_OUTPUT_SENS``).
+
+The inner optimizer -- the one that both polishes to ``theta*`` and re-optimizes the
+remaining free parameters at each grid point -- **mirrors the trf/lbfgs split** so profile
+likelihood fits every objective the gradient methods do, not just the exact-least-squares
+ones. The kind is chosen automatically from the objective's structure, read once from an
+assembled :class:`~pybnf.gradient.assembly.GradientResult` (a preflight evaluation on the
+polish path, or the explicit-``theta*`` evaluation): an **exact sum of squares** (a Gaussian
+/ Student-t family with a fixed noise scale and no constraints, ``least_squares_exact``)
+profiles with the reduced-dimension :class:`~pybnf.algorithms.optimizers.trf._TRFRunner` (the
+D2D reference, consuming the residual / Jacobian); anything else -- an **estimated** noise
+scale, a **Laplace / count** family, active **constraint** penalties -- has no faithful
+residual and profiles with the scalar-gradient
+:class:`~pybnf.algorithms.optimizers.lbfgs._LBFGSRunner` instead (the same objectives
+``job_type = lbfgs`` handles). ``least_squares_exact`` is a structural property of the
+objective, not the point, so the single read governs the whole run.
 
 Obtaining ``theta*`` (the open design question of #466)
 ------------------------------------------------------
@@ -54,9 +63,11 @@ grid; the ``Delta chi2`` threshold is on the objective, never on the transformed
 parameter). Each profiled parameter runs two independent :class:`_ProfileTrack`\\ s (one
 per direction). A track takes an **adaptive** step -- shrinking where the profile steepens,
 growing where it is flat, targeting a fixed ``Delta chi2`` rise per grid point -- and at
-each grid point re-optimizes the *remaining* free parameters with a reduced-dimension
-``_TRFRunner`` (the fixed column dropped from the Jacobian, the full residual kept),
-**warm-started** from the neighboring grid point's optimum. A direction terminates on the
+each grid point re-optimizes the *remaining* free parameters with a reduced-dimension inner
+runner of the selected kind (a ``_TRFRunner`` with the fixed column dropped from the
+Jacobian and the full residual kept, or an ``_LBFGSRunner`` on the scalar gradient with the
+fixed coordinate dropped), **warm-started** from the neighboring grid point's optimum. A
+direction terminates on the
 threshold crossing, on a bound, or on a per-direction point cap. Serial across parameters
 and directions (one re-optimization in flight at a time); parallelization is #446's
 sub-issue 2.
@@ -76,6 +87,7 @@ from typing import Any, ClassVar
 import numpy as np
 
 from .gradient_base import DONE, GradientOptimizer
+from .lbfgs import _LBFGSRunner
 from .trf import _TRFRunner
 from ...config_schema import PyBNFConfigModel
 from ...gradient import GradientResult
@@ -89,6 +101,32 @@ logger = logging.getLogger('pybnf.algorithms')
 #: as a flat profile -- the signal of *structural* non-identifiability (the parameter
 #: moved but the objective did not respond).
 _FLAT_DCHI2 = 1e-3
+
+#: Fixed L-BFGS-B tunables for the inner runner when profiling a non-exact objective --
+#: the curvature-history depth, the Armijo sufficient-decrease constant, and the
+#: backtracking factor (:class:`~pybnf.algorithms.optimizers.lbfgs.LBFGSConfig`'s own
+#: defaults). Kept off the config surface: profile likelihood exposes only the shared
+#: ``profile_likelihood_grad_tol`` / ``_step_tol`` tolerances, not the L-BFGS-B internals.
+_LBFGS_HISTORY = 10
+_LBFGS_C1 = 1e-4
+_LBFGS_BACKTRACK = 0.5
+
+
+def _build_inner_runner(kind, u0, lower, upper, max_iterations, *, grad_tol, step_tol):
+    """Construct the inner gradient step machine of the selected ``kind`` (shared by the
+    polish's :meth:`ProfileLikelihoodAlgorithm._make_runner` and each
+    :class:`_ProfileTrack`'s per-grid-point re-optimization).
+
+    ``'trf'`` is the trust-region-reflective least-squares runner (an exact sum of squares,
+    consuming the residual / Jacobian); ``'lbfgs'`` is the L-BFGS-B runner for a non-exact
+    objective (consuming only the scalar gradient), carrying the fixed L-BFGS-B tunables. A
+    module-level function (not a bound method) so a :class:`_ProfileTrack` can call it at
+    runtime while storing only the ``kind`` string -- keeping the track picklable."""
+    if kind == 'lbfgs':
+        return _LBFGSRunner(u0, lower, upper, max_iterations, grad_tol=grad_tol,
+                            step_tol=step_tol, history=_LBFGS_HISTORY, c1=_LBFGS_C1,
+                            backtrack=_LBFGS_BACKTRACK)
+    return _TRFRunner(u0, lower, upper, max_iterations, grad_tol=grad_tol, step_tol=step_tol)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,12 +297,14 @@ def _resolve_profile_idxs(variables, names):
 # --------------------------------------------------------------------------- #
 class _ProfileTrack:
     """One parameter's outward profile walk in a single direction -- the adaptive-grid
-    driver, headless and picklable (plain ``numpy`` / ``float`` / ``list``).
+    driver, headless and picklable (plain ``numpy`` / ``float`` / ``list`` -- the inner
+    runner kind rides as a plain ``'trf'`` / ``'lbfgs'`` string, so the track builds it
+    via the module-level :func:`_build_inner_runner` and holds no unpicklable callable).
 
     Owns the fixed-parameter grid position, the adaptive step, and the inner
-    reduced-dimension :class:`_TRFRunner` that re-optimizes the free parameters at the
-    current grid point (warm-started from the previous point's optimum). Driven by the
-    optimizer::
+    reduced-dimension runner (a :class:`_TRFRunner` or :class:`_LBFGSRunner`, per
+    ``runner_kind``) that re-optimizes the free parameters at the current grid point
+    (warm-started from the previous point's optimum). Driven by the optimizer::
 
         u = track.start()                       # first full-u point to evaluate, or None
         u = track.got(u_free, score, grad_r)    # feed one inner result -> next full-u / None
@@ -277,9 +317,10 @@ class _ProfileTrack:
 
     def __init__(self, param_idx, direction, u_center, lower, upper, warm_free, cost_ref,
                  *, step, min_step, max_step, dchi2_target, threshold, max_points,
-                 reopt_max_iterations, grad_tol, step_tol):
+                 reopt_max_iterations, grad_tol, step_tol, runner_kind='trf'):
         self.param_idx = int(param_idx)
         self.direction = int(direction)             # +1 or -1
+        self.runner_kind = runner_kind              # 'trf' | 'lbfgs' inner re-optimizer
         self.n = len(u_center)
         self.free_idx = [i for i in range(self.n) if i != self.param_idx]
         self._u_center = np.array(u_center, dtype=float)
@@ -344,9 +385,10 @@ class _ProfileTrack:
             self.stop_reason = 'reached parameter bound'
             return None
         self._pending_fixed = clamped
-        self.inner = _TRFRunner(
-            self.warm, self._lower[self.free_idx], self._upper[self.free_idx],
-            self.reopt_max_iterations, grad_tol=self.grad_tol, step_tol=self.step_tol)
+        self.inner = _build_inner_runner(
+            self.runner_kind, self.warm, self._lower[self.free_idx],
+            self._upper[self.free_idx], self.reopt_max_iterations,
+            grad_tol=self.grad_tol, step_tol=self.step_tol)
         return self._full_u(self.inner.start())
 
     def _grid_point_converged(self):
@@ -410,8 +452,9 @@ class ProfileLikelihoodConfig(PyBNFConfigModel):
     auto, one tenth of the threshold). ``profile_likelihood_max_points`` caps the grid
     points per direction. ``profile_likelihood_reopt_max_iterations`` caps the inner
     re-optimization's iterations at each grid point; ``profile_likelihood_grad_tol`` /
-    ``profile_likelihood_step_tol`` are its (and the polish's) Trust-Region-Reflective
-    tolerances. Like the other gradient methods' cycle budgets,
+    ``profile_likelihood_step_tol`` are its (and the polish's) optimality / step
+    tolerances, shared by whichever inner optimizer the objective selects
+    (Trust-Region-Reflective or L-BFGS-B). Like the other gradient methods' cycle budgets,
     ``profile_likelihood_max_iterations`` (the polish budget) is runtime-guarded -- it
     defaults to the global ``max_iterations`` when unset -- so it is a valid key but not a
     schema field."""
@@ -436,12 +479,17 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
     """Standalone profile-likelihood driver (``job_type = profile_likelihood``, #446/#466).
 
     A two-phase job over the :class:`GradientOptimizer` gradient path: an optional
-    multi-start Trust-Region-Reflective **polish** to the optimum ``theta*`` (skipped when
-    the config supplies ``theta*`` via ``initial_value:`` on every parameter), then the
-    **profile** phase -- one adaptive outward :class:`_ProfileTrack` per parameter per
-    direction, each re-optimizing the remaining free parameters with a reduced-dimension
-    ``_TRFRunner``. At the end it extracts each parameter's confidence interval and
-    identifiability class and writes the profile curves + a summary to ``Results/``."""
+    multi-start gradient **polish** to the optimum ``theta*`` (skipped when the config
+    supplies ``theta*`` via ``initial_value:`` on every parameter), then the **profile**
+    phase -- one adaptive outward :class:`_ProfileTrack` per parameter per direction, each
+    re-optimizing the remaining free parameters with a reduced-dimension inner runner. Both
+    the polish and the re-optimizations use the same inner optimizer, selected once from the
+    objective's structure (:meth:`_select_runner_kind`): the trust-region-reflective
+    ``_TRFRunner`` for an exact sum of squares, the scalar-gradient ``_LBFGSRunner``
+    otherwise -- so profile likelihood covers the estimated-scale / Laplace / count /
+    constrained objectives too, not only the exact-least-squares ones. At the end it
+    extracts each parameter's confidence interval and identifiability class and writes the
+    profile curves + a summary to ``Results/``."""
 
     fit_type = 'profile_likelihood'
     _method_label = 'profile-likelihood polish'
@@ -490,6 +538,7 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         and inner runners are built lazily once profiling begins."""
         self.phase = 'init'
         self.polished = None         # True once the polish phase runs, False on explicit theta*
+        self._runner_kind = None     # 'trf' | 'lbfgs' inner optimizer (set at preflight/center)
         self.profile_summary = None  # the per-parameter CI + classification list, set at finalize
         self._cost_ref = None
         self._u_star = None
@@ -506,36 +555,55 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
                 % (self.confidence, self.threshold, len(self._profile_idxs)))
 
     def _make_runner(self, u0):
-        """One full-dimension Trust-Region-Reflective step machine for the polish phase
-        (the base's multi-start orchestration builds one per start)."""
-        return _TRFRunner(u0, self._u_lower, self._u_upper, self.max_iterations,
-                          grad_tol=self.grad_tol, step_tol=self.step_tol)
+        """One full-dimension inner step machine for the polish phase, of the kind selected
+        from the objective (:meth:`_select_runner_kind`) -- trust-region-reflective
+        least-squares for an exact sum of squares, L-BFGS-B otherwise. The base's
+        multi-start orchestration builds one per start, and the kind is always resolved by
+        the preflight before this runs on the polish path."""
+        return _build_inner_runner(self._runner_kind or 'trf', u0, self._u_lower,
+                                   self._u_upper, self.max_iterations,
+                                   grad_tol=self.grad_tol, step_tol=self.step_tol)
 
     # --- phase machine ----------------------------------------------------- #
     def start_run(self):
+        # Activate the gradient path up front (idempotent): every path below needs an
+        # assembled gradient -- the preflight / theta* evaluation reads the runner kind
+        # off it, and super().start_run() would set it up again anyway.
+        self._setup_gradient_path()
         if all(v.value is not None for v in self.variables):
-            # Explicit theta* (initial_value on every parameter): evaluate it once for the
-            # reference objective, then profile -- no polish.
+            # Explicit theta* (initial_value on every parameter): evaluate it once. That
+            # single evaluation yields BOTH the reference objective and the inner-runner
+            # kind (read from least_squares_exact), then profile -- no polish.
             print2(self._start_banner())
             self.phase = 'center'
             self.polished = False
-            self._setup_gradient_path()
             self.probe_counter = 0
             self.pending = {}
             theta_star = PSet([v.set_value(v.value) for v in self.variables])
             print1('Using the supplied initial_value for every parameter as the optimum; '
                    'skipping the polish.')
             return [self._pl_dispatch(self._u_from_pset(theta_star))]
-        # Integrated polish: run the base's multi-start TRF fit to theta*, then profile.
-        # super().start_run() prints the banner and seeds the polish's start points.
-        self.phase = 'polish'
+        # Integrated polish. A preflight evaluation of the box center reads the inner-runner
+        # kind (from least_squares_exact) before the multi-start polish builds its per-start
+        # runners -- so the polish, and then the profile re-optimizations, use the matching
+        # optimizer (trf for an exact sum of squares, L-BFGS-B otherwise). It costs one
+        # extra evaluation (the box center is re-evaluated as polish start 0), the price of
+        # not knowing the objective's structure until a real gradient is assembled.
+        self.phase = 'preflight'
         self.polished = True
-        print1('No initial_value supplied; polishing to the optimum with '
-               'trust-region-reflective least-squares before profiling.')
-        return super().start_run()
+        print1('No initial_value supplied; polishing to the optimum before profiling.')
+        return [self._preflight_dispatch(self._u_from_pset(self.start_psets[0]))]
 
     def got_result(self, res):
+        if self.phase == 'preflight':
+            # The box-center evaluation fixes the inner-runner kind; hand off to the base's
+            # multi-start polish, which now builds runners of that kind.
+            self._select_runner_kind(res)
+            self.phase = 'polish'
+            return super().start_run()
         if self.phase == 'center':
+            # The explicit-theta* evaluation gives both the reference objective and the kind.
+            self._select_runner_kind(res)
             self._cost_ref = float(res.score)
             self.phase = 'profile'
             return self._begin_profiling(self._u_from_pset(res.pset))
@@ -546,6 +614,25 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
                 return self._begin_profiling(self._u_from_pset(self.trajectory.best_fit()))
             return response
         return self._profile_got(res)
+
+    def _select_runner_kind(self, res):
+        """Fix the inner optimizer from the objective's structure, read once from the
+        gradient assembled at ``res``. An **exact** sum of squares (a fixed-scale Gaussian /
+        Student-t with no constraints, ``least_squares_exact``) profiles with the
+        trust-region-reflective ``_TRFRunner`` -- the D2D reference on the residual /
+        Jacobian; anything else (an estimated noise scale, a Laplace / count family, active
+        constraint penalties) has no faithful residual and profiles with the scalar-gradient
+        ``_LBFGSRunner`` instead, the same objectives ``job_type = lbfgs`` handles. The flag
+        is structural (independent of the point), so this one read governs both the polish
+        and every per-grid-point re-optimization."""
+        exact = self.gradient_at(res).least_squares_exact
+        self._runner_kind = 'trf' if exact else 'lbfgs'
+        if exact:
+            print1('Objective is an exact sum of squares; profiling with '
+                   'trust-region-reflective least-squares re-optimization.')
+        else:
+            print1('Objective is not an exact sum of squares (estimated scale / Laplace / '
+                   'count / constraints); profiling with L-BFGS-B on the scalar gradient.')
 
     # --- profiling --------------------------------------------------------- #
     def _begin_profiling(self, u_star):
@@ -585,7 +672,8 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             max_step=self.pl_max_step, dchi2_target=self.pl_dchi2_target,
             threshold=self.threshold, max_points=self.pl_max_points,
             reopt_max_iterations=self.reopt_max_iterations,
-            grad_tol=self.grad_tol, step_tol=self.step_tol)
+            grad_tol=self.grad_tol, step_tol=self.step_tol,
+            runner_kind=self._runner_kind or 'trf')
 
     def _profile_got(self, res):
         """Route one profiling evaluation to the active track, advancing its inner
@@ -633,6 +721,15 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         single active track)."""
         self.probe_counter += 1
         name = '%s_%i' % (self.fit_type, self.probe_counter)
+        self._pl_active_name = name
+        return self._pset_from_u(u, name=name)
+
+    def _preflight_dispatch(self, u):
+        """Wrap the single preflight point (the box center) as a distinctly named PSet.
+        ``super().start_run()`` restarts the probe counter for the polish, so a distinct
+        name keeps the preflight from colliding with the polish's own start-0 evaluation;
+        its result is consumed only to read the inner-runner kind."""
+        name = '%s_preflight' % self.fit_type
         self._pl_active_name = name
         return self._pset_from_u(u, name=name)
 

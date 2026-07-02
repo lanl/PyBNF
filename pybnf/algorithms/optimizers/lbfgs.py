@@ -199,6 +199,11 @@ class _LBFGSRunner(GradientRunner):
         self.point = np.array(u_point, dtype=float)
         self.fval = score
         self.grad = grad.gradient
+        if not self.n:
+            # No free coordinates to optimize (e.g. a reduced-dimension profile-likelihood
+            # re-optimization that fixed the sole free parameter) -- trivially converged.
+            self.stop_reason = 'no free parameters to optimize'
+            return DONE
         if self._gradient_converged():
             self.stop_reason = 'projected gradient already flat at the start point'
             return DONE

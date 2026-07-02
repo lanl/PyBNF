@@ -44,14 +44,21 @@ TRUE_K = 0.3
 TRUE_S0 = 100.0
 
 
-def _write_decay_exp(path, *, n=21, t_end=10.0, sd=2.0):
-    """A zero-noise analytic decay ``.exp`` (``time Stot Stot_SD``): ``Stot = S0*exp(-k*t)``
-    at the truth, with a constant SD column so the chi-square is a fixed-scale Gaussian (an
-    exact least-squares residual -- the profile driver's TRF re-optimization needs it)."""
+def _write_decay_exp(path, *, n=21, t_end=10.0, sd=2.0, with_sd=True):
+    """A zero-noise analytic decay ``.exp`` (``time Stot [Stot_SD]``): ``Stot = S0*exp(-k*t)``
+    at the truth. With ``with_sd`` a constant SD column makes the chi-square a fixed-scale
+    Gaussian (an exact least-squares residual -- the profile driver's TRF re-optimization
+    path); with ``with_sd=False`` the SD column is dropped, so an ``estimated`` noise scale
+    (``chi_sq_dynamic``, sigma from a free parameter) reads no ``_SD`` column -- the
+    non-exact objective the L-BFGS-B inner path profiles."""
     t = np.linspace(0.0, t_end, n)
     obs = TRUE_S0 * np.exp(-TRUE_K * t)
-    lines = ['#\ttime\tStot\tStot_SD']
-    lines += ['%.12g\t%.12g\t%.12g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    if with_sd:
+        lines = ['#\ttime\tStot\tStot_SD']
+        lines += ['%.12g\t%.12g\t%.12g' % (ti, oi, sd) for ti, oi in zip(t, obs)]
+    else:
+        lines = ['#\ttime\tStot']
+        lines += ['%.12g\t%.12g' % (ti, oi) for ti, oi in zip(t, obs)]
     Path(path).write_text('\n'.join(lines) + '\n')
     return str(path)
 
@@ -169,9 +176,11 @@ def _run_track(track, A, y, names):
     return track.points
 
 
-def _profile_param(A, y, theta_star, f_min, idx, lower, upper, threshold, names):
+def _profile_param(A, y, theta_star, f_min, idx, lower, upper, threshold, names,
+                   *, runner_kind='trf'):
     """Assemble a full two-sided profile of parameter ``idx`` by running both directional
-    tracks against the analytic model; return sorted (u, dchi2)."""
+    tracks against the analytic model; return sorted (u, dchi2). ``runner_kind`` selects the
+    inner re-optimizer (``'trf'`` or the scalar-gradient ``'lbfgs'``)."""
     n = len(theta_star)
     lower = np.asarray(lower, dtype=float)
     upper = np.asarray(upper, dtype=float)
@@ -183,7 +192,7 @@ def _profile_param(A, y, theta_star, f_min, idx, lower, upper, threshold, names)
             idx, direction, theta_star, lower, upper, warm, f_min,
             step=0.05, min_step=1e-3, max_step=0.5, dchi2_target=threshold / 10.0,
             threshold=threshold, max_points=400, reopt_max_iterations=100,
-            grad_tol=1e-10, step_tol=1e-12)
+            grad_tol=1e-10, step_tol=1e-12, runner_kind=runner_kind)
         for fu, c in _run_track(track, A, y, names):
             fixed_u.append(fu)
             cost.append(c)
@@ -194,10 +203,11 @@ def _profile_param(A, y, theta_star, f_min, idx, lower, upper, threshold, names)
     return u, dchi2
 
 
-def test_profile_track_pickles_mid_walk():
-    """The track (and its inner runner) is plain numpy/float, so the optimizer that owns it
-    checkpoints for backup (ADR-0007). Round-trip a track mid-walk and confirm it resumes to
-    the same grid points."""
+@pytest.mark.parametrize('runner_kind', ['trf', 'lbfgs'])
+def test_profile_track_pickles_mid_walk(runner_kind):
+    """The track (and its inner runner -- TRF or L-BFGS-B) is plain numpy/float/list, so the
+    optimizer that owns it checkpoints for backup (ADR-0007). Round-trip a track mid-walk and
+    confirm it resumes to the same grid points, for both inner-runner kinds."""
     import pickle
     A = np.array([[1.0, 0.2], [0.1, 1.0], [0.4, 0.3]])
     y = np.array([1.0, 2.0, 0.5])
@@ -207,7 +217,7 @@ def test_profile_track_pickles_mid_walk():
         0, 1, theta_star, theta_star - 5.0, theta_star + 5.0,
         np.array([theta_star[1]]), f_min, step=0.05, min_step=1e-3, max_step=0.5,
         dchi2_target=0.4, threshold=3.84, max_points=50, reopt_max_iterations=100,
-        grad_tol=1e-10, step_tol=1e-12)
+        grad_tol=1e-10, step_tol=1e-12, runner_kind=runner_kind)
     # Advance a couple of inner evaluations, then pickle mid-walk.
     u = track.start()
     for _ in range(3):
@@ -238,6 +248,37 @@ def test_track_recovers_the_analytic_ci_on_an_identifiable_2d_model():
 
     for idx in (0, 1):
         u, dchi2 = _profile_param(A, y, theta_star, f_min, idx, lower, upper, thr, names)
+        lo, hi, lob, hib = _extract_ci(u, dchi2, float(theta_star[idx]), thr,
+                                       lower[idx], upper[idx])
+        half = np.sqrt(thr * C[idx, idx])
+        assert lo == pytest.approx(theta_star[idx] - half, rel=2e-2)
+        assert hi == pytest.approx(theta_star[idx] + half, rel=2e-2)
+        assert _classify(u, dchi2, float(theta_star[idx]), lo, hi, lob, hib) == 'identifiable'
+
+
+def test_track_recovers_the_analytic_ci_via_the_lbfgs_inner_path():
+    # The Gap-1 inner-runner split, offline: driving the SAME analytic linear-Gaussian
+    # model with runner_kind='lbfgs' (the _LBFGSRunner consuming only grad.gradient -- what
+    # _reduce_gradient slices out) must recover the SAME closed-form profile CI as the trf
+    # path above. The CI is a property of the objective's shape, not the optimizer, so a
+    # correct scalar-gradient re-optimization reproduces it. This is the backend-free proof
+    # that profile likelihood's L-BFGS-B path re-optimizes the remaining parameters
+    # correctly (the recovery tier proves it end to end on an estimated-scale fit TRF
+    # refuses).
+    A = np.array([[1.0, 0.2],
+                  [0.1, 1.0],
+                  [0.4, 0.3],
+                  [0.0, 0.7]])
+    y = np.array([1.0, 2.0, 0.5, 1.5])
+    theta_star, f_min, C = _linear_gaussian(A, y)
+    names = ['p0', 'p1']
+    thr = _chi2_quantile_1dof(0.95)
+    lower = theta_star - 10.0
+    upper = theta_star + 10.0
+
+    for idx in (0, 1):
+        u, dchi2 = _profile_param(A, y, theta_star, f_min, idx, lower, upper, thr, names,
+                                  runner_kind='lbfgs')
         lo, hi, lob, hib = _extract_ci(u, dchi2, float(theta_star[idx]), thr,
                                        lower[idx], upper[idx])
         half = np.sqrt(thr * C[idx, idx])
@@ -348,6 +389,57 @@ def test_profile_likelihood_recovers_identifiable_cis(tmp_path, monkeypatch):
     res = Path(conf.config['output_dir']) / 'Results'
     assert (res / 'profile_likelihood_summary.txt').is_file()
     assert (res / 'profile_k.txt').is_file() and (res / 'profile_S0.txt').is_file()
+
+
+@pytest.mark.bngsim
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_profile_likelihood_profiles_an_estimated_scale_fit_via_lbfgs(tmp_path, monkeypatch):
+    """The Gap-1 deliverable end to end: ``job_type = profile_likelihood`` on an
+    objective TRF *refuses* -- ``chi_sq_dynamic`` with a free ``sigma__FREE`` (an
+    **estimated** noise scale, ``least_squares_exact == False``). The preflight reads that
+    off the assembled gradient and routes both the polish and every per-grid-point
+    re-optimization through the scalar-gradient L-BFGS-B inner runner (never TRF, which
+    would raise). The polish recovers the rate ``k``, and profiling it (re-optimizing the
+    nuisance ``S0`` + ``sigma__FREE`` at each grid point) yields a finite CI that brackets
+    the truth -- the estimated-scale sibling of
+    ``test_profile_likelihood_recovers_identifiable_cis`` (which takes the TRF path)."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    # No _SD column: chi_sq_dynamic reads its sigma from the free parameter, not the data.
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sigma__FREE': ('uniform_var', 0.1, 50.0)},
+        'decay', 'profile_likelihood', objective='chi_sq_dynamic', random_seed=1234,
+        population_size=1, max_iterations=250,
+        profile_likelihood_params='k',
+        profile_likelihood_confidence=0.95, profile_likelihood_step=0.02,
+        profile_likelihood_max_points=25)
+
+    alg = H.build(conf, 'profile_likelihood')
+    H.drive(alg)   # must NOT raise -- this is the objective TRF refuses
+
+    # The auto-detection chose the scalar-gradient path, never TRF.
+    assert alg._runner_kind == 'lbfgs'
+    assert alg.polished is True    # no initial_value -> the polish ran (through lbfgs)
+
+    rec = H.best_params(alg, ('k',))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.05
+
+    s = {p['name']: p for p in alg.profile_summary}['k']
+    # A finite, sensible CI for the rate that brackets both the optimum and the truth.
+    assert s['ci_low'] is not None and s['ci_high'] is not None
+    assert s['ci_low'] < s['best'] < s['ci_high']
+    assert s['ci_low'] < TRUE_K < s['ci_high']
+
+    # Only k was profiled (profile_likelihood_params), and its curve landed in Results/.
+    assert [p['name'] for p in alg.profile_summary] == ['k']
+    res = Path(conf.config['output_dir']) / 'Results'
+    assert (res / 'profile_k.txt').is_file()
 
 
 @pytest.mark.bngsim
