@@ -158,8 +158,22 @@ def _block_lines(text, block_name):
     return lines
 
 
+def _strip_line_label(line):
+    """Drop a leading BNGL line label so the entity, not the label, is read.
+
+    ``LineLabel = {Digit}, WS | Name, ":", [WS]`` (grammar) -- either a numeric
+    index (the legacy ``.net``-style ``1 L0 1`` form) or a named label
+    (``CD14: CD14(...)``). A valid BNGL identifier starts with a letter, so a
+    leading digit-run is always an index; a compartment prefix is ``@Name:`` (with
+    the ``@``), so a bare ``Name:`` at line start is unambiguously a label.
+    """
+    m = re.match(r'^\d+\s+(.*)$', line) or re.match(r'^[A-Za-z]\w*:\s+(.*)$', line)
+    return m.group(1) if m else line
+
+
 def _parameter_name_value(line):
-    """``(name, rhs)`` for a ``Name (WS | '=') MathExpression`` parameter line."""
+    """``(name, rhs)`` for a ``[LineLabel] Name (WS | '=') MathExpression`` line."""
+    line = _strip_line_label(line)
     m = re.match(r'^(\w+)\s*=\s*(.+)$', line) or re.match(r'^(\w+)\s+(.+)$', line)
     return (m.group(1), m.group(2).strip()) if m else None
 
@@ -198,13 +212,16 @@ def _molecule_type_name(line):
 
 
 def _seed_species_pattern(line):
-    """The species pattern in a ``["$"] <pattern> <value>`` seed-species line.
+    """The species pattern in a ``[LineLabel] ["$"] <pattern> <value>`` line.
 
-    A leading ``$`` (grammar ``SeedSpeciesDefn = ["$"], Species, WS, MathExpression``)
-    marks the concentration as fixed/clamped; it is a modifier, not part of the
-    species identity, so it is stripped -- ``$counter() 10`` enumerates the state
-    variable ``counter()``, so ``is_state_variable('counter()')`` holds either way.
+    A leading line label (numeric index ``1 A() 100`` or named ``CD14: CD14(...)``;
+    see :func:`_strip_line_label`) is dropped first so the label is not mistaken for
+    the species. A leading ``$`` (grammar ``SeedSpeciesDefn = ["$"], Species, WS,
+    MathExpression``) marks a fixed/clamped concentration; it is a modifier, not part
+    of the species identity, so it too is stripped -- ``$counter() 10`` enumerates the
+    state variable ``counter()``, so ``is_state_variable('counter()')`` holds either way.
     """
+    line = _strip_line_label(line)
     if line.startswith('$'):
         line = line[1:].lstrip()
     tokens = line.split()

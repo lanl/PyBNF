@@ -1600,6 +1600,38 @@ class TestBnglGrammarHardening:
             'begin parameters\n k 1 # note \\\n j 2\nend parameters\n')
         assert ent.parameters == {'k': '1', 'j': '2'}
 
+    def test_indexed_declarations(self):
+        # Legacy `.net`-style leading index (LineLabel = {Digit}, WS): the index
+        # must not be read as the name. (corpus: example1/egfr_tutorial/Chattaraj)
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin parameters\n 1 L0 1\n 2 R0 2\nend parameters\n'
+            'begin seed species\n 1 A() 100\n 2 B() 50\nend seed species\n')
+        assert ent.parameters == {'L0': '1', 'R0': '2'}    # index dropped, real names
+        assert ent.seed_species == frozenset({'A()', 'B()'})
+
+    def test_labeled_seed_species(self):
+        # Named line label (LineLabel = Name, ":"): `CD14: CD14(...)` -- the label,
+        # which here even equals the molecule name, must not be read as the species.
+        # (corpus: An_2009). Label is stripped before the `$` clamp.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin seed species\n'
+            ' CD14: CD14(TLR4,MD2) v1\n'
+            ' clamp: $MD2(x~0) v2\n'
+            'end seed species\n')
+        assert ent.seed_species == frozenset({'CD14(TLR4,MD2)', 'MD2(x~0)'})
+
+    def test_line_label_does_not_over_strip(self):
+        # A normal `name value` param and an `@compartment:` species must be left
+        # alone -- a compartment prefix carries `@`, so it is not a bare Name label.
+        from pybnf.petab._bngl import parse_model
+        ent = parse_model(
+            'begin parameters\n NA = 6.02e23\n k1 1.0\nend parameters\n'
+            'begin seed species\n @PM:Rec() 100\nend seed species\n')
+        assert ent.parameters == {'NA': '6.02e23', 'k1': '1.0'}
+        assert ent.seed_species == frozenset({'@PM:Rec()'})   # compartment kept
+
     def test_seed_species_block_alias(self):
         # `begin species` is BNG's short alias for `begin seed species` -- and the
         # '$' clamp is stripped under the alias spelling too.
