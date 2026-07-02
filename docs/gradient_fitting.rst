@@ -98,20 +98,29 @@ The job runs in two phases:
    flat), warm-starting each grid point's re-optimization from its neighbour. A direction stops when
    the profile crosses the :math:`\Delta\chi^2` threshold (the :math:`\chi^2` quantile at the
    configured confidence level, 1 dof), reaches a parameter bound, or hits a per-direction point cap.
+   The profiles are independent, so they are farmed across the scheduler concurrently — one
+   directional walk per parameter per direction, up to ``profile_likelihood_max_parallel`` at a time
+   (default: all of them) — rather than run serially. A cap only queues the excess walks; none is
+   dropped, so coverage is never silently truncated.
 
 From each finished profile the job extracts the confidence interval at the configured level and
 classifies the parameter as **identifiable** (the threshold is crossed on both sides — a finite CI),
 **practically non-identifiable** (the profile rises but does not cross on at least one side — an open
 or bound-limited CI, reported as such rather than silently clamped), or **structurally
 non-identifiable** (a flat profile — the parameter can move with no objective response). It writes
-one ``Results/profile_<name>.txt`` curve per parameter and a ``Results/profile_likelihood_summary.txt``
-with the CI and classification for each. Profiling is serial across parameters in this release
-(parallelization across the independent profiles is planned).
+one ``Results/profile_<name>.txt`` curve per parameter (grid value, objective, :math:`\Delta\chi^2`,
+and each grid point's re-optimization iteration count + convergence flag), a
+``Results/profile_likelihood_summary.txt`` with the CI, classification, and coverage notes for each,
+and — when matplotlib is installed (the optional ``pybnf[plot]`` extra) —
+``Results/profile_likelihood.png``, one :math:`\Delta\chi^2` panel per parameter with the threshold,
+CI, and optimum marked. Every per-point profile record rides PyBNF's ordinary backup/resume, so a
+run can be resumed or extended without recomputing a finished profile.
 
 The knobs are ``profile_likelihood_confidence`` (the CI level), ``profile_likelihood_step`` /
 ``profile_likelihood_min_step`` / ``profile_likelihood_max_step`` / ``profile_likelihood_dchi2_target``
-(the adaptive grid), ``profile_likelihood_max_points`` (the per-direction cap), and
-``profile_likelihood_reopt_max_iterations`` (the per-grid-point re-optimization budget).
+(the adaptive grid), ``profile_likelihood_max_points`` (the per-direction cap),
+``profile_likelihood_reopt_max_iterations`` (the per-grid-point re-optimization budget), and
+``profile_likelihood_max_parallel`` (the max concurrent directional walks; ``0`` = all of them).
 
 
 What it computes

@@ -67,16 +67,31 @@ each grid point re-optimizes the *remaining* free parameters with a reduced-dime
 runner of the selected kind (a ``_TRFRunner`` with the fixed column dropped from the
 Jacobian and the full residual kept, or an ``_LBFGSRunner`` on the scalar gradient with the
 fixed coordinate dropped), **warm-started** from the neighboring grid point's optimum. A
-direction terminates on the
-threshold crossing, on a bound, or on a per-direction point cap. Serial across parameters
-and directions (one re-optimization in flight at a time); parallelization is #446's
-sub-issue 2.
+direction terminates on the threshold crossing, on a bound, or on a per-direction point cap.
 
+Parallel across parameters (#446 sub-issue 2 / #467)
+----------------------------------------------------
+The per-parameter profiles -- and the two directions of a single parameter -- are
+independent, so they farm across the existing Dask scheduler rather than running serially,
+exactly as the base's local multi-start does: up to ``profile_likelihood_max_parallel``
+directional tracks (default: all of them) run concurrently, each an inherently sequential
+warm-started walk holding one evaluation in flight, routed back to its owner by PSet name.
+A cap only queues the excess tracks -- they run as slots free -- so coverage is never
+silently truncated; a direction that stops at its point budget is reported as such.
+
+Serialized + resumable outputs (#467)
+-------------------------------------
 Every state object here is plain ``numpy`` / ``float`` / ``list`` (the tracks, the inner
-runners, the accumulated profiles), so the optimizer pickles for backup/resume exactly
-like the other gradient methods (ADR-0007). scipy stays out of the production loop: the
-chi-square threshold comes from a dependency-free probit approximation
-(:func:`_chi2_quantile_1dof`).
+runners, the per-point ``cost`` / ``theta_opt`` / ``nfev`` / ``success`` accumulated in
+``self._profiles``), so the optimizer pickles through PyBNF's ordinary backup/resume
+machinery exactly like the other gradient methods (ADR-0007) -- a resumed run re-submits
+only the in-flight tracks and never recomputes a finished one. At the end the driver writes
+the finished artifacts to ``Results/``: the per-parameter curve files, the CI +
+identifiability summary table, and -- when matplotlib (the optional ``pybnf[plot]`` extra)
+is importable -- the profile plots (``Delta chi2`` panels with the threshold + CI lines,
+the reference notebook's Cell 9); a missing matplotlib skips only the plots, never the run.
+scipy stays out of the production loop: the chi-square threshold comes from a
+dependency-free probit approximation (:func:`_chi2_quantile_1dof`).
 """
 
 import logging
@@ -292,6 +307,101 @@ def _resolve_profile_idxs(variables, names):
     return [i for i, v in enumerate(variables) if v.name in wanted]
 
 
+def _coverage_notes(stops, lo, hi, lo_at_bound, hi_at_bound):
+    """Honest per-side coverage caveats from the directional stop reasons (#467).
+
+    A direction whose scan stopped at the grid-point cap while its CI side is still *open*
+    (no threshold crossing and not clamped at a parameter bound) yields a note -- the open CI
+    is limited by the point budget, not by a genuine plateau, so it must not read as settled
+    coverage. ``stops`` is the list of ``(direction, stop_reason, npoints)`` records the
+    directional tracks left behind."""
+    notes = []
+    for direction, reason, _npts in stops:
+        if reason != 'reached max grid points':
+            continue
+        if direction > 0 and hi is None:
+            notes.append('upper side stopped at the grid-point cap (CI open; raise '
+                         'profile_likelihood_max_points)')
+        elif direction < 0 and lo is None:
+            notes.append('lower side stopped at the grid-point cap (CI open; raise '
+                         'profile_likelihood_max_points)')
+    return notes
+
+
+# --------------------------------------------------------------------------- #
+# Profile-curve plots (matplotlib, an optional extra -- pip install pybnf[plot])
+# --------------------------------------------------------------------------- #
+def _render_profile_plots(path, summary, variables, threshold, confidence):
+    """Render the per-parameter profile panels to ``path`` (a PNG), returning ``True`` on
+    success and ``False`` when matplotlib is not importable.
+
+    matplotlib is an OPTIONAL dependency (``pybnf[plot]``) -- PyBNF's production loop is
+    otherwise plot-free -- so this fails soft: a missing matplotlib returns ``False`` and the
+    caller reports the skip, leaving the text curves + summary as the artifacts. The figure
+    is a grid of ``Delta chi2``-vs-parameter panels (the reference notebook's Cell 9): the
+    profile curve over its converged grid points, the confidence threshold as a horizontal
+    line, the optimum and the CI bounds as vertical lines, and a log x-axis for a log-scaled
+    parameter. Kept a module-level function (taking explicit args, not ``self``) so it unit
+    tests offline without constructing an optimizer."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')          # headless: no display needed, before pyplot import
+        import matplotlib.pyplot as plt
+    except Exception:
+        return False
+    var_by_name = {v.name: v for v in variables}
+    n = len(summary)
+    ncols = min(4, max(1, n))
+    nrows = int(math.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, 3.3 * nrows), squeeze=False)
+    flat = axes.ravel()
+    for ax, s in zip(flat, summary):
+        _plot_profile_panel(ax, s, var_by_name[s['name']], threshold)
+    for ax in flat[n:]:
+        ax.axis('off')
+    fig.suptitle('Profile likelihood -- %g%% confidence (Delta chi2 = %.4g, 1 dof)'
+                 % (100.0 * confidence, threshold))
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return True
+
+
+def _plot_profile_panel(ax, s, var, threshold):
+    """Draw one parameter's ``Delta chi2`` profile panel (see :func:`_render_profile_plots`).
+
+    Plots only the converged, finite grid points (the ``success`` flag), marks the optimum
+    (green dotted) and each finite CI bound (orange dashed) with the confidence threshold as
+    a red dashed horizontal line, and caps the y-axis a little above the threshold so the
+    crossing region -- not a far-field spike -- fills the panel."""
+    u = np.asarray(s['u'], dtype=float)
+    dchi2 = np.asarray(s['dchi2'], dtype=float)
+    success = np.asarray(s['success'], dtype=bool)
+    x = np.array([var.from_sampling_space(uk) for uk in u], dtype=float)
+    ax.set_title('%s -- %s' % (s['name'], s['classification']), fontsize=9)
+    ax.set_xlabel(s['name'])
+    ax.set_ylabel('Delta chi2')
+    ax.grid(alpha=0.2)
+    finite = np.isfinite(dchi2)
+    if not np.any(finite):
+        ax.text(0.5, 0.5, 'no finite profile points', transform=ax.transAxes,
+                ha='center', va='center', fontsize=9)
+        return
+    shown = (finite & success) if np.any(finite & success) else finite
+    order = np.argsort(x[shown])
+    ax.plot(x[shown][order], dchi2[shown][order], 'o-', ms=3.5, lw=1.2, color='tab:blue')
+    ax.axhline(threshold, color='tab:red', ls='--', lw=1.0)
+    ax.axvline(s['best'], color='tab:green', ls=':', lw=1.1)
+    for ci in (s['ci_low'], s['ci_high']):
+        if ci is not None:
+            ax.axvline(ci, color='tab:orange', ls='--', lw=0.9, alpha=0.7)
+    if getattr(var, 'log_space', False):
+        ax.set_xscale('log')
+    yvals = dchi2[finite]
+    ytop = max(threshold * 1.15, min(float(np.max(yvals)), threshold * 5.0))
+    ax.set_ylim(0.0, ytop * 1.05)
+
+
 # --------------------------------------------------------------------------- #
 # One directional profile walk (headless, picklable)
 # --------------------------------------------------------------------------- #
@@ -338,7 +448,10 @@ class _ProfileTrack:
         self.reopt_max_iterations = int(reopt_max_iterations)
         self.grad_tol = float(grad_tol)
         self.step_tol = float(step_tol)
-        # Accumulated (fixed_u, cost) grid points for THIS direction (center excluded).
+        # Accumulated grid points for THIS direction (center excluded), each a
+        # (fixed_u, cost, theta_free_opt, nfev, success) tuple: the fixed grid value, the
+        # profiled objective, the re-optimized free coordinates (u-space), the inner
+        # re-optimization's iteration count, and whether it converged (vs. hit its cap).
         self.points = []
         self.prev_dchi2 = 0.0
         self.inner = None
@@ -409,8 +522,15 @@ class _ProfileTrack:
             self.step = max(self.min_step, 0.5 * self.step)
             return self._advance_to_next_grid()
 
-        self.points.append((self._pending_fixed, float(cost)))
-        self.warm = np.array(self.inner.point, dtype=float)
+        theta_free = np.array(self.inner.point, dtype=float)
+        nfev = int(getattr(self.inner, 'iteration', 0))
+        stop = getattr(self.inner, 'stop_reason', None)
+        # A grid point "succeeded" when its inner re-optimization converged on a real
+        # stopping test rather than exhausting its iteration budget -- the flag the outputs
+        # (and the plots) use to drop unconverged points from the CI/curve.
+        success = bool(stop is not None and 'max_iterations' not in stop)
+        self.points.append((self._pending_fixed, float(cost), theta_free, nfev, success))
+        self.warm = theta_free
         self.fixed_u = self._pending_fixed
         self._adapt(increment)
         self.prev_dchi2 = dchi2
@@ -454,10 +574,13 @@ class ProfileLikelihoodConfig(PyBNFConfigModel):
     re-optimization's iterations at each grid point; ``profile_likelihood_grad_tol`` /
     ``profile_likelihood_step_tol`` are its (and the polish's) optimality / step
     tolerances, shared by whichever inner optimizer the objective selects
-    (Trust-Region-Reflective or L-BFGS-B). Like the other gradient methods' cycle budgets,
-    ``profile_likelihood_max_iterations`` (the polish budget) is runtime-guarded -- it
-    defaults to the global ``max_iterations`` when unset -- so it is a valid key but not a
-    schema field."""
+    (Trust-Region-Reflective or L-BFGS-B). ``profile_likelihood_max_parallel`` caps how many
+    per-direction profile walks run concurrently on the scheduler (``0`` -> all of them, one
+    per direction per profiled parameter -- the fully-parallel default; the walks that do not
+    fit the cap queue and run as slots free, they are never dropped). Like the other gradient
+    methods' cycle budgets, ``profile_likelihood_max_iterations`` (the polish budget) is
+    runtime-guarded -- it defaults to the global ``max_iterations`` when unset -- so it is a
+    valid key but not a schema field."""
 
     profile_likelihood_params: Any = None
     profile_likelihood_confidence: float = 0.95
@@ -469,6 +592,7 @@ class ProfileLikelihoodConfig(PyBNFConfigModel):
     profile_likelihood_reopt_max_iterations: int = 50
     profile_likelihood_grad_tol: float = 1e-8
     profile_likelihood_step_tol: float = 1e-8
+    profile_likelihood_max_parallel: int = 0
 
     RUNTIME_KEYS: ClassVar[frozenset] = frozenset({'profile_likelihood_max_iterations'})
 
@@ -481,15 +605,19 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
     A two-phase job over the :class:`GradientOptimizer` gradient path: an optional
     multi-start gradient **polish** to the optimum ``theta*`` (skipped when the config
     supplies ``theta*`` via ``initial_value:`` on every parameter), then the **profile**
-    phase -- one adaptive outward :class:`_ProfileTrack` per parameter per direction, each
-    re-optimizing the remaining free parameters with a reduced-dimension inner runner. Both
-    the polish and the re-optimizations use the same inner optimizer, selected once from the
-    objective's structure (:meth:`_select_runner_kind`): the trust-region-reflective
-    ``_TRFRunner`` for an exact sum of squares, the scalar-gradient ``_LBFGSRunner``
-    otherwise -- so profile likelihood covers the estimated-scale / Laplace / count /
-    constrained objectives too, not only the exact-least-squares ones. At the end it
+    phase -- one adaptive outward :class:`_ProfileTrack` per parameter per direction, up to
+    ``profile_likelihood_max_parallel`` of them farmed across the scheduler concurrently
+    (#467), each re-optimizing the remaining free parameters with a reduced-dimension inner
+    runner. Both the polish and the re-optimizations use the same inner optimizer, selected
+    once from the objective's structure (:meth:`_select_runner_kind`): the
+    trust-region-reflective ``_TRFRunner`` for an exact sum of squares, the scalar-gradient
+    ``_LBFGSRunner`` otherwise -- so profile likelihood covers the estimated-scale / Laplace /
+    count / constrained objectives too, not only the exact-least-squares ones. At the end it
     extracts each parameter's confidence interval and identifiability class and writes the
-    profile curves + a summary to ``Results/``."""
+    finished artifacts to ``Results/`` -- the per-parameter curves, the CI/classification
+    summary table, and (with matplotlib) the profile plots. All per-point state pickles
+    through PyBNF's backup/resume, so a resumed run continues without recomputing finished
+    tracks."""
 
     fit_type = 'profile_likelihood'
     _method_label = 'profile-likelihood polish'
@@ -504,6 +632,7 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         target = config.config['profile_likelihood_dchi2_target']
         self.pl_dchi2_target = target if target > 0 else self.threshold / 10.0
         self.pl_max_points = config.config['profile_likelihood_max_points']
+        self.pl_max_parallel = config.config['profile_likelihood_max_parallel']
         self.reopt_max_iterations = config.config['profile_likelihood_reopt_max_iterations']
         self.grad_tol = config.config['profile_likelihood_grad_tol']
         self.step_tol = config.config['profile_likelihood_step_tol']
@@ -544,10 +673,9 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         self._u_star = None
         self._profile_idxs = _resolve_profile_idxs(
             self.variables, self.config.config.get('profile_likelihood_params'))
-        self._profiles = {}          # param name -> {'fixed_u': [...], 'cost': [...]}
-        self._track_queue = []       # remaining (param_idx, direction) tracks
-        self._active_track = None    # (param_idx, _ProfileTrack) currently in flight
-        self._pl_active_name = None  # name of the single in-flight profiling PSet
+        self._profiles = {}          # param name -> per-point profile record (see _begin_profiling)
+        self._track_queue = []       # remaining (param_idx, direction) tracks not yet launched
+        self._active_tracks = {}     # in-flight PSet name -> (param_idx, _ProfileTrack)
 
     def _start_banner(self):
         return ("Running profile-likelihood analysis at the %g confidence level "
@@ -582,7 +710,8 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             theta_star = PSet([v.set_value(v.value) for v in self.variables])
             print1('Using the supplied initial_value for every parameter as the optimum; '
                    'skipping the polish.')
-            return [self._pl_dispatch(self._u_from_pset(theta_star))]
+            _name, pset = self._pl_dispatch(self._u_from_pset(theta_star))
+            return [pset]
         # Integrated polish. A preflight evaluation of the box center reads the inner-runner
         # kind (from least_squares_exact) before the multi-start polish builds its per-start
         # runners -- so the polish, and then the profile re-optimizations, use the matching
@@ -636,32 +765,70 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
 
     # --- profiling --------------------------------------------------------- #
     def _begin_profiling(self, u_star):
-        """Seed the per-parameter profiles with the center point and enqueue both
-        directional tracks for every profiled parameter."""
+        """Seed the per-parameter profiles with the center point, enqueue both directional
+        tracks for every profiled parameter, and launch the first parallel batch.
+
+        The per-parameter (and per-direction) profiles are independent, so they farm across
+        the scheduler exactly like the base's multi-start orchestration: up to
+        :meth:`_effective_parallel` directional tracks run concurrently, each an inherently
+        *sequential* warm-started walk holding one evaluation in flight (#446 sub-issue 2 /
+        #467). Every point/cost/theta_opt/nfev/success lands in ``self._profiles`` (all plain
+        ``list`` / ``ndarray``), so the whole run pickles for backup/resume and a resumed run
+        never recomputes a finished track."""
         self._u_star = np.array(u_star, dtype=float)
         self._cost_ref = float(self.trajectory.best_score())
-        print1('Optimum found; tracing %i profile(s).' % len(self._profile_idxs))
         for idx in self._profile_idxs:
             name = self.variables[idx].name
-            self._profiles[name] = {'fixed_u': [float(self._u_star[idx])],
-                                    'cost': [self._cost_ref]}
+            self._profiles[name] = {
+                'fixed_u': [float(self._u_star[idx])],  # grid value (u-space), center first
+                'cost': [self._cost_ref],               # profiled objective
+                'nfev': [0],                             # inner re-opt iterations (center: 0)
+                'success': [True],                       # inner re-opt converged (center: yes)
+                'theta_opt': [self._u_star.copy()],      # full re-optimized point (u-space)
+                'stops': [],                             # per-direction (direction, reason, npts)
+            }
         self._track_queue = [(idx, d) for idx in self._profile_idxs for d in (1, -1)]
-        self._active_track = None
-        return self._next_track_probe()
+        self._active_tracks = {}
+        ncap = self._effective_parallel()
+        capped = '' if ncap >= len(self._track_queue) else (
+            ' (capped at %i concurrent; the rest queue and run as slots free)' % ncap)
+        print1('Optimum found; tracing %i profile(s) over %i directional track(s), up to %i '
+               'in parallel%s.' % (len(self._profile_idxs), len(self._track_queue), ncap, capped))
+        probes = self._fill_tracks(ncap)
+        # A degenerate run (every track already at a bound) drains immediately.
+        if not self._active_tracks and not self._track_queue:
+            return self._finalize()
+        return probes
 
-    def _next_track_probe(self):
-        """Start the next queued track and return its first probe, skipping tracks that
-        terminate immediately; finalize (write output, ``'STOP'``) when the queue drains."""
-        while self._track_queue:
+    def _effective_parallel(self):
+        """How many directional tracks may run concurrently: every track (one per direction
+        per profiled parameter) when ``profile_likelihood_max_parallel`` is ``0`` -- the
+        fully-parallel default that farms the whole set across the scheduler -- else the
+        configured cap, clamped to ``[1, total]``. A cap only *serializes* the excess tracks
+        (they queue in :attr:`_track_queue` and launch as slots free); no track is ever
+        dropped, so coverage is never silently truncated (#467)."""
+        total = 2 * len(self._profile_idxs)
+        if self.pl_max_parallel and self.pl_max_parallel > 0:
+            return max(1, min(int(self.pl_max_parallel), total))
+        return max(1, total)
+
+    def _fill_tracks(self, target):
+        """Launch queued directional tracks until ``target`` are in flight (or the queue
+        drains), returning each new track's first probe PSet. A track that terminates on its
+        first step (already at a bound) is merged and its slot immediately refilled, so an
+        empty return with a non-empty queue never stalls the pipeline."""
+        probes = []
+        while len(self._active_tracks) < target and self._track_queue:
             idx, direction = self._track_queue.pop(0)
             track = self._new_track(idx, direction)
             u = track.start()
             if u is None:
                 self._merge_track(idx, track)
                 continue
-            self._active_track = (idx, track)
-            return [self._pl_dispatch(u)]
-        return self._finalize()
+            name, pset = self._pl_dispatch(u)
+            self._active_tracks[name] = (idx, track)
+            probes.append(pset)
+        return probes
 
     def _new_track(self, idx, direction):
         warm_free = np.array([self._u_star[i] for i in range(len(self.variables))
@@ -676,19 +843,24 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             runner_kind=self._runner_kind or 'trf')
 
     def _profile_got(self, res):
-        """Route one profiling evaluation to the active track, advancing its inner
-        re-optimization; on the track terminating, move to the next queued track."""
-        idx, track = self._active_track
-        grad_full = self.gradient_at(res)
-        grad_reduced = self._reduce_gradient(grad_full, track.free_idx)
+        """Route one profiling evaluation to the track that owns it (by PSet name),
+        advancing its inner re-optimization. If the track proposes a next point, dispatch it
+        (one evaluation stays in flight per track); if it terminates, merge its grid points
+        and refill the freed slot from the queue. ``'STOP'`` fires only once every track has
+        finished and the queue is empty."""
+        idx, track = self._active_tracks.pop(res.name)
+        grad_reduced = self._reduce_gradient(self.gradient_at(res), track.free_idx)
         u_full = self._u_from_pset(res.pset)
-        u_free = u_full[track.free_idx]
-        nxt = track.got(u_free, float(res.score), grad_reduced)
-        if nxt is None:
-            self._merge_track(idx, track)
-            self._active_track = None
-            return self._next_track_probe()
-        return [self._pl_dispatch(nxt)]
+        nxt = track.got(u_full[track.free_idx], float(res.score), grad_reduced)
+        if nxt is not None:
+            name, pset = self._pl_dispatch(nxt)
+            self._active_tracks[name] = (idx, track)
+            return [pset]
+        self._merge_track(idx, track)
+        probes = self._fill_tracks(self._effective_parallel())
+        if not self._active_tracks and not self._track_queue:
+            return self._finalize()
+        return probes
 
     @staticmethod
     def _reduce_gradient(grad, free_idx):
@@ -706,23 +878,33 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             least_squares_exact=grad.least_squares_exact)
 
     def _merge_track(self, idx, track):
-        """Fold a finished directional track's grid points into its parameter's profile."""
+        """Fold a finished directional track's grid points -- value, cost, the full
+        re-optimized point, the inner iteration count, and its convergence flag -- into its
+        parameter's accumulated profile, plus a record of why the direction stopped (so a
+        grid-point-capped side is reported honestly rather than read as a genuine plateau,
+        #467)."""
         name = self.variables[idx].name
         prof = self._profiles[name]
-        for fixed_u, cost in track.points:
+        for fixed_u, cost, theta_free, nfev, success in track.points:
+            full_u = np.empty(self.n, dtype=float)
+            full_u[idx] = fixed_u
+            full_u[track.free_idx] = theta_free
             prof['fixed_u'].append(float(fixed_u))
             prof['cost'].append(float(cost))
+            prof['nfev'].append(int(nfev))
+            prof['success'].append(bool(success))
+            prof['theta_opt'].append(full_u)
+        prof['stops'].append((int(track.direction), track.stop_reason, len(track.points)))
         logger.info('profile %s direction %+d: %d point(s), %s', name, track.direction,
                     len(track.points), track.stop_reason)
 
     def _pl_dispatch(self, u):
-        """Wrap a proposed ``u`` point as a uniquely named PSet (one profiling evaluation is
-        in flight at a time, so the counter continues across phases and the name routes the
-        single active track)."""
+        """Wrap a proposed ``u`` point as a uniquely named PSet, returning ``(name, pset)``.
+        The global ``probe_counter`` keeps names unique across all concurrent tracks, and the
+        name is the routing key back to the owning track in :attr:`_active_tracks`."""
         self.probe_counter += 1
         name = '%s_%i' % (self.fit_type, self.probe_counter)
-        self._pl_active_name = name
-        return self._pset_from_u(u, name=name)
+        return name, self._pset_from_u(u, name=name)
 
     def _preflight_dispatch(self, u):
         """Wrap the single preflight point (the box center) as a distinctly named PSet.
@@ -730,13 +912,14 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
         name keeps the preflight from colliding with the polish's own start-0 evaluation;
         its result is consumed only to read the inner-runner kind."""
         name = '%s_preflight' % self.fit_type
-        self._pl_active_name = name
         return self._pset_from_u(u, name=name)
 
     # --- results ----------------------------------------------------------- #
     def _finalize(self):
         """Extract every parameter's CI + identifiability class from its finished profile,
-        write the curves + summary to ``Results/``, and stop the run."""
+        then write the finished artifacts to ``Results/`` -- the per-parameter curves, the
+        CI/classification summary table, and (when matplotlib is available) the profile
+        plots -- and stop the run (#467)."""
         cost_ref = float(self.trajectory.best_score())
         best_pset = self.trajectory.best_fit()
         summary = []
@@ -746,8 +929,10 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             prof = self._profiles[name]
             u = np.array(prof['fixed_u'], dtype=float)
             cost = np.array(prof['cost'], dtype=float)
+            nfev = np.array(prof['nfev'], dtype=int)
+            success = np.array(prof['success'], dtype=bool)
             order = np.argsort(u)
-            u, cost = u[order], cost[order]
+            u, cost, nfev, success = u[order], cost[order], nfev[order], success[order]
             dchi2 = 2.0 * (cost - cost_ref)
             u_center = float(var.to_sampling_space(best_pset[name]))
             lower_u = float(var.to_sampling_space(var.lower_bound)) if var.bounded else -np.inf
@@ -762,41 +947,68 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
                 'ci_high': None if hi is None else float(var.from_sampling_space(hi)),
                 'lo_at_bound': lo_at_bound, 'hi_at_bound': hi_at_bound,
                 'classification': klass,
-                'u': u, 'dchi2': dchi2, 'cost': cost,
+                'notes': _coverage_notes(prof['stops'], lo, hi, lo_at_bound, hi_at_bound),
+                'u': u, 'dchi2': dchi2, 'cost': cost, 'nfev': nfev, 'success': success,
             })
         self.profile_summary = summary
         self._write_profile_curves(summary)
         self._write_profile_summary(summary)
+        self._write_profile_plots(summary)
         self._print_summary(summary)
         return 'STOP'
 
     def _write_profile_curves(self, summary):
         """One tab-delimited curve file per parameter: the grid value (native + sampling
-        space), the profiled objective, and its ``Delta chi2`` rise."""
+        space), the profiled objective and its ``Delta chi2`` rise, and each grid point's
+        inner-re-optimization iteration count + convergence flag (so an unconverged point is
+        visible in the raw curve, not just the plot)."""
         for s in summary:
             v = next(v for v in self.variables if v.name == s['name'])
             path = os.path.join(self.res_dir, 'profile_%s.txt' % s['name'])
             with open(path, 'w') as f:
-                f.write('# value\tu\tobjective\tdelta_chi2\n')
-                for uk, ck, dk in zip(s['u'], s['cost'], s['dchi2']):
-                    f.write('%.10g\t%.10g\t%.10g\t%.10g\n'
-                            % (v.from_sampling_space(uk), uk, ck, dk))
+                f.write('# value\tu\tobjective\tdelta_chi2\tnfev\tsuccess\n')
+                for uk, ck, dk, nk, sk in zip(
+                        s['u'], s['cost'], s['dchi2'], s['nfev'], s['success']):
+                    f.write('%.10g\t%.10g\t%.10g\t%.10g\t%d\t%d\n'
+                            % (v.from_sampling_space(uk), uk, ck, dk, int(nk), int(sk)))
 
     def _write_profile_summary(self, summary):
-        """The CI + identifiability summary table for the whole run."""
+        """The CI + identifiability summary table for the whole run. The trailing ``notes``
+        column flags any side whose scan stopped at the grid-point cap (an open CI limited by
+        budget, not a genuine plateau) so a truncated profile is never read as identifiable
+        coverage (#467)."""
         path = os.path.join(self.res_dir, 'profile_likelihood_summary.txt')
         with open(path, 'w') as f:
             f.write('# confidence=%g\tdelta_chi2_threshold=%g\tdof=1\n'
                     % (self.confidence, self.threshold))
             f.write('# parameter\tbest\tci_low\tci_high\tci_low_at_bound\t'
-                    'ci_high_at_bound\tclassification\n')
+                    'ci_high_at_bound\tclassification\tnotes\n')
             for s in summary:
-                f.write('%s\t%.10g\t%s\t%s\t%d\t%d\t%s\n' % (
+                f.write('%s\t%.10g\t%s\t%s\t%d\t%d\t%s\t%s\n' % (
                     s['name'], s['best'],
                     'None' if s['ci_low'] is None else '%.10g' % s['ci_low'],
                     'None' if s['ci_high'] is None else '%.10g' % s['ci_high'],
-                    int(s['lo_at_bound']), int(s['hi_at_bound']), s['classification']))
+                    int(s['lo_at_bound']), int(s['hi_at_bound']), s['classification'],
+                    '; '.join(s['notes']) if s['notes'] else '-'))
         logger.info('Wrote profile-likelihood summary to %s', path)
+
+    def _write_profile_plots(self, summary):
+        """Render the profile-curve plots to ``Results/profile_likelihood.png`` -- one
+        ``Delta chi2`` panel per parameter with the confidence threshold, the CI bounds, and
+        the optimum marked (the reference notebook's Cell 9). matplotlib is an optional extra
+        (``pip install pybnf[plot]``); when it is absent the run is unaffected -- the curve +
+        summary text are already written -- and the skip is reported, never a hard failure."""
+        path = os.path.join(self.res_dir, 'profile_likelihood.png')
+        if _render_profile_plots(path, summary, self.variables, self.threshold,
+                                 self.confidence):
+            logger.info('Wrote profile-likelihood plots to %s', path)
+        else:
+            logger.info('matplotlib unavailable; skipped profile plots (the profile_*.txt '
+                        'curves and summary table were written). Install pybnf[plot] to '
+                        'enable plots.')
+            print1("matplotlib not installed; wrote the profile curves + summary but skipped "
+                   "the plots (install matplotlib, or 'pip install pybnf[plot]', to enable "
+                   "them).")
 
     def _print_summary(self, summary):
         print1('Profile-likelihood analysis complete (%g confidence, Delta chi2 = %g):'
@@ -812,3 +1024,5 @@ class ProfileLikelihoodAlgorithm(GradientOptimizer):
             suffix = (' [%s]' % ', '.join(marks)) if marks else ''
             print1('  %-16s best=%-12.6g CI=[%s, %s]  %s%s'
                    % (s['name'], s['best'], lo, hi, s['classification'], suffix))
+            for note in s['notes']:
+                print1('  %-16s   note: %s' % ('', note))

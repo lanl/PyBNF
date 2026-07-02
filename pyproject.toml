@@ -89,6 +89,14 @@ arviz = [
     "arviz>=0.17",
     "h5netcdf>=1",
 ]
+# Profile-likelihood plots (job_type = profile_likelihood, #467): the driver renders
+# Results/profile_likelihood.png (one Delta chi2 panel per parameter) at the end of a run.
+# OPTIONAL runtime extra -- matplotlib is imported lazily only in the plotting path, which
+# fails soft when it is absent (the profile_*.txt curves + the summary table are written
+# regardless); core stays plot-free and dependency-light (ADR-0019).
+plot = [
+    "matplotlib>=3.5",
+]
 tests = [
     "pytest>=7,<10",
     "hypothesis>=6,<7",
@@ -123,6 +131,11 @@ tests = [
     "jax>=0.4",
     "jaxlib>=0.4",
     "blackjax>=1.2",
+    # Profile-likelihood plot oracle (#467): tests/test_profile_likelihood.py renders the
+    # profile panels and asserts the PNG lands in Results/, so the plotting path is exercised
+    # in CI rather than skipped. The plot tests importorskip('matplotlib'), so a bare checkout
+    # still passes; this mirrors the optional `plot` runtime extra above.
+    "matplotlib>=3.5",
 ]
 
 [project.scripts]

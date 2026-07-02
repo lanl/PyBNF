@@ -17,6 +17,7 @@ below checks against. All parameters are on a LINEAR scale, so sampling space ``
 ``theta`` and the u-space Jacobian is ``A`` itself.
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -28,8 +29,10 @@ from pybnf.algorithms.optimizers.profile_likelihood import (
     _ProfileTrack,
     _chi2_quantile_1dof,
     _classify,
+    _coverage_notes,
     _extract_ci,
     _norm_ppf,
+    _render_profile_plots,
     _resolve_profile_idxs,
 )
 from pybnf.config import Configuration
@@ -146,6 +149,90 @@ def test_flat_profile_is_structurally_non_identifiable():
 
 
 # --------------------------------------------------------------------------- #
+# Coverage notes: a grid-point-capped open side is flagged, not read as settled (#467)
+# --------------------------------------------------------------------------- #
+def test_coverage_notes_flags_a_grid_point_capped_open_side():
+    # The +1 direction ran out its point budget while its (upper) CI is still open (hi None):
+    # that must be flagged; the -1 direction crossed the threshold cleanly (a normal stop),
+    # so it contributes no note.
+    stops = [(1, 'reached max grid points', 40), (-1, 'crossed Delta chi2 threshold', 12)]
+    notes = _coverage_notes(stops, lo=-0.5, hi=None, lo_at_bound=False, hi_at_bound=False)
+    assert len(notes) == 1 and 'upper side' in notes[0] and 'grid-point cap' in notes[0]
+
+
+def test_coverage_notes_silent_when_the_capped_side_still_closed():
+    # A direction that hit the cap but whose side DID cross (hi finite) is fully covered --
+    # no caveat needed.
+    stops = [(1, 'reached max grid points', 40)]
+    assert _coverage_notes(stops, lo=None, hi=2.0, lo_at_bound=False, hi_at_bound=False) == []
+
+
+# --------------------------------------------------------------------------- #
+# Profile-curve plots (matplotlib, an optional extra -- #467)
+# --------------------------------------------------------------------------- #
+class _StubVar:
+    """Minimal stand-in for a FreeParameter carrying just what the plotter reads:
+    ``name``, ``log_space``, and the ``u -> theta`` map."""
+
+    def __init__(self, name, log_space=False):
+        self.name = name
+        self.log_space = log_space
+
+    def from_sampling_space(self, u):
+        return 10.0 ** u if self.log_space else u
+
+
+def _plot_summary():
+    """A three-panel summary exercising each panel branch: an identifiable parameter (finite
+    two-sided CI), a practically non-identifiable one (open upper CI), and one with no finite
+    profile points (the empty-panel fallback)."""
+    u = np.linspace(-1.5, 1.5, 31)
+    ident = {
+        'name': 'k', 'best': 0.0, 'ci_low': -0.7, 'ci_high': 0.7,
+        'lo_at_bound': False, 'hi_at_bound': False, 'classification': 'identifiable',
+        'notes': [], 'u': u, 'dchi2': u ** 2, 'success': np.ones_like(u, dtype=bool),
+    }
+    practical = {
+        'name': 'S0', 'best': 0.0, 'ci_low': -0.7, 'ci_high': None,
+        'lo_at_bound': False, 'hi_at_bound': False,
+        'classification': 'practically non-identifiable', 'notes': ['upper side stopped'],
+        'u': u, 'dchi2': np.maximum(u, 0.0) ** 2, 'success': np.ones_like(u, dtype=bool),
+    }
+    empty = {
+        'name': 'kf', 'best': 1.0, 'ci_low': None, 'ci_high': None,
+        'lo_at_bound': False, 'hi_at_bound': False,
+        'classification': 'practically non-identifiable', 'notes': [],
+        'u': np.array([0.0, 0.1]), 'dchi2': np.array([np.inf, np.inf]),
+        'success': np.array([False, False]),
+    }
+    return [ident, practical, empty]
+
+
+def test_render_profile_plots_writes_a_png(tmp_path):
+    pytest.importorskip('matplotlib')
+    path = str(tmp_path / 'profile_likelihood.png')
+    variables = [_StubVar('k'), _StubVar('S0', log_space=True), _StubVar('kf')]
+    ok = _render_profile_plots(path, _plot_summary(), variables,
+                               threshold=3.841458820694124, confidence=0.95)
+    assert ok is True
+    assert Path(path).is_file() and Path(path).stat().st_size > 0
+    with open(path, 'rb') as f:
+        assert f.read(8) == b'\x89PNG\r\n\x1a\n'   # a real PNG, not an empty/renamed file
+
+
+def test_render_profile_plots_fails_soft_without_matplotlib(tmp_path, monkeypatch):
+    # With matplotlib un-importable, the plotter returns False (the caller keeps the text
+    # artifacts and reports the skip) rather than raising -- plots are strictly optional.
+    import sys
+    monkeypatch.setitem(sys.modules, 'matplotlib', None)
+    path = str(tmp_path / 'profile_likelihood.png')
+    ok = _render_profile_plots(path, _plot_summary(), [_StubVar('k'), _StubVar('S0'),
+                               _StubVar('kf')], threshold=3.84, confidence=0.95)
+    assert ok is False
+    assert not Path(path).exists()
+
+
+# --------------------------------------------------------------------------- #
 # _ProfileTrack driven offline against an analytic linear-Gaussian model
 # --------------------------------------------------------------------------- #
 def _linear_gaussian(A, y):
@@ -160,7 +247,7 @@ def _linear_gaussian(A, y):
 
 def _run_track(track, A, y, names):
     """Drive a track to termination, feeding it synthetic GradientResults, and return the
-    (fixed_u, cost) grid points it recorded."""
+    (fixed_u, cost, theta_free, nfev, success) grid points it recorded."""
     A = np.asarray(A, dtype=float)
     u = track.start()
     guard = 0
@@ -193,7 +280,7 @@ def _profile_param(A, y, theta_star, f_min, idx, lower, upper, threshold, names,
             step=0.05, min_step=1e-3, max_step=0.5, dchi2_target=threshold / 10.0,
             threshold=threshold, max_points=400, reopt_max_iterations=100,
             grad_tol=1e-10, step_tol=1e-12, runner_kind=runner_kind)
-        for fu, c in _run_track(track, A, y, names):
+        for fu, c, _theta_free, _nfev, _success in _run_track(track, A, y, names):
             fixed_u.append(fu)
             cost.append(c)
     u = np.array(fixed_u)
@@ -229,8 +316,38 @@ def test_profile_track_pickles_mid_walk(runner_kind):
         if u is None:
             break
     restored = pickle.loads(pickle.dumps(track))
-    assert restored.points == track.points
+    # points are (fixed_u, cost, theta_free, nfev, success) -- compare field by field, since
+    # the theta_free element is a numpy array (a bare tuple == would be ambiguous).
+    assert len(restored.points) == len(track.points)
+    for pr, pt in zip(restored.points, track.points):
+        assert pr[0] == pt[0] and pr[1] == pt[1]
+        assert np.array_equal(pr[2], pt[2])
+        assert pr[3] == pt[3] and pr[4] == pt[4]
     assert restored.fixed_u == track.fixed_u
+
+
+def test_track_records_per_point_theta_nfev_success():
+    """Each recorded grid point carries the state #467 persists for resume/analysis: the
+    re-optimized free coordinates, the inner iteration count, and a convergence flag. On the
+    exactly-quadratic linear-Gaussian objective the reduced TRF re-optimization converges at
+    every point, so every ``success`` is True and every ``theta_free`` has the free
+    dimension."""
+    A = np.array([[1.0, 0.2], [0.1, 1.0], [0.4, 0.3], [0.0, 0.7]])
+    y = np.array([1.0, 2.0, 0.5, 1.5])
+    theta_star, f_min, _ = _linear_gaussian(A, y)
+    names = ['p0', 'p1']
+    track = _ProfileTrack(
+        0, 1, theta_star, theta_star - 10.0, theta_star + 10.0,
+        np.array([theta_star[1]]), f_min, step=0.05, min_step=1e-3, max_step=0.5,
+        dchi2_target=_chi2_quantile_1dof(0.95) / 10.0, threshold=_chi2_quantile_1dof(0.95),
+        max_points=400, reopt_max_iterations=100, grad_tol=1e-10, step_tol=1e-12)
+    points = _run_track(track, A, y, names)
+    assert points, 'the track recorded at least one grid point'
+    for fixed_u, cost, theta_free, nfev, success in points:
+        assert isinstance(theta_free, np.ndarray) and theta_free.shape == (1,)  # one free coord
+        assert isinstance(nfev, int) and nfev >= 0
+        assert success is True         # a quadratic re-opt always converges before its cap
+        assert np.isfinite(cost) and np.isfinite(fixed_u)
 
 
 def test_track_recovers_the_analytic_ci_on_an_identifiable_2d_model():
@@ -343,6 +460,247 @@ def test_track_reports_an_open_ci_at_a_bound_without_clamping_silently():
 
 
 # --------------------------------------------------------------------------- #
+# Cross-parameter parallel orchestration + resume, driven offline (#467)
+#
+# The optimizer's parallel driver (the phase machine that farms directional tracks across
+# the scheduler and routes results back by PSet name) is exercised WITHOUT bngsim by
+# subclassing it over the analytic linear-Gaussian model: real _begin_profiling /
+# _fill_tracks / _profile_got / _merge_track / _finalize, with only the three model-coupled
+# seams (gradient_at + the u<->PSet plumbing) overridden. Everything is picklable (module-
+# level classes, no lambdas), so the same harness proves backup/resume mid-profiling.
+# --------------------------------------------------------------------------- #
+class _UPoint:
+    """A picklable stand-in for both an evaluated PSet and its Result: a named point that
+    carries its ``u``-vector and (once scored) its objective."""
+
+    def __init__(self, name, u):
+        self.name = name
+        self.u = np.asarray(u, dtype=float)
+        self.score = None
+
+    @property
+    def pset(self):
+        return self
+
+
+class _LinVar:
+    """A linear-scale bounded free-variable stub (identity sampling space)."""
+
+    def __init__(self, name, lo, hi):
+        self.name = name
+        self.bounded = True
+        self.lower_bound = float(lo)
+        self.upper_bound = float(hi)
+        self.log_space = False
+
+    def to_sampling_space(self, x):
+        return x
+
+    def from_sampling_space(self, u):
+        return u
+
+
+class _LinTrajectory:
+    """A trajectory stub returning the known analytic optimum + minimum objective."""
+
+    def __init__(self, theta_star, f_min, names):
+        self._theta = {n: float(t) for n, t in zip(names, theta_star)}
+        self._f = float(f_min)
+
+    def best_score(self):
+        return self._f
+
+    def best_fit(self):
+        return self._theta
+
+
+class _OfflineProfileAlg(ProfileLikelihoodAlgorithm):
+    """``ProfileLikelihoodAlgorithm`` wired to the analytic ``F = 1/2||A theta - y||**2``
+    model, bypassing the bngsim gradient path so the parallel profiling orchestration runs
+    offline and deterministically. Only the model-coupled seams are overridden."""
+
+    def __init__(self, A, y, theta_star, f_min, lower, upper, names, res_dir,
+                 max_parallel=0):
+        self.A = np.asarray(A, dtype=float)
+        self.y = np.asarray(y, dtype=float)
+        self.variables = [_LinVar(n, lo, hi) for n, lo, hi in zip(names, lower, upper)]
+        self.n = len(names)
+        self._u_lower = np.asarray(lower, dtype=float)
+        self._u_upper = np.asarray(upper, dtype=float)
+        self.refine = False
+        # Kept picklable so __setstate__ can rebuild the (non-pickled) trajectory on resume,
+        # standing in for the base's reload of sorted_params_backup.txt.
+        self._theta_star = np.asarray(theta_star, dtype=float)
+        self._f_min = float(f_min)
+        self._names = list(names)
+        self.trajectory = _LinTrajectory(theta_star, f_min, names)
+        self.fit_type = 'profile_likelihood'
+        self.confidence = 0.95
+        self.threshold = _chi2_quantile_1dof(0.95)
+        self.pl_step, self.pl_min_step, self.pl_max_step = 0.05, 1e-3, 0.5
+        self.pl_dchi2_target = self.threshold / 10.0
+        self.pl_max_points = 400
+        self.pl_max_parallel = max_parallel
+        self.reopt_max_iterations = 100
+        self.grad_tol, self.step_tol = 1e-10, 1e-12
+        self.probe_counter = 0
+        self._runner_kind = 'trf'
+        self.res_dir = res_dir
+        self._profile_idxs = list(range(self.n))
+        self._profiles = {}
+        self._track_queue = []
+        self._active_tracks = {}
+        self.profile_summary = None
+        self.phase = 'profile'
+
+    def __setstate__(self, state):
+        # The base __getstate__ drops 'trajectory' (should_pickle); the real resume reloads
+        # it from the backup params file. Here we rebuild the analytic trajectory instead --
+        # everything else (_profiles / _active_tracks / _track_queue / the tracks) rode the
+        # pickle through the base's real filter, which is what this test proves.
+        self.__dict__.update(state)
+        self.trajectory = _LinTrajectory(self._theta_star, self._f_min, self._names)
+
+    def gradient_at(self, res):
+        r = self.A @ res.u - self.y
+        return GradientResult(residual=r, jacobian=self.A, gradient=self.A.T @ r,
+                              param_names=[v.name for v in self.variables],
+                              least_squares_exact=True)
+
+    def _pset_from_u(self, u, name=''):
+        return _UPoint(name, u)
+
+    def _u_from_pset(self, pset):
+        return np.asarray(pset.u, dtype=float)
+
+
+def _score(alg, p):
+    r = alg.A @ p.u - alg.y
+    return 0.5 * float(r @ r)
+
+
+def _pump(alg, work, steps=None):
+    """Drive the async run loop over a pending-PSet list (FIFO, emulating as_completed).
+    Returns ``(finished, max_inflight, evaluated)``: whether the run reached ``'STOP'``, the
+    peak number of simultaneously in-flight tracks observed, and the number of evaluations
+    consumed. Stops early after ``steps`` results (for the resume test) with the run live."""
+    max_inflight = len(alg._active_tracks)
+    done = 0
+    while work:
+        p = work.pop(0)
+        p.score = _score(alg, p)
+        decision = alg._profile_got(p)
+        done += 1
+        max_inflight = max(max_inflight, len(alg._active_tracks))
+        if decision == 'STOP':
+            return True, max_inflight, done
+        work.extend(decision)
+        if steps is not None and done >= steps:
+            return False, max_inflight, done
+    return True, max_inflight, done
+
+
+def _lin_model_2d():
+    A = np.array([[1.0, 0.2], [0.1, 1.0], [0.4, 0.3], [0.0, 0.7]])
+    y = np.array([1.0, 2.0, 0.5, 1.5])
+    theta_star, f_min, C = _linear_gaussian(A, y)
+    names = ['p0', 'p1']
+    lower = theta_star - 10.0
+    upper = theta_star + 10.0
+    return A, y, theta_star, f_min, C, names, lower, upper
+
+
+def _summary_cis(alg):
+    return {s['name']: (s['ci_low'], s['ci_high'], s['classification'])
+            for s in alg.profile_summary}
+
+
+def test_parallel_orchestration_runs_tracks_concurrently(tmp_path):
+    """The default (``max_parallel = 0``) farms every directional track at once: 2
+    parameters -> 4 tracks all launched by _begin_profiling, so multiple re-optimizations are
+    in flight simultaneously (the #467 deliverable). The recovered CIs still match the
+    closed-form linear-Gaussian answer -- concurrency changes scheduling, not results."""
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+    alg = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names, str(tmp_path))
+    assert alg._effective_parallel() == 4          # 2 params x 2 directions, uncapped
+    work = list(alg._begin_profiling(theta_star))
+    assert len(work) == 4 and len(alg._active_tracks) == 4   # all four launched at once
+    finished, max_inflight, _ = _pump(alg, work)
+    assert finished and max_inflight >= 2          # genuinely concurrent, not serialized
+    thr = _chi2_quantile_1dof(0.95)
+    for idx, name in enumerate(names):
+        lo, hi, klass = _summary_cis(alg)[name]
+        half = np.sqrt(thr * C[idx, idx])
+        assert klass == 'identifiable'
+        assert lo == pytest.approx(theta_star[idx] - half, rel=3e-2)
+        assert hi == pytest.approx(theta_star[idx] + half, rel=3e-2)
+    # The deliverable artifacts landed in Results/.
+    assert (tmp_path / 'profile_likelihood_summary.txt').is_file()
+    assert (tmp_path / 'profile_p0.txt').is_file() and (tmp_path / 'profile_p1.txt').is_file()
+
+
+def test_max_parallel_cap_serializes_without_truncating_coverage(tmp_path):
+    """A cap only limits concurrency -- the excess tracks queue and run as slots free, never
+    dropped -- so a fully serial (cap = 1) run visits every track and yields byte-identical
+    CIs to the fully-parallel run. Proves the cap never silently truncates coverage (#467)."""
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+    par = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names,
+                             str(tmp_path / 'par'), max_parallel=0)
+    os.makedirs(tmp_path / 'par'); os.makedirs(tmp_path / 'ser')
+    _pump(par, list(par._begin_profiling(theta_star)))
+
+    ser = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names,
+                             str(tmp_path / 'ser'), max_parallel=1)
+    assert ser._effective_parallel() == 1
+    work = list(ser._begin_profiling(theta_star))
+    assert len(work) == 1 and len(ser._active_tracks) == 1   # only one at a time
+    finished, max_inflight, _ = _pump(ser, work)
+    assert finished and max_inflight == 1                     # never more than one in flight
+    assert _summary_cis(ser) == _summary_cis(par)             # identical coverage + CIs
+
+
+def test_resume_after_pickle_midway_completes_without_recompute(tmp_path):
+    """The whole optimizer -- finished tracks in ``_profiles``, in-flight tracks in
+    ``_active_tracks``, the pending PSet queue -- pickles mid-profiling and resumes, exactly
+    how PyBNF's backup/resume re-enters ``run(resume=...)``. The resumed run re-submits only
+    the in-flight PSets and never recomputes a finished track, reaching the same CIs as a
+    straight run."""
+    import pickle
+    A, y, theta_star, f_min, C, names, lower, upper = _lin_model_2d()
+
+    straight = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names,
+                                  str(tmp_path / 'straight'))
+    os.makedirs(tmp_path / 'straight')
+    _, _, n_straight = _pump(straight, list(straight._begin_profiling(theta_star)))
+    expected = _summary_cis(straight)
+
+    alg = _OfflineProfileAlg(A, y, theta_star, f_min, lower, upper, names,
+                             str(tmp_path / 'resumed'))
+    os.makedirs(tmp_path / 'resumed')
+    work = list(alg._begin_profiling(theta_star))
+    _, _, n_partial = _pump(alg, work, steps=20)     # partial run, still live
+    assert alg._active_tracks or alg._track_queue    # the run is not yet finished
+    # In-flight tracks hold real, un-merged progress that must survive the pickle.
+    inflight_points = sum(len(tr.points) for _, tr in alg._active_tracks.values())
+    assert inflight_points > 0
+
+    # Backup: pickle (algorithm, pending PSets) through the base's real __getstate__ filter
+    # (drops the trajectory, keeps _profiles / _active_tracks / _track_queue), exactly as
+    # Algorithm.backup pickles (self, pending_psets).
+    restored, restored_work = pickle.loads(pickle.dumps((alg, work)))
+    del alg, work
+    restored_inflight = sum(len(tr.points) for _, tr in restored._active_tracks.values())
+    assert restored_inflight == inflight_points      # in-flight progress rode the pickle
+
+    finished, _, n_resume = _pump(restored, list(restored_work))
+    assert finished
+    # No finished point is recomputed and none is skipped: the pause + resume evaluates
+    # exactly as many points as the straight run, and lands on the same CIs.
+    assert n_partial + n_resume == n_straight
+    assert _summary_cis(restored) == expected
+
+
+# --------------------------------------------------------------------------- #
 # End-to-end through the real bngsim forward-sensitivity path (recovery tier)
 # --------------------------------------------------------------------------- #
 @pytest.mark.bngsim
@@ -385,10 +743,29 @@ def test_profile_likelihood_recovers_identifiable_cis(tmp_path, monkeypatch):
         assert s['ci_low'] < s['best'] < s['ci_high']
         assert s['ci_low'] < truth < s['ci_high']
 
-    # The deliverable text outputs land in Results/.
+    # The deliverable text outputs land in Results/, now carrying the #467 richer state:
+    # the curve files report per-point nfev + success, and the summary a notes column.
     res = Path(conf.config['output_dir']) / 'Results'
     assert (res / 'profile_likelihood_summary.txt').is_file()
     assert (res / 'profile_k.txt').is_file() and (res / 'profile_S0.txt').is_file()
+    assert '\tnfev\tsuccess' in (res / 'profile_k.txt').read_text().splitlines()[0]
+    assert '\tnotes' in (res / 'profile_likelihood_summary.txt').read_text().splitlines()[1]
+
+    # The persisted per-point state #467 adds (rides the backup pickle for resume).
+    for name in ('k', 'S0'):
+        prof = alg._profiles[name]
+        assert set(prof) >= {'fixed_u', 'cost', 'nfev', 'success', 'theta_opt'}
+        assert len(prof['theta_opt']) == len(prof['cost'])
+        assert all(v.shape == (len(alg.variables),) for v in prof['theta_opt'])
+
+    # The profile plots (matplotlib is an optional extra -- only assert when it is present;
+    # a bare env legitimately skips them and writes only the text artifacts).
+    try:
+        import matplotlib  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        assert (res / 'profile_likelihood.png').is_file()
 
 
 @pytest.mark.bngsim

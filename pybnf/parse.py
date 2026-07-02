@@ -39,9 +39,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # HMC (job_type = hmc, ADR-0059): per-chain warmup/draw counts.
                'num_warmup', 'num_samples',
                # profile likelihood (job_type = profile_likelihood, #446/#466): the polish
-               # budget, the per-direction grid-point cap, and the per-point re-opt cap.
+               # budget, the per-direction grid-point cap, the per-point re-opt cap, and the
+               # cross-parameter parallel-track cap (#467).
                'profile_likelihood_max_iterations', 'profile_likelihood_max_points',
-               'profile_likelihood_reopt_max_iterations',
+               'profile_likelihood_reopt_max_iterations', 'profile_likelihood_max_parallel',
                # gradient optimizers (fit_type = trf / lbfgs, #386): the int-valued
                # tunables -- L-BFGS-B's curvature-history depth and the two cycle
                # budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
