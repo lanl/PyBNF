@@ -1,0 +1,48 @@
+# =============================================================================
+#  Two-reporter chain      A --k1--> B --k2--> C     (measure A and C)
+# =============================================================================
+#  A three-species chain measured through TWO reporters with different quality:
+#
+#    * Obs_A (the A reporter) is clean and well-behaved -- and since
+#      A(t) = A0*exp(-k1 t) depends on k1 alone, it pins k1 down tightly.
+#    * Obs_C (the C reporter) is where k2 hides (C rises only as fast as the
+#      B->C step lets it) -- but this reporter is noisy and prone to OUTLIERS.
+#
+#  So the two parameters lean on two different reporters, and the reporters have
+#  different noise. That is exactly the situation the PER-OBSERVABLE noise surface
+#  is for: give each observable the noise model it deserves (see the confs).
+#
+#  Intermediate B is not observed; A0 is fixed/known.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k1   0.8    # A -> B rate   [1/day]   <- FITTED (constrained by clean Obs_A)
+    k2   0.25   # B -> C rate   [1/day]   <- FITTED (constrained by noisy Obs_C)
+    A0   100    # initial A     [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+    C()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  0
+    C()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_C  C()
+  end observables
+
+  begin reaction rules
+    A_to_B: A() -> B()  k1
+    B_to_C: B() -> C()  k2
+  end reaction rules
+
+end model

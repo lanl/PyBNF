@@ -30,8 +30,8 @@ class Dataset:
     noise_seed: int = 0
     sd: float = None          # emit a constant _SD column at this value (independent of the
                               # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
-    outliers: tuple = ()      # ((row_index, replacement_value), ...): gross outliers spliced
-                              # into the FIRST observable column (deterministic contamination)
+    outliers: tuple = ()      # ((row_index, obs_name, replacement_value), ...): gross outliers
+                              # spliced into the named observable column (deterministic contamination)
     scan: str = None          # if set, an independent-variable column name (dose-response)
     doses: tuple = ()         # explicit scan values for `scan` -- a steady-state parameter_scan
                               # dataset (the .exp rows ARE the doses; no time grid, ADR-0046)
@@ -210,6 +210,28 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='10_per_observable_noise',
+        model='two_reporter.bngl',
+        truth={'k1': 0.8, 'k2': 0.25},
+        build_free={'k1': ('uniform_var', 0.05, 3.0), 'k2': ('uniform_var', 0.02, 2.0)},
+        datasets=(
+            # Two readouts: Obs_A (clean, pins k1) and Obs_C (three gross outliers,
+            # the only handle on k2). Both carry a constant _SD column.
+            Dataset('reporters.exp', obs=('Obs_A', 'Obs_C'), t_end=20, n_points=21,
+                    sd=3.0, outliers=((3, 'Obs_C', 5.0), (7, 'Obs_C', 75.0),
+                                      (11, 'Obs_C', 15.0))),
+        ),
+        confs=(
+            # Per-observable noise: Obs_A Gaussian, Obs_C Laplace -> robust exactly
+            # where the outliers are; both rates recovered.
+            ConfCheck('per_observable.conf', recover={'k1': 0.8, 'k2': 0.25}, tol=0.03),
+            # One Gaussian model for both observables: Obs_C's outliers drag k2
+            # (clean Obs_A still pins k1) -- at least 10% off.
+            ConfCheck('both_gaussian.conf', recover={'k1': 0.8, 'k2': 0.25},
+                      dragged_min_err=0.10),
+        ),
+    ),
+    Example(
         folder='09_experiment_design',
         model='inducible_gene.bngl',
         truth={'k_deg': 2.0},
@@ -240,7 +262,8 @@ EXAMPLES = (
             # A clean decay curve with three gross outliers spliced in, plus a
             # constant _SD column (assumed measurement error) for chi_sq/laplace.
             Dataset('contaminated_decay.exp', obs=('Obs_A',), t_end=10, n_points=21,
-                    sd=3.0, outliers=((4, 90.0), (12, 55.0), (16, 40.0))),
+                    sd=3.0, outliers=((4, 'Obs_A', 90.0), (12, 'Obs_A', 55.0),
+                                      (16, 'Obs_A', 40.0))),
         ),
         confs=(
             # A heavy-tailed Laplace noise model shrugs the outliers off and

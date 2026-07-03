@@ -118,7 +118,7 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
     swept parameter name for a dose-response scan). Beyond the obs columns, two
     optional corruptions support the noise/robust lessons: gaussian ``noise_sd``
     (added to every point, seeded), and explicit ``outliers`` -- ``(row_index,
-    replacement_value)`` pairs spliced into the FIRST observable column
+    obs_name, replacement_value)`` triples spliced into the named observable column
     (deterministic gross errors). A ``_SD`` column is written per observable when
     either ``sd`` (a constant, independent of the gaussian noise) or ``noise_sd`` is
     set, so chi_sq / laplace have a per-point scale to weight by.
@@ -130,8 +130,8 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
         rng = np.random.default_rng(noise_seed)
         for j in range(1, rows.shape[1]):
             rows[:, j] = rows[:, j] + rng.normal(0.0, noise_sd, size=rows.shape[0])
-    for row_index, value in outliers:
-        rows[row_index, 1] = value      # column 1 == the first observable
+    for row_index, obs_name, value in outliers:
+        rows[row_index, 1 + list(obs).index(obs_name)] = value   # col 0 is the indvar
     sd_value = sd if sd is not None else (noise_sd if noise_sd > 0 else None)
     if sd_value is not None:
         header += [o + '_SD' for o in obs]
