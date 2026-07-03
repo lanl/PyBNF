@@ -525,6 +525,34 @@ class TestChainRngSpawn:
         # Distinct from the main fit's chains.
         assert boot_first != main_first
 
+    def test_bootstrap_retry_draws_a_fresh_substream(self):
+        """A retried replicate (bootstrap_attempt > 0) reseeds to a *different*
+        sub-stream, so the retry resamples afresh instead of repeating the identical
+        failing run -- while the first attempt (attempt == 0) stays byte-identical to
+        the historical replicate-only seeding.
+
+        Regression for the deterministic-retry bug: reset() keyed the seed only on the
+        replicate number, so every one of the 20 retries regenerated the same resample
+        and fit and the loop could never make progress (lanl/PyBNF bootstrap abort)."""
+        def boot_stream(attempt):
+            algo, _ = _make_dream(seed=99)
+            algo.bootstrap_attempt = attempt
+            algo.reset(bootstrap=0)
+            # algo.rng is the root Generator gen_bootstrap_weights() resamples from.
+            return [algo.rng.random() for _ in range(5)]
+
+        first = boot_stream(0)
+        # attempt == 0 reproduces the historical (attribute-unset) seeding exactly.
+        algo_hist, _ = _make_dream(seed=99)
+        algo_hist.reset(bootstrap=0)
+        assert first == [algo_hist.rng.random() for _ in range(5)]
+        # Each retry draws a distinct stream (from attempt 0 and from each other).
+        retry1 = boot_stream(1)
+        retry2 = boot_stream(2)
+        assert first != retry1 != retry2 and first != retry2
+        # ...yet each attempt is itself reproducible from the run seed.
+        assert retry1 == boot_stream(1)
+
 
 class TestResultOrderDependence:
     """

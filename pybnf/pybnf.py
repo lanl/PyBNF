@@ -307,6 +307,18 @@ def _refine_best_fit(config, alg, cluster, debug):
     refiner = refiner_cls(config, refine=True)
     refiner.model_list = alg.model_list  # Reuse already-generated networks
     refiner.trajectory = alg.trajectory  # Reuse existing trajectory; don't start a new one.
+    if alg.bootstrap_number is not None:
+        # During bootstrapping the replicate's fit wrote to per-replicate working dirs
+        # (Simulations-boot{N} etc.) that alg.reset(bootstrap=N) (re)creates for every
+        # replicate and retry, so point the refiner at those same, existing dirs.
+        # Otherwise it defaults to the shared output_dir/Simulations, which the *main*
+        # fit's own refinement already deleted at teardown (it is a leaf Simplex run).
+        # Every replicate refine then tries os.mkdir under that missing parent; the
+        # FileNotFoundError reads as OSError, which the job's mkdir-retry loop treats as
+        # a name collision and walks to _rerun999 before giving up -> FailedSimulation.
+        # The whole refine then scores inf and never polishes the replicate's fit.
+        refiner.sim_dir = alg.sim_dir
+        refiner.failed_logs_dir = alg.failed_logs_dir
     refiner.run(cluster.client, debug=debug)
 
 
@@ -363,6 +375,13 @@ def _run_bootstrapping(config, alg, cluster, debug):
     # Run bootstrapping
     consec_failed_bootstrap_runs = 0
     while completed_bootstrap_runs < num_to_bootstrap:
+        # A rejected replicate is retried with a *fresh* resample: bumping the retry
+        # count advances the RNG sub-stream reset() derives. Without it, reset() keys
+        # the seed only on the (unchanged) replicate number, so every retry regenerates
+        # the identical resample and identical fit -- the 20 "retries" are byte-for-byte
+        # the same failing run, and the loop can never make progress. The first attempt
+        # (the common case) is byte-identical to the historical seeding.
+        alg.bootstrap_attempt = consec_failed_bootstrap_runs
         alg.reset(bootstrap=completed_bootstrap_runs)
 
         for model in alg.exp_data:
@@ -379,10 +398,16 @@ def _run_bootstrapping(config, alg, cluster, debug):
         _refine_best_fit(config, alg, cluster, debug)
 
         best_fit_pset = alg.trajectory.best_fit()
+        # Gate (and record) on the trajectory's best score, which reflects the refine
+        # polish above (the refiner shares alg.trajectory). alg.best_fit_obj is the
+        # *pre*-refine value the fit algorithm stopped at, so using it here would reject
+        # a replicate the polish already brought under the threshold -- and pair the
+        # recorded (refined) pset with a stale, larger objective.
+        best_fit_obj = alg.trajectory.best_score()
 
-        if alg.best_fit_obj <= bootstrap_max_obj:
+        if best_fit_obj <= bootstrap_max_obj:
             logger.info(f'Bootstrap run {completed_bootstrap_runs} complete')
-            bootstrapped_psets.add(best_fit_pset, alg.best_fit_obj, f'bootstrap_run_{completed_bootstrap_runs}',
+            bootstrapped_psets.add(best_fit_pset, best_fit_obj, f'bootstrap_run_{completed_bootstrap_runs}',
                                    bootstrap_file,
                                    completed_bootstrap_runs == 0)
             completed_bootstrap_runs += 1

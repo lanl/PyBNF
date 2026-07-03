@@ -144,6 +144,10 @@ class Algorithm(ABC):
         self.model_list = self._initialize_models()
 
         self.bootstrap_number = None
+        # Retry counter for the current bootstrap replicate (0 on the first attempt).
+        # _run_bootstrapping bumps it before re-resetting a rejected replicate so reset()
+        # advances the RNG sub-stream and the retry resamples afresh (see reset()).
+        self.bootstrap_attempt = 0
         self.best_fit_obj = None
         self.calc_future = None  # Created during Algorithm.run()
         self.models_future = None  # Scattered model_list Future; created during Algorithm.run()
@@ -201,6 +205,12 @@ class Algorithm(ABC):
         :param bootstrap: The bootstrap number (None if not bootstrapping)
         :type bootstrap: int or None
         :return:
+
+        A rejected bootstrap replicate (objective over ``bootstrap_max_obj``) is retried
+        with :attr:`bootstrap_attempt` incremented by the caller; that advances the RNG
+        sub-stream so the retry draws a *fresh* resample and fit rather than repeating the
+        identical failing run. ``bootstrap_attempt == 0`` (the first try, and every
+        non-bootstrap reset) reproduces the historical replicate-only seeding byte for byte.
         """
         logger.info('Resetting Algorithm for another run')
         self.trajectory = Trajectory(self.config.config['num_to_output'])
@@ -225,10 +235,14 @@ class Algorithm(ABC):
                 os.mkdir(boot_dir)
 
             # Give this bootstrap replicate an independent, deterministic RNG
-            # sub-stream (keyed by the replicate number) so the replicate's fit --
-            # and its resampled data weights -- are reproducible from the run seed
-            # yet distinct from the main fit and from every other replicate.
-            self._reseed(np.random.SeedSequence(self._base_seed, spawn_key=(bootstrap + 1,)))
+            # sub-stream (keyed by the replicate number, plus the retry counter so a
+            # retried replicate resamples afresh) so the replicate's fit -- and its
+            # resampled data weights -- are reproducible from the run seed yet distinct
+            # from the main fit and from every other replicate/retry. The first attempt
+            # keeps the historical replicate-only spawn key for backward compatibility.
+            attempt = self.bootstrap_attempt
+            spawn_key = (bootstrap + 1,) if attempt == 0 else (bootstrap + 1, attempt)
+            self._reseed(np.random.SeedSequence(self._base_seed, spawn_key=spawn_key))
             self._rebuild_chain_rngs()
 
         self.best_fit_obj = None
