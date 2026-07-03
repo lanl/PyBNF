@@ -28,7 +28,7 @@ Results land in `output/` inside the lesson folder.
 | 1 | [`01_logistic_growth`](01_logistic_growth) | your first fit; the edition-2 config surface | gradient least-squares (`trf`) |
 | 2 | [`02_bateman_chain`](02_bateman_chain) | fitting several observables at once | differential evolution (`de`), multi-observable |
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
-| 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused*, and why | gradient-refusal on non-smooth (`if()`) models |
+| 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 
 *(More lessons — profile likelihood, bootstrapping, Bayesian sampling,

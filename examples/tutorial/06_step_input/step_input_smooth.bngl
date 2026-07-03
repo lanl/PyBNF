@@ -1,0 +1,64 @@
+# =============================================================================
+#  A gradient-friendly step:  dX/dt = J(t) - k*X, with J a SMOOTH step
+# =============================================================================
+#  step_input.bngl used a hard `if(t < tau, ...)` step, which the gradient
+#  optimizers refuse (bngsim cannot differentiate `if()`). Here we model the same
+#  physics with a SMOOTH, differentiable approximation of the step -- a logistic
+#  sigmoid -- so the fit becomes gradient-friendly:
+#
+#        J(t) = J_base + J_step * sigma( s_sharp * (t - tau) )
+#        sigma(x) = 1 / (1 + exp(-x))          (smooth, C-infinity, needs only exp)
+#
+#  s_sharp sets how abrupt the transition is, and it is a genuine trade-off:
+#    * larger  -> closer to a true step, but a stiffer ODE and steeper parameter
+#                 sensitivities near t = tau (the numerical price of sharpness);
+#    * smaller -> a gentler, easier-to-fit transition that is less step-like.
+#  Because data rarely pins down *how* sharp the switch is, s_sharp is normally a
+#  fixed MODELING ASSUMPTION, not a fitted parameter.
+#
+#  The pay-off: everything is now differentiable, so a gradient fit can recover
+#  not just the rates but the TRANSITION TIME tau itself -- which the hard-`if()`
+#  model can never expose to a gradient.
+#
+#  Other smooth-step choices exist (tanh, arctan, a Gaussian CDF/erf, a Hermite
+#  "smoothstep"); the logistic sigmoid here is the simplest that stays C-infinity.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k        0.6    # first-order decay rate            [1/day]     <- FITTED
+    J_base   1.2    # baseline input                    [AU/day]    <- FITTED
+    J_step   2.4    # step increase                     [AU/day]    <- FITTED
+    tau      4.0    # transition time                   [day]       <- FITTED (now differentiable!)
+    s_sharp  6.0    # transition sharpness              [1/day]     (fixed modeling choice)
+    X0       0.5    # initial amount                    [AU]        (fixed/known)
+  end parameters
+
+  begin molecule types
+    X()
+    Clock()
+  end molecule types
+
+  begin seed species
+    X()      X0
+    Clock()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_X  X()
+    Molecules  t      Clock()
+  end observables
+
+  begin functions
+    # Smooth (logistic-sigmoid) step: differentiable everywhere, unlike if().
+    Input_X()  = J_base + J_step/(1 + exp(-s_sharp*(t - tau)))
+  end functions
+
+  begin reaction rules
+    clock:  0   -> Clock()  1.0        # dt/dt = 1  (carries time into Input_X)
+    input:  0   -> X()      Input_X()  # dX/dt += J(t)
+    decay:  X() -> 0        k          # dX/dt -= k*X
+  end reaction rules
+
+end model

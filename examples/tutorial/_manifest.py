@@ -112,6 +112,25 @@ EXAMPLES = (
                       note='piecewise input -> gradient optimizer must refuse'),
         ),
     ),
+    Example(
+        folder='06_step_input',
+        model='step_input_smooth.bngl',
+        truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4, 'tau': 4.0},
+        build_free={'k': ('uniform_var', 0.1, 3.0),
+                    'J_base': ('uniform_var', 0.1, 5.0),
+                    'J_step': ('uniform_var', 0.1, 6.0),
+                    'tau': ('uniform_var', 1.0, 8.0)},
+        datasets=(
+            Dataset('step_input_smooth.exp', obs=('Obs_X',), t_end=12, n_points=25),
+        ),
+        confs=(
+            # The smooth sigmoid step IS differentiable -> trf fits it, and even
+            # recovers the transition time tau (impossible for the hard if()).
+            ConfCheck('step_input_smooth_trf.conf',
+                      recover={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4, 'tau': 4.0},
+                      tol=0.03),
+        ),
+    ),
 )
 
 
