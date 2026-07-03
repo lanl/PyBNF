@@ -29,10 +29,11 @@ Results land in `output/` inside the lesson folder.
 | 2 | [`02_bateman_chain`](02_bateman_chain) | fitting several observables at once | differential evolution (`de`), multi-observable |
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused*, and why | gradient-refusal on non-smooth (`if()`) models |
+| 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 
 *(More lessons — profile likelihood, bootstrapping, Bayesian sampling,
-qualitative/BPSL constraints, per-observable noise, dose-response, and the PEtab
-v2 round-trip — are being added; numbering leaves room for them.)*
+qualitative/BPSL constraints, per-observable noise, dose-response — are being
+added; numbering leaves room for them.)*
 
 ## The edition-2 config surface, in one place
 
