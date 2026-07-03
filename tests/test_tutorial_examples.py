@@ -58,6 +58,8 @@ def _mode(cc):
         return 'refused'
     if cc.profile is not None:
         return 'profile'
+    if cc.max_obj is not None:
+        return 'constraint'
     return 'recover'
 
 
@@ -142,6 +144,42 @@ def test_tutorial_conf_recovers(example, confcheck, tmp_path):
         assert rel < confcheck.tol, (
             f'{example.folder}/{confcheck.conf}: {p} recovered {rec[p]:g}, '
             f'expected ~{true:g} ({rel * 100:.1f}% off > {confcheck.tol * 100:.0f}%)')
+
+
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('example, confcheck', _cases('constraint'))
+def test_tutorial_constraint_fit(example, confcheck, tmp_path):
+    """A fit to qualitative (BPSL .prop) data satisfies every constraint -- the
+    constraint-penalty objective floors at ~0."""
+    H.require_bng2pl()
+    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    alg = _build(conf, conf.config['fit_type'])
+    H.drive(alg)
+    if conf.config.get('refine'):
+        H.refine(alg, conf)
+    best = alg.trajectory.best_score()
+    assert best <= confcheck.max_obj, (
+        f'{example.folder}/{confcheck.conf}: best objective {best:g} > '
+        f'{confcheck.max_obj:g} (not all constraints satisfied)')
+
+
+def test_tutorial_model_check_reports_satisfaction(tmp_path, capsys):
+    """The `check` job_type (job_type = check) reports how many BPSL properties
+    the model satisfies, with no fitting. The logistic defaults satisfy all four."""
+    from pybnf.algorithms.model_check import ModelCheck
+    H.require_bng2pl()
+    example = _manifest.example_by_folder('01_logistic_growth')
+    check = _manifest.ConfCheck('logistic_growth_check.conf', recover={})
+    conf = _load_conf(example, check, tmp_path, seed=1234)
+    home = os.getcwd()
+    try:
+        mc = ModelCheck(conf)
+        os.makedirs(mc.sim_dir, exist_ok=True)
+        mc.run_check()
+    finally:
+        os.chdir(home)
+    out = capsys.readouterr().out
+    assert 'Satisfied 4 out of 4 constraints' in out, out
 
 
 @pytest.mark.usefixtures('_fakes')

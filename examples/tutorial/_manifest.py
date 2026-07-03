@@ -48,6 +48,7 @@ class ConfCheck:
     marker: str = 'default'    # 'default' (bngsim+newera) | 'slow' | 'jax'
     refused: bool = False      # True => a gradient fit that must be REFUSED, not run
     profile: dict = None       # {param: expected identifiability class} for profile_likelihood
+    max_obj: float = None      # constraint fit: assert best objective <= this (0 => all satisfied)
     note: str = ''
 
 
@@ -76,6 +77,9 @@ EXAMPLES = (
         ),
         confs=(
             ConfCheck('logistic_growth_trf.conf', recover={'r': 1.2, 'K': 100.0}, tol=0.02),
+            # Fit to qualitative (BPSL .prop) data only: a satisfying parameter set
+            # drives the constraint-penalty objective to ~0.
+            ConfCheck('logistic_growth_constraints.conf', recover={}, max_obj=1e-6),
         ),
     ),
     Example(

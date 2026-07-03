@@ -31,6 +31,30 @@ The fit drives the sum-of-squares objective to ~0 and lands on the true values
 `r = 1.2`, `K = 100` (the values the data was generated at). The best fit is
 written to `output/logistic_growth_trf/Results/`.
 
+## Bonus — fitting qualitative data, and model checking
+
+You don't always have a measured curve. Sometimes you only know *qualitative*
+facts: "it starts small, reaches capacity, never overshoots." PyBNF fits those
+directly, using its Biological Property Specification Language (BPSL).
+
+| File | What it is |
+| --- | --- |
+| [`logistic_growth.prop`](logistic_growth.prop) | four qualitative properties, in BPSL. |
+| [`logistic_growth_constraints.conf`](logistic_growth_constraints.conf) | **fit** to the properties alone (no numbers). |
+| [`logistic_growth_check.conf`](logistic_growth_check.conf) | **check** whether the model satisfies them (`job_type = check`). |
+
+```bash
+pybnf -c logistic_growth_constraints.conf   # finds r, K that satisfy every property
+pybnf -c logistic_growth_check.conf          # reports "Satisfied 4 out of 4 constraints"
+```
+
+- A **constraint-only experiment** uses `data: …prop` (not `.exp`) and a `t_end:`
+  (there's no measurement grid to borrow, so you say how long to integrate).
+- Each property becomes a penalty; a parameter set that satisfies all of them
+  scores **0**.
+- **`job_type = check`** doesn't fit — it evaluates the model as written and
+  counts satisfied properties. The complement of fitting.
+
 ## What to notice
 
 - **`edition = 2`** turns on the modern config surface — `model:`,

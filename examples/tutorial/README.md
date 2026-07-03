@@ -25,16 +25,16 @@ Results land in `output/` inside the lesson folder.
 
 | # | Folder | You learn… | Feature(s) |
 | --- | --- | --- | --- |
-| 1 | [`01_logistic_growth`](01_logistic_growth) | your first fit; the edition-2 config surface | gradient least-squares (`trf`) |
+| 1 | [`01_logistic_growth`](01_logistic_growth) | your first fit; **plus** fitting qualitative data + model checking | gradient least-squares (`trf`), **BPSL constraints**, `check` |
 | 2 | [`02_bateman_chain`](02_bateman_chain) | fitting several observables at once; **is each rate identifiable?** | differential evolution (`de`), multi-observable, **profile likelihood** |
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
 | 5 | [`05_noisy_decay`](05_noisy_decay) | uncertainty from resampling; noise-weighted fitting | `bootstrap`, `chi_sq` |
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 
-*(More lessons — Bayesian sampling (`slow` tier), qualitative/BPSL constraints,
-per-observable noise, dose-response — are being added; numbering leaves room for
-them.)*
+*(More lessons — Bayesian sampling (`slow` tier), per-observable noise,
+dose-response, and SBML/Antimony interop — are being added; numbering leaves room
+for them.)*
 
 ## The edition-2 config surface, in one place
 

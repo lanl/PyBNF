@@ -1,0 +1,24 @@
+# Qualitative data for the logistic model, in PyBNF's Biological Property
+# Specification Language (BPSL). Each line is a constraint the trajectory must
+# satisfy; a fit is penalized by how much it violates them (0 = all satisfied).
+#
+# Syntax:  <expr> <op> <expr>  <where>  [weight <w>]
+#   <where>:  at <indvar>=<value>   -- at one point
+#             always                -- at every output point
+#             once                  -- at least once
+#             between a=<v1>,a=<v2> -- over an interval
+#
+# These four encode what we qualitatively "know" about the population, without
+# any numeric measurements:
+
+# It starts small.
+Obs_N < 10 at time=0
+
+# It has passed the inflection (half of carrying capacity) by mid-run.
+Obs_N > 50 at time=4
+
+# It has essentially reached capacity by the end.
+Obs_N > 90 at time=8
+
+# It never overshoots its carrying capacity.
+Obs_N < 105 always
