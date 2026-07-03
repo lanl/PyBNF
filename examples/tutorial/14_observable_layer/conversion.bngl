@@ -1,0 +1,43 @@
+# =============================================================================
+#  Irreversible conversion      A --k--> B        (a one-step "reaction readout")
+# =============================================================================
+#  A converts to B at rate k, with total mass conserved (A + B = A0):
+#
+#        A(t) = A0 * exp(-k t)
+#        B(t) = A0 * (1 - exp(-k t))
+#
+#  The model reports the two species counts, Obs_A and Obs_B. This lesson never
+#  fits those raw counts directly -- instead it fits three different MEASUREMENT
+#  MODELS layered on top of them (a scaled readout, a fraction, a log-transform),
+#  each defined entirely in the .conf via an `observable: <id>, formula: <expr>`
+#  line. The model file itself only describes the biology.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k   0.7    # A -> B rate     [1/day]   <- FITTED
+    A0  10     # initial A       [AU]      (fixed/known)
+    B0  0      # initial B       [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  B0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_B  B()
+  end observables
+
+  begin reaction rules
+    convert: A() -> B()  k
+  end reaction rules
+
+end model

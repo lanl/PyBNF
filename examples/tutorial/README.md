@@ -32,6 +32,7 @@ Results land in `output/` inside the lesson folder.
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 | 13 | [`13_petab_lint_clinic`](13_petab_lint_clinic) | a gallery of broken problems — **watch the linter catch each mistake** | PEtab v2 lint tasks (`petab.v2.lint`) through the BNGL loader |
+| 14 | [`14_observable_layer`](14_observable_layer) | fit what the **instrument** reports, not the raw species — a scale, a ratio, a log | measurement models / `observableFormula` (ADR-0036) |
 
 *(More lessons — Bayesian sampling (`slow` tier), per-observable noise,
 dose-response, and SBML/Antimony interop — are being added; numbering leaves room
@@ -49,6 +50,7 @@ Every lesson uses these keys (see any `.conf` for the full commentary):
 | `job_type = …` | the algorithm: `trf`/`lbfgs` (gradient), `de`/`pso`/`ss`/… (metaheuristic), `am`/`dream`/… (Bayesian) |
 | `objective = sos` \| `chi_sq` | the fit metric (`chi_sq` when the data has `_SD` columns) |
 | `experiment: name, data: file.exp` | bind a named simulation to its data; the data's time column is the output grid |
+| `observable: id, formula: expr` | a measurement model — score a post-simulation formula over the outputs (Lesson 14) |
 | `uniform_var = p lo hi` | a free parameter, bound by name to model parameter `p`, searched in `[lo, hi]` |
 | `refine = 1` | polish the best fit with a local optimizer |
 

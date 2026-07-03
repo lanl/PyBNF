@@ -29,6 +29,25 @@ class Dataset:
     noise_sd: float = 0.0     # gaussian noise (absolute sd) added + written as _SD; 0 = clean
     noise_seed: int = 0
     scan: str = None          # if set, an independent-variable column name (dose-response)
+    measurements: tuple = ()  # derived measurement-model columns (ADR-0036); when set, the
+                              # .exp holds these columns, not the raw `obs` (which are only
+                              # simulated as inputs to the measurement formulas)
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """A derived measurement-model column (ADR-0036 ``observableFormula``) written
+    into a ``.exp`` instead of a raw model observable.
+
+    The data generator simulates the model's *raw* observables (the dataset's
+    ``obs``), then materializes ``formula`` over them -- with any observation-layer
+    ``nuisance`` at its true value -- to produce the column the fit actually scores.
+    Because the same measurement-layer code generates the data and evaluates the
+    fit, a correct fit recovers both the model rate and the nuisance exactly.
+    """
+    obs_id: str                  # derived column name (written to the .exp, scored)
+    formula: str                 # observableFormula over raw obs + nuisance symbols
+    nuisance: dict = field(default_factory=dict)  # {name: true_value}, absent from the model
 
 
 @dataclass(frozen=True)
@@ -177,6 +196,33 @@ EXAMPLES = (
         ),
         confs=(
             ConfCheck('gompertz_growth_pso.conf', recover={'r': 0.4, 'K': 100.0}, tol=0.05),
+        ),
+    ),
+    Example(
+        folder='14_observable_layer',
+        model='conversion.bngl',
+        truth={'k': 0.7},
+        build_free={'k': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # A scaled readout: the data is scale*Obs_B with a true scale of 2.0.
+            Dataset('conversion_scaling.exp', obs=('Obs_B',), t_end=8, n_points=17,
+                    measurements=(Measurement('obs_scaled', 'scale * Obs_B',
+                                              nuisance={'scale': 2.0}),)),
+            # A fraction/ratio readout (dimensionless, self-normalizing).
+            Dataset('conversion_ratio.exp', obs=('Obs_A', 'Obs_B'), t_end=8, n_points=17,
+                    measurements=(Measurement('obs_fracB', 'Obs_B / (Obs_A + Obs_B)'),)),
+            # A log-transformed readout (natural log; emphasizes the small-value tail).
+            Dataset('conversion_log.exp', obs=('Obs_A',), t_end=8, n_points=17,
+                    measurements=(Measurement('obs_logA', 'log(Obs_A)'),)),
+        ),
+        confs=(
+            # Scaling factor as an observation-layer nuisance (PEtab observableParameters):
+            # `scale` is declared only in the fit, never in the model, yet is recovered.
+            ConfCheck('conversion_scaling.conf', recover={'k': 0.7, 'scale': 2.0}, tol=0.03),
+            # A derived fraction the model never emits as a column -- built post-simulation.
+            ConfCheck('conversion_ratio.conf', recover={'k': 0.7}, tol=0.03),
+            # Fitting a transformed readout (log space).
+            ConfCheck('conversion_log.conf', recover={'k': 0.7}, tol=0.03),
         ),
     ),
     Example(

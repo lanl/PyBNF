@@ -69,6 +69,35 @@ def _simulate_truth(example, dataset):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _write_measurement_exp(path, cols, arr, dataset):
+    """Write a ``.exp`` of DERIVED measurement-model columns (ADR-0036).
+
+    The raw model observables in ``dataset.obs`` were just simulated; here we
+    materialize each ``dataset.measurements`` formula over them -- via the very
+    same :class:`~pybnf.measurement.MeasurementModel` the fit uses -- with any
+    observation-layer nuisance at its true value, and write those columns (not the
+    raw observables). Generating the data with the fit's own layer code is what
+    makes the recovery exact.
+    """
+    from pybnf.data import Data
+    from pybnf.measurement import MeasurementModel
+
+    names = [name for name, _ in sorted(cols.items(), key=lambda kv: kv[1])]
+    raw = Data.from_columns(np.asarray(arr, dtype=float), names)
+    time = raw['time']
+    header = ['time']
+    columns = [time]
+    for m in dataset.measurements:
+        allowed = set(dataset.obs) | set(m.nuisance)
+        col = MeasurementModel(m.obs_id, m.formula, allowed).materialize(raw, dict(m.nuisance))
+        header.append(m.obs_id)
+        columns.append(np.asarray(col, dtype=float))
+    lines = ['# ' + '\t'.join(header)]
+    for row in np.column_stack(columns):
+        lines.append('\t'.join('%.10g' % v for v in row))
+    Path(path).write_text('\n'.join(lines) + '\n')
+
+
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0):
     idx = [cols['time']] + [cols[o] for o in obs]
     header = ['time'] + list(obs)
@@ -89,11 +118,17 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0):
 def regenerate(example):
     for dataset in example.datasets:
         cols, arr = _simulate_truth(example, dataset)
-        _write_exp(example.path / dataset.exp, cols, arr, dataset.obs,
-                   dataset.noise_sd, dataset.noise_seed)
-        tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
-        print(f'  wrote {example.folder}/{dataset.exp}  '
-              f'[{len(arr)} pts, obs {dataset.obs}]{tag}')
+        if dataset.measurements:
+            _write_measurement_exp(example.path / dataset.exp, cols, arr, dataset)
+            derived = ', '.join(m.obs_id for m in dataset.measurements)
+            print(f'  wrote {example.folder}/{dataset.exp}  '
+                  f'[{len(arr)} pts, measurement-model: {derived}]')
+        else:
+            _write_exp(example.path / dataset.exp, cols, arr, dataset.obs,
+                       dataset.noise_sd, dataset.noise_seed)
+            tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
+            print(f'  wrote {example.folder}/{dataset.exp}  '
+                  f'[{len(arr)} pts, obs {dataset.obs}]{tag}')
 
 
 def main(argv):
