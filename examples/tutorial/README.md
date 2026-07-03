@@ -25,7 +25,7 @@ Results land in `output/` inside the lesson folder.
 
 | # | Folder | You learn… | Feature(s) |
 | --- | --- | --- | --- |
-| 1 | [`01_logistic_growth`](01_logistic_growth) | your first fit; **plus** fitting qualitative data + model checking | gradient least-squares (`trf`), **BPSL constraints**, `check` |
+| 1 | [`01_logistic_growth`](01_logistic_growth) | your first fit; **plus** two gradient methods, fitting qualitative data + model checking | gradient least-squares (`trf`) + quasi-Newton (`lbfgs`), **BPSL constraints**, `check` |
 | 2 | [`02_bateman_chain`](02_bateman_chain) | fitting several observables at once; **is each rate identifiable?** | differential evolution (`de`), multi-observable, **profile likelihood** |
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
 | 5 | [`05_noisy_decay`](05_noisy_decay) | uncertainty from resampling; noise-weighted fitting | `bootstrap`, `chi_sq` |

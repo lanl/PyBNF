@@ -295,6 +295,9 @@ EXAMPLES = (
         ),
         confs=(
             ConfCheck('logistic_growth_trf.conf', recover={'r': 1.2, 'K': 100.0}, tol=0.02),
+            # The same fit by the other edition-2 gradient method (L-BFGS-B, a
+            # quasi-Newton optimizer) -- lands on the same (r, K).
+            ConfCheck('logistic_growth_lbfgs.conf', recover={'r': 1.2, 'K': 100.0}, tol=0.02),
             # Fit to qualitative (BPSL .prop) data only: a satisfying parameter set
             # drives the constraint-penalty objective to ~0.
             ConfCheck('logistic_growth_constraints.conf', recover={}, max_obj=1e-6),

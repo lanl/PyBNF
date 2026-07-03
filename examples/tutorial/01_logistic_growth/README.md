@@ -19,6 +19,7 @@ We fit it to a single clean time course and recover the two parameters `r`
 | [`logistic_growth.bngl`](logistic_growth.bngl) | The model, in edition-2 form (no `begin actions` block). |
 | [`logistic_growth.exp`](logistic_growth.exp) | The data: `Obs_N` sampled at 17 times, noise-free. |
 | [`logistic_growth_trf.conf`](logistic_growth_trf.conf) | The fit — every key is commented. |
+| [`logistic_growth_lbfgs.conf`](logistic_growth_lbfgs.conf) | The same fit by the *other* gradient method (`job_type = lbfgs`). |
 
 ## Run it
 
@@ -64,6 +65,12 @@ pybnf -c logistic_growth_check.conf          # reports "Satisfied 4 out of 4 con
 - **`job_type = trf`** is a *gradient* optimizer. It needs `bngl_backend = bngsim`
   (the source of the parameter sensitivities it consumes) and a *smooth* model.
   Lesson 6 shows what happens when the model is not smooth.
+- **Two gradient methods.** `trf` (trust-region *least squares*) exploits the
+  sum-of-squares structure and is the fastest, most precise choice for Gaussian
+  least-squares fits; `lbfgs` (L-BFGS-B, a quasi-Newton method) works from the
+  scalar objective and its gradient, so it also handles objectives that are *not* a
+  sum of squares (a likelihood noise model). Both are local, so both run a few
+  independent starts (`population_size`) and keep the global best.
 
 ## Next
 
