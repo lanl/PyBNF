@@ -1,0 +1,3 @@
+observableId	observableFormula	observablePlaceholders	noiseFormula	noisePlaceholders	noiseDistribution
+obs_B	observableParameter1_obs_B * Obs_B	observableParameter1_obs_B	noiseParameter1_obs_B	noiseParameter1_obs_B	normal
+obs_C	observableParameter1_obs_C * Obs_C	observableParameter1_obs_C	noiseParameter1_obs_C	noiseParameter1_obs_C	laplace

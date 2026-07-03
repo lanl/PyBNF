@@ -1,0 +1,7 @@
+observableId	experimentId	time	measurement	observableParameters	noiseParameters
+obs_B		0	0.0	scale_B	sd_B
+obs_B		4	30.0	scale_B	sd_B
+obs_B		8	45.0	scale_B	sd_B
+obs_C		0	0.0	scale_C	sd_C
+obs_C		4	30.0	scale_C	sd_C
+obs_C		8	45.0	scale_C	sd_C

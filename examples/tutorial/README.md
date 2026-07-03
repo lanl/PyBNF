@@ -43,6 +43,7 @@ Results land in `output/` inside the lesson folder.
 | 17 | [`17_bayesian_uncertainty`](17_bayesian_uncertainty) | a **posterior, not just a best fit** — credible intervals from MCMC | DREAM sampler (`dream`), credible intervals *(slow tier)* |
 | 18 | [`18_count_likelihood`](18_count_likelihood) | fit **integer molecule counts** with the likelihood built for them | negative-binomial noise model (`neg_bin`, `dispersion`, `location`) |
 | 19 | [`19_shape_objectives`](19_shape_objectives) | fit the **shape** of a signal when its amplitude is arbitrary | column-joint `profile_objective` (`kl` / `wasserstein`) |
+| 20 | [`20_petab_observable_parameters`](20_petab_observable_parameters) | import PEtab **per-observable gains and noise** (the Boehm `sd_*` pattern) | PEtab `observableParameters` / `noiseParameters` import |
 
 ## The edition-2 config surface, in one place
 

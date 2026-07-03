@@ -1,0 +1,7 @@
+parameterId	estimate	lowerBound	upperBound
+k1	true	0.01	5
+k2	true	0.01	5
+scale_B	true	0.1	10
+sd_B	true	0.001	100
+scale_C	true	0.1	10
+sd_C	true	0.001	100

@@ -231,6 +231,46 @@ PRIOR_CASES = (
 
 
 @dataclass(frozen=True)
+class ChannelCase:
+    """One readout CHANNEL in the ``20_petab_observable_parameters`` fixture.
+
+    A PEtab v2 observable measured with its OWN estimated gain
+    (``observableParameters``, a per-observable scale substituted into the
+    ``observableFormula``) and its OWN estimated noise (``noiseParameters``, a
+    per-observable sigma id -- the Boehm ``sd_*`` pattern, ADR-0037/0044). This
+    records both the PEtab side a modeler writes and the native-conf lines
+    ``import_job`` must produce, so the one manifest row pins the fixture *and* the
+    expected import -- they cannot drift.
+    """
+    obs: str              # PEtab observableId
+    raw_obs: str          # the model observable the gain scales (obs = gain * raw_obs)
+    scale_param: str      # estimated observableParameters id (this channel's gain)
+    sigma_param: str      # estimated noiseParameters id (this channel's noise level)
+    petab_noise: str      # PEtab noiseDistribution ('normal' | 'laplace')
+    conf_family: str      # noise_model family it imports to ('gaussian' | 'laplace')
+    conf_sigma_key: str   # the imported sigma field name ('sigma' for gaussian, 'scale' for laplace)
+    blurb: str = ''       # the channel's story (README + test id)
+
+
+# Two readout channels of one A->B->C model, each with its own estimated detector
+# GAIN (observableParameters) and its own estimated NOISE level (noiseParameters) --
+# the standard PEtab mechanism for per-observable nuisances (the Boehm sd_* pattern).
+# A Gaussian channel and a Laplace channel show the noise FAMILY is per-observable
+# too. Each imports (through the real PEtab loader) to a native `observable:` formula
+# carrying the gain and a `noise_model <obs> =` line carrying the estimated sigma.
+OBS_PARAM_CASES = (
+    ChannelCase('obs_B', 'Obs_B', 'scale_B', 'sd_B', 'normal', 'gaussian', 'sigma',
+                blurb='a Gaussian channel with its own gain (scale_B) and sigma (sd_B)'),
+    ChannelCase('obs_C', 'Obs_C', 'scale_C', 'sd_C', 'laplace', 'laplace', 'scale',
+                blurb='a Laplace channel with its own gain (scale_C) and scale (sd_C)'),
+)
+
+# The model rates are estimated too (bound by bare id), so the imported job carries
+# them alongside the six per-channel nuisances.
+OBS_PARAM_MODEL_RATES = ('k1', 'k2')
+
+
+@dataclass(frozen=True)
 class Example:
     folder: str
     model: str

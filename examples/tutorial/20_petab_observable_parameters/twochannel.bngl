@@ -1,0 +1,44 @@
+# =============================================================================
+#  A two-channel readout       A --k1--> B --k2--> C     (observe B and C)
+# =============================================================================
+#  A single chain with TWO measured species -- B and C -- read on two separate
+#  instrument channels. Each channel has its own detector GAIN (an unknown scale
+#  factor) and its own NOISE level, and neither is a property of the biology: they
+#  belong to the measurement. This is exactly what PEtab's per-observable
+#  `observableParameters` (gain) and `noiseParameters` (noise) express, and what
+#  this lesson imports into PyBNF (see the README + tests/test_tutorial_petab_import.py).
+#
+#  The model itself is the plain kinetics; the gains and noise live in the PEtab
+#  observable/measurement tables, not here.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k1   0.8    # A -> B     <- estimated
+    k2   0.3    # B -> C     <- estimated
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+    C()
+  end molecule types
+
+  begin seed species
+    A()  100
+    B()  0
+    C()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_B  B()      # channel 1 (read with gain scale_B, noise sd_B)
+    Molecules  Obs_C  C()      # channel 2 (read with gain scale_C, noise sd_C)
+  end observables
+
+  begin reaction rules
+    r1: A() -> B()   k1
+    r2: B() -> C()   k2
+  end reaction rules
+
+end model
