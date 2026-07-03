@@ -356,9 +356,16 @@ def _run_bootstrapping(config, alg, cluster, debug):
                                                                 config.variables,
                                                                 config.config['num_to_output'])
 
-        if alg.best_fit_obj <= bootstrap_max_obj:
+        # Gate on the trajectory's best score, exactly as the main loop below. main()
+        # ran _refine_best_fit on this resumed replicate before calling us, and the
+        # refiner shares alg.trajectory -- but alg.best_fit_obj is the *pre*-refine value
+        # the loaded algorithm stopped at (a replicate resumed mid-fit finishes its fit
+        # and is then polished), so gating on it would reject a replicate the polish
+        # already brought under the threshold and pair the refined pset with a stale score.
+        resumed_best_obj = alg.trajectory.best_score()
+        if resumed_best_obj <= bootstrap_max_obj:
             logger.info(f'Bootstrap run {completed_bootstrap_runs} complete')
-            bootstrapped_psets.add(alg.trajectory.best_fit(), alg.best_fit_obj,
+            bootstrapped_psets.add(alg.trajectory.best_fit(), resumed_best_obj,
                                    f'bootstrap_run_{completed_bootstrap_runs}',
                                    bootstrap_file,
                                    completed_bootstrap_runs == 0)
