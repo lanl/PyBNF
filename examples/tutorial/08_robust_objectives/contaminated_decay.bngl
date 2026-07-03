@@ -1,0 +1,35 @@
+# =============================================================================
+#  First-order decay          dA/dt = -k*A          (with a few bad data points)
+# =============================================================================
+#  The simplest possible model -- a single species decaying exponentially,
+#  A(t) = A0 * exp(-k t) -- used here to make a point about the OBJECTIVE, not the
+#  model. The data for this lesson is the clean decay curve with a handful of
+#  gross OUTLIERS spliced in (a mispipetted well, a detector glitch). Which
+#  objective function you choose decides whether those outliers wreck the fit or
+#  get shrugged off. See the two .conf files.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k   0.5    # decay rate     [1/day]   <- FITTED
+    A0  100    # initial amount [AU]      <- FITTED
+  end parameters
+
+  begin molecule types
+    A()
+  end molecule types
+
+  begin seed species
+    A()  A0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+  end observables
+
+  begin reaction rules
+    decay:  A() -> 0  k
+  end reaction rules
+
+end model

@@ -98,7 +98,16 @@ def _write_measurement_exp(path, cols, arr, dataset):
     Path(path).write_text('\n'.join(lines) + '\n')
 
 
-def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0):
+def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=()):
+    """Write the simulated trajectory as a ``.exp``.
+
+    Beyond the raw obs columns, two optional corruptions support the noise/robust
+    lessons: gaussian ``noise_sd`` (added to every point, seeded), and explicit
+    ``outliers`` -- ``(row_index, replacement_value)`` pairs spliced into the FIRST
+    observable column (deterministic gross errors). A ``_SD`` column is written per
+    observable when either ``sd`` (a constant, independent of the gaussian noise)
+    or ``noise_sd`` is set, so chi_sq / laplace have a per-point scale to weight by.
+    """
     idx = [cols['time']] + [cols[o] for o in obs]
     header = ['time'] + list(obs)
     rows = arr[:, idx].copy()
@@ -106,9 +115,12 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0):
         rng = np.random.default_rng(noise_seed)
         for j in range(1, rows.shape[1]):
             rows[:, j] = rows[:, j] + rng.normal(0.0, noise_sd, size=rows.shape[0])
+    for row_index, value in outliers:
+        rows[row_index, 1] = value      # column 1 == the first observable
+    sd_value = sd if sd is not None else (noise_sd if noise_sd > 0 else None)
+    if sd_value is not None:
         header += [o + '_SD' for o in obs]
-        sd_block = np.full((rows.shape[0], len(obs)), noise_sd)
-        rows = np.hstack([rows, sd_block])
+        rows = np.hstack([rows, np.full((rows.shape[0], len(obs)), sd_value)])
     lines = ['# ' + '\t'.join(header)]
     for row in rows:
         lines.append('\t'.join('%.10g' % v for v in row))
@@ -125,8 +137,10 @@ def regenerate(example):
                   f'[{len(arr)} pts, measurement-model: {derived}]')
         else:
             _write_exp(example.path / dataset.exp, cols, arr, dataset.obs,
-                       dataset.noise_sd, dataset.noise_seed)
+                       dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
+            if dataset.outliers:
+                tag += f' (+{len(dataset.outliers)} outliers, _SD={dataset.sd})'
             print(f'  wrote {example.folder}/{dataset.exp}  '
                   f'[{len(arr)} pts, obs {dataset.obs}]{tag}')
 

@@ -60,6 +60,8 @@ def _mode(cc):
         return 'profile'
     if cc.max_obj is not None:
         return 'constraint'
+    if cc.dragged_min_err is not None:
+        return 'dragged'
     return 'recover'
 
 
@@ -180,6 +182,28 @@ def test_tutorial_model_check_reports_satisfaction(tmp_path, capsys):
         os.chdir(home)
     out = capsys.readouterr().out
     assert 'Satisfied 4 out of 4 constraints' in out, out
+
+
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('example, confcheck', _cases('dragged'))
+def test_tutorial_conf_is_dragged_off_truth(example, confcheck, tmp_path):
+    """A cautionary conf whose (non-robust) objective is *provably* pulled off the
+    truth by outliers -- at least one recovered parameter must miss by more than
+    ``dragged_min_err``. This is the failure half of a robust-vs-non-robust pair;
+    without it the comparison to the robust sibling would be vacuous."""
+    H.require_bng2pl()
+    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    alg = _build(conf, conf.config['fit_type'])
+    H.drive(alg)
+    if conf.config.get('refine'):
+        H.refine(alg, conf)
+
+    rec = H.best_params(alg, tuple(confcheck.recover))
+    worst = max(abs(rec[p] - true) / abs(true) for p, true in confcheck.recover.items())
+    assert worst >= confcheck.dragged_min_err, (
+        f'{example.folder}/{confcheck.conf}: expected the outliers to drag the fit '
+        f'off truth by >= {confcheck.dragged_min_err * 100:.0f}%, but the worst '
+        f'parameter error was only {worst * 100:.1f}% (recovered {rec})')
 
 
 @pytest.mark.usefixtures('_fakes')

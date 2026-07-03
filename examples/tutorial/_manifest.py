@@ -28,6 +28,10 @@ class Dataset:
     n_points: int
     noise_sd: float = 0.0     # gaussian noise (absolute sd) added + written as _SD; 0 = clean
     noise_seed: int = 0
+    sd: float = None          # emit a constant _SD column at this value (independent of the
+                              # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
+    outliers: tuple = ()      # ((row_index, replacement_value), ...): gross outliers spliced
+                              # into the FIRST observable column (deterministic contamination)
     scan: str = None          # if set, an independent-variable column name (dose-response)
     measurements: tuple = ()  # derived measurement-model columns (ADR-0036); when set, the
                               # .exp holds these columns, not the raw `obs` (which are only
@@ -68,6 +72,8 @@ class ConfCheck:
     refused: bool = False      # True => a gradient fit that must be REFUSED, not run
     profile: dict = None       # {param: expected identifiability class} for profile_likelihood
     max_obj: float = None      # constraint fit: assert best objective <= this (0 => all satisfied)
+    dragged_min_err: float = None  # cautionary conf: at least one `recover` param must be off by
+                                   # >= this fraction (a non-robust objective broken by outliers)
     note: str = ''
 
 
@@ -196,6 +202,27 @@ EXAMPLES = (
         ),
         confs=(
             ConfCheck('gompertz_growth_pso.conf', recover={'r': 0.4, 'K': 100.0}, tol=0.05),
+        ),
+    ),
+    Example(
+        folder='08_robust_objectives',
+        model='contaminated_decay.bngl',
+        truth={'k': 0.5, 'A0': 100.0},
+        build_free={'k': ('uniform_var', 0.05, 3.0), 'A0': ('uniform_var', 20.0, 400.0)},
+        datasets=(
+            # A clean decay curve with three gross outliers spliced in, plus a
+            # constant _SD column (assumed measurement error) for chi_sq/laplace.
+            Dataset('contaminated_decay.exp', obs=('Obs_A',), t_end=10, n_points=21,
+                    sd=3.0, outliers=((4, 90.0), (12, 55.0), (16, 40.0))),
+        ),
+        confs=(
+            # A heavy-tailed Laplace noise model shrugs the outliers off and
+            # recovers the truth (while estimating the noise scale `noise_scale`).
+            ConfCheck('decay_laplace.conf', recover={'k': 0.5, 'A0': 100.0}, tol=0.03),
+            # A Gaussian noise model is pulled off the truth by the same outliers:
+            # its k must be wrong by at least 10% -- the whole point of the lesson.
+            ConfCheck('decay_gaussian.conf', recover={'k': 0.5, 'A0': 100.0},
+                      dragged_min_err=0.10),
         ),
     ),
     Example(

@@ -30,6 +30,7 @@ Results land in `output/` inside the lesson folder.
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
 | 5 | [`05_noisy_decay`](05_noisy_decay) | uncertainty from resampling; noise-weighted fitting | `bootstrap`, `chi_sq` |
 | 7 | [`07_algorithm_bakeoff`](07_algorithm_bakeoff) | **six optimizers on one oscillatory fit** — how each global search behaves | `de`/`ade`/`pso`/`cmaes`/`sa`/`ss` |
+| 8 | [`08_robust_objectives`](08_robust_objectives) | when outliers wreck a fit — and the **noise model** that shrugs them off | `noise_model` (Gaussian vs Laplace) |
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 | 13 | [`13_petab_lint_clinic`](13_petab_lint_clinic) | a gallery of broken problems — **watch the linter catch each mistake** | PEtab v2 lint tasks (`petab.v2.lint`) through the BNGL loader |
@@ -50,6 +51,7 @@ Every lesson uses these keys (see any `.conf` for the full commentary):
 | `bngl_backend = bngsim` | simulate in-process with bngsim (required for gradient fits) |
 | `job_type = …` | the algorithm: `trf`/`lbfgs` (gradient), `de`/`pso`/`ss`/… (metaheuristic), `am`/`dream`/… (Bayesian) |
 | `objective = sos` \| `chi_sq` | the fit metric (`chi_sq` when the data has `_SD` columns) |
+| `noise_model = family, …` | assemble the objective from a noise family + parameter sources (Lesson 8) |
 | `experiment: name, data: file.exp` | bind a named simulation to its data; the data's time column is the output grid |
 | `observable: id, formula: expr` | a measurement model — score a post-simulation formula over the outputs (Lesson 14) |
 | `uniform_var = p lo hi` | a free parameter, bound by name to model parameter `p`, searched in `[lo, hi]` |
