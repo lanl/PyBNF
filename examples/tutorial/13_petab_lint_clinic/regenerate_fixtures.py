@@ -186,6 +186,137 @@ def _malformed_bngl(files):
         'end parameters', 'end paramters')
 
 
+# --------------------------------------------------------------------------- #
+# Wave 2 (backlog #1). First the checks that need no new tables ...
+# --------------------------------------------------------------------------- #
+def _pos_log_measurement(files):
+    # The observable is scored on a log scale (`log-normal` noise), which is only
+    # defined for positive data -- but a measurement value is <= 0
+    # -> CheckPosLogMeasurements.
+    files['observables.tsv'] = files['observables.tsv'].replace(
+        'normal', 'log-normal')
+    files['measurements.tsv'] = files['measurements.tsv'].replace(
+        'obs_A\t\t4\t1.3534', 'obs_A\t\t4\t-1', 1)
+
+
+def _duplicate_observable_id(files):
+    # Two observable-table rows share the primary key `obs_A`
+    # -> CheckUniquePrimaryKeys (petab loads both rows, then flags the dupe).
+    files['observables.tsv'] = files['observables.tsv'] + 'obs_A\tObs_A\t1\tnormal\n'
+
+
+def _model_entity_as_parameter(files):
+    # The model's observable `Obs_A` is listed in the parameter table, where only
+    # free model *parameters* may go -> CheckValidParameterInConditionOrParameter-
+    # Table. (A model entity is never a valid parameter row, so this necessarily
+    # also trips CheckAllParametersPresentInParameterTable; the test asserts the
+    # target task is AMONG those that flagged.)
+    files['parameters.tsv'] = files['parameters.tsv'] + 'Obs_A\ttrue\t0.01\t5\n'
+
+
+def _measurement_bad_model_id(files):
+    # Every measurement names modelId `ghost`, but the only model_files entry is
+    # `decay` -> CheckMeasurementModelId. (Each row must carry a modelId; an empty
+    # cell would be read as NaN and rejected at load, not by lint.)
+    files['measurements.tsv'] = (
+        'observableId\texperimentId\ttime\tmeasurement\tmodelId\n'
+        'obs_A\t\t0\t10\tghost\n'
+        'obs_A\t\t1\t6.0653\tghost\n'
+        'obs_A\t\t2\t3.6788\tghost\n')
+
+
+def _missing_config_file(files):
+    # The problem omits the required `parameter_files` section. Like an unknown
+    # prior NAME, this is a structural defect the problem-config schema rejects
+    # the instant the YAML loads (Problem.from_yaml raises) -- one layer before
+    # the CheckProblemConfig lint task, which guards the very same requirement,
+    # would run. The early rejection is itself the validator doing its job.
+    files['problem.yaml'] = files['problem.yaml'].replace(
+        'parameter_files:\n  - parameters.tsv\n', '')
+    del files['parameters.tsv']
+
+
+# --------------------------------------------------------------------------- #
+# ... then the experiment/condition-table batch. These introduce two tables the
+# base problem never needed: experiments.tsv (experimentId, time, conditionId --
+# at `time`, apply `conditionId`) and conditions.tsv (conditionId, targetId,
+# targetValue). Both are wired in through new problem.yaml keys (experiment_files
+# / condition_files). Condition targets use `A0` -- a FIXED model parameter, a
+# valid perturbation target that is NOT the estimated parameter `k`, so no
+# spurious parameter-table errors mask the defect under test.
+# --------------------------------------------------------------------------- #
+def _add_experiment_tables(files, *, conditions=None, experiments):
+    """Wire an experiments.tsv (and optional conditions.tsv) into the problem and
+    point every measurement at experiment `e1`."""
+    keys = ''
+    if conditions is not None:
+        files['conditions.tsv'] = conditions
+        keys += 'condition_files:\n  - conditions.tsv\n'
+    files['experiments.tsv'] = experiments
+    keys += 'experiment_files:\n  - experiments.tsv\n'
+    files['problem.yaml'] = files['problem.yaml'].replace(
+        'parameter_files:', keys + 'parameter_files:')
+    files['measurements.tsv'] = files['measurements.tsv'].replace(
+        'obs_A\t\t', 'obs_A\te1\t')
+
+
+def _missing_experiment_condition(files):
+    # Experiment e1's second period (t=1) applies condition `c_missing`, which the
+    # (absent) condition table never defines -> CheckExperimentConditionsExist.
+    # The first period uses the model as-is (empty conditionId), so
+    # CheckInitialChangeSymbols has nothing to complain about.
+    _add_experiment_tables(
+        files,
+        experiments=('experimentId\ttime\tconditionId\n'
+                     'e1\t0\t\n'
+                     'e1\t1\tc_missing\n'))
+
+
+def _undefined_experiment(files):
+    # A measurement points at experiment `e_ghost`, but there is no experiment
+    # table at all -> CheckUndefinedExperiments (a WARNING, not an error).
+    files['measurements.tsv'] = files['measurements.tsv'].replace(
+        'obs_A\t\t', 'obs_A\te_ghost\t')
+
+
+def _unused_experiment(files):
+    # The experiment table defines `e_unused`, which no measurement references
+    # -> CheckUnusedExperiments (a WARNING). e1 is the used experiment; both
+    # conditions are applied, so no condition goes unused.
+    _add_experiment_tables(
+        files,
+        conditions=('conditionId\ttargetId\ttargetValue\n'
+                    'c_a0\tA0\t5\n'
+                    'c_alt\tA0\t7\n'),
+        experiments=('experimentId\ttime\tconditionId\n'
+                     'e1\t0\tc_a0\n'
+                     'e_unused\t0\tc_alt\n'))
+
+
+def _unused_condition(files):
+    # The condition table defines `c_orphan`, which no experiment period applies
+    # -> CheckUnusedConditions (a WARNING). c_a0 is the applied condition.
+    _add_experiment_tables(
+        files,
+        conditions=('conditionId\ttargetId\ttargetValue\n'
+                    'c_a0\tA0\t5\n'
+                    'c_orphan\tA0\t7\n'),
+        experiments='experimentId\ttime\tconditionId\ne1\t0\tc_a0\n')
+
+
+def _initial_change_symbol(files):
+    # Condition c_a0 is applied at the START of experiment e1 (t=0) and sets A0
+    # from `undefined_symbol * 2`. An initial change may only reference parameter-
+    # table symbols (or `time`) -> CheckInitialChangeSymbols. (`undefined_symbol`
+    # is declared nowhere, so this also trips CheckAllParametersPresentInParameter-
+    # Table; the test asserts the target task is AMONG those that flagged.)
+    _add_experiment_tables(
+        files,
+        conditions=('conditionId\ttargetId\ttargetValue\n'
+                    'c_a0\tA0\tundefined_symbol * 2\n'),
+        experiments='experimentId\ttime\tconditionId\ne1\t0\tc_a0\n')
+
+
 _MUTATIONS = {
     'clean': _clean,
     'undefined_observable': _undefined_observable,
@@ -196,6 +327,18 @@ _MUTATIONS = {
     'bad_prior': _bad_prior,
     'unknown_prior_distribution': _unknown_prior_distribution,
     'malformed_bngl': _malformed_bngl,
+    # wave 2 -- no new tables
+    'pos_log_measurement': _pos_log_measurement,
+    'duplicate_observable_id': _duplicate_observable_id,
+    'model_entity_as_parameter': _model_entity_as_parameter,
+    'measurement_bad_model_id': _measurement_bad_model_id,
+    'missing_config_file': _missing_config_file,
+    # wave 2 -- experiment/condition tables
+    'missing_experiment_condition': _missing_experiment_condition,
+    'undefined_experiment': _undefined_experiment,
+    'unused_experiment': _unused_experiment,
+    'unused_condition': _unused_condition,
+    'initial_change_symbol': _initial_change_symbol,
 }
 
 

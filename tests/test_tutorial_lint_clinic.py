@@ -7,10 +7,12 @@ exactly one defect, and the assertion that the standard ``petab.v2`` validator -
 loading the ``language: bngl`` model through PyBNF's registered loader
 (``register_bngl``) -- reacts as recorded in ``examples/tutorial/_manifest.py``:
 
-  * ``clean``  -> ``lint_problem`` finds no errors;
-  * ``error``  -> ``lint_problem`` finds errors, and the expected ``Check`` task
+  * ``clean``   -> ``lint_problem`` finds no errors;
+  * ``error``   -> ``lint_problem`` finds errors, and the expected ``Check`` task
     is among those that flagged;
-  * ``raises`` -> the defect is structural, so ``Problem.from_yaml`` rejects the
+  * ``warning`` -> ``lint_problem`` finds no errors, but the expected ``Check``
+    task is among the WARNING-level advisories;
+  * ``raises``  -> the defect is structural, so ``Problem.from_yaml`` rejects the
     problem before lint even runs.
 
 This is the highest-value confidence-building we can do before proposing the
@@ -29,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from petab.v2 import Problem
-from petab.v2.lint import lint_problem
+from petab.v2.lint import lint_problem, ValidationIssueSeverity
 
 from pybnf.petab.bngl_model import register_bngl, _locate_bng2
 
@@ -79,6 +81,18 @@ def test_lint_clinic_fixture(case):
         assert not report.has_errors(), (
             f'{case.folder}: expected a clean problem, got '
             f'{[getattr(i, "message", i) for i in report]}')
+        return
+
+    if case.outcome == 'warning':
+        # An advisory, not a rejection: no errors, but the expected task raised a
+        # WARNING-level item (petab reports these instead of failing the problem).
+        assert not report.has_errors(), (
+            f'{case.folder}: expected only warnings, got errors '
+            f'{[str(i) for i in report if i.level >= ValidationIssueSeverity.ERROR]}')
+        warned = {getattr(i, 'task', None) for i in report
+                  if i.level == ValidationIssueSeverity.WARNING}
+        assert case.task in warned, (
+            f'{case.folder}: expected task {case.task!r} to warn, got {sorted(warned)}')
         return
 
     # outcome == 'error'

@@ -94,10 +94,12 @@ class LintCase:
     linter should react to it.
 
     ``outcome`` selects the expectation:
-      * ``'clean'``  -- ``lint_problem`` reports no errors;
-      * ``'error'``  -- ``lint_problem`` reports errors, and ``task`` (a
+      * ``'clean'``   -- ``lint_problem`` reports no errors;
+      * ``'error'``   -- ``lint_problem`` reports errors, and ``task`` (a
         ``petab.v2.lint`` Check class name) is among the flagging tasks;
-      * ``'raises'`` -- the defect is structural, so ``Problem.from_yaml`` itself
+      * ``'warning'`` -- ``lint_problem`` reports NO errors, but ``task`` is among
+        the WARNING-level items (some petab checks advise rather than reject);
+      * ``'raises'``  -- the defect is structural, so ``Problem.from_yaml`` itself
         rejects the problem before lint runs.
     """
     folder: str                  # subdir under 13_petab_lint_clinic/
@@ -131,7 +133,46 @@ LINT_CASES = (
              blurb='an unrecognized prior distribution name (rejected at load)'),
     LintCase('malformed_bngl', 'error', task='CheckModel', needs_bng2=True,
              blurb='a BNGL syntax error (caught by BNG2.pl --check)'),
+
+    # --- wave 2 (backlog #1): the measurement/observable/parameter checks that
+    #     need no new tables -----------------------------------------------------
+    LintCase('pos_log_measurement', 'error', task='CheckPosLogMeasurements',
+             blurb='a log-normal observable given a non-positive measurement value'),
+    LintCase('duplicate_observable_id', 'error', task='CheckUniquePrimaryKeys',
+             blurb='the observable table repeats a primary key (two obs_A rows)'),
+    LintCase('model_entity_as_parameter', 'error',
+             task='CheckValidParameterInConditionOrParameterTable',
+             blurb='a model entity (the observable Obs_A) placed in the parameter table'),
+    LintCase('measurement_bad_model_id', 'error', task='CheckMeasurementModelId',
+             blurb='a measurement names a modelId no model_files entry defines'),
+    LintCase('missing_config_file', 'raises',
+             blurb='the problem omits the required parameter_files (rejected at load)'),
+
+    # --- wave 2 (backlog #1): the experiment/condition-table batch --------------
+    LintCase('missing_experiment_condition', 'error',
+             task='CheckExperimentConditionsExist',
+             blurb='an experiment period applies a conditionId the condition table lacks'),
+    LintCase('undefined_experiment', 'warning', task='CheckUndefinedExperiments',
+             blurb='a measurement references an experimentId no experiment defines (warns)'),
+    LintCase('unused_experiment', 'warning', task='CheckUnusedExperiments',
+             blurb='the experiment table defines an experiment no measurement uses (warns)'),
+    LintCase('unused_condition', 'warning', task='CheckUnusedConditions',
+             blurb='the condition table defines a condition no experiment applies (warns)'),
+    LintCase('initial_change_symbol', 'error', task='CheckInitialChangeSymbols',
+             blurb='a t=0 condition sets a target from a symbol outside the parameter table'),
 )
+
+# Two petab.v2.lint tasks are in the default task set but cannot be provoked
+# through a file-based PEtab problem in petab 0.8.2, so the clinic documents them
+# rather than shipping a fixture that fakes a trigger (see the clinic README):
+#   * CheckExperimentTable (duplicate timepoints) -- ExperimentTable.from_df
+#     groups rows by experimentId and iterates df[TIME].unique(), so two rows at
+#     the same time collapse into ONE period; a duplicate timepoint is
+#     unreachable without constructing Experiment objects by hand.
+#   * CheckMeasuredExperimentsDefined -- absent from petab 0.8.2's
+#     default_validation_tasks; the warning-level CheckUndefinedExperiments (the
+#     `undefined_experiment` fixture) supersedes it.
+LINT_UNCOVERED = ('CheckExperimentTable', 'CheckMeasuredExperimentsDefined')
 
 
 @dataclass(frozen=True)

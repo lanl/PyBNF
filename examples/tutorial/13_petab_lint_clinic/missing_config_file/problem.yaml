@@ -1,0 +1,9 @@
+format_version: 2.0.0
+observable_files:
+  - observables.tsv
+measurement_files:
+  - measurements.tsv
+model_files:
+  decay:
+    location: decay.bngl
+    language: bngl

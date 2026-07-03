@@ -1,0 +1,21 @@
+# One-species exponential decay, A --k--> 0.  The whole lint clinic is built on
+# this three-line model; each broken fixture perturbs the PEtab *tables* around
+# it (or, for `malformed_bngl`, the model itself).
+begin model
+  begin parameters
+    k   0.5
+    A0  10
+  end parameters
+  begin molecule types
+    A()
+  end molecule types
+  begin seed species
+    A()  A0
+  end seed species
+  begin observables
+    Molecules  Obs_A  A()
+  end observables
+  begin reaction rules
+    decay: A() -> 0  k
+  end reaction rules
+end model
