@@ -210,6 +210,24 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='11_interop',
+        model='decay.bngl',
+        truth={'k': 0.5},
+        build_free={'k': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # Integer time grid (0..8): an SBML/Antimony model simulates on bngsim's
+            # default output grid, which lands on integers, so the data times match.
+            Dataset('decay.exp', obs=('Obs_A',), t_end=8, n_points=9),
+        ),
+        # The SAME A->B dynamics as BNGL / Antimony / SBML, all fit through bngsim,
+        # all recovering the same k -- a backend/format interop regression.
+        confs=(
+            ConfCheck('fit_bngl.conf', recover={'k': 0.5}, tol=0.03),
+            ConfCheck('fit_antimony.conf', recover={'k': 0.5}, tol=0.03),
+            ConfCheck('fit_sbml.conf', recover={'k': 0.5}, tol=0.03),
+        ),
+    ),
+    Example(
         folder='10_per_observable_noise',
         model='two_reporter.bngl',
         truth={'k1': 0.8, 'k2': 0.25},

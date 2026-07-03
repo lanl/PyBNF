@@ -33,14 +33,14 @@ Results land in `output/` inside the lesson folder.
 | 8 | [`08_robust_objectives`](08_robust_objectives) | when outliers wreck a fit — and the **noise model** that shrugs them off | `noise_model` (Gaussian vs Laplace) |
 | 9 | [`09_experiment_design`](09_experiment_design) | richer designs — **dose-response at steady state** and a two-phase washout | `condition:` / `preequilibrate:`, parameter scans |
 | 10 | [`10_per_observable_noise`](10_per_observable_noise) | give each reporter **its own noise model** — robust only where you need it | per-observable `noise_model <obs> = …` |
+| 11 | [`11_interop`](11_interop) | fit the **same model as BNGL, SBML, and Antimony** — one backend, one answer | SBML/Antimony on bngsim (`sbml_backend`) |
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 | 13 | [`13_petab_lint_clinic`](13_petab_lint_clinic) | a gallery of broken problems — **watch the linter catch each mistake** | PEtab v2 lint tasks (`petab.v2.lint`) through the BNGL loader |
 | 14 | [`14_observable_layer`](14_observable_layer) | fit what the **instrument** reports, not the raw species — a scale, a ratio, a log | measurement models / `observableFormula` (ADR-0036) |
 
-*(More lessons — Bayesian sampling (`slow` tier), per-observable noise,
-dose-response, and SBML/Antimony interop — are being added; numbering leaves room
-for them.)*
+*(More lessons — Bayesian sampling (`slow` tier), PEtab priors, and a
+multi-experiment joint fit — are being added; numbering leaves room for them.)*
 
 ## The edition-2 config surface, in one place
 

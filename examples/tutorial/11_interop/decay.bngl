@@ -1,0 +1,37 @@
+# =============================================================================
+#  The same model, language 1 of 3:  BNGL      A --k--> B
+# =============================================================================
+#  A one-step conversion, written in BioNetGen language. Its sibling files
+#  decay.ant (Antimony) and decay.xml (SBML) describe the SAME dynamics in two
+#  other modeling languages; all three are fit to the SAME data and recover the
+#  same rate k -- see the three .conf files and the README.
+#
+#        A(t) = A0 * exp(-k t)        (measured as Obs_A)
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k    0.5    # conversion rate   [1/day]   <- FITTED
+    A0   100    # initial A         [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+  end observables
+
+  begin reaction rules
+    conv: A() -> B()  k
+  end reaction rules
+
+end model

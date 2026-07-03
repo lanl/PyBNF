@@ -1,0 +1,14 @@
+// =============================================================================
+//  The same model, language 2 of 3:  Antimony      A --k--> B
+// =============================================================================
+//  The identical A -> B conversion, written in Antimony (a compact human-readable
+//  language for SBML). PyBNF converts it to SBML at load, and the bngsim backend
+//  simulates it -- the species A/B and the parameter k carry over by name, so the
+//  fit's `observable: Obs_A, formula: A` and `uniform_var = k` line up. (See
+//  fit_antimony.conf.)
+// =============================================================================
+model decay
+  species A = 100, B = 0;   // initial amounts (A0 fixed; B starts empty)
+  k = 0.5;                  // conversion rate -- the fitted parameter
+  conv: A -> B; k*A;        // mass-action A -> B
+end
