@@ -1,0 +1,28 @@
+# irreversible conversion  A -> B  (dA/dt = -k*A, dB/dt = +k*A)   clean edition-2
+begin model
+
+  begin parameters
+    k    0.5    # conversion rate [1/s]   <- FITTED
+    A0   100    # initial A (arbitrary detector units cancel under normalization)
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_B  B()
+  end observables
+
+  begin reaction rules
+    R_conv: A() -> B()  k
+  end reaction rules
+
+end model

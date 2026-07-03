@@ -126,8 +126,28 @@ def _negative_binomial_counts(means, dispersion, seed):
     return out
 
 
+def _apply_normalization(rows, obs, normalize):
+    """Pre-normalize named observable columns in place (ADR-0053), matching what
+    ``pybnf.data.Data.normalize`` does to the *simulation* at fit time -- so the
+    committed ``.exp`` is data as an experimentalist would report it (normalized),
+    and the conf's ``normalization`` key reproduces the same operation on the model
+    output. Supports ``init`` (divide by the t=0 value), ``peak`` (divide by the
+    column max), and ``zero`` (z-score: subtract the mean, divide by the sample sd)."""
+    for obs_name, ntype in normalize:
+        j = 1 + list(obs).index(obs_name)     # col 0 is the indvar
+        col = rows[:, j]
+        if ntype == 'init':
+            rows[:, j] = col / col[0]
+        elif ntype == 'peak':
+            rows[:, j] = col / np.max(col)
+        elif ntype == 'zero':
+            rows[:, j] = (col - np.mean(col)) / np.std(col, ddof=1)
+        else:
+            raise ValueError(f'unsupported normalization type {ntype!r} in regenerate_data')
+
+
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
-               indvar='time', count_dispersion=None, count_seed=0, scale=None):
+               indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=()):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -157,6 +177,8 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
             rows[:, j] = rows[:, j] + rng.normal(0.0, noise_sd, size=rows.shape[0])
     for row_index, obs_name, value in outliers:
         rows[row_index, 1 + list(obs).index(obs_name)] = value   # col 0 is the indvar
+    if normalize:
+        _apply_normalization(rows, obs, normalize)
     sd_value = sd if sd is not None else (noise_sd if noise_sd > 0 else None)
     if sd_value is not None:
         header += [o + '_SD' for o in obs]
@@ -182,7 +204,7 @@ def regenerate(example):
                        dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers,
                        indvar=dataset.scan or 'time',
                        count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed,
-                       scale=dataset.scale)
+                       scale=dataset.scale, normalize=dataset.normalize)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
             if dataset.scale is not None:
                 tag += f' (scaled x{dataset.scale:g}, arbitrary units)'

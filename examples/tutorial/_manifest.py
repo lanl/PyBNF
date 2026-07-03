@@ -44,6 +44,10 @@ class Dataset:
                               # objective (profile_objective = kl/wasserstein; lesson 19)
     outliers: tuple = ()      # ((row_index, obs_name, replacement_value), ...): gross outliers
                               # spliced into the named observable column (deterministic contamination)
+    normalize: tuple = ()     # ((obs_name, type), ...): write the named column PRE-normalized
+                              # (init/peak/zero, ADR-0053) -- data as an experimentalist reports it
+                              # (e.g. dF/F0, % of max), which the conf's `normalization` key then
+                              # reproduces on the simulation so the two are comparable (lesson 22)
     scan: str = None          # if set, an independent-variable column name (dose-response)
     doses: tuple = ()         # explicit scan values for `scan` -- a steady-state parameter_scan
                               # dataset (the .exp rows ARE the doses; no time grid, ADR-0046)
@@ -599,6 +603,27 @@ EXAMPLES = (
             # Bounds placed entirely inside the hazardous region: every sim fails,
             # so max_failed_simulations aborts the run instead of spinning forever.
             ConfCheck('blowup_aborts.conf', recover={}, aborts=True),
+        ),
+    ),
+    Example(
+        folder='22_normalization',
+        model='conversion.bngl',
+        truth={'k': 0.5},
+        build_free={'k': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # A -> B in arbitrary units, then normalized as an experimentalist would
+            # report it: the reactant Obs_A to its initial reading, the product Obs_B
+            # to its peak. The absolute scale (detector gain, A0) is gone.
+            Dataset('conversion.exp', obs=('Obs_A', 'Obs_B'), t_end=10, n_points=21,
+                    normalize=(('Obs_A', 'init'), ('Obs_B', 'peak'))),
+        ),
+        confs=(
+            # Normalize the simulation the same way -> shape matched, k recovered
+            # without knowing A0 or the gain.
+            ConfCheck('normalized_shape.conf', recover={'k': 0.5}, tol=0.03),
+            # Forget the `normalization` lines: the raw-scale simulation can't match
+            # the normalized data, and k is dragged far off (>= 10%).
+            ConfCheck('no_normalization.conf', recover={'k': 0.5}, dragged_min_err=0.10),
         ),
     ),
     Example(
