@@ -41,6 +41,7 @@ Results land in `output/` inside the lesson folder.
 | 15 | [`15_petab_priors`](15_petab_priors) | **declare what you believe** — a PEtab prior gallery and how each imports | PEtab `priorDistribution` → `FreeParameter` priors |
 | 16 | [`16_joint_fit`](16_joint_fit) | fit **two experiments at once** with one shared rate set — a two-route PK study | multi-experiment joint fit, shared parameters (multi-model) |
 | 17 | [`17_bayesian_uncertainty`](17_bayesian_uncertainty) | a **posterior, not just a best fit** — credible intervals from MCMC | DREAM sampler (`dream`), credible intervals *(slow tier)* |
+| 18 | [`18_count_likelihood`](18_count_likelihood) | fit **integer molecule counts** with the likelihood built for them | negative-binomial noise model (`neg_bin`, `dispersion`, `location`) |
 
 ## The edition-2 config surface, in one place
 

@@ -111,22 +111,44 @@ def _write_measurement_exp(path, cols, arr, dataset):
     Path(path).write_text('\n'.join(lines) + '\n')
 
 
+def _negative_binomial_counts(means, dispersion, seed):
+    """Draw over-dispersed integer counts: negative-binomial samples with the given
+    per-point ``means`` and dispersion ``r`` (the NB2 parameterization, so
+    variance = mean + mean**2/r). numpy's ``negative_binomial(n, p)`` has mean
+    n(1-p)/p, so n = r and p = r/(r+mean) reproduce that mean exactly; a zero mean
+    (an empty cell at t=0) deterministically yields a zero count."""
+    rng = np.random.default_rng(seed)
+    means = np.asarray(means, dtype=float)
+    p = dispersion / (dispersion + np.where(means > 0, means, 0.0))
+    out = np.zeros(means.shape, dtype=float)
+    nonzero = means > 0
+    out[nonzero] = rng.negative_binomial(dispersion, p[nonzero])
+    return out
+
+
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
-               indvar='time'):
+               indvar='time', count_dispersion=None, count_seed=0):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
-    swept parameter name for a dose-response scan). Beyond the obs columns, two
+    swept parameter name for a dose-response scan). Beyond the obs columns, three
     optional corruptions support the noise/robust lessons: gaussian ``noise_sd``
-    (added to every point, seeded), and explicit ``outliers`` -- ``(row_index,
+    (added to every point, seeded), explicit ``outliers`` -- ``(row_index,
     obs_name, replacement_value)`` triples spliced into the named observable column
-    (deterministic gross errors). A ``_SD`` column is written per observable when
-    either ``sd`` (a constant, independent of the gaussian noise) or ``noise_sd`` is
-    set, so chi_sq / laplace have a per-point scale to weight by.
+    (deterministic gross errors), and ``count_dispersion`` -- resample every
+    observable as over-dispersed integer COUNTS (negative-binomial, mean = the model
+    value, seeded by ``count_seed``) for the count-likelihood lesson. A ``_SD`` column
+    is written per observable when either ``sd`` (a constant, independent of the
+    gaussian noise) or ``noise_sd`` is set, so chi_sq / laplace have a per-point scale
+    to weight by; count data carries no ``_SD`` (a count likelihood is self-normalizing).
     """
     idx = [cols[indvar]] + [cols[o] for o in obs]
     header = [indvar] + list(obs)
     rows = arr[:, idx].copy()
+    if count_dispersion is not None:
+        for j in range(1, rows.shape[1]):
+            rows[:, j] = _negative_binomial_counts(
+                rows[:, j], count_dispersion, count_seed + j)
     if noise_sd > 0:
         rng = np.random.default_rng(noise_seed)
         for j in range(1, rows.shape[1]):
@@ -139,7 +161,9 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
         rows = np.hstack([rows, np.full((rows.shape[0], len(obs)), sd_value)])
     lines = ['# ' + '\t'.join(header)]
     for row in rows:
-        lines.append('\t'.join('%.10g' % v for v in row))
+        fmt = '%d' if count_dispersion is not None else '%.10g'
+        lines.append('\t'.join(
+            ('%.10g' % v if k == 0 else fmt % v) for k, v in enumerate(row)))
     Path(path).write_text('\n'.join(lines) + '\n')
 
 
@@ -154,8 +178,11 @@ def regenerate(example):
         else:
             _write_exp(example.path / dataset.exp, cols, arr, dataset.obs,
                        dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers,
-                       indvar=dataset.scan or 'time')
+                       indvar=dataset.scan or 'time',
+                       count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
+            if dataset.count_dispersion is not None:
+                tag += f' (neg-bin counts, r={dataset.count_dispersion}, seed {dataset.count_seed})'
             if dataset.outliers:
                 tag += f' (+{len(dataset.outliers)} outliers, _SD={dataset.sd})'
             print(f'  wrote {example.folder}/{dataset.exp}  '

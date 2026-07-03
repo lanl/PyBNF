@@ -1,0 +1,43 @@
+# =============================================================================
+#  Decay of an mRNA molecule count        A --k_deg--> 0
+# =============================================================================
+#  After transcription is shut off, a pool of N0 mRNA molecules degrades
+#  first-order:
+#
+#        dA/dt = -k_deg * A       ->       A(t) = N0 * exp(-k_deg * t)
+#
+#  This is the kind of experiment single-molecule methods (e.g. smFISH) produce:
+#  at each time point you COUNT molecules, so the data are non-negative integers,
+#  and biological/technical variation makes them OVER-DISPERSED (their scatter is
+#  wider than a Poisson's). The starting count N0 is pinned by the early points and
+#  the rate k_deg by the slope of the (log) decay, so a single count time course
+#  identifies both -- provided you score the counts with a COUNT likelihood rather
+#  than least squares (see mrna_decay_neg_bin.conf).
+#
+#  No `begin actions` block: the time course comes from the `experiment:` line.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k_deg   0.3     # degradation rate     [1 / time]        <- FITTED
+    N0      200     # initial mRNA count   [molecules]       <- FITTED
+  end parameters
+
+  begin molecule types
+    A()
+  end molecule types
+
+  begin seed species
+    A()  N0           # start from N0 molecules
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()      # a molecule COUNT (the data are integer counts of this)
+  end observables
+
+  begin reaction rules
+    death: A() -> 0    k_deg
+  end reaction rules
+
+end model

@@ -33,6 +33,12 @@ class Dataset:
     noise_seed: int = 0
     sd: float = None          # emit a constant _SD column at this value (independent of the
                               # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
+    count_dispersion: float = None  # if set, resample each observable as OVER-DISPERSED integer
+                              # COUNTS: negative-binomial draws with mean = the model value and this
+                              # dispersion r (variance = mean + mean^2/r), seeded by `count_seed`.
+                              # No _SD column is written -- a count likelihood (neg_bin) is
+                              # self-normalizing (lesson 18).
+    count_seed: int = 0
     outliers: tuple = ()      # ((row_index, obs_name, replacement_value), ...): gross outliers
                               # spliced into the named observable column (deterministic contamination)
     scan: str = None          # if set, an independent-variable column name (dose-response)
@@ -477,6 +483,27 @@ EXAMPLES = (
         # has its own slow-tier verifier (tests/test_tutorial_bayesian.py) rather than
         # a ConfCheck here.
         confs=(),
+    ),
+    Example(
+        folder='18_count_likelihood',
+        model='mrna_decay.bngl',
+        truth={'k_deg': 0.3, 'N0': 200.0},
+        build_free={'k_deg': ('uniform_var', 0.02, 2.0),
+                    'N0': ('uniform_var', 20.0, 1000.0)},
+        datasets=(
+            # Molecule COUNTS, not a smooth curve: each point is an over-dispersed
+            # negative-binomial draw (dispersion r=40) around the model mean A(t).
+            # No _SD column -- a count likelihood is self-normalizing.
+            Dataset('mrna_decay.exp', obs=('Obs_A',), t_end=15, n_points=31,
+                    count_dispersion=40.0, count_seed=3),
+        ),
+        confs=(
+            # The count likelihood (negative binomial), estimating the dispersion r
+            # as a nuisance: recovers the decay rate and starting count from the
+            # over-dispersed counts.
+            ConfCheck('mrna_decay_neg_bin.conf',
+                      recover={'k_deg': 0.3, 'N0': 200.0}, tol=0.10),
+        ),
     ),
     Example(
         folder='06_step_input',
