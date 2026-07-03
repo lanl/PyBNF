@@ -13,10 +13,13 @@ Keeping the truth + tolerances here (not in the confs) is what lets one artifact
 set serve both the tutorial (clean, copy-pasteable) and the test suite
 (asserting, gated) without the two colliding.
 """
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
 TUTORIAL_DIR = Path(__file__).resolve().parent
+
+_INV_LN10 = 1.0 / math.log(10.0)   # natural-log location/scale -> log10 (PyBNF's log parameterization)
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,52 @@ LINT_CASES = (
              blurb='an unrecognized prior distribution name (rejected at load)'),
     LintCase('malformed_bngl', 'error', task='CheckModel', needs_bng2=True,
              blurb='a BNGL syntax error (caught by BNG2.pl --check)'),
+)
+
+
+@dataclass(frozen=True)
+class PriorCase:
+    """One estimated parameter in the ``15_petab_priors`` fixture: the PEtab v2
+    ``priorDistribution`` / ``priorParameters`` a modeler wrote, and the PyBNF
+    :class:`~pybnf.pset.FreeParameter` it must import to.
+
+    ``regenerate_fixtures.py`` writes the left half (the PEtab ``parameters.tsv``
+    row) from these fields; ``tests/test_tutorial_priors.py`` reads that committed
+    table back and asserts ``free_parameter_from_row`` produces the right half
+    (``exp_type`` / ``exp_p1`` / ``exp_p2`` / ``exp_bounded``). So the one manifest
+    row pins both the fixture *and* the expected import -- they can never drift.
+    """
+    param: str                    # parameterId (a real model parameter, bound by bare id)
+    distribution: str             # PEtab priorDistribution ('' => none: PEtab defaults to uniform/bounds)
+    prior_params: str             # PEtab priorParameters cell ('' => none)
+    lower: float                  # lowerBound
+    upper: float                  # upperBound
+    exp_type: str                 # expected FreeParameter.type keyword after import
+    exp_p1: float                 # expected FreeParameter.p1
+    exp_p2: float = None          # expected FreeParameter.p2 (None for a one-parameter family)
+    exp_bounded: bool = True      # expected FreeParameter.bounded
+    blurb: str = ''               # the prior's modelling story (README + test id)
+
+
+# A receptor--ligand binding model (L + R <-> C), four estimated parameters, each
+# with the prior family a modeler would naturally reach for -- a positive gallery
+# that complements lesson 13's `bad_prior`. A rate spanning orders of magnitude
+# takes a LOG-normal; a positive rate a half-bounded GAMMA; a measured amount a
+# NORMAL; a dose you set yourself only a UNIFORM range. Each imports (through the
+# real PEtab loader) to the matching *_var FreeParameter, priorParameters and all.
+PRIOR_CASES = (
+    PriorCase('kon', 'log-normal', '0;1', 0.001, 10,
+              exp_type='lognormal_var', exp_p1=0.0, exp_p2=_INV_LN10,
+              blurb='an association rate spanning orders of magnitude -> log-normal belief'),
+    PriorCase('koff', 'gamma', '2;0.5', 0.001, 10,
+              exp_type='gamma_var', exp_p1=2.0, exp_p2=0.5,
+              blurb='a positive dissociation rate -> gamma (shape, scale) on (0, inf)'),
+    PriorCase('R0', 'normal', '30;5', 1, 100,
+              exp_type='normal_var', exp_p1=30.0, exp_p2=5.0,
+              blurb='a receptor amount measured with error -> normal (mean, sd)'),
+    PriorCase('L0', '', '', 1, 100,
+              exp_type='uniform_var', exp_p1=1.0, exp_p2=100.0,
+              blurb='a dose you set yourself, known only to a range -> PEtab default uniform'),
 )
 
 

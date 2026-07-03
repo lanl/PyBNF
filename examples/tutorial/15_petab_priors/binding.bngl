@@ -1,0 +1,28 @@
+# Mass-action receptor--ligand binding, L + R <-> C.  The four rate/amount
+# parameters below are what the PEtab parameters table puts priors on; each is
+# fit by bare id (new-era binds a free parameter to the model parameter it names).
+begin model
+  begin parameters
+    kon   0.5    # association rate    (L + R -> C)      -- log-normal prior
+    koff  0.2    # dissociation rate   (C -> L + R)      -- gamma prior
+    R0    30     # total receptor                        -- normal prior
+    L0    50     # ligand dose (input)                   -- uniform (range only)
+  end parameters
+  begin molecule types
+    L()
+    R()
+    C()
+  end molecule types
+  begin seed species
+    L()  L0
+    R()  R0
+    C()  0
+  end seed species
+  begin observables
+    Molecules  Obs_C  C()
+  end observables
+  begin reaction rules
+    bind:   L() + R() -> C()  kon
+    unbind: C() -> L() + R()  koff
+  end reaction rules
+end model
