@@ -1,0 +1,44 @@
+# =============================================================================
+#  Two-compartment PK, dosed into the PERIPHERAL compartment
+# =============================================================================
+#  The SAME drug and the SAME kinetics as `central_bolus.bngl` -- only the dose
+#  lands in the other compartment. Now the plasma (central) concentration starts
+#  at ZERO and RISES as drug redistributes back from the periphery (rate k21),
+#  before elimination pulls it down: a peak-and-decline curve whose *rise* is a
+#  sharp handle on k21, complementing the central bolus's biexponential decay.
+#
+#  Because both files name the same parameters k12/k21/ke, the joint fit's free
+#  parameters bind to BOTH -- one shared rate set explaining two very different
+#  curves. See joint_fit.conf.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k12   0.8   # central -> peripheral   [1/day]   <- FITTED (shared with the central route)
+    k21   0.4   # peripheral -> central   [1/day]   <- FITTED (shared)
+    ke    0.3   # central elimination     [1/day]   <- FITTED (shared)
+  end parameters
+
+  begin molecule types
+    Central()
+    Peripheral()
+  end molecule types
+
+  begin seed species
+    Central()       0
+    Peripheral()  100    # the whole dose starts here (extravascular / tissue depot)
+  end seed species
+
+  begin observables
+    Molecules  Obs_Central     Central()
+    Molecules  Obs_Peripheral  Peripheral()
+  end observables
+
+  begin reaction rules
+    distribute:   Central()    -> Peripheral()  k12
+    redistribute: Peripheral() -> Central()     k21
+    eliminate:    Central()    -> 0             ke
+  end reaction rules
+
+end model

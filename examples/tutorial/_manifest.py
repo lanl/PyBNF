@@ -44,6 +44,9 @@ class Dataset:
     measurements: tuple = ()  # derived measurement-model columns (ADR-0036); when set, the
                               # .exp holds these columns, not the raw `obs` (which are only
                               # simulated as inputs to the measurement formulas)
+    model: str = None         # generate this dataset from a DIFFERENT model than the example's
+                              # (a multi-model joint fit, ADR-0041: each experiment its own model
+                              # file, all sharing the example's free parameters by bare id)
 
 
 @dataclass(frozen=True)
@@ -388,6 +391,31 @@ EXAMPLES = (
             ConfCheck('conversion_ratio.conf', recover={'k': 0.7}, tol=0.03),
             # Fitting a transformed readout (log space).
             ConfCheck('conversion_log.conf', recover={'k': 0.7}, tol=0.03),
+        ),
+    ),
+    Example(
+        folder='16_joint_fit',
+        model='central_bolus.bngl',
+        truth={'k12': 0.8, 'k21': 0.4, 'ke': 0.3},
+        build_free={'k12': ('uniform_var', 0.05, 3.0),
+                    'k21': ('uniform_var', 0.05, 3.0),
+                    'ke':  ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # Two dosing routes of the SAME drug, each its own model file but sharing
+            # {k12, k21, ke} (a multi-model joint fit, ADR-0041). Central bolus: the
+            # plasma curve is the classic biexponential decay.
+            Dataset('central_dose.exp', obs=('Obs_Central',), t_end=20, n_points=21,
+                    model='central_bolus.bngl'),
+            # Peripheral bolus: the plasma starts at ZERO and rises (fed by k21) before
+            # it falls -- a shape whose rise pins k21, complementing the central bolus.
+            Dataset('peripheral_dose.exp', obs=('Obs_Central',), t_end=20, n_points=21,
+                    model='peripheral_bolus.bngl'),
+        ),
+        confs=(
+            # One shared-parameter fit to BOTH experiments (two models): recover all
+            # three rates that no single route pins as tightly on its own.
+            ConfCheck('joint_fit.conf', recover={'k12': 0.8, 'k21': 0.4, 'ke': 0.3},
+                      tol=0.05),
         ),
     ),
     Example(

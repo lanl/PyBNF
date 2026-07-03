@@ -1,0 +1,49 @@
+# =============================================================================
+#  Two-compartment PK, dosed into the CENTRAL compartment (an IV bolus)
+# =============================================================================
+#  A drug distributes between a CENTRAL compartment (plasma) and a PERIPHERAL
+#  one (tissue), and is eliminated from the central compartment:
+#
+#        dCentral/dt    = -(k12 + ke)*Central + k21*Peripheral
+#        dPeripheral/dt =        k12 *Central - k21*Peripheral
+#
+#  The three rate constants k12, k21, ke are properties of the DRUG -- the same no
+#  matter how it was administered. This file is one dosing route (all of the drug
+#  starts in the central compartment); `peripheral_bolus.bngl` is the other. The
+#  joint fit (joint_fit.conf) fits BOTH files at once with ONE shared {k12,k21,ke}.
+#
+#  The two models are identical except for the seed species (the dose), and they
+#  declare the SAME parameter names -- which is exactly how a free parameter is
+#  shared across models in new-era PyBNF: it binds to `k12` in *both* files by id.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k12   0.8   # central -> peripheral   [1/day]   <- FITTED (shared with the other route)
+    k21   0.4   # peripheral -> central   [1/day]   <- FITTED (shared)
+    ke    0.3   # central elimination     [1/day]   <- FITTED (shared)
+  end parameters
+
+  begin molecule types
+    Central()
+    Peripheral()
+  end molecule types
+
+  begin seed species
+    Central()     100    # the whole dose starts here (central/IV bolus)
+    Peripheral()    0
+  end seed species
+
+  begin observables
+    Molecules  Obs_Central     Central()
+    Molecules  Obs_Peripheral  Peripheral()
+  end observables
+
+  begin reaction rules
+    distribute:   Central()    -> Peripheral()  k12
+    redistribute: Peripheral() -> Central()     k21
+    eliminate:    Central()    -> 0             ke
+  end reaction rules
+
+end model

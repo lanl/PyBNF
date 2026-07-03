@@ -44,6 +44,7 @@ def _simulate_truth(example, dataset):
     (``timecourse``), not the unmeasured equilibration phase (``timecourse_preequil``)."""
     H.require_bng2pl()
     folder = example.path
+    model_file = dataset.model or example.model   # a dataset may name its own model (joint fit)
     indvar = dataset.scan or 'time'
     if dataset.doses:
         grid = list(dataset.doses)            # the .exp rows ARE the swept doses (no time grid)
@@ -62,7 +63,7 @@ def _simulate_truth(example, dataset):
             extra['condition'] = dataset.condition
         if dataset.preequilibrate is not None:
             extra['preequilibrate'] = dataset.preequilibrate
-        conf = H.make_newera_config(scratch, str(folder / example.model), placeholder,
+        conf = H.make_newera_config(scratch, str(folder / model_file), placeholder,
                                     example.build_free, 'timecourse', 'de',
                                     population_size=4, max_iterations=1, **extra)
         alg = H.build(conf, 'de')
