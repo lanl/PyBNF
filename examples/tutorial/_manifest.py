@@ -33,6 +33,11 @@ class Dataset:
     outliers: tuple = ()      # ((row_index, replacement_value), ...): gross outliers spliced
                               # into the FIRST observable column (deterministic contamination)
     scan: str = None          # if set, an independent-variable column name (dose-response)
+    doses: tuple = ()         # explicit scan values for `scan` -- a steady-state parameter_scan
+                              # dataset (the .exp rows ARE the doses; no time grid, ADR-0046)
+    condition: tuple = None       # (name, "var op val"): a measurement condition (perturbation)
+    preequilibrate: tuple = None  # (name, "var op val"): equilibrate here to steady state first
+                                  # (two-phase protocol; carry-over into the measurement, ADR-0052)
     measurements: tuple = ()  # derived measurement-model columns (ADR-0036); when set, the
                               # .exp holds these columns, not the raw `obs` (which are only
                               # simulated as inputs to the measurement formulas)
@@ -202,6 +207,28 @@ EXAMPLES = (
         ),
         confs=(
             ConfCheck('gompertz_growth_pso.conf', recover={'r': 0.4, 'K': 100.0}, tol=0.05),
+        ),
+    ),
+    Example(
+        folder='09_experiment_design',
+        model='inducible_gene.bngl',
+        truth={'k_deg': 2.0},
+        build_free={'k_deg': ('uniform_var', 0.1, 10.0)},
+        datasets=(
+            # Dose-response: sweep the stimulus strength k_prod and read the STEADY-STATE
+            # level A_ss = k_prod/k_deg at each dose (a parameter_scan, no time grid).
+            Dataset('dose_response.exp', obs=('A_tot',), t_end=0, n_points=0,
+                    scan='k_prod', doses=(1.0, 2.0, 4.0, 8.0, 16.0)),
+            # Washout: equilibrate with the stimulus ON (A -> k_prod/k_deg), then switch it
+            # OFF and watch A relax -- a two-phase pre-equilibration protocol.
+            Dataset('washout.exp', obs=('A_tot',), t_end=3, n_points=7,
+                    condition=('stim_off', 'Stimulus_isOn = 0'),
+                    preequilibrate=('stim_on', 'Stimulus_isOn = 1')),
+        ),
+        # Two experiment designs, one rate constant: both recover k_deg.
+        confs=(
+            ConfCheck('dose_response.conf', recover={'k_deg': 2.0}, tol=0.03),
+            ConfCheck('washout.conf', recover={'k_deg': 2.0}, tol=0.03),
         ),
     ),
     Example(

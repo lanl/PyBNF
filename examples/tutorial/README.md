@@ -31,6 +31,7 @@ Results land in `output/` inside the lesson folder.
 | 5 | [`05_noisy_decay`](05_noisy_decay) | uncertainty from resampling; noise-weighted fitting | `bootstrap`, `chi_sq` |
 | 7 | [`07_algorithm_bakeoff`](07_algorithm_bakeoff) | **six optimizers on one oscillatory fit** — how each global search behaves | `de`/`ade`/`pso`/`cmaes`/`sa`/`ss` |
 | 8 | [`08_robust_objectives`](08_robust_objectives) | when outliers wreck a fit — and the **noise model** that shrugs them off | `noise_model` (Gaussian vs Laplace) |
+| 9 | [`09_experiment_design`](09_experiment_design) | richer designs — **dose-response at steady state** and a two-phase washout | `condition:` / `preequilibrate:`, parameter scans |
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 | 13 | [`13_petab_lint_clinic`](13_petab_lint_clinic) | a gallery of broken problems — **watch the linter catch each mistake** | PEtab v2 lint tasks (`petab.v2.lint`) through the BNGL loader |
@@ -54,6 +55,7 @@ Every lesson uses these keys (see any `.conf` for the full commentary):
 | `noise_model = family, …` | assemble the objective from a noise family + parameter sources (Lesson 8) |
 | `experiment: name, data: file.exp` | bind a named simulation to its data; the data's time column is the output grid |
 | `observable: id, formula: expr` | a measurement model — score a post-simulation formula over the outputs (Lesson 14) |
+| `condition: name, perturbations: …` | a named parameter setting; `preequilibrate:`/`condition:` on an experiment build multi-phase protocols (Lesson 9) |
 | `uniform_var = p lo hi` | a free parameter, bound by name to model parameter `p`, searched in `[lo, hi]` |
 | `refine = 1` | polish the best fit with a local optimizer |
 

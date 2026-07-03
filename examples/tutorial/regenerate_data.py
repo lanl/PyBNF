@@ -37,22 +37,34 @@ _alg.core.run_job = slim_run_job
 
 
 def _simulate_truth(example, dataset):
-    """Return (cols, arr): the model's trajectory at the true parameters, on the
-    dataset's time grid, through the real bngsim backend."""
+    """Return (cols, arr): the model's output at the true parameters through the real
+    bngsim backend, for the dataset's protocol -- a plain time course, a steady-state
+    parameter scan (``doses``), or a two-phase pre-equilibration (``condition`` /
+    ``preequilibrate``). For the two-phase case we read the MEASUREMENT suffix
+    (``timecourse``), not the unmeasured equilibration phase (``timecourse_preequil``)."""
     H.require_bng2pl()
     folder = example.path
-    grid = np.linspace(0, dataset.t_end, dataset.n_points)
+    indvar = dataset.scan or 'time'
+    if dataset.doses:
+        grid = list(dataset.doses)            # the .exp rows ARE the swept doses (no time grid)
+    else:
+        grid = list(np.linspace(0, dataset.t_end, dataset.n_points))
     # Everything the fit machinery writes (network gen, output_dir, truth run)
     # goes to a scratch dir so the committed example folder stays pristine.
     scratch = Path(tempfile.mkdtemp(prefix='tutorial_gen_'))
     try:
         placeholder = scratch / dataset.exp
-        placeholder.write_text('#\ttime\t' + '\t'.join(dataset.obs) + '\n' +
-                               '\n'.join(f'{t:.10g}\t' + '\t'.join('0' for _ in dataset.obs)
-                                         for t in grid) + '\n')
+        placeholder.write_text('#\t' + indvar + '\t' + '\t'.join(dataset.obs) + '\n' +
+                               '\n'.join(f'{x:.10g}\t' + '\t'.join('0' for _ in dataset.obs)
+                                         for x in grid) + '\n')
+        extra = {}
+        if dataset.condition is not None:
+            extra['condition'] = dataset.condition
+        if dataset.preequilibrate is not None:
+            extra['preequilibrate'] = dataset.preequilibrate
         conf = H.make_newera_config(scratch, str(folder / example.model), placeholder,
                                     example.build_free, 'timecourse', 'de',
-                                    population_size=4, max_iterations=1)
+                                    population_size=4, max_iterations=1, **extra)
         alg = H.build(conf, 'de')
         truth = PSet([v.set_value(example.truth[v.name]) for v in alg.variables])
         model = alg.model_list[0].copy_with_param_set(truth)
@@ -63,7 +75,7 @@ def _simulate_truth(example, dataset):
             ds = model.execute(out, 'truth', 0)
         finally:
             os.chdir(home)
-        data = ds[next(iter(ds))]
+        data = ds['timecourse'] if 'timecourse' in ds else ds[next(iter(ds))]
         return data.cols, np.asarray(data.data)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -98,18 +110,21 @@ def _write_measurement_exp(path, cols, arr, dataset):
     Path(path).write_text('\n'.join(lines) + '\n')
 
 
-def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=()):
+def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
+               indvar='time'):
     """Write the simulated trajectory as a ``.exp``.
 
-    Beyond the raw obs columns, two optional corruptions support the noise/robust
-    lessons: gaussian ``noise_sd`` (added to every point, seeded), and explicit
-    ``outliers`` -- ``(row_index, replacement_value)`` pairs spliced into the FIRST
-    observable column (deterministic gross errors). A ``_SD`` column is written per
-    observable when either ``sd`` (a constant, independent of the gaussian noise)
-    or ``noise_sd`` is set, so chi_sq / laplace have a per-point scale to weight by.
+    ``indvar`` is the independent-variable column (``time`` for a time course, or the
+    swept parameter name for a dose-response scan). Beyond the obs columns, two
+    optional corruptions support the noise/robust lessons: gaussian ``noise_sd``
+    (added to every point, seeded), and explicit ``outliers`` -- ``(row_index,
+    replacement_value)`` pairs spliced into the FIRST observable column
+    (deterministic gross errors). A ``_SD`` column is written per observable when
+    either ``sd`` (a constant, independent of the gaussian noise) or ``noise_sd`` is
+    set, so chi_sq / laplace have a per-point scale to weight by.
     """
-    idx = [cols['time']] + [cols[o] for o in obs]
-    header = ['time'] + list(obs)
+    idx = [cols[indvar]] + [cols[o] for o in obs]
+    header = [indvar] + list(obs)
     rows = arr[:, idx].copy()
     if noise_sd > 0:
         rng = np.random.default_rng(noise_seed)
@@ -137,7 +152,8 @@ def regenerate(example):
                   f'[{len(arr)} pts, measurement-model: {derived}]')
         else:
             _write_exp(example.path / dataset.exp, cols, arr, dataset.obs,
-                       dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers)
+                       dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers,
+                       indvar=dataset.scan or 'time')
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
             if dataset.outliers:
                 tag += f' (+{len(dataset.outliers)} outliers, _SD={dataset.sd})'
