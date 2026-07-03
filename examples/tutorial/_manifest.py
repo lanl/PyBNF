@@ -102,6 +102,22 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='05_noisy_decay',
+        model='noisy_decay.bngl',
+        truth={'k': 0.5, 'A0': 100.0},
+        build_free={'k': ('uniform_var', 0.05, 3.0), 'A0': ('uniform_var', 20.0, 400.0)},
+        datasets=(
+            # A noisy dataset (gaussian sd=3, written as _SD columns) for the
+            # uncertainty lessons -- bootstrapping resamples these residuals.
+            Dataset('noisy_decay.exp', obs=('Obs_A',), t_end=10, n_points=21,
+                    noise_sd=3.0, noise_seed=7),
+        ),
+        # The bootstrap conf is CLI-orchestrated, so it is verified by its own
+        # subprocess test (tests/test_tutorial_bootstrap.py), not the inline
+        # harness verifier -- no ConfCheck here.
+        confs=(),
+    ),
+    Example(
         folder='03_gompertz_growth',
         model='gompertz_growth.bngl',
         truth={'r': 0.4, 'K': 100.0},
