@@ -33,12 +33,21 @@ class Dataset:
 
 @dataclass(frozen=True)
 class ConfCheck:
-    """One committed ``.conf`` and what a fit of it must recover."""
+    """One committed ``.conf`` and how the test checks it.
+
+    Exactly one *mode* applies:
+      * ``refused=True``  -- a gradient fit that must be refused, not run;
+      * ``profile={...}`` -- a profile-likelihood run; the dict maps each
+        parameter to its expected identifiability class (and ``recover`` holds
+        the true values that an *identifiable* CI must bracket);
+      * otherwise         -- a plain fit that must recover ``recover`` within ``tol``.
+    """
     conf: str                 # filename, relative to the example folder
-    recover: dict             # {param: true_value} the fit must return (within tol)
+    recover: dict             # {param: true_value} (recovery target / CI-bracket target)
     tol: float = 0.03          # fractional recovery tolerance
     marker: str = 'default'    # 'default' (bngsim+newera) | 'slow' | 'jax'
     refused: bool = False      # True => a gradient fit that must be REFUSED, not run
+    profile: dict = None       # {param: expected identifiability class} for profile_likelihood
     note: str = ''
 
 
@@ -81,6 +90,15 @@ EXAMPLES = (
         ),
         confs=(
             ConfCheck('bateman_chain_de.conf', recover={'k1': 0.8, 'k2': 0.25}, tol=0.03),
+            # Profile likelihood: all three species observed -> both rates identifiable.
+            ConfCheck('bateman_chain_profile_likelihood.conf',
+                      recover={'k1': 0.8, 'k2': 0.25},
+                      profile={'k1': 'identifiable', 'k2': 'identifiable'}),
+            # Observe only A: A(t) doesn't depend on k2 -> k2 structurally non-identifiable.
+            ConfCheck('bateman_A_only_profile_likelihood.conf',
+                      recover={'k1': 0.8},
+                      profile={'k1': 'identifiable',
+                               'k2': 'structurally non-identifiable'}),
         ),
     ),
     Example(

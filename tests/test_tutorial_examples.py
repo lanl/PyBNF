@@ -53,13 +53,21 @@ def _marks(confcheck):
     return marks
 
 
-def _cases(refused):
-    """(example, confcheck) params for confs whose ``refused`` flag matches, each
-    carrying its tier's marks + a readable id."""
+def _mode(cc):
+    if cc.refused:
+        return 'refused'
+    if cc.profile is not None:
+        return 'profile'
+    return 'recover'
+
+
+def _cases(mode):
+    """(example, confcheck) params for confs in the given mode (recover / refused /
+    profile), each carrying its tier's marks + a readable id."""
     out = []
     for ex in EXAMPLES:
         for cc in ex.confs:
-            if cc.refused is refused:
+            if _mode(cc) == mode:
                 out.append(pytest.param(ex, cc, marks=_marks(cc),
                                         id=f'{ex.folder}/{cc.conf}'))
     return out
@@ -102,7 +110,7 @@ def _fakes(monkeypatch):
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases(refused=True))
+@pytest.mark.parametrize('example, confcheck', _cases('refused'))
 def test_tutorial_conf_is_refused(example, confcheck, tmp_path):
     """A gradient conf on a model bngsim can't differentiate must be refused (the
     gradient-refusal path) -- the teaching point of the piecewise lessons. bngsim
@@ -116,7 +124,7 @@ def test_tutorial_conf_is_refused(example, confcheck, tmp_path):
 
 
 @pytest.mark.usefixtures('_fakes')
-@pytest.mark.parametrize('example, confcheck', _cases(refused=False))
+@pytest.mark.parametrize('example, confcheck', _cases('recover'))
 def test_tutorial_conf_recovers(example, confcheck, tmp_path):
     """Running a lesson's committed conf recovers its documented parameters."""
     H.require_bng2pl()
@@ -134,3 +142,27 @@ def test_tutorial_conf_recovers(example, confcheck, tmp_path):
         assert rel < confcheck.tol, (
             f'{example.folder}/{confcheck.conf}: {p} recovered {rec[p]:g}, '
             f'expected ~{true:g} ({rel * 100:.1f}% off > {confcheck.tol * 100:.0f}%)')
+
+
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('example, confcheck', _cases('profile'))
+def test_tutorial_profile_likelihood(example, confcheck, tmp_path):
+    """A profile_likelihood conf classifies each parameter's identifiability, and
+    an identifiable parameter's confidence interval brackets the known truth."""
+    H.require_bng2pl()
+    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    alg = _build(conf, conf.config['fit_type'])
+    H.drive(alg)
+
+    summary = {s['name']: s for s in alg.profile_summary}
+    for p, expected in confcheck.profile.items():
+        s = summary[p]
+        assert s['classification'] == expected, (
+            f'{example.folder}/{confcheck.conf}: {p} classified '
+            f'{s["classification"]!r}, expected {expected!r}')
+        if expected == 'identifiable' and p in confcheck.recover:
+            assert s['ci_low'] is not None and s['ci_high'] is not None
+            assert s['ci_low'] < confcheck.recover[p] < s['ci_high'], (
+                f'{example.folder}/{confcheck.conf}: {p} CI '
+                f'[{s["ci_low"]:g}, {s["ci_high"]:g}] does not bracket '
+                f'{confcheck.recover[p]:g}')
