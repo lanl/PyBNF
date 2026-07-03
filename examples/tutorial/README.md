@@ -30,7 +30,7 @@ Results land in `output/` inside the lesson folder.
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
 | 5 | [`05_noisy_decay`](05_noisy_decay) | uncertainty from resampling; noise-weighted fitting | `bootstrap`, `chi_sq` |
 | 7 | [`07_algorithm_bakeoff`](07_algorithm_bakeoff) | **six optimizers on one oscillatory fit** — how each global search behaves | `de`/`ade`/`pso`/`cmaes`/`sa`/`ss` |
-| 8 | [`08_robust_objectives`](08_robust_objectives) | when outliers wreck a fit — and the **noise model** that shrugs them off | `noise_model` (Gaussian vs Laplace) |
+| 8 | [`08_robust_objectives`](08_robust_objectives) | when outliers wreck a fit — and the **noise models** that shrug them off | `noise_model` (Gaussian vs Laplace vs Student-t) |
 | 9 | [`09_experiment_design`](09_experiment_design) | richer designs — **dose-response at steady state** and a two-phase washout | `condition:` / `preequilibrate:`, parameter scans |
 | 10 | [`10_per_observable_noise`](10_per_observable_noise) | give each reporter **its own noise model** — robust only where you need it | per-observable `noise_model <obs> = …` |
 | 11 | [`11_interop`](11_interop) | fit the **same model as BNGL, SBML, and Antimony** — one backend, one answer | SBML/Antimony on bngsim (`sbml_backend`) |

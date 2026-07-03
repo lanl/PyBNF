@@ -386,6 +386,9 @@ EXAMPLES = (
             # A heavy-tailed Laplace noise model shrugs the outliers off and
             # recovers the truth (while estimating the noise scale `noise_scale`).
             ConfCheck('decay_laplace.conf', recover={'k': 0.5, 'A0': 100.0}, tol=0.03),
+            # A Student-t noise model (df=4) is robust too, via a tunable
+            # tail-heaviness dial -- recovers the truth despite the same outliers.
+            ConfCheck('decay_student_t.conf', recover={'k': 0.5, 'A0': 100.0}, tol=0.03),
             # A Gaussian noise model is pulled off the truth by the same outliers:
             # its k must be wrong by at least 10% -- the whole point of the lesson.
             ConfCheck('decay_gaussian.conf', recover={'k': 0.5, 'A0': 100.0},
