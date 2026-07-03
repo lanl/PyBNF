@@ -1570,11 +1570,15 @@ class TestBnglGrammarHardening:
         assert ent.seed_species == frozenset({'A()', 'B()', 'C()'})
         assert '$A()' not in ent.seed_species        # the marker never leaks into the id
 
-    def test_molecule_types_block_alias(self):
-        # `begin molecules` is BNG's short alias for `begin molecule types`.
+    def test_rejected_block_aliases_are_not_honored(self):
+        # The grammar doc lists `molecules`/`rules` as aliases, but BNG2.pl 2.9.3
+        # REJECTS both ("Could not process block type"); only `species` is real.
+        # Matching the reference implementation, the reader must NOT treat
+        # `begin molecules`/`begin rules` as their canonical blocks (else it would
+        # accept models BNG2.pl refuses).
         from pybnf.petab._bngl import parse_model
         ent = parse_model('begin molecules\n A()\n B(x)\nend molecules\n')
-        assert ent.molecule_type_names == frozenset({'A', 'B'})
+        assert ent.molecule_type_names == frozenset()   # `molecules` not an alias
 
     def test_line_continuation_is_joined(self):
         # A trailing `\` continues the logical line (BNG2.pl readFile). Without

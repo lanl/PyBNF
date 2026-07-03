@@ -15,19 +15,19 @@ sets were fixed against BNG2.pl's ``Perl2/`` modules, not the PySB analogy:
 expression symbols are exactly the ``ParamList`` (parameters, observables, global
 functions), and compartments are *not* expression symbols (ADR-0026).
 
-The grammar this reader is hardened against is the BNGL reference in the sibling
-``BNG_vscode_extension`` repo (``docs/bngl-grammar.md``, derived from
-``bng2/Perl2/``): line continuations (a trailing ``\\``), block aliases
-(``molecules``/``species``/``rules``), the seed-species ``$`` clamp marker, and
-the observable/function/compartment line shapes.
+The grammar this reader is hardened against is BNG2.pl itself (the ``is_valid``
+oracle; cross-checked against the reference in the sibling ``BNG_vscode_extension``
+repo, ``docs/bngl-grammar.md``): line continuations (a trailing ``\\``), the
+``species`` block alias (``begin species`` = ``begin seed species``), the seed-
+species ``$`` clamp marker, and the observable/function/compartment line shapes.
 
 **Drift note (#420 Step B):** this reader has an upstream twin — the standalone,
 pybnf-free port in the ``bngl_model_support`` branch of ``libpetab-python``
 (``petab/v1/models/bngl_model.py``), the candidate ``BnglModel`` contribution for
 PEtab-dev/PEtab#436. The two carry the *same* entity-enumeration semantics and
-grammar hardening; any change here (e.g. a new block alias or pattern-modifier
-rule) must be ported there, guarded by the mirrored grammar-hardening tests on
-both sides.
+grammar hardening; any change here (e.g. a block alias or pattern-modifier rule)
+must be ported there, guarded by the mirrored grammar-hardening tests on both
+sides.
 """
 
 import re
@@ -36,14 +36,15 @@ from dataclasses import dataclass
 # The three observable keywords that open an observable declaration line.
 _OBS_KEYWORDS = frozenset({'Molecules', 'Species', 'Counter'})
 
-# Short spellings BNG accepts for a block's canonical (long) name -- the ``Aliases``
-# column of the block table in ``BNG_vscode_extension/docs/bngl-grammar.md``. Only
-# the blocks this reader enumerates need an entry; either spelling opens/closes the
-# same block.
+# Short spellings BNG2.pl accepts for a block's canonical (long) name; either
+# spelling opens/closes the same block. The grammar doc
+# (``BNG_vscode_extension/docs/bngl-grammar.md``) also lists ``molecules`` and
+# ``rules``, but BNG2.pl 2.9.3 -- the reference this linter validates against
+# (``is_valid`` shells to it) -- *rejects* both ("Could not process block type"),
+# so honoring them would accept models BNG2.pl refuses. Only ``species`` (for
+# ``seed species``, which is also BNG2.pl's own canonical output spelling) is real.
 _BLOCK_ALIASES = {
-    'molecule types': ('molecules',),
     'seed species': ('species',),
-    'reaction rules': ('rules',),
 }
 
 
@@ -137,10 +138,10 @@ def _logical_lines(text):
 def _block_lines(text, block_name):
     """Yield the comment-stripped, non-blank lines inside a ``begin/end <block>``.
 
-    ``block_name`` is the canonical (long) spelling; any BNG alias for it
-    (``molecules`` for ``molecule types``, ``species`` for ``seed species``,
-    ``rules`` for ``reaction rules``) opens and closes the same block. Lines are
-    logical lines (continuations already joined; see :func:`_logical_lines`).
+    ``block_name`` is the canonical (long) spelling; a BNG2.pl-accepted alias for
+    it (only ``species`` for ``seed species``; see :data:`_BLOCK_ALIASES`) opens
+    and closes the same block. Lines are logical lines (continuations already
+    joined; see :func:`_logical_lines`).
     """
     names = '|'.join(
         re.escape(n) for n in (block_name, *_BLOCK_ALIASES.get(block_name, ())))
