@@ -627,6 +627,19 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='23_resume',
+        model='decay.bngl',
+        truth={'k': 0.5, 'A0': 100.0},
+        build_free={'k': ('uniform_var', 0.05, 3.0), 'A0': ('uniform_var', 20.0, 400.0)},
+        datasets=(
+            Dataset('decay.exp', obs=('Obs_A',), t_end=10, n_points=21),
+        ),
+        # Checkpoint/resume is orchestrated by the CLI (`pybnf ... -r`), not by an
+        # algorithm's run() alone, so it is verified by its own subprocess test
+        # (tests/test_tutorial_resume.py), not the inline harness -- no ConfCheck.
+        confs=(),
+    ),
+    Example(
         folder='06_step_input',
         model='step_input.bngl',
         truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},
