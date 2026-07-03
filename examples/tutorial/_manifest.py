@@ -640,6 +640,26 @@ EXAMPLES = (
         confs=(),
     ),
     Example(
+        folder='24_moment_equations',
+        model='moments.bngl',
+        truth={'s': 1.0, 'birth_rate': 0.4, 'death_rate': 0.8},
+        build_free={'s': ('uniform_var', 0.1, 5.0),
+                    'birth_rate': ('uniform_var', 0.05, 2.0),
+                    'death_rate': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # Both closed moment trajectories of the birth-death-immigration process:
+            # the mean rises to -s/(b-d)=2.5, the variance to 5.0.
+            Dataset('moments.exp', obs=('Obs_Mean', 'Obs_Variance'), t_end=15, n_points=16),
+        ),
+        confs=(
+            # Fitting mean AND variance jointly recovers all three process rates --
+            # the variance is what separates birth from death (the mean gives only
+            # s and the net b-d).
+            ConfCheck('moment_fit.conf',
+                      recover={'s': 1.0, 'birth_rate': 0.4, 'death_rate': 0.8}, tol=0.03),
+        ),
+    ),
+    Example(
         folder='06_step_input',
         model='step_input.bngl',
         truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},

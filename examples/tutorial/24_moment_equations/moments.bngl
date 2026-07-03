@@ -1,0 +1,58 @@
+# =============================================================================
+#  Birth-death-immigration MOMENT equations   (the ODE states ARE the moments)
+# =============================================================================
+#  A linear branching process    0 -> X (rate s),  X -> 2X (rate b),  X -> 0 (rate d)
+#  has closed first- and second-moment ODEs:
+#
+#        dMean/dt     = s + (b - d)*Mean
+#        dVariance/dt = s + (b + d)*Mean + 2*(b - d)*Variance
+#
+#  so the two ODE states here are literally E[X](t) and Var[X](t). We fit BOTH
+#  moment trajectories as observables to recover the process rates (s, b, d).
+#  (Reporting Analytical_* functions + the Clock dropped: a clean edition-2 model.)
+# =============================================================================
+
+begin model
+
+  begin parameters
+    s           1.0   # immigration rate [individuals/day]  <- FITTED
+    birth_rate  0.4   # per-individual birth rate [1/day]   <- FITTED
+    death_rate  0.8   # per-individual death rate [1/day]   <- FITTED
+    Mean0       0.0   # initial mean      (known)
+    Variance0   0.0   # initial variance  (known)
+  end parameters
+
+  begin molecule types
+    Mean()
+    Variance()
+  end molecule types
+
+  begin seed species
+    Mean()      Mean0
+    Variance()  Variance0
+  end seed species
+
+  begin observables
+    Molecules  Obs_Mean      Mean()
+    Molecules  Obs_Variance  Variance()
+  end observables
+
+  begin functions
+    # dMean/dt = s + birth_rate*Mean - death_rate*Mean  (immigration + birth - death)
+    mean_birth()                   = birth_rate*Obs_Mean
+    # dVariance/dt event-drive + amplification - damping
+    variance_event_drive()         = (birth_rate + death_rate)*Obs_Mean
+    variance_birth_amplification() = 2*birth_rate*Obs_Variance
+  end functions
+
+  begin reaction rules
+    R_mean_immigration:            0 -> Mean()      s
+    R_mean_birth:                  0 -> Mean()      mean_birth()
+    R_mean_death:                  Mean() -> 0      death_rate
+    R_variance_immigration:        0 -> Variance()  s
+    R_variance_event_drive:        0 -> Variance()  variance_event_drive()
+    R_variance_birth_amplification: 0 -> Variance() variance_birth_amplification()
+    R_variance_death_damping:      Variance() -> 0  2*death_rate
+  end reaction rules
+
+end model
