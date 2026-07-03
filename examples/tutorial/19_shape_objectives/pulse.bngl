@@ -1,0 +1,48 @@
+# =============================================================================
+#  A transient pulse       A --k1--> B --k2--> C     (observe B)
+# =============================================================================
+#  A signal enters as A, converts to B, and drains away as C. The middle species
+#  B rises then falls -- a PULSE:
+#
+#        B(t) = A0 * k1/(k2-k1) * (exp(-k1 t) - exp(-k2 t))
+#
+#  The two rates set the SHAPE of that pulse -- how fast it rises, where it peaks,
+#  how it tails off -- while A0 (and any detector gain) sets only its HEIGHT. This
+#  lesson fits data whose height is meaningless (arbitrary detector units): all the
+#  information is in the shape. A shape-comparison objective
+#  (`profile_objective = kl` or `wasserstein`) normalizes the curve to a
+#  distribution and matches that, recovering k1 and k2 from the shape alone
+#  (see pulse_kl.conf / pulse_wasserstein.conf).
+#
+#  No `begin actions` block: the time course comes from the `experiment:` line.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k1   0.8    # A -> B  (the fast, rising edge)     <- FITTED
+    k2   0.25   # B -> C  (the slow, falling tail)    <- FITTED
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+    C()
+  end molecule types
+
+  begin seed species
+    A()  100      # the height is arbitrary -- a shape objective ignores it
+    B()  0
+    C()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_B  B()      # the pulse we measure (shape carries the rates)
+  end observables
+
+  begin reaction rules
+    r1: A() -> B()   k1
+    r2: B() -> C()   k2
+  end reaction rules
+
+end model

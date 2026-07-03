@@ -127,7 +127,7 @@ def _negative_binomial_counts(means, dispersion, seed):
 
 
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
-               indvar='time', count_dispersion=None, count_seed=0):
+               indvar='time', count_dispersion=None, count_seed=0, scale=None):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -145,6 +145,8 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
     idx = [cols[indvar]] + [cols[o] for o in obs]
     header = [indvar] + list(obs)
     rows = arr[:, idx].copy()
+    if scale is not None:
+        rows[:, 1:] *= scale        # observable columns in arbitrary units (scale-free objective)
     if count_dispersion is not None:
         for j in range(1, rows.shape[1]):
             rows[:, j] = _negative_binomial_counts(
@@ -179,8 +181,11 @@ def regenerate(example):
             _write_exp(example.path / dataset.exp, cols, arr, dataset.obs,
                        dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers,
                        indvar=dataset.scan or 'time',
-                       count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed)
+                       count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed,
+                       scale=dataset.scale)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
+            if dataset.scale is not None:
+                tag += f' (scaled x{dataset.scale:g}, arbitrary units)'
             if dataset.count_dispersion is not None:
                 tag += f' (neg-bin counts, r={dataset.count_dispersion}, seed {dataset.count_seed})'
             if dataset.outliers:

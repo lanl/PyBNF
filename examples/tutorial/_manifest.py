@@ -39,6 +39,9 @@ class Dataset:
                               # No _SD column is written -- a count likelihood (neg_bin) is
                               # self-normalizing (lesson 18).
     count_seed: int = 0
+    scale: float = None       # multiply every observable column by this constant -- data in
+                              # ARBITRARY units (e.g. detector AU), for a scale-free shape
+                              # objective (profile_objective = kl/wasserstein; lesson 19)
     outliers: tuple = ()      # ((row_index, obs_name, replacement_value), ...): gross outliers
                               # spliced into the named observable column (deterministic contamination)
     scan: str = None          # if set, an independent-variable column name (dose-response)
@@ -506,6 +509,27 @@ EXAMPLES = (
             # over-dispersed counts.
             ConfCheck('mrna_decay_neg_bin.conf',
                       recover={'k_deg': 0.3, 'N0': 200.0}, tol=0.10),
+        ),
+    ),
+    Example(
+        folder='19_shape_objectives',
+        model='pulse.bngl',
+        truth={'k1': 0.8, 'k2': 0.25},
+        build_free={'k1': ('uniform_var', 0.3, 3.0),
+                    'k2': ('uniform_var', 0.05, 0.3)},
+        datasets=(
+            # The pulse B(t) in ARBITRARY units (scaled x1000): a shape objective
+            # normalizes it away, so only the pulse shape -- and thus k1, k2 -- is fit.
+            Dataset('pulse_shape.exp', obs=('Obs_B',), t_end=20, n_points=41,
+                    scale=1000.0),
+        ),
+        confs=(
+            # Two members of the profile_objective family recover the same rates from
+            # the scale-free pulse shape: KL cross-entropy and Wasserstein distance.
+            # (KL's un-normalized objective is larger-magnitude and converges a touch
+            # looser than the fully-normalized Wasserstein -- hence the wider tol.)
+            ConfCheck('pulse_kl.conf', recover={'k1': 0.8, 'k2': 0.25}, tol=0.05),
+            ConfCheck('pulse_wasserstein.conf', recover={'k1': 0.8, 'k2': 0.25}, tol=0.03),
         ),
     ),
     Example(

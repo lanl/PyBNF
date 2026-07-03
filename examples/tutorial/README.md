@@ -42,6 +42,7 @@ Results land in `output/` inside the lesson folder.
 | 16 | [`16_joint_fit`](16_joint_fit) | fit **two experiments at once** with one shared rate set — a two-route PK study | multi-experiment joint fit, shared parameters (multi-model) |
 | 17 | [`17_bayesian_uncertainty`](17_bayesian_uncertainty) | a **posterior, not just a best fit** — credible intervals from MCMC | DREAM sampler (`dream`), credible intervals *(slow tier)* |
 | 18 | [`18_count_likelihood`](18_count_likelihood) | fit **integer molecule counts** with the likelihood built for them | negative-binomial noise model (`neg_bin`, `dispersion`, `location`) |
+| 19 | [`19_shape_objectives`](19_shape_objectives) | fit the **shape** of a signal when its amplitude is arbitrary | column-joint `profile_objective` (`kl` / `wasserstein`) |
 
 ## The edition-2 config surface, in one place
 
