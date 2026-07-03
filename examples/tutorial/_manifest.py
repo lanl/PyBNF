@@ -53,6 +53,52 @@ class ConfCheck:
 
 
 @dataclass(frozen=True)
+class LintCase:
+    """One PEtab v2 fixture in the ``13_petab_lint_clinic`` gallery and how the
+    linter should react to it.
+
+    ``outcome`` selects the expectation:
+      * ``'clean'``  -- ``lint_problem`` reports no errors;
+      * ``'error'``  -- ``lint_problem`` reports errors, and ``task`` (a
+        ``petab.v2.lint`` Check class name) is among the flagging tasks;
+      * ``'raises'`` -- the defect is structural, so ``Problem.from_yaml`` itself
+        rejects the problem before lint runs.
+    """
+    folder: str                  # subdir under 13_petab_lint_clinic/
+    outcome: str                 # 'clean' | 'error' | 'raises'
+    task: str = ''               # expected Check class in the report (outcome='error')
+    needs_bng2: bool = False     # CheckModel shells out to `BNG2.pl --check`
+    blurb: str = ''              # one-line description (README + test id)
+
+
+# The negative-lint gallery: each fixture carries exactly one defect (or none),
+# and the test asserts the petab.v2 validator -- running through PyBNF's BNGL
+# loader -- reacts as recorded here. See the folder's regenerate_fixtures.py for
+# the recipe that produces each defect.
+LINT_CASES = (
+    LintCase('clean', 'clean',
+             blurb='a valid BNGL-native PEtab v2 problem (baseline)'),
+    LintCase('undefined_observable', 'error', task='CheckMeasuredObservablesDefined',
+             blurb='a measurement references an observable the table never defines'),
+    LintCase('observable_shadows_entity', 'error',
+             task='CheckObservablesDoNotShadowModelEntities',
+             blurb='an observable id collides with a model species/observable name'),
+    LintCase('missing_parameter', 'error', task='CheckAllParametersPresentInParameterTable',
+             blurb='an observable formula uses a symbol declared nowhere'),
+    LintCase('override_placeholder_mismatch', 'error', task='CheckOverridesMatchPlaceholders',
+             blurb='a formula placeholder has no matching measurement override'),
+    LintCase('bad_condition_target', 'error', task='CheckValidConditionTargets',
+             blurb='a condition perturbs a symbol that is not a model entity'),
+    LintCase('bad_prior', 'error', task='CheckPriorDistribution',
+             blurb='a normal prior is given the wrong number of parameters'),
+    LintCase('unknown_prior_distribution', 'raises',
+             blurb='an unrecognized prior distribution name (rejected at load)'),
+    LintCase('malformed_bngl', 'error', task='CheckModel', needs_bng2=True,
+             blurb='a BNGL syntax error (caught by BNG2.pl --check)'),
+)
+
+
+@dataclass(frozen=True)
 class Example:
     folder: str
     model: str
