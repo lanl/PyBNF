@@ -56,6 +56,10 @@ def _marks(confcheck):
 def _mode(cc):
     if cc.refused:
         return 'refused'
+    if cc.aborts:
+        return 'hazard_abort'
+    if cc.hazard:
+        return 'hazard'
     if cc.profile is not None:
         return 'profile'
     if cc.max_obj is not None:
@@ -204,6 +208,49 @@ def test_tutorial_conf_is_dragged_off_truth(example, confcheck, tmp_path):
         f'{example.folder}/{confcheck.conf}: expected the outliers to drag the fit '
         f'off truth by >= {confcheck.dragged_min_err * 100:.0f}%, but the worst '
         f'parameter error was only {worst * 100:.1f}% (recovered {rec})')
+
+
+@pytest.mark.parametrize('example, confcheck', _cases('hazard'))
+def test_tutorial_conf_survives_hazard(example, confcheck, tmp_path, monkeypatch):
+    """A fit on a model with a numerical hazard (finite-time blowup) completes and
+    recovers its parameters even though some simulations FAIL: a failed sim is
+    scored +inf (not a crash), and the optimizer routes around the region. The
+    wall_time_sim + max_failed_simulations guards keep the run bounded. We also
+    assert that failures actually happened, so the test is not vacuous.
+
+    Uses the failure-catching inline run_job (``catch_sim_failures``), which
+    mirrors production's ``run_simulation`` -- the default ``slim_run_job`` lets a
+    sim exception crash the run."""
+    H.require_bng2pl()
+    H.install(monkeypatch, catch_sim_failures=True)
+    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    alg = _build(conf, conf.config['fit_type'])
+    H.drive(alg)
+    if conf.config.get('refine'):
+        H.refine(alg, conf)
+
+    assert alg.fail_count > 0, (
+        f'{example.folder}/{confcheck.conf}: expected some simulations to hit the '
+        f'hazard and fail, but none did -- the guard demonstration is vacuous')
+    rec = H.best_params(alg, tuple(confcheck.recover))
+    for p, true in confcheck.recover.items():
+        rel = abs(rec[p] - true) / abs(true)
+        assert rel < confcheck.tol, (
+            f'{example.folder}/{confcheck.conf}: {p} recovered {rec[p]:g}, '
+            f'expected ~{true:g} ({rel * 100:.1f}% off > {confcheck.tol * 100:.0f}%)')
+
+
+@pytest.mark.parametrize('example, confcheck', _cases('hazard_abort'))
+def test_tutorial_conf_aborts_when_all_fail(example, confcheck, tmp_path, monkeypatch):
+    """When every candidate hits the hazard (all sims fail, none succeed), the
+    max_failed_simulations guard aborts the run with a clear error instead of
+    spinning forever proposing unsimulatable parameter sets."""
+    H.require_bng2pl()
+    H.install(monkeypatch, catch_sim_failures=True)
+    conf = _load_conf(example, confcheck, tmp_path, seed=1234)
+    alg = _build(conf, conf.config['fit_type'])
+    with pytest.raises(PybnfError, match='(?i)all jobs are failing'):
+        H.drive(alg)
 
 
 @pytest.mark.usefixtures('_fakes')

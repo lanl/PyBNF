@@ -94,6 +94,11 @@ class ConfCheck:
     max_obj: float = None      # constraint fit: assert best objective <= this (0 => all satisfied)
     dragged_min_err: float = None  # cautionary conf: at least one `recover` param must be off by
                                    # >= this fraction (a non-robust objective broken by outliers)
+    hazard: bool = False       # True => a fit whose model has a numerical hazard (finite-time
+                               # blowup): some simulations MUST fail, yet the fit completes and
+                               # recovers `recover` -- the verifier asserts fail_count > 0 too
+    aborts: bool = False       # True => every candidate hits the hazard (all sims fail): the
+                               # max_failed_simulations guard must abort the run with a PybnfError
     note: str = ''
 
 
@@ -573,6 +578,27 @@ EXAMPLES = (
             # looser than the fully-normalized Wasserstein -- hence the wider tol.)
             ConfCheck('pulse_kl.conf', recover={'k1': 0.8, 'k2': 0.25}, tol=0.05),
             ConfCheck('pulse_wasserstein.conf', recover={'k1': 0.8, 'k2': 0.25}, tol=0.03),
+        ),
+    ),
+    Example(
+        folder='21_numerical_hazards',
+        model='quadratic_finite_time_growth.bngl',
+        truth={'k': 0.5},
+        # k > 0.625 pulls the finite-time pole 1/(k*X0) inside the window (X0=0.2,
+        # t_end=8), so the upper part of this range blows up and those sims fail.
+        build_free={'k': ('uniform_var', 0.1, 2.0)},
+        datasets=(
+            # A clean sub-blowup trajectory at the truth (pole at t=10, past t_end=8).
+            Dataset('quadratic_finite_time_growth.exp', obs=('Obs_X',),
+                    t_end=8, n_points=17),
+        ),
+        confs=(
+            # The fit survives the blowups (some sims fail, scored +inf) and still
+            # recovers k, guarded by wall_time_sim + max_failed_simulations.
+            ConfCheck('blowup_survives.conf', recover={'k': 0.5}, tol=0.03, hazard=True),
+            # Bounds placed entirely inside the hazardous region: every sim fails,
+            # so max_failed_simulations aborts the run instead of spinning forever.
+            ConfCheck('blowup_aborts.conf', recover={}, aborts=True),
         ),
     ),
     Example(

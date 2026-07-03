@@ -1,0 +1,31 @@
+# quadratic finite-time growth  dX/dt = k*X^2   (clean edition-2 model)
+begin model
+
+  begin parameters
+    k   0.5   # quadratic growth coefficient [1/AU/day]   <- FITTED
+    X0  0.2   # initial abundance [AU]                     <- FITTED
+  end parameters
+
+  begin molecule types
+    X()
+  end molecule types
+
+  begin seed species
+    X()  X0
+  end seed species
+
+  begin observables
+    Molecules  Obs_X  X()
+  end observables
+
+  begin functions
+    # Quadratic positive-feedback flux; the closed form X0/(1-k*X0*t) has a
+    # finite-time pole at t = 1/(k*X0), so a too-large k blows up inside the window.
+    quadratic_growth() = k*Obs_X^2
+  end functions
+
+  begin reaction rules
+    R_growth: 0 -> X()  quadratic_growth()
+  end reaction rules
+
+end model

@@ -68,7 +68,33 @@ def require_bng2pl():
         pytest.skip('BNG2.pl not resolvable (set BNGPATH) -- required for rules->.net generation')
 
 
-def install(monkeypatch, *, real_run_job=False):
+def _run_job_catching(j, debug=False, failed_logs_dir=''):
+    """Folder-free ``run_job`` (like ``slim_run_job``) that turns a simulation
+    exception into a :class:`~pybnf.algorithms.core.FailedSimulation` instead of
+    letting it crash the run -- exactly what the real ``Job.run_simulation`` does
+    in its ``except`` arms. ``slim_run_job`` omits that guard (its targets never
+    fail), so a model with a genuine numerical hazard (e.g. the finite-time
+    blowup of lesson 21, whose ODE solver aborts for a diverging parameter set)
+    needs this variant to be driven inline: the failing evaluations are scored
+    ``+inf`` and the optimizer routes around them, just as in production.
+    """
+    from pybnf.algorithms.core import Result, FailedSimulation
+    try:
+        simdata = j._run_models()
+    except Exception:
+        return FailedSimulation(j.params, j.job_id, 1)
+    res = Result(j.params, simdata, j.job_id)
+    if j.calc_future is not None:
+        res.normalize(j.norm_settings)
+        res.score = j.calc_future.result().evaluate_objective(
+            res.simdata, res.pset, show_warnings=False)
+        res.out = simdata
+        if res.score is None:          # NaN/Inf simulation -> penalize, don't crash
+            res.score = np.inf
+    return res
+
+
+def install(monkeypatch, *, real_run_job=False, catch_sim_failures=False):
     """Fake the dask layer so the fit runs inline.
 
     The bngsim **simulation** is always real. By default ``run_job`` is also faked
@@ -76,10 +102,14 @@ def install(monkeypatch, *, real_run_job=False):
     folders add only I/O the production path already covers in ``test_run_loop`` /
     ``test_job_execution``) -- this keeps the tier fast. Pass ``real_run_job=True``
     for a smoke test that exercises the genuine ``run_job`` + folder path end to end
-    with the bngsim backend.
+    with the bngsim backend. Pass ``catch_sim_failures=True`` (still folder-free) to
+    tolerate simulations that raise -- needed for the numerical-hazard lesson, where
+    some parameter sets make the ODE solver diverge.
     """
     monkeypatch.setattr(algorithms.core, 'as_completed', FakeAsCompleted)
-    if not real_run_job:
+    if catch_sim_failures:
+        monkeypatch.setattr(algorithms.core, 'run_job', _run_job_catching)
+    elif not real_run_job:
         monkeypatch.setattr(algorithms.core, 'run_job', slim_run_job)
 
 
