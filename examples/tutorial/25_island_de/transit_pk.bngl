@@ -1,0 +1,51 @@
+# =============================================================================
+#  Transit-compartment absorption PK (N=2)   Transit1->Transit2->Absorption->Central
+# =============================================================================
+#  A single oral bolus flows through two transit compartments (rate k_transit each),
+#  is absorbed into the central/plasma compartment (rate k_abs), and is eliminated
+#  (rate k_elim). Three rate constants govern a four-compartment cascade -- a
+#  rugged inverse problem, since the transit and absorption rates are similar in
+#  magnitude and easily confused. (Reporting Analytical_* functions + Clock dropped.)
+# =============================================================================
+
+begin model
+
+  begin parameters
+    Dose            3.5    # administered bolus [mg]           (known)
+    F_bio           0.69   # bioavailability fraction          (known)
+    Effective_Dose  F_bio*Dose   # amount entering compartment 1 [mg]
+
+    k_transit  12.76   # transit rate [1/hour]      <- FITTED
+    k_abs       9.11   # absorption rate [1/hour]   <- FITTED
+    k_elim      0.96   # elimination rate [1/hour]  <- FITTED
+  end parameters
+
+  begin molecule types
+    Transit1()
+    Transit2()
+    Absorption()
+    Central()
+  end molecule types
+
+  begin seed species
+    Transit1()    Effective_Dose
+    Transit2()    0.0
+    Absorption()  0.0
+    Central()     0.0
+  end seed species
+
+  begin observables
+    Molecules  Obs_Transit1    Transit1()
+    Molecules  Obs_Transit2    Transit2()
+    Molecules  Obs_Absorption  Absorption()
+    Molecules  Obs_Central     Central()
+  end observables
+
+  begin reaction rules
+    R_transit1_to_transit2:  Transit1()  -> Transit2()    k_transit
+    R_transit2_to_absorption: Transit2() -> Absorption()  k_transit
+    R_absorption_to_central: Absorption() -> Central()    k_abs
+    R_elimination:           Central()   -> 0             k_elim
+  end reaction rules
+
+end model

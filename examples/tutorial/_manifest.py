@@ -660,6 +660,25 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='25_island_de',
+        model='transit_pk.bngl',
+        truth={'k_transit': 12.76, 'k_abs': 9.11, 'k_elim': 0.96},
+        build_free={'k_transit': ('uniform_var', 1.0, 30.0),
+                    'k_abs': ('uniform_var', 1.0, 30.0),
+                    'k_elim': ('uniform_var', 0.1, 5.0)},
+        datasets=(
+            # Only the central (plasma) compartment is observed; all three rates must
+            # be inferred from that one curve.
+            Dataset('transit_pk.exp', obs=('Obs_Central',), t_end=8, n_points=33),
+        ),
+        confs=(
+            # Island DE (job_type=de + islands/migrate_every/num_to_migrate) recovers
+            # all three PK rates from the plasma curve alone.
+            ConfCheck('island_de.conf',
+                      recover={'k_transit': 12.76, 'k_abs': 9.11, 'k_elim': 0.96}, tol=0.03),
+        ),
+    ),
+    Example(
         folder='06_step_input',
         model='step_input.bngl',
         truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},
