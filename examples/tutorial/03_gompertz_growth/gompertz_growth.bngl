@@ -1,0 +1,43 @@
+# =============================================================================
+#  Gompertz growth              dX/dt = r * X * ln(K / X)
+# =============================================================================
+#  A sigmoidal growth law (common for tumours) whose per-capita rate slows
+#  logarithmically as X approaches the carrying capacity K. Closed form:
+#
+#        X(t) = K * exp( ln(X0/K) * exp(-r t) )
+#
+#  The rate law is nonlinear in X, which makes the objective landscape a little
+#  less forgiving than logistic -- a good showcase for a global optimizer
+#  (particle swarm) finished with a local polish (refine).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    r   0.4    # Gompertz growth-rate parameter   [1/day]   <- FITTED
+    K   100    # carrying capacity                [AU]      <- FITTED
+    X0  10     # initial abundance (must be > 0)  [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    X()
+  end molecule types
+
+  begin seed species
+    X()  X0
+  end seed species
+
+  begin observables
+    Molecules  Obs_X  X()
+  end observables
+
+  begin functions
+    # Gompertz growth flux (nonlinear in the current abundance).
+    gompertz_flux()  = r*Obs_X*ln(K/Obs_X)
+  end functions
+
+  begin reaction rules
+    growth: 0 -> X()  gompertz_flux()       # dX/dt = r*X*ln(K/X)
+  end reaction rules
+
+end model

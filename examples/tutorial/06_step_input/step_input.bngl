@@ -1,0 +1,59 @@
+# =============================================================================
+#  Step-input first-order system     dX/dt = J(t) - k*X,  J steps up at t = tau
+# =============================================================================
+#  A first-order system driven by an input J(t) that jumps from J_base to
+#  J_base + J_step at time tau:
+#
+#        J(t) = J_base                for t <  tau
+#        J(t) = J_base + J_step       for t >= tau
+#
+#  This model uses an `if(t < tau, ...)` conditional in its input rate law. It is
+#  the star of Lesson 6 -- it fits fine with a metaheuristic (differential
+#  evolution) but the gradient optimizers (trf/lbfgs) REFUSE it. The reason is
+#  specific: bngsim's forward-sensitivity engine does not support the `if()`
+#  conditional construct (it raises "expression 'Input_X' ... uses unsupported
+#  construct: if() conditional"). The refusal is a feature, not a bug -- it tells
+#  you to pick a gradient-free algorithm for inputs expressed this way.
+#
+#  A `Clock()` pseudo-species carries simulation time `t` so the input function
+#  can reference it (BNGL rate laws have no built-in `time` symbol).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k       0.6    # first-order decay rate       [1/day]     <- FITTED
+    J_base  1.2    # baseline input               [AU/day]    <- FITTED
+    J_step  2.4    # step increase at t = tau      [AU/day]    <- FITTED
+    tau     4.0    # step time                    [day]       (fixed/known)
+    X0      0.5    # initial amount               [AU]        (fixed/known)
+  end parameters
+
+  begin molecule types
+    X()
+    Clock()
+  end molecule types
+
+  begin seed species
+    X()      X0
+    Clock()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_X  X()
+    Molecules  t      Clock()
+  end observables
+
+  begin functions
+    # The stepped input -- a discrete jump at t = tau (this is what makes the
+    # model non-differentiable for the gradient optimizers).
+    Input_X()  = if(t < tau, J_base, J_base + J_step)
+  end functions
+
+  begin reaction rules
+    clock:  0   -> Clock()  1.0        # dt/dt = 1  (carries time into Input_X)
+    input:  0   -> X()      Input_X()  # dX/dt += J(t)
+    decay:  X() -> 0        k          # dX/dt -= k*X
+  end reaction rules
+
+end model

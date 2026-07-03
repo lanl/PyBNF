@@ -1,0 +1,47 @@
+# =============================================================================
+#  Logistic (Verhulst-Pearl) growth        dN/dt = r * N * (1 - N/K)
+# =============================================================================
+#  A single growing population N(t) that accelerates while it is small and
+#  saturates at the carrying capacity K. The closed-form solution is
+#
+#        N(t) = K / ( 1 + ((K - N0)/N0) * exp(-r*t) )
+#
+#  so a fit to a clean time course should recover r and K exactly.
+#
+#  This is an *edition-2* model: it has NO `begin actions` block. PyBNF
+#  synthesizes the simulation from the experiment's data grid (see the .conf),
+#  so the model file describes only the biology.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    r   1.2     # intrinsic per-capita growth rate   [1/day]   <- FITTED
+    K   100     # carrying capacity                  [AU]      <- FITTED
+    N0  5       # initial abundance                  [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    N()
+  end molecule types
+
+  begin seed species
+    N()  N0
+  end seed species
+
+  begin observables
+    Molecules  Obs_N  N()
+  end observables
+
+  begin functions
+    # Per-capita crowding loss. BNG multiplies a unimolecular rate by the
+    # reactant count, so this rate law gives a total loss of (r/K)*N^2.
+    crowding_loss_rate()  = r*Obs_N/K
+  end functions
+
+  begin reaction rules
+    growth: 0   -> N()  r*Obs_N               # dN/dt += r*N        (exponential growth)
+    crowd:  N() -> 0    crowding_loss_rate()  # dN/dt -= (r/K)*N^2  (density-dependent loss)
+  end reaction rules
+
+end model
