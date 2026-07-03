@@ -1,0 +1,60 @@
+# =============================================================================
+#  Linearized Lotka-Volterra    dP/dt = -alpha*Q,  dQ/dt = gamma*P
+# =============================================================================
+#  Predator-prey dynamics linearized about the coexistence equilibrium, giving an
+#  undamped harmonic oscillation in the (signed) relative deviations P and Q:
+#
+#        P(t) = P0 cos(w t) - (alpha Q0 / w) sin(w t)
+#        Q(t) = Q0 cos(w t) + (gamma P0 / w) sin(w t)        w = sqrt(alpha*gamma)
+#
+#  This is a deliberately AWKWARD landscape for a fit: the objective as a function
+#  of (alpha, gamma) is oscillatory, because a trial frequency that is off by a
+#  little drifts in and out of phase with the data over the time window, carving
+#  the error surface into ridges and local minima at nearby/aliased frequencies.
+#  That makes it the perfect proving ground for an algorithm BAKE-OFF -- see the
+#  six .conf files, one per optimizer, in this folder.
+#
+#  P and Q are signed continuous ODE states (deviations, not molecule counts), so
+#  this model is ODE-only. Adapted from the analytical-ODE catalog's
+#  `linearized_lotka_volterra`, with the closed-form reporting functions removed
+#  (a clean edition-2 model: only the dynamics).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    alpha  1.2    # prey response rate     [1/day]   <- FITTED
+    gamma  0.8    # predator response rate [1/day]   <- FITTED
+    P0     0.20   # initial prey deviation      [-]  (fixed/known)
+    Q0    -0.10   # initial predator deviation  [-]  (fixed/known)
+  end parameters
+
+  begin molecule types
+    P()
+    Q()
+  end molecule types
+
+  begin seed species
+    P()  P0
+    Q()  Q0
+  end seed species
+
+  begin observables
+    Molecules  Obs_P  P()
+    Molecules  Obs_Q  Q()
+  end observables
+
+  begin functions
+    # Signed ODE contribution rules -- the total flux into each state, not a
+    # per-reactant rate constant (BNG multiplies unimolecular rates by the
+    # reactant count, so these `0 -> X` source rules give exactly dX/dt).
+    dP_dt()  = -alpha*Obs_Q
+    dQ_dt()  =  gamma*Obs_P
+  end functions
+
+  begin reaction rules
+    R_dP:  0 -> P()  dP_dt()
+    R_dQ:  0 -> Q()  dQ_dt()
+  end reaction rules
+
+end model

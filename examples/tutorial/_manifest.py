@@ -199,6 +199,27 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='07_algorithm_bakeoff',
+        model='oscillator.bngl',
+        truth={'alpha': 1.2, 'gamma': 0.8},
+        build_free={'alpha': ('uniform_var', 0.1, 5.0),
+                    'gamma': ('uniform_var', 0.1, 5.0)},
+        datasets=(
+            Dataset('oscillator.exp', obs=('Obs_P', 'Obs_Q'), t_end=12, n_points=25),
+        ),
+        # Six metaheuristics, one oscillatory landscape, same (alpha, gamma) truth.
+        # Every optimizer in the population/metaheuristic family must recover it --
+        # a broad regression gate across the whole non-gradient algorithm surface.
+        confs=(
+            ConfCheck('oscillator_de.conf',    recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            ConfCheck('oscillator_ade.conf',   recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            ConfCheck('oscillator_pso.conf',   recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            ConfCheck('oscillator_cmaes.conf', recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            ConfCheck('oscillator_sa.conf',    recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            ConfCheck('oscillator_ss.conf',    recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+        ),
+    ),
+    Example(
         folder='14_observable_layer',
         model='conversion.bngl',
         truth={'k': 0.7},

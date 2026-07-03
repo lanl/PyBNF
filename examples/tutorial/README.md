@@ -29,6 +29,7 @@ Results land in `output/` inside the lesson folder.
 | 2 | [`02_bateman_chain`](02_bateman_chain) | fitting several observables at once; **is each rate identifiable?** | differential evolution (`de`), multi-observable, **profile likelihood** |
 | 3 | [`03_gompertz_growth`](03_gompertz_growth) | global search then local polish | particle swarm (`pso`) + `refine` |
 | 5 | [`05_noisy_decay`](05_noisy_decay) | uncertainty from resampling; noise-weighted fitting | `bootstrap`, `chi_sq` |
+| 7 | [`07_algorithm_bakeoff`](07_algorithm_bakeoff) | **six optimizers on one oscillatory fit** — how each global search behaves | `de`/`ade`/`pso`/`cmaes`/`sa`/`ss` |
 | 6 | [`06_step_input`](06_step_input) | when a gradient fit is *refused* — and how to fix it by smoothing the step | gradient-refusal + smooth (sigmoid) approximation |
 | 12 | [`12_petab_roundtrip`](12_petab_roundtrip) | export/import/validate a PEtab v2 problem | PEtab v2 interop + the BNGL linter |
 | 13 | [`13_petab_lint_clinic`](13_petab_lint_clinic) | a gallery of broken problems — **watch the linter catch each mistake** | PEtab v2 lint tasks (`petab.v2.lint`) through the BNGL loader |
