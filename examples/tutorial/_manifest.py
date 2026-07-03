@@ -419,6 +419,25 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='17_bayesian_uncertainty',
+        model='bateman_chain.bngl',
+        truth={'k1': 0.8, 'k2': 0.25},
+        build_free={'k1': ('uniform_var', 0.05, 3.0), 'k2': ('uniform_var', 0.02, 2.0)},
+        datasets=(
+            # A clean bateman curve carrying a constant _SD column: the data sits
+            # exactly at the truth, and the _SD sets the likelihood width, so the
+            # posterior is centred on the truth with a scale the sampler can resolve.
+            # Both rates are O(1), so the DREAM chains mix them together well.
+            Dataset('bateman_chain.exp', obs=('Obs_A', 'Obs_B', 'Obs_C'),
+                    t_end=20, n_points=21, sd=3.0),
+        ),
+        # The Bayesian conf samples a whole posterior (a slow DREAM run that writes
+        # credible intervals), asserted differently from a point-recovery fit, so it
+        # has its own slow-tier verifier (tests/test_tutorial_bayesian.py) rather than
+        # a ConfCheck here.
+        confs=(),
+    ),
+    Example(
         folder='06_step_input',
         model='step_input.bngl',
         truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},

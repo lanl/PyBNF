@@ -1,0 +1,49 @@
+# =============================================================================
+#  Bateman chain          A --k1--> B --k2--> C        (two sequential decays)
+# =============================================================================
+#  A classic three-species chain: A decays into B, which decays into C. With
+#  distinct rates (k1 != k2) the closed form is the Bateman equation:
+#
+#        A(t) = A0 * exp(-k1 t)
+#        B(t) = A0 * k1/(k2-k1) * ( exp(-k1 t) - exp(-k2 t) )
+#        C(t) = A0 - A(t) - B(t)                          (mass is conserved)
+#
+#  We observe all three species and recover the two rate constants k1 and k2.
+#  Note (Lesson 4): B and C never depend on A alone, but A(t) does NOT depend on
+#  k2 at all -- observing only A leaves k2 structurally non-identifiable.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k1  0.8    # A -> B rate   [1/day]   <- FITTED
+    k2  0.25   # B -> C rate   [1/day]   <- FITTED
+    A0  100    # initial A     [AU]      (fixed/known)
+    B0  0      # initial B     [AU]      (fixed/known)
+    C0  0      # initial C     [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+    C()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  B0
+    C()  C0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_B  B()
+    Molecules  Obs_C  C()
+  end observables
+
+  begin reaction rules
+    A_to_B: A() -> B()  k1
+    B_to_C: B() -> C()  k2
+  end reaction rules
+
+end model

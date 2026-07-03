@@ -40,9 +40,7 @@ Results land in `output/` inside the lesson folder.
 | 14 | [`14_observable_layer`](14_observable_layer) | fit what the **instrument** reports, not the raw species — a scale, a ratio, a log | measurement models / `observableFormula` (ADR-0036) |
 | 15 | [`15_petab_priors`](15_petab_priors) | **declare what you believe** — a PEtab prior gallery and how each imports | PEtab `priorDistribution` → `FreeParameter` priors |
 | 16 | [`16_joint_fit`](16_joint_fit) | fit **two experiments at once** with one shared rate set — a two-route PK study | multi-experiment joint fit, shared parameters (multi-model) |
-
-*(More lessons — Bayesian sampling (`slow` tier) — are being added; numbering
-leaves room for them.)*
+| 17 | [`17_bayesian_uncertainty`](17_bayesian_uncertainty) | a **posterior, not just a best fit** — credible intervals from MCMC | DREAM sampler (`dream`), credible intervals *(slow tier)* |
 
 ## The edition-2 config surface, in one place
 
