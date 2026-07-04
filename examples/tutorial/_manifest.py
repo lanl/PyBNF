@@ -748,6 +748,30 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='30_data_fusion',
+        model='reversible_conversion.bngl',
+        truth={'kf': 0.7, 'kr': 0.2},
+        build_free={'kf': ('uniform_var', 0.05, 3.0), 'kr': ('uniform_var', 0.02, 2.0)},
+        datasets=(
+            # A relaxation TIME COURSE (Obs_B rising to equilibrium at the default total
+            # A0=80): its relaxation rate is kf+kr.
+            Dataset('relaxation.exp', obs=('Obs_B',), t_end=8, n_points=17, sd=1.0),
+            # A steady-state TITRATION: the independent variable is the total amount A0
+            # (not time), so each row is run to STEADY STATE and reads the equilibrium
+            # Obs_B. This sees only the ratio kf/kr (the equilibrium constant).
+            Dataset('titration.exp', obs=('Obs_B',), t_end=0, n_points=0,
+                    scan='A0', doses=(20.0, 40.0, 80.0, 160.0, 320.0), sd=1.0),
+            # (qualitative.prop is committed by hand, like lesson 1 -- BPSL facts, not a
+            # model-generated .exp, so it is not regenerated here.)
+        ),
+        confs=(
+            # One fit to all three data types at once. The titration alone is degenerate
+            # (ratio only); fused with the kinetics + qualitative facts it recovers both
+            # rates. de + refine.
+            ConfCheck('data_fusion.conf', recover={'kf': 0.7, 'kr': 0.2}, tol=0.03),
+        ),
+    ),
+    Example(
         folder='06_step_input',
         model='step_input.bngl',
         truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},

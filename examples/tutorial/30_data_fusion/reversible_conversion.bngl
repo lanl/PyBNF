@@ -1,0 +1,55 @@
+# =============================================================================
+#  Reversible first-order conversion      A <--kf/kr--> B
+# =============================================================================
+#  A single reversible reaction: A converts to B at rate kf, B back to A at rate
+#  kr. The total A + B is conserved, and the system relaxes to an equilibrium set
+#  by the ratio of the rates:
+#
+#        dA/dt = -kf*A + kr*B          A(t) -> A_eq = kr/(kf+kr) * (A0+B0)
+#        dB/dt =  kf*A - kr*B          B(t) -> B_eq = kf/(kf+kr) * (A0+B0)
+#
+#  Two very different measurements probe this system, and NEITHER pins both rates
+#  on its own -- which is the point of lesson 30:
+#
+#    * EQUILIBRIUM (a steady-state titration): vary the total amount and read the
+#      equilibrium B. This sees only the RATIO kf/kr (the equilibrium constant);
+#      it cannot tell a fast pair (kf,kr) from a slow pair with the same ratio.
+#    * KINETICS (a relaxation time-course): watch B approach equilibrium. The
+#      relaxation rate is kf+kr -- the timescale the equilibrium data is blind to.
+#
+#  Fit them TOGETHER (plus a qualitative fact) and the ratio + the rate pin both
+#  kf and kr. Adapted from the analytical_odes `reversible_first_order_conversion`
+#  model (closed-form report functions, Clock/t, and the A_eq/B_eq/T_total/s_rate
+#  scaffolding parameters removed; the reaction network is unchanged).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    kf  0.7    # /day  forward  A -> B     <- FITTED
+    kr  0.2    # /day  reverse  B -> A     <- FITTED
+    A0  80.0   # AU    initial A  (the total swept in the titration; B starts at 0)
+    B0  0.0    # AU    initial B
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  B0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_B  B()
+  end observables
+
+  begin reaction rules
+    R_forward: A() -> B()  kf
+    R_reverse: B() -> A()  kr
+  end reaction rules
+
+end model

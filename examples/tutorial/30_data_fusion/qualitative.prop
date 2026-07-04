@@ -1,0 +1,15 @@
+# Qualitative facts about the A <-> B relaxation (default total A0 = 80), in PyBNF's
+# Biological Property Specification Language (BPSL). No numeric time-series here --
+# just things we qualitatively "know" and want the fit to respect. Each line is a
+# constraint scored by how much the trajectory violates it (0 = all satisfied).
+#
+# Syntax:  <expr> <op> <expr>  <where>   (where: at time=<v> | always | once | between)
+
+# The reaction starts with essentially all A (B is negligible at the outset).
+Obs_B < 5 at time=0
+
+# Because kf > kr, the product B eventually becomes the majority species.
+Obs_B > Obs_A once
+
+# It has essentially reached its equilibrium plateau by the end of the run.
+Obs_B > 55 at time=8
