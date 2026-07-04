@@ -889,14 +889,15 @@ EXAMPLES = (
         build_free={'k': ('uniform_var', 0.05, 3.0)},
         datasets=(
             # A decay with CONSTANT additive noise (sd 4, seeded) and an _SD column
-            # reporting that true noise level. chi_sq reads the _SD; chi_sq_dynamic
-            # ignores it and estimates a single constant sigma (sigma__FREE) jointly
-            # with k. A fine 41-point grid so the noise level is well estimated.
+            # reporting that true noise level. The `read_exp_file _SD` conf reads it;
+            # the `fit noise_level` conf ignores it and estimates a single constant
+            # sigma jointly with k. A fine 41-point grid so the noise is well estimated.
             Dataset('decay.exp', obs=('Obs_A',), t_end=20, n_points=41,
                     noise_sd=4.0, noise_seed=1),
         ),
-        # The three confs (sos / chi_sq / chi_sq_dynamic) all recover k; the payoff --
-        # chi_sq_dynamic ALSO recovers the noise level sigma__FREE ~ 4 -- is asserted by
+        # Three new-era `noise_model = normal` confs differing only in the sigma SOURCE
+        # (fix_at 1 / read_exp_file _SD / fit noise_level) all recover k; the payoff --
+        # the `fit` conf ALSO recovers the noise level ~ 4 -- is asserted by
         # tests/test_tutorial_estimate_noise.py (which needs a k-tight, sigma-loose split
         # a single-tolerance ConfCheck can't express), not here.
         confs=(),

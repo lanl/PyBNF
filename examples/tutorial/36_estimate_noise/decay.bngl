@@ -3,13 +3,12 @@
 # =============================================================================
 #  A single first-order decay, A(t) = A0 exp(-k t), from A0 = 100, measured with
 #  CONSTANT additive noise of a fixed (but here, "unknown") size. This is the
-#  setup for the dynamic-noise objective (lesson 36): rather than supplying the
+#  setup for estimating the noise (lesson 36): rather than supplying the
 #  measurement error as an _SD column, we let the fit ESTIMATE it jointly with the
-#  rate.
+#  rate, via `noise_model = normal, sigma = fit <name>`.
 #
-#  Only k is a model parameter; the noise level is a NUISANCE parameter estimated
-#  by `objective = chi_sq_dynamic` (declared in the conf as sigma__FREE), not part
-#  of the model.
+#  Only k is a model parameter; the noise level is a NUISANCE parameter (a named
+#  free variable the noise-model line binds its sigma to), not part of the model.
 # =============================================================================
 
 begin model

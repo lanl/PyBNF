@@ -59,7 +59,7 @@ Results land in `output/` inside the lesson folder.
 | 33 | [`33_sbml_petab`](33_sbml_petab) | import a standard **SBML** PEtab problem and fit it through bngsim | SBML PEtab v2 import, `sbml_backend = bngsim` |
 | 34 | [`34_petab_observable_formula`](34_petab_observable_formula) | an **arithmetic** `observableFormula` (ratio/log/scale) in a PEtab table, and its round-trip | PEtab `observableFormula` expressions (ADR-0036) |
 | 35 | [`35_scale_free_objectives`](35_scale_free_objectives) | when data spans **orders of magnitude** — relative vs absolute error | `norm_sos` / `ave_norm_sos` / `sod` objectives |
-| 36 | [`36_estimate_noise`](36_estimate_noise) | fit noisy data with **no error bars** — let the fit estimate the noise | `chi_sq_dynamic` (estimated `sigma__FREE`) |
+| 36 | [`36_estimate_noise`](36_estimate_noise) | fit noisy data with **no error bars** — let the fit estimate the noise | `noise_model = normal, sigma = fit <name>` |
 
 ## The edition-2 config surface, in one place
 
