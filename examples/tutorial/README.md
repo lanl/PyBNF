@@ -58,6 +58,7 @@ Results land in `output/` inside the lesson folder.
 | 32 | [`32_prior_gallery`](32_prior_gallery) | the **whole catalog of prior families** — how each is spelled and shaped | `normal_var`/`gamma_var`/`beta_var`/… + `student_t` record *(slow tier)* |
 | 33 | [`33_sbml_petab`](33_sbml_petab) | import a standard **SBML** PEtab problem and fit it through bngsim | SBML PEtab v2 import, `sbml_backend = bngsim` |
 | 34 | [`34_petab_observable_formula`](34_petab_observable_formula) | an **arithmetic** `observableFormula` (ratio/log/scale) in a PEtab table, and its round-trip | PEtab `observableFormula` expressions (ADR-0036) |
+| 35 | [`35_scale_free_objectives`](35_scale_free_objectives) | when data spans **orders of magnitude** — relative vs absolute error | `norm_sos` / `ave_norm_sos` / `sod` objectives |
 
 ## The edition-2 config surface, in one place
 

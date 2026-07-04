@@ -1,0 +1,44 @@
+# =============================================================================
+#  Decay over orders of magnitude    A --k--> (gone)
+# =============================================================================
+#  A single first-order decay, A(t) = A0 exp(-k t), started high (A0 = 1000) and
+#  followed long enough that A falls through three orders of magnitude (~1000 down
+#  to ~1). The measurement noise is MULTIPLICATIVE -- a constant 15% of whatever
+#  the value is -- so in ABSOLUTE terms the early large points carry huge scatter
+#  (+-150 near t=0) and the late small points carry tiny scatter (+-0.2 near the
+#  tail).
+#
+#  That is the setup where the CHOICE OF OBJECTIVE matters (lesson 35):
+#     * sos (absolute error) is dominated by the large early points and their big
+#       absolute residuals -> it under-uses the informative small-magnitude tail
+#       and the recovered k is dragged off.
+#     * norm_sos (RELATIVE error: each residual divided by the value) weights every
+#       point equally regardless of magnitude -> k is recovered.
+#
+#  Only k is fitted; A0 is fixed/known.
+# =============================================================================
+
+begin model
+
+begin parameters
+  k   0.4    # decay rate [1/day]  <- FITTED
+  A0  1000   # initial amount [AU] (fixed/known)
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  A0
+end seed species
+
+begin observables
+  Molecules  Obs_A  A()
+end observables
+
+begin reaction rules
+  A_decay: A() -> 0  k
+end reaction rules
+
+end model

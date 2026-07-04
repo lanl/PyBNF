@@ -153,7 +153,7 @@ def _apply_normalization(rows, obs, normalize):
 
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
                indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=(),
-               sd_by_obs=(), cumulative_obs=()):
+               sd_by_obs=(), cumulative_obs=(), noise_cv=None, noise_cv_seed=0):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -193,6 +193,15 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
         rng = np.random.default_rng(noise_seed)
         for j in range(1, rows.shape[1]):
             rows[:, j] = rows[:, j] + rng.normal(0.0, noise_sd, size=rows.shape[0])
+    if noise_cv is not None:
+        # Multiplicative (constant-relative) noise: each point *= (1 + cv*N(0,1)). The
+        # noise scales with the value, so it is huge in absolute terms on the large-magnitude
+        # points and tiny on the small ones -- the heteroscedasticity a scale-free objective
+        # is built for (lesson 35). Clipped to stay positive.
+        rng = np.random.default_rng(noise_cv_seed)
+        for j in range(1, rows.shape[1]):
+            rows[:, j] = np.clip(rows[:, j] * (1.0 + noise_cv * rng.standard_normal(rows.shape[0])),
+                                 1e-9, None)
     for row_index, obs_name, value in outliers:
         rows[row_index, 1 + list(obs).index(obs_name)] = value   # col 0 is the indvar
     if normalize:
@@ -228,8 +237,11 @@ def regenerate(example):
                        indvar=dataset.scan or 'time',
                        count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed,
                        scale=dataset.scale, normalize=dataset.normalize,
-                       sd_by_obs=dataset.sd_by_obs, cumulative_obs=dataset.cumulative_obs)
+                       sd_by_obs=dataset.sd_by_obs, cumulative_obs=dataset.cumulative_obs,
+                       noise_cv=dataset.noise_cv, noise_cv_seed=dataset.noise_cv_seed)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
+            if dataset.noise_cv is not None:
+                tag += f' (xN(1,{dataset.noise_cv}) mult-noise, seed {dataset.noise_cv_seed})'
             if dataset.scale is not None:
                 tag += f' (scaled x{dataset.scale:g}, arbitrary units)'
             if dataset.count_dispersion is not None:

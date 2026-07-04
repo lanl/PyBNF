@@ -31,6 +31,13 @@ class Dataset:
     n_points: int
     noise_sd: float = 0.0     # gaussian noise (absolute sd) added + written as _SD; 0 = clean
     noise_seed: int = 0
+    noise_cv: float = None    # MULTIPLICATIVE gaussian noise: each point *= (1 + cv*N(0,1)),
+                              # seeded by `noise_cv_seed`. No _SD column -- the scale-free objectives
+                              # derive their own weighting (sos: sigma=1; norm_sos: sigma proportional
+                              # to the value). Data spanning orders of magnitude with constant-relative
+                              # noise -- the scale-free objective lesson (35): sos over-weights the
+                              # large points, norm_sos weights every point equally.
+    noise_cv_seed: int = 0
     sd: float = None          # emit a constant _SD column at this value (independent of the
                               # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
     sd_by_obs: tuple = ()     # ((obs_name, sd_value), ...): a DIFFERENT constant _SD per
@@ -848,6 +855,32 @@ EXAMPLES = (
         # check on all families + a slow-tier sampler run on a representative trio),
         # not a ConfCheck.
         confs=(),
+    ),
+    Example(
+        folder='35_scale_free_objectives',
+        model='decay.bngl',
+        truth={'k': 0.4},
+        build_free={'k': ('uniform_var', 0.02, 3.0)},
+        datasets=(
+            # One decay spanning three orders of magnitude (A0=1000 -> ~1) with 15%
+            # MULTIPLICATIVE noise: huge absolute scatter on the early large points,
+            # tiny on the informative small tail. The objective choice decides whether
+            # the tail is used (norm_sos) or drowned out (sos).
+            Dataset('decay.exp', obs=('Obs_A',), t_end=18, n_points=19,
+                    noise_cv=0.15, noise_cv_seed=3),
+        ),
+        confs=(
+            # sos (absolute error) is dominated by the large early residuals and drags k
+            # off; ave_norm_sos normalizes by the COLUMN mean, which on a single column is
+            # just a constant -> it reduces to sos and is dragged the same way (the teaching
+            # point: column normalization is the MULTI-observable tool).
+            ConfCheck('sos.conf', recover={'k': 0.4}, dragged_min_err=0.10),
+            ConfCheck('ave_norm_sos.conf', recover={'k': 0.4}, dragged_min_err=0.10),
+            # norm_sos (per-point RELATIVE error) weights every point equally and recovers k;
+            # sod (L1) is a linear penalty, less dominated by the large points, and recovers too.
+            ConfCheck('norm_sos.conf', recover={'k': 0.4}, tol=0.05),
+            ConfCheck('sod.conf', recover={'k': 0.4}, tol=0.07),
+        ),
     ),
 )
 
