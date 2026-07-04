@@ -143,12 +143,50 @@ class FailedSimulation(Result):
         return
 
 
-def run_job(j, debug=False, failed_logs_dir=''):
+class _ResolvedFuture:
+    """A minimal future-like handle wrapping an already-resolved value.
+
+    dask substitutes a scattered ``Future`` with its concrete value only when the
+    Future is a *direct* argument to ``client.submit`` (positional or keyword). A
+    Future buried as an attribute of a submitted object is pickled verbatim and,
+    since distributed 2026.6.0, deserializes "not properly initialized" on the
+    worker, so calling ``.result()`` on it raises (lanl/PyBNF #476). ``Algorithm.run``
+    therefore passes the once-scattered model_list / objective Futures to
+    ``client.submit`` as direct ``models=`` / ``calc=`` kwargs, and ``run_job``
+    rebinds their worker-resolved values onto the Job wrapped in this handle. That
+    keeps the Job's duck-typed ``.result()`` consumers (``Job._get_models`` and the
+    scoring in ``Job.run_simulation``) working unchanged while guaranteeing no raw
+    Future is ever ``.result()``-ed off a Job attribute worker-side.
+    """
+    __slots__ = ('_value',)
+
+    def __init__(self, value):
+        self._value = value
+
+    def result(self):
+        return self._value
+
+
+def run_job(j, debug=False, failed_logs_dir='', models=None, calc=None):
     """
     Runs the Job j.
     This function is passed to Dask instead of j.run_simulation because if you pass j.run_simulation, Dask leaks memory
     associated with j.
+
+    ``models`` / ``calc`` are the worker-resolved model_list and ObjectiveCalculator
+    that ``Algorithm.run`` scattered once per fit and hands to ``client.submit`` as
+    direct kwargs, so dask substitutes the Futures with their concrete values here
+    on the worker (see :class:`_ResolvedFuture` for why a Future stashed as a Job
+    attribute cannot be used instead). When provided they are rebound onto the Job;
+    when omitted -- the in-process paths that call ``run_job`` directly
+    (``_rerun_best_fit_to_save_data``, ``ModelCheck``, the folder-free test
+    harnesses) -- the Job's own ``models`` / ``calc_future`` attributes are used
+    as-is.
     """
+    if models is not None:
+        j.models = _ResolvedFuture(models)
+    if calc is not None:
+        j.calc_future = _ResolvedFuture(calc)
     try:
         return j.run_simulation(debug, failed_logs_dir)
     except RuntimeError as e:

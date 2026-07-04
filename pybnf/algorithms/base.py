@@ -1129,6 +1129,14 @@ class Algorithm(ABC):
         # (parameters live in the separate PSet). Jobs resolve and slice it
         # worker-side; see make_job and core.Job._get_models. Mirrors the
         # calc_future scatter above (issue #416).
+        #
+        # Both scattered Futures (models_future here, calc_future above) are
+        # handed to client.submit below as *direct kwargs* -- NOT left buried as
+        # Job attributes. dask only substitutes a Future for its concrete value
+        # when the Future is a direct submit arg; a Future pickled inside the Job
+        # deserializes broken on the worker under distributed >= 2026.6.0 and
+        # raises on .result() (lanl/PyBNF #476). core.run_job rebinds the resolved
+        # values onto the Job. See core._ResolvedFuture.
         [self.models_future] = client.scatter([self.model_list], broadcast=True)
 
         jobs = []
@@ -1139,7 +1147,8 @@ class Algorithm(ABC):
         logger.info('Submitting initial set of %d Jobs' % len(jobs))
         futures = []
         for job in jobs:
-            f = client.submit(core.run_job, job, True, self.failed_logs_dir)
+            f = client.submit(core.run_job, job, True, self.failed_logs_dir,
+                              models=self.models_future, calc=self.calc_future)
             futures.append(f)
             pending[f] = (job.params, job.job_id)
         pool = core.as_completed(futures, with_results=True, raise_errors=False)
@@ -1174,7 +1183,9 @@ class Algorithm(ABC):
             for ps in decision:
                 new_js = self.make_job(ps)
                 for new_j in new_js:
-                    new_f = client.submit(core.run_job, new_j, (debug or self.fail_count < 10), self.failed_logs_dir)
+                    new_f = client.submit(core.run_job, new_j, (debug or self.fail_count < 10),
+                                          self.failed_logs_dir,
+                                          models=self.models_future, calc=self.calc_future)
                     pending[new_f] = (ps, new_j.job_id)
                     new_futures.append(new_f)
             logger.debug('Submitting %d new Jobs' % len(new_futures))
