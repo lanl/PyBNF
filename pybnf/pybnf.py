@@ -579,3 +579,15 @@ def main():
         _cleanup_dask_workspace()
         # After any error, try to clean up; then report timing and exit.
         _finalize(success, alg, start_time)
+
+
+# PyBNF is launched via the ``pybnf`` console script (``pybnf -c fit.conf``) or
+# ``python -m pybnf`` (see pybnf/__main__.py) -- both call main() behind a proper
+# __main__ guard, which is what keeps spawned dask workers from re-running the fit.
+# Executing this *submodule* directly (``python -m pybnf.pybnf``) would instead
+# import-and-exit silently, reading as a confusing no-op. Fail loudly and point at
+# the supported entry points rather than adding a second, unguarded run path.
+if __name__ == '__main__':
+    raise SystemExit(
+        'Run PyBNF via the `pybnf` console script (e.g. `pybnf -c fit.conf`) or '
+        '`python -m pybnf`, not `python -m pybnf.pybnf`.')
