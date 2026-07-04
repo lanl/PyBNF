@@ -1,0 +1,46 @@
+# =============================================================================
+#  Two-step chain      A --k1--> B --k2--> C
+# =============================================================================
+#  A simple sequential conversion used to show ARITHMETIC observable formulas
+#  living in a PEtab observables.tsv (Lesson 34). Only the raw species are
+#  declared here; the measured quantities (a fraction, a log, a concentration)
+#  are post-simulation FORMULAS over these, supplied by the PEtab problem -- the
+#  model file itself is never edited (ADR-0036).
+#
+#  A(t) = A0 exp(-k1 t)  -> ln(Obs_A) is linear in t, pinning k1.
+#  The fraction that has reached C, and B/Vd, then pin k2.
+# =============================================================================
+
+begin model
+
+begin parameters
+  k1  0.7    # A -> B rate  [1/day]   <- FITTED
+  k2  0.35   # B -> C rate  [1/day]   <- FITTED
+  A0  100    # initial A    [AU]      (fixed/known)
+  Vd  10     # volume of distribution [vol]  (fixed/known; used by a formula)
+end parameters
+
+begin molecule types
+  A()
+  B()
+  C()
+end molecule types
+
+begin seed species
+  A()  A0
+  B()  0
+  C()  0
+end seed species
+
+begin observables
+  Molecules  Obs_A  A()
+  Molecules  Obs_B  B()
+  Molecules  Obs_C  C()
+end observables
+
+begin reaction rules
+  A_to_B: A() -> B()  k1
+  B_to_C: B() -> C()  k2
+end reaction rules
+
+end model

@@ -1,0 +1,4 @@
+observableId	observableFormula	noiseFormula	noiseDistribution
+frac_C	Obs_C / (Obs_A + Obs_B + Obs_C)	1	normal
+log_A	ln(Obs_A)	1	normal
+conc_B	Obs_B / Vd	1	normal
