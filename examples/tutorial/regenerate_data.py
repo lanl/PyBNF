@@ -63,6 +63,11 @@ def _simulate_truth(example, dataset):
             extra['condition'] = dataset.condition
         if dataset.preequilibrate is not None:
             extra['preequilibrate'] = dataset.preequilibrate
+        if str(model_file).endswith(('.xml', '.ant')):
+            # An SBML/Antimony model is simulated through the bngsim SBML path (lesson 11);
+            # its raw output columns are the species ids (not BNGL Molecules observables),
+            # so such a dataset names its obs by the species id (e.g. obs=('C',)).
+            extra['sbml_backend'] = 'bngsim'
         conf = H.make_newera_config(scratch, str(folder / model_file), placeholder,
                                     example.build_free, 'timecourse', 'de',
                                     population_size=4, max_iterations=1, **extra)

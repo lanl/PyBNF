@@ -1,0 +1,50 @@
+# =============================================================================
+#  Reversible bimolecular association     A + B <--kf/kr--> C      (LOW-B condition)
+# =============================================================================
+#  A binds B to form the complex C, which dissociates back. This is the "low
+#  ligand" experimental condition: B starts at 75. Written in BNGL and simulated
+#  by the bngsim backend. Its data column is Obs_C -- the BNGL observable name.
+#
+#  Lesson 31 fits THIS model jointly with an SBML copy of the SAME reaction run at
+#  a different condition (binding_high.xml, B starts at 150). Both share the rate
+#  constants kf and kr; the fit recovers them from the two binding curves at once,
+#  not caring that one experiment's model is BNGL and the other's is SBML.
+#
+#  Adapted from the analytical_odes `reversible_bimolecular_association` model
+#  (closed-form report functions, Clock/t, and the Riccati-root scaffolding
+#  parameters removed; the single reversible reaction is unchanged).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    kf  0.002   # /AU/day  association A + B -> C     <- FITTED (shared with the SBML model)
+    kr  0.3     # /day     dissociation C -> A + B    <- FITTED (shared with the SBML model)
+    A0  100     # AU       initial free A
+    B0  75      # AU       initial free B   (the LOW-ligand condition)
+    C0  0       # AU       initial complex
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+    C()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  B0
+    C()  C0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_B  B()
+    Molecules  Obs_C  C()    # the complex -- the measured column in bind_low.exp
+  end observables
+
+  begin reaction rules
+    R_assoc: A() + B() <-> C()  kf, kr
+  end reaction rules
+
+end model

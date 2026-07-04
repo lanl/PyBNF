@@ -772,6 +772,26 @@ EXAMPLES = (
         ),
     ),
     Example(
+        folder='31_bngl_sbml_fit',
+        model='binding_low.bngl',   # the primary (BNGL) model; the high dataset names its own
+        truth={'kf': 0.002, 'kr': 0.3},
+        build_free={'kf': ('uniform_var', 0.0002, 0.05), 'kr': ('uniform_var', 0.02, 3.0)},
+        datasets=(
+            # Two conditions of A + B <-> C, one modeled in each language, sharing kf, kr.
+            # LOW ligand (B0=75) from the BNGL model -- native Obs_C column.
+            Dataset('bind_low.exp', obs=('Obs_C',), t_end=8, n_points=9),
+            # HIGH ligand (B0=150) from the SBML model -- the bngsim SBML path reports the
+            # raw species, so this dataset's obs is the species id `C` (not `Obs_C`), and
+            # regenerate_data drives it through the sbml_backend (model= override, ADR-0041).
+            Dataset('bind_high.exp', obs=('C',), t_end=8, n_points=9, model='binding_high.xml'),
+        ),
+        confs=(
+            # A joint fit whose two experiments' models are in DIFFERENT languages (BNGL +
+            # SBML), both on the bngsim backend, sharing the rate constants. de + refine.
+            ConfCheck('bngl_sbml_fit.conf', recover={'kf': 0.002, 'kr': 0.3}, tol=0.03),
+        ),
+    ),
+    Example(
         folder='06_step_input',
         model='step_input.bngl',
         truth={'k': 0.6, 'J_base': 1.2, 'J_step': 2.4},

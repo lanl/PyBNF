@@ -1,0 +1,24 @@
+// =============================================================================
+//  The SAME reaction as binding_low.bngl, but in Antimony -> SBML   (HIGH-B condition)
+// =============================================================================
+//  The identical reversible association A + B <-> C, written in Antimony (a compact,
+//  human-readable language for SBML). This is the "high ligand" condition: B starts
+//  at 150. The committed binding_high.xml is this file converted to SBML; PyBNF's
+//  bngsim backend ingests the SBML directly.
+//
+//  The rate constants kf and kr carry over BY NAME, so they bind to the same fitted
+//  parameters as the BNGL model. Note the species are named A/B/C -- and because the
+//  bngsim SBML path reports raw species (not BNGL observables), the SBML experiment's
+//  data column is "C" (the species id), while the BNGL experiment's is "Obs_C".
+//
+//  Regenerate the SBML from this source with:
+//      python -c "import antimony as a; a.loadAntimonyFile('binding_high.ant'); \
+//                 open('binding_high.xml','w').write(a.getSBMLString(a.getMainModuleName()))"
+// =============================================================================
+model binding_high
+  species A = 100, B = 150, C = 0;   // HIGH-ligand condition (B0 = 150)
+  kf = 0.002;   // /AU/day  association   -- shared fitted parameter
+  kr = 0.3;     // /day     dissociation -- shared fitted parameter
+  assoc:  A + B -> C;  kf*A*B;         // mass-action association
+  dissoc: C -> A + B;  kr*C;           // first-order dissociation
+end
