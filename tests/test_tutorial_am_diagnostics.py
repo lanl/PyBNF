@@ -6,12 +6,12 @@ Lesson 26 showed the two *non-adaptive* samplers (mh, pt). This lesson runs the
 harmonic oscillator's correlated (k4, k6) posterior, and reads formal convergence
 diagnostics (R-hat / ESS) out of it via **ArviZ**.
 
-The mechanic being verified is the one the lesson teaches: ``am`` does NOT write
-``Results/samples.txt`` (its draws land in ``Results/A_MCMC/Runs/params_*.txt``),
-so the automatic ArviZ bridge (``pybnf.inference_data.from_pybnf``) never finds
-them. The diagnostics therefore have to build the ``InferenceData`` BY HAND from
-the per-chain sample files -- reshaped to ``(chain, draw, param)`` and handed to
-``az.from_dict`` -- which is exactly what this test does.
+The mechanic being verified is the one the lesson teaches: ``am`` records its draws
+to per-chain ``Results/A_MCMC/Runs/params_*.txt`` files (not a single
+``samples.txt``), and PyBNF's ArviZ bridge (``pybnf.inference_data.from_pybnf``)
+reads those per-chain files directly -- reshaping them to ``(chain, draw, param)``
+-- so ``from_pybnf`` returns a usable ``InferenceData`` for an ``am`` run, which is
+exactly what this test loads its diagnostics from.
 
 Driven through the same faked-dask recovery harness as lesson 26 (bngsim real,
 dask faked, seed pinned): inline and deterministic, but ``slow``-marked. The data
@@ -27,6 +27,7 @@ import pytest
 
 from . import recovery_harness as H
 from .context import config, parse
+from pybnf.inference_data import from_pybnf
 from pybnf.registry import FIT_TYPE_REGISTRY
 
 az = pytest.importorskip('arviz')   # the diagnostics beat needs the arviz extra
@@ -53,29 +54,17 @@ def _load_conf(conf_name, tmp_path):
         os.chdir(home)
 
 
-def _read_chains(output_dir, names):
-    """am's per-chain post-burn-in draws as a ``(chain, draw, param)`` array.
-
-    Reads ``Results/A_MCMC/Runs/params_*.txt`` (one file per chain; each is a
-    header row of parameter names followed by whitespace-separated draws) and
-    stacks the requested columns, truncating to the shortest chain so ArviZ gets a
-    rectangular ``(chain, draw, param)`` block."""
-    runs = Path(output_dir) / 'Results' / 'A_MCMC' / 'Runs'
-    chains = []
-    for fn in sorted(runs.glob('params_*.txt')):
-        d = np.genfromtxt(fn, names=True)
-        if d.size == 0:
-            continue
-        d = np.atleast_1d(d)
-        chains.append(np.column_stack([d[n] for n in names]))
-    assert chains, f'no per-chain params_*.txt found under {runs}'
-    m = min(c.shape[0] for c in chains)
-    return np.stack([c[:m] for c in chains], axis=0)
+def _posterior_array(idata, names):
+    """The InferenceData posterior stacked back into a ``(chain, draw, param)``
+    array for the recovery / correlation checks. ``from_pybnf`` already reshaped
+    ``am``'s per-chain ``params_*.txt`` files into this ``chain`` x ``draw``
+    posterior (truncated to the shortest chain), so this just orders the columns."""
+    return np.stack([idata.posterior[n].values for n in names], axis=-1)
 
 
 def test_am_posterior_diagnostics(tmp_path, monkeypatch):
-    """am recovers the correlated (k4, k6) posterior, and the by-hand ArviZ
-    InferenceData reports healthy R-hat and ESS."""
+    """am recovers the correlated (k4, k6) posterior, and the InferenceData
+    from_pybnf builds from its per-chain draws reports healthy R-hat and ESS."""
     H.require_bng2pl()
     H.install(monkeypatch)   # fake dask; bngsim simulation stays real
 
@@ -89,12 +78,14 @@ def test_am_posterior_diagnostics(tmp_path, monkeypatch):
         os.chdir(home)
     H.drive(alg)
 
-    # --- the §E mechanic: build an ArviZ InferenceData BY HAND from am's per-chain
-    #     draws (am writes params_*.txt, NOT samples.txt, so the auto-bridge misses it).
-    arr = _read_chains(conf.config['output_dir'], NAMES)   # (chain, draw, param)
+    # --- the §E mechanic: the ArviZ bridge reads am's per-chain params_*.txt files
+    #     directly (am writes those, not samples.txt) and returns a usable InferenceData.
+    idata = from_pybnf(conf.config['output_dir'])   # finds A_MCMC/Runs/params_*.txt
+    arr = _posterior_array(idata, NAMES)             # (chain, draw, param)
     assert arr.shape[0] >= 4, f'expected >=4 chains, got shape {arr.shape}'
-    idata = az.from_dict({'posterior': {NAMES[i]: arr[:, :, i]
-                                        for i in range(len(NAMES))}})
+    # am records only draws (no per-draw log-posterior), so there is no sample_stats.
+    groups = idata.groups() if callable(idata.groups) else idata.groups
+    assert not any(str(g).rstrip('/').endswith('sample_stats') for g in groups)
     # az.summary is the human-readable diagnostics table the README shows. In
     # arviz 1.2 its r_hat/mean/sd columns are STRING-formatted, so we assert on the
     # numeric az.rhat / az.ess functions instead of parsing the display table.

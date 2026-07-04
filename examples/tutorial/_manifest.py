@@ -917,9 +917,10 @@ EXAMPLES = (
             Dataset('two_species_oscillator.exp', obs=('Obs_S1', 'Obs_S2'),
                     t_end=3.0, n_points=61, sd=1.0),
         ),
-        # am writes raw draws (Results/A_MCMC/Runs/params_*.txt), NOT samples.txt and NO
-        # credible intervals -- so its own slow-tier verifier (tests/test_tutorial_am_
-        # diagnostics.py) builds the ArviZ InferenceData by hand and asserts R-hat/recovery.
+        # am writes raw per-chain draws (Results/A_MCMC/Runs/params_*.txt) and NO
+        # credible intervals; the ArviZ bridge (from_pybnf) reads those files directly, so
+        # its slow-tier verifier (tests/test_tutorial_am_diagnostics.py) loads the run via
+        # from_pybnf and asserts R-hat/recovery.
         confs=(),
     ),
 )

@@ -50,41 +50,36 @@ step_size       = 0.2      # INITIAL proposal scale — am adapts away from it
 pybnf -c adaptive_covariance.conf
 ```
 
-## Where `am` writes its output (and why diagnostics need a hand)
+## Where `am` writes its output, and reading it with ArviZ
 
-Unlike `dream`/`mh`/`pt`, **`am` does not write `Results/samples.txt`**, and it
-writes **no credible intervals** (its histogram step is a no-op — see lesson 26).
-Its draws land in
+Unlike `dream`/`mh`/`pt`, `am` records each chain's draws to a **per-chain** file
+rather than a single `samples.txt`, and it writes **no credible intervals** (its
+histogram step is a no-op — see lesson 26):
 
 ```
 Results/A_MCMC/Runs/params_<chain>.txt     # one file per chain (header + draws)
 Results/A_MCMC/Runs/combined_params.txt    # the pooled draws
 ```
 
-Because PyBNF's automatic ArviZ bridge (`pybnf.inference_data.from_pybnf`) only
-looks for `samples.txt`, `output_inference_data = 1` cannot help `am` — it just
-logs a non-fatal "Failed to write inference_data.nc". So for `am` you build the
-ArviZ object **by hand**: read the per-chain files, stack them into a
-`(chain, draw, parameter)` array, and hand that to `az.from_dict`:
+PyBNF's automatic ArviZ bridge (`pybnf.inference_data.from_pybnf`) reads those
+per-chain files directly — reshaping them to a `(chain, draw, parameter)`
+posterior — so `output_inference_data = 1` writes `Results/inference_data.nc` for
+`am` just as it does for the other samplers, and you can load a finished run in one
+call:
 
 ```python
-import numpy as np, arviz as az
-from pathlib import Path
+import arviz as az
+from pybnf.inference_data import from_pybnf
 
-runs = Path('output/adaptive_covariance/Results/A_MCMC/Runs')
-names = ['k4', 'k6']
-chains = []
-for f in sorted(runs.glob('params_*.txt')):
-    d = np.atleast_1d(np.genfromtxt(f, names=True))          # header row = param names
-    chains.append(np.column_stack([d[n] for n in names]))
-m = min(c.shape[0] for c in chains)                          # rectangular block
-arr = np.stack([c[:m] for c in chains], axis=0)              # (chain, draw, param)
-
-idata = az.from_dict({'posterior': {n: arr[:, :, i] for i, n in enumerate(names)}})
-print(az.summary(idata))          # R-hat, ESS, posterior mean/sd, 89% interval
-az.plot_trace(idata)              # per-chain "fuzzy caterpillar" mixing check
+idata = from_pybnf('output/adaptive_covariance')   # finds A_MCMC/Runs/params_*.txt
+print(az.summary(idata))            # R-hat, ESS, posterior mean/sd, 89% interval
+az.plot_trace(idata)                # per-chain "fuzzy caterpillar" mixing check
 az.plot_pair(idata, marginal=True)  # the tilted (k4, k6) ridge am adapted to
 ```
+
+(`am` records only draws, not a per-draw log-posterior, so the object carries a
+`posterior` group but no `sample_stats.lp` — every ArviZ diagnostic used here works
+on the posterior alone.)
 
 ## Reading the diagnostics
 
@@ -123,8 +118,8 @@ The pooled posterior means land on the truth the data was generated from
 - **`mh` / `pt`** (lesson 26) — simple, fixed-proposal; `pt` adds temperature
   swaps for multi-modal posteriors. Both write credible intervals.
 - **`am`** (this lesson) — adaptive-covariance Metropolis; strongest on a
-  **correlated/tilted** posterior, but writes only raw draws (diagnose it via the
-  by-hand ArviZ bridge above).
+  **correlated/tilted** posterior. It writes only raw draws (no credible
+  intervals), but `from_pybnf` reads them straight into ArviZ (above).
 - **`hmc`** (lessons 37–38) — gradient-based NUTS; needs a JAX-traceable
   analytical/`expression` target.
 
@@ -132,9 +127,9 @@ The pooled posterior means land on the truth the data was generated from
 
 [`tests/test_tutorial_am_diagnostics.py`](../../../tests/test_tutorial_am_diagnostics.py)
 (slow tier) drives `am` through the same faked-dask harness as lesson 26, then
-runs exactly the by-hand ArviZ recipe above and asserts that the run **converged**
-(`r_hat < 1.1`, healthy ESS), **recovered** the true `(k4, k6)`, and produced a
-genuinely **correlated** posterior.
+loads the run with `from_pybnf` (the recipe above) and asserts that the run
+**converged** (`r_hat < 1.1`, healthy ESS), **recovered** the true `(k4, k6)`, and
+produced a genuinely **correlated** posterior.
 
 ## Regenerating the data
 

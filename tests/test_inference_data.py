@@ -474,3 +474,139 @@ def test_sampler_no_sidecar_when_objfunc_not_a_likelihood(tmp_path):
     algo.record_pointwise_loglik(res, 0)  # a no-op
     assert algo.current_pointwise_loglik[0] is None
     assert not (results / 'log_likelihood.txt').exists()
+
+
+# --------------------------------------------------------------------------- #
+# Adaptive_MCMC (am): draws live in A_MCMC/Runs/params_<chain>.txt, not samples.txt
+# --------------------------------------------------------------------------- #
+# The `am` sampler records each chain's draws to a per-chain
+# Results/A_MCMC/Runs/params_<chain>.txt file (one row per recorded iteration, in
+# order), which is the authoritative posterior. Any samples.txt it also writes reuses
+# the accepted pset's *proposal* name for every draw, so its iter<draw>run<chain>
+# labels collide on rejection and cannot be reshaped -- and a run that converges during
+# the adaptive phase writes no post-burn-in samples.txt rows at all. The bridge reads
+# the params files and reshapes them to (chain, draw, param); am records no per-draw
+# log-posterior, so the sample_stats.lp group is omitted.
+
+def _write_am_params(path, param_names, rows):
+    """Write one am per-chain params_<c>.txt: a header row of tab-joined parameter
+    NAMES (as Adaptive_MCMC.write_out_params writes) followed by whitespace-separated
+    numeric draw rows (np.savetxt default). `rows` may be empty (a header-only chain)."""
+    with open(path, 'w') as f:
+        f.write('\t'.join(param_names) + '\n')
+        arr = np.asarray(rows, dtype=float)
+        if arr.size:
+            np.savetxt(f, arr)
+
+
+@pytest.fixture
+def am_run(tmp_path):
+    """A synthetic am output dir: two per-chain params files under Results/A_MCMC/Runs,
+    params (a linear, k log-scaled), three draws per chain with known values."""
+    runs = tmp_path / 'Results' / 'A_MCMC' / 'Runs'
+    runs.mkdir(parents=True)
+    chain0 = [[3.0, 0.1], [3.2, 0.12], [3.1, 0.11]]
+    chain1 = [[2.8, 0.09], [2.9, 0.11], [2.7, 0.08]]
+    _write_am_params(runs / 'params_0.txt', ['a', 'k'], chain0)
+    _write_am_params(runs / 'params_1.txt', ['a', 'k'], chain1)
+    return tmp_path / 'Results', chain0, chain1
+
+
+def test_am_discovers_params_and_shapes_posterior(am_run):
+    """from_pybnf finds the per-chain params files, reshapes them to (chain, draw,
+    param) with values straight from the files, and -- am having no lp -- emits no
+    sample_stats group."""
+    results, c0, c1 = am_run
+    idata = from_pybnf(results)
+
+    assert set(idata.posterior.data_vars) == {'a', 'k'}  # natural space -> bare names
+    assert idata.posterior.sizes['chain'] == 2           # one chain per params file
+    assert idata.posterior.sizes['draw'] == 3            # one draw per file row
+    np.testing.assert_allclose(idata.posterior['a'].values,
+                               [[r[0] for r in c0], [r[0] for r in c1]])
+    np.testing.assert_allclose(idata.posterior['k'].values,
+                               [[r[1] for r in c0], [r[1] for r in c1]])
+    assert 'sample_stats' not in _group_names(idata)     # am records no per-draw lp
+
+
+def test_am_sampling_space_with_variables(am_run):
+    """A log parameter passed via `variables` is renamed log10_<name> and emitted in
+    sampling space, exactly as for samples.txt-based samplers."""
+    results, c0, c1 = am_run
+    variables = [
+        FreeParameter('a', 'uniform_var', 0, 10, value=3.0),
+        FreeParameter('k', 'loguniform_var', 1e-3, 1e3, value=0.1),
+    ]
+    idata = from_pybnf(results, variables=variables)
+    assert set(idata.posterior.data_vars) == {'a', 'log10_k'}
+    np.testing.assert_allclose(idata.posterior['log10_k'].values,
+                               np.log10([[r[1] for r in c0], [r[1] for r in c1]]))
+
+
+def test_am_params_preferred_over_stray_samples_txt(am_run):
+    """am also writes a samples.txt whose iter<draw>run<chain> labels are unreliable
+    (here degenerate to header-only, the convergence-during-adaptive case that made the
+    classic path raise). With params files present the bridge must use them, so the
+    posterior is the 3-draw per-chain record rather than the empty samples.txt."""
+    results, _, _ = am_run
+    _write_samples(results / 'samples.txt', ['a', 'k'], [])  # header only
+    idata = from_pybnf(results)
+    assert idata.posterior.sizes['draw'] == 3
+    assert idata.posterior.sizes['chain'] == 2
+
+
+def test_am_ragged_chains_truncated_to_min(tmp_path):
+    """Unequal-length per-chain params files are truncated to the shortest for a
+    rectangular array, keeping each chain's earliest draws (file order)."""
+    runs = tmp_path / 'Results' / 'A_MCMC' / 'Runs'
+    runs.mkdir(parents=True)
+    _write_am_params(runs / 'params_0.txt', ['x'], [[1.0], [2.0], [3.0]])  # 3 draws
+    _write_am_params(runs / 'params_1.txt', ['x'], [[10.0], [20.0]])       # 2 draws
+    idata = from_pybnf(tmp_path / 'Results')
+    assert idata.posterior.sizes['draw'] == 2
+    np.testing.assert_allclose(idata.posterior['x'].values, [[1.0, 2.0], [10.0, 20.0]])
+
+
+def test_am_chain_axis_from_file_index(tmp_path):
+    """The chain axis is ordered by the params_<c> file index (params_10 sorts after
+    params_2, not lexicographically)."""
+    runs = tmp_path / 'Results' / 'A_MCMC' / 'Runs'
+    runs.mkdir(parents=True)
+    for c in (0, 2, 10):
+        _write_am_params(runs / ('params_%d.txt' % c), ['x'],
+                         [[float(c)], [float(c) + 0.5], [float(c) + 0.9]])
+    idata = from_pybnf(tmp_path / 'Results')
+    assert idata.posterior.sizes['chain'] == 3
+    np.testing.assert_allclose(idata.posterior['x'].values[:, 0], [0.0, 2.0, 10.0])
+
+
+def test_am_run_hook_emits_netcdf(am_run):
+    """`output_inference_data = 1` makes the run-end hook write inference_data.nc for an
+    am run (the whole point: am used to silently fail this). The live variables put the
+    log parameter in sampling space; the reloaded object has posterior but no
+    sample_stats."""
+    pytest.importorskip('h5netcdf')
+    results, _, _ = am_run
+    variables = [
+        FreeParameter('a', 'uniform_var', 0, 10, value=3.0),
+        FreeParameter('k', 'loguniform_var', 1e-3, 1e3, value=0.1),
+    ]
+    algo = _bayesian_stub(results, 1, variables)
+    algo._emit_inference_data()
+
+    out = results / 'inference_data.nc'
+    assert out.is_file()
+    reloaded = az.from_netcdf(str(out))
+    assert set(reloaded.posterior.data_vars) == {'a', 'log10_k'}
+    assert 'sample_stats' not in _group_names(reloaded)
+
+
+def test_am_all_chains_empty_raises(tmp_path):
+    """Header-only params files (a run that recorded no draws) raise a clear error
+    rather than producing an empty object."""
+    runs = tmp_path / 'Results' / 'A_MCMC' / 'Runs'
+    runs.mkdir(parents=True)
+    _write_am_params(runs / 'params_0.txt', ['x'], [])
+    _write_am_params(runs / 'params_1.txt', ['x'], [])
+    with pytest.raises(ValueError, match='No draws found'):
+        from_pybnf(tmp_path / 'Results')
