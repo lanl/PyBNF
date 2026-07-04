@@ -56,6 +56,7 @@ Results land in `output/` inside the lesson folder.
 | 30 | [`30_data_fusion`](30_data_fusion) | one fit to **time-course + steady-state + qualitative** data at once | multi-experiment, `.prop` constraints |
 | 31 | [`31_bngl_sbml_fit`](31_bngl_sbml_fit) | one fit **mixing a BNGL model and an SBML model** | multi-model BNGL + SBML on bngsim |
 | 32 | [`32_prior_gallery`](32_prior_gallery) | the **whole catalog of prior families** — how each is spelled and shaped | `normal_var`/`gamma_var`/`beta_var`/… + `student_t` record *(slow tier)* |
+| 33 | [`33_sbml_petab`](33_sbml_petab) | import a standard **SBML** PEtab problem and fit it through bngsim | SBML PEtab v2 import, `sbml_backend = bngsim` |
 
 ## The edition-2 config surface, in one place
 

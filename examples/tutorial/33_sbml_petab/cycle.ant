@@ -1,0 +1,23 @@
+// =============================================================================
+//  Three-state irreversible cycle  X1 -> X2 -> X3 -> X1   (one shared rate k)
+// =============================================================================
+//  Written in Antimony, a compact human-readable language for SBML. The committed
+//  cycle.xml is this file converted to SBML L3V2; PyBNF's bngsim backend ingests
+//  the SBML directly (Lesson 11). Three species cycle around at a common
+//  first-order rate k, so the system relaxes with a damped OSCILLATION to the
+//  uniform steady state (X1 = X2 = X3 = T_total/3): X1 overshoots downward, X2 and
+//  X3 rise and cross, and all three settle at 33.33.
+//
+//  k is the single fitted parameter. It sets both the relaxation rate (3k/2) and
+//  the oscillation frequency (sqrt(3) k/2), so a single time course pins it hard.
+//
+//  Regenerate cycle.xml from this source (and the PEtab measurements) with:
+//      python regenerate_fixtures.py
+// =============================================================================
+model three_state_cycle
+  species X1 = 90, X2 = 10, X3 = 0;   // initial concentrations [AU]
+  k = 1.0;                             // /day  common cycle rate  <- FITTED
+  r12: X1 -> X2;  k*X1;                // mass-action, first order
+  r23: X2 -> X3;  k*X2;
+  r31: X3 -> X1;  k*X3;
+end
