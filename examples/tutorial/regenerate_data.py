@@ -147,7 +147,8 @@ def _apply_normalization(rows, obs, normalize):
 
 
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
-               indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=()):
+               indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=(),
+               sd_by_obs=()):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -161,6 +162,11 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
     is written per observable when either ``sd`` (a constant, independent of the
     gaussian noise) or ``noise_sd`` is set, so chi_sq / laplace have a per-point scale
     to weight by; count data carries no ``_SD`` (a count likelihood is self-normalizing).
+
+    ``sd_by_obs`` -- ``((obs_name, sd_value), ...)`` -- writes a DIFFERENT constant ``_SD`` per
+    observable (observables measured with differing precision), overriding the single ``sd``.
+    A small ``_SD`` on one channel pins the parameters it senses; a large ``_SD`` on another
+    leaves its parameters weakly identified -- the setup the priors lesson (27) needs.
     """
     idx = [cols[indvar]] + [cols[o] for o in obs]
     header = [indvar] + list(obs)
@@ -180,7 +186,12 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
     if normalize:
         _apply_normalization(rows, obs, normalize)
     sd_value = sd if sd is not None else (noise_sd if noise_sd > 0 else None)
-    if sd_value is not None:
+    if sd_by_obs:
+        by = dict(sd_by_obs)
+        header += [o + '_SD' for o in obs]
+        sd_row = np.array([[float(by[o]) for o in obs]])
+        rows = np.hstack([rows, np.repeat(sd_row, rows.shape[0], axis=0)])
+    elif sd_value is not None:
         header += [o + '_SD' for o in obs]
         rows = np.hstack([rows, np.full((rows.shape[0], len(obs)), sd_value)])
     lines = ['# ' + '\t'.join(header)]
@@ -204,7 +215,8 @@ def regenerate(example):
                        dataset.noise_sd, dataset.noise_seed, dataset.sd, dataset.outliers,
                        indvar=dataset.scan or 'time',
                        count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed,
-                       scale=dataset.scale, normalize=dataset.normalize)
+                       scale=dataset.scale, normalize=dataset.normalize,
+                       sd_by_obs=dataset.sd_by_obs)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
             if dataset.scale is not None:
                 tag += f' (scaled x{dataset.scale:g}, arbitrary units)'

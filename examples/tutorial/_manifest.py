@@ -33,6 +33,11 @@ class Dataset:
     noise_seed: int = 0
     sd: float = None          # emit a constant _SD column at this value (independent of the
                               # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
+    sd_by_obs: tuple = ()     # ((obs_name, sd_value), ...): a DIFFERENT constant _SD per
+                              # observable (channels measured with differing precision),
+                              # overriding the single `sd`. A tight _SD on one channel pins
+                              # its parameters; a loose _SD on another leaves its parameters
+                              # weakly identified -- the priors lesson's weak-vs-strong setup (27)
     count_dispersion: float = None  # if set, resample each observable as OVER-DISPERSED integer
                               # COUNTS: negative-binomial draws with mean = the model value and this
                               # dispersion r (variance = mean + mean^2/r), seeded by `count_seed`.
@@ -691,6 +696,27 @@ EXAMPLES = (
         ),
         # The mh/pt posterior samplers write credible intervals (unlike am), asserted
         # by their own slow-tier verifier (tests/test_tutorial_mcmc.py) -- no ConfCheck.
+        confs=(),
+    ),
+    Example(
+        folder='27_priors',
+        model='bateman_chain.bngl',
+        truth={'k1': 0.8, 'k2': 0.25},
+        # The flat-prior conf's parameters (the informative conf swaps k2's line for a
+        # gamma_var; the test builds both confs itself). build_free is what regenerate_data
+        # runs the truth simulation through -- the prior family here is irrelevant to the data.
+        build_free={'k1': ('uniform_var', 0.05, 3.0), 'k2': ('uniform_var', 0.02, 2.0)},
+        datasets=(
+            # Two channels measured with DIFFERENT precision: Obs_A tight (_SD 3, pins k1),
+            # Obs_C loose (_SD 25, so k2 is only weakly identified). Data sits exactly at the
+            # truth; the per-observable _SD sets each channel's likelihood width. Obs_B is
+            # NOT measured -- k2's only handle is the noisy Obs_C.
+            Dataset('bateman_chain.exp', obs=('Obs_A', 'Obs_C'), t_end=20, n_points=21,
+                    sd_by_obs=(('Obs_A', 3.0), ('Obs_C', 25.0))),
+        ),
+        # Two Bayesian confs (flat vs informative prior on the weak k2) sampled by DREAM;
+        # the payoff is a credible-interval WIDTH comparison, asserted by a dedicated
+        # slow-tier verifier (tests/test_tutorial_priors.py) rather than a ConfCheck.
         confs=(),
     ),
     Example(
