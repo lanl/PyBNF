@@ -1,0 +1,51 @@
+# =============================================================================
+#  Bateman chain          A --k1--> B --k2--> C        (two sequential decays)
+# =============================================================================
+#  A classic three-species chain: A decays into B, which decays into C. With
+#  distinct rates (k1 != k2) the closed form is the Bateman equation:
+#
+#        A(t) = A0 * exp(-k1 t)
+#        B(t) = A0 * k1/(k2-k1) * ( exp(-k1 t) - exp(-k2 t) )
+#        C(t) = A0 - A(t) - B(t)                          (mass is conserved)
+#
+#  Here (the priors lesson) we recover k1 and k2 from just two channels: a
+#  PRECISE Obs_A (small measurement error) and an IMPRECISE Obs_C (large error).
+#  A(t) depends only on k1, so the tight Obs_A pins k1 hard. Only Obs_C carries
+#  information about k2 -- and it is measured so noisily that k2 is left WEAKLY
+#  identified. That is the gap an informative prior fills (see the two confs).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k1  0.8    # A -> B rate   [1/day]   <- FITTED
+    k2  0.25   # B -> C rate   [1/day]   <- FITTED
+    A0  100    # initial A     [AU]      (fixed/known)
+    B0  0      # initial B     [AU]      (fixed/known)
+    C0  0      # initial C     [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    A()
+    B()
+    C()
+  end molecule types
+
+  begin seed species
+    A()  A0
+    B()  B0
+    C()  C0
+  end seed species
+
+  begin observables
+    Molecules  Obs_A  A()
+    Molecules  Obs_B  B()
+    Molecules  Obs_C  C()
+  end observables
+
+  begin reaction rules
+    A_to_B: A() -> B()  k1
+    B_to_C: B() -> C()  k2
+  end reaction rules
+
+end model

@@ -827,6 +827,28 @@ EXAMPLES = (
                       tol=0.03),
         ),
     ),
+    Example(
+        folder='32_prior_gallery',
+        model='bateman_chain.bngl',
+        truth={'k1': 0.8, 'k2': 0.25},
+        # The gallery swaps k2's prior across the whole family catalog; the prior is
+        # irrelevant to the DATA, which regenerate_data simulates through the flat
+        # build_free at the truth (identical setup to Lesson 27's weak-k2 bateman).
+        build_free={'k1': ('uniform_var', 0.05, 3.0), 'k2': ('uniform_var', 0.02, 2.0)},
+        datasets=(
+            # Same two-quality-channel data as Lesson 27: Obs_A tight (_SD 3, pins k1),
+            # Obs_C loose (_SD 25, so k2 is only weakly identified). Obs_B unmeasured.
+            Dataset('bateman_chain.exp', obs=('Obs_A', 'Obs_C'), t_end=20, n_points=21,
+                    sd_by_obs=(('Obs_A', 3.0), ('Obs_C', 25.0))),
+        ),
+        # A flat prior plus one conf per family (normal/laplace/gamma/beta/half_normal
+        # positional + student_t via the parameter: record). The payoff -- each
+        # informative prior narrows the weak k2 -- is a credible-interval WIDTH
+        # comparison asserted by tests/test_tutorial_prior_gallery.py (structural build
+        # check on all families + a slow-tier sampler run on a representative trio),
+        # not a ConfCheck.
+        confs=(),
+    ),
 )
 
 

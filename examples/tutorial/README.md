@@ -44,6 +44,18 @@ Results land in `output/` inside the lesson folder.
 | 18 | [`18_count_likelihood`](18_count_likelihood) | fit **integer molecule counts** with the likelihood built for them | negative-binomial noise model (`neg_bin`, `dispersion`, `location`) |
 | 19 | [`19_shape_objectives`](19_shape_objectives) | fit the **shape** of a signal when its amplitude is arbitrary | column-joint `profile_objective` (`kl` / `wasserstein`) |
 | 20 | [`20_petab_observable_parameters`](20_petab_observable_parameters) | import PEtab **per-observable gains and noise** (the Boehm `sd_*` pattern) | PEtab `observableParameters` / `noiseParameters` import |
+| 21 | [`21_numerical_hazards`](21_numerical_hazards) | keep a fit alive when some simulations **blow up or hang** | `wall_time_sim`, `max_failed_simulations` |
+| 22 | [`22_normalization`](22_normalization) | fit data reported **relative to a reference** (init / peak / …) | `normalization <obs> = init\|peak\|zero\|unit` |
+| 23 | [`23_resume`](23_resume) | **stop and resume** a fit, or extend it with more iterations | `--resume` / backups |
+| 24 | [`24_moment_equations`](24_moment_equations) | fit a model whose states are the **mean and variance** | moment-equation observables |
+| 25 | [`25_island_de`](25_island_de) | a **multi-island** differential evolution with migration | `islands`, `migrate_every`, `num_to_migrate` |
+| 26 | [`26_mcmc_samplers`](26_mcmc_samplers) | two more posterior samplers — **Metropolis-Hastings and parallel tempering** | `mh`, `pt` *(slow tier)* |
+| 27 | [`27_priors`](27_priors) | an **informative prior** vs a flat one on a weakly-identified rate | `gamma_var` in a sampler *(slow tier)* |
+| 28 | [`28_cumulative_counts`](28_cumulative_counts) | fit **incident counts** from a cumulative prediction | per-observable `cumulative`, `neg_bin` |
+| 29 | [`29_petab_protocols`](29_petab_protocols) | round-trip **dose-response and pre-equilibration** through PEtab | PEtab `conditions` / `experiments` |
+| 30 | [`30_data_fusion`](30_data_fusion) | one fit to **time-course + steady-state + qualitative** data at once | multi-experiment, `.prop` constraints |
+| 31 | [`31_bngl_sbml_fit`](31_bngl_sbml_fit) | one fit **mixing a BNGL model and an SBML model** | multi-model BNGL + SBML on bngsim |
+| 32 | [`32_prior_gallery`](32_prior_gallery) | the **whole catalog of prior families** — how each is spelled and shaped | `normal_var`/`gamma_var`/`beta_var`/… + `student_t` record *(slow tier)* |
 
 ## The edition-2 config surface, in one place
 
