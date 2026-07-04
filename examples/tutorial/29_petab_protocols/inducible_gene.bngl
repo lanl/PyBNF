@@ -1,0 +1,54 @@
+# =============================================================================
+#  Inducible production      0 --k_prod*stim--> A --k_deg--> 0
+# =============================================================================
+#  A single species A produced under an inducible STIMULUS and degraded at a
+#  constant rate. Production is gated by a 0/1 flag `Stimulus_isOn`:
+#
+#        dA/dt = k_prod * Stimulus_isOn  -  k_deg * A
+#
+#  With the stimulus on, A settles to the steady state A_ss = k_prod / k_deg.
+#  This one model supports two very different EXPERIMENT DESIGNS (see the confs):
+#
+#    * a dose-response  -- vary the stimulus strength k_prod, read the steady
+#      state at each dose;
+#    * a washout        -- pre-equilibrate with the stimulus on, then switch it
+#      off and watch A relax.
+#
+#  Both recover the SAME degradation rate k_deg. The model has NO `begin actions`
+#  block: PyBNF synthesizes each experiment's simulation protocol (a steady-state
+#  scan, or a two-phase equilibrate-then-measure) from the experiment declaration
+#  in the .conf -- you never hand-write the protocol.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    k_prod         3.0   # production rate      [AU/day]   (the swept dose / fixed input)
+    k_deg          2.0   # degradation rate     [1/day]    <- FITTED
+    Stimulus_isOn  1     # 0/1 flag the conditions set inline (on to equilibrate, off to wash out)
+  end parameters
+
+  begin molecule types
+    A()
+  end molecule types
+
+  begin seed species
+    A()  0
+  end seed species
+
+  begin observables
+    Molecules  A_tot  A()
+  end observables
+
+  begin functions
+    # Production gated by the stimulus flag: full rate when on, zero when off. This
+    # is the idiom that lets a mid-protocol setParameter switch turn a reaction on/off.
+    prod_rate()  k_prod * Stimulus_isOn
+  end functions
+
+  begin reaction rules
+    birth: 0 -> A()    prod_rate()
+    death: A() -> 0    k_deg
+  end reaction rules
+
+end model
