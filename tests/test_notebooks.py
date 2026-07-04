@@ -24,7 +24,6 @@ Run with::
 import importlib.util
 from pathlib import Path
 
-import nbformat
 import pytest
 
 from . import recovery_harness as H
@@ -41,8 +40,9 @@ def _have(*mods):
 def _execute(name):
     """Run a committed notebook in-memory with the notebook dir as cwd; raise on
     any cell error. Does not write the executed copy back to disk."""
-    if not _have('nbclient'):
-        pytest.skip('needs nbclient to execute notebooks')
+    if not _have('nbformat', 'nbclient'):
+        pytest.skip('needs nbformat + nbclient to execute notebooks')
+    import nbformat
     from nbclient import NotebookClient
 
     nb = nbformat.read(str(_NB_DIR / name), as_version=4)

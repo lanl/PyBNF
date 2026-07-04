@@ -195,6 +195,12 @@ ignore = [
 # context.py is a re-export shim: test modules do `from .context import data`,
 # so its imports are "unused" only within the file itself.
 "tests/context.py" = ["F401"]
+# Teaching notebooks: compact grouped imports (`import os, tempfile`) and one-line
+# plot/setup statements (`plt.tight_layout(); plt.show()`) are idiomatic in a cell
+# and read better there than split across lines -- the same E702 stance as tests/**.
+# Substantive checks (unused imports F401, empty f-strings F541, undefined names)
+# stay enforced on the cells.
+"examples/notebooks/*.ipynb" = ["E401", "E702"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
