@@ -153,7 +153,8 @@ def _apply_normalization(rows, obs, normalize):
 
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
                indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=(),
-               sd_by_obs=(), cumulative_obs=(), noise_cv=None, noise_cv_seed=0):
+               sd_by_obs=(), cumulative_obs=(), noise_cv=None, noise_cv_seed=0,
+               count_replicates=1):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -186,9 +187,24 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
         col = rows[:, j].copy()
         rows[1:, j] = col[1:] - col[:-1]
     if count_dispersion is not None:
-        for j in range(1, rows.shape[1]):
-            rows[:, j] = _negative_binomial_counts(
-                rows[:, j], count_dispersion, count_seed + j)
+        n_obs = rows.shape[1] - 1
+        if count_replicates > 1:
+            # Replicate measurements: K independent count observations per time point,
+            # stacked as K blocks of the (same-means) grid. Each block/observable gets a
+            # distinct seed so the draws are independent. Replicates are what pin the
+            # over-dispersion (one time course barely constrains it) -- lesson 41.
+            blocks = []
+            for k in range(count_replicates):
+                block = rows.copy()
+                for j in range(1, rows.shape[1]):
+                    block[:, j] = _negative_binomial_counts(
+                        rows[:, j], count_dispersion, count_seed + k * n_obs + j)
+                blocks.append(block)
+            rows = np.vstack(blocks)
+        else:
+            for j in range(1, rows.shape[1]):
+                rows[:, j] = _negative_binomial_counts(
+                    rows[:, j], count_dispersion, count_seed + j)
     if noise_sd > 0:
         rng = np.random.default_rng(noise_seed)
         for j in range(1, rows.shape[1]):
@@ -238,7 +254,8 @@ def regenerate(example):
                        count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed,
                        scale=dataset.scale, normalize=dataset.normalize,
                        sd_by_obs=dataset.sd_by_obs, cumulative_obs=dataset.cumulative_obs,
-                       noise_cv=dataset.noise_cv, noise_cv_seed=dataset.noise_cv_seed)
+                       noise_cv=dataset.noise_cv, noise_cv_seed=dataset.noise_cv_seed,
+                       count_replicates=dataset.count_replicates)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
             if dataset.noise_cv is not None:
                 tag += f' (xN(1,{dataset.noise_cv}) mult-noise, seed {dataset.noise_cv_seed})'

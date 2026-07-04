@@ -51,6 +51,12 @@ class Dataset:
                               # No _SD column is written -- a count likelihood (neg_bin) is
                               # self-normalizing (lesson 18).
     count_seed: int = 0
+    count_replicates: int = 1  # write this many INDEPENDENT count observations per time point
+                              # (replicate measurements): K stacked blocks, each an independent
+                              # negative-binomial draw of the same model means (seeded by
+                              # count_seed + k). Replicates are how over-dispersion is actually
+                              # pinned -- one time course barely constrains it -- so the
+                              # estimate-the-dispersion lesson (41) needs them (neg_bin_dynamic).
     cumulative_obs: tuple = ()  # observable columns that are CUMULATIVE counts in the model and
                               # must be differenced to per-interval INCIDENT counts before count
                               # sampling (row i - row i-1; row 0 kept raw) -- matching the conf's
@@ -943,6 +949,29 @@ EXAMPLES = (
         # p_dream writes credible intervals (it inherits the base sampler's histogram
         # step, unlike am); its slow-tier verifier (tests/test_tutorial_pdream.py) asserts
         # the 95% credible interval brackets truth, like the mh/pt verifier (lesson 26).
+        confs=(),
+    ),
+    Example(
+        folder='41_estimate_dispersion',
+        model='sis_epidemic.bngl',
+        truth={'beta': 1.2},   # gamma held fixed at the model default (0.4, a known recovery rate)
+        build_free={'beta': ('uniform_var', 0.3, 3.0)},
+        datasets=(
+            # An SIS outbreak's infected COUNT, measured with REPLICATES: 6 independent
+            # negative-binomial count observations (dispersion r=25) at each of 25 time
+            # points. The population scale (S0/I0/N) is KNOWN and held fixed, and the
+            # recovery rate gamma is known too -- so the transmission rate beta AND the
+            # over-dispersion r are what the fit estimates. Replicates are what make the
+            # dispersion identifiable (one time course barely constrains it). No _SD
+            # column: a count likelihood is self-normalizing.
+            Dataset('sis_counts.exp', obs=('Obs_I',), t_end=12, n_points=25,
+                    count_dispersion=25.0, count_seed=6, count_replicates=6),
+        ),
+        # The fit estimates BOTH beta and the dispersion r_disp; beta comes back tight
+        # but r_disp is inherently noisy (a variance-of-variance estimate), so the two
+        # need different tolerances -- a single-tol ConfCheck can't express that. Its
+        # dedicated verifier (tests/test_tutorial_neg_bin_dynamic.py) asserts beta tight
+        # and r_disp within a generous window.
         confs=(),
     ),
 )

@@ -1,0 +1,55 @@
+# =============================================================================
+#  SIS epidemic   S + I --k_infect--> 2I,   I --gamma--> S
+# =============================================================================
+#  A closed population of N individuals, each either Susceptible or Infected.
+#  Infection is a bimolecular contact process (an S meeting an I becomes a second
+#  I); recovery returns an I to the susceptible pool (no lasting immunity -- the
+#  "SIS" model). With S + I = N conserved, the infected count follows a logistic
+#  threshold equation:
+#
+#        dI/dt = (beta/N) * S * I  -  gamma * I
+#        I(t) -> I_star = N * (1 - gamma/beta)      (endemic steady state, beta>gamma)
+#
+#  The early growth rate is beta - gamma and the plateau is N(1 - gamma/beta), so
+#  the shape of one infected-count curve pins BOTH rates. The population size N
+#  (and the initial split S0/I0) is KNOWN -- it is the count SCALE, held fixed --
+#  which is what lets the over-dispersion be estimated jointly with the rates.
+#
+#  Adapted from the analytical-ODE catalog's `sis_epidemic_threshold`, cut to a
+#  clean edition-2 model: the Clock molecule and the `Analytical_*` closed-form
+#  reporting functions (and their eigenvalue-scaffolding parameters) are removed;
+#  only the two reactions remain.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    beta    1.2      # transmission rate       [1/day]         <- FITTED
+    gamma   0.4      # recovery rate           [1/day]         <- FITTED
+    S0      990      # initial susceptibles    [individuals]   (fixed/known)
+    I0      10       # initial infected        [individuals]   (fixed/known)
+    N_total S0 + I0  # conserved population    [individuals]   (fixed/known)
+    k_infect beta/N_total   # bimolecular infection rate constant
+  end parameters
+
+  begin molecule types
+    S()
+    I()
+  end molecule types
+
+  begin seed species
+    S()  S0
+    I()  I0
+  end seed species
+
+  begin observables
+    Molecules  Obs_S  S()
+    Molecules  Obs_I  I()
+  end observables
+
+  begin reaction rules
+    R_infection: S() + I() -> I() + I()  k_infect
+    R_recovery:  I() -> S()  gamma
+  end reaction rules
+
+end model
