@@ -148,7 +148,7 @@ def _apply_normalization(rows, obs, normalize):
 
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
                indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=(),
-               sd_by_obs=()):
+               sd_by_obs=(), cumulative_obs=()):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -173,6 +173,13 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
     rows = arr[:, idx].copy()
     if scale is not None:
         rows[:, 1:] *= scale        # observable columns in arbitrary units (scale-free objective)
+    for oname in cumulative_obs:
+        # A cumulative model count -> per-interval increment (row 0 kept raw), so the .exp is
+        # incident counts, mirroring how the fit's `cumulative` flag differences the prediction
+        # (ADR-0051). Done before count sampling so the neg-bin means are the incident values.
+        j = 1 + list(obs).index(oname)
+        col = rows[:, j].copy()
+        rows[1:, j] = col[1:] - col[:-1]
     if count_dispersion is not None:
         for j in range(1, rows.shape[1]):
             rows[:, j] = _negative_binomial_counts(
@@ -216,7 +223,7 @@ def regenerate(example):
                        indvar=dataset.scan or 'time',
                        count_dispersion=dataset.count_dispersion, count_seed=dataset.count_seed,
                        scale=dataset.scale, normalize=dataset.normalize,
-                       sd_by_obs=dataset.sd_by_obs)
+                       sd_by_obs=dataset.sd_by_obs, cumulative_obs=dataset.cumulative_obs)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
             if dataset.scale is not None:
                 tag += f' (scaled x{dataset.scale:g}, arbitrary units)'

@@ -44,6 +44,12 @@ class Dataset:
                               # No _SD column is written -- a count likelihood (neg_bin) is
                               # self-normalizing (lesson 18).
     count_seed: int = 0
+    cumulative_obs: tuple = ()  # observable columns that are CUMULATIVE counts in the model and
+                              # must be differenced to per-interval INCIDENT counts before count
+                              # sampling (row i - row i-1; row 0 kept raw) -- matching the conf's
+                              # per-observable `cumulative` flag on those columns (ADR-0051, #418).
+                              # So the committed .exp is incident counts, scored against the model's
+                              # cumulative prediction differenced the same way (lesson 28).
     scale: float = None       # multiply every observable column by this constant -- data in
                               # ARBITRARY units (e.g. detector AU), for a scale-free shape
                               # objective (profile_objective = kl/wasserstein; lesson 19)
@@ -715,9 +721,31 @@ EXAMPLES = (
                     sd_by_obs=(('Obs_A', 3.0), ('Obs_C', 25.0))),
         ),
         # Two Bayesian confs (flat vs informative prior on the weak k2) sampled by DREAM;
-        # the payoff is a credible-interval WIDTH comparison, asserted by a dedicated
-        # slow-tier verifier (tests/test_tutorial_priors.py) rather than a ConfCheck.
+        # the payoff is a credible-interval WIDTH comparison, asserted by a dedicated slow-tier
+        # verifier (tests/test_tutorial_bayesian_priors.py) rather than a ConfCheck.
         confs=(),
+    ),
+    Example(
+        folder='28_cumulative_counts',
+        model='linearized_seir.bngl',
+        truth={'beta_eff': 0.8, 'gamma': 0.3},   # sigma held fixed at the model default (0.5)
+        build_free={'beta_eff': ('uniform_var', 0.2, 3.0),
+                    'gamma': ('uniform_var', 0.1, 2.0)},
+        datasets=(
+            # Two epidemic COUNT channels (negative-binomial, dispersion r=50): Obs_I is the
+            # current infectious count (a prevalence, sampled directly), and Obs_R is INCIDENT
+            # recoveries per day -- the model's CUMULATIVE Obs_R differenced to per-interval
+            # increments (cumulative_obs), matching the conf's `cumulative` flag. No _SD column
+            # (a count likelihood is self-normalizing). Daily grid: t_end=12, 13 points.
+            Dataset('seir_counts.exp', obs=('Obs_I', 'Obs_R'), t_end=12, n_points=13,
+                    count_dispersion=50.0, count_seed=2, cumulative_obs=('Obs_R',)),
+        ),
+        confs=(
+            # Fit beta_eff + gamma from the two count channels: a neg_bin base scores the
+            # prevalence Obs_I, and a per-observable neg_bin+`cumulative` override scores the
+            # incident recoveries. Count-data recovery, so a looser tol like lesson 18.
+            ConfCheck('incidence_fit.conf', recover={'beta_eff': 0.8, 'gamma': 0.3}, tol=0.10),
+        ),
     ),
     Example(
         folder='06_step_input',

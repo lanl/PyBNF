@@ -1,0 +1,70 @@
+# =============================================================================
+#  Early-epidemic SEIR (linearized)     E --sigma--> I --gamma--> R
+# =============================================================================
+#  A small compartmental epidemic model, linearized for the early phase (the
+#  susceptible pool is treated as constant, so new exposures arrive at a rate
+#  proportional to the current infectious count):
+#
+#        dE/dt = beta_eff*I - sigma*E      (E: exposed / incubating)
+#        dI/dt = sigma*E   - gamma*I       (I: infectious)
+#        dR/dt = gamma*I                   (R: recovered -- CUMULATIVE)
+#
+#  R() only ever grows (recovery is one-way), so Obs_R is a running CUMULATIVE
+#  count of everyone who has recovered so far. Public-health data, though, is
+#  usually reported as INCIDENCE -- new recoveries *per day*, not the running
+#  total. Lesson 28 bridges that gap with the per-observable `cumulative` flag,
+#  which differences the model's cumulative Obs_R into per-interval increments
+#  before scoring, so it can be fit against incident count data.
+#
+#  We also observe Obs_I (the current infectious count -- a prevalence, not a
+#  cumulative). Incubation is comparatively well characterized clinically, so
+#  sigma is held fixed; the fit recovers beta_eff (transmission) and gamma
+#  (recovery) from the two count channels.
+#
+#  Adapted from the analytical_odes `early_seir_linearized` model: the closed-form
+#  `Analytical_*` report functions, the `Clock`/`t` bookkeeping, and the eigenvalue
+#  scaffolding parameters are dropped (bngsim differentiates every function and
+#  chokes on the derived-parameter expressions); the reaction network is unchanged.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    beta_eff  0.8    # /day  effective transmission (constant-susceptible limit)  <- FITTED
+    sigma     0.5    # /day  incubation E -> I  (fixed: known from clinical data)
+    gamma     0.3    # /day  recovery   I -> R                                    <- FITTED
+    E0        50     # initial exposed (population seed; sets the count scale)
+    I0        0       # initial infectious
+    R0_init   0       # initial recovered (the cumulative count starts at 0)
+  end parameters
+
+  begin molecule types
+    E()
+    I()
+    R()
+  end molecule types
+
+  begin seed species
+    E()  E0
+    I()  I0
+    R()  R0_init
+  end seed species
+
+  begin observables
+    Molecules  Obs_I  I()    # current infectious  -- a PREVALENCE count
+    Molecules  Obs_R  R()    # total recovered     -- a CUMULATIVE count (differenced when fit)
+  end observables
+
+  begin functions
+    # New exposures per unit time. In the early-epidemic linearization the susceptible
+    # fraction is ~constant, so the incidence of new infections is proportional to Obs_I.
+    infection_input() = beta_eff*Obs_I
+  end functions
+
+  begin reaction rules
+    R_exposure:   0 -> E()   infection_input()
+    R_incubation: E() -> I()  sigma
+    R_recovery:   I() -> R()  gamma
+  end reaction rules
+
+end model
