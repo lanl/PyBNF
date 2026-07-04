@@ -62,6 +62,12 @@ class TestParse:
                                                                                   'some/crazy!!-folder$$=\\"/BNG2.pl']
         assert parse.parse('bngl_backend = bngsim') == ['bngl_backend', 'bngsim']
 
+    def test_precondition_adapt_key(self):
+        # p_dream's one extra knob (PDreamConfig.precondition_adapt) must parse as an
+        # integer config key -- it was a schema field with no grammar entry, so a conf
+        # line for it used to raise a ParseException (tutorial lesson 40).
+        assert parse.parse('precondition_adapt = 250') == ['precondition_adapt', '250']
+
     def test_ploop(self):
         d = parse.ploop(self.s)
         assert 'output_dir' in d.keys()

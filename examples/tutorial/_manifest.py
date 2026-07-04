@@ -923,6 +923,28 @@ EXAMPLES = (
         # from_pybnf and asserts R-hat/recovery.
         confs=(),
     ),
+    Example(
+        folder='40_preconditioned_dream',
+        model='oscillator.bngl',
+        truth={'alpha': 1.2, 'gamma': 0.8},
+        build_free={'alpha': ('uniform_var', 0.1, 5.0),
+                    'gamma': ('uniform_var', 0.1, 5.0)},
+        datasets=(
+            # The linearized Lotka-Volterra oscillator (lesson 07's model). The
+            # frequency omega = sqrt(alpha*gamma) is pinned tightly by the period, but
+            # the individual rates trade off along alpha*gamma = const -> a long, thin,
+            # strongly anti-correlated (alpha, gamma) posterior (corr ~ -0.99): exactly
+            # the tilted geometry Preconditioned DREAM whitens its proposals to. A small
+            # constant _SD (0.01) sets the likelihood width; zero-noise-at-truth data
+            # centres the posterior on the truth so the 95% credible interval brackets it.
+            Dataset('oscillator.exp', obs=('Obs_P', 'Obs_Q'),
+                    t_end=12, n_points=25, sd=0.01),
+        ),
+        # p_dream writes credible intervals (it inherits the base sampler's histogram
+        # step, unlike am); its slow-tier verifier (tests/test_tutorial_pdream.py) asserts
+        # the 95% credible interval brackets truth, like the mh/pt verifier (lesson 26).
+        confs=(),
+    ),
 )
 
 

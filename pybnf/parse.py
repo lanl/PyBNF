@@ -34,7 +34,8 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'local_objective_eval', 'reps_per_beta', 'save_best_data', 'embed_best_fit_data',
                'smooth_plot_points', 'output_inference_data',
                'parallelize_models', 'adaptive', 'continue_run',
-               'delta', 'archive_size', 'archive_thin_rate', 'adaptive_step_size', 'powell_max_iterations',
+               'delta', 'archive_size', 'archive_thin_rate', 'precondition_adapt',
+               'adaptive_step_size', 'powell_max_iterations',
                'max_failed_simulations', 'random_seed', 'sbml_ssa_strict', 'diagnostics_every', 'edition',
                # HMC (job_type = hmc, ADR-0059): per-chain warmup/draw counts.
                'num_warmup', 'num_samples',

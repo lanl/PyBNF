@@ -63,6 +63,7 @@ Results land in `output/` inside the lesson folder.
 | 37 | [`37_hmc_benchmark_geometry`](37_hmc_benchmark_geometry) | **Hamiltonian Monte Carlo / NUTS** on the built-in benchmark geometries (the banana) | `job_type = hmc` (jax extra) *(slow tier)* |
 | 38 | [`38_hmc_analytical_ode`](38_hmc_analytical_ode) | an ODE's **closed-form solution as an HMC likelihood** — no simulator | `objective = expression` + `job_type = hmc` *(slow tier)* |
 | 39 | [`39_adaptive_mcmc`](39_adaptive_mcmc) | **Adaptive Metropolis** on a correlated posterior + formal **R-hat/ESS via ArviZ** | `job_type = am` + ArviZ diagnostics *(slow tier)* |
+| 40 | [`40_preconditioned_dream`](40_preconditioned_dream) | **Preconditioned DREAM** — covariance-whitened proposals for a strongly correlated posterior | `job_type = p_dream` + `precondition_adapt` *(slow tier)* |
 
 ## The edition-2 config surface, in one place
 
