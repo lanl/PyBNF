@@ -65,6 +65,7 @@ Results land in `output/` inside the lesson folder.
 | 39 | [`39_adaptive_mcmc`](39_adaptive_mcmc) | **Adaptive Metropolis** on a correlated posterior + formal **R-hat/ESS via ArviZ** | `job_type = am` + ArviZ diagnostics *(slow tier)* |
 | 40 | [`40_preconditioned_dream`](40_preconditioned_dream) | **Preconditioned DREAM** — covariance-whitened proposals for a strongly correlated posterior | `job_type = p_dream` + `precondition_adapt` *(slow tier)* |
 | 41 | [`41_estimate_dispersion`](41_estimate_dispersion) | **estimating count over-dispersion** jointly with the dynamics (from replicate counts) | `noise_model = neg_bin, dispersion = fit …` *(recovery tier)* |
+| 43 | [`43_custom_objective`](43_custom_objective) | **bring your own objective** — a custom Python callable (a robust mixture likelihood) | `objective = callable` + `callable = mod:func` |
 
 ## The edition-2 config surface, in one place
 
