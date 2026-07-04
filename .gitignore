@@ -39,6 +39,9 @@ examples/sampler_benchmarking/*/output_*/
 examples/sampler_benchmarking/*/*.out
 examples/sampler_benchmarking/*/*.err
 
+# Jupyter
+.ipynb_checkpoints/
+
 # Local scratch
 environment*.yml
 full-environment.yml
