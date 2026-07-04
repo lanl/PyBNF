@@ -12,6 +12,7 @@ different entry point.
 | [`02_bngsim_simulation.ipynb`](02_bngsim_simulation.ipynb) | Simulate a model **forward with bngsim** (no fitting): time courses, a parameter sweep, steady state. |
 | [`03_posterior_exploration.ipynb`](03_posterior_exploration.ipynb) | Sample a posterior with **HMC/NUTS**, export an **ArviZ `InferenceData`**, and read trace / pair / R-hat / ESS. |
 | [`04_petab_in_a_notebook.ipynb`](04_petab_in_a_notebook.ipynb) | **Import a PEtab problem** with `pybnf.petab.import_job` and fit it interactively. |
+| [`05_gradient_fitting_profiles.ipynb`](05_gradient_fitting_profiles.ipynb) | A **Data2Dynamics-style** workflow: **multi-start trust-region** least-squares using bngsim **forward sensitivities** for the Jacobian, then **profile-likelihood** identifiability — on the CC0 Becker EpoR model with synthetic data. |
 
 ## How PyBNF runs in a notebook
 
@@ -47,9 +48,9 @@ jupyter nbconvert --to notebook --execute --inplace examples/notebooks/01_quicks
 ```
 
 Dependencies (all in the project's `.venv`): `pybnf`, `bngsim` + `BNG2.pl`
-(notebooks 01/02/04); the optional `jax` and `arviz` extras (notebook 03);
-`petab` (notebook 04). Notebook 02/03/04's diagnostics also use `pandas`,
-`matplotlib`, and (for the `.nc` export) `h5py`.
+(notebooks 01/02/04/05); the optional `jax` and `arviz` extras (notebook 03);
+`petab` (notebook 04); `scipy` (notebook 05). Notebook 02/03/04's diagnostics also
+use `pandas`, `matplotlib`, and (for the `.nc` export) `h5py`.
 
 ## CI
 

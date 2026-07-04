@@ -58,11 +58,14 @@ def _execute(name):
     '01_quickstart.ipynb',
     '02_bngsim_simulation.ipynb',
     '04_petab_in_a_notebook.ipynb',
+    '05_gradient_fitting_profiles.ipynb',   # bngsim forward sensitivities + scipy TRF/profiles
 ])
 def test_bngsim_notebook_executes(name):
     H.require_bng2pl()                       # skip unless BNGPATH resolves BNG2.pl
     if name.startswith('04') and not _have('petab'):
         pytest.skip('notebook 04 needs the petab package (import_job)')
+    if name.startswith('05') and not _have('scipy'):
+        pytest.skip('notebook 05 needs scipy (least_squares)')
     _execute(name)
 
 
