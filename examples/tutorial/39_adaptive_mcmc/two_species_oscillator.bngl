@@ -1,0 +1,81 @@
+# =============================================================================
+#  Two-species harmonic oscillator (2SHO)          clean edition-2 model
+# =============================================================================
+#  A linear two-species reaction network (Hellerstein 2023) that sustains a pure
+#  sinusoidal oscillation. Under the constraints k3 = k1 + k2 and k5 = k3 + kd the
+#  Jacobian squares to -theta^2 * I, so the ODE has a closed-form solution and the
+#  observables oscillate at angular frequency
+#
+#        theta = sqrt(k2 * kd)        (period 2*pi/theta ~ 1 day here)
+#
+#  around DC baselines (offsets) set by the two constant fluxes k4 and k6:
+#
+#        S1_offset = (k6 - k4) / kd
+#        S2_offset =  k4 / k2  -  S1_offset
+#
+#  This is the analytical-ODE catalog model `two_species_harmonic_oscillator`, cut
+#  down to a clean edition-2 model (lessons 07/28 style): no `begin actions`, and
+#  the `Analytical_*` closed-form reporting functions + the Clock/eigenvalue
+#  scaffolding have been stripped. Only the dynamics remain, so PyBNF synthesizes
+#  the simulation from the `experiment:` grid.
+#
+#  WHAT WE FIT (lesson 39): the two constant fluxes k4 and k6. Both shift the DC
+#  baseline of the oscillation, so the data constrains their COMBINATION more
+#  tightly than either one alone -> a tilted, CORRELATED posterior. That tilt is
+#  exactly what Adaptive Metropolis (`am`) learns from its running chain covariance
+#  (contrast lesson 26's fixed-proposal mh/pt). k2 and kd (hence the frequency) are
+#  held fixed; k1 cancels from both ODEs and is a structural constant.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    # --- FITTED: the two constant fluxes that set the oscillation's DC baseline ---
+    k4   41.77   # fixed S1 removal flux     [AU/day]   <- FITTED
+    k6   92.2    # fixed S2 synthesis flux   [AU/day]   <- FITTED
+
+    # --- fixed / known (set the frequency theta = sqrt(k2*kd) and the phase) ---
+    k2   3.91    # S2 -> S1 rate             [1/day]
+    kd   10.09   # excess feedback           [1/day]
+    k1   1.0     # S1 -> S2 rate (cancels from both ODEs; a structural constant)
+    S1_0 5.00    # initial S1                [AU]
+    S2_0 10.49   # initial S2                [AU]
+
+    # --- constrained (the 2SHO oscillator constraints) ---
+    k3   k1 + k2   # autocatalytic S1 -> 2 S1 rate
+    k5   k3 + kd   # S1-controlled S2 removal coefficient
+  end parameters
+
+  begin molecule types
+    S1()
+    S2()
+  end molecule types
+
+  begin seed species
+    S1()  S1_0
+    S2()  S2_0
+  end seed species
+
+  begin observables
+    Molecules  Obs_S1  S1()
+    Molecules  Obs_S2  S2()
+  end observables
+
+  begin functions
+    # Total fluxes (signed ODE contributions), not per-reactant rate constants:
+    # BNG multiplies a unimolecular rate by the reactant count, so writing these
+    # as `0 -> X  <flux>` source rules injects exactly the published total flux.
+    R4_fixed_S1_sink()         = k4
+    R5_S1_controlled_S2_sink() = k5 * Obs_S1
+  end functions
+
+  begin reaction rules
+    R1_s1_to_s2:              S1() -> S2()          k1
+    R2_s2_to_s1:              S2() -> S1()          k2
+    R3_s1_autocatalysis:      S1() -> S1() + S1()   k3
+    R4_s1_fixed_sink:         0 -> S1()   -R4_fixed_S1_sink()
+    R5_s2_s1_controlled_sink: 0 -> S2()   -R5_S1_controlled_S2_sink()
+    R6_s2_source:             0 -> S2()             k6
+  end reaction rules
+
+end model

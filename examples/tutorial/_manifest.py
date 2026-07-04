@@ -902,6 +902,26 @@ EXAMPLES = (
         # a single-tolerance ConfCheck can't express), not here.
         confs=(),
     ),
+    Example(
+        folder='39_adaptive_mcmc',
+        model='two_species_oscillator.bngl',
+        truth={'k4': 41.77, 'k6': 92.2},
+        # Fit the two constant fluxes that set the oscillation's DC baseline; k2/kd
+        # (hence the frequency) are held fixed. Both fluxes move the offsets, so the
+        # data pins their COMBINATION tighter than either alone -> a correlated posterior.
+        build_free={'k4': ('uniform_var', 30.0, 55.0), 'k6': ('uniform_var', 75.0, 110.0)},
+        datasets=(
+            # Clean-at-truth 2SHO oscillation over ~3 periods; the constant _SD sets the
+            # (deliberately loose) likelihood width so the tilted posterior is wide enough
+            # for Adaptive Metropolis to sample and diagnose (R-hat/ESS via ArviZ).
+            Dataset('two_species_oscillator.exp', obs=('Obs_S1', 'Obs_S2'),
+                    t_end=3.0, n_points=61, sd=1.0),
+        ),
+        # am writes raw draws (Results/A_MCMC/Runs/params_*.txt), NOT samples.txt and NO
+        # credible intervals -- so its own slow-tier verifier (tests/test_tutorial_am_
+        # diagnostics.py) builds the ArviZ InferenceData by hand and asserts R-hat/recovery.
+        confs=(),
+    ),
 )
 
 

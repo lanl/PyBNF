@@ -60,6 +60,9 @@ Results land in `output/` inside the lesson folder.
 | 34 | [`34_petab_observable_formula`](34_petab_observable_formula) | an **arithmetic** `observableFormula` (ratio/log/scale) in a PEtab table, and its round-trip | PEtab `observableFormula` expressions (ADR-0036) |
 | 35 | [`35_scale_free_objectives`](35_scale_free_objectives) | when data spans **orders of magnitude** — relative vs absolute error | `norm_sos` / `ave_norm_sos` / `sod` objectives |
 | 36 | [`36_estimate_noise`](36_estimate_noise) | fit noisy data with **no error bars** — let the fit estimate the noise | `noise_model = normal, sigma = fit <name>` |
+| 37 | [`37_hmc_benchmark_geometry`](37_hmc_benchmark_geometry) | **Hamiltonian Monte Carlo / NUTS** on the built-in benchmark geometries (the banana) | `job_type = hmc` (jax extra) *(slow tier)* |
+| 38 | [`38_hmc_analytical_ode`](38_hmc_analytical_ode) | an ODE's **closed-form solution as an HMC likelihood** — no simulator | `objective = expression` + `job_type = hmc` *(slow tier)* |
+| 39 | [`39_adaptive_mcmc`](39_adaptive_mcmc) | **Adaptive Metropolis** on a correlated posterior + formal **R-hat/ESS via ArviZ** | `job_type = am` + ArviZ diagnostics *(slow tier)* |
 
 ## The edition-2 config surface, in one place
 
