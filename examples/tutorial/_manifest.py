@@ -882,6 +882,25 @@ EXAMPLES = (
             ConfCheck('sod.conf', recover={'k': 0.4}, tol=0.07),
         ),
     ),
+    Example(
+        folder='36_estimate_noise',
+        model='decay.bngl',
+        truth={'k': 0.5},
+        build_free={'k': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # A decay with CONSTANT additive noise (sd 4, seeded) and an _SD column
+            # reporting that true noise level. chi_sq reads the _SD; chi_sq_dynamic
+            # ignores it and estimates a single constant sigma (sigma__FREE) jointly
+            # with k. A fine 41-point grid so the noise level is well estimated.
+            Dataset('decay.exp', obs=('Obs_A',), t_end=20, n_points=41,
+                    noise_sd=4.0, noise_seed=1),
+        ),
+        # The three confs (sos / chi_sq / chi_sq_dynamic) all recover k; the payoff --
+        # chi_sq_dynamic ALSO recovers the noise level sigma__FREE ~ 4 -- is asserted by
+        # tests/test_tutorial_estimate_noise.py (which needs a k-tight, sigma-loose split
+        # a single-tolerance ConfCheck can't express), not here.
+        confs=(),
+    ),
 )
 
 

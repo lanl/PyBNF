@@ -1,0 +1,38 @@
+# =============================================================================
+#  Decay with UNKNOWN measurement noise    A --k--> (gone)
+# =============================================================================
+#  A single first-order decay, A(t) = A0 exp(-k t), from A0 = 100, measured with
+#  CONSTANT additive noise of a fixed (but here, "unknown") size. This is the
+#  setup for the dynamic-noise objective (lesson 36): rather than supplying the
+#  measurement error as an _SD column, we let the fit ESTIMATE it jointly with the
+#  rate.
+#
+#  Only k is a model parameter; the noise level is a NUISANCE parameter estimated
+#  by `objective = chi_sq_dynamic` (declared in the conf as sigma__FREE), not part
+#  of the model.
+# =============================================================================
+
+begin model
+
+begin parameters
+  k   0.5    # decay rate [1/day]  <- FITTED
+  A0  100    # initial amount [AU] (fixed/known)
+end parameters
+
+begin molecule types
+  A()
+end molecule types
+
+begin seed species
+  A()  A0
+end seed species
+
+begin observables
+  Molecules  Obs_A  A()
+end observables
+
+begin reaction rules
+  A_decay: A() -> 0  k
+end reaction rules
+
+end model
