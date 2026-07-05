@@ -14,6 +14,8 @@ authors = [
     { name = "Eshan Mitra" },
     { name = "Ryan Suderman" },
     { name = "Alex Ionkov" },
+    { name = "Jacob Neumann" },
+    { name = "Bill Hlavacek" },
 ]
 keywords = ["BioNetGen", "BNGL", "SBML", "parameter-estimation", "systems-biology"]
 classifiers = [
