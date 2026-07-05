@@ -581,6 +581,56 @@ class TestEvaluatePointwise:
         assert objective.NegBinLikelihood_Dynamic().supports_pointwise_log_likelihood is True
 
 
+class TestInformationCriteria:
+    """AIC / BIC / AICc for a fit -- the report field promoting lesson 45's
+    hand-computed AIC to first-class. The log-likelihood is the FULL normalized one
+    (the sum of ``evaluate_pointwise``'s ``log_density``), so the AIC is absolute."""
+
+    def test_arithmetic(self):
+        """AIC = 2k - 2lnL, BIC = k ln(n) - 2lnL, AICc adds the small-sample term."""
+        ic = objective.information_criteria(log_likelihood=-100.0, k=3, n=50)
+        assert ic.k == 3 and ic.n == 50 and ic.log_likelihood == -100.0
+        npt.assert_allclose(ic.aic, 2 * 3 - 2 * (-100.0))            # 206
+        npt.assert_allclose(ic.bic, 3 * np.log(50) - 2 * (-100.0))
+        npt.assert_allclose(ic.aicc, ic.aic + (2 * 3 * 4) / (50 - 3 - 1))
+
+    def test_aicc_none_when_sample_too_small(self):
+        """The AICc correction is undefined once ``n <= k + 1`` (denominator <= 0)."""
+        assert objective.information_criteria(-1.0, k=5, n=6).aicc is None   # n-k-1 == 0
+        assert objective.information_criteria(-1.0, k=5, n=3).aicc is None   # n-k-1 < 0
+        assert objective.information_criteria(-1.0, k=5, n=7).aicc is not None  # n-k-1 == 1
+
+    def test_from_likelihood_objective_matches_scipy(self):
+        """chi_sq (Gaussian, sigma from _SD): the log-likelihood behind the AIC is the
+        genuine normalized Gaussian density summed over the scored points -- so it
+        equals the scipy oracle, and the AIC/BIC follow by definition."""
+        exp = _mkdata(['# x  obs1  obs3  obs1_SD  obs3_SD\n',
+                       ' 0 3 5 0.1 0.3\n', ' 1 2 6 0.1 0.1\n', ' 2 4 10 0.3 1.0\n'])
+        sim = _mkdata(['# x  obs1  obs3\n', ' 0 3.1 5.1\n', ' 1 2 6\n', ' 2 4.2 10.2\n'])
+        simd, expd, pset = {'m': {'s': sim}}, {'m': {'s': exp}}, [_Param('a', 1.0)]
+        k = 2
+        ic = objective.likelihood_information_criteria(
+            objective.ChiSquareObjective(), simd, expd, pset, k)
+        pairs = [(3.1, 3, 0.1), (5.1, 5, 0.3), (2, 2, 0.1),
+                 (6, 6, 0.1), (4.2, 4, 0.3), (10.2, 10, 1.0)]
+        ln_l = sum(stats.norm.logpdf(o, loc=p, scale=s) for p, o, s in pairs)
+        assert ic.n == 6 and ic.k == 2
+        npt.assert_allclose(ic.log_likelihood, ln_l)
+        npt.assert_allclose(ic.aic, 2 * k - 2 * ln_l)
+        npt.assert_allclose(ic.bic, k * np.log(6) - 2 * ln_l)
+        npt.assert_allclose(ic.aicc, ic.aic + (2 * k * (k + 1)) / (6 - k - 1))
+
+    def test_non_likelihood_objective_returns_none(self):
+        """No normalized density -> no AIC (the LOO/WAIC gate). ``None``, not a number."""
+        exp = _mkdata(['# x  obs1\n', ' 0 3\n', ' 1 2\n'])
+        sim = _mkdata(['# x  obs1\n', ' 0 3.1\n', ' 1 2\n'])
+        simd, expd, pset = {'m': {'s': sim}}, {'m': {'s': exp}}, [_Param('a', 1.0)]
+        for obj in (objective.SumOfSquaresObjective(),
+                    objective.NormSumOfSquaresObjective(),
+                    objective.DirectPassObjective()):
+            assert objective.likelihood_information_criteria(obj, simd, expd, pset, 2) is None
+
+
 # ---------------------------------------------------------------------------
 # Student-t noise (ADR-0058): the first two-parameter family.
 # Oracle: scipy.stats.t (logpdf for the density, gammaln for the df-block).

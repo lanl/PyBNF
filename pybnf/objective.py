@@ -6,6 +6,7 @@ from .noise import (LOG10, MEAN, MEDIAN, ColumnMeanSigma, ConstantSigma, DataCol
 from .printing import PybnfError, print1
 from .registry import register_objfunc
 
+from collections import namedtuple
 import re
 
 import numpy as np
@@ -14,6 +15,84 @@ import numpy as np
 # presence is what distinguishes a row-varying ``PerMeasurementFormulaSigma`` (bound per data
 # point from the measurement_params table) from the constant-per-observable ``FormulaSigma``.
 _PLACEHOLDER_IN_FORMULA = re.compile(r'(?:observable|noise)Parameter\d')
+
+
+# --------------------------------------------------------------------------- #
+# Information criteria (AIC / BIC / AICc) for a fitted model.
+#
+# These rank competing models by trading goodness-of-fit against parameter count
+# (lower is better for all three). They are defined ONLY for a proper likelihood
+# objective -- the ADR-0011 noise families (normal / lognormal / laplace /
+# neg_bin / student_t) -- because a bare least-squares / distance / pass-through
+# objective (sos / sod / norm_sos / kl / wasserstein / direct_pass) carries no
+# normalized density, so there is no log-likelihood to score. That is the same
+# gate LOO/WAIC use (``supports_pointwise_log_likelihood``, ADR-0056).
+#
+# The log-likelihood behind the AIC is the FULL normalized one: the sum of the
+# noise family's complete per-point ``log_density`` (evaluate_pointwise), which
+# restores the parameter-independent constants the optimizer's ``-score`` drops
+# (Gaussian's ½log2π and logσ, the log-scale Jacobian). So the reported AIC is an
+# ABSOLUTE value -- comparable across families and data sets -- not merely up to
+# the objective's dropped constant (which cancels only when the SAME objective
+# scores the SAME data, the narrower model-selection case).
+# --------------------------------------------------------------------------- #
+
+#: AIC/BIC/AICc for a fit, alongside the inputs (``k`` free params, ``n`` data
+#: points, ``log_likelihood``) so a report can show the derivation. ``aicc`` is
+#: ``None`` when the small-sample correction is undefined (``n <= k + 1``).
+InformationCriteria = namedtuple(
+    'InformationCriteria', ['k', 'n', 'log_likelihood', 'aic', 'bic', 'aicc'])
+
+
+def information_criteria(log_likelihood, k, n):
+    """AIC / BIC / AICc from a fit's maximized log-likelihood (pure arithmetic).
+
+    :param log_likelihood: the maximized log-likelihood ``lnL`` at the best fit --
+        the sum of the noise model's complete per-point ``log_density``, NOT the
+        (constant-dropped) ``-score`` the optimizer minimizes.
+    :param k: number of free (fitted) parameters, INCLUDING any estimated noise
+        parameter -- a fitted ``sigma`` / ``b`` / ``r`` is itself a free parameter
+        (ADR-0021), so counting the declared free parameters already includes it.
+    :param n: number of scored data points.
+    :returns: an :class:`InformationCriteria`. ``aicc`` is ``None`` when
+        ``n <= k + 1`` (the correction ``2k(k+1)/(n-k-1)`` has a non-positive
+        denominator there and is conventionally reported as undefined).
+
+    ``AIC = 2k - 2 lnL``; ``BIC = k ln(n) - 2 lnL``;
+    ``AICc = AIC + 2k(k+1)/(n-k-1)``.
+    """
+    aic = 2.0 * k - 2.0 * log_likelihood
+    bic = float(k * np.log(n) - 2.0 * log_likelihood)
+    denom = n - k - 1
+    aicc = float(aic + (2.0 * k * (k + 1.0)) / denom) if denom > 0 else None
+    return InformationCriteria(k=k, n=n, log_likelihood=log_likelihood,
+                               aic=aic, bic=bic, aicc=aicc)
+
+
+def likelihood_information_criteria(objective, sim_data_dict, exp_data_dict, pset, k):
+    """Information criteria for ``objective`` scored at ``pset``, or ``None``.
+
+    Returns ``None`` -- rather than a misleading number -- when the objective is
+    not a per-point likelihood (``sos`` / ``sod`` / ``norm_sos`` / ``kl`` /
+    ``wasserstein`` / ``direct_pass``: no normalized density, so no AIC; the same
+    gate LOO/WAIC use), when no point is scored, or when the log-likelihood is not
+    finite. Otherwise the log-likelihood is the sum of the objective's complete
+    per-point ``log_density`` over the scored data (``evaluate_pointwise``,
+    ADR-0056), ``n`` is that point count, and ``k`` the free-parameter count.
+    """
+    if not getattr(objective, 'supports_pointwise_log_likelihood', False):
+        return None
+    result = objective.evaluate_pointwise(sim_data_dict, exp_data_dict, pset)
+    if result is None:
+        return None
+    _ids, values = result
+    n = len(values)
+    if n == 0:
+        return None
+    log_likelihood = float(np.sum(values))
+    if not np.isfinite(log_likelihood):
+        return None
+    return information_criteria(log_likelihood, k, n)
 
 
 class ObjectiveCalculator:

@@ -30,7 +30,7 @@ from ..bngsim_model import (
     missing_bngsim_nf_action_support,
 )
 from ..printing import print0, print1, print2, PybnfError
-from ..objective import ObjectiveCalculator
+from ..objective import ObjectiveCalculator, likelihood_information_criteria
 
 from abc import ABC, abstractmethod
 import logging
@@ -1201,6 +1201,7 @@ class Algorithm(ABC):
         self._copy_best_fit_sims(best_pset, best_name)
         self._rerun_best_fit_to_save_data(best_pset)
         self._emit_best_fit_bngl(best_pset, best_name)
+        self._emit_information_criteria(self._compute_information_criteria(best_pset))
         self._emit_inference_data()
         self._finalize_backup_pickle()
         self._teardown_sim_dir()
@@ -1331,6 +1332,95 @@ class Algorithm(ABC):
             except Exception:
                 logger.exception('Failed to write best-fit BNGL for model %s' % m)
                 print1('Could not write the best-fit BNGL artifact for model %s; see log.' % m)
+
+    def _compute_information_criteria(self, best_pset):
+        """AIC / BIC / AICc for the best-fit parameter set, or ``None``.
+
+        A no-op (``None``) unless there is a best fit AND the objective is a proper
+        likelihood (``supports_pointwise_log_likelihood`` -- the ADR-0011 noise
+        families). A bare least-squares / distance / pass-through objective carries
+        no normalized density, so no information criterion is defined for it -- the
+        same gate LOO/WAIC use (ADR-0056).
+
+        Otherwise the best pset is re-simulated once, in-process, to get its
+        simulation data back (``core.run_job`` with no calculator future does not
+        null ``res.simdata`` the way worker-side scoring does), then scored through
+        the same normalize -> postprocess -> pointwise-``log_density`` path the fit
+        used -- giving the FULL normalized log-likelihood behind an ABSOLUTE AIC.
+        One extra simulation at the end of a run that already ran thousands is
+        negligible, and it is the only place the best pset's simdata is in hand
+        (an optimizer discards it after scoring on the workers).
+
+        Every failure is logged and swallowed (returns ``None``): the run has
+        otherwise completed, and a diagnostics field must never abort it. Split out
+        of run()'s tail so it can be unit-tested without a dask client.
+        """
+        if best_pset is None:
+            return None
+        if not getattr(self.objective, 'supports_pointwise_log_likelihood', False):
+            return None
+        try:
+            # calc_future=None keeps simdata on the Result (no worker-side scoring);
+            # delete_folder=True cleans up the one-off rerun (its gdat/scan are already
+            # saved by _copy_best_fit_sims / _rerun_best_fit_to_save_data above).
+            job = core.Job(self.model_list, best_pset, 'bestfit_infocrit',
+                           self.sim_dir, self.config.config['wall_time_sim'], None,
+                           self.config.config['normalization'], self.config.postprocessing,
+                           True,
+                           stochastic_seed_policy=self.config.config['stochastic_seed'])
+            res = core.run_job(job)
+            if getattr(res, 'failed', False) or res.simdata is None:
+                logger.warning('Could not re-simulate the best fit to compute information criteria')
+                return None
+            # Mirror add_to_trajectory's scoring setup so the log-likelihood is scored
+            # against exactly the data the fit's objective saw.
+            res.normalize(self.config.config['normalization'])
+            res.postprocess_data(self.config.postprocessing)
+            return likelihood_information_criteria(
+                self.objective, res.simdata, self.exp_data, best_pset, len(self.variables))
+        except Exception:
+            logger.exception('Failed to compute information criteria for the best fit')
+            return None
+
+    def _emit_information_criteria(self, ic):
+        """Write ``Results/information_criteria.txt`` (and a console line) for a fit.
+
+        ``ic`` is the :class:`~pybnf.objective.InformationCriteria` from
+        :meth:`_compute_information_criteria`, or ``None`` -- a non-likelihood
+        objective, or no best fit -- in which case nothing is written. AIC/BIC/AICc
+        rank this fit against competing models (lower is better); this is the
+        first-class form of the AIC lesson 45 (model selection) computes by hand.
+        """
+        if ic is None:
+            return
+        aicc_str = ('%.10g' % ic.aicc) if ic.aicc is not None else 'n/a (n <= k+1)'
+        lines = [
+            '# Information criteria for the best-fit parameter set (lower is better).',
+            '# Valid for a likelihood objective only (normal / lognormal / laplace /',
+            '#   neg_bin / student_t). Computed from the full normalized log-likelihood',
+            "#   at the best fit (the sum of the noise model's per-point log_density,",
+            '#   ADR-0056), so AIC is an absolute value comparable across models.',
+            '#   AIC  = 2k - 2*lnL',
+            '#   BIC  = k*ln(n) - 2*lnL',
+            '#   AICc = AIC + 2k(k+1)/(n-k-1)   (undefined when n <= k+1)',
+            'k\t%d' % ic.k,
+            'n\t%d' % ic.n,
+            'log_likelihood\t%.10g' % ic.log_likelihood,
+            'AIC\t%.10g' % ic.aic,
+            'BIC\t%.10g' % ic.bic,
+            'AICc\t%s' % aicc_str,
+        ]
+        path = str(Path(self.res_dir) / 'information_criteria.txt')
+        try:
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines) + '\n')
+        except Exception:
+            logger.exception('Failed to write information_criteria.txt')
+            return
+        logger.info('Wrote information criteria %s' % path)
+        print1('Information criteria (best fit): AIC=%.6g  BIC=%.6g  AICc=%s  '
+               '(k=%d, n=%d, lnL=%.6g)'
+               % (ic.aic, ic.bic, aicc_str, ic.k, ic.n, ic.log_likelihood))
 
     def _emit_inference_data(self):
         """Write Results/inference_data.nc when ``output_inference_data`` is set (ADR-0055).
