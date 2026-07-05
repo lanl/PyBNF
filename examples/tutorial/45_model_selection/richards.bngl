@@ -33,13 +33,14 @@ begin model
   end observables
 
   begin functions
-    # Generalized density-dependent loss: r*N*(N/K)^b.
-    density_loss()  = r*Obs_N*(Obs_N/K)^b
+    # Generalized density-dependent loss RATE: r*(N/K)^b. The decay rule below
+    # multiplies this by the population N, giving the flux r*N*(N/K)^b.
+    density_loss_rate()  = r*(Obs_N/K)^b
   end functions
 
   begin reaction rules
-    growth: 0   -> N()  r*Obs_N          # dN/dt += r*N
-    crowd:  N() -> 0    density_loss()   # dN/dt -= r*N*(N/K)^b
+    growth: 0   -> N()  r*Obs_N               # dN/dt += r*N
+    crowd:  N() -> 0    density_loss_rate()    # dN/dt -= r*N*(N/K)^b  (rate * N)
   end reaction rules
 
 end model

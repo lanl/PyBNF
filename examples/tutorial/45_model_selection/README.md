@@ -52,9 +52,9 @@ and you pick the model with the **lowest** AIC. For this data:
 | Model | chi-square | `k` | AIC | rank |
 | --- | --- | --- | --- | --- |
 | **Richards** | **≈ 11** | 3 | **≈ 17** | **1 (true)** |
-| von Bertalanffy | ≈ 30 | 2 | ≈ 34 | 2 |
-| gompertz | ≈ 470 | 2 | ≈ 474 | 3 |
-| logistic | ≈ 742 | 2 | ≈ 746 | 4 |
+| logistic | ≈ 62 | 2 | ≈ 66 | 2 |
+| gompertz | ≈ 244 | 2 | ≈ 248 | 3 |
+| von Bertalanffy | ≈ 363 | 2 | ≈ 367 | 4 |
 
 Richards wins decisively: it fits the asymmetric curve so much better than the
 others that its extra shape parameter `b` is *more than* paid for by the `2·k`
@@ -63,13 +63,13 @@ parameter count. (When two models fit almost equally well, AIC would correctly
 prefer the simpler one — that is the whole point of the penalty.)
 
 **Selecting the law is not the same as pinning the parameters.** Model selection
-picks the right *structure* — here, that the data follow a Richards law. The
-Richards *parameters* are actually a bit **sloppy**: `r`, `K`, and `b` trade off, so
-the fit lands on a `(r, K, b)` that reproduces the curve without recovering the
-generating values exactly (its `K` comes back high). That is a real and common
-situation — the model is identified even where its parameters are not — and it is a
-reason to reach for the identifiability tools of lessons 02 (profile likelihood),
-05 (bootstrap) and 17 (posterior) *after* you have chosen the model.
+picks the right *structure* — here, that the data follow a Richards law. Richards's
+three parameters `r`, `K`, `b` partly **trade off** (a sloppy direction), so a fit
+can reproduce the curve with a `(r, K, b)` that is not exactly the generating one.
+That is a real and common situation — the model can be identified even where its
+parameters are only loosely so — and it is a reason to reach for the identifiability
+tools of lessons 02 (profile likelihood), 05 (bootstrap) and 17 (posterior) *after*
+you have chosen the model.
 
 ## The test
 
