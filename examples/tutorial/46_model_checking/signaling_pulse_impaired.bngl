@@ -1,0 +1,47 @@
+# =============================================================================
+#  The same pulse, with IMPAIRED CLEARANCE       (the non-compliant model)
+# =============================================================================
+#  Identical to signaling_pulse.bngl in every way EXCEPT the clearance rate:
+#  kclr is knocked down from 0.5 to 0.03 (clearance almost switched off). The
+#  precursor still activates just as fast, but the active response R now barely
+#  drains away, so the pulse
+#
+#    * OVERSHOOTS -- it climbs to ~92 instead of ~58, breaching the safe ceiling
+#    * NEVER CLEARS -- it is still ~75 at the end of the run, not back at baseline
+#
+#  Checked against the SAME specification (pulse.prop), this model satisfies only
+#  3 of the 5 properties -- `check` acts as a pass/fail QA gate that tells the two
+#  circuits apart. See signaling_pulse_impaired_check.conf, and the itemized
+#  penalties in Simulations/qualitative_constraint_eval.txt for WHICH two fail.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    kact  1.5    # Pre -> R   activation rate  (unchanged -- the rise is fine)
+    kclr  0.03   # R -> Clr   clearance rate   (KNOCKED DOWN from 0.5: the lesion)
+    Pre0  100    # initial precursor amount    (unchanged)
+  end parameters
+
+  begin molecule types
+    Pre()
+    R()
+    Clr()
+  end molecule types
+
+  begin seed species
+    Pre()  Pre0
+    R()    0
+    Clr()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_R  R()      # the active response we check
+  end observables
+
+  begin reaction rules
+    activate:  Pre() -> R()    kact     # dR/dt += kact*Pre   (rise -- same as healthy)
+    clear:     R()   -> Clr()  kclr     # dR/dt -= kclr*R     (fall -- crippled)
+  end reaction rules
+
+end model

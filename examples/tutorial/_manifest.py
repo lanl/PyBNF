@@ -1060,6 +1060,22 @@ EXAMPLES = (
         # tests/test_tutorial_model_selection.py, not a per-conf ConfCheck.
         confs=(),
     ),
+    Example(
+        folder='46_model_checking',
+        model='signaling_pulse.bngl',   # the healthy circuit (the impaired sibling is checked too)
+        # A `check` lesson: no fitting and no .exp data -- the model is scored AS
+        # WRITTEN against a BPSL .prop spec, so there is no recovery truth and no
+        # free parameters. `truth` records the two models' identifying rate (the
+        # healthy clearance vs the knocked-down lesion) for documentation only;
+        # `datasets`/`confs` are empty (a check reads the .prop, not a generated
+        # .exp, and the two check confs are asserted by the dedicated verifier
+        # tests/test_tutorial_examples.py::test_tutorial_model_check_discriminates,
+        # not the recover/constraint ConfCheck machinery).
+        truth={'kclr_healthy': 0.5, 'kclr_impaired': 0.03},
+        build_free={},
+        datasets=(),
+        confs=(),
+    ),
 )
 
 

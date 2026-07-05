@@ -1,0 +1,30 @@
+# Qualitative specification for the signaling pulse, in PyBNF's Biological
+# Property Specification Language (BPSL). Each non-comment line is one property
+# the trajectory must satisfy; `job_type = check` reports how many hold, with no
+# fitting. A satisfied property scores 0; a violated one scores a positive
+# penalty (written per-line to Simulations/qualitative_constraint_eval.txt).
+#
+# Syntax:  <expr> <op> <expr>  <where>
+#   <where>:  at time=<v>            -- at one time point
+#             once                   -- true at least once over the run
+#             always                 -- true at every output point
+#             between time=<a>,time=<b>  -- true across an interval
+#
+# These five deliberately use the whole where-vocabulary. The healthy circuit
+# (signaling_pulse.bngl) satisfies all five; the impaired one
+# (signaling_pulse_impaired.bngl) fails the two marked [DISCRIMINATING].
+
+# (at)      The response starts at baseline.
+Obs_R < 5 at time=0
+
+# (once)    It mounts a real response -- the pulse peaks above 50 at some point.
+Obs_R > 50 once
+
+# (always)  [DISCRIMINATING] But it never overshoots the safe ceiling of 75.
+Obs_R < 75 always
+
+# (at)      It is still clearly elevated partway through (a sustained pulse, not a blip).
+Obs_R > 20 at time=3
+
+# (between) [DISCRIMINATING] And it clears back to baseline by the end of the run.
+Obs_R < 10 between time=8,time=12

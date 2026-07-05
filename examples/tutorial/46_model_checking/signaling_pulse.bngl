@@ -1,0 +1,54 @@
+# =============================================================================
+#  A transient signaling pulse    Pre --kact--> R --kclr--> Clr    (observe R)
+# =============================================================================
+#  A stimulus converts an inactive precursor `Pre` into an active response `R`,
+#  which is then cleared to `Clr`. The active species R rises then falls -- a
+#  PULSE -- with the closed form
+#
+#        R(t) = Pre0 * kact/(kclr-kact) * (exp(-kact*t) - exp(-kclr*t))
+#
+#  A healthy response has three qualitative features: it starts near baseline,
+#  it mounts a real response (peaks well above baseline) without OVERSHOOTING a
+#  safe ceiling, and it CLEARS back to baseline afterwards. This file is the
+#  well-behaved circuit: with fast activation (kact = 1.5) and brisk clearance
+#  (kclr = 0.5) the pulse peaks near 58 and has decayed away by t = 8.
+#
+#  This lesson does NOT fit anything. It CHECKS the model as written against a
+#  qualitative specification (pulse.prop) -- see signaling_pulse_check.conf.
+#  Its impaired sibling (signaling_pulse_impaired.bngl) breaks clearance and
+#  fails the same spec.
+#
+#  Like every edition-2 model, there is no `begin actions` block: the time course
+#  comes from the experiment's `t_end:` (see the .conf).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    kact  1.5    # Pre -> R   activation rate  (the rising edge)
+    kclr  0.5    # R -> Clr   clearance rate   (the falling tail)
+    Pre0  100    # initial precursor amount    (the response's headroom)
+  end parameters
+
+  begin molecule types
+    Pre()
+    R()
+    Clr()
+  end molecule types
+
+  begin seed species
+    Pre()  Pre0
+    R()    0
+    Clr()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_R  R()      # the active response we check
+  end observables
+
+  begin reaction rules
+    activate:  Pre() -> R()    kact     # dR/dt += kact*Pre   (rise)
+    clear:     R()   -> Clr()  kclr     # dR/dt -= kclr*R     (fall / clearance)
+  end reaction rules
+
+end model

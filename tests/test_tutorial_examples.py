@@ -81,16 +81,18 @@ def _cases(mode):
     return out
 
 
-def _load_conf(example, confcheck, tmp_path, seed):
+def _load_conf(example, confcheck, tmp_path, seed, out_name='out'):
     """Load a committed tutorial conf into a Configuration, with the output dir
     redirected to the test's tmp dir and the RNG pinned for determinism. Paths in
-    the conf are relative to the example folder, so we parse from inside it."""
+    the conf are relative to the example folder, so we parse from inside it.
+    ``out_name`` names the subdir under ``tmp_path`` so a single test can load
+    (and run) more than one conf without their outputs colliding."""
     text = (example.path / confcheck.conf).read_text()
     home = os.getcwd()
     os.chdir(example.path)
     try:
         raw = parse.ploop(text.splitlines(keepends=True))
-        raw['output_dir'] = str(tmp_path / 'out')
+        raw['output_dir'] = str(tmp_path / out_name)
         raw['random_seed'] = seed
         raw['verbosity'] = 0
         return config.Configuration(raw)
@@ -186,6 +188,53 @@ def test_tutorial_model_check_reports_satisfaction(tmp_path, capsys):
         os.chdir(home)
     out = capsys.readouterr().out
     assert 'Satisfied 4 out of 4 constraints' in out, out
+
+
+def _run_check(example, conf_name, tmp_path, out_name):
+    """Run one `job_type = check` conf through ModelCheck (the real dispatch) and
+    return its itemized per-constraint penalties. The `Satisfied N out of M` line
+    is left on stdout for the caller to read via capsys."""
+    from pybnf.algorithms.model_check import ModelCheck
+    check = _manifest.ConfCheck(conf_name, recover={})
+    conf = _load_conf(example, check, tmp_path, seed=1234, out_name=out_name)
+    home = os.getcwd()
+    try:
+        mc = ModelCheck(conf)
+        os.makedirs(mc.sim_dir, exist_ok=True)
+        mc.run_check()
+    finally:
+        os.chdir(home)
+    # `check` writes one file per .prop (named for the experiment/suffix), one
+    # penalty per constraint line in file order: 0 = satisfied, > 0 = violated.
+    evals = list(Path(mc.sim_dir).glob('*_constraint_eval.txt'))
+    assert len(evals) == 1, f'expected one itemized eval file, got {evals}'
+    return [float(x) for x in evals[0].read_text().split()]
+
+
+def test_tutorial_model_check_discriminates(tmp_path, capsys):
+    """Lesson 46: `check` is a pass/fail gate. The SAME BPSL spec (pulse.prop),
+    checked against two models, tells them apart -- the healthy signaling pulse
+    satisfies all five properties; the impaired-clearance sibling satisfies only
+    three, and the itemized penalties pin the two it violates (the `always`
+    ceiling and the `between` return-to-baseline, lines 3 and 5)."""
+    H.require_bng2pl()
+    example = _manifest.example_by_folder('46_model_checking')
+
+    ok = _run_check(example, 'signaling_pulse_check.conf', tmp_path, 'ok')
+    out = capsys.readouterr().out
+    assert 'Satisfied 5 out of 5 constraints' in out, out
+    assert ok == [0.0, 0.0, 0.0, 0.0, 0.0], ok
+
+    bad = _run_check(example, 'signaling_pulse_impaired_check.conf', tmp_path, 'bad')
+    out = capsys.readouterr().out
+    assert 'Satisfied 3 out of 5 constraints' in out, out
+    assert len(bad) == 5, bad
+    # The two discriminating properties (3: `always` ceiling, 5: `between` clears)
+    # are violated; the other three hold.
+    satisfied = [bad[i] for i in (0, 1, 3)]
+    violated = [bad[2], bad[4]]
+    assert satisfied == [0.0, 0.0, 0.0], bad
+    assert all(p > 0 for p in violated), bad
 
 
 @pytest.mark.usefixtures('_fakes')
