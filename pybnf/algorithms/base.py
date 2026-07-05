@@ -1070,10 +1070,10 @@ class Algorithm(ABC):
                 raise PybnfError('Aborted because all jobs are failing',
                                  'Your simulations are failing to run. Logs from failed simulations are saved in '
                                  'the FailedSimLogs directory. For help troubleshooting this error, refer to '
-                                 'https://pybnf.readthedocs.io/en/latest/troubleshooting.html#failed-simulations')
+                                 'https://lanl.github.io/PyBNF/troubleshooting.html#failed-simulations')
         elif isinstance(res, CancelledError):
-            raise PybnfError('PyBNF has encounted a fatel error. If the error has occured on the inital run please varify your model '
-                            'is funcational. To resume run please restart PyBNF using the -r flag')
+            raise PybnfError('PyBNF has encountered a fatal error. If the error has occurred on the initial run please verify your model '
+                            'is functional. To resume the run please restart PyBNF using the -r flag')
         else:
             self.success_count += 1
             logger.debug('Job %s complete')

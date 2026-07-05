@@ -145,7 +145,7 @@ pybnf = "pybnf.pybnf:main"
 
 [project.urls]
 Homepage = "https://github.com/lanl/PyBNF"
-Documentation = "https://pybnf.readthedocs.io/en/latest/"
+Documentation = "https://lanl.github.io/PyBNF/"
 Source = "https://github.com/lanl/PyBNF"
 Issues = "https://github.com/lanl/PyBNF/issues"
 

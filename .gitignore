@@ -6,7 +6,9 @@ build/**
 **/__pycache__
 **/*.pyc
 examples/output/**
-docs/_build/**# macOS cruft
+docs/_build/
+
+# macOS cruft
 .DS_Store
 
 # Python build/cache

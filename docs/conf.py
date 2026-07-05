@@ -97,6 +97,10 @@ html_theme = 'sphinxdoc'
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 
+# Browser-tab icon: the pronghorn favicon (rounded card, padded). SVG favicons
+# are served as-is by GitHub Pages and supported by all current browsers.
+html_favicon = '_static/favicon.svg'
+
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.
 #

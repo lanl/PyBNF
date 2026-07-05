@@ -60,7 +60,9 @@ Two small modifications of a BioNetGen-compatible BNGL file are necessary to use
 1) Replace each value to be fit with a name that ends in the string “__FREE”.
 
 For example, if the parameters block in our original file was the following:
+
 ::
+
     begin parameters
 
         v1 17
@@ -71,7 +73,9 @@ For example, if the parameters block in our original file was the following:
     end parameters
 
 the revised version for PyBNF should look like:
+
 ::
+
     begin parameters
 
         v1 v1__FREE
@@ -108,7 +112,9 @@ Experimental Data Files
 Experimental data file are plain text files with the extension “.exp” that contain whitespace-delimited tables of data to be used for fitting.
 
 The first line of the .exp file is the header. It should contain the character ``#`` (optional, to match the output format of BioNetGen), followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
+
 ::
+
     #    time    X    Y
         0    5    1e4
         5    7    1.5e4
@@ -117,7 +123,9 @@ The first line of the .exp file is the header. It should contain the character `
         20    15    1.1e5
 
 If your are fitting with the chi-squared objective function, you also need to provide a standard deviation for each experimental data point. To do so, include a column in the .exp file with "_SD" appended to the variable name. For example:
+
 ::
+
     #    time    X    Y        X_SD    Y_SD
         0    5    1e4        1    2e2
         5    7    1.5e4    1.2    2e2

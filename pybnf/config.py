@@ -1932,7 +1932,7 @@ class Configuration:
                                  '"bng_command" configuration key to the location of the file BNG2.pl, or set the '
                                  'BNGPATH environmental variable to the folder containing BNG2.pl.\n'
                                  'If BioNetGen is not yet installed, please refer to installation instructions at '
-                                 'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
+                                 'https://lanl.github.io/PyBNF/installation.html#bionetgen')
             elif re.search(r'BNG2.pl', self.config['bng_command']) is None:
                 raise PybnfError('The specified "bng_command" parameter in the configuration file must include the script '
                                  'name at the end of the path (e.g. /path/to/BNG2.pl)')
@@ -1949,14 +1949,14 @@ class Configuration:
                                      'configuration file points to the BNG2.pl script, or that the BNGPATH environmental '
                                      'variable is set to the folder containing BNG2.pl.\n'
                                      'For help, refer to '
-                                     'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
+                                     'https://lanl.github.io/PyBNF/installation.html#bionetgen')
                 except FileNotFoundError:
                     #  Occurs on Mac/Linux if BNG2.pl is nonexistent.
                     raise PybnfError('The BioNetGen simulator (BNG2.pl) was not found at the specified location. Please set the '
                                      '"bng_command" configuration key to the location of the file BNG2.pl, or set the '
                                      'BNGPATH environmental variable to the folder containing BNG2.pl.\n'
                                      'If BioNetGen is not yet installed, please refer to installation instructions at '
-                                     'https://pybnf.readthedocs.io/en/latest/installation.html#bionetgen')
+                                     'https://lanl.github.io/PyBNF/installation.html#bionetgen')
         # Check that the integrator is valid
         if self.config['sbml_backend'] == 'bngsim':
             bngsim_integrators = ('cvode', 'gillespie')

@@ -8,7 +8,7 @@ bootstrapping or Bayesian approaches, and model checking. PyBNF includes an adap
 (BPSL) for defining qualitative data for use in parameterization or checking. It runs on most Linux and macOS
 workstations as well on computing clusters.
 
-For documentation, refer to [Documentation_PyBioNetFit.pdf](Documentation_PyBioNetFit.pdf) or the online documentation at <https://pybnf.readthedocs.io/en/latest/>.
+For documentation, refer to the online documentation at <https://lanl.github.io/PyBNF/> or [Documentation_PyBioNetFit.pdf](Documentation_PyBioNetFit.pdf).
 
 ## Installation
 
