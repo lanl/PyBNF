@@ -10,6 +10,15 @@ name: docs
 on:
   push:
     branches: [main]
+    # Only rebuild/redeploy the site when something that affects it changes. An
+    # unrelated push (another workflow, packaging metadata) should not fire a
+    # Pages deploy -- every deploy risks a transient Pages-backend flake, so we
+    # don't spend them on no-op runs.
+    paths:
+      - 'docs/**'
+      - 'pybnf/**'
+      - 'pyproject.toml'
+      - '.github/workflows/docs.yml'
   # Build (but do not deploy) on PRs that touch the docs or the documented code,
   # so a broken build is caught before it reaches main.
   pull_request:
