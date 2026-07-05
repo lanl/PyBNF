@@ -2321,7 +2321,9 @@ def test_constraint_estimated_scale_gradient_column():
     np.testing.assert_allclose(g[2], dF_ds)
 
     # Log10 scale parameter (the recommended positive-parameter declaration): the tied column carries
-    # the ln(10)*s chain factor, exactly like an estimated sigma on a log scale.
+    # the ln(10)*s chain factor, exactly like an estimated sigma on a log scale. The log-space
+    # transform autodiffs through jax (the optional pybnf[jax] extra), so skip this leg without it.
+    pytest.importorskip('jax')
     log = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0),
                 ('s_q', 'loguniform_var', 0.1, 1000.0, s_val))
     g_log = assemble_constraint_gradient([cset], sdd, routings, log)

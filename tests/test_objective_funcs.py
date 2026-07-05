@@ -27,7 +27,7 @@ class _FakeConstraintSet:
         self._penalty = penalty
         self._failed = failed
 
-    def total_penalty(self, sim_data_dict):
+    def total_penalty(self, sim_data_dict, pset_values=None):
         return self._penalty
 
     def number_failed(self, sim_data_dict):
