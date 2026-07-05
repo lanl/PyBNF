@@ -7,29 +7,40 @@ PyBioNetFit
 =================================
 
 PyBioNetFit (PyBNF) is a general-purpose program for **parameterizing** and
-**checking** mechanistic biological models. It fits the free parameters of a
-model — written in the BioNetGen rule-based modeling language (`BNGL`_), the
-Systems Biology Markup Language (`SBML`_), or Antimony — to experimental data by
-minimizing an objective function with a chosen optimization or Bayesian-sampling
-algorithm. It runs on most Linux and macOS workstations as well as on computing
-clusters.
+**checking** mechanistic biological models. Given a model — written in the
+BioNetGen rule-based modeling language (`BNGL`_), the Systems Biology Markup
+Language (`SBML`_), or Antimony — and experimental data, PyBNF scores each
+candidate assignment of the free parameters with an objective function. An
+**optimization algorithm** searches for the single best-fitting parameter set;
+a **Bayesian sampling algorithm** instead draws from the posterior distribution
+to quantify parameter uncertainty. PyBNF runs on Linux, macOS, and Windows
+workstations as well as on computing clusters.
 
-Fitting algorithms
-------------------
+Algorithms
+----------
 
-PyBNF ships a broad, parallelized suite of fit types:
+A fit is driven by one algorithm, chosen by ``fit_type`` (spelled ``job_type``
+in edition-2). These fall into distinct families, and PyBNF ships a broad,
+parallelized suite of each.
 
-- **Metaheuristic optimizers** — differential evolution, particle swarm,
-  scatter search, CMA-ES, and simulated annealing — for global search over
-  rugged objective surfaces.
-- **Gradient-based optimizers** — a trust-region least-squares method (``trf``)
+**Optimization algorithms** search for the single best-fitting parameter set by
+minimizing the objective:
+
+- *Metaheuristic optimizers* — differential evolution, particle swarm, scatter
+  search, CMA-ES, and simulated annealing — for global search over rugged
+  objective surfaces.
+- *Gradient-based optimizers* — a trust-region least-squares method (``trf``)
   and a quasi-Newton method (``lbfgs``) — driven by analytic parameter
   sensitivities for fast local convergence.
-- **Bayesian samplers** for uncertainty quantification — Adaptive MCMC (``am``,
-  the recommended sampler), DREAM(ZS), Preconditioned DREAM, parallel tempering,
-  and a Hamiltonian Monte Carlo / NUTS reference sampler.
-- **Model checking** (``check``) and **profile-likelihood** analysis for
-  identifiability, plus uncertainty quantification by bootstrapping.
+
+**Bayesian sampling algorithms** do not return one best fit; they draw from the
+posterior distribution of the free parameters to quantify uncertainty — Adaptive
+MCMC (``am``, the recommended sampler), DREAM(ZS), Preconditioned DREAM, parallel
+tempering, and a Hamiltonian Monte Carlo / NUTS reference sampler.
+
+**Analysis methods** round out the suite: **model checking** (``check``) and
+**profile-likelihood** analysis for identifiability, plus uncertainty
+quantification by **bootstrapping**.
 
 Objectives and noise
 --------------------
