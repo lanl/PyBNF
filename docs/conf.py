@@ -20,13 +20,15 @@
 # -- Project information -----------------------------------------------------
 
 project = 'PyBNF'
-copyright = '2018, Ryan Suderman, Eshan Mitra'
+copyright = '2018-2026, Ryan Suderman, Eshan Mitra'
 author = 'Ryan Suderman, Eshan Mitra'
 
+# Keep in sync with pybnf.__version__ (docs/conf.py is not imported by the
+# package, so this is a manual bump at release time).
 # The short X.Y version
-version = '1.1.9'
+version = '1.5.0'
 # The full version, including alpha/beta/rc tags
-release = 'v1.1.9'
+release = 'v1.5.0'
 
 
 # -- General configuration ---------------------------------------------------
@@ -41,7 +43,12 @@ release = 'v1.1.9'
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.viewcode',
-    'sphinx.ext.imgmath'
+    # mathjax (client-side rendering) rather than imgmath: imgmath shells out to
+    # LaTeX + dvipng to rasterize each equation, which would require a system TeX
+    # install on the Pages build runner. The docs use ~200 math directives; for a
+    # web-hosted site mathjax renders them in the browser with zero build-time
+    # system dependencies. LaTeX output (make latexpdf) still uses real math.
+    'sphinx.ext.mathjax',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -61,7 +68,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
