@@ -4,10 +4,10 @@ When you don't know which growth LAW your data follows, you fit several candidat
 models to the same data and rank them. Four growth laws (logistic / gompertz /
 richards / von_bertalanffy) are fit to one noisy Richards curve, each scored with
 the same weighted least-squares objective (``noise_model = normal, sigma =
-read_exp_file _SD``) so the best chi-square is comparable across models. Ranking by
-the Akaike Information Criterion (``AIC = chi_square + 2*k``) picks the true model:
-Richards fits the asymmetric curve so much better that its extra shape parameter is
-more than paid for.
+read_exp_file _SD``) so the fits are comparable across models. Ranking by the Akaike
+Information Criterion (``AIC = 2*k - 2*lnL``, which PyBNF writes to each fit's
+``Results/information_criteria.txt``) picks the true model: Richards fits the
+asymmetric curve so much better that its extra shape parameter is more than paid for.
 
 This cross-model comparison can't be expressed as a per-conf ConfCheck, so it lives
 here: Richards has the lowest AIC (and recovers its true ``(r, K, b)``), and every
@@ -62,6 +62,21 @@ def _fit(conf_name, tmp_path):
     return alg
 
 
+def _read_ic(alg):
+    """Parse the AIC/BIC/AICc report PyBNF writes to Results/information_criteria.txt
+    -- the first-class field this lesson ranks models by, so the test reads the same
+    number a user would (no hand-rolled ``chi_square + 2k``, which is a factor of two
+    off: the objective is ½·χ², and AIC needs the full normalized ``-2*lnL``)."""
+    text = (Path(alg.res_dir) / 'information_criteria.txt').read_text()
+    ic = {}
+    for line in text.splitlines():
+        if line.startswith('#') or '\t' not in line:
+            continue
+        key, val = line.split('\t', 1)
+        ic[key] = val
+    return ic
+
+
 def test_aic_selects_the_true_growth_law(tmp_path, monkeypatch):
     """Fitting four growth laws to the Richards data, the AIC ranking picks the
     Richards LAW (the model structure the data came from), decisively."""
@@ -72,9 +87,10 @@ def test_aic_selects_the_true_growth_law(tmp_path, monkeypatch):
     chi2s = {}
     for conf_name, k in _CANDIDATES.items():
         alg = _fit(conf_name, tmp_path)
-        chi2 = alg.trajectory.best_score()
-        chi2s[conf_name] = chi2
-        aic[conf_name] = chi2 + 2 * k
+        chi2s[conf_name] = alg.trajectory.best_score()
+        ic = _read_ic(alg)
+        assert int(ic['k']) == k    # the report counts exactly the fitted parameters
+        aic[conf_name] = float(ic['AIC'])
 
     winner = min(aic, key=aic.get)
     assert winner == _TRUTH, (
@@ -82,11 +98,11 @@ def test_aic_selects_the_true_growth_law(tmp_path, monkeypatch):
         + ', '.join(f'{c}={aic[c]:.1f}' for c in sorted(aic, key=aic.get)))
 
     # Richards is not just the lowest -- it is clearly better, so the *fit* (not the
-    # parameter-count tie-break) is what decides. It fits the asymmetric curve well
-    # (chi-square on the order of the point count); the others are the wrong shape and
-    # cannot match it, so their extra parsimony cannot save them.
+    # parameter-count tie-break) is what decides. Its AIC is ~100 below the runner-up
+    # (a gap past ~10 is already decisive); the others are the wrong shape and cannot
+    # match it, so their extra parsimony cannot save them.
     runner_up = min((c for c in aic if c != _TRUTH), key=aic.get)
-    assert aic[_TRUTH] < aic[runner_up] - 10, (
+    assert aic[_TRUTH] < aic[runner_up] - 50, (
         f'Richards AIC {aic[_TRUTH]:.1f} is not decisively below the runner-up '
         f'{runner_up} {aic[runner_up]:.1f}')
     assert chi2s[_TRUTH] < 0.5 * chi2s[runner_up], (

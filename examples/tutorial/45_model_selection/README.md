@@ -31,36 +31,53 @@ weighted least-squares objective:
 noise_model = normal, sigma = read_exp_file _SD
 ```
 
-so the best objective — a **chi-square** — is directly comparable across models.
+so the best objectives are directly comparable across models (all four minimize the
+same weighted least-squares score, a scaled chi-square).
 
 ```bash
 for m in richards logistic gompertz von_bertalanffy; do pybnf -c fit_$m.conf; done
 ```
 
-## Rank by AIC (don't just pick the lowest chi-square)
+## Rank by AIC — read it from `information_criteria.txt`
 
 A more flexible model (more parameters) can always match the data at least as well,
-so the raw chi-square favours complexity. The **Akaike Information Criterion**
-charges for each parameter:
+so the raw fit score favours complexity. The **Akaike Information Criterion** charges
+for each parameter. It is defined from the maximized log-likelihood `lnL`:
 
 ```
-AIC = chi_square + 2·k          (k = number of fitted parameters)
+AIC = 2·k − 2·lnL          (k = number of fitted parameters; lower is better)
 ```
 
-and you pick the model with the **lowest** AIC. For this data:
+You don't compute this by hand. At the end of every likelihood fit PyBNF writes
+`Results/information_criteria.txt` with `k`, `n` (data points), `lnL`, and
+**AIC / BIC / AICc** for the best-fit parameter set. Read the `AIC` line from each
+model's file:
 
-| Model | chi-square | `k` | AIC | rank |
-| --- | --- | --- | --- | --- |
-| **Richards** | **≈ 11** | 3 | **≈ 17** | **1 (true)** |
-| logistic | ≈ 62 | 2 | ≈ 66 | 2 |
-| gompertz | ≈ 244 | 2 | ≈ 248 | 3 |
-| von Bertalanffy | ≈ 363 | 2 | ≈ 367 | 4 |
+| Model | `k` | best objective (½·χ²) | `lnL` | **AIC** | ΔAIC |
+| --- | --- | --- | --- | --- | --- |
+| **Richards** | 3 | ≈ 11.1 | ≈ −61.1 | **≈ 128** | **0 (true)** |
+| logistic | 2 | ≈ 62.1 | ≈ −112.1 | ≈ 228 | ≈ 100 |
+| gompertz | 2 | ≈ 243.9 | ≈ −293.8 | ≈ 592 | ≈ 464 |
+| von Bertalanffy | 2 | ≈ 363.0 | ≈ −413.0 | ≈ 830 | ≈ 702 |
 
-Richards wins decisively: it fits the asymmetric curve so much better than the
-others that its extra shape parameter `b` is *more than* paid for by the `2·k`
-penalty. The others are the wrong *shape* and can't be rescued by their smaller
-parameter count. (When two models fit almost equally well, AIC would correctly
-prefer the simpler one — that is the whole point of the penalty.)
+You pick the model with the **lowest** AIC — Richards, by a landslide (ΔAIC ≈ 100
+over the runner-up; a gap past ~10 is already decisive). It fits the asymmetric curve
+so much better than the others that its extra shape parameter `b` is *more than* paid
+for by the `2·k` penalty. The others are the wrong *shape* and can't be rescued by
+their smaller parameter count. (When two models fit almost equally well, AIC would
+correctly prefer the simpler one — that is the whole point of the penalty.)
+
+### Why not just `chi-square + 2k`?
+
+You may have seen `AIC = χ² + 2k` for a Gaussian fit. That is the same formula — but
+only with the **classical** chi-square statistic `χ² = Σ (rᵢ/σᵢ)²`, which equals
+`−2·lnL` up to a constant. PyBNF's reported objective is **half** of that,
+`½·Σ (rᵢ/σᵢ)²` (and it drops the parameter-independent `½·log 2π` and `log σ` terms a
+minimizer never needs). So `objective + 2k` is **not** the AIC — it is off by a factor
+of two on the fit term (it would rank Richards at ≈ 17 instead of ≈ 128 and roughly
+halve the evidence for it: ΔAIC ≈ 49 over the runner-up rather than the correct ≈ 100).
+`information_criteria.txt` is built from the full normalized `lnL`, so its AIC is
+absolute and correct — just read it.
 
 **Selecting the law is not the same as pinning the parameters.** Model selection
 picks the right *structure* — here, that the data follow a Richards law. Richards's
@@ -74,9 +91,9 @@ you have chosen the model.
 ## The test
 
 [`tests/test_tutorial_model_selection.py`](../../../tests/test_tutorial_model_selection.py)
-(recovery tier) fits all four candidates through the faked-dask harness, computes
-each AIC, and asserts that Richards has the lowest AIC (decisively) and recovers its
-true parameters.
+(recovery tier) fits all four candidates through the faked-dask harness, reads each
+model's AIC from its `Results/information_criteria.txt`, and asserts that Richards has
+the lowest AIC (decisively) and recovers its true parameters.
 
 ## Regenerating the data
 
@@ -94,6 +111,8 @@ python examples/tutorial/regenerate_data.py 45_model_selection
   `Clock` and `Analytical_*` reporting functions removed) and renamed to observe
   `Obs_N` so all four candidates share the data column. `logistic`/`gompertz` are the
   lesson-01/03 laws.
-- AIC is computed here from the chi-square with a known per-point `_SD`. With an
-  *estimated* noise level you would use the log-likelihood form
-  (`AIC = 2k − 2·ln L`) and count the noise parameter in `k`.
+- PyBNF reports the AIC (in `Results/information_criteria.txt`) from the full
+  normalized log-likelihood, so it is valid whether the noise level is known (as here,
+  the per-point `_SD` column) or *estimated* — a fitted `sigma` is itself a free
+  parameter, so it is already counted in `k`. The same file carries BIC
+  (`k·ln n − 2·lnL`) and the small-sample-corrected AICc.
