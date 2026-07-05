@@ -154,16 +154,17 @@ The following EBNF grammar defines the complete BPSL syntax. All keywords are ca
 
     split          = observable at_clause operator observable at_clause
 
-    penalty        = weight_clause | likelihood_clause
+    penalty        = weight_clause | likelihood_clause | logit_clause
     weight_clause  = "weight" number [ "altpenalty" inequality ] [ "min" number ]
     likelihood_clause = ( "confidence" number | "pmin" number "pmax" number )
                         [ "tolerance" number ]
+    logit_clause   = "logit" "scale" number [ "pmin" number "pmax" number ]
 
     comment        = "#" { any printable character }
 
-Two methods of incorporating constraints are supported. A static penalty model can be used by providing a `Weight`_ clause. In this case, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. Alternatively, a likelihood-based model can be used by providing a `Confidence`_ clause. In this case, the contribution is the negative log probability of constraint satisfaction. The likelihood-based model should be used when statistically rigorous results are important, such as when performing Bayesian uncertainty quantification. It is not recommended to mix between the static penalty and likelihood models within the same fitting problem. 
+Three methods of incorporating constraints are supported. A static penalty model (the 2018 "hinge") can be used by providing a `Weight`_ clause. In this case, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. Alternatively, a likelihood-based model can be used by providing a `Confidence`_ clause (the 2020 "probit") or a `Logit`_ clause (the 2025 logit). In these cases, the contribution is the negative log probability of constraint satisfaction under a proper noise model. The likelihood-based models should be used when statistically rigorous results are important, such as when performing Bayesian uncertainty quantification. It is not recommended to mix penalty models within the same fitting problem (but see `qualitative_loss`_, which re-runs one problem under a single chosen model).
 
-If neither a weight nor a confidence clause is provided, a static penalty model is assumed with a weight of 1.
+If none of a weight, confidence, or logit clause is provided, a static penalty model is assumed with a weight of 1.
 
 Inequality
 ^^^^^^^^^^
@@ -257,6 +258,34 @@ The following examples illustrate the use of confidence clauses:
 The keywords ``pmin`` and ``pmax`` may be used in place of ``confidence`` to specify different minimum and maximum probabilities of the constraint. In this case, the term added to the objectve function is :math:`-\textrm{log}( p_{min} + (p_{max}-p_{min}) \textrm{cdf}(g,tol,0))`. For example
 
 * ``A < 5 at time = 4 pmin 0.01 pmax 0.98`` - The term added to the objective function would be :math:`-\textrm{log}(0.01 + 0.97*\textrm{cdf}(A(4)-5, 1, 0))`
+
+Logit
+^^^^^
+
+A ``logit`` clause selects the logit (Bernoulli) likelihood model of Miller et al. 2025. As with the confidence clause, the inequality is first rewritten in the form :math:`g<0`; :math:`g` is the signed constraint margin (negative when satisfied). The clause consists of the ``logit`` keyword, the ``scale`` keyword, and a positive number :math:`s`. The term added to the objective function is the softplus
+
+.. math::
+
+    -\textrm{log}\,\sigma(-g/s) = \textrm{log}(1 + e^{g/s}),
+
+where :math:`\sigma` is the logistic function. The scale :math:`s` controls how sharply the penalty turns on as the constraint is violated. As :math:`s \to 0` (with :math:`\textrm{weight} = 1/s`), the logit penalty converges to the 2018 hinge :math:`\textrm{weight} \cdot \textrm{max}(0, g)` — the large-margin limit — so the logit model can be read as a smooth, likelihood-grounded generalization of the static penalty. The logit and probit models agree closely near the decision boundary when their scales are matched by :math:`s \approx \textrm{tolerance}/1.6` (the :math:`\Phi(x) \approx \sigma(1.6x)` link).
+
+Because the softplus is smooth and its gradient with respect to the model parameters is available (via the same forward-sensitivity machinery as the other penalties), the logit model works with the gradient-based optimizers.
+
+* ``A < 5 at time = 4 logit scale 1.0`` - The term added to the objective function is :math:`\textrm{log}(1 + e^{(A(4)-5)/1.0})`.
+
+Optional ``pmin`` and ``pmax`` keywords add probit-style label smoothing for apples-to-apples comparison with the confidence model, clipping the satisfaction probability to :math:`p_{min} + (p_{max}-p_{min})\,\sigma(-g/s)` before the negative log. They are off by default (faithful to the original derivation).
+
+* ``A < 5 at time = 4 logit scale 1.0 pmin 0.01 pmax 0.98`` - The term added is :math:`-\textrm{log}(0.01 + 0.97\,\sigma(-(A(4)-5)/1.0))`.
+
+.. _qualitative_loss:
+
+Choosing one penalty model for the whole fit
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default (``qualitative_loss = auto``), each constraint's penalty model is chosen by its own clause: a ``weight`` clause selects the hinge, a ``confidence``/``pmin``/``tolerance`` clause selects the probit, and a ``logit scale`` clause selects the logit. The ``qualitative_loss`` configuration key overrides this per-constraint choice, forcing **every** constraint in the fit to a single family — ``hinge``, ``probit``, or ``logit`` — without re-authoring the ``.prop`` files. The scale of the target family is derived from whatever each constraint authored, using the scale-matching identities above (logit :math:`s` ↔ hinge :math:`\textrm{weight} = 1/s` ↔ probit :math:`\textrm{tolerance} = 1.6\,s`). This is a benchmarking convenience for comparing the three models on the same problem; the recommended default for ordinary use is ``auto``. Example::
+
+    qualitative_loss = logit
 
 
 Constraints involving multiple models

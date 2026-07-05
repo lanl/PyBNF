@@ -1587,7 +1587,8 @@ class Configuration:
         representation, so the PEtab v2 exporter refuses an experiment carrying it."""
         cs = ConstraintSet(base, data_key)
         try:
-            cs.load_constraint_file(constraint_file, scale=self.config['constraint_scale'])
+            cs.load_constraint_file(constraint_file, scale=self.config['constraint_scale'],
+                                    qualitative_loss=self.config['qualitative_loss'])
         except FileNotFoundError:
             raise PybnfError(
                 f"Constraint file {constraint_file} for experiment '{name}' was not found.")
@@ -2029,7 +2030,8 @@ class Configuration:
                 else:
                     cs = ConstraintSet(self._file_prefix(m, '(bngl|xml|ant)'), self._file_prefix(ef, '(con|prop)'))
                     try:
-                        cs.load_constraint_file(ef, scale=self.config['constraint_scale'])
+                        cs.load_constraint_file(ef, scale=self.config['constraint_scale'],
+                                                qualitative_loss=self.config['qualitative_loss'])
                     except FileNotFoundError:
                         raise PybnfError(f'Constraint file {ef} was not found')
                     csets.add(cs)

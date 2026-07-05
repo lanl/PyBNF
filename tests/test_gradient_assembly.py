@@ -2265,6 +2265,38 @@ def test_constraint_likelihood_penalty_gradient():
     np.testing.assert_allclose(g, [slope * (-_C_DK[2]), slope * (-_C_DS0[2])])
 
 
+def test_constraint_logit_penalty_gradient():
+    """The logit softplus penalty ``ln(1 + e^{difference/s})`` (Miller et al. 2025) is smooth; its
+    gradient is the local slope ``sigma(difference/s)/s`` (the logistic) times the readout's forward
+    sensitivity -- the same Danskin-argmax structure as the probit gradient."""
+    from pybnf.constraint import _sigmoid
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    s = 12.0
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=None, atvar=None, atval=2.0, scale=s)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    diff = 90.0 - _C_STOT[2]
+    slope = _sigmoid(diff / s) / s
+    np.testing.assert_allclose(g, [slope * (-_C_DK[2]), slope * (-_C_DS0[2])])
+
+
+def test_constraint_logit_clipped_penalty_gradient():
+    """With optional pmin/pmax label smoothing the logit slope becomes
+    ``(pmax-pmin) sigma(-x) sigma(x) / (s * adjusted_prob)`` with ``x = difference/s`` -- matching a
+    central difference of the clipped penalty."""
+    from pybnf.constraint import _sigmoid
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    s, pmin, pmax = 12.0, 0.02, 0.98
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=None, atvar=None, atval=2.0,
+                     scale=s, pmin=pmin, pmax=pmax)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    g = assemble_constraint_gradient([cset], sdd, routings, free)
+    x = (90.0 - _C_STOT[2]) / s
+    adjusted = pmin + (pmax - pmin) * _sigmoid(-x)
+    slope = (pmax - pmin) * _sigmoid(-x) * _sigmoid(x) / (s * adjusted)
+    np.testing.assert_allclose(g, [slope * (-_C_DK[2]), slope * (-_C_DS0[2])])
+
+
 def test_constraint_always_reads_the_worst_miss_row():
     """An 'always' constraint is enforced at its worst point over the whole column; the gradient
     therefore reads the sensitivity at the argmax (worst-miss) row -- Danskin's theorem. For
@@ -2291,14 +2323,14 @@ def test_constraint_gradient_sums_across_a_set():
 
 
 @pytest.mark.bngsim
-@pytest.mark.parametrize('model_kind', ['static', 'likelihood'])
+@pytest.mark.parametrize('model_kind', ['static', 'likelihood', 'logit'])
 def test_fd_acceptance_gate_constraint(model_kind):
     """Central differences of (loss + constraint penalty)(u) vs the assembled (objective gradient +
     constraint gradient)(u) on the decay net (layer I, #456). One 'Stot > 80 at time=2' constraint,
     violated at the evaluation point so the penalty and its gradient are nonzero and -- away from
-    the kink -- locally smooth (the 'at' crossing row is fixed by the time grid). Both penalty
-    models: the static ``weight * max(0, diff)`` and the smooth Gaussian-CDF likelihood. Two free
-    params (k parameter axis + S0 initial-condition axis)."""
+    the kink -- locally smooth (the 'at' crossing row is fixed by the time grid). All three penalty
+    models: the static ``weight * max(0, diff)``, the smooth Gaussian-CDF likelihood (probit), and
+    the logit softplus. Two free params (k parameter axis + S0 axis)."""
     obj = ChiSquareObjective()
     sigma = 5.0
     model_name = 'e2e_ode_decay'
@@ -2313,9 +2345,12 @@ def test_fd_acceptance_gate_constraint(model_kind):
     def make_cset():
         if model_kind == 'static':
             c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=0.7, atvar=None, atval=2.0)
-        else:
+        elif model_kind == 'likelihood':
             c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=None, atvar=None,
                              atval=2.0, pmin=0.02, pmax=0.98, tolerance=40.0)
+        else:  # logit
+            c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=None, atvar=None,
+                             atval=2.0, scale=25.0)
         cset = ConstraintSet(model_name, 'tc'); cset.constraints = [c]
         return cset
 

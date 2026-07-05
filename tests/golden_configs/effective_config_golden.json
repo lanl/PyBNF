@@ -242,6 +242,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -646,6 +650,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -1062,6 +1070,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -1442,6 +1454,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -1960,6 +1976,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -2488,6 +2508,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -2982,6 +3006,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -3386,6 +3414,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -3802,6 +3834,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -4121,6 +4157,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -4471,6 +4511,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -4764,6 +4808,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -5007,6 +5055,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -5282,6 +5334,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -5568,6 +5624,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -5873,6 +5933,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -6182,6 +6246,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -6525,6 +6593,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -6844,6 +6916,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -7190,6 +7266,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -7511,6 +7591,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -7818,6 +7902,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -8129,6 +8217,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -8438,6 +8530,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -8733,6 +8829,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -9038,6 +9138,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -9384,6 +9488,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -9734,6 +9842,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -10045,6 +10157,10 @@
     null
    ],
    [
+    "qualitative_loss",
+    "auto"
+   ],
+   [
     "random_seed",
     null
    ],
@@ -10328,6 +10444,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",
@@ -10634,6 +10754,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "qualitative_loss",
+    "auto"
    ],
    [
     "random_seed",

@@ -1,5 +1,7 @@
 from .context import constraint, data, raises
 import copy
+import os
+import tempfile
 import numpy as np
 from pyparsing import ParseBaseException
 from math import erf, sqrt
@@ -210,3 +212,209 @@ class TestConstraint:
         np.testing.assert_almost_equal(cs.constraints[6].penalty(d_dict), -np.log(cdf(-3., 3.)))
         np.testing.assert_almost_equal(cs.constraints[7].penalty(d_dict), -np.log(0.75 * cdf(1., 2.) + 0.1))
         np.testing.assert_almost_equal(cs.constraints[8].penalty(d_dict), -np.log(cdf(-1., 1.)))
+
+
+def _softplus(x):
+    return float(np.logaddexp(0.0, x))
+
+
+def _gauss_cdf(x):
+    return (1. + erf(x / sqrt(2.))) / 2.
+
+
+def _sdd(xvals, model='m', suffix='tc'):
+    """A ``{model: {suffix: Data}}`` with a ``time``/``X`` column pair, X held at ``xvals`` -- the
+    minimal simulation for exercising the logit penalty on an ``X > c always`` constraint whose
+    worst-miss difference is ``max(c - X)``."""
+    xvals = np.atleast_1d(np.asarray(xvals, float))
+    times = np.arange(len(xvals), dtype=float)
+    d = data.Data.from_columns(np.column_stack([times, xvals]), ['time', 'X'])
+    return {model: {suffix: d}}
+
+
+class TestLogitConstraint:
+    """The logit (softplus) qualitative penalty and the ``qualitative_loss`` selector."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.cset = constraint.ConstraintSet('m', 'tc')
+
+    # ---- grammar ----
+
+    def test_grammar_logit(self):
+        p = self.cset.parse_constraint_line('A<B at 6 logit scale 2.0')
+        assert not p.weight_expr
+        assert not p.likelihood_expr
+        assert p.logit_expr.scale == '2.0'
+        assert not p.logit_expr.pmin
+
+    def test_grammar_logit_clipped(self):
+        p = self.cset.parse_constraint_line('A<B at 6 logit scale 2.0 pmin 0.02 pmax 0.98')
+        assert p.logit_expr.scale == '2.0'
+        assert p.logit_expr.pmin == '0.02'
+        assert p.logit_expr.pmax == '0.98'
+
+    @raises(ParseBaseException)
+    def test_grammar_logit_excludes_weight(self):
+        # weight and logit are mutually exclusive alternatives in the grammar
+        self.cset.parse_constraint_line('A<16 always weight 2 logit scale 1.0')
+
+    def test_load_file_selects_logit_model(self):
+        f = tempfile.NamedTemporaryFile('w', suffix='.prop', delete=False)
+        f.write('X < 8 always logit scale 2.0\n')
+        f.write('X < 8 always logit scale 1.5 pmin 0.02 pmax 0.98\n')
+        f.close()
+        cs = constraint.ConstraintSet('m', 'tc')
+        cs.load_constraint_file(f.name)
+        os.unlink(f.name)
+        assert cs.constraints[0].penalty_model == 'logit'
+        assert cs.constraints[0].scale == 2.0
+        assert cs.constraints[0].pmin is None
+        assert cs.constraints[1].penalty_model == 'logit'
+        assert cs.constraints[1].pmin == 0.02 and cs.constraints[1].pmax == 0.98
+
+    # ---- penalty values ----
+
+    def test_logit_penalty_violated_and_satisfied(self):
+        # 'X > 8 always' normalizes to 8 < X (difference = 8 - X). worst point = smallest X.
+        c_viol = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=2.0)
+        np.testing.assert_almost_equal(c_viol.penalty(_sdd([5.0])), _softplus((8.0 - 5.0) / 2.0))
+        # satisfied: X = 11 > 8, difference = -3
+        c_sat = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=2.0)
+        np.testing.assert_almost_equal(c_sat.penalty(_sdd([11.0])), _softplus((8.0 - 11.0) / 2.0))
+
+    def test_logit_clipped_penalty(self):
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=2.0,
+                                        pmin=0.02, pmax=0.98)
+        diff = 8.0 - 5.0
+        p = constraint._sigmoid(-diff / 2.0)
+        np.testing.assert_almost_equal(c.penalty(_sdd([5.0])), -np.log(0.02 + 0.96 * p))
+
+    def test_logit_overflow_is_finite(self):
+        # A huge margin must not overflow (logaddexp) -- the softplus reduces to difference/scale.
+        c = constraint.AlwaysConstraint('X', '>', 1e6, 'm', 'tc', weight=None, scale=1e-3)
+        val = c.penalty(_sdd([0.0]))
+        assert np.isfinite(val)
+        np.testing.assert_allclose(val, (1e6 - 0.0) / 1e-3, rtol=1e-9)
+
+    def test_logit_asymptotes_to_hinge(self):
+        """As scale -> 0 with weight = 1/scale, the logit softplus converges to the 2018 hinge
+        pointwise: -> weight*difference where violated, -> 0 where satisfied. This is the
+        large-margin identity that is."""
+        for diff, xthresh, xval in [(2.0, 8.0, 6.0), (-2.0, 8.0, 10.0)]:
+            sdd = _sdd([xval])
+            gaps = []
+            for s in (1.0, 0.1, 0.01):
+                logit = constraint.AlwaysConstraint('X', '>', xthresh, 'm', 'tc', weight=None, scale=s)
+                hinge = constraint.AlwaysConstraint('X', '>', xthresh, 'm', 'tc', weight=1.0 / s)
+                gaps.append(abs(logit.penalty(sdd) - hinge.penalty(sdd)))
+            # Monotone convergence to the hinge as the scale shrinks.
+            assert gaps[0] > gaps[1] > gaps[2]
+            assert gaps[2] < 1e-6
+
+    def test_probit_and_logit_agree_near_the_boundary(self):
+        """The probit link Phi(x) ~ sigma(1.6 x) makes an unclipped probit with SD sigma and an
+        unclipped logit with scale s = sigma/1.6 agree in the **central region** near the decision
+        boundary (|difference| <~ sigma) The
+        two diverge in the deep tails (the Gaussian -logPhi grows quadratically, the logit softplus
+        only linearly), so this is deliberately a central-region statement, checked around zero."""
+        sigma = 2.0
+        s = sigma / 1.6
+        for diff in (-2., -1., -0.5, 0., 0.5, 1., 2.):
+            xval = 8.0 - diff   # 'X > 8': difference = 8 - X = diff
+            sdd = _sdd([xval])
+            probit = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None,
+                                                 pmin=0.0, pmax=1.0, tolerance=sigma)
+            logit = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=s)
+            np.testing.assert_allclose(logit.penalty(sdd), probit.penalty(sdd), atol=0.07)
+
+    def test_logit_slope_matches_central_difference(self):
+        """dF/d(difference) of the logit penalty equals sigma(difference/s)/s (the local slope the
+        gradient reads), validated against a central finite difference of get_log_likelihood_logit
+        w.r.t. a shift in the readout X."""
+        s = 1.3
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=s)
+        x0, h = 5.0, 1e-6
+        f_plus = c.penalty(_sdd([x0 + h]))    # difference = 8 - (x0+h)
+        f_minus = c.penalty(_sdd([x0 - h]))
+        dF_dX = (f_plus - f_minus) / (2 * h)  # = dF/ddiff * d(8-X)/dX = slope * (-1)
+        diff = 8.0 - x0
+        slope = constraint._sigmoid(diff / s) / s
+        np.testing.assert_allclose(dF_dX, -slope, rtol=1e-5)
+
+    # ---- construction guards ----
+
+    def test_logit_requires_positive_scale(self):
+        for bad in (0.0, -1.0):
+            try:
+                constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=bad)
+                assert False, f'scale={bad} should be rejected'
+            except Exception:
+                pass
+
+    # ---- qualitative_loss selector ----
+
+    def test_qualitative_loss_coercion_table(self):
+        """Loading one mixed .prop under each qualitative_loss coerces every constraint to that
+        family with a scale-matched parameter (logit s <-> hinge weight 1/s <-> probit tol 1.6 s),
+        and a family's own authored constraint round-trips to itself unchanged."""
+        f = tempfile.NamedTemporaryFile('w', suffix='.prop', delete=False)
+        f.write('X < 8 always weight 4\n')                       # hinge, weight 4 -> base s = 0.25
+        f.write('X < 8 always confidence 0.9 tolerance 10\n')    # probit, tol 10 -> base s = 6.25
+        f.write('X < 8 always logit scale 2.0\n')                # logit, s = 2 -> base s = 2
+        f.close()
+
+        def models(ql):
+            cs = constraint.ConstraintSet('m', 'tc')
+            cs.load_constraint_file(f.name, qualitative_loss=ql)
+            return cs.constraints
+
+        hinge = models('hinge')
+        assert [c.penalty_model for c in hinge] == ['static'] * 3
+        np.testing.assert_allclose([c.weight for c in hinge], [1 / 0.25, 1 / 6.25, 1 / 2.0])
+
+        probit = models('probit')
+        assert [c.penalty_model for c in probit] == ['likelihood'] * 3
+        np.testing.assert_allclose([c.tolerance for c in probit], [1.6 * 0.25, 1.6 * 6.25, 1.6 * 2.0])
+
+        logit = models('logit')
+        assert [c.penalty_model for c in logit] == ['logit'] * 3
+        np.testing.assert_allclose([c.scale for c in logit], [0.25, 6.25, 2.0])
+
+        os.unlink(f.name)
+
+    def test_qualitative_loss_auto_is_a_no_op(self):
+        """'auto' (the default) preserves each constraint's authored family exactly."""
+        f = tempfile.NamedTemporaryFile('w', suffix='.prop', delete=False)
+        f.write('X < 8 always weight 4\n')
+        f.write('X < 8 always confidence 0.9 tolerance 10\n')
+        f.write('X < 8 always logit scale 2.0\n')
+        f.close()
+        cs_auto = constraint.ConstraintSet('m', 'tc'); cs_auto.load_constraint_file(f.name)  # default auto
+        cs_explicit = constraint.ConstraintSet('m', 'tc')
+        cs_explicit.load_constraint_file(f.name, qualitative_loss='auto')
+        os.unlink(f.name)
+        assert [c.penalty_model for c in cs_auto.constraints] == ['static', 'likelihood', 'logit']
+        assert [c.penalty_model for c in cs_explicit.constraints] == ['static', 'likelihood', 'logit']
+
+    def test_coercion_preserves_penalty_ordering(self):
+        """A scale-matched coercion keeps a violated constraint's penalty positive and a satisfied
+        one at ~0 under every family -- the benchmark reruns score the same qualitative outcome."""
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=2.0)
+        viol, sat = _sdd([5.0]), _sdd([11.0])
+        for target in ('hinge', 'probit', 'logit'):
+            cc = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=2.0)
+            cc.coerce_penalty_model(target)
+            assert cc.penalty(viol) > 0
+            assert cc.penalty(sat) < cc.penalty(viol)
+
+    def test_coerce_probit_step_function_is_rejected(self):
+        """A probit step function (tolerance 0) has no finite logit-equivalent scale; coercing it
+        raises a pointed error rather than silently producing scale 0."""
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None,
+                                        pmin=0.05, pmax=0.95, tolerance=0.0)
+        try:
+            c.coerce_penalty_model('logit')
+            assert False, 'expected a rejection for tolerance-0 coercion'
+        except Exception:
+            pass

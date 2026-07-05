@@ -210,6 +210,13 @@ class GlobalConfig(PyBNFConfigModel):
     ind_var_rounding: int = 0
     local_objective_eval: int = 0
     constraint_scale: float = 1.0
+    # Global override for the qualitative (BPSL .con/.prop) penalty family.
+    # 'auto' (default) keeps each constraint's authored family -- weight -> hinge,
+    # confidence/pmin/tolerance -> probit, `logit scale` -> logit. Any other value coerces every
+    # constraint to that family, deriving a scale-matched parameter from whatever was authored
+    # (Constraint.coerce_penalty_model), so one .prop set runs under all three losses without
+    # re-authoring. A benchmarking convenience; the recommended user default is 'auto'.
+    qualitative_loss: Literal['auto', 'hinge', 'probit', 'logit'] = 'auto'
     sbml_integrator: str = 'cvode'
     sbml_backend: str = 'roadrunner'
     bngl_backend: str = 'auto'

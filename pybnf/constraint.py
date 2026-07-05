@@ -15,6 +15,16 @@ from math import erf
 logger = logging.getLogger(__name__)
 
 
+def _sigmoid(x):
+    """The logistic function ``1 / (1 + e^{-x})``, evaluated in the numerically stable branch
+    (``e^{x}/(1+e^{x})`` for ``x < 0``) so large ``|x|`` never overflows. Scalar in, scalar out --
+    the local slope factor of the logit penalty."""
+    if x >= 0:
+        return 1.0 / (1.0 + np.exp(-x))
+    ex = np.exp(x)
+    return ex / (1.0 + ex)
+
+
 class ConstraintSet:
     """
     Represents the set of all constraints provided in one prop file
@@ -57,11 +67,15 @@ class ConstraintSet:
             for c in self.constraints:
                 out.write(f'{c.penalty(sim_data_dict)}\n')
 
-    def load_constraint_file(self, filename, scale=1.0):
+    def load_constraint_file(self, filename, scale=1.0, qualitative_loss='auto'):
         """
         Parse the constraint file filename and load them all into my constraint list
         :param filename: Path of constraint file
         :param scale: Factor by which we multiply all constraint weights
+        :param qualitative_loss: One of 'auto', 'hinge', 'probit', 'logit'. 'auto' (default) keeps
+        each constraint's authored penalty family (the keyword-driven per-constraint selection);
+        any other value coerces every constraint to that family via
+        :meth:`Constraint.coerce_penalty_model` -- a benchmarking convenience.
         """
         logger.info(f'Loading constraints for {self.base_model} suffix {self.base_suffix} from {filename}')
         with open(filename) as f:
@@ -102,6 +116,7 @@ class ConstraintSet:
                     pmin = None
                     pmax = None
                     tolerance = None
+                    logit_scale = None
                     if p.likelihood_expr:
                         # Should not happen if parsing is working right
                         raise ValueError('Parsed with both weight_expr and likelihood_expr')
@@ -117,6 +132,22 @@ class ConstraintSet:
                     weight = None
                     altpenalty = None
                     minpenalty = None
+                    logit_scale = None
+                elif p.logit_expr:
+                    # Logit (Miller et al. 2025) softplus penalty. `scale` is the s of ln(1+e^{diff/s}).
+                    # Optional pmin/pmax add probit-style label smoothing (default off = faithful to
+                    # the arXiv derivation).
+                    logit_scale = float(p.logit_expr.scale)
+                    if p.logit_expr.pmin:
+                        pmin = float(p.logit_expr.pmin)
+                        pmax = float(p.logit_expr.pmax)
+                    else:
+                        pmin = None
+                        pmax = None
+                    tolerance = None
+                    weight = None
+                    altpenalty = None
+                    minpenalty = None
                 else:
                     weight = 1.
                     altpenalty = None
@@ -124,6 +155,7 @@ class ConstraintSet:
                     pmin = None
                     pmax = None
                     tolerance = None
+                    logit_scale = None
 
                 if weight is not None:
                     weight *= scale  # Scale the weight by the specified factor
@@ -154,7 +186,7 @@ class ConstraintSet:
                     con = SplitAtConstraint(quant1, atvar1, atval1, sign, quant2, atvar2, atval2, self.base_model,
                                             self.base_suffix, weight, altpenalty=altpenalty, minpenalty=minpenalty,
                                             repeat=repeat, before1=before1, before2=before2, pmin=pmin, pmax=pmax,
-                                            tolerance=tolerance)
+                                            tolerance=tolerance, scale=logit_scale)
                 elif p.enforce[0] == 'at':
                     if len(p.enforce[1]) == 1:
                         atval = float(p.enforce[1][0])
@@ -166,7 +198,7 @@ class ConstraintSet:
                     before = (len(p.enforce) >= 3 and p.enforce[-1] == 'before')
                     con = AtConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before,
-                                       pmin=pmin, pmax=pmax, tolerance=tolerance)
+                                       pmin=pmin, pmax=pmax, tolerance=tolerance, scale=logit_scale)
                 elif p.enforce[0] == 'between' or p.enforce[0] == 'once between':
                     once = (p.enforce[0] == 'once between')
                     if len(p.enforce[1]) == 1:
@@ -183,16 +215,18 @@ class ConstraintSet:
                         endval = float(p.enforce[2][1])
                     con = BetweenConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
-                                           endval=endval, pmin=pmin, pmax=pmax, tolerance=tolerance, once=once)
+                                           endval=endval, pmin=pmin, pmax=pmax, tolerance=tolerance, once=once, scale=logit_scale)
                 elif p.enforce[0] == 'always':
                     con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty, pmin=pmin, pmax=pmax, tolerance=tolerance)
+                                           minpenalty=minpenalty, pmin=pmin, pmax=pmax, tolerance=tolerance, scale=logit_scale)
                 elif p.enforce[0] == 'once':
                     con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty,
-                                         minpenalty, pmin, pmax, tolerance)
+                                         minpenalty, pmin, pmax, tolerance, scale=logit_scale)
                 else:
                     raise RuntimeError(f'Unknown enforcement keyword {p.enforce[0]}')
                 con.source_line = line.strip()
+                if qualitative_loss != 'auto':
+                    con.coerce_penalty_model(qualitative_loss)
                 self.constraints.append(con)
         logger.info('Loaded %i constraints' % len(self.constraints))
 
@@ -228,11 +262,17 @@ class ConstraintSet:
                     pp.CaselessLiteral('pmax') - number.set_results_name('pmax')
         likelihood = (confidence ^ pmin_pmax) - \
                      pp.Optional(pp.CaselessLiteral('tolerance') - number.set_results_name('tolerance'))
+        # Logit (Miller et al. 2025) penalty: `logit scale <s>` selects the softplus loss
+        # ln(1 + e^{difference/s}); the optional `pmin/pmax` add probit-style label smoothing for
+        # apples-to-apples benchmarking (default off).
+        logit = pp.CaselessLiteral('logit') - pp.CaselessLiteral('scale') - number.set_results_name('scale') - \
+                pp.Optional(pmin_pmax)
         comment = pp.Suppress(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables)))
         constraint = ((pp.Group(ineq).set_results_name('ineq') + pp.Group(enforce).set_results_name('enforce')) ^
                       pp.Group(split).set_results_name('split')) + \
                      pp.Optional(pp.Group(weight).set_results_name('weight_expr') ^
-                                 pp.Group(likelihood).set_results_name('likelihood_expr')) + pp.Optional(comment)
+                                 pp.Group(likelihood).set_results_name('likelihood_expr') ^
+                                 pp.Group(logit).set_results_name('logit_expr')) + pp.Optional(comment)
 
         return constraint.parse_string(line, parse_all=True)
 
@@ -243,13 +283,14 @@ class Constraint:
     """
 
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
-                 pmin=None, pmax=None, tolerance=None):
+                 pmin=None, pmax=None, tolerance=None, scale=None):
         """
         Create a constraint of the form (quant1) (sign) (quant2)
         Depending on which parameters are passed, the constraint automatically chooses a model for penalty calculation
-        If weight and/or altpenalty are passed, uses the static penalty method
-        If confidence and/or tolerance are passed, uses the log likelihood method with a Gaussian CDF.
-        The two penalty models should not be mixed.
+        If weight and/or altpenalty are passed, uses the static (hinge) penalty method.
+        If confidence and/or tolerance are passed, uses the log likelihood method with a Gaussian CDF (probit).
+        If scale is passed, uses the logit softplus penalty (Miller et al. 2025).
+        The three penalty models should not be mixed.
 
         :param quant1: String observable name or float. String could be in the form suffix.Observable to refer to any
         observable in the fitting run.
@@ -266,6 +307,8 @@ class Constraint:
         :param pmax: Using the log likelihood penalty, the maximum possible probability of this constraint.
         Represents the probability that the constraint is violated regardless of the output of the model
         :param tolerance: Using the log likelihood penalty, the standard deviation of the Gaussian CDF.
+        :param scale: Using the logit penalty, the scale s of the softplus loss ln(1 + e^{difference/s}).
+        Must be positive. Smaller s approaches the hinge (weight = 1/s); larger s is softer.
         """
         # Flip the inequality if it's a '>', so we can always assume a '<'
         if sign in ('>', '>='):
@@ -302,13 +345,32 @@ class Constraint:
         self.pmin = pmin
         self.pmax = pmax
         self.tolerance = tolerance
+        self.scale = scale
 
         # Choose penalty model depending on what is set to None
         # Check for invalid combinations of keys, but these should have been caught during parsing.
         if weight is not None:
             self.penalty_model = 'static'
-            if pmin is not None or pmax is not None or tolerance is not None:
-                raise ValueError(f'Constraint {quant1}{sign}{quant2} has a weight, and so should not have a pmin, pmax and/or tolerance')
+            if pmin is not None or pmax is not None or tolerance is not None or scale is not None:
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} has a weight, and so should not have a pmin, pmax, tolerance and/or scale')
+        elif scale is not None:
+            # Logit (softplus) penalty. Checked before the probit branch because a logit constraint
+            # may also carry optional pmin/pmax (label smoothing).
+            self.penalty_model = 'logit'
+            if scale <= 0.:
+                raise PybnfError(f'Constraint {quant1}{sign}{quant2} has a logit scale of {scale}; the scale must be positive.')
+            if tolerance is not None:
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} should not have both a logit scale and a tolerance')
+            if altpenalty is not None:
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} should not have both a logit scale and an altpenalty')
+            if (pmin is None) != (pmax is None):
+                raise ValueError(f'Constraint {quant1}{sign}{quant2} logit penalty needs both pmin and pmax, or neither')
+            if pmin is not None:
+                if pmin < 0. or pmax > 1.:
+                    raise PybnfError(f'Constraint {quant1}{sign}{quant2} has invalid probabilities. Settings for pmin '
+                                     'and pmax must be between 0 and 1.')
+                if pmin > pmax:
+                    raise PybnfError(f'Constraint {quant1}{sign}{quant2} has pmin set larger than pmax.')
         elif pmin is not None:
             self.penalty_model = 'likelihood'
             if pmax is None:
@@ -323,7 +385,7 @@ class Constraint:
             if pmin > pmax:
                 raise PybnfError(f'Constraint {quant1}{sign}{quant2} has pmin set larger than pmax.')
         else:
-            raise ValueError(f'Constraint {quant1}{sign}{quant2} must have either a weight or a confidence')
+            raise ValueError(f'Constraint {quant1}{sign}{quant2} must have either a weight, a confidence, or a logit scale')
 
         # Key tuples need to be initialized after we receive the first data result, so we can figure out the keys.
         self.qkeys1 = None
@@ -418,6 +480,63 @@ class Constraint:
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
+    def _intrinsic_scale(self):
+        """This constraint's authored scale expressed as a **logit-equivalent** ``s`` -- the common
+        currency the three qualitative losses convert through. Static hinge
+        ``weight w`` -> ``1/w`` (the large-margin identity logit ~ hinge with weight ``1/s``);
+        logit ``scale s`` -> ``s``; probit ``tolerance sigma`` -> ``sigma/1.6`` (the
+        ``Phi(x) ~ sigma(1.6 x)`` link). Raises on a degenerate scale (zero weight, or a probit
+        step function with tolerance 0) that has no finite logit-equivalent."""
+        if self.penalty_model == 'static':
+            if not self.weight:
+                raise PybnfError(f"Cannot convert constraint '{self.source_line}' to another "
+                                 "qualitative loss: it has zero weight (no finite scale).")
+            return 1.0 / self.weight
+        if self.penalty_model == 'logit':
+            return self.scale
+        if self.penalty_model == 'likelihood':
+            if not self.tolerance:
+                raise PybnfError(f"Cannot convert constraint '{self.source_line}' to another "
+                                 "qualitative loss: its probit tolerance is 0 (a step function has "
+                                 "no finite scale). Give it a positive tolerance.")
+            return self.tolerance / 1.6
+        raise PybnfError(f'Unknown penalty model {self.penalty_model}')
+
+    def coerce_penalty_model(self, target):
+        """Override this constraint's penalty family to ``target`` in {'hinge', 'probit', 'logit'},
+        deriving the target's scale from whatever was authored via the scale-matching table in
+        :meth:`_intrinsic_scale` (logit ``s`` <-> hinge ``weight = 1/s`` <-> probit
+        ``tolerance = 1.6 s``). ``'auto'`` / ``None`` is a no-op. This is the mechanism behind the
+        ``qualitative_loss`` config key -- a benchmarking convenience so one ``.prop`` set runs
+        under all three losses without re-authoring. Authored ``pmin/pmax``
+        label smoothing is preserved where the target supports it; a probit target with no authored
+        smoothing gets the unclipped ``pmin=0, pmax=1``."""
+        if target in (None, 'auto'):
+            return
+        base = self._intrinsic_scale()
+        pmin, pmax = self.pmin, self.pmax
+        # Clear every family's scale fields; each branch sets only the ones its model reads.
+        self.weight = None
+        self.scale = None
+        self.tolerance = None
+        self.pmin = None
+        self.pmax = None
+        if target == 'hinge':
+            self.penalty_model = 'static'
+            self.weight = 1.0 / base
+        elif target == 'logit':
+            self.penalty_model = 'logit'
+            self.scale = base
+            self.pmin, self.pmax = pmin, pmax   # keep label smoothing if it was authored
+        elif target == 'probit':
+            self.penalty_model = 'likelihood'
+            self.tolerance = 1.6 * base
+            self.pmin = 0.0 if pmin is None else pmin
+            self.pmax = 1.0 if pmax is None else pmax
+        else:
+            raise PybnfError(f"Unknown qualitative_loss target '{target}'. "
+                             "Expected one of 'auto', 'hinge', 'probit', 'logit'.")
+
     def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
@@ -428,6 +547,8 @@ class Constraint:
             return self.get_static_penalty(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         elif self.penalty_model == 'likelihood':
             return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        elif self.penalty_model == 'logit':
+            return self.get_log_likelihood_logit(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         else:
             raise ValueError(f'Invalid penalty model: {self.penalty_model}')
 
@@ -577,6 +698,36 @@ class Constraint:
             log_likelihood = -np.log(adjusted_prob)
         return log_likelihood
 
+    def get_log_likelihood_logit(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+        """Negative log likelihood of constraint satisfaction under the **logit** (Miller et al.
+        2025) noise model: the comparison outcome is Bernoulli with P(holds) = sigma(-difference/s),
+        so the single-sided BPSL penalty collapses to the softplus
+
+            F(difference; s) = ln(1 + e^{difference/s}) = softplus(difference/s).
+
+        ``difference`` is the signed constraint margin (negative == satisfied, :meth:`get_difference`).
+        As ``s -> 0`` with ``weight = 1/s`` this is the 2018 hinge (the large-margin asymptote); larger ``s`` is a softer penalty. ``np.logaddexp(0, x)`` evaluates the
+        softplus without overflow. If optional ``pmin/pmax`` were supplied (label smoothing, for
+        probit parity), the probability is clipped to ``pmin + (pmax-pmin)*sigma(-difference/s)``
+        before the ``-log`` -- default off (faithful to the arXiv derivation).
+
+        :param sim_data_dict: The dictionary of data objects
+        :param imin: First index at which to check the constraint
+        :param imax: Last index at which to check the constraint (exclusive)
+        :param once: If true, enforce that the constraint holds once at some point during the interval
+        :param require_length: If set, raise if the selected data column length differs (unsupported case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
+        """
+        difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        x = difference / self.scale
+        if self.pmin is None:
+            # Faithful softplus: -log sigma(-x) = ln(1 + e^{x}), stable via logaddexp.
+            return float(np.logaddexp(0.0, x))
+        # Label-smoothed (probit-parity) variant.
+        adjusted_prob = self.pmin + (self.pmax - self.pmin) * _sigmoid(-x)
+        return float(-np.log(adjusted_prob))
+
 
 
     def penalty(self, sim_data_dict):
@@ -644,6 +795,9 @@ class Constraint:
         elif self.penalty_model == 'likelihood':
             return self._likelihood_penalty_gradient(sim_data_dict, raw_sens, n_param,
                                                     imin, imax, once, require_length, imin2, imax2)
+        elif self.penalty_model == 'logit':
+            return self._logit_penalty_gradient(sim_data_dict, raw_sens, n_param,
+                                                imin, imax, once, require_length, imin2, imax2)
         raise ValueError(f'Invalid penalty model: {self.penalty_model}')
 
     def _static_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once, imin2):
@@ -701,6 +855,30 @@ class Constraint:
             raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
             self.qkeys2, self.quant2, imin2_eff + a)
 
+    def _logit_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once,
+                                require_length, imin2, imax2):
+        """Gradient of the logit softplus penalty ``ln(1 + e^{difference/s})``
+        (:meth:`get_log_likelihood_logit`). The loss is smooth everywhere (``s > 0``), with local
+        slope ``dF/d difference = sigma(difference/s) / s`` (the logistic; > 0, a larger difference
+        is a worse violation), times ``d(readout)/d theta`` at the interval's achieving point --
+        the same Danskin-argmax structure the probit gradient uses. With optional ``pmin/pmax``
+        label smoothing the slope becomes
+        ``(pmax-pmin) * sigma(-x) * sigma(x) / (s * adjusted_prob)`` with ``x = difference/s`` and
+        ``adjusted_prob = pmin + (pmax-pmin)*sigma(-x)`` -- collapsing to ``sigma(x)/s`` when
+        unclipped (``pmin=0, pmax=1``)."""
+        difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        s = self.scale
+        x = difference / s
+        if self.pmin is None:
+            slope = _sigmoid(x) / s
+        else:
+            adjusted = self.pmin + (self.pmax - self.pmin) * _sigmoid(-x)
+            slope = (self.pmax - self.pmin) * _sigmoid(-x) * _sigmoid(x) / (s * adjusted)
+        imin2_eff = imin if imin2 is None else imin2
+        return slope * self._readout_gradient(
+            raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
+            self.qkeys2, self.quant2, imin2_eff + a)
+
     def penalty_gradient(self, sim_data_dict, raw_sens, index, n_param):
         """The gradient of this constraint's total penalty w.r.t. the free parameters (layer I,
         #456/#385) -- ``raw_sens(model, suffix, observable, row)`` supplies each readout's native-
@@ -722,7 +900,7 @@ class Constraint:
 
 class AtConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
-                 repeat=False, before=False, pmin=None, pmax=None, tolerance=None):
+                 repeat=False, before=False, pmin=None, pmax=None, tolerance=None, scale=None):
         """
         Creates a new constraint of the form
 
@@ -736,7 +914,7 @@ class AtConstraint(Constraint):
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
-                         tolerance)
+                         tolerance, scale)
         self.atvar = atvar
         self.atval = atval
         self.repeat = repeat
@@ -783,7 +961,7 @@ class AtConstraint(Constraint):
 class SplitAtConstraint(Constraint):
     def __init__(self, quant1, atvar1, atval1, sign, quant2, atvar2, atval2, base_model, base_suffix,
                  weight, altpenalty=None, minpenalty=0.,
-                 repeat=False, before1=False, before2=False, pmin=None, pmax=None, tolerance=None):
+                 repeat=False, before1=False, before2=False, pmin=None, pmax=None, tolerance=None, scale=None):
         """
         Creates a new constraint of the form
 
@@ -797,7 +975,7 @@ class SplitAtConstraint(Constraint):
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
-                         tolerance)
+                         tolerance, scale)
 
         # Since the superclass flips the sign for ">", we need to also flip the "at" conditions
         if sign in ('>', '>='):
@@ -868,7 +1046,7 @@ class SplitAtConstraint(Constraint):
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
-                 minpenalty=0., pmin=None, pmax=None, tolerance=None, once=False):
+                 minpenalty=0., pmin=None, pmax=None, tolerance=None, once=False, scale=None):
         """
         Creates a new constraint of the form
 
@@ -884,7 +1062,7 @@ class BetweenConstraint(Constraint):
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
-                         tolerance)
+                         tolerance, scale)
 
         self.startvar = startvar
         self.startval = startval
@@ -943,7 +1121,7 @@ class BetweenConstraint(Constraint):
 
 class AlwaysConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
-                 pmin=None, pmax=None, tolerance=None):
+                 pmin=None, pmax=None, tolerance=None, scale=None):
         """
         Creates a new constraint of the form
 
@@ -951,7 +1129,7 @@ class AlwaysConstraint(Constraint):
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
-                         tolerance)
+                         tolerance, scale)
         logger.debug(f"Created 'always' constraint {self.quant1}<{self.quant2}")
 
     def _penalty_intervals(self, sim_data_dict):
@@ -965,7 +1143,7 @@ class AlwaysConstraint(Constraint):
 
 class OnceConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
-                 pmin=None, pmax=None, tolerance=None):
+                 pmin=None, pmax=None, tolerance=None, scale=None):
         """
         Creates a new constraint of the form
 
@@ -973,7 +1151,7 @@ class OnceConstraint(Constraint):
         """
 
         super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
-                         tolerance)
+                         tolerance, scale)
         logger.debug(f"Created 'once' constraint {self.quant1}<{self.quant2}")
 
     def _penalty_intervals(self, sim_data_dict):

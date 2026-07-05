@@ -87,7 +87,10 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'initialization_distribution',
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
-              'outlier_method', 'refine_method', 'noise_location']
+              'outlier_method', 'refine_method', 'noise_location',
+              # Global qualitative (BPSL) penalty-family override:
+              # auto | hinge | probit | logit.
+              'qualitative_loss']
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory',
                # profile likelihood (#446/#466): the subset of free parameters to profile
                # (a list of parameter ids; absent -> profile every free parameter).

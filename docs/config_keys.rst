@@ -918,14 +918,28 @@ Algorithm Options
   
     * ``bootstrap_max_obj = 1.5``
     
-**constraint_scale**  
-  Scale all weights in all .prop files by this multiplicative factor. For convenience only - The same thing could be achieved by editing .prop files, but this option is useful for tuning the relative contributions of quantitative and qualitative data. 
-  
+**constraint_scale**
+  Scale all weights in all .prop files by this multiplicative factor. For convenience only - The same thing could be achieved by editing .prop files, but this option is useful for tuning the relative contributions of quantitative and qualitative data.
+
   Default: 1 (no scaling)
-  
+
   Example:
-  
+
     * ``constraint_scale = 1.5``
+
+**qualitative_loss**
+  Global override for the qualitative (.prop / BPSL) penalty family. Forces every constraint in the fit to one model, deriving a scale-matched parameter from whatever each constraint authored (see the weight/confidence/logit clauses in :ref:`Property files <config>`). A benchmarking convenience for comparing the three models on one problem; the recommended default is ``auto``.
+
+   - ``auto`` - each constraint keeps its authored model (``weight`` → hinge, ``confidence``/``pmin``/``tolerance`` → probit, ``logit scale`` → logit).
+   - ``hinge`` - force every constraint to the static (2018) hinge penalty.
+   - ``probit`` - force every constraint to the Gaussian-CDF (2020) likelihood.
+   - ``logit`` - force every constraint to the logit (2025) softplus likelihood.
+
+  Default: auto
+
+  Example:
+
+    * ``qualitative_loss = logit``
 
 **ind_var_rounding**
   If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) 
