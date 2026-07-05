@@ -303,7 +303,9 @@ def test_declared_noise_free_param_passes_check():
         _is_free_param_key=Configuration._is_free_param_key,
         # ... and stub the downstream keyword-combination check (separate concern); the
         # point here is that the noise-param check does not raise for a declared param.
-        _check_variable_keyword_combination=lambda fit_type: None)
+        _check_variable_keyword_combination=lambda fit_type: None,
+        # ... and the qualitative-scale free-param check, unused here.
+        _qualitative_scale_param=lambda: None)
     variables = Configuration._load_variables(ns)
     assert [v.name for v in variables] == ['sigma__FREE']
 

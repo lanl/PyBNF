@@ -529,11 +529,16 @@ def assemble_constraint_gradient(constraint_sets, sim_data_dict, routings, free_
     names = [p.name for p in free_params]
     index = {name: j for j, name in enumerate(names)}
     n_param = len(free_params)
+    # Live parameter values, so a constraint with an estimated scale reads its
+    # current value and contributes its d(penalty)/d(scale) column -- the constraint counterpart of
+    # assemble_gaussian_gradient seeding the objective's _pset_values from the free-parameter point.
+    pset_values = {p.name: p.value for p in free_params}
     raw_sens = _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param)
     grad = np.zeros(n_param)
     for cset in constraint_sets:
         for constraint in cset.constraints:
-            grad += constraint.penalty_gradient(sim_data_dict, raw_sens, index, n_param)
+            grad += constraint.penalty_gradient(sim_data_dict, raw_sens, index, n_param,
+                                                pset_values=pset_values)
     return grad * _sampling_scale_factors(free_params)
 
 

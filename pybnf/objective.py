@@ -210,7 +210,7 @@ class ObjectiveFunction:
                                 return None
                             total += val
                 for cset in constraints:
-                    total += cset.total_penalty(sim_data_dict)
+                    total += cset.total_penalty(sim_data_dict, pset_values=self._pset_values)
 
                 return total
 
@@ -1414,9 +1414,12 @@ class DirectPassObjective(ObjectiveFunction):
         """
         # Mirror the base's legacy-calling-convention disambiguation: a constraint set lacks
         # ``.name`` (and a None/blank pset is not iterable), so constraints handed in the
-        # ``pset`` position fall through here. ``direct_pass`` reads no per-parameter value.
+        # ``pset`` position fall through here. ``direct_pass`` reads no per-parameter value for the
+        # score, but a constraint may reference an estimated scale parameter, so
+        # still resolve the live ``{name: value}`` map when a real pset was passed.
+        self._pset_values = {}
         try:
-            [p.name for p in pset]
+            self._pset_values = {p.name: p.value for p in pset}
         except (AttributeError, TypeError):
             constraints = pset
         if not sim_data_dict:
@@ -1429,7 +1432,7 @@ class DirectPassObjective(ObjectiveFunction):
                     return None
                 total += val
         for cset in constraints:
-            total += cset.total_penalty(sim_data_dict)
+            total += cset.total_penalty(sim_data_dict, pset_values=self._pset_values)
         return total
 
 

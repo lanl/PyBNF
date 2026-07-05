@@ -94,7 +94,10 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
 multstrkeys = ['worker_nodes', 'postprocess', 'output_trajectory', 'output_noise_trajectory',
                # profile likelihood (#446/#466): the subset of free parameters to profile
                # (a list of parameter ids; absent -> profile every free parameter).
-               'profile_likelihood_params']
+               'profile_likelihood_params',
+               # qualitative scale as a fittable parameter: the two-token
+               # value `fit <param>` ties every qualitative constraint's scale to a free parameter.
+               'qualitative_scale']
 dictkeys = ['time_course', 'param_scan']
 punctuation_safe = re.sub('[:,]', '', punctuation)
 

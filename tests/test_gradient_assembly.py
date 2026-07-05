@@ -2297,6 +2297,37 @@ def test_constraint_logit_clipped_penalty_gradient():
     np.testing.assert_allclose(g, [slope * (-_C_DK[2]), slope * (-_C_DS0[2])])
 
 
+def test_constraint_estimated_scale_gradient_column():
+    """When a logit constraint's scale is tied to a free parameter (qualitative_scale = fit), assemble_constraint_gradient adds the closed-form d(penalty)/d(scale) to that
+    parameter's column -- a scalar term needing no forward sensitivity. The model-parameter columns
+    stay the ordinary readout-sensitivity gradient, and the tied column carries the log-space chain
+    factor like any positive parameter."""
+    from pybnf.constraint import _sigmoid
+    sdd, routings, _ = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    s_val = 12.0
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=None, atvar=None, atval=2.0, scale=s_val)
+    c.bind_scale_param('s_q')
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    diff = 90.0 - _C_STOT[2]
+    slope = _sigmoid(diff / s_val) / s_val                  # dF/d(difference)
+    dF_ds = -_sigmoid(diff / s_val) * diff / (s_val * s_val)  # dF/d(scale), the new column
+
+    # Linear scale parameter: sampling factor 1, so the tied column equals dF/d(scale) exactly, and
+    # the model columns are unchanged by the tie.
+    lin = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0),
+                ('s_q', 'uniform_var', 0.1, 1000.0, s_val))
+    g = assemble_constraint_gradient([cset], sdd, routings, lin)
+    np.testing.assert_allclose(g[:2], [slope * (-_C_DK[2]), slope * (-_C_DS0[2])])
+    np.testing.assert_allclose(g[2], dF_ds)
+
+    # Log10 scale parameter (the recommended positive-parameter declaration): the tied column carries
+    # the ln(10)*s chain factor, exactly like an estimated sigma on a log scale.
+    log = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0),
+                ('s_q', 'loguniform_var', 0.1, 1000.0, s_val))
+    g_log = assemble_constraint_gradient([cset], sdd, routings, log)
+    np.testing.assert_allclose(g_log[2], dF_ds * np.log(10.0) * s_val, rtol=1e-6)
+
+
 def test_constraint_always_reads_the_worst_miss_row():
     """An 'always' constraint is enforced at its worst point over the whole column; the gradient
     therefore reads the sensitivity at the argmax (worst-miss) row -- Danskin's theorem. For
@@ -2365,6 +2396,56 @@ def test_fd_acceptance_gate_constraint(model_kind):
     con_grad = assemble_constraint_gradient(
         [make_cset()], {model_name: {'tc': sim}}, {(model_name, 'tc'): route_wt}, free)
     np.testing.assert_allclose(obj_grad + con_grad, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('model_kind', ['logit', 'likelihood'])
+def test_fd_acceptance_gate_estimated_scale(model_kind):
+    """Central differences of (loss + constraint penalty)(u) vs the assembled gradient(u) with the
+    constraint scale ITSELF a free parameter (qualitative_scale = fit). A third,
+    log-scaled free param ``s_q`` is the logit ``s`` / probit ``sigma``; the FD perturbs it through
+    PyBNF's own loss, validating the closed-form ``d(penalty)/d(scale)`` column and its log-space
+    chain rule end-to-end on the real bngsim decay net. The scale never enters the data fit, so its
+    whole gradient comes from the constraint's scalar column -- the estimated-noise pattern, applied
+    to a qualitative constraint."""
+    obj = ChiSquareObjective()
+    sigma = 5.0
+    model_name = 'e2e_ode_decay'
+    s_init = 25.0
+    free = [FreeParameter('k', 'uniform_var', 0.01, 100.0, value=0.4),
+            FreeParameter('S0', 'uniform_var', 0.0, 1000.0, value=120.0),
+            FreeParameter('s_q', 'loguniform_var', 0.1, 1000.0, value=s_init)]
+    names = [p.name for p in free]
+    k_true, s0_true = 0.3, 100.0
+    exp_wt = _exp_decay(_decay_run(k_true, s0_true, False), sigma)
+    params, species = ['S0', 'k'], [('S()', 'S0')]
+    route_wt = route_experiment(names, params, species, None)   # s_q is model-unbound -> NONE route
+
+    def make_cset():
+        if model_kind == 'logit':
+            c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=None, atvar=None,
+                             atval=2.0, scale=s_init)
+        else:
+            c = AtConstraint('Stot', '>', 80.0, model_name, 'tc', weight=None, atvar=None,
+                             atval=2.0, pmin=0.02, pmax=0.98, tolerance=s_init)
+        c.bind_scale_param('s_q')
+        cset = ConstraintSet(model_name, 'tc'); cset.constraints = [c]
+        return cset
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        sim = _decay_run(theta['k'], theta['S0'], False)
+        return obj.evaluate(sim, exp_wt) + make_cset().total_penalty(
+            {model_name: {'tc': sim}}, pset_values=theta)
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim = _decay_run(free[0].value, free[1].value, True)
+    obj_grad = assemble_gaussian_gradient(obj, [(sim, exp_wt, route_wt)], free).gradient
+    con_grad = assemble_constraint_gradient(
+        [make_cset()], {model_name: {'tc': sim}}, {(model_name, 'tc'): route_wt}, free)
+    total = obj_grad + con_grad
+    np.testing.assert_allclose(total, grad_fd, rtol=1e-4, atol=1e-4)
+    assert total[2] != 0.0        # the estimated-scale column is live (its whole gradient is here)
 
 
 def test_constraint_gradient_refuses_missing_routing():

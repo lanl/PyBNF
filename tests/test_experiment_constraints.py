@@ -223,3 +223,48 @@ class TestBoundaries:
     def test_missing_constraint_file_names_the_experiment(self, tmp_path):
         with pytest.raises(PybnfError, match="was not found"):
             _build(tmp_path, conf_lines=_BASE + ["experiment: meas, data: meas.exp, gone.prop"])
+
+
+class TestEstimatedQualitativeScale:
+    """`qualitative_scale = fit <param>` ties every qualitative constraint's scale to a fittable
+    free parameter, so a fit estimates it jointly with the model parameters."""
+
+    def test_binds_constraint_scale_to_a_declared_free_parameter(self, tmp_path):
+        # Coerce the hinge .prop to logit, then tie its scale to a declared (log-scaled) free param.
+        conf = _build(tmp_path, conf_lines=_BASE + [
+            "qualitative_loss = logit",
+            "qualitative_scale = fit s_q",
+            "loguniform_var = s_q 0.1 100",
+            "experiment: meas, data: meas.exp, c.prop",
+        ])
+        (cs,) = tuple(conf.constraints)
+        con = cs.constraints[0]
+        assert con.penalty_model == "logit"
+        assert con.scale_param == "s_q"
+        # s_q is accepted as a legitimate nuisance free parameter (not flagged as an orphan/typo).
+        assert "s_q" in {v.name for v in conf.variables}
+
+    def test_undeclared_scale_parameter_is_a_pointed_error(self, tmp_path):
+        with pytest.raises(PybnfError, match="s_q"):
+            _build(tmp_path, conf_lines=_BASE + [
+                "qualitative_loss = logit",
+                "qualitative_scale = fit s_q",   # never declared as a free parameter
+                "experiment: meas, data: meas.exp, c.prop",
+            ])
+
+    def test_scale_on_a_hinge_constraint_is_rejected(self, tmp_path):
+        # Without coercion the .prop stays a hinge (weight 1), which has no scale to estimate.
+        with pytest.raises(PybnfError):
+            _build(tmp_path, conf_lines=_BASE + [
+                "qualitative_scale = fit s_q",
+                "loguniform_var = s_q 0.1 100",
+                "experiment: meas, data: meas.exp, c.prop",
+            ])
+
+    def test_malformed_qualitative_scale_is_rejected(self, tmp_path):
+        with pytest.raises(PybnfError):
+            _build(tmp_path, conf_lines=_BASE + [
+                "qualitative_scale = s_q",       # missing the 'fit' verb
+                "loguniform_var = s_q 0.1 100",
+                "experiment: meas, data: meas.exp, c.prop",
+            ])

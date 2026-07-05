@@ -287,6 +287,20 @@ By default (``qualitative_loss = auto``), each constraint's penalty model is cho
 
     qualitative_loss = logit
 
+.. _qualitative_scale:
+
+Estimating the scale as a fitting parameter
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The likelihood models (logit and probit) each carry a scale — the logit ``scale`` :math:`s` or the probit ``tolerance`` :math:`\sigma` — that is normally a fixed number you supply. The ``qualitative_scale`` key instead ties that scale to a **fittable free parameter**, so a fit estimates it jointly with the model parameters (the proper-likelihood framework's payoff: the noise scale need not be elicited in advance). The value is ``fit <parameter>``, naming a free parameter you have declared elsewhere in the ``.conf``::
+
+    qualitative_scale = fit s_qual
+    loguniform_var = s_qual 0.01 100
+
+Every logit/probit constraint's scale then reads its live value from ``s_qual`` at each evaluation, and the fit sees the closed-form :math:`\partial(\textrm{penalty})/\partial(\textrm{scale})` in its gradient (so the gradient-based optimizers estimate it efficiently). Declare the scale parameter **positive** — a ``log``-scaled variable (e.g. ``loguniform_var``) is the natural choice, and the log-space transform is handled automatically.
+
+A single scale is tied across **all** qualitative constraints (a globally-tied scale). This is the identifiable case: because BPSL constraints are single-sided (each asserts its inequality *holds*), the scale is informed only by the tension between constraints the best fit can and cannot satisfy, so per-observation scales are not identifiable while one shared scale is. The tie applies to logit/probit constraints; a static (hinge) constraint has no scale to estimate, so combine ``qualitative_scale`` with ``qualitative_loss = logit`` (or ``probit``) when your ``.prop`` files author hinge weights.
+
 
 Constraints involving multiple models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

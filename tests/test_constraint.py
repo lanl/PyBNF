@@ -315,9 +315,9 @@ class TestLogitConstraint:
     def test_probit_and_logit_agree_near_the_boundary(self):
         """The probit link Phi(x) ~ sigma(1.6 x) makes an unclipped probit with SD sigma and an
         unclipped logit with scale s = sigma/1.6 agree in the **central region** near the decision
-        boundary (|difference| <~ sigma) The
-        two diverge in the deep tails (the Gaussian -logPhi grows quadratically, the logit softplus
-        only linearly), so this is deliberately a central-region statement, checked around zero."""
+        boundary (|difference| <~ sigma). The two diverge in the deep tails (the Gaussian -logPhi
+        grows quadratically, the logit softplus only linearly), so this is deliberately a
+        central-region statement, checked around zero."""
         sigma = 2.0
         s = sigma / 1.6
         for diff in (-2., -1., -0.5, 0., 0.5, 1., 2.):
@@ -418,3 +418,66 @@ class TestLogitConstraint:
             assert False, 'expected a rejection for tolerance-0 coercion'
         except Exception:
             pass
+
+
+class TestEstimatedScale:
+    """The qualitative scale (logit s / probit sigma) as a fittable parameter tied to a free
+    parameter -- eval resolution from the live pset and the closed-form d(penalty)/d(scale)."""
+
+    def test_bind_resolves_live_scale_and_falls_back_to_literal(self):
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=2.0)
+        c.bind_scale_param('s_q')
+        sdd = _sdd([5.0])                     # difference = 8 - 5 = 3
+        # With a pset the live value wins; without one, the authored literal (2.0) is the fallback.
+        np.testing.assert_almost_equal(c.penalty(sdd, pset_values={'s_q': 4.0}), _softplus(3.0 / 4.0))
+        np.testing.assert_almost_equal(c.penalty(sdd), _softplus(3.0 / 2.0))
+        # A pset that lacks the tied name also falls back (a bare diagnostic call).
+        np.testing.assert_almost_equal(c.penalty(sdd, pset_values={'other': 9.0}), _softplus(3.0 / 2.0))
+
+    def test_bind_scale_param_rejects_hinge(self):
+        """The static (hinge) penalty has no scale to estimate -- binding one is a pointed error."""
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=2.0)
+        try:
+            c.bind_scale_param('s_q')
+            assert False, 'binding a scale param to a hinge constraint should raise'
+        except Exception:
+            pass
+
+    def test_scale_derivative_matches_central_difference(self):
+        """The closed-form d(penalty)/d(scale) equals a central finite difference of the penalty
+        w.r.t. the tied scale value -- for logit, clipped logit, and probit."""
+        sdd = _sdd([5.0])                     # difference = 8 - 5 = 3
+        diff, h = 3.0, 1e-6
+        cases = [
+            constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=10.0),
+            constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=10.0,
+                                        pmin=0.02, pmax=0.98),
+            constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None,
+                                        pmin=0.02, pmax=0.98, tolerance=40.0),
+        ]
+        for c in cases:
+            c.bind_scale_param('s_q')
+            s0 = 7.5
+            fd = (c.penalty(sdd, pset_values={'s_q': s0 + h})
+                  - c.penalty(sdd, pset_values={'s_q': s0 - h})) / (2 * h)
+            np.testing.assert_allclose(c._scale_derivative(diff, s0), fd, rtol=1e-5)
+
+    def test_scale_gradient_signs_show_identifiability_tension(self):
+        """The estimated scale is identified by the *tension* between satisfied and violated
+        constraints (the open identifiability question). Because BPSL constraints
+        are single-sided (every line asserts the inequality *holds*), a set of all-satisfied
+        constraints has no interior scale optimum -- d(penalty)/d(scale) drives s one way. The sign
+        is the mechanism: a SATISFIED constraint (difference < 0) has a positive scale gradient, so
+        gradient descent shrinks s toward the hinge; a VIOLATED one (difference > 0) has a negative
+        scale gradient, so descent grows s toward a softer penalty. A scale is pinned only where both
+        are present -- the reason globally-tied (not per-observation) scales are the identifiable
+        default."""
+        s = 3.0
+        c = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None, scale=s)
+        assert c._scale_derivative(-3.0, s) > 0     # satisfied (X above threshold) -> shrink s
+        assert c._scale_derivative(+3.0, s) < 0     # violated  (X below threshold) -> grow s
+        # Probit behaves the same way.
+        p = constraint.AlwaysConstraint('X', '>', 8.0, 'm', 'tc', weight=None,
+                                        pmin=0.0, pmax=1.0, tolerance=s)
+        assert p._scale_derivative(-3.0, s) > 0
+        assert p._scale_derivative(+3.0, s) < 0

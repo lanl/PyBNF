@@ -217,6 +217,12 @@ class GlobalConfig(PyBNFConfigModel):
     # (Constraint.coerce_penalty_model), so one .prop set runs under all three losses without
     # re-authoring. A benchmarking convenience; the recommended user default is 'auto'.
     qualitative_loss: Literal['auto', 'hinge', 'probit', 'logit'] = 'auto'
+    # Tie every qualitative (BPSL) constraint's scale (logit s / probit sigma) to a fittable free
+    # parameter, so a fit estimates it jointly with the model parameters. The
+    # two-token value `fit <param>` names an already-declared free parameter (positive; declare it
+    # log-scaled). None (default) keeps the authored fixed scales. Applies to logit/probit
+    # constraints only (the hinge has no scale to estimate).
+    qualitative_scale: Any = None
     sbml_integrator: str = 'cvode'
     sbml_backend: str = 'roadrunner'
     bngl_backend: str = 'auto'

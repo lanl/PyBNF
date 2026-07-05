@@ -1588,7 +1588,8 @@ class Configuration:
         cs = ConstraintSet(base, data_key)
         try:
             cs.load_constraint_file(constraint_file, scale=self.config['constraint_scale'],
-                                    qualitative_loss=self.config['qualitative_loss'])
+                                    qualitative_loss=self.config['qualitative_loss'],
+                                    qualitative_scale=self._qualitative_scale_param())
         except FileNotFoundError:
             raise PybnfError(
                 f"Constraint file {constraint_file} for experiment '{name}' was not found.")
@@ -2031,7 +2032,8 @@ class Configuration:
                     cs = ConstraintSet(self._file_prefix(m, '(bngl|xml|ant)'), self._file_prefix(ef, '(con|prop)'))
                     try:
                         cs.load_constraint_file(ef, scale=self.config['constraint_scale'],
-                                                qualitative_loss=self.config['qualitative_loss'])
+                                                qualitative_loss=self.config['qualitative_loss'],
+                                                qualitative_scale=self._qualitative_scale_param())
                     except FileNotFoundError:
                         raise PybnfError(f'Constraint file {ef} was not found')
                     csets.add(cs)
@@ -2190,6 +2192,21 @@ class Configuration:
             obj._cumulative_cols = cumulative_cols
         return obj
 
+    def _qualitative_scale_param(self):
+        """The free-parameter name that ``qualitative_scale = fit <param>`` ties every qualitative
+        constraint's scale (logit ``s`` / probit ``sigma``) to, or ``None`` when
+        the scales are fixed as authored. Validates the only supported form, ``fit <param>``."""
+        spec = self.config.get('qualitative_scale')
+        if not spec:
+            return None
+        tokens = list(spec)
+        if len(tokens) != 2 or str(tokens[0]).lower() != 'fit':
+            raise PybnfError(
+                f"Invalid qualitative_scale = {' '.join(map(str, tokens))}",
+                "The only supported form is 'qualitative_scale = fit <parameter>', naming a declared "
+                "free parameter to estimate the qualitative-constraint scale jointly with the fit.")
+        return tokens[1]
+
     def _load_variables(self):
         """
         Loads the variable names from the config dict into FreeParameter instances.
@@ -2210,6 +2227,14 @@ class Configuration:
                              f'estimates the noise parameter(s) {names}, but they are not declared as free '
                              f'parameters in the .conf file (and the model file). Declare each as a variable, '
                              f'e.g. "uniform_var = {sorted(missing)[0]} <lower> <upper>".')
+        # An estimated qualitative-constraint scale (qualitative_scale = fit <param>) likewise names
+        # a free parameter that must be declared.
+        qscale = self._qualitative_scale_param()
+        if qscale is not None and qscale not in declared_params:
+            raise PybnfError(f'qualitative_scale free parameter {qscale} not declared',
+                             f'qualitative_scale = fit {qscale} ties every qualitative-constraint scale to a '
+                             f'free parameter, but {qscale} is not declared. Declare it as a positive '
+                             f'(log-scaled) variable, e.g. "loguniform_var = {qscale} <lower> <upper>".')
         fit_type = self.config['fit_type']
         self._check_variable_keyword_combination(fit_type)
         variables = []
@@ -2553,6 +2578,11 @@ class Configuration:
 
         variables_names = {v.name for v in self.variables}
         extra_in_conf = variables_names.difference(model_vars)
+        # An estimated qualitative-constraint scale (qualitative_scale = fit) is a
+        # nuisance bound to no model parameter, not a typo.
+        qscale = self._qualitative_scale_param()
+        if qscale is not None:
+            extra_in_conf.discard(qscale)
         extra_in_model = set(model_vars).difference(variables_names)
         # Only __FREE-suffixed names are "must-fit" model parameters; ignore other
         # model params (e.g. SBML species/globals) that legitimately aren't fit.
@@ -2613,6 +2643,11 @@ class Configuration:
         # A parameter id used only as a row-varying per-measurement noise token (the ADR-0045
         # binding table) is a legitimate nuisance, bound to no model id.
         nuisance |= getattr(self, '_per_measurement_free_params', set())
+        # An estimated qualitative-constraint scale (qualitative_scale = fit) is a
+        # nuisance too -- it feeds the constraint penalty, not the model.
+        qscale = self._qualitative_scale_param()
+        if qscale is not None:
+            nuisance.add(qscale)
 
         orphans = sorted(v.name for v in self.variables
                          if v.name not in model_ids and v.name not in nuisance)

@@ -246,6 +246,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -654,6 +658,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -1074,6 +1082,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -1458,6 +1470,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -1980,6 +1996,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -2512,6 +2532,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -3010,6 +3034,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -3418,6 +3446,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -3838,6 +3870,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -4161,6 +4197,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -4515,6 +4555,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -4812,6 +4856,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -5059,6 +5107,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -5338,6 +5390,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -5628,6 +5684,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -5937,6 +5997,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -6250,6 +6314,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -6597,6 +6665,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -6920,6 +6992,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -7270,6 +7346,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -7595,6 +7675,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -7906,6 +7990,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -8221,6 +8309,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -8534,6 +8626,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -8833,6 +8929,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -9142,6 +9242,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -9492,6 +9596,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -9846,6 +9954,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -10161,6 +10273,10 @@
     "auto"
    ],
    [
+    "qualitative_scale",
+    null
+   ],
+   [
     "random_seed",
     null
    ],
@@ -10448,6 +10564,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",
@@ -10758,6 +10878,10 @@
    [
     "qualitative_loss",
     "auto"
+   ],
+   [
+    "qualitative_scale",
+    null
    ],
    [
     "random_seed",

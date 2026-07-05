@@ -941,6 +941,15 @@ Algorithm Options
 
     * ``qualitative_loss = logit``
 
+**qualitative_scale**
+  Tie every qualitative (logit/probit) constraint's scale (the logit ``scale`` or probit ``tolerance``) to a fittable free parameter, so a fit estimates it jointly with the model parameters. The value is ``fit <parameter>``, naming a free parameter declared elsewhere in the .conf; declare it positive (log-scaled). A single scale is shared across all qualitative constraints (globally tied — the identifiable case). Applies to logit/probit constraints only; pair with ``qualitative_loss = logit`` (or ``probit``) if your .prop files author hinge weights.
+
+  Default: none (scales fixed as authored)
+
+  Example:
+
+    * ``qualitative_scale = fit s_qual`` (with ``loguniform_var = s_qual 0.01 100``)
+
 **ind_var_rounding**
   If 1, make sure every exp row is used by rounding it to the nearest available value of the independent variable in the simulation data. (Be careful with this! Usually, it is better to set up your simulation so that all experimental points are hit exactly) 
   

@@ -34,14 +34,16 @@ class ConstraintSet:
         self.base_suffix = base_suffix
         self.base_model = base_model
 
-    def total_penalty(self, sim_data_dict):
+    def total_penalty(self, sim_data_dict, pset_values=None):
         """
         Evaluate the sim_data_dict against all constraints, and return the total penalty
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
+        :param pset_values: The objective's live ``{name: value}`` map, threaded so a constraint with an
+        estimated scale parameter reads its current value; ``None`` uses the literal.
         :return:
         """
-        return sum([c.penalty(sim_data_dict) for c in self.constraints])
+        return sum([c.penalty(sim_data_dict, pset_values=pset_values) for c in self.constraints])
 
     def number_failed(self, sim_data_dict):
         """
@@ -67,7 +69,7 @@ class ConstraintSet:
             for c in self.constraints:
                 out.write(f'{c.penalty(sim_data_dict)}\n')
 
-    def load_constraint_file(self, filename, scale=1.0, qualitative_loss='auto'):
+    def load_constraint_file(self, filename, scale=1.0, qualitative_loss='auto', qualitative_scale=None):
         """
         Parse the constraint file filename and load them all into my constraint list
         :param filename: Path of constraint file
@@ -76,6 +78,9 @@ class ConstraintSet:
         each constraint's authored penalty family (the keyword-driven per-constraint selection);
         any other value coerces every constraint to that family via
         :meth:`Constraint.coerce_penalty_model` -- a benchmarking convenience.
+        :param qualitative_scale: If set, the name of a free parameter every constraint's scale is
+        tied to (:meth:`Constraint.bind_scale_param`), so a fit estimates the qualitative scale
+        jointly. Applied after any ``qualitative_loss`` coercion.
         """
         logger.info(f'Loading constraints for {self.base_model} suffix {self.base_suffix} from {filename}')
         with open(filename) as f:
@@ -227,6 +232,8 @@ class ConstraintSet:
                 con.source_line = line.strip()
                 if qualitative_loss != 'auto':
                     con.coerce_penalty_model(qualitative_loss)
+                if qualitative_scale is not None:
+                    con.bind_scale_param(qualitative_scale)
                 self.constraints.append(con)
         logger.info('Loaded %i constraints' % len(self.constraints))
 
@@ -346,6 +353,10 @@ class Constraint:
         self.pmax = pmax
         self.tolerance = tolerance
         self.scale = scale
+        # Name of a free parameter this constraint's scale (logit s / probit sigma) is tied to,
+        # or None for a fixed authored scale. Set by bind_scale_param when a fit ties the
+        # qualitative scale to an estimated parameter (qualitative_scale = fit).
+        self.scale_param = None
 
         # Choose penalty model depending on what is set to None
         # Check for invalid combinations of keys, but these should have been caught during parsing.
@@ -537,18 +548,62 @@ class Constraint:
             raise PybnfError(f"Unknown qualitative_loss target '{target}'. "
                              "Expected one of 'auto', 'hinge', 'probit', 'logit'.")
 
-    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+    def bind_scale_param(self, name):
+        """Tie this constraint's scale (the logit ``s`` or probit ``sigma``) to an estimated free
+        parameter ``name``, so a fit can infer it jointly with the model parameters. Only the likelihood families carry a scale: a static (hinge) constraint has no
+        scale to estimate, so binding one is an error. The authored literal scale is kept as the
+        fallback/initial value (used when no pset is supplied, e.g. a bare diagnostic penalty())."""
+        if self.penalty_model == 'static':
+            raise PybnfError(
+                f"Constraint '{self.source_line}' uses the static (hinge) penalty, which has no "
+                "scale to estimate. qualitative_scale = fit needs logit or probit constraints "
+                "(convert the whole fit with qualitative_loss = logit or probit).")
+        self.scale_param = name
+
+    def _effective_scale(self, pset_values):
+        """This constraint's live scale: the current value of the tied free parameter if its scale
+        is estimated (``scale_param`` set) and that value is available in ``pset_values``, otherwise
+        the authored literal (logit ``self.scale`` / probit ``self.tolerance``). ``pset_values`` is
+        the objective's ``{name: value}`` map for the evaluation; ``None`` (a bare penalty() call
+        outside a fit) falls back to the literal."""
+        if self.scale_param is not None and pset_values is not None and self.scale_param in pset_values:
+            return pset_values[self.scale_param]
+        return self.scale if self.penalty_model == 'logit' else self.tolerance
+
+    def _scale_derivative(self, difference, s):
+        """Closed-form ``d(penalty)/d(scale)`` at the interval's achieving ``difference`` -- the scalar-gradient contribution to the tied scale parameter's column, needing
+        no forward sensitivity (the scale does not move the readout). Mirrors the estimated-noise
+        ``d loss/d sigma`` term. Logit: ``-sigma(d/s) * d / s^2`` (unclipped), or the clipped form
+        when pmin/pmax are set. Probit: ``-(pmax-pmin) * phi(-d/s) * d / (s^2 * adjusted_prob)``."""
+        if self.penalty_model == 'logit':
+            x = difference / s
+            if self.pmin is None:
+                return -_sigmoid(x) * difference / (s * s)
+            adjusted = self.pmin + (self.pmax - self.pmin) * _sigmoid(-x)
+            return -(self.pmax - self.pmin) * _sigmoid(-x) * _sigmoid(x) * difference / (s * s * adjusted)
+        # probit (Gaussian-CDF likelihood)
+        u = -difference / s
+        phi = np.exp(-0.5 * u * u) / np.sqrt(2. * np.pi)
+        prob = (1. + erf(u / np.sqrt(2.))) / 2.
+        adjusted = (self.pmax - self.pmin) * prob + self.pmin
+        return -(self.pmax - self.pmin) * phi * difference / (s * s * adjusted)
+
+    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None,
+                    imax2=None, pset_values=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
         Chooses to call either get_static_penalty or get_log_likelihood depending on the penalty model
-        used for this constraint
+        used for this constraint. ``pset_values`` (the objective's live ``{name: value}`` map) lets a
+        likelihood constraint resolve an estimated scale parameter.
         """
         if self.penalty_model == 'static':
             return self.get_static_penalty(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
         elif self.penalty_model == 'likelihood':
-            return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+            return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length, imin2, imax2,
+                                           pset_values=pset_values)
         elif self.penalty_model == 'logit':
-            return self.get_log_likelihood_logit(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+            return self.get_log_likelihood_logit(sim_data_dict, imin, imax, once, require_length, imin2, imax2,
+                                                 pset_values=pset_values)
         else:
             raise ValueError(f'Invalid penalty model: {self.penalty_model}')
 
@@ -655,12 +710,13 @@ class Constraint:
 
         return penalty * self.weight
 
-    def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+    def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None,
+                           pset_values=None):
         """
         Helper function for calculating the negative log likelihood of constraint satisfaction given the parameters,
         i.e. a likelihood-based penalty function.
         The likelihood is calculated with a Gaussian CDF defined in terms of this constraint's confidence
-        and tolerance
+        and tolerance (or an estimated scale parameter resolved from ``pset_values``)
 
         :param sim_data_dict: The dictionary of data objects
         :param imin: First index at which to check the constraint
@@ -683,7 +739,8 @@ class Constraint:
             return (1. + erf(x / np.sqrt(2.))) / 2.
 
         difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
-        if self.tolerance == 0:
+        k = self._effective_scale(pset_values)
+        if k == 0:
             # Edge case where cdf is a step function
             if difference < 0 or (difference == 0 and self.or_equal):
                 log_likelihood = -np.log(self.pmax)
@@ -692,13 +749,13 @@ class Constraint:
         else:
             # Standard case
             # Note that a negative difference is good, hence the sign convention in the calculation below.
-            k = self.tolerance
             prob = cdf(-difference/k)
             adjusted_prob = (self.pmax - self.pmin) * prob + self.pmin
             log_likelihood = -np.log(adjusted_prob)
         return log_likelihood
 
-    def get_log_likelihood_logit(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+    def get_log_likelihood_logit(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None,
+                                 imax2=None, pset_values=None):
         """Negative log likelihood of constraint satisfaction under the **logit** (Miller et al.
         2025) noise model: the comparison outcome is Bernoulli with P(holds) = sigma(-difference/s),
         so the single-sided BPSL penalty collapses to the softplus
@@ -706,7 +763,8 @@ class Constraint:
             F(difference; s) = ln(1 + e^{difference/s}) = softplus(difference/s).
 
         ``difference`` is the signed constraint margin (negative == satisfied, :meth:`get_difference`).
-        As ``s -> 0`` with ``weight = 1/s`` this is the 2018 hinge (the large-margin asymptote); larger ``s`` is a softer penalty. ``np.logaddexp(0, x)`` evaluates the
+        As ``s -> 0`` with ``weight = 1/s`` this is the 2018 hinge (the large-margin asymptote);
+        larger ``s`` is a softer penalty. ``np.logaddexp(0, x)`` evaluates the
         softplus without overflow. If optional ``pmin/pmax`` were supplied (label smoothing, for
         probit parity), the probability is clipped to ``pmin + (pmax-pmin)*sigma(-difference/s)``
         before the ``-log`` -- default off (faithful to the arXiv derivation).
@@ -720,7 +778,7 @@ class Constraint:
         :param imax2: If specified, use this different index for quantity 2
         """
         difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
-        x = difference / self.scale
+        x = difference / self._effective_scale(pset_values)
         if self.pmin is None:
             # Faithful softplus: -log sigma(-x) = ln(1 + e^{x}), stable via logaddexp.
             return float(np.logaddexp(0.0, x))
@@ -730,7 +788,7 @@ class Constraint:
 
 
 
-    def penalty(self, sim_data_dict):
+    def penalty(self, sim_data_dict, pset_values=None):
         """
         penalty function for violating the constraint. Returns 0 if constraint is satisfied, or a positive value
         if the constraint is violated.
@@ -743,8 +801,11 @@ class Constraint:
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
+        :param pset_values: The objective's live ``{name: value}`` map, so a likelihood constraint whose
+        scale is tied to an estimated free parameter reads its current value.
+        ``None`` (a bare diagnostic call) falls back to the authored literal scale.
         """
-        return sum((self.get_penalty(sim_data_dict, **interval)
+        return sum((self.get_penalty(sim_data_dict, pset_values=pset_values, **interval)
                     for interval in self._penalty_intervals(sim_data_dict)), 0.)
 
     def _penalty_intervals(self, sim_data_dict):
@@ -782,23 +843,38 @@ class Constraint:
         return s1 - s2
 
     def get_penalty_gradient(self, sim_data_dict, raw_sens, index, n_param, imin, imax,
-                             once=False, require_length=None, imin2=None, imax2=None):
+                             once=False, require_length=None, imin2=None, imax2=None, pset_values=None):
         """The gradient of this interval's penalty w.r.t. the free parameters (#456/#385) --
         the constraint counterpart of the objective's per-point gradient. Dispatches to the
         static or likelihood model, mirroring :meth:`get_penalty`. Both reduce to ``local penalty
         slope * d(readout)/d theta`` at the interval's achieving point: the penalty is a piecewise
         (static) or Gaussian-CDF (likelihood) function of the at-/between-time readout ``q1 - q2``,
-        so its gradient is that readout's forward sensitivity times the model's local slope."""
+        so its gradient is that readout's forward sensitivity times the model's local slope.
+
+        When this constraint's scale is tied to an estimated free parameter (``scale_param``), a closed-form ``d(penalty)/d(scale)`` term is added to that parameter's column --
+        a scalar contribution needing no forward sensitivity, exactly like the estimated-noise
+        ``d loss/d sigma`` column."""
         if self.penalty_model == 'static':
             return self._static_penalty_gradient(sim_data_dict, raw_sens, n_param,
                                                  imin, imax, once, imin2)
         elif self.penalty_model == 'likelihood':
-            return self._likelihood_penalty_gradient(sim_data_dict, raw_sens, n_param,
-                                                    imin, imax, once, require_length, imin2, imax2)
+            grad = self._likelihood_penalty_gradient(sim_data_dict, raw_sens, n_param,
+                                                     imin, imax, once, require_length, imin2, imax2,
+                                                     pset_values)
         elif self.penalty_model == 'logit':
-            return self._logit_penalty_gradient(sim_data_dict, raw_sens, n_param,
-                                                imin, imax, once, require_length, imin2, imax2)
-        raise ValueError(f'Invalid penalty model: {self.penalty_model}')
+            grad = self._logit_penalty_gradient(sim_data_dict, raw_sens, n_param,
+                                                imin, imax, once, require_length, imin2, imax2,
+                                                pset_values)
+        else:
+            raise ValueError(f'Invalid penalty model: {self.penalty_model}')
+
+        if self.scale_param is not None:
+            # Add d(penalty)/d(scale) to the tied parameter's column (scalar; no forward sensitivity).
+            difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+            s = self._effective_scale(pset_values)
+            grad = np.array(grad, dtype=float)
+            grad[index[self.scale_param]] += self._scale_derivative(difference, s)
+        return grad
 
     def _static_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once, imin2):
         """Gradient of the static penalty ``weight * max(0, difference)`` (#456), mirroring
@@ -834,17 +910,19 @@ class Constraint:
         return float(diffs[idx]), idx
 
     def _likelihood_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once,
-                                     require_length, imin2, imax2):
+                                     require_length, imin2, imax2, pset_values=None):
         """Gradient of the likelihood penalty ``-log((pmax-pmin) * Phi(-difference/k) + pmin)``
         (#456). The Gaussian-CDF model is smooth, with local slope
         ``d/d difference = (pmax-pmin) * phi(-difference/k) / (k * adjusted_prob)`` (> 0: a larger
         difference is a worse violation, a larger penalty), times ``d(readout)/d theta``. A zero
         tolerance is a step function (flat almost everywhere) -> zero gradient, matching the
-        non-differentiable edge case :meth:`get_log_likelihood` special-cases."""
+        non-differentiable edge case :meth:`get_log_likelihood` special-cases. ``k`` is the effective
+        scale -- the estimated free parameter's live value if tied, else the
+        authored tolerance."""
         difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
-        if self.tolerance == 0:
+        k = self._effective_scale(pset_values)
+        if k == 0:
             return np.zeros(n_param)
-        k = self.tolerance
         x = -difference / k
         phi = np.exp(-0.5 * x * x) / np.sqrt(2. * np.pi)
         prob = (1. + erf(x / np.sqrt(2.))) / 2.
@@ -856,7 +934,7 @@ class Constraint:
             self.qkeys2, self.quant2, imin2_eff + a)
 
     def _logit_penalty_gradient(self, sim_data_dict, raw_sens, n_param, imin, imax, once,
-                                require_length, imin2, imax2):
+                                require_length, imin2, imax2, pset_values=None):
         """Gradient of the logit softplus penalty ``ln(1 + e^{difference/s})``
         (:meth:`get_log_likelihood_logit`). The loss is smooth everywhere (``s > 0``), with local
         slope ``dF/d difference = sigma(difference/s) / s`` (the logistic; > 0, a larger difference
@@ -865,9 +943,10 @@ class Constraint:
         label smoothing the slope becomes
         ``(pmax-pmin) * sigma(-x) * sigma(x) / (s * adjusted_prob)`` with ``x = difference/s`` and
         ``adjusted_prob = pmin + (pmax-pmin)*sigma(-x)`` -- collapsing to ``sigma(x)/s`` when
-        unclipped (``pmin=0, pmax=1``)."""
+        unclipped (``pmin=0, pmax=1``). ``s`` is the effective scale -- the estimated free
+        parameter's live value if tied, else the authored scale."""
         difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
-        s = self.scale
+        s = self._effective_scale(pset_values)
         x = difference / s
         if self.pmin is None:
             slope = _sigmoid(x) / s
@@ -879,7 +958,7 @@ class Constraint:
             raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
             self.qkeys2, self.quant2, imin2_eff + a)
 
-    def penalty_gradient(self, sim_data_dict, raw_sens, index, n_param):
+    def penalty_gradient(self, sim_data_dict, raw_sens, index, n_param, pset_values=None):
         """The gradient of this constraint's total penalty w.r.t. the free parameters (layer I,
         #456/#385) -- ``raw_sens(model, suffix, observable, row)`` supplies each readout's native-
         space forward sensitivity row (the #447 tensor, factor-folded per #448 routing), ``index``
@@ -891,10 +970,13 @@ class Constraint:
         sum of squares, so (like an estimated noise normalizer, #451) it cannot enter the residual-
         Jacobian -- a fit with active constraints is not ``least_squares_exact``. The static model
         is non-smooth at the constraint boundary and at the ``min_penalty`` floor; the subgradient
-        0 is taken there (documented like the Laplace kink, #454)."""
+        0 is taken there (documented like the Laplace kink, #454). ``pset_values`` carries the live
+        parameter values so a constraint with an estimated scale contributes its
+        ``d(penalty)/d(scale)`` column."""
         grad = np.zeros(n_param)
         for interval in self._penalty_intervals(sim_data_dict):
-            grad += self.get_penalty_gradient(sim_data_dict, raw_sens, index, n_param, **interval)
+            grad += self.get_penalty_gradient(sim_data_dict, raw_sens, index, n_param,
+                                              pset_values=pset_values, **interval)
         return grad
 
 
