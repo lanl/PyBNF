@@ -1,0 +1,60 @@
+# =============================================================================
+#  One-compartment infusion + washout PK
+#         dA/dt = R_in*[t < t_infusion]  -  kel*A
+# =============================================================================
+#  A drug is infused at a constant rate R_in until t = t_infusion, then the
+#  infusion stops and the drug washes out by first-order elimination (rate kel):
+#
+#        rise (t < t_infusion):  A(t) -> A_ss = R_in/kel      (approach the plateau)
+#        washout (t >= t_infusion):  A(t) = A_stop * exp(-kel*(t - t_infusion))
+#
+#  The washout is a clean exponential decay, so over a long enough window the
+#  measured amount spans several ORDERS OF MAGNITUDE (a tall plateau down to a
+#  tiny tail). That wide dynamic range is what the lognormal lesson needs.
+#
+#  A `Clock()` pseudo-species carries simulation time `t` so the piecewise
+#  infusion can reference it (BNGL rate laws have no built-in `time` symbol) --
+#  the same trick as lesson 06. The `if()` makes this non-differentiable, so fit
+#  it with a gradient-free method (de), not trf/lbfgs.
+#
+#  Adapted from the analytical-ODE catalog's `infusion_washout_pk`, cut to a clean
+#  edition-2 model: the `Analytical_*` / concentration reporting functions are
+#  removed; only the infusion + elimination dynamics remain.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    kel         0.35   # elimination rate         [1/day]     <- FITTED
+    R_in        12.0   # infusion rate            [AU/day]    (fixed/known protocol)
+    t_infusion  6.0    # infusion duration        [day]       (fixed/known protocol)
+    A0          1.0    # initial amount           [AU]        (fixed/known)
+  end parameters
+
+  begin molecule types
+    Drug()
+    Clock()
+  end molecule types
+
+  begin seed species
+    Drug()   A0
+    Clock()  0
+  end seed species
+
+  begin observables
+    Molecules  Obs_Drug  Drug()
+    Molecules  t         Clock()
+  end observables
+
+  begin functions
+    # Constant infusion while t < t_infusion, then off (piecewise -> non-differentiable).
+    Infusion_Input()  = if(t < t_infusion, R_in, 0)
+  end functions
+
+  begin reaction rules
+    clock:        0       -> Clock()  1.0               # dt/dt = 1 (carries time)
+    infusion:     0       -> Drug()   Infusion_Input()  # dA/dt += R_in while infusing
+    elimination:  Drug()  -> 0        kel               # dA/dt -= kel*A
+  end reaction rules
+
+end model

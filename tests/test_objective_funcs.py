@@ -435,6 +435,40 @@ class TestNegBinMedianCentering:
         assert noise.NegBinomial(location=noise.MEDIAN).data_fit(8.0, -1, self.r) == 0
 
 
+class TestLogScaleNonPositivePrediction:
+    """The log additive scales (lognormal/log-normal noise) must not turn a
+    non-positive value into a NaN. An ODE solver can undershoot to a tiny negative
+    in a deep decay tail; log10(that) used to be NaN, which silently corrupted the
+    fit (a NaN score is neither accepted nor rejected -- it left DE with a `None`
+    individual and crashed). A non-positive prediction has zero lognormal
+    likelihood, so it must map to -inf (NLL +inf), a hard penalty. Regression for
+    the guard behind tutorial lesson 42."""
+
+    def test_log10_forward_maps_nonpositive_to_neg_inf(self):
+        from pybnf.noise.scale import LOG10
+        assert LOG10.forward(100.0) == 2.0
+        assert LOG10.forward(-1e-10) == -np.inf     # solver undershoot, not NaN
+        assert LOG10.forward(0.0) == -np.inf
+        # array form: positives transform, non-positives -> -inf (never NaN)
+        out = LOG10.forward(np.array([10.0, -1e-9, 0.0, 1000.0]))
+        npt.assert_array_equal(out, [1.0, -np.inf, -np.inf, 3.0])
+        assert not np.any(np.isnan(out))
+
+    def test_ln_forward_maps_nonpositive_to_neg_inf(self):
+        from pybnf.noise.scale import LN
+        assert LN.forward(-1.0) == -np.inf
+        assert not np.isnan(LN.forward(0.0))
+
+    def test_lognormal_data_fit_is_inf_not_nan_on_negative_prediction(self):
+        """A Gaussian on the log10 scale (the lognormal family) scores +inf, not NaN,
+        for a negative prediction against a positive observation."""
+        g = noise.Gaussian(additive_on=noise.LOG10)
+        val = g.data_fit(-1e-10, 5.0, 0.2)
+        assert np.isinf(val) and val > 0
+        # a valid positive prediction still scores finitely
+        assert np.isfinite(g.data_fit(5.0, 5.0, 0.2))
+
+
 class TestLogDensity:
     """The complete, normalized per-point ``log_density`` LOO/WAIC consume (ADR-0056).
 

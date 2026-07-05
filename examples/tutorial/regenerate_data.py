@@ -151,10 +151,13 @@ def _apply_normalization(rows, obs, normalize):
             raise ValueError(f'unsupported normalization type {ntype!r} in regenerate_data')
 
 
+_LN10 = np.log(10.0)
+
+
 def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outliers=(),
                indvar='time', count_dispersion=None, count_seed=0, scale=None, normalize=(),
                sd_by_obs=(), cumulative_obs=(), noise_cv=None, noise_cv_seed=0,
-               count_replicates=1):
+               count_replicates=1, noise_lognormal_sigma=None, noise_lognormal_seed=0):
     """Write the simulated trajectory as a ``.exp``.
 
     ``indvar`` is the independent-variable column (``time`` for a time course, or the
@@ -209,6 +212,18 @@ def _write_exp(path, cols, arr, obs, noise_sd=0.0, noise_seed=0, sd=None, outlie
         rng = np.random.default_rng(noise_seed)
         for j in range(1, rows.shape[1]):
             rows[:, j] = rows[:, j] + rng.normal(0.0, noise_sd, size=rows.shape[0])
+    if noise_lognormal_sigma is not None:
+        # Multiplicative LOGNORMAL noise on a log10 scale: each point *=
+        # 10**(sigma*N(0,1) - sigma**2*ln10/2). The -sigma^2*ln10/2 term is the
+        # lognormal mean correction, so E[obs] = the model value (mean-aligned) --
+        # matching a `noise_model = lognormal, ..., location = mean` fit. Always
+        # positive (the lognormal support), so data spanning orders of magnitude
+        # carries constant RELATIVE scatter (lesson 42).
+        rng = np.random.default_rng(noise_lognormal_seed)
+        s = noise_lognormal_sigma
+        for j in range(1, rows.shape[1]):
+            rows[:, j] = rows[:, j] * 10 ** (s * rng.standard_normal(rows.shape[0])
+                                             - s ** 2 * _LN10 / 2)
     if noise_cv is not None:
         # Multiplicative (constant-relative) noise: each point *= (1 + cv*N(0,1)). The
         # noise scales with the value, so it is huge in absolute terms on the large-magnitude
@@ -255,7 +270,9 @@ def regenerate(example):
                        scale=dataset.scale, normalize=dataset.normalize,
                        sd_by_obs=dataset.sd_by_obs, cumulative_obs=dataset.cumulative_obs,
                        noise_cv=dataset.noise_cv, noise_cv_seed=dataset.noise_cv_seed,
-                       count_replicates=dataset.count_replicates)
+                       count_replicates=dataset.count_replicates,
+                       noise_lognormal_sigma=dataset.noise_lognormal_sigma,
+                       noise_lognormal_seed=dataset.noise_lognormal_seed)
             tag = f' (+N({dataset.noise_sd}) seed {dataset.noise_seed})' if dataset.noise_sd else ''
             if dataset.noise_cv is not None:
                 tag += f' (xN(1,{dataset.noise_cv}) mult-noise, seed {dataset.noise_cv_seed})'

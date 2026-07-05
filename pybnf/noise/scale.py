@@ -84,7 +84,17 @@ class _Log10(AdditiveNoiseScale):
     ln_base = _LN10
 
     def forward(self, x):
-        return np.log10(x)
+        # A non-positive value has no place on the log scale: log10(x<=0) is
+        # mathematically -inf/undefined. A model *prediction* can land there from an
+        # ODE solver's tiny sub-tolerance undershoot in a deep decay tail (a value
+        # like -1e-10 that is physically zero). Map any x<=0 to -inf rather than let
+        # numpy return NaN: the residual then blows up and the lognormal NLL is +inf
+        # -- a hard penalty that steers the optimizer away -- instead of a NaN score
+        # that silently corrupts the fit (observations are validated positive
+        # upstream, so this guards the prediction). `[()]` keeps a scalar in, scalar
+        # out (0-d array -> numpy scalar), preserving the plain-log10 return type.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.where(x > 0, np.log10(x), -np.inf)[()]
 
     def dforward(self, x):
         # d log10(x)/dx = 1/(x ln 10).
@@ -99,7 +109,10 @@ class _Ln(AdditiveNoiseScale):
     ln_base = 1.0
 
     def forward(self, x):
-        return np.log(x)
+        # Same non-positive-prediction guard as _Log10.forward (natural-log twin):
+        # x<=0 -> -inf, so the NLL is +inf rather than NaN.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.where(x > 0, np.log(x), -np.inf)[()]
 
     def dforward(self, x):
         # d ln(x)/dx = 1/x.

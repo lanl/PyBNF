@@ -38,6 +38,15 @@ class Dataset:
                               # noise -- the scale-free objective lesson (35): sos over-weights the
                               # large points, norm_sos weights every point equally.
     noise_cv_seed: int = 0
+    noise_lognormal_sigma: float = None  # MULTIPLICATIVE lognormal noise on a log10 scale:
+                              # each point *= 10**(sigma*N(0,1) - sigma**2*ln10/2), seeded by
+                              # `noise_lognormal_seed`. The -sigma^2*ln10/2 term is the mean
+                              # correction, so E[obs] = the model value (mean-aligned) -- matching
+                              # a `noise_model = lognormal, ..., location = mean` fit. Always
+                              # positive (the lognormal support). No _SD column (the lognormal
+                              # confs set sigma with `fix_at`): data spanning orders of magnitude
+                              # with constant RELATIVE scatter -- the lognormal lesson (42).
+    noise_lognormal_seed: int = 0
     sd: float = None          # emit a constant _SD column at this value (independent of the
                               # gaussian noise above -- for a clean curve scored under chi_sq/laplace)
     sd_by_obs: tuple = ()     # ((obs_name, sd_value), ...): a DIFFERENT constant _SD per
@@ -973,6 +982,31 @@ EXAMPLES = (
         # dedicated verifier (tests/test_tutorial_neg_bin_dynamic.py) asserts beta tight
         # and r_disp within a generous window.
         confs=(),
+    ),
+    Example(
+        folder='42_lognormal_error',
+        model='infusion_washout.bngl',
+        truth={'kel': 0.35},
+        build_free={'kel': ('uniform_var', 0.05, 3.0)},
+        datasets=(
+            # An infusion+washout PK curve whose amount spans nearly three orders of
+            # magnitude (a tall plateau ~30 down to a tiny washout tail ~0.05), with
+            # MULTIPLICATIVE lognormal noise (log10 sigma 0.2, mean-aligned). The big
+            # early/plateau points carry huge absolute scatter, the informative tail
+            # tiny absolute scatter -- so a Gaussian (constant-sigma) fit over-weights
+            # the plateau and under-uses the tail, while a lognormal fit weights every
+            # point equally in log space. No _SD column (the confs set sigma with fix_at).
+            Dataset('infusion_washout.exp', obs=('Obs_Drug',), t_end=24, n_points=41,
+                    noise_lognormal_sigma=0.2, noise_lognormal_seed=8),
+        ),
+        confs=(
+            # The right likelihood for multiplicative error: recovers kel from the whole
+            # curve, tail included.
+            ConfCheck('lognormal.conf', recover={'kel': 0.35}, tol=0.05),
+            # A Gaussian (constant-sigma) fit is dragged off by over-weighting the
+            # large-magnitude plateau points and ignoring the informative low tail.
+            ConfCheck('gaussian_dragged.conf', recover={'kel': 0.35}, dragged_min_err=0.10),
+        ),
     ),
 )
 
