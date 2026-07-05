@@ -502,6 +502,13 @@ EXAMPLES = (
             ConfCheck('oscillator_cmaes.conf', recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
             ConfCheck('oscillator_sa.conf',    recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
             ConfCheck('oscillator_ss.conf',    recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            # Powell addendum -- the LOCAL contrast (a start-point conjugate-direction
+            # optimizer). From a good start (var = alpha 1.3, gamma 0.9) it descends
+            # straight to the truth; from a bad start it TRAPS at an aliased frequency.
+            ConfCheck('oscillator_powell.conf', recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.03),
+            ConfCheck('oscillator_powell_trapped.conf', recover={'alpha': 1.2, 'gamma': 0.8},
+                      dragged_min_err=0.10,
+                      note='local optimizer from a wrong-basin start traps at an aliased frequency'),
         ),
     ),
     Example(

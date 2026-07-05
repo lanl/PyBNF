@@ -70,3 +70,31 @@ Every conf ends with `refine = 1`: after the global search narrows down the basi
 a local Simplex polish drops the objective the last few orders of magnitude onto
 the true optimum. Global search to *find* the basin, local search to *nail* it — a
 pattern worth reusing (see Lesson 3).
+
+## Addendum: Powell, the local contrast
+
+The six above are all *global* metaheuristics. It's worth seeing the other kind on
+the same landscape — a **local** optimizer, **Powell** (`job_type = powell`), a
+derivative-free conjugate-direction method (a cousin of Simplex). A local
+optimizer is exactly the "naive" method the landscape section warned about: it
+starts from a **single point** and descends into the nearest dip.
+
+So a start-point optimizer takes an initial **guess** per parameter with `var`
+(one value), not a search range with `uniform_var`:
+
+| Conf | start | outcome |
+| --- | --- | --- |
+| [`oscillator_powell.conf`](oscillator_powell.conf) | `var = alpha 1.3, gamma 0.9` (right basin) | walks straight to `(1.2, 0.8)`, cheaply |
+| [`oscillator_powell_trapped.conf`](oscillator_powell_trapped.conf) | `var = alpha 3.0, gamma 3.0` (wrong basin) | **trapped** at an aliased frequency |
+
+From a guess already in the right basin, Powell nails the truth in far fewer
+evaluations than any global search. From a guess in the wrong basin it gets stuck —
+it has no way to climb back out. That is the whole reason the bake-off uses global
+methods: they don't need a good starting point. Powell (like Simplex) earns its
+keep as a fast **refiner** *after* a global search has found the basin (it's a
+valid `refine_method`), or when you already have a solid initial estimate.
+
+```bash
+pybnf -c oscillator_powell.conf           # good start -> recovers
+pybnf -c oscillator_powell_trapped.conf   # bad start  -> traps
+```
