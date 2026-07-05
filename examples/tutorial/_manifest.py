@@ -1015,6 +1015,31 @@ EXAMPLES = (
             ConfCheck('gaussian_dragged.conf', recover={'kel': 0.35}, dragged_min_err=0.10),
         ),
     ),
+    Example(
+        folder='44_initialization',
+        model='oscillator.bngl',
+        truth={'alpha': 1.2, 'gamma': 0.8},
+        build_free={'alpha': ('uniform_var', 0.1, 5.0),
+                    'gamma': ('uniform_var', 0.1, 5.0)},
+        datasets=(
+            # The same linearized Lotka-Volterra oscillator as lesson 07 -- a hard,
+            # multimodal (alpha, gamma) landscape. On a deliberately tiny budget it is
+            # WHERE the initial population starts that decides whether the fit finds the
+            # basin, which is what the initialization keys control.
+            Dataset('oscillator.exp', obs=('Obs_P', 'Obs_Q'), t_end=12, n_points=25),
+        ),
+        confs=(
+            # Informative normal priors near the truth, drawn from by
+            # initialization_distribution = prior (the default): the initial population
+            # is seeded where the answer is, so a tiny 8-iteration budget recovers.
+            ConfCheck('prior_seeded.conf', recover={'alpha': 1.2, 'gamma': 0.8}, tol=0.05),
+            # Flat uniform priors + the same tiny budget: no informative seeding, so the
+            # search can't climb out of a wrong-frequency local minimum -- dragged far off.
+            ConfCheck('uninformed.conf', recover={'alpha': 1.2, 'gamma': 0.8},
+                      dragged_min_err=0.10,
+                      note='no informative prior to seed from -> tiny budget cannot find the basin'),
+        ),
+    ),
 )
 
 
