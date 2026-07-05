@@ -18,7 +18,6 @@ correct when a user runs ``pybnf -c`` from the lesson folder. To stay
 cwd-independent, the test rewrites that to the committed module's absolute path
 (the same file), exactly what the relative path resolves to from the folder.
 """
-import os
 from pathlib import Path
 
 import pytest
