@@ -256,7 +256,7 @@ class Data:
         This should typically be used for col_header as the independent variable.
 
         :param col_header: Data column name
-        :type col_header str
+        :type col_header: str
         :param value:
         :type value: str
         :return: 1D numpy array consisting of the requested row

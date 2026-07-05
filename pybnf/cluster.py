@@ -144,7 +144,7 @@ class Cluster:
         :param node_string: A string composed of a list of compute nodes
         :param out_dir: A directory for cluster logging output
         :param parallel_count: Total number of parallel threads to use over all nodes. If None, use all available threads
-        (the dask-ssh default)
+            (the dask-ssh default)
         :return: subprocess.Popen
         """
         logger.info(f'Starting dask-ssh subprocess using nodes {node_string}')

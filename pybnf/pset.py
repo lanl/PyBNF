@@ -2150,7 +2150,7 @@ class FreeParameter:
     def has_bounded_support(self):
         """Whether the prior family has finite support (the Uniform families).
         Drives latin-hypercube participation and the box-escape warning -- the
-        property the algorithms ask instead of matching the *_var type string."""
+        property the algorithms ask instead of matching the ``*_var`` type string."""
         return self._prior.has_bounded_support
 
     def value_from_quantile(self, q):

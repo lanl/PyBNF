@@ -40,7 +40,7 @@ class ConstraintSet:
 
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :param pset_values: The objective's live ``{name: value}`` map, threaded so a constraint with an
-        estimated scale parameter reads its current value; ``None`` uses the literal.
+            estimated scale parameter reads its current value; ``None`` uses the literal.
         :return:
         """
         return sum([c.penalty(sim_data_dict, pset_values=pset_values) for c in self.constraints])
@@ -621,8 +621,8 @@ class Constraint:
         :param imax: Last index at which to check the constraint (exclusive)
         :param once: If true, enforce that the constraint holds once at some point during the time interval
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
-        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
-        case)
+            equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+            case)
         :param imin2: If specified, use this different index for quantity 2
         :param imax2: If specified, use this different index for quantity 2
         :return:
@@ -676,8 +676,8 @@ class Constraint:
         :param imax: Last index at which to check the constraint (exclusive)
         :param once: If true, enforce that the constraint holds once at some point during the time interval
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
-        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
-        case)
+            equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+            case)
         :param imin2: If specified, use this different index for quantity 2
         :param imax2: If specified, use this different index for quantity 2
         :return:
@@ -723,8 +723,8 @@ class Constraint:
         :param imax: Last index at which to check the constraint (exclusive)
         :param once: If true, enforce that the constraint holds once at some point during the time interval
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
-        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
-        case)
+            equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+            case)
         :param imin2: If specified, use this different index for quantity 2
         :param imax2: If specified, use this different index for quantity 2
         :return:
@@ -802,8 +802,8 @@ class Constraint:
         :param sim_data_dict: Dictionary of the form {modelname: {suffix1: Data1}} containing the simulated data objects
         :type sim_data_dict: dict
         :param pset_values: The objective's live ``{name: value}`` map, so a likelihood constraint whose
-        scale is tied to an estimated free parameter reads its current value.
-        ``None`` (a bare diagnostic call) falls back to the authored literal scale.
+            scale is tied to an estimated free parameter reads its current value.
+            ``None`` (a bare diagnostic call) falls back to the authored literal scale.
         """
         return sum((self.get_penalty(sim_data_dict, pset_values=pset_values, **interval)
                     for interval in self._penalty_intervals(sim_data_dict)), 0.)

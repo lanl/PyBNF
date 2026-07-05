@@ -696,6 +696,7 @@ These keys specify what simulations should be performed with the models. For SBM
    For BNGL models, we recommend specifying simulation actions in the BNGL file's ``begin actions`` block rather than in the configuration file. The BNGL actions block supports the full set of BioNetGen action arguments (e.g., ``steady_state``, ``atol``, ``rtol``, ``sparse``, ``continue``, ``stop_if``), whereas the configuration file keys below only support a subset. Configuration file actions are primarily intended for SBML models, which have no native action syntax.
 
 .. _time_course_key:
+
 **time_course**
   Run a time course simulation on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
   
@@ -716,6 +717,7 @@ These keys specify what simulations should be performed with the models. For SBM
     * ``time_course = time:60, model:model1, suffix:data1``
 
 .. _param_scan_key:
+
 **param_scan**
   Run a parameter scan on the model. Specify a comma-delimited list of ``key:value`` pairs, with the following possible keys:
   
@@ -1341,11 +1343,13 @@ PyBNF offers two versions of :ref:`differential evoltution <alg-de>`: synchronou
    - ``best2``
    - ``all1``
    - ``all2``
+
   The first part of the string determines which parameter set we mutate:
   
    - ``rand`` - a random one
    - ``best`` - the one with the lowest objective value
    - ``all`` - the one we are proposing to replace (so all psets are mutated once per iteration). 
+
   The second part of the string specifies how we calculate the amount by which to mutate each parameter: 
   
    - ``1`` - Use 1 pair of other parameter sets: :math:`(p_1-p_2)`
@@ -1715,6 +1719,7 @@ For Adaptive MCMC
   Example: 
   
     * ``starting_params = 5.5 2 3``     
+
 For DREAM
 """""""""
 

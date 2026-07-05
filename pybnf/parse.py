@@ -886,7 +886,7 @@ def parse_normalization_def(s):
 
     :param s: The string following the equals sign in the normalization key
     :return: What to write in the config dictionary: A string, or a dictionary {expfile: string} or
-    {expfile: (string, index_list)} or {expfile: (string, name_list)}
+        {expfile: (string, index_list)} or {expfile: (string, name_list)}
     """
 
     def parse_range(x):

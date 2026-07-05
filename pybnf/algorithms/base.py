@@ -993,7 +993,7 @@ class Algorithm(ABC):
         Create a backup of this algorithm object that can be reloaded later to resume the run
 
         :param pending_psets: Iterable of PSets that are currently submitted as jobs, and will need to get re-submitted
-        when resuming the algorithm
+            when resuming the algorithm
         :return:
         """
 

@@ -140,7 +140,7 @@ class ScatterSearch(Algorithm):
         Called when a simulation run finishes
 
         :param res:
-        :type res Result
+        :type res: Result
         :return:
         """
 

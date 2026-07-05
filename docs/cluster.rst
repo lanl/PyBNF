@@ -35,7 +35,7 @@ Submit the batch job to the queueing system using the command ``sbatch script.sh
 
 Troubleshooting: SSH access to nodes
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-The above instructions assume that PyBNF can access all allocated nodes via SSH. For some clusters, additional configuration is necessary to enable SSH access: use ``ssh_keygen`` (documented in many places, such as `here <https://www.ssh.com/ssh/keygen/>`_, or `here <http://tomdlt.github.io/blog/dask_distributed_joblib.html>`_ for instructions specific to PyBNF's Dask scheduler) to set up SSH keys. 
+The above instructions assume that PyBNF can access all allocated nodes via SSH. For some clusters, additional configuration is necessary to enable SSH access: use ``ssh_keygen`` (documented in many places, such as `here <https://www.ssh.com/ssh/keygen/>`__, or `here <http://tomdlt.github.io/blog/dask_distributed_joblib.html>`__ for instructions specific to PyBNF's Dask scheduler) to set up SSH keys. 
 
 To confirm that SSH keys are set up correctly, make sure that you are able to SSH into all allocated nodes without needing to enter a password.
 

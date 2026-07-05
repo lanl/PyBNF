@@ -6,7 +6,7 @@ the residual vector + residual-Jacobian (TRF / Levenberg–Marquardt) or the sca
 gradient (L-BFGS-B) that #385 assembles from bngsim's forward output-sensitivity
 tensor. :class:`GradientOptimizer` factors out everything a new gradient method
 needs so a leaf (``trf.py``, ``lbfgs.py``) implements only its step math --
-mirroring how :class:`StartPointOptimizer` factors the start-point / ``u``↔PSet
+mirroring how :class:`StartPointOptimizer` factors the start-point / ``u`` ↔ ``PSet``
 plumbing out of Powell and CMA-ES.
 
 What this base provides

@@ -25,7 +25,7 @@ machine into a per-start runner is also what lets a fit run ``N`` of them concur
 ``numpy``, so its math is unit-testable offline against a scipy oracle with no backend.
 
 The method (L-BFGS-B: Cauchy point + subspace min + line search)
----------------------------------------------------------------
+----------------------------------------------------------------
 The Byrd–Lu–Nocedal–Zhu (1995) algorithm. In sampling space ``u``
 (``StartPointOptimizer`` / ``GradientOptimizer``), with the scalar gradient
 ``g = ∇F`` from #385 at the current point ``x``:

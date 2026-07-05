@@ -111,8 +111,6 @@ For Windows, Perl must be installed separately, as described :ref:`above <window
 The current BioNetGen distribution includes support for both network-based simulations and network-free simulations. 
 
 .. _set_bng_path:
-\
-
 
 PyBNF will need to know the location of BioNetGen – specifically the location of the script ``BNG2.pl`` within the
 BioNetGen installation. This path can be included in the PyBNF configuration file with the :ref:`bng_command <bng_command>` key. 

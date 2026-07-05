@@ -13,7 +13,7 @@ a bound without crossing) a **practically** non-identifiable one, and one that c
 the threshold on both sides an **identifiable** one with a finite CI.
 
 A standalone new-era job, not a fit stage (ADR-0031, #446)
----------------------------------------------------------
+----------------------------------------------------------
 This is a self-contained ``job_type = profile_likelihood`` run selected on the modern
 (``edition >= 2``) surface, *not* a stage auto-triggered at the end of a fit. It subclasses
 :class:`~pybnf.algorithms.optimizers.gradient_base.GradientOptimizer`, so it inherits the
@@ -38,7 +38,7 @@ residual and profiles with the scalar-gradient
 objective, not the point, so the single read governs the whole run.
 
 Obtaining ``theta*`` (the open design question of #466)
-------------------------------------------------------
+-------------------------------------------------------
 Two sources, resolved at :meth:`start_run`:
 
 * **Explicit override.** If every free parameter declares an ``initial_value:`` in its
