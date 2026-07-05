@@ -2,7 +2,8 @@ cff-version: 1.2.0
 message: If you use PyBioNetFit (pybnf), please cite the works listed below.
 title: PyBioNetFit (pybnf)
 type: software
-version: 1.3.0
+version: 1.6.0
+date-released: 2026-07-05
 repository-code: https://github.com/lanl/PyBNF
 
 preferred-citation:

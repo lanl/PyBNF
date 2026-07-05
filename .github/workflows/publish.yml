@@ -1,0 +1,87 @@
+name: publish
+
+# Build the sdist + wheel and publish to PyPI via Trusted Publishing (OIDC) --
+# no API token or password is stored anywhere. PyPI publication fires when a
+# GitHub Release is *published*; TestPyPI can be exercised on demand via
+# "Run workflow" (workflow_dispatch) as a dry run before cutting the real release.
+#
+# The PyPI/TestPyPI trusted-publisher entries MUST match this workflow exactly:
+#   Owner: lanl · Repository: PyBNF · Workflow: publish.yml
+#   Environment: pypi   (for the PyPI job)  /  testpypi  (for the TestPyPI job)
+#
+# The wheel is built from the dynamic version in pybnf/__init__.py, so the
+# released tag must sit on a commit whose __version__ matches the release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + twine check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: publish
+
+      # uv build produces both the sdist and the pure-Python wheel from the
+      # setuptools backend declared in pyproject.toml.
+      - name: Build sdist + wheel
+        run: uv build
+
+      # --strict fails on any metadata/description warning. This is also the gate
+      # that catches a `git+` direct reference sneaking back into Requires-Dist
+      # (which PyPI rejects at upload); the tests extra was scrubbed of that pin.
+      - name: Validate distribution metadata
+        run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    name: publish to TestPyPI (dry run)
+    # Manual dispatch only -- a rehearsal that never fires on a real release.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/pybnf/
+    permissions:
+      id-token: write   # mint the OIDC token Trusted Publishing authenticates with
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: publish to PyPI
+    # The real thing: only when a GitHub Release is published.
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pybnf/
+    permissions:
+      id-token: write   # mint the OIDC token Trusted Publishing authenticates with
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

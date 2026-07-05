@@ -5,6 +5,40 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+## [v1.6.0] - 2026-07-05
+
+### Added
+- **`qualitative_loss` selector and logit penalty model** (ADR-0060) — a new logit
+  (softplus) qualitative-constraint penalty completes the hinge/probit/logit family,
+  and a global `qualitative_loss = {auto|hinge|probit|logit}` config key re-runs a
+  `.prop` set under any one family, coercing every constraint to it through a shared
+  scale currency (a family authored in its own model round-trips to identity). The
+  logit gradient rides the existing constraint-gradient path (no assembly change).
+- **Estimable qualitative-constraint scale** (ADR-0061) — `qualitative_scale = fit <param>`
+  promotes the logit scale (`s`) / probit tolerance (`σ`) from a fixed authored value
+  to a fittable free parameter estimated jointly with the model parameters, globally
+  tied across all qualitative constraints (one nuisance parameter, the identifiable
+  case). Includes its closed-form `d(penalty)/d(scale)` contribution on the scalar
+  gradient path, mirroring the estimated-noise pattern.
+- **Online documentation on GitHub Pages** — <https://lanl.github.io/PyBNF/>, built
+  from the Sphinx sources and deployed via GitHub Actions (interim host while Read the
+  Docs access is provisioned). New pronghorn logo/favicon and a populated
+  `pybnf.algorithms` API reference.
+
+### Fixed
+- **Packaging: the built wheel is now PyPI-uploadable.** The `tests` extra pinned petab
+  to a `git+` URL, which setuptools wrote into the wheel's `Requires-Dist`; PyPI rejects
+  any upload whose metadata carries a direct (`git+`) reference. Reverted the extra to
+  stock `petab>=0.8,<1` — the sdist and wheel now pass `twine check` with zero direct
+  references. The CI native-BNGL oracle still gets the fork via the `setup-pybnf`
+  action's input, so there is no test-coverage impact.
+- Corrected typos in the fatal-error (`CancelledError`) message, and migrated the
+  in-code documentation links from readthedocs.io to the GitHub Pages URL.
+
+### Changed
+- The Sphinx documentation build is warning-clean and now enforced with `-W`
+  (warnings-as-errors) in CI, so a malformed docstring or RST fails the docs job.
+
 ## [v1.5.0] - 2026-07-05
 
 ### Added
