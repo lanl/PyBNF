@@ -41,6 +41,10 @@ runs:
         # No uv.lock in this repo; key the cache on pyproject.toml so it can
         # invalidate when deps change.
         cache-dependency-glob: pyproject.toml
+        # Namespace this action's uv cache (tests + integration) so it does not
+        # collide with the lint workflow's cache on the same push -- see the
+        # matching note in lint.yml.
+        cache-suffix: pybnf
 
     - name: Install BioNetGen 2.9.3
       shell: bash

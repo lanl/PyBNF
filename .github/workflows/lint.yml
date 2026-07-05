@@ -14,6 +14,12 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          # Namespace this workflow's uv cache so it does not collide with the
+          # tests workflow's cache on the same push. Without a suffix both save
+          # the same content-addressed key (os/arch/python/pyproject hash, not
+          # the workflow name), and the concurrent save loses the reservation
+          # with a benign "another job may be creating this cache" warning.
+          cache-suffix: lint
 
       - name: ruff check
         # Pin ruff so the rule set is reproducible: the [tool.ruff] config in
