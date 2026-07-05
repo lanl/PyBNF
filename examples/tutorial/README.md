@@ -68,6 +68,7 @@ Results land in `output/` inside the lesson folder.
 | 42 | [`42_lognormal_error`](42_lognormal_error) | **multiplicative (lognormal) measurement error** over orders of magnitude | `noise_model = lognormal, …, location = mean` *(recovery tier)* |
 | 43 | [`43_custom_objective`](43_custom_objective) | **bring your own objective** — a custom Python callable (a robust mixture likelihood) | `objective = callable` + `callable = mod:func` |
 | 44 | [`44_initialization`](44_initialization) | **where the search starts** — seeding the initial population from an informative prior | `initialization` / `initialization_distribution` *(recovery tier)* |
+| 45 | [`45_model_selection`](45_model_selection) | **which growth law?** — fit competing models, rank by **AIC** | multi-model comparison (`de` + AIC) *(recovery tier)* |
 
 ## The edition-2 config surface, in one place
 

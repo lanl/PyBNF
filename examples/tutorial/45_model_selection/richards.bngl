@@ -1,0 +1,45 @@
+# =============================================================================
+#  Richards growth (the generalized logistic)   dN/dt = r*N*(1 - (N/K)^b)
+# =============================================================================
+#  The catalog's `richards_growth`, cut to a clean edition-2 model (Clock and the
+#  `Analytical_*` reporting functions removed). A generalized logistic with an extra
+#  SHAPE exponent `b`: b = 1 recovers the ordinary logistic, and b != 1 lets the
+#  curve be ASYMMETRIC about its inflection point -- a sharper approach to the
+#  carrying capacity K. It is the TRUE model behind this lesson's data.
+#
+#  All four candidate models in this folder observe `Obs_N`, so they fit the same
+#  growth.exp column.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    r   0.8    # growth-rate parameter   [1/day]        <- FITTED
+    K   100    # carrying capacity       [AU]           <- FITTED
+    b   3.0    # shape exponent          [dimensionless] <- FITTED (b=1 => logistic)
+    N0  2      # initial abundance       [AU]           (fixed/known)
+  end parameters
+
+  begin molecule types
+    N()
+  end molecule types
+
+  begin seed species
+    N()  N0
+  end seed species
+
+  begin observables
+    Molecules  Obs_N  N()
+  end observables
+
+  begin functions
+    # Generalized density-dependent loss: r*N*(N/K)^b.
+    density_loss()  = r*Obs_N*(Obs_N/K)^b
+  end functions
+
+  begin reaction rules
+    growth: 0   -> N()  r*Obs_N          # dN/dt += r*N
+    crowd:  N() -> 0    density_loss()   # dN/dt -= r*N*(N/K)^b
+  end reaction rules
+
+end model

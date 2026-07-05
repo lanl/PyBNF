@@ -1,0 +1,40 @@
+# =============================================================================
+#  Von Bertalanffy growth (candidate)   dN/dt = a*N^(2/3) - b*N
+# =============================================================================
+#  The catalog's `von_bertalanffy_growth`, cut to a clean edition-2 model. A
+#  surface-area-limited growth law (classic in fisheries/biology): anabolism scales
+#  with surface area (N^(2/3)), catabolism with volume (N). Its saturating shape is
+#  different again from logistic/gompertz/Richards -- another candidate for the same
+#  data. Observes `Obs_N` (the catalog's biomass W, renamed to share the data column).
+# =============================================================================
+
+begin model
+
+  begin parameters
+    a   3.0    # anabolic (surface-area) coefficient   [AU^(1/3)/day]  <- FITTED
+    b   0.3    # catabolic (volume) coefficient        [1/day]         <- FITTED
+    N0  2      # initial abundance                     [AU]            (fixed/known)
+  end parameters
+
+  begin molecule types
+    N()
+  end molecule types
+
+  begin seed species
+    N()  N0
+  end seed species
+
+  begin observables
+    Molecules  Obs_N  N()
+  end observables
+
+  begin functions
+    anabolic_growth()  = a*Obs_N^0.6666666666666666
+  end functions
+
+  begin reaction rules
+    growth: 0   -> N()  anabolic_growth()   # dN/dt += a*N^(2/3)
+    loss:   N() -> 0    b                    # dN/dt -= b*N
+  end reaction rules
+
+end model

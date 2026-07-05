@@ -1,0 +1,38 @@
+# =============================================================================
+#  Logistic growth (candidate)     dN/dt = r*N*(1 - N/K)
+# =============================================================================
+#  The classic S-curve (lesson 01), here as one candidate model. It is the b = 1
+#  special case of Richards, so it is SYMMETRIC about its inflection at N = K/2 --
+#  it cannot reproduce an asymmetric approach to K. Observes `Obs_N`.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    r   1.0    # intrinsic growth rate   [1/day]   <- FITTED
+    K   100    # carrying capacity       [AU]      <- FITTED
+    N0  2      # initial abundance       [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    N()
+  end molecule types
+
+  begin seed species
+    N()  N0
+  end seed species
+
+  begin observables
+    Molecules  Obs_N  N()
+  end observables
+
+  begin functions
+    crowding_loss()  = r*Obs_N/K
+  end functions
+
+  begin reaction rules
+    growth: 0   -> N()  r*Obs_N          # dN/dt += r*N
+    crowd:  N() -> 0    crowding_loss()  # dN/dt -= (r/K)*N^2
+  end reaction rules
+
+end model

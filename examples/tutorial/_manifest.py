@@ -1040,6 +1040,26 @@ EXAMPLES = (
                       note='no informative prior to seed from -> tiny budget cannot find the basin'),
         ),
     ),
+    Example(
+        folder='45_model_selection',
+        model='richards.bngl',   # the TRUE model the data is generated from
+        truth={'r': 0.8, 'K': 100.0, 'b': 3.0},
+        build_free={'r': ('uniform_var', 0.1, 3.0), 'K': ('uniform_var', 50.0, 200.0),
+                    'b': ('uniform_var', 0.5, 6.0)},
+        datasets=(
+            # An asymmetric Richards growth curve (shape exponent b=3, a sharp approach
+            # to K) with gaussian noise + a constant _SD -- the data four competing
+            # growth laws are fit to. All candidate models observe Obs_N, so they share
+            # this one column.
+            Dataset('growth.exp', obs=('Obs_N',), t_end=20, n_points=31,
+                    noise_sd=2.0, noise_seed=5),
+        ),
+        # Four candidate confs (logistic / gompertz / richards / von_bertalanffy) all
+        # fit this Richards data; only Richards recovers the truth, and the payoff is
+        # the AIC RANKING across models -- asserted by the dedicated verifier
+        # tests/test_tutorial_model_selection.py, not a per-conf ConfCheck.
+        confs=(),
+    ),
 )
 
 

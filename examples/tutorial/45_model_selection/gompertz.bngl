@@ -1,0 +1,37 @@
+# =============================================================================
+#  Gompertz growth (candidate)     dN/dt = r*N*ln(K/N)
+# =============================================================================
+#  An asymmetric S-curve (lesson 03), here as one candidate. Its asymmetry is fixed
+#  by the ln(K/N) form -- it has no free shape parameter -- so it captures a
+#  different skew than Richards. Observes `Obs_N`.
+# =============================================================================
+
+begin model
+
+  begin parameters
+    r   0.4    # Gompertz growth-rate parameter   [1/day]   <- FITTED
+    K   100    # carrying capacity                [AU]      <- FITTED
+    N0  2      # initial abundance (must be > 0)   [AU]      (fixed/known)
+  end parameters
+
+  begin molecule types
+    N()
+  end molecule types
+
+  begin seed species
+    N()  N0
+  end seed species
+
+  begin observables
+    Molecules  Obs_N  N()
+  end observables
+
+  begin functions
+    gompertz_flux()  = r*Obs_N*ln(K/Obs_N)
+  end functions
+
+  begin reaction rules
+    growth: 0 -> N()  gompertz_flux()   # dN/dt = r*N*ln(K/N)
+  end reaction rules
+
+end model
