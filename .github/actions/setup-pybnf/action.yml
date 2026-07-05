@@ -20,6 +20,16 @@ inputs:
       loader rather than the register_bngl() monkeypatch (ADR-0026).
     required: false
     default: 'petab>=0.8,<1'
+  cache-suffix:
+    description: >-
+      uv cache namespace suffix. Two jobs that run the SAME python version
+      through this action share one content-addressed cache key (os/arch/python/
+      pyproject hash + this suffix) and race to save it -- a benign "another job
+      may be creating this cache" warning. Override per job to give each its own
+      namespace (e.g. the native-BNGL leg also runs 3.12, colliding with the
+      matrix 3.12 job under a shared suffix).
+    required: false
+    default: 'pybnf'
 
 runs:
   using: composite
@@ -41,10 +51,11 @@ runs:
         # No uv.lock in this repo; key the cache on pyproject.toml so it can
         # invalidate when deps change.
         cache-dependency-glob: pyproject.toml
-        # Namespace this action's uv cache (tests + integration) so it does not
-        # collide with the lint workflow's cache on the same push -- see the
-        # matching note in lint.yml.
-        cache-suffix: pybnf
+        # Namespace this action's uv cache (default "pybnf") so it does not
+        # collide with the lint workflow, and so a job on the same python
+        # version can override it to avoid racing the matrix job's save (see the
+        # cache-suffix input).
+        cache-suffix: ${{ inputs.cache-suffix }}
 
     - name: Install BioNetGen 2.9.3
       shell: bash

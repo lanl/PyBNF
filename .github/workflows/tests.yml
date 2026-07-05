@@ -52,6 +52,11 @@ jobs:
         with:
           python-version: '3.12'
           petab-spec: 'petab @ git+https://github.com/wshlavacek/libpetab-python.git@bngl_model_support'
+          # This job also runs 3.12 through setup-pybnf, so without its own
+          # suffix it shares the matrix py3.12 job's cache key and one save loses
+          # the reservation (the "another job may be creating this cache"
+          # warning). Give it a distinct namespace.
+          cache-suffix: pybnf-native
 
       # Fail loudly if the fork did not actually install (e.g. a resolution
       # fallback to stock petab): the native path would silently skip otherwise.
