@@ -696,10 +696,20 @@ def test_resume_after_pickle_midway_completes_without_recompute(tmp_path):
                              str(tmp_path / 'resumed'))
     os.makedirs(tmp_path / 'resumed')
     work = list(alg._begin_profiling(theta_star))
-    _, _, n_partial = _pump(alg, work, steps=20)     # partial run, still live
+    # Pump until an in-flight track has committed real progress (its first accepted profile
+    # point), then pause there -- the mid-walk state worth pickling. A hard-coded step count is
+    # fragile: the first point lands only once a track's first re-optimization converges, whose
+    # inner-iteration count depends on the (SciPy) least-squares solver, so we stop on the
+    # condition itself rather than a fixed evaluation number.
+    n_partial = 0
+    inflight_points = 0
+    while inflight_points == 0:
+        finished_partial, _, done = _pump(alg, work, steps=1)
+        n_partial += done
+        assert not finished_partial, 'run finished before any in-flight point was committed'
+        inflight_points = sum(len(tr.points) for _, tr in alg._active_tracks.values())
     assert alg._active_tracks or alg._track_queue    # the run is not yet finished
     # In-flight tracks hold real, un-merged progress that must survive the pickle.
-    inflight_points = sum(len(tr.points) for _, tr in alg._active_tracks.values())
     assert inflight_points > 0
 
     # Backup: pickle (algorithm, pending PSets) through the base's real __getstate__ filter
