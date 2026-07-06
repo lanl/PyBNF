@@ -12,6 +12,7 @@ PyBNF Module References
    config
    constraint
    data
+   diagnostics
    objective
    parse
    printing
