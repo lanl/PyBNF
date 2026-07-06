@@ -137,7 +137,7 @@ def _condition_rows_for(cid, perturbations, surrogate, nominal_of):
     a condition the same way: each surrogate (fit) param is pinned (this condition's expression
     where it sets it, else the base value ``<p>__REF`` -- every experiment re-supplies every M
     param, since the model name is now a pure condition target), then the fixed-param
-    perturbations are emitted with precomputed numeric ``targetValue``s.
+    perturbations are emitted with precomputed numeric ``targetValue`` entries.
     """
     rows = []
     mut_by_var = {var: (op, val) for var, op, val in perturbations}
@@ -163,7 +163,8 @@ def build_experiment_conditions(experiments, conditions, fit_params, nominal_of,
     Generalizes :func:`build_mutant_conditions` from "base + mutants each carrying their
     own data" to "named conditions + named experiments that reference them" -- the new era
     decouples a Condition from the Experiment that applies it (a ``condition:`` is named
-    once; N ``experiment:``s may reference it, so a shared condition emits its rows once).
+    once; N ``experiment:`` records may reference it, so a shared condition emits its rows
+    once).
 
     ``experiments`` is a list of ``(experiment_name, condition_name_or_None)`` in
     declaration order. ``conditions`` maps a condition name to its perturbations
@@ -258,7 +259,7 @@ def build_preequilibration_conditions(experiments, conditions, nominal_of,
     perturbing period emits the surrogate op (``k = k__REF * 2`` / an absolute ``k = 0.5``) and
     every other period re-pins the base value (``k = k__REF``).
 
-    ``existing_condition_ids`` is the set of ``conditionId``s :func:`build_experiment_conditions`
+    ``existing_condition_ids`` is the set of ``conditionId`` values :func:`build_experiment_conditions`
     already emitted (its time-course conditions plus the synthesized ``cond_wildtype`` base when
     present); a condition shared between a time course and a pre-equilibration experiment is
     emitted **once**, and the wash-out base condition is reused rather than re-emitted.

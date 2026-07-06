@@ -19,6 +19,7 @@ PyBNF Module References
    noise
    objective
    parse
+   petab
    printing
    priors
    pset

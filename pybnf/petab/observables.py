@@ -35,14 +35,14 @@ columns:
 The mapping (all with the prediction taken as the distribution's **median** --
 PEtab v2 specifies this for every noise distribution; the location axis, ADR-0011):
 
-===============  ====================================
+=================  ========================================
 noiseDistribution  PyBNF (NoiseModel)
-===============  ====================================
+=================  ========================================
 ``normal``         ``Gaussian(LINEAR, MEDIAN)``
 ``log-normal``     ``Gaussian(LN, MEDIAN)``   (natural log)
 ``laplace``        ``Laplace(LINEAR, MEDIAN)``
 ``log-laplace``    ``Laplace(LN, MEDIAN)``    (natural log)
-===============  ====================================
+=================  ========================================
 
 **Spec note (PEtab v2 vs v1).** PEtab v2 *removed* the separate
 ``observableTransformation`` column (``lin`` / ``log`` / ``log10``) and folded it
@@ -74,8 +74,8 @@ The ``observableFormula`` (the model-output expression) and the
 sibling half** -- a separate, later chunk that adopts the ``petab`` sympy layer.
 ``observable_formula`` is recorded on :class:`PetabObservableRow` so that chunk
 reuses this reader, but the noise asset neither reads nor validates it (real
-``observableFormula``s are non-trivial expressions, so coupling that boundary here
-would make the noise asset raise on nearly every real PEtab problem).
+``observableFormula`` values are non-trivial expressions, so coupling that boundary
+here would make the noise asset raise on nearly every real PEtab problem).
 """
 
 import csv

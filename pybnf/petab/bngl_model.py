@@ -16,7 +16,7 @@ lands, :func:`register_bngl` collapses to a no-op.
 Validation needs only *parsing*, so every ABC method is backed by the parsed entity
 sets -- except :meth:`BnglModel.is_valid`, which shells out to ``BNG2.pl --check`` (the
 real validator) when a BNG2.pl is locatable, and degrades gracefully to ``True`` when
-it is not. This module ``import``s ``petab`` and is therefore **not** imported by
+it is not. This module imports ``petab`` and is therefore **not** imported by
 ``pybnf.petab.__init__``; it is reached only from the test tier / an explicit
 ``register_bngl()`` call, keeping core dependency-free (ADR-0025).
 """
