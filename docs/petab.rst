@@ -142,3 +142,5 @@ Further reading
 - The `PEtab documentation and specification <https://petab.readthedocs.io>`__.
 - `libpetab-python <https://github.com/PEtab-dev/libpetab-python>`__, the reference
   Python library PyBNF builds on.
+- :ref:`API reference <petab_module>` — the :py:mod:`pybnf.petab` module
+  docstrings for the importer, exporter, and per-table adapters.

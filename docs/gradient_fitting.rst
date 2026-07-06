@@ -552,3 +552,8 @@ is scale-invariant, and each Jacobian column is multiplied by :math:`\mathrm{d}\
 A linear parameter contributes a factor of one (and needs no extra dependency); a log-scaled
 parameter's factor is obtained by autodiff of its scale, which requires the optional
 ``pybnf[jax]`` extra (install with ``pip install pybnf[jax]``).
+
+.. seealso::
+
+   :ref:`API reference <gradient_module>` — the :py:mod:`pybnf.gradient` module
+   docstrings for the sensitivity routing and gradient-assembly layers.

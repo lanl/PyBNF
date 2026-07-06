@@ -182,3 +182,5 @@ See also
   includes any estimated noise parameter.
 - :doc:`analytical_objectives` — supplying a closed-form log-likelihood
   directly, with no simulator in the loop.
+- :ref:`API reference <noise_module>` — the :py:mod:`pybnf.noise` module
+  docstrings for the per-point noise-model kernels.

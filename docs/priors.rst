@@ -179,3 +179,5 @@ See also
   a free parameter and takes a prior like any other.
 - :doc:`petab` — PyBNF imports and exports PEtab v2 priors, whose catalog these
   families mirror.
+- :ref:`API reference <priors_module>` — the :py:mod:`pybnf.priors` module
+  docstrings for the ``Prior`` families and their scale/bounding infrastructure.
