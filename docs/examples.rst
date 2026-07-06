@@ -11,7 +11,7 @@ Each example directory contains all files required to run the example: the confi
 
 The examples are described below. For an index of which examples demonstrate which PyBNF features, refer to `Index of examples by attribute`_
 
-Even more examples are available on `RuleHub <https://github.com/RuleWorld/RuleHub/tree/master/Contributed/Mitra2019>`_.
+Even more examples are available on `RuleHub <https://github.com/RuleWorld/RuleHub>`_.
 
 Benchmark and reference models
 ------------------------------

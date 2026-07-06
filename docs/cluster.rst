@@ -70,7 +70,7 @@ For manual configuration, you will need to run the series of commands described 
 
 To begin, run the command ``dask-scheduler`` on the node you want to use as the scheduler. Pass the argument ``--scheduler-file`` to create a JSON-encoded text file containing connection information. For example:
 
-    :command:`dask-schduler --scheduler-file cluster.json`
+    :command:`dask-scheduler --scheduler-file cluster.json`
 
 On each node you want to use as a worker, run the command ``dask-worker``. Pass the scheduler file, and also specify the number of processes and threads per process to use on that worker. For example:
 

@@ -202,17 +202,17 @@ inline. They live under
 `examples/notebooks <https://github.com/lanl/PyBNF/tree/main/examples/notebooks>`__
 and are committed pre-executed, so you can read them without running anything.
 
-- `01. Quickstart <https://github.com/lanl/PyBNF/tree/main/examples/notebooks/01_quickstart.ipynb>`__
+- `01. Quickstart <https://github.com/lanl/PyBNF/blob/main/examples/notebooks/01_quickstart.ipynb>`__
   — write a model, make data, run a differential-evolution fit, plot fit vs data.
-- `02. bngsim simulation <https://github.com/lanl/PyBNF/tree/main/examples/notebooks/02_bngsim_simulation.ipynb>`__
+- `02. bngsim simulation <https://github.com/lanl/PyBNF/blob/main/examples/notebooks/02_bngsim_simulation.ipynb>`__
   — simulate a model forward with bngsim (no fitting): time courses, a parameter
   sweep, steady state.
-- `03. Posterior exploration <https://github.com/lanl/PyBNF/tree/main/examples/notebooks/03_posterior_exploration.ipynb>`__
+- `03. Posterior exploration <https://github.com/lanl/PyBNF/blob/main/examples/notebooks/03_posterior_exploration.ipynb>`__
   — sample a posterior with HMC/NUTS, export an ArviZ ``InferenceData``, and read
   trace / pair / R-hat / ESS.
-- `04. PEtab in a notebook <https://github.com/lanl/PyBNF/tree/main/examples/notebooks/04_petab_in_a_notebook.ipynb>`__
+- `04. PEtab in a notebook <https://github.com/lanl/PyBNF/blob/main/examples/notebooks/04_petab_in_a_notebook.ipynb>`__
   — import a PEtab problem with ``pybnf.petab.import_job`` and fit it
   interactively.
-- `05. Gradient fitting and profiles <https://github.com/lanl/PyBNF/tree/main/examples/notebooks/05_gradient_fitting_profiles.ipynb>`__
+- `05. Gradient fitting and profiles <https://github.com/lanl/PyBNF/blob/main/examples/notebooks/05_gradient_fitting_profiles.ipynb>`__
   — a multi-start trust-region least-squares fit using bngsim forward
   sensitivities, then profile-likelihood identifiability.

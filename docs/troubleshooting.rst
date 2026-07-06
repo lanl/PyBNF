@@ -26,7 +26,7 @@ Confirm that the model runs in BioNetGen
 """"""""""""""""""""""""""""""""""""""""
 If the simulation logs are not sufficient to diagnose the problem, you may want to check whether you can run BioNetGen on the PyBNF-generated model files by hand. Run the fit with the config key ``delete_old_files=0``, and refer to the subdirectory of the ``Simulations`` folder corresponding to a job that failed. Try running BioNetGen on that .bngl file and check for errors; also examine the .bngl file and confirm that PyBNF did not introduce any errors to the model. 
 
-If your model is not running in BioNetGen, the best place to find help is the documentation and troubleshooting for BioNetGen, at http://bionetgen.org
+If your model is not running in BioNetGen, the best place to find help is the documentation and troubleshooting for BioNetGen, at https://bionetgen.org/
 
 Known BioNetGen issues:
   * If you are using a Linux distribution other than Ubuntu, it may be necessary to compile BioNetGen from source rather than installing the pre-built binary. Specifically, on CentOS, the binary appears to work at first glance, but fails to parse models containing functions. 
@@ -88,7 +88,7 @@ Some highly parallelized runs may encounter the error "Too many open files". Thi
 
 **Remedies:** You can check the limit of open files per program on the command line: ``ulimit -n`` gives you the "soft" limit, and ``ulimit -Hn`` gives you the "hard" limit. The soft limit is what is actually enforced. You can increase the soft limit up to the hard limit with, for example ``ulimit -n 4096`` if your hard limit is 4096 (this only affects the current terminal, so do it in the same terminal where you will run PyBNF). This might give you enough file handles to avoid the bug. If not, the hard limit can be increased with root access to the machine. 
 
-If you are unable to increase the open file handle limit, then you will have to reduce the number of parallel jobs submitted in PyBNF by adjusting the ``num_parallel`` or ``population_size`` settings. 
+If you are unable to increase the open file handle limit, then you will have to reduce the number of parallel jobs submitted in PyBNF by adjusting the ``parallel_count`` or ``population_size`` settings.
 
 
 Too many threads

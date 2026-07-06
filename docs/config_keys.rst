@@ -1124,7 +1124,7 @@ Algorithm Options
     * ``refine_method = powell``
 
 **sbml_integrator**
-  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://sys-bio.github.io/roadrunner/python_docs/using_roadrunner.html#solvers>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. 
+  Which integrator to use for SBML models. Options are ``cvode``, ``rk4``, ``gillespie``, or ``euler``, and are described in the `libroadrunner documentation <https://libroadrunner.readthedocs.io/en/latest/>`_. If your ``time_course`` or ``param_scan`` key specifies ``method: ssa``, then ``gillespie`` is used for that action, overriding this setting. 
   
   Default: cvode
   

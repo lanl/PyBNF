@@ -89,6 +89,26 @@ With ``uv``, the equivalent editable source setup is:
 
     :command:`uv pip install -e .`
 
+Optional features
+^^^^^^^^^^^^^^^^^
+
+Some capabilities pull in heavier dependencies and are packaged as **optional
+extras**, installed with the ``pybnf[extra]`` syntax (e.g.
+``pip install pybnf[petab,arviz]``). The core install stays lightweight; a
+feature whose extra is missing raises a clear install hint rather than a bare
+import error.
+
+* ``pybnf[petab]`` — :doc:`PEtab v2 <petab>` import/export, including the
+  expression-valued ``observableFormula`` measurement models.
+* ``pybnf[jax]`` — the Hamiltonian Monte Carlo / NUTS reference sampler
+  (``job_type = hmc``), which runs `blackjax`_ NUTS on the model's JAX
+  log-density.
+* ``pybnf[arviz]`` — the `ArviZ`_ ``InferenceData`` bridge for posterior
+  analysis (LOO / WAIC / trace plots); see :ref:`Model selection and posterior
+  analysis <model_selection>`.
+* ``pybnf[plot]`` — end-of-run plots, including the profile-likelihood panels.
+* ``pybnf[antimony]`` — Antimony model support (via BNGsim).
+
 
 Installation of External Simulators
 -----------------------------------
@@ -135,10 +155,12 @@ SBML format.
 
 
 .. _Anaconda: https://www.anaconda.com/download
-.. _BioNetGen: http://www.bionetgen.org
-.. _SBML: http://sbml.org/
-.. _libroadrunner: http://libroadrunner.org/
+.. _BioNetGen: https://bionetgen.org/
+.. _SBML: https://sbml.org/
+.. _libroadrunner: https://www.libroadrunner.org/
 .. _COPASI: http://copasi.org/
 .. _virtualenv: https://packaging.python.org/guides/installing-using-pip-and-virtualenv/
-.. _Strawberry Perl: http://strawberryperl.com/
+.. _Strawberry Perl: https://strawberryperl.com/
 .. _uv: https://docs.astral.sh/uv/
+.. _blackjax: https://blackjax-devs.github.io/blackjax/
+.. _ArviZ: https://python.arviz.org/

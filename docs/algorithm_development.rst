@@ -6,8 +6,16 @@ Algorithm class found in :ref:`alg_module`.
 
 Implementation
 --------------
-A new algorithm can be written by creating a class that subclasses the Algorithm class::
+A new algorithm can be written by creating a class that subclasses the Algorithm class and
+registering it with the ``@register_fit_type`` decorator (from ``pybnf.registry``), which
+names the ``fit_type`` / ``job_type`` code(s) that select it, its family (``optimizer``,
+``sampler``, or ``checker``), a display name, and its config schema (see `Adding configuration
+options`_)::
 
+    from pybnf.registry import register_fit_type
+
+    @register_fit_type('newalg', family='optimizer', display_name='My Algorithm',
+                       schema=NewAlgorithmConfig)
     class NewAlgorithm(Algorithm):
         def __init__(self, config, **kwargs):
             super(NewAlgorithm, self).__init__(config)
@@ -60,11 +68,23 @@ such that the new algorithm is compatible with all features of PyBNF.
 Adding configuration options
 ----------------------------
 
-If the new algorithm requires user configuration via the configuration file, new options may be added to the
-``pybnf.parse`` module.  The configuration parser uses the ``pyparsing`` module and new grammars for parsing individual
-lines may be added to the ``pybnf.parse.parse`` function based on the key text.  Default values for parameters may be
-added to the ``Configuration`` object via its ``default_config`` method in the ``pybnf.config`` module if desired.
-Other supporting configuration methods should also be added to the ``Configuration`` object if necessary.
+An algorithm's user-settable options live in a **Pydantic config schema** — a class
+subclassing ``PyBNFConfigModel`` (or a family base such as ``MCMCFamilyConfig``), co-located
+with the algorithm class and wired to the fit type through the ``schema=`` argument of
+``@register_fit_type``. The schema is the single source of truth for the method's option
+names, types, and defaults; each fit's effective config is narrowed to the global keys plus
+its own schema's keys, so a method only ever sees the options it reads::
+
+    from pybnf.config_schema import PyBNFConfigModel
+
+    class NewAlgorithmConfig(PyBNFConfigModel):
+        my_option: float = 1.0          # a new key, with its type and default
+        my_count: int = 10
+
+A new numeric key must also be listed in the appropriate token-type list in ``pybnf.parse``
+(for example ``numkeys_int`` or ``numkeys_float``) so the configuration parser reads and
+coerces its value. The parser uses the ``pyparsing`` module; a key with a more elaborate
+grammar than a single scalar adds a parse rule there as well.
 
 Pull requests
 -------------

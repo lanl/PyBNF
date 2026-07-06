@@ -68,8 +68,8 @@ work through the :doc:`Quick Start <quickstart>` and the hands-on
 :doc:`tutorial <tutorial>`.
 
 
-.. _BNGL: http://www.bionetgen.org
-.. _SBML: http://sbml.org/Main_Page
+.. _BNGL: https://bionetgen.org/
+.. _SBML: https://sbml.org/
 
 .. toctree::
    :maxdepth: 2

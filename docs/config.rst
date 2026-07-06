@@ -51,7 +51,7 @@ Model Files
 BioNetGen
 ^^^^^^^^^
 
-BioNetGen models are specified in plain text files written in BioNetGen language (BNGL). Documentation for BNGL can be found at http://www.csb.pitt.edu/Faculty/Faeder/?page_id=409.
+BioNetGen models are specified in plain text files written in BioNetGen language (BNGL). Documentation for BNGL can be found at https://bionetgen.org/.
 
 Two small modifications of a BioNetGen-compatible BNGL file are necessary to use the file with PyBNF
 
