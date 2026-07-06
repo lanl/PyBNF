@@ -283,7 +283,7 @@ class PerMeasurementModel:
         measurement model at one matched point (#453/#385) -- the gradient sibling of
         :meth:`value`, resolving each symbol the same way.
 
-        ``raw_sens(column_name, sim_row)`` supplies ``∂(that sim column as ``_prediction`` sees
+        ``raw_sens(column_name, sim_row)`` supplies ``∂(that sim column as _prediction sees
         it)/∂θ`` (the #447 sensitivity tensor, with any ``Data``-level normalization already
         folded in); ``index`` maps a free-parameter name to its column in the returned vector.
         The prediction is ``f(symbol values)``, so by the chain rule ``∂pred/∂θ = Σ_symbol

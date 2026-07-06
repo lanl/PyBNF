@@ -15,6 +15,7 @@ PyBNF Module References
    diagnostics
    gradient
    inference_data
+   measurement
    noise
    objective
    parse
