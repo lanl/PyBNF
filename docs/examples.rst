@@ -1,18 +1,20 @@
 .. _examples:
 
-Examples
-========
+Real-model gallery
+==================
 
-The PyBNF `GitHub repository <https://github.com/lanl/pybnf>`_ contains 17 example fitting jobs in the examples/ directory. 
+The PyBNF `GitHub repository <https://github.com/lanl/PyBNF>`__ ships a collection of example fitting jobs in its ``examples/`` directory — from installation-check toys to benchmark rule-based and SBML models and the complete setups behind published applications.
 
-Each example directory contains all files required to run the example: the config file, model file(s), and data / property file(s). The config file paths are specified such that the examples should be run from the root PyBNF directory, i.e., to run the "demo" example, cd into the examples/demo direcotry and run ``pybnf -c demo_bng.conf``. Results will be saved in a directory called "output" inside the examples/demo directory. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
+New to PyBNF? Start with the :ref:`quickstart` and the :ref:`tutorial`; the tutorial teaches the modern (edition-2) configuration surface on small models with known answers. The gallery below collects the larger, real models.
+
+Each example directory contains all files required to run the example: the config file, model file(s), and data / property file(s). Run each example from its own directory — for instance, ``cd examples/demo`` then ``pybnf -c demo_bng.conf`` — and results are written to an ``output/`` directory there. Examples with BioNetGen assume that you have set the ``BNGPATH`` environmental variable to point to your BioNetGen installation; if not, you should add the ``bng_command`` key to the config file to specify the location of your BioNetGen. 
 
 The examples are described below. For an index of which examples demonstrate which PyBNF features, refer to `Index of examples by attribute`_
 
 Even more examples are available on `RuleHub <https://github.com/RuleWorld/RuleHub/tree/master/Contributed/Mitra2019>`_.
 
-List of examples included in PyBNF
-----------------------------------
+Benchmark and reference models
+------------------------------
 
 constraint_advanced
 ^^^^^^^^^^^^^^^^^^^
@@ -104,7 +106,69 @@ A detailed model for cell cycle control in yeast, described and fit in [Oguz2013
 
 This is the most difficult example provided in PyBNF. Due to the huge size of parameter space (150 parameters), we require many iterations of fitting to expect a good result. Although each simulation is fast, each objective evaluation requires a total of 120 simulations of different mutant yeast strains, which take a total of ~ 30 seconds on the libRoadRunner/CVODE simulator. Replicating the fit under the same specifications used in [Mitra2018]_ is expected to take several weeks on a cluster or powerful workstation.
 
-The config file may be inspected as an example of how to use the ``mutant`` keyword to consider "mutant" models that differ only slightly from another model used in fitting. In this problem, each yeast mutant considered is declared using the ``mutant`` keyword to change a few parameters compared to the base model. By doing so, we avoid having to maintain 120 separate, nearly identical .xml files. 
+The config file may be inspected as an example of how to use the ``mutant`` keyword to consider "mutant" models that differ only slightly from another model used in fitting. In this problem, each yeast mutant considered is declared using the ``mutant`` keyword to change a few parameters compared to the base model. By doing so, we avoid having to maintain 120 separate, nearly identical .xml files.
+
+
+Published applications
+----------------------
+
+These directories hold the complete PyBNF setups behind published applications —
+the parameterization and uncertainty quantification of real biological and
+epidemiological models. Several are the supplementary material for their papers,
+and several were run with **Adaptive MCMC** (``am``); each directory carries its
+own ``README`` with the run details and full citation.
+
+- `COVID19forecasting_aMCMC <https://github.com/lanl/PyBNF/tree/main/examples/COVID19forecasting_aMCMC>`__
+  — Adaptive-MCMC parameterization, with Bayesian uncertainty quantification, of a
+  regional COVID-19 forecasting model across many US metropolitan areas. Reproduces
+  the procedure of Lin *et al.*, *Emerging Infectious Diseases* **27** (2021), 767–778.
+- `HIVdynamics_aMCMC <https://github.com/lanl/PyBNF/tree/main/examples/HIVdynamics_aMCMC>`__
+  — a two-phase exponential-decay model of plasma viral dynamics under therapy, fit
+  per patient by Adaptive MCMC. After Perelson *et al.*, *Science* **271** (1996), and
+  Ho *et al.*, *Nature* **373** (1995).
+- `LinearRegression_aMCMC <https://github.com/lanl/PyBNF/tree/main/examples/LinearRegression_aMCMC>`__
+  — a toy linear-regression model with an analytically known posterior, used to show
+  that Metropolis-Hastings (``mh``) fails where Adaptive MCMC (``am``) recovers the
+  analytical distribution from the same start point.
+- `Degranulation_aMCMC <https://github.com/lanl/PyBNF/tree/main/examples/Degranulation_aMCMC>`__
+  — the published mast-cell degranulation model [Harmon2017]_, parameterized to
+  compare ``am`` against ``mh`` (see also the `degranulation`_ example above).
+- `Mallela2021States <https://github.com/lanl/PyBNF/tree/main/examples/Mallela2021States>`__
+  — a compartmental COVID-19 model reproducing surveillance data for all 50 US states,
+  inferring state-level basic reproduction numbers. Supplementary material for Mallela
+  *et al.*, *Viruses* **14** (2022), 157.
+- `Mallela2022MSAs <https://github.com/lanl/PyBNF/tree/main/examples/Mallela2022MSAs>`__
+  — region-specific COVID-19 reproduction numbers for 280 US metropolitan statistical
+  areas via Bayesian inference and the next-generation-matrix approach. Supplementary
+  material for Mallela, Lin, and Hlavacek, *Epidemics*.
+- `Miller2022NavajoNation <https://github.com/lanl/PyBNF/tree/main/examples/Miller2022NavajoNation>`__
+  — quantifying early non-pharmaceutical interventions that slowed COVID-19
+  transmission in the Navajo Nation and surrounding states. Supplementary material for
+  Miller *et al.*, *PLOS Global Public Health*.
+- `Miller2025_MEK_Isoforms <https://github.com/lanl/PyBNF/tree/main/examples/Miller2025_MEK_Isoforms>`__
+  — global parameterization of MEK-isoform models leveraging both qualitative (BPSL)
+  and quantitative data, with uncertainty quantification; includes both an
+  Adaptive-MCMC and a differential-evolution setup. Supplementary material for Miller
+  *et al.*,
+  `Frontiers in Immunology <https://www.frontiersin.org/journals/immunology/articles/10.3389/fimmu.2026.1663008/full>`__.
+- `Vax_and_Variants <https://github.com/lanl/PyBNF/tree/main/examples/Vax_and_Variants>`__
+  — job-setup files and diagnostic plots reproducing inferences on the impact of
+  vaccination and the Alpha and Delta SARS-CoV-2 variants on COVID-19 transmission in
+  four US metropolitan areas. Supplementary material for Mallela *et al.*,
+  `Bulletin of Mathematical Biology <https://link.springer.com/article/10.1007/s11538-024-01258-4>`__ (2024).
+
+Sampler benchmarking suite
+--------------------------
+
+`sampler_benchmarking <https://github.com/lanl/PyBNF/tree/main/examples/sampler_benchmarking>`__
+is a systematic, like-for-like comparison of PyBNF's three Bayesian samplers —
+Adaptive Metropolis (``am``), DREAM(ZS) (``dream``), and Preconditioned DREAM
+(``p_dream``) — across a dozen benchmark problems. These span analytical geometries
+(a banana, a 10-D Gaussian, a multimodal mixture) and biological models of increasing
+cost (linear regression, HIV dynamics, a COVID-19 MSA, degranulation, TCR signaling,
+FcERI-gamma, MEK isoforms, and reduced and full EGFR). Within each problem every
+sampler uses identical population, iteration, and burn-in settings with no warm
+starts, so the comparison is fair. 
 
 
 Index of examples by attribute 

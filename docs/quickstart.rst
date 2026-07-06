@@ -22,7 +22,7 @@ The examples will print progress to the terminal as the fitting proceeds, and th
 
 In examples/demo/output/Results, the file sorted_params.txt contains the parameter sets tested during the fitting run. Open this file and verify that the best-fit parameter set (first line of the file) is close to the ground truth value of v1__FREE=0.5, v2__FREE=1.0, v3__FREE=3.0. 
 
-After verifying that PyBNF is installed correctly, it should be possible to run any of the other examples in the examples/ directory. For more information about these examples and the features they include, see :ref:`examples` 
+After verifying that PyBNF is installed correctly, it should be possible to run any of the other examples in the examples/ directory. For more information about these examples and the features they include, see the :ref:`Real-model gallery <examples>`. To learn PyBNF's modern (edition-2) features step by step — on small models with known answers — work through the :ref:`tutorial` 
 
 On a SLURM cluster
 ^^^^^^^^^^^^^^^^^^
@@ -123,3 +123,10 @@ Once you have your config file edited as needed, run PyBNF from the folder conta
     :command:`pybnf -c my_config.conf`
     
 Congratulations, you've just completed your first PyBNF fitting job!
+
+.. note::
+
+   Ready for more? The :ref:`tutorial` tours PyBNF's modern (edition-2) features
+   — gradient and Bayesian fitting, noise models, PEtab interoperability, and
+   more — one short lesson at a time, while the :ref:`config` and
+   :ref:`config_keys` pages document every configuration key.
