@@ -10,6 +10,41 @@ PyBNF includes a model checking utility that evaluates how well an already param
 
 Note that for model checking, input models should *not* contain any free parameters tagged with ``__FREE``; all parameters should already be defined.
 
+.. _preequilibration:
+
+Pre-equilibration and Steady State
+----------------------------------
+
+Many experiments measure a system that was first held at a **steady state** under
+an unmeasured condition — a serum-starved culture, a resting cell — and only then
+stimulated and observed. PyBNF captures this with the PEtab v2 *pre-equilibration*
+protocol: an :ref:`experiment <experiment>` names a ``preequilibrate:``
+:ref:`condition <condition>`, PyBNF runs the model to steady state under that
+condition, then applies the measurement condition and simulates the data grid from
+the equilibrated state. This is the right tool whenever the model's initial
+conditions are not the true starting point of the measured protocol, and it lets
+one fit share a single equilibrated baseline across dose or genotype variations.
+See the ``preequilibrate:`` field of the :ref:`experiment <experiment>` key for the
+syntax; the equilibration condition may use only absolute (``=``) perturbations and
+the protocol applies to time-course experiments. This surface requires
+:ref:`edition <edition>` ``>= 2`` and round-trips to PEtab v2.
+
+.. _normalization_adv:
+
+Data Normalization
+------------------
+
+When the experimental values are reported on a *normalized* scale — fold-change,
+percent-of-maximum, a z-score — the simulated prediction has to be reduced the same
+way before it can be compared. The :ref:`normalization <normalization_key>` key
+applies a per-observable prediction transform (to the initial value, the peak, a
+zero-mean/unit-variance z-score, or a unit range) so the model output and the data
+live on the same scale. Under a modern :ref:`edition <edition>` (``>= 2``) it is
+keyed by observable (and optionally by experiment), with a most-specific-wins rule;
+see the key reference for the forms and examples. Normalization is a whole-trajectory
+reduction with no PEtab v2 representation, so a job that uses it cannot be exported
+to PEtab.
+
 .. _bootstrap:
 
 Bootstrapping

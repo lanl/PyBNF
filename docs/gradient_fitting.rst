@@ -74,6 +74,20 @@ to a standalone box-start fit: when the optimizer runs as a **refiner** (an expl
 injected) it always runs a single start, since the job there is to polish the one best fit, not to
 re-scatter. ``max_iterations`` is the per-start iteration budget.
 
+**Convergence tuning.** Both optimizers stop when a first-order optimality (gradient) tolerance or a
+step tolerance is met, or the per-start iteration budget is exhausted:
+
+* ``trf`` — ``trf_grad_tol`` (first-order optimality on the scaled gradient, default ``1e-8``) and
+  ``trf_step_tol`` (accepted step negligible relative to the point, default ``1e-8``). The initial
+  trust radius is derived from the start point; there is no separate radius knob.
+* ``lbfgs`` — ``lbfgs_grad_tol`` (gradient tolerance, default ``1e-6``), ``lbfgs_step_tol`` (step
+  tolerance, default ``1e-8``), ``lbfgs_history`` (number of stored correction pairs, default
+  ``10``), and the line-search constants ``lbfgs_c1`` (Armijo sufficient-decrease, default ``1e-4``)
+  and ``lbfgs_backtrack`` (step-length reduction factor, :math:`0 < \beta < 1`, default ``0.5``).
+
+For both, ``<method>_max_iterations`` caps the iterations per start and defaults to the global
+``max_iterations``.
+
 
 Profile likelihood (identifiability + confidence intervals)
 -----------------------------------------------------------

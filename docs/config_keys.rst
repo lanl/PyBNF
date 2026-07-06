@@ -74,9 +74,9 @@ Required Keys
   not inferred from filenames.
 
   The line is ``experiment: <name>, data: <file1.exp>[, <file2.exp>…]`` plus the optional
-  labeled fields ``condition: <name>``, ``model: <file>``, ``type: <type>``, and
-  ``method: <ode|ssa|pla|nf>``, which may appear in any order after the name; only
-  ``data:`` is required.
+  labeled fields ``condition: <name>``, ``preequilibrate: <name>``, ``model: <file>``,
+  ``type: <type>``, and ``method: <ode|ssa|pla|nf>``, which may appear in any order after
+  the name; only ``data:`` is required.
 
     * **data:** a comma list of ``.exp`` files. **Multiple files are replicates** — all
       their rows become measurements under the one experiment (stacked, not averaged), the
@@ -87,6 +87,15 @@ Required Keys
       from the data, so the scoring grid always lines up with the measurements.
     * **condition:** names a :ref:`condition <condition>` to apply (omitted ⇒ wildtype,
       "model as is").
+    * **preequilibrate:** names a :ref:`condition <condition>` that puts the model in an
+      unmeasured **steady state before the measured time course begins** — the PEtab v2
+      pre-equilibration protocol. The named condition (and the measurement ``condition:``,
+      if any) is applied inline as a ``setParameter`` change: PyBNF runs the model to
+      steady state under it, then applies the measurement condition and simulates the data
+      grid from that equilibrated state. A pre-equilibration condition may use only
+      **absolute** (``=``) perturbations, and pre-equilibration applies to a **time-course**
+      experiment only (not a parameter scan). The conditions it names are consumed by the
+      experiment, so they are not also run as standalone conditions.
     * **model:** names the base model by filename stem; omittable when the job declares a
       single model, required when it declares more than one.
     * **type:** is **inferred** from the data's independent-variable header — a ``time``
@@ -102,6 +111,8 @@ Required Keys
 
     * ``experiment: egf_high, data: high_wt_r1.exp, high_wt_r2.exp`` (two replicates)
     * ``experiment: egf_high_dd, condition: dimer_dead, data: high_dd.exp``
+    * ``experiment: dose, preequilibrate: serum_starve, data: dose.exp`` (equilibrate under
+      ``serum_starve``, then measure)
     * ``experiment: egf_high, model: egfr.bngl, data: high.exp`` (multi-model)
 
 .. _observable:
@@ -845,9 +856,20 @@ Output Options
   Default: 20
 
   Example:
-  
+
     * ``output_every = 1000``
-    
+
+**backup_every**
+  The number of iterations between writes of the run's checkpoint — the saved state that a
+  ``-r`` :ref:`resume <config>` reads to continue an interrupted run. A larger value checkpoints
+  less often, trading resume granularity for lower I/O.
+
+  Default: 1
+
+  Example:
+
+    * ``backup_every = 10``
+
 **save_best_data**
   If 1, run an extra simulation at the end of fitting using the best-fit parameters, and save the best-fit .gdat and .scan files to the Results directory. 
   
@@ -1109,7 +1131,26 @@ Algorithm Options
   Example:
   
     * ``sbml_integrator = rk4``
-    
+
+**sbml_backend**
+  Which simulation engine runs SBML models: ``roadrunner`` (the default, libRoadRunner) or
+  ``bngsim`` (the BioNetGen simulator). The ``bngsim`` backend supports a restricted set of
+  integrators (see the ``sbml_integrator`` key) and only the ``ode`` and ``ssa`` simulation
+  methods.
+
+  Default: roadrunner
+
+  Example:
+
+    * ``sbml_backend = bngsim``
+
+**sbml_ssa_strict**
+  Relevant only when ``sbml_backend = bngsim`` and a simulation uses a stochastic (``ssa``)
+  method: whether the SBML-to-network conversion runs in strict mode. Set to 0 to relax the
+  strict checks.
+
+  Default: 1
+
 **smoothing**
   Number of replicate runs to average together for each parameter set (useful for stochastic simulations). This option can be used with
   ``parallelize_models`` to run model partitions independently within each replicate.
@@ -1728,6 +1769,11 @@ For DREAM
   :math:`2.38/\sqrt{2\delta d'}` is used automatically (recommended). Setting this key explicitly disables
   adaptive scaling.
 
+``adaptive_step_size = bool``
+  Toggle for the adaptive jump-rate scaling above (owned by ``dream`` / ``p_dream``). Set to 0 to
+  disable adaptation and use a fixed step, the same off-state as specifying an explicit ``step_size``.
+  Default: on
+
 ``crossover_number = int``
   The number of distinct crossover probabilities for subspace sampling. Defines the set
   :math:`\{1/n, 2/n, \ldots, 1\}`. Selection probabilities are adapted during the first half of burn-in.
@@ -1763,6 +1809,11 @@ For DREAM
 ``outlier_method = str``
   Method for detecting outlier chains during burn-in. Options: ``iqr`` (interquartile range) or
   ``grubbs`` (Grubbs test at alpha=0.01). Default: ``iqr``
+
+``precondition_adapt = int``
+  **P-DREAM only.** The iteration at which P-DREAM switches to proposing in its learned
+  covariance-whitened space; until then the online covariance is still being estimated and plain
+  DREAM proposals are used. Default: half of ``burn_in``.
 
 ``rhat_threshold = float``
   If set to a positive value, the algorithm stops automatically once all parameters have
