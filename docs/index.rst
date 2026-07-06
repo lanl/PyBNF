@@ -87,6 +87,8 @@ work through the :doc:`Quick Start <quickstart>` and the hands-on
    config
    config_keys
    algorithms
+   noise_models
+   priors
    gradient_fitting
    analytical_objectives
    petab

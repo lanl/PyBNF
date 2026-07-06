@@ -55,10 +55,12 @@ General implementation features for all algorithms
 
 All algorithms in PyBNF keep track of a list of parameter sets (a "population"), and over the course of the simulation, submit new parameter sets to run on the simulator. Algorithms periodically output the file ``sorted_params.txt`` containing the best parameter sets found so far, and the corresponding objective function values. 
 
+.. _param-init:
+
 Initialization
 ^^^^^^^^^^^^^^
 
-The initial population of parameter sets is generated based on the keys specified for each free parameter: ``uniform_var``, ``loguniform_var``, ``normal_var`` or ``lognormal_var``. The value of the parameter in each new random parameter set is drawn from the specified probability distribution. 
+The initial population of parameter sets is generated based on the keys specified for each free parameter: ``uniform_var``, ``loguniform_var``, ``normal_var`` or ``lognormal_var``. The value of the parameter in each new random parameter set is drawn from the specified probability distribution. PyBNF ships a broad catalog of prior distribution families beyond these four — see :ref:`priors`.
 
 The ``latin_hypercube`` option for initialization is enabled by default. This option only affects initialization of ``uniform_var``\ s and ``loguniform_var``\ s. When enabled, instead of drawing an independent random value for each starting parameter set, the starting parameter sets are generated with Latin hypercube sampling, which ensures a roughly even distribution of the parameter sets throughout the search space. 
 
