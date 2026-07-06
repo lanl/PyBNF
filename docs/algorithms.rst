@@ -1,3 +1,5 @@
+.. _algorithms:
+
 Fitting Algorithms
 ==================
 
@@ -39,6 +41,14 @@ Summary of Available Algorithms
 |                             | Metropolis       |                 |                                                                           |
 +-----------------------------+------------------+-----------------+---------------------------------------------------------------------------+
 
+
+In addition to the population-based and Metropolis samplers in the table above,
+PyBNF provides gradient-based optimizers (``trf``, ``lbfgs``) and
+profile-likelihood analysis — see :ref:`Gradient-based optimization
+<alg-gradient>` — the :ref:`Hamiltonian Monte Carlo (NUTS) <alg-hmc>` and
+:ref:`Preconditioned DREAM <alg-p_dream>` samplers, and :ref:`model checking
+<alg-check>`. Information criteria and posterior export are covered under
+:ref:`Model selection and posterior analysis <model_selection>`.
 
 General implementation features for all algorithms
 --------------------------------------------------
@@ -384,6 +394,34 @@ chains.  Two detection methods are available via the ``outlier_method`` key:
 - ``grubbs``: Applies the Grubbs test at significance level :math:`\alpha = 0.01` to detect a single minimum outlier.
 
 
+.. _alg-p_dream:
+
+
+Preconditioned DREAM
+--------------------
+
+Algorithm
+^^^^^^^^^
+Preconditioned DREAM (``fit_type = p_dream``) is :ref:`DREAM(ZS) <alg-dream>` with
+its proposals computed in a covariance-whitened parameter space. The
+preconditioning transform is estimated from the sampled history (and adapted as
+sampling proceeds), so the differential-evolution donor moves are scaled and
+rotated to the geometry of a correlated posterior rather than the raw parameter
+axes. On posteriors with strong parameter correlations this markedly improves
+mixing over plain DREAM; on well-conditioned posteriors it reduces to DREAM(ZS).
+
+Parallelization
+^^^^^^^^^^^^^^^
+As with :ref:`DREAM <alg-dream>`, the chains advance synchronously: one generation
+of all chains is proposed and scored together, and the shared ZS archive and the
+preconditioning estimate are updated between generations.
+
+Applications
+^^^^^^^^^^^^
+Sampling posteriors with strongly correlated parameters, where an axis-aligned or
+isotropic proposal mixes slowly.
+
+
 .. _alg-hmc:
 
 
@@ -594,6 +632,80 @@ is ``max_iterations``. ``cmaes_sigma0`` sets the initial step size — in point-
 mode an absolute step in the sampling space, in box mode a fraction of each box
 width — and ``cmaes_stop_tol`` the convergence threshold on the search
 distribution's spread. As a refiner the start is always the injected best fit.
+
+
+.. _alg-gradient:
+
+
+Gradient-based optimization
+---------------------------
+
+For edition-2 fits of ODE-network models, PyBNF offers two gradient-based
+optimizers driven by exact forward parameter sensitivities:
+
+* ``fit_type = trf`` — a trust-region least-squares method (Trust-Region
+  Reflective), for objectives that are a sum of squared residuals; and
+* ``fit_type = lbfgs`` — a quasi-Newton method (L-BFGS-B) that minimizes a scalar
+  objective from its analytic gradient.
+
+Both converge far faster than the metaheuristics near a good fit, and the same
+sensitivity machinery drives profile-likelihood identifiability analysis
+(``fit_type = profile_likelihood``). These methods, the noise families and
+constraints they support, and the capability gate that decides when a gradient fit
+is possible are documented in full on the :ref:`gradient-based fitting
+<gradient_fitting>` page.
+
+
+.. _alg-check:
+
+
+Model checking
+--------------
+
+``fit_type = check`` (equivalently ``job_type = check``) is a first-class checking
+method rather than a search: it evaluates the objective value and constraint
+satisfaction for a given set of parameter values without exploring parameter
+space. Use it to verify that a model satisfies a set of qualitative properties
+(:ref:`constraints <con-file>` / BPSL) or to score a specific parameter set — a
+quick way to test a candidate fit or validate a model against its specification.
+See the `model-checking tutorial lesson
+<https://github.com/lanl/PyBNF/tree/main/examples/tutorial/46_model_checking>`__
+for a worked example.
+
+
+.. _model_selection:
+
+
+Model selection and posterior analysis
+--------------------------------------
+
+Beyond a single best fit, PyBNF supports comparing models and characterizing
+posteriors.
+
+**Information criteria.** From a fit's maximized log-likelihood PyBNF computes the
+Akaike Information Criterion (AIC), the Bayesian Information Criterion (BIC), and
+the small-sample-corrected AIC (AICc), using the *full* normalized log-likelihood
+(including the noise-model normalizer):
+
+.. math::
+
+   \mathrm{AIC} = 2k - 2\ln L, \qquad
+   \mathrm{BIC} = k\ln n - 2\ln L, \qquad
+   \mathrm{AICc} = \mathrm{AIC} + \frac{2k(k+1)}{n-k-1},
+
+where :math:`k` is the number of free parameters and :math:`n` the number of data
+points. Ranking competing models by AIC is the basis of the model-selection
+tutorial lesson.
+
+**ArviZ / LOO / WAIC.** A completed MCMC run can be exported as an ArviZ
+``InferenceData`` object by setting
+:ref:`output_inference_data <output_inference_data>` ``= 1`` (needs the optional
+``arviz`` extra, ``pip install pybnf[arviz]``). The posterior then plugs into the
+ArviZ / bayesplot ecosystem for trace, rank, forest, and pair plots and for
+convergence diagnostics (R-hat, bulk/tail ESS). When the run also records the
+per-observation log-likelihood, the exported object carries a ``log_likelihood``
+group, so leave-one-out cross-validation (``az.loo``) and the widely-applicable
+information criterion (``az.waic``) can be computed directly.
 
 
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
