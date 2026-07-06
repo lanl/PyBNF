@@ -13,6 +13,7 @@ PyBNF Module References
    constraint
    data
    diagnostics
+   inference_data
    objective
    parse
    printing
