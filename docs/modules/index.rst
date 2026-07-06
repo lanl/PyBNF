@@ -14,6 +14,7 @@ PyBNF Module References
    data
    diagnostics
    inference_data
+   noise
    objective
    parse
    printing
