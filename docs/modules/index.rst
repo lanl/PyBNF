@@ -13,6 +13,7 @@ PyBNF Module References
    constraint
    data
    diagnostics
+   gradient
    inference_data
    noise
    objective
