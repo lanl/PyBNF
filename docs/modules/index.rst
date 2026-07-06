@@ -19,4 +19,5 @@ PyBNF Module References
    objective
    parse
    printing
+   priors
    pset

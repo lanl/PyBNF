@@ -15,14 +15,14 @@ The transform is a property of the support *shape*, not the family, so it lives 
 keys purely on ``support()`` (the ``(lo, hi)`` finiteness pattern) -- the same family-agnostic
 ethos as :mod:`~pybnf.priors.truncated`. Four cases cover the whole catalog:
 
-==================  ==========================  ===============  =====================
-support ``(lo,hi)``  ``u = b(z)``                ``z = b^{-1}(u)``  ``log|b'(z)|``
-==================  ==========================  ===============  =====================
-``(-inf, inf)``      ``z``                       ``u``            ``0``
-``(lo, inf)``        ``lo + exp(z)``             ``log(u - lo)``  ``z``
-``(-inf, hi)``       ``hi - exp(z)``             ``log(hi - u)``  ``z``
+===================  ===========================  =========================  ===================================
+support ``(lo,hi)``  ``u = b(z)``                 ``z = b^{-1}(u)``          ``log|b'(z)|``
+===================  ===========================  =========================  ===================================
+``(-inf, inf)``      ``z``                        ``u``                      ``0``
+``(lo, inf)``        ``lo + exp(z)``              ``log(u - lo)``            ``z``
+``(-inf, hi)``       ``hi - exp(z)``              ``log(hi - u)``            ``z``
 ``(lo, hi)``         ``lo + (hi-lo)*sigmoid(z)``  ``logit((u-lo)/(hi-lo))``  ``log(hi-lo)+logsig(z)+logsig(-z)``
-==================  ==========================  ===============  =====================
+===================  ===========================  =========================  ===================================
 
 Each bijector exposes a numpy ``to_unconstrained`` / ``to_constrained`` / ``logdet`` (host-side
 init seeding and draw-writing) and a JAX-traceable ``to_constrained_jax`` / ``logdet_jax`` (the
