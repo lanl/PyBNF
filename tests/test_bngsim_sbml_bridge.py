@@ -5,6 +5,7 @@ import textwrap
 from pathlib import Path
 import types
 
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -935,3 +936,126 @@ def test_amount_species_initial_assignment_recompute_with_units(tmp_path, _clear
         ))
         ref = ref_model.execute(str(tmp_path), f'amt_ia_ref_{int(k)}', 3)['time_course']
         npt.assert_allclose(fast.data, ref.data, rtol=0, atol=0)
+
+
+# ── #469/#470: SBML/Antimony fits honor the experiment's measurement grid ────
+#
+# A one-step decay A -> B with rate k*A, so A(t) = 100*exp(-k t). The experiment's
+# measurement times are threaded into bngsim's sample_times; before the fix the
+# SBML path simulated a uniform integer grid and non-grid times (e.g. t=0.5) were
+# never in the output, so scoring raised / scored inf.
+_DECAY_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="decay">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="c" initialConcentration="100" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="B" compartment="c" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="conv" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="B" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>A</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+class _CapturingSim:
+    def __init__(self):
+        self.captured = {}
+
+    def run(self, **kwargs):
+        self.captured.update(kwargs)
+        return object()
+
+
+def test_run_simulation_threads_sample_times_into_bngsim_run(monkeypatch):
+    """Regression for #469/#470: when the action carries explicit measurement
+    points, ``_run_simulation`` passes them to bngsim's ``run(sample_times=...)``
+    (with a matching t_span/n_points) instead of a uniform grid."""
+    sim = _CapturingSim()
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    monkeypatch.setattr(model, '_make_simulator', lambda engine_model, method: sim)
+
+    model._run_simulation(object(), 2.5, 3, method='ode',
+                          sample_times=[0.0, 0.5, 1.5, 2.5])
+
+    assert sim.captured['sample_times'] == [0.0, 0.5, 1.5, 2.5]
+    assert sim.captured['t_span'] == (0.0, 2.5)
+    assert sim.captured['n_points'] == 4
+
+
+def test_run_simulation_uniform_grid_without_sample_times(monkeypatch):
+    """The legacy uniform-grid path is unchanged: no ``sample_times`` is passed
+    when the action carries none (issue #469/#470 must not alter the default)."""
+    sim = _CapturingSim()
+    model = object.__new__(bngsim_sbml_model.BngsimSbmlModelNoTimeout)
+    monkeypatch.setattr(model, '_make_simulator', lambda engine_model, method: sim)
+
+    model._run_simulation(object(), 8.0, 9, method='ode')
+
+    assert 'sample_times' not in sim.captured
+    assert sim.captured['t_span'] == (0.0, 8.0)
+    assert sim.captured['n_points'] == 9
+
+
+@pytest.mark.bngsim_sbml
+def test_bngsim_sbml_timecourse_honors_non_integer_sample_times(tmp_path):
+    """End-to-end regression for #469/#470: an SBML time course whose experiment
+    supplies non-integer measurement times outputs at exactly those times, so a
+    point at t=0.5 is present and scores correctly (previously the uniform integer
+    grid dropped it and scoring failed)."""
+    xml_path = tmp_path / 'decay.xml'
+    xml_path.write_text(_DECAY_SBML)
+    xml_path = str(xml_path)
+
+    times = [0.5, 1.5, 2.5]
+    action = pset.TimeCourse({}, explicit_points=times)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+
+    data = model.execute(str(tmp_path), 'decay_nonint', 10)['time_course']
+
+    # explicit_points forces a leading t=0, so the sim outputs {0, 0.5, 1.5, 2.5}.
+    sim_times = list(data['time'])
+    for t in (0.0, 0.5, 1.5, 2.5):
+        assert any(abs(st - t) < 1e-9 for st in sim_times), (t, sim_times)
+    # A(t) = 100*exp(-0.5 t) at each non-integer measurement time.
+    for t in times:
+        idx = min(range(len(sim_times)), key=lambda i: abs(sim_times[i] - t))
+        npt.assert_allclose(data['A'][idx], 100.0 * np.exp(-0.5 * t), rtol=1e-4)
+
+
+@pytest.mark.bngsim_sbml
+def test_bngsim_sbml_param_scan_honors_explicit_values(tmp_path):
+    """Companion regression for #469/#470: an SBML parameter scan whose experiment
+    supplies explicit (non-grid) swept values sweeps exactly those values rather
+    than a uniform linspace grid."""
+    xml_path = tmp_path / 'decay.xml'
+    xml_path.write_text(_DECAY_SBML)
+    xml_path = str(xml_path)
+
+    values = [0.3, 0.55, 0.8]
+    action = pset.ParamScan({'param': 'k', 'time': '2'}, explicit_points=values)
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=pset.PSet([]), actions=(action,),
+    )
+
+    data = model.execute(str(tmp_path), 'decay_scan', 10)['param_scan']
+
+    assert data.indvar == 'k'
+    npt.assert_allclose(sorted(data['k']), values, rtol=0, atol=1e-12)
+    # A(t=2) = 100*exp(-2k) at each swept k, in swept order.
+    order = np.argsort(data['k'])
+    npt.assert_allclose(
+        np.asarray(data['A'])[order],
+        100.0 * np.exp(-2.0 * np.asarray(values)),
+        rtol=1e-4,
+    )

@@ -402,9 +402,11 @@ EXAMPLES = (
         truth={'k': 0.5},
         build_free={'k': ('uniform_var', 0.05, 3.0)},
         datasets=(
-            # Integer time grid (0..8): an SBML/Antimony model simulates on bngsim's
-            # default output grid, which lands on integers, so the data times match.
-            Dataset('decay.exp', obs=('Obs_A',), t_end=8, n_points=9),
+            # Non-integer time grid (step 0.5, 0..4): the SBML/Antimony path outputs at
+            # exactly the experiment's measurement times (bngsim sample_times), so the
+            # half-integer points score just like the native BNGL path -- the #469/#470
+            # regression fixture (previously the SBML grid dropped off-integer times).
+            Dataset('decay.exp', obs=('Obs_A',), t_end=4, n_points=9),
         ),
         # The SAME A->B dynamics as BNGL / Antimony / SBML, all fit through bngsim,
         # all recovering the same k -- a backend/format interop regression.

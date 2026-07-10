@@ -51,12 +51,12 @@ fact to an *identical* objective, because they are the same dynamics.
 
 ## A note on measurement times
 
-This lesson samples at **integer** times (0, 1, …, 8). The SBML/Antimony simulation
-currently reports on an integer grid up to the data's end time, so integer
-measurement times line up exactly; non-integer times for an SBML/Antimony fit are
-not yet supported (the native BNGL path has no such restriction). Integer sampling
-is a natural choice for time-course data, so this is rarely a constraint in
-practice — but it's why the data here is spaced one unit apart.
+The data here is sampled every **half** time unit (0, 0.5, 1.0, …, 4.0), so most
+points fall at **non-integer** times. The SBML/Antimony simulation reports at exactly
+the experiment's measurement times — the same as the native BNGL path — so any
+spacing works and all three fits recover the same `k`. (Earlier releases simulated
+SBML/Antimony on a uniform integer grid and silently dropped off-grid times like
+`t = 0.5`; that was fixed in #469/#470.)
 
 ## The takeaway
 

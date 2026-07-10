@@ -821,7 +821,7 @@ class BngsimSbmlModelNoTimeout(Model):
             raise ModelError(str(exc)) from exc
 
     def _run_simulation(self, engine_model, end_time, n_points, *, method='ode',
-                        seed=None, timeout=None):
+                        seed=None, timeout=None, sample_times=None):
         sim = self._make_simulator(engine_model, method)
         run_kwargs = {}
         if timeout is not None:
@@ -835,6 +835,21 @@ class BngsimSbmlModelNoTimeout(Model):
             if seed is None:
                 seed = secrets.randbits(31) or 1
             run_kwargs['seed'] = seed
+        if sample_times is not None:
+            # New-era explicit output points (ADR-0028, #469/#470): output at exactly
+            # the experiment's measurement times instead of a uniform n_points grid,
+            # mirroring the native BNGL path (net_model._run_prepared_simulate). Without
+            # this the SBML/Antimony sim only lands on integer-spaced times, so a data
+            # point at a non-grid time (e.g. t=0.5) is never in the output and scoring
+            # fails. explicit_points always includes t=0 (TimeCourse), so integration
+            # starts from the model baseline.
+            pts = [float(p) for p in sample_times]
+            return sim.run(
+                t_span=(pts[0], pts[-1]),
+                n_points=len(pts),
+                sample_times=pts,
+                **run_kwargs,
+            )
         return sim.run(t_span=(0.0, float(end_time)), n_points=int(n_points), **run_kwargs)
 
     def _resolve_action_seed(self, *, explicit_seed, action_index, suffix, method):
@@ -881,6 +896,7 @@ class BngsimSbmlModelNoTimeout(Model):
                         result = self._run_simulation(
                             engine_model, act.time, act.stepnumber + 1,
                             method=method, seed=seed_value, timeout=timeout,
+                            sample_times=act.explicit_points,
                         )
                         data = self._result_to_data(result, stochastic=method == 'ssa')
                         result_dict[suffix_with_mut] = data
@@ -896,7 +912,15 @@ class BngsimSbmlModelNoTimeout(Model):
                             )
 
                         scan_label = act.param + '_0' if act.param in self._species_name_set else act.param
-                        points = np.linspace(act.min, act.max, act.stepnumber + 1)
+                        # New-era explicit scan values (ADR-0028, #469/#470): sweep exactly
+                        # the data's swept-parameter values instead of a uniform linspace
+                        # grid, mirroring the native BNGL path (net_model._scan_independent).
+                        # Without this a dose at a non-grid value is never simulated and
+                        # scoring fails, exactly as for the time-course grid.
+                        if act.explicit_points is not None:
+                            points = act.explicit_points
+                        else:
+                            points = np.linspace(act.min, act.max, act.stepnumber + 1)
                         rows = []
                         headers = None
 
