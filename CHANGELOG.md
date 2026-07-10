@@ -5,6 +5,27 @@ All notable changes to PyBNF are documented below. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **`examples/real-world/` — the 2019 PyBNF-paper case studies on the edition-2 surface.**
+  The biological models from Mitra et al. (iScience 2019) — Kozer's EGFR (ODE and
+  network-free), the ligand/receptor model (ODE and NFsim), IGF1R competition binding,
+  the FcεRI γ-chain SSA network, and the trivalent-ligand aggregation model — re-expressed
+  on the new-era `experiment:`/`condition:`/`data:` config surface, spanning the three
+  simulator paths (deterministic ODE, Gillespie SSA, network-free NFsim). These validate
+  PyBNF's bngsim-backed default path on representative, paper-scale models (issue #380),
+  with `tests/test_real_world_examples.py` running a backend-free well-formedness tier in
+  default CI and a real-bngsim end-to-end tier under `-m recovery`.
+
+### Fixed
+- **Edition-2 network-free (NFsim) experiments now run through the bngsim bridge.** A
+  `method: nf` experiment synthesized an action set that (a) began with
+  `resetConcentrations()` — which the bngsim NF bridge rejects (NFsim re-seeds each run, so
+  it is a no-op) — and (b) forced `generates_network=True`, sending a network-*free* model
+  (whose reaction network is unbounded) down the network-generation path. Both are now
+  suppressed on the NF path, so an edition-2 NF experiment classifies as the NF bridge and
+  routes to `writeXML` → `BngsimNfModel`, matching a hand-written NF actions block. Surfaced
+  by the new `examples/real-world/` NFsim examples (#380); ODE/SSA synthesis is unchanged.
+
 ## [v1.6.0] - 2026-07-05
 
 ### Added

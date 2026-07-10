@@ -978,12 +978,20 @@ class BNGLModel(Model):
                        f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
         else:
             raise RuntimeError(f'Unknown action type {type(action)}')
-        # Config actions are assumed to be independent, so need to reset concentrations before each one.
-        self.actions.append('resetConcentrations()')
+        # Config actions are assumed to be independent, so reset concentrations before each one --
+        # EXCEPT on the network-free (method=>nf) path. The bngsim NF bridge rejects
+        # resetConcentrations() (NFsim re-seeds from the seed species every run, so it is a no-op),
+        # and an NF model must not force network generation (its reaction network is unbounded and
+        # cannot be generated). Leaving both off routes an NF experiment to the pure network-free
+        # bridge (writeXML -> BngsimNfModel), matching a hand-written NF actions block.
+        is_nf = getattr(action, 'method', None) == 'nf'
+        if not is_nf:
+            self.actions.append('resetConcentrations()')
         self.actions.append(line)
-        self.generates_network = True
-        if self.generate_network_line is None:
-            self.generate_network_line = 'generate_network({overwrite=>1})'
+        if not is_nf:
+            self.generates_network = True
+            if self.generate_network_line is None:
+                self.generate_network_line = 'generate_network({overwrite=>1})'
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     @staticmethod
@@ -1036,7 +1044,11 @@ class BNGLModel(Model):
         _mt = float(action.equil_max_time)
         max_time = str(int(_mt)) if _mt.is_integer() else repr(_mt)
         equil_suffix = f'{action.suffix}_preequil'
-        self.actions.append('resetConcentrations()')
+        # Skip the leading resetConcentrations() on the NF path (bngsim's NF bridge rejects it;
+        # NFsim re-seeds each run, so it is a no-op there) -- see add_action for the rationale.
+        is_nf = getattr(action, 'method', None) == 'nf'
+        if not is_nf:
+            self.actions.append('resetConcentrations()')
         for pname, pval in action.equil_perturbations:
             self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
         self.actions.append(
@@ -1045,9 +1057,11 @@ class BNGLModel(Model):
         for pname, pval in action.measure_perturbations:
             self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
         self.actions.append(self._timecourse_line(action))
-        self.generates_network = True
-        if self.generate_network_line is None:
-            self.generate_network_line = 'generate_network({overwrite=>1})'
+        # NF experiments are network-free: do not force network generation (see add_action).
+        if not is_nf:
+            self.generates_network = True
+            if self.generate_network_line is None:
+                self.generate_network_line = 'generate_network({overwrite=>1})'
         # Register ONLY the measurement suffix: the equilibration phase is unmeasured, so its
         # gdat is never read (BNG2.pl) / its ds entry never scored (bngsim).
         self.suffixes.append((action.bng_codeword, action.suffix))
