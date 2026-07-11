@@ -39,6 +39,19 @@ _TFUN_FILE_REF_RE = re.compile(
 )
 
 
+# Simulation-method tokens that select a stochastic engine (network-free NFsim/RuleMonkey
+# or the network-based SSA/PLA solvers). Mirrors the ``method=>"..."`` alternatives in the
+# parse-time ``begin actions`` regex (see BNGLModel.__init__). Used to re-derive
+# ``BNGLModel.stochastic`` for edition-2 (new-era) experiments, whose ``simulate`` /
+# ``parameter_scan`` action is synthesized from the config ``experiment:`` line
+# (BNGLModel.add_action / _append_preequilibration_actions) rather than parsed from a
+# ``begin actions`` block -- so the ``smoothing`` misuse check does not false-alarm and its
+# replicates are correctly understood as averaging independent stochastic trajectories (#471).
+STOCHASTIC_METHODS = frozenset({
+    'ssa', 'pla', 'nf', 'nf_reject', 'nfsim', 'nf_exact', 'rm', 'rulemonkey',
+})
+
+
 def _format_bngl_number(x):
     """Format a float for a BNGL ``sample_times`` / ``par_scan_vals`` list (ADR-0028).
 
@@ -1010,6 +1023,12 @@ class BNGLModel(Model):
             self.generates_network = True
             if self.generate_network_line is None:
                 self.generate_network_line = 'generate_network({overwrite=>1})'
+        # Re-derive the stochastic flag from the synthesized action's method (#471): the
+        # edition-2 surface has no ``begin actions`` block for __init__ to scan, so a
+        # ``method: ssa``/``nf`` experiment would otherwise leave the model flagged
+        # non-stochastic and trip a spurious ``smoothing`` warning.
+        if getattr(action, 'method', None) in STOCHASTIC_METHODS:
+            self.stochastic = True
         self.suffixes.append((action.bng_codeword, action.suffix))
 
     @staticmethod
@@ -1094,6 +1113,11 @@ class BNGLModel(Model):
             self.generates_network = True
             if self.generate_network_line is None:
                 self.generate_network_line = 'generate_network({overwrite=>1})'
+        # Re-derive the stochastic flag from the synthesized action's method (#471): both the
+        # unmeasured equilibration and the measurement simulate use ``action.method``, so a
+        # stochastic engine makes the whole model stochastic for the ``smoothing`` check.
+        if getattr(action, 'method', None) in STOCHASTIC_METHODS:
+            self.stochastic = True
         # Register ONLY the measurement suffix: the equilibration phase is unmeasured, so its
         # gdat is never read (BNG2.pl) / its ds entry never scored (bngsim).
         self.suffixes.append((action.bng_codeword, action.suffix))

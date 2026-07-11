@@ -222,6 +222,35 @@ class TestModel:
 
         assert myguess == answer
 
+    def test_config_action_sets_stochastic_flag(self):
+        # #471: on the edition-2 surface a model carries no `begin actions` block, so the
+        # parse-time regex never runs; the simulate/parameter_scan is synthesized from the
+        # experiment line via add_action. A stochastic method must set model.stochastic so
+        # the `smoothing` misuse check doesn't false-alarm. (Simple.bngl's own actions are
+        # ODE, so the flag starts False.)
+        for method in ('ssa', 'pla', 'nf', 'rm', 'rulemonkey'):
+            model = pset.BNGLModel(self.file1, suppress_free_param_error=True)
+            assert not model.stochastic
+            model.add_action(pset.TimeCourse({'time': 5, 'suffix': 's', 'method': method}))
+            assert model.stochastic, method
+
+    def test_config_action_ode_leaves_stochastic_false(self):
+        # Regression companion to the above: a deterministic config action must NOT flip the
+        # flag, so an all-ODE edition-2 fit still gets the smoothing warning it deserves.
+        model = pset.BNGLModel(self.file1, suppress_free_param_error=True)
+        model.add_action(pset.TimeCourse({'time': 5, 'suffix': 's', 'method': 'ode'}))
+        model.add_action(pset.ParamScan({'min': 1, 'max': 2, 'step': 1, 'time': 5,
+                                         'suffix': 'sc', 'param': 'kon', 'method': 'ode'}))
+        assert not model.stochastic
+
+    def test_config_param_scan_sets_stochastic_flag(self):
+        # The scan synthesis path (add_action, ParamScan branch) must set the flag too:
+        # a network-free dose-response (examples/real-world/tlbr) uses method: nf.
+        model = pset.BNGLModel(self.file1, suppress_free_param_error=True)
+        model.add_action(pset.ParamScan({'min': 1, 'max': 2, 'step': 1, 'time': 5,
+                                         'suffix': 'sc', 'param': 'kon', 'method': 'nf'}))
+        assert model.stochastic
+
     def test_action_suffixes(self):
         m0 = pset.BNGLModel(self.file1)
         assert len(m0.suffixes) == 1

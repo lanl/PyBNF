@@ -97,6 +97,14 @@ def test_real_world_conf_is_wellformed(example, tmp_path):
     assert names, f'{example.folder}: no free parameters'
     for name in names:
         assert '__FREE' not in name, f'{example.folder}: {name} still uses a __FREE alias'
+    # #471: the synthesized simulate/parameter_scan sets the model `stochastic` flag from its
+    # method (ssa/nf), so the smoothing misuse check no longer false-alarms on an edition-2
+    # stochastic fit. The manifest records which examples are stochastic; assert the resolved
+    # model agrees -- this is the corpus that surfaced the bug.
+    model_stochastic = any(getattr(m, 'stochastic', False) for m in conf.models.values())
+    assert model_stochastic == example.stochastic, (
+        f'{example.folder}: model.stochastic={model_stochastic}, manifest '
+        f'stochastic={example.stochastic}')
 
 
 @pytest.mark.parametrize('example', [e for e in EXAMPLES if e.simulator == 'nf'],

@@ -429,3 +429,54 @@ def test_smoothing_with_seeded_bngl_no_error_under_auto():
                      if isinstance(m, pset.BNGLModel) and m.seeded]
     assert seeded_models  # precondition
     assert not cfg.config['stochastic_seed'].endswith('_honorbngl')
+
+
+# ── _check_smoothing_misuse: the real deferred check (#471) ─────────────────────
+# The check moved out of _load_models into its own method called AFTER experiment
+# actions are synthesized, so an edition-2 stochastic model is no longer flagged
+# early as non-stochastic. These drive the real method rather than replaying it.
+
+def _cfg_for_smoothing_check(models, *, smoothing=2, stochastic_seed='auto'):
+    cfg = object.__new__(config.Configuration)
+    cfg.models = models
+    cfg.config = {'smoothing': smoothing, 'stochastic_seed': stochastic_seed}
+    return cfg
+
+
+class _FakeBNGL(pset.BNGLModel):
+    def __init__(self, name, *, seeded=False, stochastic=False):
+        self.name = name
+        self.seeded = seeded
+        self.stochastic = stochastic
+        self.has_observables = True
+        self.file_path = '/tmp/%s.bngl' % name
+
+
+def test_check_smoothing_misuse_raises_on_honored_seed():
+    cfg = _cfg_for_smoothing_check(
+        {'m': _FakeBNGL('m', seeded=True, stochastic=True)},
+        stochastic_seed='auto_honorbngl')
+    with pytest.raises(printing.PybnfError, match='_honorbngl'):
+        cfg._check_smoothing_misuse()
+
+
+def test_check_smoothing_misuse_warns_when_no_model_is_stochastic(capsys):
+    cfg = _cfg_for_smoothing_check({'m': _FakeBNGL('m', stochastic=False)})
+    cfg._check_smoothing_misuse()
+    assert 'none of your models use a stochastic' in capsys.readouterr().out
+
+
+def test_check_smoothing_misuse_silent_when_a_model_is_stochastic(capsys):
+    # The #471 fix: a stochastic model (edition-2 ssa/nf sets this via add_action) means
+    # no false-alarm warning and no seed error under the default policy.
+    cfg = _cfg_for_smoothing_check({'m': _FakeBNGL('m', stochastic=True)})
+    cfg._check_smoothing_misuse()
+    assert 'none of your models use a stochastic' not in capsys.readouterr().out
+
+
+def test_check_smoothing_misuse_noop_when_smoothing_disabled(capsys):
+    cfg = _cfg_for_smoothing_check(
+        {'m': _FakeBNGL('m', seeded=True, stochastic=False)},
+        smoothing=1, stochastic_seed='auto_honorbngl')
+    cfg._check_smoothing_misuse()  # smoothing<=1: neither warns nor raises
+    assert capsys.readouterr().out == ''

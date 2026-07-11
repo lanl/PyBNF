@@ -136,6 +136,22 @@ class TestSynthesis:
         assert sum(a.startswith("setParameter") for a in acts) == 1
         assert not conf.models["m"].mutants
 
+    def test_nf_preequilibration_sets_stochastic_flag(self, tmp_path):
+        # #471: the pre-equilibration synthesis path (_append_preequilibration_actions) must
+        # re-derive model.stochastic from the method too. A network-free pre-equilibration
+        # (method: nf) needs a fixed equil_t_end (NFsim has no steady-state solve); with the
+        # measured model carrying no `begin actions` block, the flag would otherwise stay False
+        # and trip a spurious `smoothing` warning.
+        conf = _build(tmp_path, _BASE + [
+            "condition: prod_on, perturbations: flag = 1",
+            "experiment: relax, preequilibrate: prod_on, method: nf, equil_t_end: 10, data: relax.exp",
+        ])
+        assert conf.models["m"].stochastic
+
+    def test_ode_preequilibration_leaves_stochastic_false(self, tmp_path):
+        # Regression companion: the default (ODE) pre-equilibration must NOT set the flag.
+        assert not self._conf(tmp_path).models["m"].stochastic
+
 
 # --------------------------------------------------------------------------- #
 # Error boundaries

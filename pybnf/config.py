@@ -284,6 +284,11 @@ class Configuration:
         # wart is bypassed: a new-era model carries no data on its model line).
         self._load_experiments()
         logger.debug('Loaded experiments')
+        # Deferred until here (post-_load_experiments) so the 'smoothing' misuse check sees the
+        # edition-2 models' synthesized simulate/parameter_scan actions -- and thus their
+        # `stochastic` flag (#471). Legacy models set the flag at parse time, so the check is
+        # order-independent for them.
+        self._check_smoothing_misuse()
         # New-era observable: column-header overrides (ADR-0028, Chunk 4). Runs after every
         # experimental Data exists (so it can rename columns across all of them) and before
         # the objective is built (so the objective's by-name column match + per-observable
@@ -779,22 +784,11 @@ class Configuration:
                 print1(f'Warning: Model {model.file_path} has no observables defined. Fitting will not work without observables.')
                 logger.warning(f'Model {model.file_path} has no observables defined')
 
-        if self.config['smoothing'] > 1:
-            # Check for misuse of 'smoothing' feature
-            stochastic = np.any([m.stochastic for m in md.values()])
-            if not stochastic:
-                print1('Warning: You specified smoothing=%i, but it looks like none of your models use a stochastic '
-                       'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
-            seeded_models = [m for m in md.values() if isinstance(m, BNGLModel) and m.seeded]
-            if seeded_models and self.config['stochastic_seed'].endswith('_honorbngl'):
-                raise PybnfError(
-                    'You specified smoothing=%i with stochastic_seed=%s, and one of your simulation '
-                    'commands contains an explicit "seed" argument. Under the "_honorbngl" policies, '
-                    'that seed is honored verbatim, which would cause all of your smoothing replicates '
-                    'to come out the same. Switch to stochastic_seed=auto (default) or stochastic_seed=random '
-                    'so PyBNF overrides the BNGL seed per replicate.'
-                    % (self.config['smoothing'], self.config['stochastic_seed'])
-                )
+        # The 'smoothing' misuse check (stochastic-method + explicit-seed) is deferred to
+        # _check_smoothing_misuse(), called from __init__ AFTER _load_experiments(): an
+        # edition-2 model's simulate/parameter_scan is synthesized there from the experiment
+        # line (BNGLModel.add_action), so its `stochastic` flag is not yet set at this point
+        # (#471). Checking here would false-alarm on every edition-2 ssa/nf fit.
 
         # Warn once per model when explicit BNGL seeds will be overridden by the
         # current policy. Saves the user from "this fit gives different numbers
@@ -810,6 +804,33 @@ class Configuration:
             raise PybnfError('Job contains %i models, so "parallelize_models" should be at most %i' % (len(md), len(md)))
 
         return md
+
+    def _check_smoothing_misuse(self):
+        """Warn/raise on ``smoothing > 1`` used with non-stochastic models or honored BNGL seeds.
+
+        Called from ``__init__`` AFTER ``_load_experiments()`` so it sees the fully-synthesized
+        actions: an edition-2 model's ``simulate``/``parameter_scan`` is built there from the
+        experiment line (``BNGLModel.add_action``), which is where its ``stochastic`` flag gets
+        set (#471). Running this inside ``_load_models`` (before experiments are loaded) would
+        flag every edition-2 ``method: ssa``/``nf`` fit as non-stochastic and false-alarm.
+        """
+        if self.config['smoothing'] <= 1:
+            return
+        md = self.models
+        stochastic = np.any([m.stochastic for m in md.values()])
+        if not stochastic:
+            print1('Warning: You specified smoothing=%i, but it looks like none of your models use a stochastic '
+                   'method. All of your smoothing replicates will come out identical.' % self.config['smoothing'])
+        seeded_models = [m for m in md.values() if isinstance(m, BNGLModel) and m.seeded]
+        if seeded_models and self.config['stochastic_seed'].endswith('_honorbngl'):
+            raise PybnfError(
+                'You specified smoothing=%i with stochastic_seed=%s, and one of your simulation '
+                'commands contains an explicit "seed" argument. Under the "_honorbngl" policies, '
+                'that seed is honored verbatim, which would cause all of your smoothing replicates '
+                'to come out the same. Switch to stochastic_seed=auto (default) or stochastic_seed=random '
+                'so PyBNF overrides the BNGL seed per replicate.'
+                % (self.config['smoothing'], self.config['stochastic_seed'])
+            )
 
     def _add_inline_analytical_target(self, md):
         """Synthesize the AnalyticalModel for an inline named objective (ADR-0059 item 6).
