@@ -76,12 +76,12 @@ EXAMPLES = [
     RealWorldExample(
         folder='receptor_nf', conf='receptor_nf.conf', simulator='nf', stochastic=True,
         heavy=True,
-        blocked='NFsim has no steady-state solve (that path exists only for the bngsim net/ODE '
-                'backend), so the edition-2 pre-equilibration -- which equilibrates to steady '
-                'state via a large-t_end bound -- integrates a network-free simulation to t=1e6 '
-                'and never completes. The model still builds through the pure-NF bridge; a fixed-'
-                'time NF equilibration knob would be needed to run the fit.',
         observables=('RLbonds', 'pR'),
+        # Fixed-time NF pre-equilibration (equil_t_end: 600) makes this run through bngsim
+        # (previously it hung: NFsim has no steady-state solve, so the default steady-state
+        # equilibration integrated to t=1e6). It is HEAVY -- NFsim on ~1000 molecules is
+        # cluster-scale, exceeding wall_time_sim for some parameter sets -- so it stays in the
+        # backend-free tier only.
         system='Ligand/receptor binding (BioNetFit 1 ex 6); network-free NFsim, pre-equilibration'),
     RealWorldExample(
         folder='tlbr', conf='tlbr.conf', simulator='nf', stochastic=True,

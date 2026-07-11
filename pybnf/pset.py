@@ -50,6 +50,24 @@ def _format_bngl_number(x):
     return repr(float(x))
 
 
+def _nf_action_opts(action):
+    """Trailing BNGL option string for an NF action's ``gml``/``complex`` settings (edition-2
+    ``method: nf``), e.g. ``,gml=>1000000,complex=>1`` -- or ``''`` when unset or off the NF
+    path. Inserted before the closing ``}})`` of a synthesized NFsim simulate/parameter_scan so
+    a large aggregating model can raise its molecule limit and track complexes, as its classic
+    hand-written action did."""
+    if getattr(action, 'method', None) != 'nf':
+        return ''
+    opts = ''
+    gml = getattr(action, 'gml', None)
+    if gml is not None:
+        opts += f',gml=>{int(float(gml))}'
+    cx = getattr(action, 'complex', None)
+    if cx is not None:
+        opts += f',complex=>{int(float(cx))}'
+    return opts
+
+
 def _collapse_line_continuations(text):
     """Collapse BNGL-style trailing backslash continuations."""
     return re.sub(r'\\\s*\n\s*', '', text)
@@ -972,10 +990,10 @@ class BNGLModel(Model):
                 # dose at t_end -- byte-identical to the pre-ADR-0046 emission.
                 ss = 'steady_state=>1,ss_method=>"newton",' if action.steady_state else ''
                 line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},' \
-                       f'{ss}par_scan_vals=>[{par_scan_vals}],log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
+                       f'{ss}par_scan_vals=>[{par_scan_vals}],log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})'
             else:
                 line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},' \
-                       f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1}})'
+                       f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})'
         else:
             raise RuntimeError(f'Unknown action type {type(action)}')
         # Config actions are assumed to be independent, so reset concentrations before each one --
@@ -1012,13 +1030,16 @@ class BNGLModel(Model):
                     "BioNetGen's sample_times requires 3 or more. Provide a data set with at least two "
                     'positive time points.')
             sample_times = ','.join(_format_bngl_number(p) for p in action.explicit_points)
-            return f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],suffix=>"{action.suffix}",print_functions=>1}})'
+            return (f'simulate({{method=>"{action.method}",t_start=>0,sample_times=>[{sample_times}],'
+                    f'suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})')
         # t_start renders as a bare int when integral (so the default 0 stays
         # ``t_start=>0`` -- byte-identical to the pre-t_start emission), else full
         # precision; a non-zero t_start shifts the integration window (ADR-0028).
         _ts = float(action.t_start)
         ts_str = str(int(_ts)) if _ts.is_integer() else repr(_ts)
-        return f'simulate({{method=>"{action.method}",t_start=>{ts_str},t_end=>{action.time},n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1}})'
+        return (f'simulate({{method=>"{action.method}",t_start=>{ts_str},t_end=>{action.time},'
+                f'n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1'
+                f'{_nf_action_opts(action)}}})')
 
     def _append_preequilibration_actions(self, action):
         """Emit the new-era pre-equilibration action block for a measurement ``TimeCourse``
@@ -1051,9 +1072,20 @@ class BNGLModel(Model):
             self.actions.append('resetConcentrations()')
         for pname, pval in action.equil_perturbations:
             self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
-        self.actions.append(
-            f'simulate({{method=>"{action.method}",steady_state=>1,t_start=>0,'
-            f't_end=>{max_time},n_steps=>1,suffix=>"{equil_suffix}",print_functions=>1}})')
+        # The equilibration phase relaxes to STEADY STATE (steady_state=>1; t_end is only the
+        # max-time bound) -- EXCEPT when a fixed equilibration duration is given (required for NF,
+        # which has no steady-state solve): then it integrates to that fixed t_end, no steady_state.
+        opts = _nf_action_opts(action)
+        if action.equil_fixed_time is not None:
+            _ft = action.equil_fixed_time
+            ft = str(int(_ft)) if float(_ft).is_integer() else repr(_ft)
+            self.actions.append(
+                f'simulate({{method=>"{action.method}",t_start=>0,'
+                f't_end=>{ft},n_steps=>1,suffix=>"{equil_suffix}",print_functions=>1{opts}}})')
+        else:
+            self.actions.append(
+                f'simulate({{method=>"{action.method}",steady_state=>1,t_start=>0,'
+                f't_end=>{max_time},n_steps=>1,suffix=>"{equil_suffix}",print_functions=>1{opts}}})')
         for pname, pval in action.measure_perturbations:
             self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
         self.actions.append(self._timecourse_line(action))
@@ -1591,17 +1623,24 @@ class TimeCourse(Action):
         self.equil_perturbations = []     # [(param, value)] setParameter before equilibration
         self.measure_perturbations = []   # [(param, value)] setParameter before measurement
         self.equil_max_time = 1e6         # steady-state run's max-time bound (early-stops sooner)
+        self.equil_fixed_time = None      # fixed equilibration duration (NF: no steady-state solve)
+        # Optional NFsim options (edition-2 method: nf); None => omitted from the emitted action.
+        self.gml = None                   # global molecule limit
+        self.complex = None               # track molecular complexes (0/1)
 
     def set_preequilibration(self, equil_perturbations, measure_perturbations,
-                             equil_max_time=1e6):
+                             equil_max_time=1e6, equil_fixed_time=None):
         """Mark this time course as the measured phase of a pre-equilibration protocol
         (ADR-0052). ``equil_perturbations`` are applied (as absolute ``setParameter``) before
-        the unmeasured steady-state equilibration; ``measure_perturbations`` after it, before
-        this measurement. Each is a list of ``(param_name, value)`` pairs."""
+        the equilibration; ``measure_perturbations`` after it, before this measurement. Each is
+        a list of ``(param_name, value)`` pairs. The equilibration relaxes to STEADY STATE by
+        default; ``equil_fixed_time`` instead runs it for that fixed duration (no steady-state
+        solve) -- required for NF, which has no steady-state solve."""
         self.preequilibrate = True
         self.equil_perturbations = list(equil_perturbations)
         self.measure_perturbations = list(measure_perturbations)
         self.equil_max_time = equil_max_time
+        self.equil_fixed_time = None if equil_fixed_time is None else float(equil_fixed_time)
 
 class ParamScan(Action):
     """A parameter-scan action parsed from the PyBNF configuration file.
@@ -1647,6 +1686,9 @@ class ParamScan(Action):
         # steady state (PEtab time=inf) rather than to a fixed endpoint. 0 = the legacy
         # fixed-endpoint behaviour; the new-era loader sets 1 (with no ``time``).
         self.steady_state = 0
+        # Optional NFsim options (edition-2 method: nf); None => omitted from the emitted action.
+        self.gml = None                   # global molecule limit
+        self.complex = None               # track molecular complexes (0/1)
 
         # ``t_end`` is an accepted alias for ``time`` (the integration end time): for a
         # fixed-endpoint scan it is the readout time, and for a steady-state scan the

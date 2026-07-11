@@ -404,12 +404,28 @@ def parse(s):
     # per-row placeholder tokens config.py attaches to this experiment's exp Data.
     exp_measparams_field = pp.Group(
         pp.Suppress(',') + pp.CaselessLiteral('measurement_params') + colon + param_file)
+    # The optional ``equil_t_end:`` field (edition-2 NF pre-equilibration): a FIXED equilibration
+    # duration. Pre-equilibration (ADR-0052) equilibrates *to steady state* (``steady_state=>1``)
+    # by default, but NFsim has no steady-state solve, so an NF pre-equilibration must instead run
+    # its (unmeasured) equilibration phase for a fixed time -- this field gives that time. When
+    # present the equilibration integrates to ``equil_t_end`` WITHOUT steady_state (any method);
+    # it is required for a ``method: nf`` pre-equilibration. A single number; config.py by label.
+    exp_equil_tend_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('equil_t_end') + colon + num)
+    # The optional NFsim options ``gml:`` (global molecule limit) and ``complex:`` (track
+    # molecular complexes; 0/1) for a ``method: nf`` experiment -- the network-free counterparts
+    # of atol/rtol, carried into the synthesized NFsim simulate/parameter_scan (a large
+    # aggregating model needs a raised gml and complex bookkeeping). Ignored off the NF path.
+    # Single numbers; config.py reads them by label.
+    exp_gml_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('gml') + colon + num)
+    exp_complex_field = pp.Group(pp.Suppress(',') + pp.CaselessLiteral('complex') + colon + num)
     experiment_gram = experiment_key + colon - exp_name + \
         (pp.Optional(exp_condition_field) & pp.Optional(exp_preequilibrate_field)
          & pp.Optional(exp_model_field) & exp_data_field
          & pp.Optional(exp_type_field) & pp.Optional(exp_method_field)
          & pp.Optional(exp_tend_field) & pp.Optional(exp_tstart_field)
-         & pp.Optional(exp_nsteps_field) & pp.Optional(exp_measparams_field)) - comment
+         & pp.Optional(exp_nsteps_field) & pp.Optional(exp_measparams_field)
+         & pp.Optional(exp_equil_tend_field) & pp.Optional(exp_gml_field)
+         & pp.Optional(exp_complex_field)) - comment
 
     # new-era observable grammar (ADR-0028) -- a column-header override:
     #   observable: <entity>, column: <header>

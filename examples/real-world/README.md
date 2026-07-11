@@ -45,45 +45,53 @@ bngsim backend (see "How these are validated" and "Known limitations" below):
 | [`receptor`](receptor/) | ligand/receptor, BioNetFit 1 ex 5 | **ODE** | pre-equilibration (`preequilibrate:` + gate parameter), `sos` | ✅ validated |
 | [`igf1r`](igf1r/) | IGF1R competition binding, Erickson et al. | **ODE** (network-generating) | dose-response scan, whole-fit `normalization = init`, `chi_sq`, refinement | ✅ validated |
 | [`tlbr`](tlbr/) | trivalent-ligand aggregation, BioNetFit 1 ex 3 | **NF** (NFsim) | `method: nf` dose-response scan (fixed `t_end`) | ✅ validated |
-| [`egfr_nf`](egfr_nf/) | EGFR clustering, Kozer 2013 (BioNetFit 1 ex 2) | **NF** (NFsim) | `method: nf`, time course + dose-response scan | 🔶 builds (XML); NFsim fit slow |
+| [`egfr_nf`](egfr_nf/) | EGFR clustering, Kozer 2013 (BioNetFit 1 ex 2) | **NF** (NFsim) | `method: nf`, time course + dose-response scan, `gml:`/`complex:` | 🔶 runs; heavy (NFsim) |
 | [`egfr_ode`](egfr_ode/) | EGFR activation, Kozer 2013 (Problem 2) | **ODE** (network-generating) | time course + dose-response scan, `chi_sq`, scaled-observable functions | 🔶 cluster-scale network |
 | [`fceri_gamma`](fceri_gamma/) | FcεRI γ-chain, Gupta & Mendes 2018 (Problem 3) | **SSA** (Gillespie) | `method: ssa`, `smoothing` over replicate trajectories | 🔶 cluster-scale (58k rxns) |
-| [`receptor_nf`](receptor_nf/) | ligand/receptor, BioNetFit 1 ex 6 | **NF** (NFsim) | `method: nf` + pre-equilibration | ⛔ builds; fit blocked |
+| [`receptor_nf`](receptor_nf/) | ligand/receptor, BioNetFit 1 ex 6 | **NF** (NFsim) | `method: nf` + pre-equilibration (`equil_t_end:`) | 🔶 runs; heavy (NFsim) |
 
-✅ validated end-to-end through bngsim (runs in the `recovery` test tier) · 🔶 builds but
-too heavy to run routinely — reference only, backend-free tier only (`egfr_nf` generates its
-NFsim XML and runs, just slowly; `egfr_ode`/`fceri_gamma` have cluster-scale networks whose
-generation is impractical in CI) · ⛔ builds but the fit cannot complete through bngsim yet
-(see below).
+✅ validated end-to-end through bngsim (runs in the `recovery` test tier) · 🔶 builds and runs
+but too heavy to run routinely (reference only, backend-free tier only): `egfr_nf`/`receptor_nf`
+run real NFsim but a full fit is cluster-scale (NFsim on ~10³ molecules can exceed
+`wall_time_sim`), and `egfr_ode`/`fceri_gamma` have cluster-scale networks whose generation is
+impractical in CI.
 
 ## A bug this surfaced (and its fix)
 
 Expressing the NFsim examples on the edition-2 surface exposed a real integration gap — the
-kind #380 exists to catch. Edition-2 synthesizes, for every experiment, a leading
-`resetConcentrations()` (IC hygiene) and sets `generates_network=True`. Both are wrong for a
-network-free model: the bngsim NF bridge *rejects* `resetConcentrations()` (NFsim re-seeds
-each run, so it is a no-op), and an NF model's reaction network is unbounded and cannot be
-generated. So **no** edition-2 `method: nf` experiment could run through bngsim. The fix
-(in `pybnf/pset.py`) suppresses both on the NF path, so an NF experiment now classifies as
-the NF bridge and routes to `writeXML` → `BngsimNfModel` — exactly as a hand-written NF
-actions block does. ODE/SSA synthesis is unchanged; guarded by
-`tests/test_real_world_examples.py::test_real_world_nf_synthesis_is_network_free`.
+kind #380 exists to catch — and drove three fixes.
 
-## Known limitations (examples that do not yet fully run through bngsim)
+1. **NF experiments could not route to the NF bridge.** Edition-2 synthesizes, for every
+   experiment, a leading `resetConcentrations()` (IC hygiene) and sets `generates_network=True`.
+   Both are wrong for a network-free model: the bngsim NF bridge *rejects* `resetConcentrations()`
+   (NFsim re-seeds each run, so it is a no-op), and an NF model's reaction network is unbounded
+   and cannot be generated. So **no** edition-2 `method: nf` experiment could run through bngsim.
+   Fixed in `pybnf/pset.py`: both are suppressed on the NF path, so an NF experiment classifies as
+   the NF bridge and routes to `writeXML` → `BngsimNfModel`, as a hand-written NF actions block does.
+2. **NF pre-equilibration hung.** Edition-2 pre-equilibration equilibrates *to steady state*, but
+   NFsim has no steady-state solve, so it integrated the equilibration to t≈1e6 event-by-event and
+   never finished. Added the **`equil_t_end:`** field: a `method: nf` pre-equilibration runs its
+   equilibration for that fixed duration instead (`receptor_nf` uses the classic 600 s); omitting it
+   on the NF path is now a clear config-time error, not a hang.
+3. **NF actions dropped NFsim options.** Added the **`gml:`** (global molecule limit) and
+   **`complex:`** (track complexes) experiment fields, carried into the synthesized NFsim
+   `simulate`/`parameter_scan` — `egfr_nf` now sets `gml=>1000000, complex=>1` as its classic model did.
 
-- **`receptor_nf` — NF pre-equilibration.** The model builds through the pure-NF bridge, but
-  edition-2 pre-equilibration equilibrates *to steady state* via a large-`t_end` bound, and
-  the bngsim **NF backend has no steady-state solve** (that path exists only for the net/ODE
-  backend). NFsim therefore tries to integrate the equilibration to t≈1e6 event-by-event and
-  never finishes. The classic model equilibrated for a fixed 600 s; expressing that would need
-  a *fixed-time* NF-equilibration knob the new-era surface does not yet offer.
-- **`egfr_nf` — NFsim options.** Builds and runs, but the synthesized NF action does not carry
-  the `gml`/`complex` NFsim options the classic model set (`gml=>1000000`, `complex=>1`) for
-  the large EGFR clustering state space, so a full fit is slow. Kept as a reference example.
-- **`egfr_ode`, `fceri_gamma` — cluster-scale.** The Kozer EGFR crosslinking network takes
-  >10 min to generate; the FcεRI network is ~58k reactions and its SSA fit is a cluster job.
-  Both build correctly but are impractical to run in CI. SSA-through-bngsim itself is covered
-  at the fixture level by `tests/test_bngsim_ssa_replaces_rr.py` (#379).
+ODE/SSA synthesis is unchanged throughout; guarded by the backend-free tests in
+`tests/test_real_world_examples.py` (`…_nf_synthesis_is_network_free`,
+`test_receptor_nf_equilibrates_for_a_fixed_time`, `test_egfr_nf_carries_nfsim_options`,
+`test_nf_preequilibration_without_equil_t_end_errors`).
+
+## Known limitations (examples too heavy to run routinely)
+
+- **`receptor_nf`, `egfr_nf` — NFsim is cluster-scale.** Both now run real NFsim through bngsim,
+  but a full fit is a cluster job: NFsim steps event-by-event over ~10³ molecules, and some
+  parameter sets exceed the (default 1-hour) `wall_time_sim` per simulation. They stay in the
+  backend-free tier, matching the paper's use of a cluster for these problems.
+- **`egfr_ode`, `fceri_gamma` — cluster-scale networks.** The Kozer EGFR crosslinking network takes
+  >10 min to generate; the FcεRI network is ~58k reactions and its SSA fit is a cluster job. Both
+  build correctly but are impractical to run in CI. SSA-through-bngsim itself is covered at the
+  fixture level by `tests/test_bngsim_ssa_replaces_rr.py` (#379).
 
 ## Running an example
 

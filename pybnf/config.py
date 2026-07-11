@@ -1338,6 +1338,7 @@ class Configuration:
                         name, model, base, method, points, action_type, fields, consumed_conditions)
                 elif action_type == 'time_course':
                     action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+                    self._attach_nf_options(action, fields, method)
                 else:
                     # parameter_scan / dose-response (ADR-0046): the data's independent-variable
                     # column (col 0) is the swept parameter -- its values are the doses, fed to the
@@ -1354,6 +1355,7 @@ class Configuration:
                     else:
                         scan['steady_state'] = 1
                     action = ParamScan(scan, explicit_points=points)
+                    self._attach_nf_options(action, fields, method)
                 model.add_action(action)
                 self.exp_data.setdefault(base, {})[data_key] = stacked
                 self.mapping.setdefault(base, set()).add(data_key)
@@ -1438,6 +1440,19 @@ class Configuration:
             perts.append((mut.name, mut.value))
         return perts
 
+    @staticmethod
+    def _attach_nf_options(action, fields, method):
+        """Carry the optional NFsim options (``gml:``, ``complex:``) from an experiment's fields
+        onto its synthesized action, for a ``method: nf`` experiment. No-op off the NF path, so
+        an ODE/SSA action is unchanged. :meth:`pybnf.pset.BNGLModel` emits them into the NFsim
+        simulate/parameter_scan."""
+        if method != 'nf':
+            return
+        if fields.get('gml') is not None:
+            action.gml = fields['gml']
+        if fields.get('complex') is not None:
+            action.complex = fields['complex']
+
     def _build_preequilibration_action(self, name, model, base, method, points, action_type,
                                        fields, consumed_conditions):
         """Build the measurement ``TimeCourse`` for a pre-equilibration experiment (ADR-0052)
@@ -1462,8 +1477,18 @@ class Configuration:
             consumed_conditions[base].add(meas_cond)
         else:
             measure_perts = []
+        # NFsim has no steady-state solve, so an NF pre-equilibration cannot equilibrate to
+        # steady state; it must run its equilibration phase for a FIXED time given by
+        # ``equil_t_end:`` (any method may use it; ODE/SSA default to a steady-state solve).
+        equil_t_end = fields.get('equil_t_end')
+        if method == 'nf' and equil_t_end is None:
+            raise PybnfError(
+                f"Experiment '{name}' is a network-free (method: nf) pre-equilibration, but NFsim "
+                "has no steady-state solve. Give the equilibration a fixed duration with "
+                "'equil_t_end: <time>' (the interval to run before the measured phase).")
         action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
-        action.set_preequilibration(equil_perts, measure_perts)
+        action.set_preequilibration(equil_perts, measure_perts, equil_fixed_time=equil_t_end)
+        self._attach_nf_options(action, fields, method)
         return action
 
     def _resolve_experiment_model(self, name, model_ref):

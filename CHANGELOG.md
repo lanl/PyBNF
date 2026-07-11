@@ -15,6 +15,17 @@ All notable changes to PyBNF are documented below. This project adheres to
   PyBNF's bngsim-backed default path on representative, paper-scale models (issue #380),
   with `tests/test_real_world_examples.py` running a backend-free well-formedness tier in
   default CI and a real-bngsim end-to-end tier under `-m recovery`.
+- **Network-free (NFsim) options on the edition-2 experiment surface.** A `method: nf`
+  experiment now accepts `gml:` (global molecule limit) and `complex:` (track molecular
+  complexes) — the network-free counterparts of `atol`/`rtol` — carried into the synthesized
+  NFsim `simulate`/`parameter_scan` so a large aggregating model (e.g. the EGFR clustering
+  fit) can raise its molecule limit and track complexes as its classic hand-written action did.
+- **Fixed-time NF pre-equilibration (`equil_t_end:`).** Edition-2 pre-equilibration (ADR-0052)
+  equilibrates *to steady state*, but NFsim has no steady-state solve. A `method: nf`
+  pre-equilibration now takes `equil_t_end: <time>` and runs its (unmeasured) equilibration
+  phase for that fixed duration instead; omitting it on the NF path is a clear config-time
+  error rather than an unbounded run. ODE/SSA pre-equilibration is unchanged (still
+  steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Fixed
 - **Edition-2 network-free (NFsim) experiments now run through the bngsim bridge.** A

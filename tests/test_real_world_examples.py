@@ -36,6 +36,7 @@ import pytest
 
 from . import recovery_harness as H
 from .context import config, parse
+from pybnf.printing import PybnfError
 from pybnf.registry import FIT_TYPE_REGISTRY
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,49 @@ def test_real_world_nf_synthesis_is_network_free(example, tmp_path):
         f'the bngsim NF bridge)')
     assert classify_actions_for_bngsim(m.actions) == 'nf', (
         f'{example.folder}: actions do not classify as the bngsim NF bridge')
+
+
+def test_receptor_nf_equilibrates_for_a_fixed_time(tmp_path):
+    """NF pre-equilibration uses a FIXED-time equilibration (``equil_t_end:``), not a
+    steady-state solve (NFsim has none): the unmeasured equilibration simulate integrates to
+    t_end without ``steady_state=>1``. Backend-free."""
+    ex = _manifest.example_by_folder('receptor_nf')
+    m = list(_load_conf(ex, tmp_path).models.values())[0]
+    equil = [a for a in m.actions if 'preequil' in a]
+    assert len(equil) == 1, m.actions
+    assert 'steady_state' not in equil[0], f'NF equilibration must not request steady_state: {equil[0]}'
+    assert 't_end=>600' in equil[0], f'NF equilibration should run to the fixed equil_t_end: {equil[0]}'
+
+
+def test_egfr_nf_carries_nfsim_options(tmp_path):
+    """The ``gml:``/``complex:`` NFsim options ride into every synthesized NF action.
+    Backend-free."""
+    ex = _manifest.example_by_folder('egfr_nf')
+    m = list(_load_conf(ex, tmp_path).models.values())[0]
+    sims = [a for a in m.actions if a.startswith(('simulate', 'parameter_scan'))]
+    assert sims, m.actions
+    for a in sims:
+        assert 'gml=>1000000' in a and 'complex=>1' in a, f'NF action missing gml/complex: {a}'
+
+
+def test_nf_preequilibration_without_equil_t_end_errors(tmp_path):
+    """A network-free pre-equilibration MUST give a fixed equilibration time (``equil_t_end:``)
+    because NFsim has no steady-state solve -- omitting it is a clear error at config time, not a
+    hang at run time. Backend-free (the error is raised during action synthesis)."""
+    ex = _manifest.example_by_folder('receptor_nf')
+    model, data = ex.path / 'receptor_nf.bngl', ex.path / 'receptor_nf.exp'
+    conf = '\n'.join([
+        'edition = 2', 'bngl_backend = bngsim', f'output_dir = {tmp_path}/out',
+        f'model: {model}', 'job_type = ss', 'objective = sos',
+        'population_size = 4', 'max_iterations = 1',
+        'condition: noligand,   perturbations: Ligand_isPresent = 0',
+        'condition: withligand, perturbations: Ligand_isPresent = 1',
+    ] + [f'loguniform_var = {p} 0.01 100'
+         for p in ('KD1', 'km1', 'K2RT', 'km2', 'kphos', 'kdephos')]
+        + [f'experiment: receptor_nf, preequilibrate: noligand, condition: withligand, '
+           f'method: nf, data: {data}']) + '\n'
+    with pytest.raises(PybnfError, match='(?i)equil_t_end'):
+        config.Configuration(parse.ploop(conf.splitlines(keepends=True)))
 
 
 # --------------------------------------------------------------------------- #
