@@ -36,6 +36,7 @@ import pytest
 
 from . import recovery_harness as H
 from .context import config, parse
+from pybnf import _bngsim_caps
 from pybnf.printing import PybnfError
 from pybnf.registry import FIT_TYPE_REGISTRY
 
@@ -115,7 +116,12 @@ def test_real_world_nf_synthesis_is_network_free(example, tmp_path):
     NF bridge rejects it; NFsim re-seeds each run) and ``generates_network`` left False
     (NFsim models have unbounded networks) -- so it classifies as the NF bridge and
     routes to writeXML -> BngsimNfModel rather than (impossible) network generation.
-    Backend-free."""
+
+    The network-free *shape* checks are backend-free (run everywhere). The NF-bridge
+    routing check needs bngsim: ``classify_actions_for_bngsim`` normalizes the method
+    through the vendored NFsim engine, so on a bngsim-less install (PYBNF_NO_BNGSIM /
+    public CI) it returns None, not 'nf' -- it is only asserted where bngsim can perform
+    the classification."""
     from pybnf.bngsim_model.classification import classify_actions_for_bngsim
     conf = _load_conf(example, tmp_path)
     m = list(conf.models.values())[0]
@@ -123,8 +129,9 @@ def test_real_world_nf_synthesis_is_network_free(example, tmp_path):
     assert not any('resetConcentrations' in a for a in m.actions), (
         f'{example.folder}: synthesized NF actions contain resetConcentrations (rejected by '
         f'the bngsim NF bridge)')
-    assert classify_actions_for_bngsim(m.actions) == 'nf', (
-        f'{example.folder}: actions do not classify as the bngsim NF bridge')
+    if _bngsim_caps.BNGSIM_AVAILABLE:
+        assert classify_actions_for_bngsim(m.actions) == 'nf', (
+            f'{example.folder}: actions do not classify as the bngsim NF bridge')
 
 
 def test_receptor_nf_equilibrates_for_a_fixed_time(tmp_path):
