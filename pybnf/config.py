@@ -707,7 +707,11 @@ class Configuration:
             # Initialize model type based on extension
             try:
                 if re.search(r'\.bngl$', mf):
-                    model = BNGLModel(mf, suppress_free_param_error=(self.config['fit_type']=='check' or modern))
+                    # #473: the model-scoped generate_network conf option rides into the
+                    # BNGLModel so its edition-2-synthesized generate_network line carries the
+                    # cap (max_stoich / max_agg / max_iter). None when unset -> the bare default.
+                    model = BNGLModel(mf, suppress_free_param_error=(self.config['fit_type']=='check' or modern),
+                                      generate_network_options=self.config.get('generate_network'))
                     model.bng_command = self._absolute(self.config['bng_command'])
                     logger.debug(f'Set model {mf} command to {model.bng_command}')
                 elif re.search(r'\.xml$', mf):

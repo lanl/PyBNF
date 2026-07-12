@@ -1169,13 +1169,32 @@ Algorithm Options
 
     * ``smoothing = 2``
     
+**generate_network**
+  Model-scoped options for BNGL network generation (edition 2). When a model carries no
+  ``begin actions`` block — the edition-2 convention, where the ``experiment:`` lines
+  synthesize the simulations — PyBNF generates the reaction network with a bare
+  ``generate_network({overwrite=>1})``. For a model whose reaction network is finite only
+  under a stoichiometry / aggregation / iteration cap (crosslinking, aggregation,
+  polymerization), that bare default would generate an *unbounded* network and never
+  terminate. This key supplies the cap the stripped actions block used to carry: its value is
+  a free-form BNGL ``generate_network`` options fragment, injected as
+  ``generate_network({overwrite=>1, <options>})``. An explicit ``generate_network`` line in
+  the model always takes precedence (this only fills the synthesized default).
+
+  Default: none (the bare ``generate_network({overwrite=>1})``)
+
+  Examples:
+
+    * ``generate_network = max_stoich=>{EGF=>4,EGFR=>4}``
+    * ``generate_network = max_stoich=>{EGF=>4,EGFR=>4}, max_iter=>3, max_agg=>8``
+
 **wall_time_gen**
-  Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded. 
-  
+  Maximum time (in seconds) to wait to generate the network for a BNGL model. Will cause the program to exit if exceeded.
+
   Default: 3600
-  
-  Example: 
-  
+
+  Example:
+
     * ``wall_time_gen = 600``
     
 **wall_time_sim**

@@ -481,7 +481,8 @@ class BNGLModel(Model):
 
     """
 
-    def __init__(self, bngl_file, pset=None, suppress_free_param_error=False):
+    def __init__(self, bngl_file, pset=None, suppress_free_param_error=False,
+                 generate_network_options=None):
         """
         Loads the model from the given .bngl file
 
@@ -489,8 +490,17 @@ class BNGLModel(Model):
         :param pset: PSet to initialize the model with. Defaults to None
         :param suppress_free_param_error: If True, suppress the error that would occur if the model has no free
         parameters declared
+        :param generate_network_options: Optional free-form BNGL options fragment (the
+        ``generate_network`` conf key, #473) appended to the synthesized
+        ``generate_network({overwrite=>1, <opts>})`` when the model carries no explicit
+        ``generate_network`` line. None (default) yields the bare line.
         """
         self.file_path = bngl_file
+        # Model-scoped network-generation options (#473): read by
+        # _synthesized_generate_network_line at every default site (__init__ here, and the
+        # edition-2 add_action / pre-equilibration synthesis). An explicit model
+        # generate_network line, captured below, always wins over this default.
+        self.generate_network_options = generate_network_options
         self.name = re.sub(".bngl", "", self.file_path[self.file_path.rfind("/")+1:])
         self.suffixes = []  # list of 2-tuples (sim_type, prefix)
         self.bng_command = ''
@@ -636,7 +646,7 @@ class BNGLModel(Model):
             raise ModelError("'begin parameters' not found in BNGL file")
         self.model_lines = [all_lines[i] for i in range(len(all_lines)) if i not in skip_lines]
         if self.generates_network and self.generate_network_line is None:
-            self.generate_network_line = 'generate_network({overwrite=>1})'
+            self.generate_network_line = self._synthesized_generate_network_line()
 
         # The full ``begin parameters`` namespace: every parameter id, in source
         # order. Distinct from ``param_names`` (the legacy ``__FREE`` tokens scanned
@@ -970,6 +980,23 @@ class BNGLModel(Model):
             ds[suff[1]] = data
         return ds
 
+    def _synthesized_generate_network_line(self):
+        """The default ``generate_network`` action synthesized when the model carries no
+        explicit one (the edition-2 surface strips the ``begin actions`` block).
+
+        Bare ``generate_network({overwrite=>1})`` unless a model-scoped ``generate_network``
+        conf option (#473) supplies caps -- ``max_stoich`` / ``max_agg`` / ``max_iter`` ... --
+        which are injected inside the braces as ``generate_network({overwrite=>1, <opts>})``.
+        Without the option a model whose reaction network is finite only under a stoichiometry
+        cap would synthesize an *unbounded* network (a silent hang); with it, the job config
+        expresses the cap that the stripped actions block used to carry. An explicit
+        ``generate_network`` line in the model always wins -- it is captured in ``__init__``
+        before any default fires, so this is only ever the fill-in for a model that has none."""
+        opts = (self.generate_network_options or '').strip().strip(',').strip()
+        if opts:
+            return 'generate_network({overwrite=>1,%s})' % opts
+        return 'generate_network({overwrite=>1})'
+
     def add_action(self, action):
         """Append a config-file action as a BNGL action string.
 
@@ -1022,7 +1049,7 @@ class BNGLModel(Model):
         if not is_nf:
             self.generates_network = True
             if self.generate_network_line is None:
-                self.generate_network_line = 'generate_network({overwrite=>1})'
+                self.generate_network_line = self._synthesized_generate_network_line()
         # Re-derive the stochastic flag from the synthesized action's method (#471): the
         # edition-2 surface has no ``begin actions`` block for __init__ to scan, so a
         # ``method: ssa``/``nf`` experiment would otherwise leave the model flagged
@@ -1112,7 +1139,7 @@ class BNGLModel(Model):
         if not is_nf:
             self.generates_network = True
             if self.generate_network_line is None:
-                self.generate_network_line = 'generate_network({overwrite=>1})'
+                self.generate_network_line = self._synthesized_generate_network_line()
         # Re-derive the stochastic flag from the synthesized action's method (#471): both the
         # unmeasured equilibration and the measurement simulate use ``action.method``, so a
         # stochastic engine makes the whole model stochastic for the ``smoothing`` check.

@@ -293,6 +293,17 @@ class GlobalConfig(PyBNFConfigModel):
     wall_time_gen: int = 3600
     wall_time_sim: Optional[int] = None   # chosen when loading models
     normalization: Any = None
+    # Model-scoped network-generation options for edition-2 synthesis (#473). When the
+    # edition-2 surface strips the model's ``begin actions`` block, pybnf synthesizes a
+    # bare ``generate_network({overwrite=>1})``; this free-form BNGL options fragment --
+    # e.g. ``max_stoich=>{EGF=>4,EGFR=>4}`` -- is injected as the additional options so a
+    # model whose reaction network is finite only under a stoichiometry / aggregation cap
+    # can express that cap in the JOB config rather than re-introducing an actions block.
+    # Consumed by pset.BNGLModel (both the BNG2.pl and bngsim ``.net`` paths read the
+    # synthesized line); an explicit ``generate_network`` line in the model always wins.
+    # None (default) preserves the bare line -- byte-identical to pre-#473 for any job
+    # that does not set it.
+    generate_network: Optional[str] = None
 
     # --- cluster ---
     cluster_type: Optional[str] = None

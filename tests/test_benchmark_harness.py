@@ -53,7 +53,9 @@ import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness 
 # ArviZ InferenceData artifact is opt-in, so these pre-migration confs never carried it),
 # and qualitative_loss / qualitative_scale (defaults 'auto' / None -- the qualitative-penalty
 # family override and the estimated-scale tie both no-ops on these sampler confs, which carry no
-# constraints anyway).
+# constraints anyway), and generate_network (#473; defaults to None == the bare
+# generate_network({overwrite=>1}) -- the edition-2 network-generation cap surface, a no-op on
+# these pre-migration sampler confs, which carry no crosslinking BNGL model).
 # These always carry no-op defaults here, so excluding them keeps the oracle an
 # independent *pre-migration* witness without regenerating it for keys the original confs
 # could not have carried.
@@ -61,7 +63,7 @@ _EXCLUDE = frozenset({
     'bng_command', 'output_dir', 'refine_method', 'noise_location',
     'initialization_distribution', 'edition', 'objective', 'profile_objective',
     'job_type', 'embed_best_fit_data', 'smooth_plot_points', 'output_inference_data',
-    'qualitative_loss', 'qualitative_scale',
+    'qualitative_loss', 'qualitative_scale', 'generate_network',
 })
 
 

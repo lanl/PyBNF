@@ -54,6 +54,35 @@ class TestModel:
         assert model.generates_network
         assert model.generate_network_line == 'generate_network({overwrite=>1})'
 
+    def test_generate_network_option_augments_default(self):
+        """#473: the model-scoped ``generate_network`` conf option is injected into the
+        synthesized default line when the model carries no explicit ``generate_network``
+        (the edition-2 stripped-actions case). Simple_nogen has a simulate but no
+        generate_network line, so the option supplies the cap the actions block would
+        have carried -- without it a crosslinking model synthesizes an unbounded network."""
+        model = pset.BNGLModel(self.file6, generate_network_options='max_stoich=>{EGF=>4,EGFR=>4}')
+        assert model.generates_network
+        assert model.generate_network_line == 'generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})'
+
+    def test_generate_network_option_none_is_bare_default(self):
+        """#473: with no option (None -- the default for every job that does not set the
+        key), the synthesized line is byte-identical to the pre-#473 bare default."""
+        model = pset.BNGLModel(self.file6, generate_network_options=None)
+        assert model.generate_network_line == 'generate_network({overwrite=>1})'
+
+    def test_generate_network_option_normalizes_leading_comma(self):
+        """#473: the injected fragment is forgiving of surrounding whitespace and a stray
+        leading/trailing comma, so ``, max_iter=>3 `` still yields a clean single-comma join."""
+        model = pset.BNGLModel(self.file6, generate_network_options=' , max_iter=>3 ')
+        assert model.generate_network_line == 'generate_network({overwrite=>1,max_iter=>3})'
+
+    def test_generate_network_option_model_line_wins(self):
+        """#473 precedence: an explicit ``generate_network`` line in the model always wins
+        over the conf option (it is captured in __init__ before any default fires). Simple
+        carries ``generate_network({overwrite=>1})``, so the option is ignored."""
+        model = pset.BNGLModel(self.file1, generate_network_options='max_stoich=>{EGF=>4,EGFR=>4}')
+        assert model.generate_network_line == 'generate_network({overwrite=>1})'
+
     def test_initialize(self):
         model1 = pset.BNGLModel(self.file1)
         assert model1.param_names == ('kase__FREE', 'koff__FREE', 'pase__FREE')

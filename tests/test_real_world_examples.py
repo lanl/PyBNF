@@ -157,6 +157,20 @@ def test_egfr_nf_carries_nfsim_options(tmp_path):
         assert 'gml=>1000000' in a and 'complex=>1' in a, f'NF action missing gml/complex: {a}'
 
 
+def test_egfr_ode_carries_generate_network_options(tmp_path):
+    """#473: the model-scoped ``generate_network`` conf option rides into the synthesized
+    ``generate_network`` line. The Kozer EGFR ectodomain model crosslinks (EGF/EGFR are
+    multivalent), so its reaction network is finite ONLY under a ``max_stoich`` cap; with the
+    edition-2 actions block stripped, the cap lives in the job config. Without this the
+    synthesized network is unbounded and generation never terminates. Backend-free (the ODE
+    ``egfr_nf`` NFsim guard's deterministic sibling)."""
+    ex = _manifest.example_by_folder('egfr_ode')
+    m = list(_load_conf(ex, tmp_path).models.values())[0]
+    assert m.generates_network, 'egfr_ode should generate a reaction network'
+    assert m.generate_network_line == 'generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})', (
+        f'egfr_ode generate_network line missing the max_stoich cap: {m.generate_network_line}')
+
+
 def test_nf_preequilibration_without_equil_t_end_errors(tmp_path):
     """A network-free pre-equilibration MUST give a fixed equilibration time (``equil_t_end:``)
     because NFsim has no steady-state solve -- omitting it is a clear error at config time, not a

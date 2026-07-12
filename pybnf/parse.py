@@ -326,6 +326,26 @@ def parse(s):
     data_key = pp.CaselessLiteral('data')
     data_gram = data_key - equals - _DelimitedList(exp_file) - comment
 
+    # model-scoped network-generation options (#473):
+    #   generate_network = max_stoich=>{EGF=>4,EGFR=>4}
+    #   generate_network = max_stoich=>{EGF=>4,EGFR=>4}, max_iter=>3, max_agg=>8
+    # A free-form BNGL options fragment injected into the edition-2-synthesized
+    # ``generate_network({overwrite=>1, <opts>})`` (pset.BNGLModel), so a model whose
+    # reaction network is finite only under a stoichiometry / aggregation cap can
+    # express that cap in the JOB config once its ``begin actions`` block is stripped
+    # (edition-2 convention) -- without it the bare default synthesizes an unbounded
+    # (hanging) network. The value carries ``=>`` / ``{}`` / commas / spaces (e.g.
+    # ``max_stoich=>{EGF=>4,EGFR=>4}, max_iter=>3``), too rich for the space-splitting
+    # ``string`` token, so it reuses the permissive rest-of-line regex the analytical
+    # ``expression`` / ``callable`` values do; pset injects it verbatim and BNG / bngsim
+    # validate the fragment (a malformed option gives a pointed BNG error there, not a
+    # parse failure). Honors a trailing ``#`` comment. An explicit ``generate_network``
+    # line in the model always wins (captured in BNGLModel.__init__); this only fills the
+    # synthesized default.
+    gennet_key = pp.CaselessLiteral('generate_network')
+    gennet_value = pp.Regex(r'[^#\n]+').set_parse_action(lambda t: t[0].strip())
+    gennet_gram = gennet_key - equals - gennet_value - comment
+
     # mutant model grammar
     mutkey = pp.CaselessLiteral('mutant')
     mut_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
@@ -478,7 +498,7 @@ def parse(s):
     parameter_gram = parameter_key + colon - param_id - pp.ZeroOrMore(parameter_field) - comment
 
     # check each grammar and output somewhat legible error message
-    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
+    parser = model_decl_gram | mdmgram | noise_model_gram | objective_target_gram | mode_gram | expression_gram | callable_gram | data_gram | gennet_gram | condition_gram | experiment_gram | observable_gram | parameter_gram | strgram | numgram | strnumgram | multnumgram | multstrgram | vargram | norm_modern_gram | normgram | dictgram | mutgram
     line = _parse_all(parser, s).asList()
 
     return line
@@ -852,6 +872,9 @@ def ploop(ls):  # parse loop
             elif key == 'normalization':
                 fmt = f"'{key}=s' or '{key}=s : datafile1.exp, datafile2.exp' where s is a string ('init', 'peak', " \
                       "'unit', or 'zero')"
+            elif key == 'generate_network':
+                fmt = "'generate_network = <options>' where <options> is a BNGL generate_network options fragment, " \
+                      "e.g. 'max_stoich=>{EGF=>4,EGFR=>4}' or 'max_stoich=>{EGF=>4,EGFR=>4}, max_iter=>3, max_agg=>8'"
             elif key in dictkeys:
                 fmt = f"'{key}=key1: value1, key2: value2,...' where key1, key2, etc are attributes of the {key} (see " \
                       "documentation for available options)"
