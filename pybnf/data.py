@@ -57,6 +57,42 @@ class OutputSensitivities:
         return tensor[:, col, :]
 
 
+def stack_scan_sensitivities(per_point):
+    """Stack per-dose-point forward-sensitivity tensors into one scan :class:`OutputSensitivities`.
+
+    A dose-response (``parameter_scan``) ``Data`` has one row per swept dose point,
+    each row being the *final* integrated state of an independent, reset-to-seed
+    per-point run (#476). ``per_point`` is the list of those per-point
+    :class:`OutputSensitivities` (in dose order). This takes the **last integrated
+    row** of each -- the equilibrium / end-of-run row the dose-response reads as that
+    point's value -- and stacks them down a new leading dose axis, yielding a
+    ``(n_doses, n_selectors, n_axis)`` tensor: the same layout a time-course ``Data``
+    uses, with the swept dose (the scan ``Data``'s independent variable) occupying the
+    row slot. Gradient assembly then addresses the tensor by dose row exactly as it
+    does a time-course by time row (:mod:`pybnf.gradient.assembly`).
+
+    Returns ``None`` if ``per_point`` is empty or **any** point carries no tensor, so
+    a scan strategy that cannot supply sensitivities at every dose point leaves
+    :attr:`Data.output_sensitivities` ``None`` (scalar path preserved, and the
+    gradient path reports the gap once, uniformly). The selector / axis labels are
+    taken from the first point; every point shares them (same model, same
+    observables / requested parameters).
+    """
+    if not per_point or any(p is None for p in per_point):
+        return None
+    first = per_point[0]
+    d_param = None
+    if first.d_param is not None:
+        d_param = np.stack([p.d_param[-1] for p in per_point], axis=0)
+    d_ic = None
+    if first.d_ic is not None:
+        d_ic = np.stack([p.d_ic[-1] for p in per_point], axis=0)
+    return OutputSensitivities(
+        selectors=first.selectors, param_names=first.param_names,
+        ic_species=first.ic_species, d_param=d_param, d_ic=d_ic,
+    )
+
+
 @dataclass
 class NormalizationRecord:
     """How one column of a simulated :class:`Data` was normalized (#453/#385).

@@ -482,6 +482,65 @@ def test_bngsim_sbml_param_scan_matches_existing_expectations(tmp_path):
 
 
 @pytest.mark.bngsim_sbml
+def test_bngsim_sbml_param_scan_carries_dose_axis_sensitivities(tmp_path):
+    """A gradient-path SBML dose-response scan carries ``∂species/∂θ`` stacked down the dose
+    axis (#476) -- the SBML/Antimony twin of the net-backend plumbing.
+
+    Each swept ``K3`` point is an independent, reset-to-seed ODE run, so its final-row forward
+    sensitivity w.r.t. the fitted ``K5`` is well-posed; the scan stacks those rows into
+    ``Data.output_sensitivities`` (``species:`` selectors, one row per dose). Validated against
+    a central finite difference of the scan's own species columns w.r.t. ``K5``."""
+    xml_path = _raf_xml_path()
+    action = pset.ParamScan(
+        {'param': 'K3', 'min': '2000', 'max': '8000', 'step': '2000', 'time': '1000'})
+
+    def _run_scan(k5, with_sensitivities):
+        ps = pset.PSet([
+            pset.FreeParameter('K3', 'uniform_var', 2000., 10000., 8000.),
+            pset.FreeParameter('K5', 'uniform_var', 0.1, 1., k5),
+        ])
+        model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+            xml_path, xml_path, pset=ps, actions=(action,))
+        if with_sensitivities:
+            model.enable_output_sensitivities(params=['K5'])
+        return model.execute(str(tmp_path), 'raf_scan_sens', 1000)['param_scan']
+
+    k5_0 = 0.3
+    data = _run_scan(k5_0, True)
+    sens = data.output_sensitivities
+    assert sens is not None
+    assert sens.param_names == ['K5']
+    assert sens.ic_species == []
+    # dose axis first, one param column, one selector per species column.
+    n_doses = data.data.shape[0]
+    assert sens.d_param.shape == (n_doses, len(sens.selectors), 1)
+    assert all(s.startswith('species:') for s in sens.selectors)
+
+    # Central finite difference of each scan species column w.r.t. K5, per dose row.
+    h = 1e-4
+    hi = _run_scan(k5_0 + h, False)
+    lo = _run_scan(k5_0 - h, False)
+    for col in ('R', 'I'):
+        fd = (hi.data[:, hi.cols[col]] - lo.data[:, lo.cols[col]]) / (2.0 * h)
+        got = sens.slice_for('species:%s' % col)[:, 0]
+        np.testing.assert_allclose(got, fd, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.bngsim_sbml
+def test_bngsim_sbml_param_scan_scalar_path_carries_no_sensitivities(tmp_path):
+    """With the gradient path inactive, an SBML dose-response scan has no sensitivity payload
+    (scalar path byte-identical)."""
+    xml_path = _raf_xml_path()
+    ps = pset.PSet(_raf_params())
+    action = pset.ParamScan(
+        {'param': 'K3', 'min': '2000', 'max': '8000', 'step': '2000', 'time': '1000'})
+    model = bngsim_sbml_model.BngsimSbmlModelNoTimeout(
+        xml_path, xml_path, pset=ps, actions=(action,))
+    data = model.execute(str(tmp_path), 'raf_scan_scalar', 1000)['param_scan']
+    assert data.output_sensitivities is None
+
+
+@pytest.mark.bngsim_sbml
 def test_bngsim_sbml_mutant_matches_existing_expectations(tmp_path):
     xml_path = _raf_xml_path()
     mut = pset.Mutation('K3', '*', 4)

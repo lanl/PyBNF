@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import _runtime
-from ..data import Data, OutputSensitivities
+from ..data import Data, OutputSensitivities, stack_scan_sensitivities
 from ..pset import NetModel
 from ..printing import PybnfError
 from .._seed import resolve_action_seed
@@ -186,6 +186,14 @@ class BngsimModel(NetModel):
     _scored_suffixes = None
     _sensitivity_offset = ''
     _current_action_suffix = None
+
+    # Transient per-scan sensitivity accumulator (#476): a gradient-supporting scan
+    # strategy (reset-to-seed parity steady-state or independent dose-response) fills
+    # this with the per-dose-point OutputSensitivities during ``_run_parameter_scan``,
+    # which then stacks them onto the scan Data and clears it. A class attribute (like
+    # ``_current_action_suffix``) so an object.__new__ instance is safe; set and read
+    # synchronously within one scan, never pickled.
+    _pending_scan_sens = None
 
     def __init__(self, name, acts, suffs, mutants, ls=None, nf=None, source_dir=None, protocol=None,
                  save_files=False):
@@ -1125,6 +1133,10 @@ class BngsimModel(NetModel):
         # strategies build their simulators through _sensitivity_request_kwargs,
         # and _scan_carried_state's refusal consults _action_bears_sensitivities).
         self._current_action_suffix = s.suffix
+        # Reset the per-scan sensitivity accumulator (#476): a gradient-supporting
+        # strategy (parity steady-state / independent, both reset-to-seed) fills it
+        # with the per-dose-point tensors; every other strategy leaves it None.
+        self._pending_scan_sens = None
         if carried_state:
             rows, obs_names, expr_names = self._scan_carried_state(model, s, is_bifurcate)
         elif s.use_ss and s.reset_conc and s.ss_method == _SS_METHOD_NEWTON:
@@ -1137,7 +1149,18 @@ class BngsimModel(NetModel):
             rows, obs_names, expr_names = self._scan_continuation(model, s)
         else:
             rows, obs_names, expr_names = self._scan_independent(model, s)
-        return self._assemble_scan_data(rows, obs_names, expr_names, s)
+        ds = self._assemble_scan_data(rows, obs_names, expr_names, s)
+        # Gradient path (#476): stack the per-dose-point forward sensitivities the
+        # strategy collected onto the assembled scan Data, so gradient assembly can
+        # consume d(dose-response)/dtheta. None on the scalar path (accumulator never
+        # filled) or when any point lacked a tensor -> byte-identical scalar Data.
+        pending = self._pending_scan_sens
+        if pending is not None:
+            sens = stack_scan_sensitivities(pending)
+            if sens is not None:
+                ds[s.suffix].output_sensitivities = sens
+        self._pending_scan_sens = None
+        return ds
 
     def _resolve_scan_settings(self, ps_params, is_bifurcate, action_index, timeout,
                                concentration_overrides):
@@ -1337,7 +1360,20 @@ class BngsimModel(NetModel):
         initializers, >=4 points); otherwise solves each dose-response point
         independently, falling back to a long time-course when the solver fails
         or does not converge.
+
+        Gradient path (#476): the KINSOL algebraic steady-state solve performs no
+        forward-sensitivity integration, so a *scored* Newton scan cannot supply
+        d(dose-response)/dtheta -- it refuses cleanly here (before building any
+        sensitivity-configured simulator) pointing the user at the parity default,
+        which IS differentiable. An incidental/unscored Newton scan runs unchanged.
         """
+        if self._action_bears_sensitivities():
+            raise PybnfError(
+                "Model %s: a scored parameter_scan with ss_method=>\"newton\"/\"kinsol\" "
+                "cannot be run on the gradient path -- the KINSOL algebraic steady-state "
+                "solve performs no forward-sensitivity integration. Omit ss_method (the "
+                "BNG2.pl-parity integrate-to-steady-state default IS differentiable) or "
+                "run a gradient-free fit." % self.name)
         param_name = s.param_name
         points = s.points
         method = s.method
@@ -1449,6 +1485,10 @@ class BngsimModel(NetModel):
         obs_names = []
         expr_names = []
         rows = []
+        # Gradient path (#476): each dose point is an independent, reset-to-seed
+        # sensitivity-configured ODE run, so ∂obs/∂θ at its equilibrium row is
+        # well-posed; collect it per point for stacking down the dose axis.
+        sens_slices = []
         for value in points:
             point_model = self._prepare_scan_point_model(
                 model, param_name, value,
@@ -1473,10 +1513,23 @@ class BngsimModel(NetModel):
                 obs_names = row_obs
                 expr_names = row_expr
             rows.append(row)
+            sens_slices.append(self._scan_point_sensitivities(result, print_funcs))
+        self._pending_scan_sens = sens_slices
         return rows, obs_names, expr_names
 
     def _scan_protocol(self, model, s):
-        """method=>"protocol": run the begin protocol...end protocol block per point."""
+        """method=>"protocol": run the begin protocol...end protocol block per point.
+
+        Gradient path (#476): a per-point protocol chains several simulate phases
+        (pre-equilibration, interventions) whose forward-sensitivity continuity is
+        not yet wired for a scan, so a *scored* protocol scan refuses cleanly; an
+        incidental one runs unchanged.
+        """
+        if self._action_bears_sensitivities():
+            raise PybnfError(
+                "Model %s: a scored parameter_scan with method=>\"protocol\" cannot be "
+                "run on the gradient path -- per-point protocol forward sensitivities "
+                "are not yet supported. Run a gradient-free fit." % self.name)
         param_name = s.param_name
         points = s.points
         print_funcs = s.print_funcs
@@ -1516,7 +1569,20 @@ class BngsimModel(NetModel):
         (run_network -c) carrying the previous point's equilibrium forward — the
         continuation that traces hysteresis. ss_method=>"newton" was already
         downgraded to parity in _resolve_scan_settings for bifurcate.
+
+        Gradient path (#476): each point's initial state is the previous point's
+        theta-dependent end state, so a correct sensitivity seed would have to be
+        chained from point to point (dx0/dtheta != 0) -- not yet supported. A
+        *scored* continuation / bifurcate refuses cleanly here; an incidental one
+        runs unchanged.
         """
+        if self._action_bears_sensitivities():
+            raise PybnfError(
+                "Model %s: a scored continuation parameter_scan (reset_conc=>0) or "
+                "bifurcate cannot be run on the gradient path -- each point carries a "
+                "parameter-dependent seed from the previous point, whose sensitivity "
+                "seed-chaining is not yet supported. Use a reset-to-seed dose-response "
+                "(reset_conc=>1, the default) or run a gradient-free fit." % self.name)
         param_name = s.param_name
         points = s.points
         method = s.method
@@ -1595,12 +1661,18 @@ class BngsimModel(NetModel):
         # initializers, no active setConcentration() overrides (each
         # point needs its own concentration setup, which run_batch's
         # parameter-only API cannot express), no sample_times, enough
-        # points. Issue #46.
+        # points. Issue #46. On the gradient path (#476) an ODE scan's per-point
+        # simulators are sensitivity-configured (ODE always bears, #457) and
+        # run_batch() cannot return forward output sensitivities, so such a scan
+        # takes the sequential per-point run() loop -- which both collects the
+        # tensor (for a scored scan) and avoids a doomed run_batch()+fallback.
+        gradient_ode = self._sensitivity_request is not None and method == 'ode'
         use_batch = (
             not self._net_species_initializers
             and not concentration_overrides
             and sample_times is None
             and len(points) >= 4
+            and not gradient_ode
         )
         if use_batch:
             params = [{param_name: float(v)} for v in points]
@@ -1635,6 +1707,10 @@ class BngsimModel(NetModel):
                     expr_names = row_expr
                 rows.append(row)
         else:
+            # Gradient path (#476): each independent, reset-to-seed point is a
+            # sensitivity-configured ODE run, so collect ∂obs/∂θ at its final row
+            # for stacking down the dose axis (None on the scalar path).
+            sens_slices = []
             for value in points:
                 point_model = self._prepare_scan_point_model(
                     model,
@@ -1668,6 +1744,8 @@ class BngsimModel(NetModel):
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
+                sens_slices.append(self._scan_point_sensitivities(result, print_funcs))
+            self._pending_scan_sens = sens_slices
         return rows, obs_names, expr_names
 
     def _assemble_scan_data(self, rows, obs_names, expr_names, s):
@@ -1785,6 +1863,20 @@ class BngsimModel(NetModel):
             selectors=selectors, param_names=param_names, ic_species=ic_species,
             d_param=d_param, d_ic=d_ic,
         )
+
+    def _scan_point_sensitivities(self, result, print_functions):
+        """Per-dose-point forward-sensitivity tensor for a reset-to-seed scan point (#476).
+
+        ``None`` on the scalar path (no request) or when the point's ``Result`` carries
+        no tensor (a non-ODE / non-sensitivity run); otherwise the full per-point
+        :class:`~pybnf.data.OutputSensitivities` (all integrated rows), whose final row
+        the scan stacks down the dose axis (:func:`pybnf.data.stack_scan_sensitivities`).
+        Reuses :meth:`_extract_output_sensitivities` so the scan tensor's selectors /
+        axis labels are byte-identical to the time-course path's."""
+        if self._sensitivity_request is None or not getattr(
+                result, 'has_sensitivities', False):
+            return None
+        return self._extract_output_sensitivities(result, print_functions)
 
     def _get_mutant_model_bngsim(self, mut):
         """Create a mutant copy using a cloned engine model."""

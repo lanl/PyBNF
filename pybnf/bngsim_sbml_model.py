@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .data import Data, OutputSensitivities
+from .data import Data, OutputSensitivities, stack_scan_sensitivities
 from .printing import PybnfError
 from .pset import (
     FailedSimulationError,
@@ -693,6 +693,19 @@ class BngsimSbmlModelNoTimeout(Model):
             d_param=d_param, d_ic=d_ic,
         )
 
+    def _scan_point_sensitivities(self, result):
+        """Per-dose-point forward-sensitivity tensor for a reset-to-seed SBML scan point (#476).
+
+        ``None`` on the scalar path (no request) or when the point's ``Result`` carries no
+        tensor; otherwise the full per-point :class:`~pybnf.data.OutputSensitivities` (all
+        rows), whose final row the scan stacks down the dose axis
+        (:func:`pybnf.data.stack_scan_sensitivities`). Each dose point is an independent,
+        reset-to-seed ODE run, so ``∂species/∂θ`` at its end-of-run row is well-posed."""
+        if self._sensitivity_request is None or not getattr(
+                result, 'has_sensitivities', False):
+            return None
+        return self._extract_output_sensitivities(result)
+
     def enable_output_sensitivities(self, *, params=None, ic=None):
         """Activate the gradient path: request forward sensitivities ∂g/∂θ (#385/#455).
 
@@ -923,6 +936,11 @@ class BngsimSbmlModelNoTimeout(Model):
                             points = np.linspace(act.min, act.max, act.stepnumber + 1)
                         rows = []
                         headers = None
+                        # Gradient path (#476): each independent, reset-to-seed dose
+                        # point is a sensitivity-configured ODE run, so collect
+                        # ∂species/∂θ at its final row for stacking down the dose axis
+                        # (None per point on the scalar path -> no tensor attached).
+                        sens_slices = []
 
                         for x in points:
                             engine_model = self._engine_model_for_action(
@@ -935,8 +953,12 @@ class BngsimSbmlModelNoTimeout(Model):
                             rows.append(row)
                             if headers is None:
                                 headers = point_headers
+                            sens_slices.append(self._scan_point_sensitivities(result))
 
                         data = self._data_with_headers(np.vstack(rows), headers)
+                        scan_sens = stack_scan_sensitivities(sens_slices)
+                        if scan_sens is not None:
+                            data.output_sensitivities = scan_sens
                         result_dict[suffix_with_mut] = data
                         if self.save_files:
                             self._write_saved_output(

@@ -372,3 +372,47 @@ class TestOutputSensitivities:
     def test_slice_for_rejects_bad_axis(self):
         with pytest.raises(ValueError):
             self._payload().slice_for('observable:A', axis='bogus')
+
+
+class TestStackScanSensitivities:
+    """Stacking per-dose-point tensors into one dose-axis scan payload (#476)."""
+
+    @staticmethod
+    def _point(a_k1, a_k2, ic_a=None):
+        # One per-point payload with n_times=2 (only the LAST row is stacked): the first
+        # row is a decoy that must NOT appear in the stacked result, the second is the
+        # equilibrium row carrying the given (k1, k2) sensitivities for selector A.
+        d_param = np.array([[[-9.0, -9.0]], [[a_k1, a_k2]]])   # (2 times, 1 selector, 2 params)
+        d_ic = None
+        if ic_a is not None:
+            d_ic = np.array([[[-9.0]], [[ic_a]]])              # (2 times, 1 selector, 1 ic)
+        return data.OutputSensitivities(
+            selectors=['observable:A'], param_names=['k1', 'k2'],
+            ic_species=['S()'] if ic_a is not None else [],
+            d_param=d_param, d_ic=d_ic)
+
+    def test_stacks_final_row_down_dose_axis(self):
+        stacked = data.stack_scan_sensitivities(
+            [self._point(1.0, 2.0), self._point(3.0, 4.0), self._point(5.0, 6.0)])
+        assert stacked.selectors == ['observable:A']
+        assert stacked.param_names == ['k1', 'k2']
+        # (n_doses=3, n_selectors=1, n_params=2), each dose row = that point's LAST row.
+        assert stacked.d_param.shape == (3, 1, 2)
+        npt.assert_array_equal(stacked.d_param[:, 0, :],
+                               [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        assert stacked.d_ic is None
+
+    def test_stacks_ic_axis_when_present(self):
+        stacked = data.stack_scan_sensitivities(
+            [self._point(1.0, 2.0, ic_a=0.5), self._point(3.0, 4.0, ic_a=0.7)])
+        assert stacked.ic_species == ['S()']
+        assert stacked.d_ic.shape == (2, 1, 1)
+        npt.assert_array_equal(stacked.d_ic[:, 0, 0], [0.5, 0.7])
+
+    def test_empty_list_returns_none(self):
+        assert data.stack_scan_sensitivities([]) is None
+
+    def test_any_missing_point_returns_none(self):
+        # A single scalar-path (None) point makes the whole scan scalar-path -> no tensor.
+        assert data.stack_scan_sensitivities(
+            [self._point(1.0, 2.0), None, self._point(5.0, 6.0)]) is None

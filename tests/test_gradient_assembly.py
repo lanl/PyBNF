@@ -2700,3 +2700,88 @@ def test_fd_acceptance_gate_preequilibration(k_type):
     # Fixed sigma, all-Gaussian: the residual/Jacobian is the whole objective.
     assert res.least_squares_exact is True
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+# ============================== FD acceptance: dose-response scan (bngsim, #476) ===
+
+DOSE_RESPONSE_DOSES = [1.0, 2.0, 4.0, 7.0]
+
+
+def _dose_response_run(k_deg_eff, with_sensitivities):
+    """Run the birth-death net as a reset-to-seed steady-state dose-response over k_prod (#476).
+
+    ``dS/dt = k_prod - k_deg*S`` (observable ``Stot = S``). The ``parameter_scan`` sweeps
+    ``k_prod`` -- the dose / independent variable -- to the parity steady state at fixed
+    ``k_deg``; at each dose ``S* = k_prod/k_deg``. With ``with_sensitivities`` the scan
+    :class:`Data` carries ``∂S*/∂k_deg`` stacked down the dose axis (the per-point forward
+    sensitivities PyBNF previously computed and discarded). ``k_prod`` is the swept dose, not a
+    free parameter, so only ``k_deg`` is fit and routed to the parameter axis."""
+    import pybnf.bngsim_model as bngsim_model
+    net = FIXTURES / 'e2e_ssa_birthdeath.net'
+    vals = ','.join(str(d) for d in DOSE_RESPONSE_DOSES)
+    action = ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[%s],'
+              'steady_state=>1,t_end=>500,suffix=>"dr"})' % vals)
+    model = bngsim_model.BngsimModel(
+        net.stem, [action], [('parameter_scan', 'dr')], [], nf=str(net))
+    model.param_set = PSet(
+        [FreeParameter('k_deg', 'uniform_var', 0.0, 100.0, value=k_deg_eff)])
+    if with_sensitivities:
+        model.enable_output_sensitivities(params=['k_deg'])
+    return model.execute('/tmp', 'fd_dr', 60)['dr']
+
+
+def _exp_dose_response(sim, sigma):
+    """Dose-response experimental Data from a run's exact (k_prod, Stot) grid + constant SD."""
+    dose = sim.data[:, sim.cols['k_prod']]
+    obs = sim.data[:, sim.cols['Stot']]
+    return Data.from_columns(np.column_stack([dose, obs, np.full(len(obs), sigma)]),
+                             ['k_prod', 'Stot', 'Stot_SD'])
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
+def test_fd_acceptance_gate_dose_response(k_type):
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on a
+    reset-to-seed steady-state dose-response scan -- the #476 acceptance gate.
+
+    The scanned ``k_prod`` is the data's independent variable (the dose), so the assembled
+    gradient consumes ``∂(dose-response)/∂k_deg`` stacked down the dose axis from the per-point
+    forward sensitivities the scan now retains (previously computed and discarded). Two
+    experiments (wildtype + a ``k_deg*2`` condition) exercise the per-condition routing factor
+    and the cross-experiment sum; the ``loguniform_var`` variant adds the native->sampling
+    transform on the fitted column."""
+    if k_type == 'loguniform_var':
+        pytest.importorskip('jax')
+
+    obj = ChiSquareObjective()
+    free = [FreeParameter('k_deg', k_type, 0.01, 100.0, value=1.6)]
+    names = [p.name for p in free]
+    k_factor = 2.0   # the 'hi' condition: k_deg * 2
+
+    # Synthetic data at a *true* k_deg different from the evaluation point, so residuals -- and
+    # hence the gradient -- are non-trivial, on each experiment's exact dose grid.
+    k_deg_true, sigma = 2.0, 0.1
+    exp_wt = _exp_dose_response(_dose_response_run(k_deg_true, False), sigma)
+    exp_hi = _exp_dose_response(_dose_response_run(k_factor * k_deg_true, False), sigma)
+
+    # Per-experiment routing: wildtype k_deg factor 1, condition factor 2; k_prod is the swept
+    # dose (never a free parameter), so it is absent from the routing.
+    cond_hi = MutationSet([Mutation('k_deg', '*', k_factor)], 'hi')
+    params, species = ['k_prod', 'k_deg'], []
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        return (obj.evaluate(_dose_response_run(theta['k_deg'], False), exp_wt)
+                + obj.evaluate(_dose_response_run(k_factor * theta['k_deg'], False), exp_hi))
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _dose_response_run(free[0].value, True)
+    sim_hi = _dose_response_run(k_factor * free[0].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    # Fixed sigma, all-Gaussian: the residual/Jacobian is the whole objective.
+    assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)

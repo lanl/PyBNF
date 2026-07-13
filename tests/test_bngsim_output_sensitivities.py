@@ -274,3 +274,100 @@ def test_scalar_path_action_never_bears_sensitivities():
     model._current_action_suffix = 'tc'
     assert model._sensitivity_request is None
     assert model._action_bears_sensitivities() is False
+
+
+# -------------------------------------- dose-response scan sensitivities (#476) ----
+#
+# Birth-death net: dS/dt = k_prod - k_deg*S, observable Stot = S. The scanned
+# ``k_prod`` is the dose (the scan Data's independent variable), and ``k_deg`` is the
+# fitted parameter. At steady state S*(dose) = dose/k_deg, so the per-dose sensitivity
+# has the closed form  d S*/d k_deg = -dose/k_deg**2  -- the oracle the stacked
+# dose-axis tensor is checked against. A long-integration (t_end=500) independent scan
+# lands on the same equilibrium, so its final-row tensor matches the same oracle.
+
+SCAN_K_DEG = 2.0
+SCAN_DOSES = [1.0, 2.0, 4.0, 6.0, 8.0]
+
+
+def _dose_response_model(action, suffixes=(('parameter_scan', 'dr'),), *, request=True,
+                         scored=True, k_deg=SCAN_K_DEG):
+    """A birth-death BngsimModel driving one dose-response ``parameter_scan`` over k_prod."""
+    net_path = FIXTURES / 'e2e_ssa_birthdeath.net'
+    model = bngsim_model.BngsimModel(
+        net_path.stem, [action], list(suffixes), [], nf=str(net_path))
+    model.param_set = pset.PSet(
+        [pset.FreeParameter('k_deg', 'uniform_var', 0.0, 10.0, value=k_deg)])
+    if request:
+        model.enable_output_sensitivities(params=['k_deg'])
+        model.set_scored_suffixes({'dr'} if scored else {'unscored'})
+    return model
+
+
+def _scan_action(doses, *, steady_state):
+    """A ``parameter_scan`` over k_prod: steady-state (parity) or long independent run."""
+    vals = ','.join(str(d) for d in doses)
+    ss = 'steady_state=>1,' if steady_state else ''
+    return ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[%s],'
+            '%st_start=>0,t_end=>500,n_steps=>1,suffix=>"dr"})' % (vals, ss))
+
+
+@pytest.mark.parametrize('steady_state', [True, False], ids=['parity_ss', 'independent'])
+def test_scan_carries_dose_axis_sensitivity_tensor(steady_state):
+    """A scored reset-to-seed dose-response carries ∂(dose-response)/∂θ stacked down the
+    dose axis, matching the closed-form ``-dose/k_deg**2``.
+
+    Covers both gradient-supporting strategies: the default parity steady-state scan
+    (``steady_state=>1``) and the long-integration independent scan (which reaches the
+    same equilibrium). The independent case has >=4 points, so it also exercises the
+    gradient-path bypass of ``run_batch`` (which cannot return sensitivities)."""
+    model = _dose_response_model(_scan_action(SCAN_DOSES, steady_state=steady_state))
+    data = model.execute('/tmp', 'dr_grad', 120)['dr']
+
+    sens = data.output_sensitivities
+    assert sens is not None
+    assert sens.selectors == ['observable:Stot']
+    assert sens.param_names == ['k_deg']
+    assert sens.d_ic is None
+    assert sens.d_param.shape == (len(SCAN_DOSES), 1, 1)
+
+    doses = data.data[:, data.cols['k_prod']]
+    np.testing.assert_allclose(doses, SCAN_DOSES)          # dose axis is the indep var
+    # And the value column is the equilibrium dose/k_deg (scoring path intact).
+    np.testing.assert_allclose(data.data[:, data.cols['Stot']],
+                               np.array(SCAN_DOSES) / SCAN_K_DEG, rtol=1e-4, atol=1e-4)
+
+    got = sens.slice_for('observable:Stot')[:, 0]          # (n_doses,) d Stot/d k_deg
+    expected = -np.array(SCAN_DOSES) / SCAN_K_DEG ** 2
+    np.testing.assert_allclose(got, expected, rtol=1e-3, atol=1e-3)
+
+
+def test_scan_scalar_path_carries_no_sensitivities():
+    """With the gradient path inactive, the scan Data has no sensitivity payload and the
+    equilibrium value column is unchanged (scalar path byte-identical)."""
+    model = _dose_response_model(_scan_action(SCAN_DOSES, steady_state=True), request=False)
+    data = model.execute('/tmp', 'dr_scalar', 120)['dr']
+    assert data.output_sensitivities is None
+    np.testing.assert_allclose(data.data[:, data.cols['Stot']],
+                               np.array(SCAN_DOSES) / SCAN_K_DEG, rtol=1e-4, atol=1e-4)
+
+
+def test_scored_newton_dose_response_refuses_on_gradient_path():
+    """A scored ss_method=>"newton" scan cannot supply forward sensitivities -- refuse
+    cleanly, pointing at the differentiable parity default."""
+    action = ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[2,5,8],'
+              'steady_state=>1,ss_method=>"newton",t_end=>500,suffix=>"dr"})')
+    model = _dose_response_model(action)
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'dr_newton', 120)
+    assert 'newton' in str(exc.value).lower()
+
+
+def test_scored_continuation_dose_response_refuses_on_gradient_path():
+    """A scored reset_conc=>0 continuation scan carries a θ-dependent per-point seed whose
+    sensitivity chaining is unsupported -- refuse cleanly."""
+    action = ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[2,5,8],'
+              'reset_conc=>0,t_end=>500,suffix=>"dr"})')
+    model = _dose_response_model(action)
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'dr_cont', 120)
+    assert 'reset_conc' in str(exc.value).lower() or 'seed' in str(exc.value).lower()

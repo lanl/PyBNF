@@ -6,6 +6,21 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Gradient-based fitting extends to `parameter_scan` (dose-response) objectives (#476).**
+  A gradient fit (`fit_type = trf`/`lbfgs`) can now target a dose-response objective, not
+  just a time course. The default dose-response path already computed the per-dose forward
+  sensitivities `∂obs(dose)/∂θ` — one sensitivity-configured ODE `run()` per swept dose —
+  and then discarded them at row assembly; PyBNF now stacks those per-point final-row
+  sensitivities down the dose axis into the scan `Data`, so the existing gradient assembly
+  produces `d(objective)/dθ` for dose-response fits. The swept dose is the data's independent
+  variable (not a fitted parameter), so the per-dose sensitivity is well-posed and consumed
+  exactly as a time-course row is. Supported for the **reset-to-seed** strategies — the
+  parity / integrate-to-steady-state default and the independent fixed-time scan — on both
+  the native BNGL and SBML/Antimony backends. Newton/KINSOL (`ss_method=>"newton"`),
+  continuation/bifurcate (`reset_conc=>0`), `method=>"protocol"`, and carried-state
+  (pre-equilibration, ADR-0062) scans refuse cleanly on the gradient path with an actionable
+  message (an *incidental*, unscored scan of the same shape still runs sensitivity-free,
+  #475). The scalar (metaheuristic) path is byte-identical. See ADR-0064.
 - **Edition-2 preincubate → wash → dose-response scan protocol (#474).** The new-era
   `experiment:`/`condition:` surface now expresses the full **equilibrate → intervene →
   measure a dose-response** protocol, so a published fit that needs it (the Erickson-2019
