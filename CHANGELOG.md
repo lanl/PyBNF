@@ -6,6 +6,23 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Edition-2 preincubate → wash → dose-response scan protocol (#474).** The new-era
+  `experiment:`/`condition:` surface now expresses the full **equilibrate → intervene →
+  measure a dose-response** protocol, so a published fit that needs it (the Erickson-2019
+  IGF1R competition/dissociation fit — 7 rate constants to 3 datasets, two of them a
+  2 h-preincubate → wash → cold-competition scan) runs in `edition = 2` with **no in-model
+  actions block**. Two capabilities: (A) a `parameter_scan` may be the measured phase of a
+  `preequilibrate:` experiment — the synthesizer emits `saveConcentrations()` +
+  `parameter_scan(… reset_conc=>1)` so each dose resets to the carried post-intervention
+  state; (B) a `condition:`'s `perturbations:` accepts a **quoted BNGL species pattern**
+  target with a number *or a parameter-expression* value — a species `setConcentration`
+  (a wash `"IGF1(ds,hs,label~hot)" = 0`, or a dose-tracking bolus
+  `"IGF1(ds,hs,label~cold)" = IGF1_cold_conc*(NA*Vecf)`), vs. a parameter `setParameter`.
+  The bngsim backend routes such a carried-state scan to its native
+  reset-conc-to-snapshot `parameter_scan`/`bifurcate` (**requires bngsim ≥ 0.11.34**,
+  lanl/bngsim#11), reproducing BNG2.pl exactly; the fresh-from-seed dose-response paths
+  (ADR-0046) are unchanged. PEtab **export** of these two shapes is deferred (#477). See
+  ADR-0062.
 - **`examples/real-world/` — the 2019 PyBNF-paper case studies on the edition-2 surface.**
   The biological models from Mitra et al. (iScience 2019) — Kozer's EGFR (ODE and
   network-free), the ligand/receptor model (ODE and NFsim), IGF1R competition binding,
