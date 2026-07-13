@@ -56,6 +56,18 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Fixed
+- **Gradient fits no longer abort on an incidental non-differentiable action (#475).** A
+  gradient-based fit (`fit_type = trf`/`lbfgs`) enables a forward-sensitivity request on the
+  whole model, and any action that cannot carry sensitivities forward — a stochastic (`ssa`/
+  `nfsim`) diagnostic `simulate`, or a carried-state pre-equilibration `parameter_scan` (#474)
+  — used to abort the **entire** fit, even when that action's output is never scored against
+  data. The two guards (`_sensitivity_request_kwargs`, `_scan_carried_state`) now gate on
+  whether the action's output is a *scored* gradient target: a scored non-ODE / carried-state
+  action still refuses cleanly (its gradient genuinely cannot be supplied), while an
+  incidental/unscored one runs on the ordinary sensitivity-free path. The gradient optimizer
+  declares each model's scored suffixes (from `exp_data`) in `_setup_gradient_path`, keyed
+  per-instance by the mutant/condition suffix; ODE actions stay always-bearing so the
+  persistent-simulator sensitivity continuity across carried states (#457) is untouched.
 - **Edition-2 network-free (NFsim) experiments now run through the bngsim bridge.** A
   `method: nf` experiment synthesized an action set that (a) began with
   `resetConcentrations()` — which the bngsim NF bridge rejects (NFsim re-seeds each run, so

@@ -319,13 +319,18 @@ class GradientOptimizer(StartPointOptimizer):
     #
     # The per-evaluation gate (an unsupported *objective* -- Laplace residual,
     # estimated scale, … raising :class:`GradientNotSupported`) is caught at the first
-    # assembly in :meth:`gradient_at`. A non-ODE simulation *method* (SSA / NFsim) is
-    # likewise non-differentiable, but the method is an action-level property (a model
-    # can mix actions) rather than a model-structure one, so it is not hoisted here; it
-    # keeps its existing clean per-evaluation refusal in the backend's
-    # ``_sensitivity_request_kwargs`` (a method != 'ode' under a sensitivity request
-    # raises a :class:`PybnfError`, not a raw backend traceback). Events, by contrast,
-    # are a build-time structural signal and so *can* be a pre-flight gate.
+    # assembly in :meth:`gradient_at`. A non-ODE simulation *method* (SSA / NFsim), and a
+    # carried-state pre-equilibration ``parameter_scan`` (#474), are likewise
+    # non-differentiable, but the method is an action-level property (a model can mix
+    # actions) rather than a model-structure one, so they are not hoisted here. They keep
+    # a per-evaluation refusal in the backend (``_sensitivity_request_kwargs`` /
+    # ``_scan_carried_state`` raise a clean :class:`PybnfError`, not a raw backend
+    # traceback) -- but *only when that action's output is a scored gradient target*
+    # (#475): an incidental/unscored non-ODE or carried-state action needs no
+    # sensitivities, so it runs sensitivity-free instead of aborting a fit whose scored
+    # objective is fully differentiable. :meth:`_setup_gradient_path` declares each
+    # model's scored suffixes so the backend can make that per-action distinction. Events,
+    # by contrast, are a build-time structural signal and so *can* be a pre-flight gate.
     def _require_edition_2(self, config):
         """Refuse a legacy (edition < 2) config before any model is built."""
         edition = config.config.get('edition')
@@ -401,6 +406,12 @@ class GradientOptimizer(StartPointOptimizer):
             # Union sensitivity request (wildtype) -> sets _sensitivity_request,
             # which survives the scatter and is applied at every simulate().
             apply_routing(model, route_for_model(model, names, condition=None))
+            # Declare which of this model's outputs are scored gradient targets so
+            # an incidental/unscored action (a stochastic diagnostic, a
+            # carried-state pre-equilibration scan) runs sensitivity-free instead
+            # of aborting the whole fit at a differentiability guard (#475). Rides
+            # the scatter alongside the sensitivity request.
+            model.set_scored_suffixes(self.exp_data.get(model.name, {}))
             for suffix in self.exp_data.get(model.name, {}):
                 condition = self._condition_for_suffix(model, suffix)
                 routings[(model.name, suffix)] = route_for_model(model, names, condition)

@@ -140,7 +140,7 @@ def test_network_free_model_refuses_gradient_path():
 
 
 def test_stochastic_action_refuses_cleanly_on_gradient_path():
-    """An ssa simulate() under a gradient fit surfaces a PyBNF-level message."""
+    """A *scored* ssa simulate() under a gradient fit surfaces a PyBNF-level message."""
     net_path = FIXTURES / 'e2e_ssa_birthdeath.net'
     actions = [
         'simulate({method=>"ssa",t_start=>0,t_end=>5,n_steps=>5,suffix=>"tc"})',
@@ -156,3 +156,121 @@ def test_stochastic_action_refuses_cleanly_on_gradient_path():
     msg = str(exc.value).lower()
     assert 'ode' in msg
     assert 'ssa' in msg
+
+
+# ------------------------------------------ per-action scored gate (#475) ----
+
+def _mixed_net_model(actions, suffixes):
+    """A BngsimModel over the birth-death net with the given action lines/suffixes."""
+    net_path = FIXTURES / 'e2e_ssa_birthdeath.net'
+    model = bngsim_model.BngsimModel(
+        net_path.stem, list(actions), list(suffixes), [], nf=str(net_path),
+    )
+    model.param_set = pset.PSet([])
+    return model
+
+
+def test_unscored_stochastic_action_runs_sensitivity_free():
+    """An UNSCORED ssa diagnostic beside a scored ODE course no longer aborts (#475).
+
+    The gradient fit's scored target is the ODE ``tc`` course; the incidental ``diag``
+    ssa run is never scored against data. It must run on the ordinary path -- carrying
+    no sensitivity tensor -- rather than aborting the whole fit at the ODE-only guard.
+    """
+    model = _mixed_net_model(
+        [
+            'simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>5,suffix=>"tc"})',
+            'simulate({method=>"ssa",t_start=>0,t_end=>5,n_steps=>5,suffix=>"diag"})',
+        ],
+        [('simulate', 'tc'), ('simulate', 'diag')],
+    )
+    model.enable_output_sensitivities(params=['k_prod'])
+    model.set_scored_suffixes({'tc'})   # only 'tc' is a scored gradient target
+
+    ds = model.execute('/tmp', 'mixed_grad', 60)
+    # The scored ODE course carries its native parameter tensor...
+    assert ds['tc'].output_sensitivities is not None
+    assert ds['tc'].output_sensitivities.param_names == ['k_prod']
+    # ...while the unscored stochastic diagnostic ran sensitivity-free.
+    assert ds['diag'].output_sensitivities is None
+
+
+def test_unscored_carried_state_scan_runs_sensitivity_free():
+    """An UNSCORED carried-state parameter_scan (#474 shape) no longer aborts (#475).
+
+    A pre-equilibration ``simulate`` advances the model off its seed, then a
+    ``parameter_scan`` reads the carried state. When that scan's output is not scored,
+    it runs through bngsim's native carried-state scan sensitivity-free instead of
+    hitting the ``_scan_carried_state`` gradient refusal.
+    """
+    model = _mixed_net_model(
+        [
+            'simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>5,suffix=>"pre"})',
+            'parameter_scan({parameter=>"k_deg",par_scan_vals=>[0.5,1.0],'
+            't_start=>0,t_end=>5,n_steps=>5,suffix=>"scan",reset_conc=>1})',
+        ],
+        [('simulate', 'pre'), ('parameter_scan', 'scan')],
+    )
+    model.enable_output_sensitivities(params=['k_prod'])
+    model.set_scored_suffixes({'pre'})   # only the ODE pre-course is scored
+
+    ds = model.execute('/tmp', 'carried_grad', 60)
+    assert ds['pre'].output_sensitivities is not None
+    assert 'scan' in ds
+    assert ds['scan'].output_sensitivities is None
+
+
+def test_scored_carried_state_scan_still_refuses():
+    """A SCORED carried-state scan cannot be differentiated -- it must still refuse."""
+    model = _mixed_net_model(
+        [
+            'simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>5,suffix=>"pre"})',
+            'parameter_scan({parameter=>"k_deg",par_scan_vals=>[0.5,1.0],'
+            't_start=>0,t_end=>5,n_steps=>5,suffix=>"scan",reset_conc=>1})',
+        ],
+        [('simulate', 'pre'), ('parameter_scan', 'scan')],
+    )
+    model.enable_output_sensitivities(params=['k_prod'])
+    model.set_scored_suffixes({'pre', 'scan'})   # the scan output is a scored target
+    with pytest.raises(PybnfError) as exc:
+        model.execute('/tmp', 'carried_scored', 60)
+    assert 'pre-equilibration' in str(exc.value).lower()
+
+
+def test_scored_gate_folds_in_mutant_suffix():
+    """The scored gate keys an action by its output suffix + this instance's offset."""
+    model = _decay_model()
+    model.enable_output_sensitivities(params=['k'])
+    model.set_scored_suffixes({'tc_cond'})   # only the conditioned output is scored
+    model._current_action_suffix = 'tc'
+    # Base instance (offset ''): bare 'tc' is not scored -> unscored action.
+    assert model._action_bears_sensitivities() is False
+    # A condition/mutant copy carries offset '_cond': 'tc'+'_cond' IS scored.
+    model._sensitivity_offset = '_cond'
+    assert model._action_bears_sensitivities() is True
+
+
+def test_unscored_non_ode_kwargs_are_empty_not_refused():
+    """The kwargs helper: unscored non-ODE -> {}; scored non-ODE -> refuse; ODE bears."""
+    model = _decay_model()
+    model.enable_output_sensitivities(params=['k'])
+    model.set_scored_suffixes({'tc'})
+
+    model._current_action_suffix = 'tc'          # scored
+    assert model._sensitivity_request_kwargs('ode') == {'sensitivity_params': ['k']}
+    with pytest.raises(PybnfError):
+        model._sensitivity_request_kwargs('ssa')  # scored non-ODE still refuses
+
+    model._current_action_suffix = 'diag'        # unscored
+    assert model._sensitivity_request_kwargs('ssa') == {}      # runs sensitivity-free
+    # ODE is always bearing (persistent-simulator continuity), scored or not.
+    assert model._sensitivity_request_kwargs('ode') == {'sensitivity_params': ['k']}
+
+
+def test_scalar_path_action_never_bears_sensitivities():
+    """With the request inactive, no action bears sensitivities (scalar path intact)."""
+    model = _decay_model()
+    model.set_scored_suffixes({'tc'})            # a scored set with no active request
+    model._current_action_suffix = 'tc'
+    assert model._sensitivity_request is None
+    assert model._action_bears_sensitivities() is False
