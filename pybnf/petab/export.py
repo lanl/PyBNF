@@ -326,7 +326,12 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     pe_experiments = [exp for exp in experiments if exp['preequilibrate'] is not None]
     tc_experiments = [exp for exp in experiments
                       if exp['type'] == 'time_course' and exp['preequilibrate'] is None]
-    dr_experiments = [exp for exp in experiments if exp['type'] == 'parameter_scan']
+    dr_experiments = [exp for exp in experiments
+                      if exp['type'] == 'parameter_scan' and exp['preequilibrate'] is None]
+    # (A parameter_scan measured phase of a pre-equilibration experiment -- #474 -- is already
+    # refused upstream in _read_experiments; its PEtab v2 export is deferred, a follow-up to
+    # ADR-0052. So pe_experiments here are all time-course measured, and dr_experiments exclude
+    # the pre-equilibrated scans, keeping each experiment in exactly one shape bucket.)
 
     conditions = _read_conditions(conf, models, registry)
     referenced = {exp['condition'] for exp in tc_experiments if exp['condition'] is not None}
@@ -342,6 +347,19 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         raise PybnfError(
             f"Experiment(s) reference undefined condition(s) {sorted(undefined)}; define "
             f"each with a 'condition:' line.")
+    # A species-target condition (setConcentration -- a wash/bolus, #474) exports to a PEtab v2
+    # condition whose target is a species amount (not a parameter); that mapping is deferred with
+    # the pre-equilibration scan above, so refuse a referenced species-target condition rather than
+    # emit it as a bogus parameter target (a species pattern contains '(', which no parameter id does).
+    species_conditions = sorted(
+        name for name in referenced
+        for var, _op, _val in conditions.get(name, []) if '(' in var)
+    if species_conditions:
+        raise PybnfError(
+            f"Condition(s) {species_conditions} set a species amount (setConcentration -- a "
+            "wash/bolus, #474). The edition-2 fitter supports this, but its PEtab v2 export (a "
+            "species-amount condition target) is not yet implemented (deferred, a follow-up to "
+            "ADR-0052). Run the job natively, or use parameter-only conditions for export.")
     unused = set(conditions) - referenced
     if unused:
         # An unused condition emits no PEtab rows (the fitter would not apply it either);
@@ -489,14 +507,18 @@ def _read_experiments(conf, conf_path, models):
         exp_type = _experiment_type(name, datas[0], fields.get('type'))
         preequilibrate = fields.get('preequilibrate')
         # A pre-equilibration experiment (ADR-0052) is a time course measured AFTER an
-        # unmeasured steady-state equilibration phase -> a PEtab two-period Experiment (#441).
-        # A scan after equilibration has no export route (mirrors the fitter's refusal).
+        # unmeasured equilibration phase -> a PEtab two-period Experiment (#441). A
+        # parameter_scan measured phase (a preincubate->wash->dose-scan protocol, #474) is
+        # supported by the edition-2 FITTER, but its PEtab v2 export (a shared pre-equilibration
+        # condition across the scanned experiments + a species-amount intervention) is DEFERRED
+        # (a follow-up to ADR-0052's phased export), so refuse it here rather than mis-export.
         if preequilibrate is not None and exp_type == 'parameter_scan':
             raise NotImplementedError(
                 f"Experiment '{name}' combines pre-equilibration (preequilibrate:) with a "
-                f"parameter_scan. A pre-equilibration experiment is a time course measured "
-                f"after equilibrating to steady state; a dose-response after equilibration has "
-                f"no PEtab export route (ADR-0052/0046, #441).")
+                f"parameter_scan measured phase (a preincubate->wash->dose-scan protocol, #474). "
+                f"The edition-2 fitter supports this, but its PEtab v2 export is not yet "
+                f"implemented (deferred, a follow-up to ADR-0052/0046). Run the job natively "
+                f"(it needs no PEtab), or export only time-course / plain dose-response experiments.")
         # A parameter_scan (dose-response) experiment's measurement time is its scan endpoint
         # (ADR-0046): inf for the steady-state default (PEtab time=inf), or a finite ``t_end:``.
         # A time course derives its grid from the data, so ``t_end:`` is inert there.
@@ -633,6 +655,14 @@ def _read_conditions(conf, models, registry):
                 f"{sorted(stem_to_model)}).")
         muts = []
         for var, op, val in perts:
+            # A species-target perturbation (setConcentration -- a wash/bolus, #474) has a BNGL
+            # pattern target (contains '(') and possibly a param-expression value; its PEtab
+            # export is deferred, so pass it through UNVALIDATED (no param/compartment check, no
+            # float) -- the deferred-export guard in _build_experiments_and_conditions raises a
+            # clear message for a *referenced* one, and an unused species condition is skipped.
+            if '(' in var:
+                muts.append((var, op, val))
+                continue
             if var not in union_params and var not in union_comparts:
                 raise PybnfError(
                     f"Condition '{name}' perturbs '{var}', which is not a parameter or "

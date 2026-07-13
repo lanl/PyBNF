@@ -491,8 +491,15 @@ class BngsimModel(NetModel):
                 continue
 
             if _is_save_concentrations(line):
+                # A saveConcentrations() snapshots the current amounts as the new
+                # reset point but does NOT un-pin an active param-dependent
+                # setConcentration expression: BNG2.pl keeps it live so a
+                # following parameter_scan re-evaluates it per point (the
+                # preincubate->wash->dose-scan idiom saves the post-wash state and
+                # then titrates the competitor per dose -- issue #474). So the
+                # overrides carry THROUGH a save (only resetConcentrations(), which
+                # returns to the seed, clears them, above).
                 model.save_concentrations()
-                concentration_overrides.clear()
                 continue
 
             if _is_save_parameters(line):
@@ -540,6 +547,7 @@ class BngsimModel(NetModel):
                     action_index=action_index,
                     timeout=timeout,
                     concentration_overrides=concentration_overrides,
+                    carried_state=state.carried_state,
                 ))
                 continue
 
@@ -550,6 +558,7 @@ class BngsimModel(NetModel):
                     action_index=action_index,
                     timeout=timeout,
                     concentration_overrides=concentration_overrides,
+                    carried_state=state.carried_state,
                 ))
                 continue
 
@@ -1014,17 +1023,28 @@ class BngsimModel(NetModel):
         return rows, obs_names, expr_names
 
     def _run_parameter_scan(self, model, ps_params, is_bifurcate=False, action_index=0,
-                            timeout=None, concentration_overrides=None):
+                            timeout=None, concentration_overrides=None, carried_state=False):
         """Execute a parameter_scan() or bifurcate() action.
 
         Resolves the action's settings once, dispatches to the matching scan
         strategy, and assembles the per-point rows into a Data object. See the
         ``_scan_*`` helpers for each strategy.
+
+        ``carried_state`` is True when a preceding ``simulate`` advanced the model
+        off its seed state (a pre-equilibration + intervention, e.g. a
+        preincubate->wash->dose-scan protocol; issue #474). Such a scan resets
+        each point to the *carried* post-intervention state, not the ``.net``
+        seed, so it routes to bngsim's native reset_conc-to-snapshot scan
+        (:meth:`_scan_carried_state`, lanl/bngsim#11) rather than the
+        seed-re-syncing hand-rolled strategies below (which are correct only for a
+        fresh-from-seed dose-response, ADR-0046).
         """
         s = self._resolve_scan_settings(
             ps_params, is_bifurcate, action_index, timeout, concentration_overrides,
         )
-        if s.use_ss and s.reset_conc and s.ss_method == _SS_METHOD_NEWTON:
+        if carried_state:
+            rows, obs_names, expr_names = self._scan_carried_state(model, s, is_bifurcate)
+        elif s.use_ss and s.reset_conc and s.ss_method == _SS_METHOD_NEWTON:
             rows, obs_names, expr_names = self._scan_newton_steady_state(model, s)
         elif s.use_ss and s.reset_conc:
             rows, obs_names, expr_names = self._scan_parity_steady_state(model, s)
@@ -1134,6 +1154,95 @@ class BngsimModel(NetModel):
             scan_timeout=scan_timeout,
             scan_eval_timeout=scan_eval_timeout,
         )
+
+    def _scan_carried_state(self, model, s, is_bifurcate):
+        """Scan invoked with a CARRIED model state -- a ``simulate`` advanced the
+        system off its seed before the scan (pre-equilibration + intervention;
+        issue #474, the preincubate->wash->dose-scan protocol).
+
+        Uses bngsim's native ``Simulator.parameter_scan``/``bifurcate``
+        (lanl/bngsim#11) whose ``reset_conc`` semantics match BNG2.pl: each point
+        resets to the state **at scan invocation** (the carried post-intervention
+        state -- receptors already loaded during the pre-incubation), assigns the
+        scanned parameter, then replays the active ``setConcentration`` overrides
+        (species that track the scanned parameter, e.g. the titrated competitor)
+        via ``on_point`` -- WITHOUT re-deriving species from the ``.net`` seed
+        initializers. Contrast :meth:`_prepare_scan_point_model` (the
+        fresh-from-seed dose-response path, ADR-0046), whose seed re-sync would
+        discard the pre-equilibrated state.
+
+        bngsim refuses a scan on a sensitivity-configured Simulator (per-point
+        seeds off a mid-protocol snapshot would be wrong), so a carried-state scan
+        is unavailable on the gradient path -- surfaced as a clear PyBNF error.
+        """
+        if self._sensitivity_request is not None:
+            raise PybnfError(
+                "Model %s: a parameter_scan following a pre-equilibration (a "
+                "carried, non-seed model state) cannot be run on the gradient "
+                "path -- bngsim refuses per-point sensitivity seeds taken off a "
+                "mid-protocol snapshot. Run a gradient-free fit for a "
+                "pre-equilibrated dose-response experiment." % self.name)
+        method = s.method
+        if method == 'psa':
+            sim = _runtime.bngsim.Simulator(model, method='psa', poplevel=s.poplevel)
+        else:
+            sim = _runtime.bngsim.Simulator(
+                model, method=method, **self._codegen_kwargs(method))
+
+        overrides = s.concentration_overrides or {}
+
+        def on_point(point_model, value):
+            # Replay the setConcentration expressions active at scan invocation
+            # (issue #46) against each point's post-reset state -- re-evaluated
+            # with the just-assigned scanned parameter, so a competitor whose
+            # amount tracks the scanned dose (setConcentration("cold",
+            # "dose*(NA*Vecf)")) is titrated per point. Species NOT named here
+            # keep their carried snapshot value (the pre-equilibrated state).
+            for species_name, expr in overrides.items():
+                try:
+                    point_model.set_concentration(
+                        species_name, _eval_model_expression(expr, point_model))
+                except Exception:
+                    logger.warning(
+                        "BngsimModel: scan on_point setConcentration(%s, %s) failed",
+                        species_name, expr)
+
+        n_points = len(s.sample_times) if s.sample_times is not None else 2
+        scan_kwargs = dict(
+            parameter=s.param_name,
+            par_scan_vals=list(s.points),
+            t_span=(s.t_start, s.t_end),
+            n_points=n_points,
+            steady_state=bool(s.use_ss),
+        )
+        if s.scan_seed is not None:
+            scan_kwargs['seed'] = s.scan_seed
+        if s.scan_timeout is not None:
+            scan_kwargs['timeout'] = s.scan_timeout
+
+        # bifurcate is the continuation sibling (reset_conc pinned False, no
+        # per-point reset/override -- each point continues from the previous
+        # point's end state); parameter_scan resets each point to the invocation
+        # snapshot (reset_to=None) and replays overrides via on_point.
+        if is_bifurcate:
+            results = sim.bifurcate(**scan_kwargs)
+        else:
+            results = sim.parameter_scan(
+                reset_conc=s.reset_conc, reset_to=None, on_point=on_point, **scan_kwargs)
+        if not isinstance(results, list):
+            results = [results]
+
+        obs_names = []
+        expr_names = []
+        rows = []
+        for value, result in zip(s.points, results):
+            row, row_obs, row_expr = self._scan_result_to_row(
+                result, value, print_functions=s.print_funcs)
+            if len(obs_names) == 0:
+                obs_names = row_obs
+                expr_names = row_expr
+            rows.append(row)
+        return rows, obs_names, expr_names
 
     def _scan_newton_steady_state(self, model, s):
         """steady_state=>1 + ss_method=>"newton"/"kinsol": KINSOL Newton per point.

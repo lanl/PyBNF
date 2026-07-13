@@ -1005,35 +1005,19 @@ class BNGLModel(Model):
         subset of BioNetGen arguments are supported here; for full control,
         write actions in the BNGL file's ``begin actions`` block instead.
         """
+        if isinstance(action, (TimeCourse, ParamScan)) and getattr(action, 'preequilibrate', False):
+            # New-era pre-equilibration (ADR-0052, #440; #474): this is the MEASURED phase of a
+            # two-phase protocol. Emit the whole block (reset -> pre-equil perturbations ->
+            # unmeasured equilibration -> intervention perturbations -> measurement), registering
+            # ONLY the measurement suffix, then return -- the standard reset+line+suffix tail
+            # below does not apply (it would inject a reset BETWEEN the phases, breaking
+            # carry-over). The measured phase is a time course OR a dose-response scan (#474).
+            self._append_preequilibration_actions(action)
+            return
         if isinstance(action, TimeCourse):
-            if getattr(action, 'preequilibrate', False):
-                # New-era pre-equilibration (ADR-0052, #440): this is the MEASURED phase of a
-                # two-phase protocol. Emit the whole block (reset -> setParameter(pre) ->
-                # unmeasured steady-state equilibration -> setParameter(meas) -> measurement),
-                # registering ONLY the measurement suffix, then return -- the standard
-                # reset+line+suffix tail below does not apply (it would inject a reset BETWEEN
-                # the phases, breaking carry-over).
-                self._append_preequilibration_actions(action)
-                return
             line = self._timecourse_line(action)
         elif isinstance(action, ParamScan):
-            if action.explicit_points is not None:
-                # New-era explicit scan values (ADR-0028): emit par_scan_vals so the scan
-                # samples exactly the data's swept-parameter values. par_min/par_max/
-                # n_scan_pts are deliberately omitted -- when present BioNetGen ignores
-                # par_scan_vals (BNGAction.pm: "defined min/max takes precedence").
-                par_scan_vals = ','.join(_format_bngl_number(p) for p in action.explicit_points)
-                # A steady-state scan (ADR-0046) requests bngsim's KINSOL solve per dose
-                # via steady_state=>1; ss_method=>"newton" is the only exposed method
-                # (KINSOL + parity fallback). t_end is emitted as the max-time bound for
-                # that fallback. A fixed-endpoint scan omits steady_state and reads each
-                # dose at t_end -- byte-identical to the pre-ADR-0046 emission.
-                ss = 'steady_state=>1,ss_method=>"newton",' if action.steady_state else ''
-                line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},' \
-                       f'{ss}par_scan_vals=>[{par_scan_vals}],log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})'
-            else:
-                line = f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",t_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},' \
-                       f'n_scan_pts=>{action.stepnumber + 1},log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})'
+            line = self._paramscan_line(action)
         else:
             raise RuntimeError(f'Unknown action type {type(action)}')
         # Config actions are assumed to be independent, so reset concentrations before each one --
@@ -1087,27 +1071,78 @@ class BNGLModel(Model):
                 f'n_steps=>{action.stepnumber},suffix=>"{action.suffix}",print_functions=>1'
                 f'{_nf_action_opts(action)}}})')
 
+    @staticmethod
+    def _paramscan_line(action, reset_conc=None):
+        """The BNGL ``parameter_scan(...)`` line for a :class:`ParamScan` (shared by the ordinary
+        and the pre-equilibration emission paths).
+
+        ``reset_conc`` (when given) emits ``reset_conc=>N`` -- the pre-equilibration scan (#474)
+        passes ``reset_conc=>1`` so each dose resets to the carried post-intervention state (the
+        bngsim carried-state scan; the ordinary dose-response omits it and relies on BNG's
+        default). A steady-state scan (ADR-0046) requests bngsim's KINSOL solve per dose via
+        ``steady_state=>1``; ``ss_method=>"newton"`` is the only exposed method (KINSOL + parity
+        fallback) and ``t_end`` is the max-time bound for that fallback."""
+        rc = f'reset_conc=>{reset_conc},' if reset_conc is not None else ''
+        if action.explicit_points is not None:
+            # New-era explicit scan values (ADR-0028): emit par_scan_vals so the scan samples
+            # exactly the data's swept-parameter values. par_min/par_max/n_scan_pts are
+            # deliberately omitted -- when present BioNetGen ignores par_scan_vals (BNGAction.pm:
+            # "defined min/max takes precedence").
+            par_scan_vals = ','.join(_format_bngl_number(p) for p in action.explicit_points)
+            ss = 'steady_state=>1,ss_method=>"newton",' if action.steady_state else ''
+            return (f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",'
+                    f't_start=>0,t_end=>{action.time},{ss}{rc}par_scan_vals=>[{par_scan_vals}],'
+                    f'log_scale=>{action.logspace},suffix=>"{action.suffix}",print_functions=>1'
+                    f'{_nf_action_opts(action)}}})')
+        return (f'parameter_scan({{parameter=>"{action.param}",method=>"{action.method}",'
+                f't_start=>0,t_end=>{action.time},par_min=>{action.min},par_max=>{action.max},'
+                f'n_scan_pts=>{action.stepnumber + 1},{rc}log_scale=>{action.logspace},'
+                f'suffix=>"{action.suffix}",print_functions=>1{_nf_action_opts(action)}}})')
+
+    @staticmethod
+    def _preequilibration_perturbation_line(pert):
+        """One inline BNGL perturbation line for a pre-equilibration phase (#474).
+
+        ``pert`` is a ``(kind, name, value)`` tuple. A ``'param'`` target emits
+        ``setParameter("<name>", <value>)`` (an integral value renders bare, e.g.
+        ``Ligand_isPresent`` -> ``1``); a ``'species'`` target emits
+        ``setConcentration("<pattern>", <value>)`` -- a numeric amount renders bare
+        (a wash to ``0``), and a param-EXPRESSION renders quoted
+        (``"IGF1_cold_conc*(NA*Vecf)"``, re-evaluated per scan dose by the backend)."""
+        kind, name, value = pert
+        if kind == 'species':
+            try:
+                fv = float(value)
+            except (TypeError, ValueError):
+                # A param-expression (e.g. IGF1_cold_conc*(NA*Vecf)) -- emit it quoted so the
+                # backend keeps it live and re-evaluates it per scan dose (issue #46 / #474).
+                return f'setConcentration("{name}","{value}")'
+            num = str(int(fv)) if fv.is_integer() else repr(fv)
+            return f'setConcentration("{name}",{num})'
+        fv = float(value)
+        num = str(int(fv)) if fv.is_integer() else repr(fv)
+        return f'setParameter("{name}",{num})'
+
     def _append_preequilibration_actions(self, action):
-        """Emit the new-era pre-equilibration action block for a measurement ``TimeCourse``
-        (ADR-0052, #440): a single simulation in two phases.
+        """Emit the new-era pre-equilibration action block for a measurement ``TimeCourse`` or
+        ``ParamScan`` (ADR-0052, #440; #474): a single simulation in two (or three) phases.
 
         ``resetConcentrations()`` (clean ICs -- independence from any other experiment's
-        simulation) -> the pre-equilibration condition as absolute ``setParameter`` -> an
-        UNMEASURED steady-state ``simulate`` (``steady_state=>1``, early-stops on
-        ``||dx/dt||``; ``t_end`` is its max-time bound) -> the measurement condition as
-        ``setParameter`` -> the measurement ``simulate`` over the data grid. There is
-        deliberately NO ``resetConcentrations()`` between the phases: BioNetGen carries the
-        equilibrated species state into the measurement (the measurement's clock restarts at
-        ``t_start=0``, but the *concentrations* are the equilibrium -- verified on bngsim).
-        Only the measurement suffix is registered, so the equilibration phase runs but is
-        never scored (no ``exp_data`` entry)."""
-        def _param_value(v):
-            # Render an integral perturbation value as a bare int (so a flag like
-            # ``Ligand_isPresent`` emits ``setParameter("Ligand_isPresent",1)`` -- matching
-            # legacy receptor.bngl byte-for-byte), else full round-tripping precision.
-            f = float(v)
-            return str(int(f)) if f.is_integer() else repr(f)
+        simulation) -> the pre-equilibration condition inline (``setParameter`` /
+        ``setConcentration``) -> an UNMEASURED equilibration ``simulate`` (``steady_state=>1``,
+        early-stops on ``||dx/dt||``, ``t_end`` its max-time bound -- or a fixed ``equil_t_end``)
+        -> the intervention (measurement ``condition:``) inline -> the measured phase. There is
+        deliberately NO ``resetConcentrations()`` between the phases: the equilibrated species
+        state carries into the measurement (verified on bngsim).
 
+        For a **time course** the measured phase is the ``simulate`` over the data grid. For a
+        **parameter_scan** (#474, the preincubate->wash->dose-scan protocol) the intervention is
+        followed by ``saveConcentrations()`` and a ``parameter_scan(..., reset_conc=>1)``: each
+        dose resets to the carried post-intervention state (bngsim's native reset_conc-to-snapshot
+        scan, lanl/bngsim#11), and a species ``setConcentration`` expression that tracks the
+        scanned parameter (the titrated competitor) is replayed per dose. Only the measurement
+        suffix is registered, so the equilibration phase runs but is never scored."""
+        is_scan = isinstance(action, ParamScan)
         _mt = float(action.equil_max_time)
         max_time = str(int(_mt)) if _mt.is_integer() else repr(_mt)
         equil_suffix = f'{action.suffix}_preequil'
@@ -1116,11 +1151,12 @@ class BNGLModel(Model):
         is_nf = getattr(action, 'method', None) == 'nf'
         if not is_nf:
             self.actions.append('resetConcentrations()')
-        for pname, pval in action.equil_perturbations:
-            self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
+        for pert in action.equil_perturbations:
+            self.actions.append(self._preequilibration_perturbation_line(pert))
         # The equilibration phase relaxes to STEADY STATE (steady_state=>1; t_end is only the
         # max-time bound) -- EXCEPT when a fixed equilibration duration is given (required for NF,
-        # which has no steady-state solve): then it integrates to that fixed t_end, no steady_state.
+        # which has no steady-state solve; the preincubate protocols use it too -- #474): then it
+        # integrates to that fixed t_end, no steady_state.
         opts = _nf_action_opts(action)
         if action.equil_fixed_time is not None:
             _ft = action.equil_fixed_time
@@ -1132,17 +1168,24 @@ class BNGLModel(Model):
             self.actions.append(
                 f'simulate({{method=>"{action.method}",steady_state=>1,t_start=>0,'
                 f't_end=>{max_time},n_steps=>1,suffix=>"{equil_suffix}",print_functions=>1{opts}}})')
-        for pname, pval in action.measure_perturbations:
-            self.actions.append(f'setParameter("{pname}",{_param_value(pval)})')
-        self.actions.append(self._timecourse_line(action))
+        for pert in action.measure_perturbations:
+            self.actions.append(self._preequilibration_perturbation_line(pert))
+        if is_scan:
+            # Snapshot the post-intervention state and sweep the dose from it: each scan point
+            # resets to this snapshot (reset_conc=>1) -- the bngsim carried-state scan -- rather
+            # than re-deriving from the seed (which would discard the pre-equilibration).
+            self.actions.append('saveConcentrations()')
+            self.actions.append(self._paramscan_line(action, reset_conc=1))
+        else:
+            self.actions.append(self._timecourse_line(action))
         # NF experiments are network-free: do not force network generation (see add_action).
         if not is_nf:
             self.generates_network = True
             if self.generate_network_line is None:
                 self.generate_network_line = self._synthesized_generate_network_line()
         # Re-derive the stochastic flag from the synthesized action's method (#471): both the
-        # unmeasured equilibration and the measurement simulate use ``action.method``, so a
-        # stochastic engine makes the whole model stochastic for the ``smoothing`` check.
+        # unmeasured equilibration and the measured phase use ``action.method``, so a stochastic
+        # engine makes the whole model stochastic for the ``smoothing`` check.
         if getattr(action, 'method', None) in STOCHASTIC_METHODS:
             self.stochastic = True
         # Register ONLY the measurement suffix: the equilibration phase is unmeasured, so its
@@ -1671,8 +1714,8 @@ class TimeCourse(Action):
         # ``BNGLModel.add_action`` reads them to emit the full action block. Default off, so
         # an ordinary time course is unchanged.
         self.preequilibrate = False
-        self.equil_perturbations = []     # [(param, value)] setParameter before equilibration
-        self.measure_perturbations = []   # [(param, value)] setParameter before measurement
+        self.equil_perturbations = []     # [(kind, name, value)] applied before equilibration
+        self.measure_perturbations = []   # [(kind, name, value)] applied before measurement
         self.equil_max_time = 1e6         # steady-state run's max-time bound (early-stops sooner)
         self.equil_fixed_time = None      # fixed equilibration duration (NF: no steady-state solve)
         # Optional NFsim options (edition-2 method: nf); None => omitted from the emitted action.
@@ -1682,11 +1725,12 @@ class TimeCourse(Action):
     def set_preequilibration(self, equil_perturbations, measure_perturbations,
                              equil_max_time=1e6, equil_fixed_time=None):
         """Mark this time course as the measured phase of a pre-equilibration protocol
-        (ADR-0052). ``equil_perturbations`` are applied (as absolute ``setParameter``) before
-        the equilibration; ``measure_perturbations`` after it, before this measurement. Each is
-        a list of ``(param_name, value)`` pairs. The equilibration relaxes to STEADY STATE by
-        default; ``equil_fixed_time`` instead runs it for that fixed duration (no steady-state
-        solve) -- required for NF, which has no steady-state solve."""
+        (ADR-0052). ``equil_perturbations`` are applied before the equilibration;
+        ``measure_perturbations`` after it, before this measurement. Each is a list of
+        ``(kind, name, value)`` tuples (``kind`` in ``{'param', 'species'}`` -- a parameter
+        ``setParameter`` or a species ``setConcentration``, #474). The equilibration relaxes to
+        STEADY STATE by default; ``equil_fixed_time`` instead runs it for that fixed duration (no
+        steady-state solve) -- required for NF, which has no steady-state solve."""
         self.preequilibrate = True
         self.equil_perturbations = list(equil_perturbations)
         self.measure_perturbations = list(measure_perturbations)
@@ -1817,22 +1861,61 @@ class ParamScan(Action):
         self.stepnumber = int(np.round((self.max - self.min) / self.step))
         self.bng_codeword = 'parameter_scan'
 
+        # New-era pre-equilibration (ADR-0052; #474): when set, this scan is the MEASURED phase
+        # of a pre-equilibration protocol -- an unmeasured equilibration runs first, an
+        # intervention (wash/bolus) perturbs, then this dose-response scan runs, each dose reset
+        # to the carried post-intervention state (the preincubate->wash->dose-scan protocol).
+        # ``set_preequilibration`` fills these in; ``BNGLModel.add_action`` reads them to emit the
+        # full block. Default off, so an ordinary parameter scan is unchanged.
+        self.preequilibrate = False
+        self.equil_perturbations = []     # [(kind, name, value)] applied before equilibration
+        self.measure_perturbations = []   # [(kind, name, value)] the intervention, before the scan
+        self.equil_max_time = 1e6         # steady-state run's max-time bound (early-stops sooner)
+        self.equil_fixed_time = None      # fixed equilibration duration (NF / fixed-time incubation)
+
+    def set_preequilibration(self, equil_perturbations, measure_perturbations,
+                             equil_max_time=1e6, equil_fixed_time=None):
+        """Mark this parameter scan as the measured phase of a pre-equilibration protocol
+        (ADR-0052; #474, the preincubate->wash->dose-scan protocol). ``equil_perturbations`` are
+        applied before the equilibration; ``measure_perturbations`` (the intervention) after it,
+        before the scan. Each is a list of ``(kind, name, value)`` tuples (``kind`` in
+        ``{'param', 'species'}``). The equilibration relaxes to STEADY STATE by default;
+        ``equil_fixed_time`` instead runs it for that fixed duration (required for NF, and used by
+        a fixed-time pre-incubation)."""
+        self.preequilibrate = True
+        self.equil_perturbations = list(equil_perturbations)
+        self.measure_perturbations = list(measure_perturbations)
+        self.equil_max_time = equil_max_time
+        self.equil_fixed_time = None if equil_fixed_time is None else float(equil_fixed_time)
+
 
 class Mutation:
 
-    def __init__(self, name, operation, value):
+    def __init__(self, name, operation, value, is_species=False):
         """
         Create a mutation
-        :param name: Name of the variable to mutate
+        :param name: Name of the variable to mutate (a parameter id, or -- when
+            ``is_species`` -- a BNGL species pattern like ``IGF1(ds,hs,label~hot)``)
         :type name: str
         :param operation: Operation to perform on the target variable; one of + - * / =
+            (a species perturbation supports only ``=``, an absolute setConcentration)
         :type operation: str
-        :param value: The value to add/subtract/etc (depending on the operation)
-        :type value: float
+        :param value: The value to add/subtract/etc (depending on the operation). For a
+            parameter perturbation a float; for a species perturbation (``is_species``) the
+            setConcentration value -- a number OR a param-expression string
+            (``IGF1_cold_conc*(NA*Vecf)``), kept unevaluated for inline emission (#474).
+        :type value: float | str
+        :param is_species: True when ``name`` is a BNGL species pattern targeted by a
+            ``setConcentration`` (a wash / bolus), rather than a parameter (setParameter).
+            A species perturbation is applied INLINE only in a pre-equilibration protocol
+            (ADR-0052); it has no meaning as a mutant parameter-block change, so
+            :meth:`mutate` refuses it.
+        :type is_species: bool
         """
         self.name = name
         self.operation = operation
         self.value = value
+        self.is_species = is_species
         if operation not in ('+', '-', '*', '/', '='):
             raise RuntimeError(f'Invalid mutation operation {operation}')
         self.old = None
@@ -1844,6 +1927,13 @@ class Mutation:
         :param num:
         :return: float
         """
+        if self.is_species:
+            raise PybnfError(
+                f"Species perturbation setConcentration(\"{self.name}\", {self.value}) can only "
+                "be applied inline in a pre-equilibration experiment (as an intervention between "
+                "the equilibration and the measured phase, ADR-0052/#474) -- not as a mutant "
+                "parameter-block change. Use it in a condition consumed by an experiment's "
+                "'preequilibrate:' or measurement 'condition:'.")
         self.old = num
         if self.operation == '=':
             return self.value

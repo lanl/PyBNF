@@ -187,6 +187,17 @@ class TestParse:
         assert parse.parse('condition: oe, model: erbb2.bngl, perturbations: a * 20, b / 2') == \
             ['condition', 'oe', ['erbb2.bngl'], [['a', '*', '20'], ['b', '/', '2']]]
 
+    def test_condition_species_perturbation_grammar(self):
+        # A SPECIES perturbation (#474): a QUOTED BNGL pattern (carries commas) = value, where the
+        # value is a number OR a param-expression -- emitted as setConcentration (a wash/bolus).
+        # A quoted LHS routes to the species op; a bare-id LHS stays the parameter op. The pattern
+        # and the expression are captured verbatim (commas inside are protected by the quotes).
+        assert parse.parse('condition: wash, perturbations: "IGF1(ds,hs,label~hot)" = 0') == \
+            ['condition', 'wash', [['IGF1(ds,hs,label~hot)', '=', '0']]]
+        assert parse.parse(
+            'condition: w, perturbations: hot_conc = 7e-12, "IGF1(ds,hs,label~cold)" = c*(NA*V)') == \
+            ['condition', 'w', [['hot_conc', '=', '7E-12'], ['IGF1(ds,hs,label~cold)', '=', 'c*(NA*V)']]]
+
     def test_condition_ploop_tuple_key(self):
         d = parse.ploop(['condition: c1, perturbations: kf = 1e-3, kr - 2',
                          'condition: c2, model: m.bngl, perturbations: a / 10'])

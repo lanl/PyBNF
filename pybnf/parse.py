@@ -366,7 +366,23 @@ def parse(s):
     cond_name = pp.Word(pp.alphas, pp.alphanums + '_')
     cond_model_key = pp.Suppress(pp.CaselessLiteral('model'))
     perturbations_key = pp.Suppress(pp.CaselessLiteral('perturbations'))
-    cond_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
+    # A parameter perturbation: bare identifier <op> number (op in = * / + -).
+    cond_param_op = pp.Group(pp.Word(pp.alphas+'_', pp.alphanums+'_') - _one_of('+ - * / =') - num)
+    # A SPECIES perturbation (#474): a QUOTED BNGL species pattern = value -- emitted as a
+    # ``setConcentration("<pattern>", <value>)`` (a wash / bolus / removal of a species pool),
+    # vs. a parameter perturbation's ``setParameter``. The pattern is quoted because it carries
+    # commas (``IGF1(ds,hs,label~hot)``) that would otherwise split the comma-delimited
+    # perturbation list; the value is a NUMBER or a param EXPRESSION (``IGF1_cold_conc*(NA*Vecf)``
+    # -- how a competitor amount tracks the scanned dose), quotable when it needs commas. Only
+    # ``=`` (absolute) is meaningful for a species amount. config.py routes a target containing
+    # ``(`` to setConcentration; the species case is applied inline in a pre-equilibration
+    # protocol (ADR-0052), not as a mutant parameter block.
+    cond_species_val = pp.QuotedString('"') | pp.Regex(r'[^,#\n]+').set_parse_action(lambda t: t[0].strip())
+    # Accept any op after a quoted species pattern so the op is validated in config.py with an
+    # actionable message (only ``=`` -- an absolute setConcentration -- is meaningful for a species
+    # amount); a relative op raises there rather than as a generic parse failure.
+    cond_species_op = pp.Group(pp.QuotedString('"') - _one_of('+ - * / =') - cond_species_val)
+    cond_op = cond_species_op | cond_param_op
     cond_model_ref = pp.Group(pp.Suppress(',') + cond_model_key + colon + model_file)
     cond_perts = pp.Group(_DelimitedList(cond_op))
     condition_gram = condition_key + colon - cond_name + pp.Optional(cond_model_ref) + \

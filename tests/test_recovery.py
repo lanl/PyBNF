@@ -499,6 +499,96 @@ def test_receptor_v2_example_builds_and_fits(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# New-era pre-equilibration + wash + parameter_scan (#474): the preincubate->wash->dose-scan
+# protocol, on bngsim's native carried-state scan
+# --------------------------------------------------------------------------- #
+@pytest.mark.newera
+@pytest.mark.usefixtures('_fakes')
+@pytest.mark.parametrize('seed', [1234, 7])
+def test_de_recovers_carried_state_dose_scan(seed, tmp_path):
+    """A pre-equilibration experiment whose MEASURED phase is a ``parameter_scan`` (#474, the
+    preincubate -> wash -> dose-scan protocol) recovers a rate through the real bngsim backend.
+
+    ``m10_preequil_scan``: a catalyst species ``P`` drives production of ``A`` (steady state
+    ``A_ss = k_prod/k_deg`` while ``P=1``); a WASH zeroes ``P`` (a *species* setConcentration), then
+    a dose-response scan over ``washout`` (extra first-order loss) reads ``A`` at ``t_end``:
+    ``A(t_end) = (k_prod/k_deg)*exp(-(k_deg+washout)*t_end)`` -- an exact closed form, so the ``.exp``
+    is a zero-noise oracle with a reachable optimum at the truth.
+
+    A sharp gate on BOTH #474 capabilities: the measured scan value is *entirely* the carried
+    post-wash state (a scan re-derived from the ``.net`` seed would start at ``A=0`` and, with ``P``
+    washed to 0, stay 0 -- flat, matching nothing), and the intervention is a species
+    setConcentration. Each dose resets to the carried snapshot via bngsim's native carried-state
+    scan (reset_conc-to-snapshot, lanl/bngsim#11). Counterpart of
+    ``test_de_recovers_preequilibration`` (a time course) and ``test_de_recovers_dose_response_steady_state``
+    (a fresh-from-seed scan).
+    """
+    H.require_bng2pl()
+    model_path = H.RECOVERY_MODELS_DIR / 'm10_preequil_scan.bngl'
+
+    k_prod, k_deg_true, t_end = 3.0, 2.0, 1.0
+    doses = [0.0, 0.5, 1.0, 2.0, 4.0]                     # washout values (the .exp swept axis)
+    a_ss = k_prod / k_deg_true                            # equilibration steady state (carried over)
+    exp_path = tmp_path / 'dose.exp'
+    lines = ['#\twashout\tA_tot']
+    lines += ['%.12g\t%.12g' % (d, a_ss * np.exp(-(k_deg_true + d) * t_end)) for d in doses]
+    exp_path.write_text('\n'.join(lines) + '\n')
+
+    # k_deg is the fitted free parameter (bound by id). `load` (P=1) is the pre-equilibration
+    # condition; `wash` (P=0, a species setConcentration) the intervention; the scan sweeps the
+    # data's `washout` column, read at t_end. Built via ploop directly (the shared harness's
+    # make_newera_config does not carry the scan + species-wash combo).
+    conf_text = '\n'.join([
+        'edition = 2', 'job_type = de', 'objective = sos',
+        'model: %s' % model_path,
+        'output_dir = %s' % (tmp_path / 'out'),
+        'bngl_backend = bngsim', 'initialization = lh', 'delete_old_files = 1',
+        'verbosity = 0', 'wall_time_sim = 0', 'random_seed = %d' % seed,
+        'refine = 1', 'population_size = 10', 'max_iterations = 20',
+        'uniform_var = k_deg 0.1 10',
+        'condition: load, perturbations: "P()" = 1',
+        'condition: wash, perturbations: "P()" = 0',
+        'experiment: relax, preequilibrate: load, condition: wash, type: parameter_scan, '
+        't_end: %g, data: %s' % (t_end, exp_path),
+    ]) + '\n'
+    conf = H.config.Configuration(H.ploop(conf_text.splitlines(keepends=True)))
+
+    # Build assertion: reset -> setConcentration("P()",1) [load] -> steady-state equilibration
+    # (unmeasured) -> setConcentration("P()",0) [wash] -> saveConcentrations -> parameter_scan
+    # (reset_conc=>1) over exactly the data's doses; only 'relax' is a scored suffix and both
+    # conditions are consumed inline.
+    model = conf.models['m10_preequil_scan']
+    acts = model.actions
+    i_load = acts.index('setConcentration("P()",1)')
+    i_equil = next(i for i, a in enumerate(acts) if 'steady_state=>1' in a and 'relax_preequil' in a)
+    i_wash = acts.index('setConcentration("P()",0)')
+    i_save = acts.index('saveConcentrations()')
+    i_scan = next(i for i, a in enumerate(acts) if a.startswith('parameter_scan('))
+    assert acts.index('resetConcentrations()') < i_load < i_equil < i_wash < i_save < i_scan, acts
+    # carry-over invariant: NO resetConcentrations between the equilibration and the scan
+    assert 'resetConcentrations()' not in acts[i_equil:i_scan + 1], acts[i_equil:i_scan + 1]
+    scan_line = acts[i_scan]
+    assert 'parameter=>"washout"' in scan_line and 'reset_conc=>1' in scan_line, scan_line
+    assert 'par_scan_vals=>[0.0,0.5,1.0,2.0,4.0]' in scan_line and 't_end=>1' in scan_line, scan_line
+    assert [s[1] for s in model.suffixes] == ['relax']
+    assert not model.mutants
+
+    alg = H.build(conf, 'de')
+    H.drive(alg)
+    H.refine(alg, conf)
+
+    # Hard gate (data reproduced): zero-noise oracle -> objective floors near 0.
+    data_ss = sum((a_ss * np.exp(-(k_deg_true + d) * t_end)) ** 2 for d in doses)
+    assert alg.trajectory.best_score() < 1e-3 * data_ss, \
+        'carried-state scan: best objective %g not < %g' % (
+            alg.trajectory.best_score(), 1e-3 * data_ss)
+    # Soft gate: the degradation rate comes back at the truth.
+    rec = H.best_params(alg, ('k_deg',))['k_deg']
+    rel = abs(rec - k_deg_true) / k_deg_true
+    assert rel < 0.15, 'k_deg recovered %g, expected ~%g (%.0f%% off)' % (rec, k_deg_true, rel * 100)
+
+
+# --------------------------------------------------------------------------- #
 # Determinism (guards the RNG-migration contract on the real-sim path)
 # --------------------------------------------------------------------------- #
 @pytest.mark.recovery

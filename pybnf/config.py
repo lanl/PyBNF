@@ -1256,10 +1256,30 @@ class Configuration:
                     f"Condition '{name}' does not name a model, but the job declares "
                     f"{len(self.models)} models. Add 'model: <file>' to the condition to "
                     f"say which model it perturbs.")
-            mut_objects = [Mutation(var, op, float(val)) for var, op, val in perts]
+            mut_objects = [self._build_condition_mutation(name, var, op, val)
+                           for var, op, val in perts]
             self.models[base].add_mutant(MutationSet(mut_objects, name))
             logger.debug(f"Condition '{name}' applied to model '{base}' "
                          f"({len(mut_objects)} perturbation(s))")
+
+    @staticmethod
+    def _build_condition_mutation(cond_name, var, op, val):
+        """Build a :class:`~pybnf.pset.Mutation` for one condition perturbation, routing a
+        BNGL **species pattern** target (contains ``(``) to a ``setConcentration`` species
+        perturbation and a bare identifier to a ``setParameter`` parameter perturbation (#474).
+
+        A species perturbation keeps its value UNEVALUATED (a number or a param-expression
+        string like ``IGF1_cold_conc*(NA*Vecf)``) for inline emission; only ``=`` (an absolute
+        setConcentration) is meaningful for a species amount. A parameter perturbation is the
+        pre-#474 behaviour: ``op`` in ``= * / + -`` with a float value."""
+        if '(' in var:
+            if op != '=':
+                raise PybnfError(
+                    f"Condition '{cond_name}': species perturbation \"{var}\" {op} {val} uses a "
+                    f"relative operator '{op}', but a species amount (setConcentration) supports "
+                    "only '=' (an absolute set -- a wash to 0, or a bolus/amount). Use '='.")
+            return Mutation(var, op, val, is_species=True)
+        return Mutation(var, op, float(val))
 
     def _load_experiments(self):
         """Map new-era ``experiment:`` lines to synthesized actions + exp_data (ADR-0028).
@@ -1359,8 +1379,12 @@ class Configuration:
                     # New-era pre-equilibration (ADR-0052, #440): equilibrate UNDER the named
                     # condition (unmeasured, to steady state), perturb to the measurement
                     # condition, then measure -- one simulation, two phases, state carried over.
+                    # The measured phase is a time course OR (#474) a parameter_scan (a
+                    # preincubate->wash->dose-scan protocol); the scan sweeps the data's
+                    # independent-variable column (stacked.indvar).
                     action = self._build_preequilibration_action(
-                        name, model, base, method, points, action_type, fields, consumed_conditions)
+                        name, model, base, method, points, action_type, fields,
+                        consumed_conditions, indvar=stacked.indvar)
                 elif action_type == 'time_course':
                     action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
                     self._attach_nf_options(action, fields, method)
@@ -1441,14 +1465,16 @@ class Configuration:
             model.mutants = [m for m in model.mutants if m.suffix not in conds]
 
     def _preequilibration_perturbations(self, exp_name, model, condition_name):
-        """Absolute ``(param, value)`` setParameter perturbations for a pre-equilibration phase,
-        read from a named condition's ``MutationSet`` (ADR-0052).
+        """Absolute ``(kind, name, value)`` perturbations for a pre-equilibration phase, read
+        from a named condition's ``MutationSet`` (ADR-0052, #474).
 
-        A pre-equilibration condition is applied INLINE as ``setParameter`` (a mid-protocol
-        parameter change), so each of its mutations must resolve to an absolute value. Phase 1
-        supports absolute (``=``) perturbations only -- what receptor uses (``Ligand_isPresent
-        = 1``); a relative op (``* / + -``) needs the nominal value and is deferred (it would
-        emit an expression form), so it raises a clear message here."""
+        A pre-equilibration condition is applied INLINE (a mid-protocol change), so each of its
+        mutations must resolve to an absolute (``=``) value; a relative op (``* / + -``) needs
+        the nominal value and is deferred, so it raises a clear message here. ``kind`` is
+        ``'param'`` for a parameter target (emitted as ``setParameter``, what receptor's
+        ``Ligand_isPresent = 1`` uses) or ``'species'`` for a BNGL species pattern target
+        (emitted as ``setConcentration`` -- a wash / bolus, #474); a species ``value`` may be a
+        number or a param-expression string (``IGF1_cold_conc*(NA*Vecf)``), kept unevaluated."""
         mut_set = next((m for m in model.mutants if m.suffix == condition_name), None)
         if mut_set is None:
             raise PybnfError(
@@ -1460,9 +1486,10 @@ class Configuration:
                 raise PybnfError(
                     f"Experiment '{exp_name}': pre-equilibration condition '{condition_name}' "
                     f"uses a relative perturbation ('{mut.name} {mut.operation} {mut.value}'). "
-                    "Pre-equilibration currently supports only absolute ('=') perturbations "
-                    "(applied as setParameter); use '=' (ADR-0052).")
-            perts.append((mut.name, mut.value))
+                    "Pre-equilibration currently supports only absolute ('=') perturbations; "
+                    "use '=' (ADR-0052).")
+            kind = 'species' if getattr(mut, 'is_species', False) else 'param'
+            perts.append((kind, mut.name, mut.value))
         return perts
 
     @staticmethod
@@ -1479,20 +1506,28 @@ class Configuration:
             action.complex = fields['complex']
 
     def _build_preequilibration_action(self, name, model, base, method, points, action_type,
-                                       fields, consumed_conditions):
-        """Build the measurement ``TimeCourse`` for a pre-equilibration experiment (ADR-0052)
-        and record the conditions it consumes.
+                                       fields, consumed_conditions, indvar=None):
+        """Build the measured action for a pre-equilibration experiment (ADR-0052, #474) and
+        record the conditions it consumes.
 
         Reads the ``preequilibrate:`` condition (the unmeasured equilibration state) and the
         measurement ``condition:`` (optional -- omitted measures at the model default) as
-        absolute ``setParameter`` perturbations, attaches them to a time-course action over the
-        data grid (so :meth:`pybnf.pset.BNGLModel.add_action` emits the two-phase block), and
-        marks both conditions consumed (removed from the model's mutants after the loop)."""
-        if action_type != 'time_course':
+        absolute inline perturbations (``setParameter`` for a parameter target, ``setConcentration``
+        for a species target -- a wash / bolus, #474), attaches them to the measured action, and
+        marks both conditions consumed (removed from the model's mutants after the loop).
+
+        The measured phase is a ``TimeCourse`` over the data's time grid (ADR-0052) OR, when the
+        data's independent variable is a swept parameter (``type: parameter_scan``, #474), a
+        ``ParamScan`` over the data's dose grid -- the preincubate->wash->dose-scan protocol. A
+        pre-equilibrated scan saves the post-intervention state and resets each dose to it
+        (``saveConcentrations`` + ``reset_conc=>1``), which bngsim honors natively
+        (lanl/bngsim#11); ``t_end:`` fixes the scan's measurement time (e.g. a dissociation read
+        at 20/60 min), or with none each dose runs to steady state (ADR-0046)."""
+        if action_type not in ('time_course', 'parameter_scan'):
             raise PybnfError(
-                f"Experiment '{name}' uses pre-equilibration (preequilibrate:) with type "
-                f"'{action_type}'. Pre-equilibration measures a time course after equilibrating; "
-                "a parameter_scan with pre-equilibration is not supported (ADR-0052).")
+                f"Experiment '{name}' uses pre-equilibration (preequilibrate:) with unsupported "
+                f"type '{action_type}'. The measured phase must be a time_course or a "
+                "parameter_scan.")
         preequil_cond = fields['preequilibrate']
         equil_perts = self._preequilibration_perturbations(name, model, preequil_cond)
         consumed_conditions.setdefault(base, set()).add(preequil_cond)
@@ -1511,7 +1546,20 @@ class Configuration:
                 f"Experiment '{name}' is a network-free (method: nf) pre-equilibration, but NFsim "
                 "has no steady-state solve. Give the equilibration a fixed duration with "
                 "'equil_t_end: <time>' (the interval to run before the measured phase).")
-        action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
+        if action_type == 'parameter_scan':
+            # The measured phase is a dose-response scan (#474). Its endpoint is the scan's
+            # measurement time (``t_end:``, e.g. the 20/60-min dissociation read); with none each
+            # dose runs to steady state (ADR-0046 default). The scan resets each dose to the
+            # carried post-intervention state (reset_conc=>1) -- the pre-equilibrated dissociation.
+            scan = {'suffix': name, 'method': method, 'param': indvar}
+            t_end = fields.get('t_end')
+            if t_end is not None:
+                scan['time'] = t_end
+            else:
+                scan['steady_state'] = 1
+            action = ParamScan(scan, explicit_points=points)
+        else:
+            action = TimeCourse({'suffix': name, 'method': method}, explicit_points=points)
         action.set_preequilibration(equil_perts, measure_perts, equil_fixed_time=equil_t_end)
         self._attach_nf_options(action, fields, method)
         return action

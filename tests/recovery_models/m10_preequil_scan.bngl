@@ -1,0 +1,48 @@
+begin model
+#@model_id: m10_preequil_scan
+#@title: Pre-equilibration + wash + dose-response scan (PyBNF #474 carried-state scan fixture)
+#@description: A CATALYST species P drives production of A (P -> P + A at k_prod; P is not
+#  consumed), and A degrades (A -> 0 at k_deg + washout). Equilibrating with P present settles A
+#  to A_ss = k_prod/k_deg; a WASH that zeroes P (setConcentration("P()",0)) stops production, and
+#  then a dose-response scan over `washout` (extra first-order loss) reads A at a fixed t_end:
+#    A(t_end) = (k_prod/k_deg) * exp(-(k_deg + washout)*t_end).
+#  This is the preincubate -> wash -> dose-scan protocol of issue lanl/PyBNF#474 in miniature. It
+#  is a SHARP gate on BOTH new capabilities: the measured scan value is ENTIRELY the carried
+#  post-wash state (if the scan re-derived each dose from the seed, A would start at 0 and, with P
+#  washed to 0, stay 0 -- flat, matching nothing), and the wash is a SPECIES setConcentration.
+#
+# New-era conventions (see tests/test_recovery.py):
+#   * NO `begin actions` block: PyBNF synthesizes reset -> setConcentration(load) -> steady-state
+#     equilibration -> setConcentration(wash) -> saveConcentrations -> parameter_scan(reset_conc=>1)
+#     from the experiment:'s `preequilibrate:`/`condition:` + the data grid.
+#   * Free parameters bind BY ID (ADR-0034): the fitted `k_deg` is a bare model-parameter id.
+#   * `P()` is a catalyst species the two conditions set inline (equilibrate P=1, wash P=0); the
+#     scanned `washout` is the data's independent-variable column.
+
+begin parameters
+  k_prod   3.0    # catalytic production rate (fixed/known)
+  k_deg    2.0    # baseline degradation rate (the FITTED free parameter, bound by id)
+  washout  0.0    # scanned: extra first-order loss during the measured phase (the data indvar)
+end parameters
+
+begin molecule types
+  A()
+  P()
+end molecule types
+
+begin seed species
+  A()  0
+  P()  0
+end seed species
+
+begin observables
+  Molecules  A_tot  A()
+end observables
+
+begin reaction rules
+  birth:   P() -> P() + A()   k_prod     # P catalyzes A production (P is NOT consumed)
+  death:   A() -> 0           k_deg      # baseline degradation (fitted)
+  washing: A() -> 0           washout    # scanned extra first-order loss (the dose)
+end reaction rules
+
+end model

@@ -178,15 +178,80 @@ class TestBoundaries:
                 f"experiment: relax, preequilibrate: prod_on, data: {tmp_path / 'c.prop'}, t_end: 10",
             ])
 
-    def test_parameter_scan_preequilibration_is_refused(self, tmp_path):
-        # A non-time indvar would infer parameter_scan; a scan + pre-equilibration has no support.
-        (tmp_path / "dose.exp").write_text("# dose\tA_tot\n1\t1\n2\t2\n4\t4\n")
-        with pytest.raises(PybnfError, match="parameter_scan|time course after equilibrating"):
+    def test_parameter_scan_preequilibration_emits_scan_block(self, tmp_path):
+        # A parameter_scan measured phase of a pre-equilibration experiment (#474, the
+        # preincubate->wash->dose-scan protocol): the equilibration runs (fixed equil_t_end),
+        # the intervention perturbs, the post-intervention state is SAVED, and the scan resets
+        # each dose to it (reset_conc=>1). The swept parameter is the data's indvar column.
+        (tmp_path / "dose.exp").write_text("# k_prod\tA_tot\n1\t1\n2\t2\n4\t4\n")
+        conf = _build(tmp_path, _BASE + [
+            "condition: prod_on, perturbations: flag = 1",
+            f"experiment: relax, preequilibrate: prod_on, type: parameter_scan, "
+            f"equil_t_end: 100, t_end: 50, data: {tmp_path / 'dose.exp'}",
+        ])
+        acts = conf.models["m"].actions
+        i_reset = acts.index("resetConcentrations()")
+        i_flag = next(i for i, a in enumerate(acts) if a == 'setParameter("flag",1)')
+        i_equil = next(i for i, a in enumerate(acts)
+                       if a.startswith("simulate(") and "relax_preequil" in a)
+        i_save = acts.index("saveConcentrations()")
+        i_scan = next(i for i, a in enumerate(acts) if a.startswith("parameter_scan("))
+        # reset -> setParameter(equil) -> equilibration simulate -> saveConcentrations -> scan
+        assert i_reset < i_flag < i_equil < i_save < i_scan
+        # the equilibration runs for the fixed equil_t_end (no steady_state), then the scan
+        # resets each dose to the saved post-intervention state and sweeps the data's indvar.
+        assert "t_end=>100" in acts[i_equil] and "steady_state" not in acts[i_equil]
+        assert 'parameter=>"k_prod"' in acts[i_scan]
+        assert "reset_conc=>1" in acts[i_scan] and "t_end=>50" in acts[i_scan]
+        # the equilibration phase is unmeasured; only the measurement suffix is registered.
+        assert conf.models["m"].get_suffixes() == ["relax"]
+
+    def test_species_wash_intervention_emits_setconcentration(self, tmp_path):
+        # A species setConcentration intervention (#474): the measurement `condition:` (the wash)
+        # targets a BNGL species pattern -> setConcentration, with a numeric value (a wash to 0) or
+        # a param-EXPRESSION value (a bolus that tracks the scanned dose) emitted quoted. A
+        # parameter target in the same condition stays setParameter.
+        (tmp_path / "dose.exp").write_text("# k_prod\tA_tot\n1\t1\n2\t2\n4\t4\n")
+        conf = _build(tmp_path, _BASE + [
+            "condition: prod_on, perturbations: flag = 1",
+            'condition: wash, perturbations: "A()" = 0, "A()" = k_prod*2, k_deg = 5',
+            f"experiment: relax, preequilibrate: prod_on, condition: wash, type: parameter_scan, "
+            f"equil_t_end: 100, t_end: 50, data: {tmp_path / 'dose.exp'}",
+        ])
+        acts = conf.models["m"].actions
+        # a numeric species value renders bare; an expression value renders quoted; a parameter
+        # target is setParameter -- all emitted AFTER the equilibration, BEFORE saveConcentrations.
+        assert 'setConcentration("A()",0)' in acts
+        assert 'setConcentration("A()","k_prod*2")' in acts
+        assert 'setParameter("k_deg",5)' in acts
+        i_equil = next(i for i, a in enumerate(acts) if "relax_preequil" in a)
+        i_save = acts.index("saveConcentrations()")
+        for line in ('setConcentration("A()",0)', 'setConcentration("A()","k_prod*2")',
+                     'setParameter("k_deg",5)'):
+            assert i_equil < acts.index(line) < i_save, (line, acts)
+
+    def test_species_perturbation_relative_op_is_refused(self, tmp_path):
+        # A species amount (setConcentration) is an absolute set; a relative op has no meaning.
+        with pytest.raises(PybnfError, match="species perturbation|only '='"):
             _build(tmp_path, _BASE + [
-                "condition: prod_on, perturbations: flag = 1",
-                f"experiment: relax, preequilibrate: prod_on, type: parameter_scan, "
-                f"data: {tmp_path / 'dose.exp'}",
+                'condition: wash, perturbations: "A()" * 2',
+                "experiment: relax, preequilibrate: wash, data: relax.exp",
             ])
+
+    def test_species_mutation_refused_as_plain_mutant(self, tmp_path):
+        # A species perturbation is applied INLINE in a pre-equilibration protocol; used as a
+        # regular measurement condition (a mutant parameter-block change) it is refused, because a
+        # species pattern is not a parameter -- Mutation.mutate raises when the mutant is built.
+        (tmp_path / "other.exp").write_text("# time\tA_tot\n0\t1\n1\t1\n2\t1\n")
+        conf = _build(tmp_path, _BASE + [
+            'condition: wash, perturbations: "A()" = 0',
+            f"experiment: relax, condition: wash, data: {tmp_path / 'other.exp'}",
+        ])
+        # the config builds (the species mutation lives in the MutationSet); applying it as a
+        # mutant parameter-block change is what raises.
+        mut = next(m for m in conf.models["m"].mutants if m.suffix == "wash")
+        with pytest.raises(PybnfError, match="only be applied inline|pre-equilibration"):
+            next(iter(mut.mutations)).mutate(1.0)
 
     def test_condition_used_both_inline_and_as_a_mutant_is_refused(self, tmp_path):
         # prod_off is consumed (inline) by the pre-equilibration experiment AND named as a
