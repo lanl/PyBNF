@@ -85,8 +85,10 @@ from .conditions import (
     REF_MARKER,
     condition_name_from_id,
     conditions_from_rows,
+    is_species_target,
     read_condition_table,
     read_experiment_table,
+    read_mapping_table,
 )
 from .measurements import (
     data_from_measurement_rows,
@@ -95,6 +97,7 @@ from .measurements import (
     observable_parameters_by_observable,
     read_measurement_table,
     reconstruct_dose_responses,
+    reconstruct_preequilibrated_dose_responses,
     row_varying_noise_ids,
     row_varying_observable_ids,
 )
@@ -191,7 +194,11 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     scale/offset and an expression ``noiseFormula`` are substituted/reduced and import too
     (ADR-0044). A **dose-response** (parameter_scan) problem -- N conditions each setting one
     swept parameter at a constant measurement time (``inf`` => steady state, ADR-0046) -- is
-    reconstructed into a single swept-axis ``.exp`` + a ``parameter_scan`` experiment. Raises
+    reconstructed into a single swept-axis ``.exp`` + a ``parameter_scan`` experiment; a
+    **pre-equilibrated dose-response** (ADR-0062, the preincubate -> wash -> dose-scan protocol) --
+    N two-period experiments whose species ``setConcentration`` wash targets are aliased through
+    the **mapping table** -- is reconstructed into a ``preequilibrate:`` + ``condition:``
+    ``parameter_scan`` experiment (the species patterns recovered from the mapping). Raises
     ``NotImplementedError`` at the remaining PEtab/PyBNF boundaries (a model language other than
     ``bngl``/``sbml``; the five unsupported prior families; a log-normal/log-laplace noise
     distribution; a condition expression; a **row-varying** per-measurement
@@ -215,6 +222,11 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
                       if problem['condition_files'] else [])
     experiment_rows = (read_experiment_table(base / problem['experiment_files'][0])
                        if problem['experiment_files'] else [])
+    # The species-amount mapping table (ADR-0062): a {petab_id: BNGL pattern} inversion of the
+    # exporter's species setConcentration aliasing. Absent for a job with no species conditions.
+    mapping_rows = (read_mapping_table(base / problem['mapping_files'][0])
+                    if problem['mapping_files'] else [])
+    species_by_id = {r.petab_id: r.model_id for r in mapping_rows}
 
     # Parameters -> conf free-parameter lines (bare ids; new-era binds by id, ADR-0034)
     # + the surrogate set M of fit-and-perturbed model parameters.
@@ -267,13 +279,22 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
         observable_rows, namespace, entity_names, fixed_params, obs_params, free_names,
         row_varying_obs_params)
 
+    # Pre-equilibrated dose-response reconstruction (ADR-0062): pull out the two-period scan groups
+    # (a -inf pre-equilibration period + a per-dose measurement period) FIRST, so the plain
+    # dose-response and time-course reconstructions below never see them. Only the per-dose
+    # conditions are consumed; the shared pre-equilibration + wash conditions stay in the condition
+    # table (they become preequilibrate:/condition: lines).
+    preequil_scans, meas_rows_1, pdr_condition_ids, pdr_experiment_ids = \
+        reconstruct_preequilibrated_dose_responses(
+            measurement_rows, condition_rows, experiment_rows, observable_id_to_column)
+
     # Dose-response (parameter_scan) reconstruction (ADR-0046): pull out the experiment groups
     # whose N conditions each set one swept parameter at a constant measurement time (inf =>
     # steady state) and rebuild each as a single swept-axis Data; the remaining rows are time
     # courses. Their conditions/experiments are dropped from the time-course reconstruction (a
     # dose is the scan axis, not a named condition: line).
     dose_responses, tc_rows, dr_condition_ids, dr_experiment_ids = reconstruct_dose_responses(
-        measurement_rows, condition_rows, experiment_rows, observable_id_to_column)
+        meas_rows_1, condition_rows, experiment_rows, observable_id_to_column)
 
     # Time-course measurements -> the wide Data replicates per (experiment, model), then assemble
     # the experiment list (repeated (obs, time) rows are dealt into replicate grids -- ADR-0039;
@@ -293,29 +314,38 @@ def import_job(problem_yaml_path, out_dir, job_type='de', method='ode',
     param_bindings = measurement_param_bindings(
         tc_rows, observable_id_to_column, row_varying_obs, row_varying_obs_params)
     # The column-mean resolver (sos vs ave_norm_sos) averages over every experiment's data,
-    # time courses and dose-response scans alike.
+    # time courses and dose-response scans (plain + pre-equilibrated) alike.
     dr_datas = {(dr['name'], dr['model_id']): [dr['data']] for dr in dose_responses}
+    pdr_datas = {(s['name'], s['model_id']): [s['data']] for s in preequil_scans}
     objective_directives = _objective_directives(
         observable_rows, observable_id_to_column, noise_param_ids,
-        _column_mean_resolver({**datas, **dr_datas}, observable_id_to_column),
+        _column_mean_resolver({**datas, **dr_datas, **pdr_datas}, observable_id_to_column),
         obs_params, row_varying_obs)
-    # Named conditions exclude those absorbed into a dose-response (each dose is the scan axis,
-    # not a condition: line).
-    tc_condition_rows = [r for r in condition_rows if r.condition_id not in dr_condition_ids]
-    conditions = conditions_from_rows(tc_condition_rows, surrogate_params)
+    # Named conditions exclude those absorbed into a dose-response (each dose is the scan axis, not
+    # a condition: line); a pre-equilibrated scan's per-dose conditions are absorbed too, but its
+    # shared pre-equilibration + wash conditions REMAIN (they become preequilibrate:/condition:).
+    # A species target's BNGL pattern is recovered from the mapping table (ADR-0062).
+    absorbed_condition_ids = dr_condition_ids | pdr_condition_ids
+    tc_condition_rows = [r for r in condition_rows
+                         if r.condition_id not in absorbed_condition_ids]
+    conditions = conditions_from_rows(tc_condition_rows, surrogate_params, species_by_id)
     # Each (experiment, model) group recovers its model from the rows' modelId (ADR-0041);
     # a single-model job carries modelId '' and emits no per-experiment model: field. A group
     # with a row-varying noise binding also writes its per-measurement sidecar (ADR-0045). The
-    # time-course experiment rows exclude those absorbed into a dose-response scan.
+    # time-course experiment rows exclude those absorbed into a (plain or pre-equilibrated) scan.
     model_location_of = {m['model_id']: m['location'] for m in models}
+    absorbed_experiment_ids = dr_experiment_ids | pdr_experiment_ids
     tc_experiment_rows = [r for r in experiment_rows
-                          if r.experiment_id not in dr_experiment_ids]
+                          if r.experiment_id not in absorbed_experiment_ids]
     experiments = _experiments(datas, tc_experiment_rows, out_dir, model_location_of,
                                param_bindings)
     # Dose-response scans become parameter_scan experiments: a steady-state scan (scan_time inf)
     # carries no t_end: (the .exp's swept-axis column 0 infers the type); a finite scan carries
     # t_end: <t> (ADR-0046). Their .exp files are written here.
     experiments += _dose_response_experiments(dose_responses, out_dir, model_location_of)
+    # Pre-equilibrated scans become preequilibrate:+condition: parameter_scan experiments (ADR-0062).
+    experiments += _preequilibrated_dose_response_experiments(
+        preequil_scans, out_dir, model_location_of)
 
     # Each model file is carried verbatim -- no synthesis, no edit, for BNGL or SBML
     # (ADR-0036). Expression observables live in the conf's measurement-model layer below.
@@ -897,6 +927,29 @@ def _dose_response_experiments(dose_responses, out_dir, model_location_of):
     return experiments
 
 
+def _preequilibrated_dose_response_experiments(scans, out_dir, model_location_of):
+    """Build the conf experiment entries for the reconstructed pre-equilibrated dose-response scans
+    (#477; ADR-0062) -- the two-period sibling of :func:`_dose_response_experiments`.
+
+    Each scan's swept-axis :class:`~pybnf.data.Data` is written to ``<name>.exp`` (column 0 the
+    swept parameter, so ``config._infer_experiment_type`` reads it as a parameter_scan -- no
+    ``type:`` field needed), and the experiment carries its ``preequilibrate:`` (the ``-inf``
+    pre-equilibration condition) and its optional measurement ``condition:`` (the wash). A
+    steady-state scan (``scan_time`` inf) carries ``t_end = None``; a finite scan carries that
+    endpoint. Returns :class:`ImportedExperiment` records (``measparams`` always ``None`` -- a
+    dose-response carries no per-measurement sidecar)."""
+    experiments = []
+    for s in scans:
+        name = s['name']
+        data_file = f'{name}.exp'
+        _write_exp(out_dir / data_file, s['data'])
+        model_location = model_location_of.get(s['model_id'])
+        t_end = None if math.isinf(s['scan_time']) else s['scan_time']
+        experiments.append(ImportedExperiment(
+            name, s['wash'], s['preequilibrate'], [data_file], model_location, None, t_end))
+    return experiments
+
+
 def _write_exp(path, data):
     """Write a wide :class:`~pybnf.data.Data` as a PyBNF ``.exp`` file (a ``#``-prefixed
     header line + tab-separated rows, the shape ``Data.load_data`` reads back). ``NaN``
@@ -964,7 +1017,7 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
             if cname:
                 cond_models.setdefault(cname, set()).add(exp.model_location)
     for name, perts in conditions.items():
-        pert_str = ', '.join(f'{var} {op} {num(val)}' for var, op, val in perts)
+        pert_str = ', '.join(_render_perturbation(var, op, val) for var, op, val in perts)
         model_field = ''
         if multi_model:
             locs = {loc for loc in cond_models.get(name, set()) if loc}
@@ -1003,6 +1056,20 @@ def _write_conf(path, *, model_filenames, job_type, objective_directives, free_p
     path.write_text('\n'.join(lines) + '\n')
 
 
+def _render_perturbation(var, op, val):
+    """Render one recovered condition perturbation as a conf ``perturbations:`` token.
+
+    A **species** ``setConcentration`` target (a BNGL pattern, ADR-0062) is emitted with its
+    pattern quoted (it carries commas) and its verbatim value (a number or a param-expression),
+    the value itself quoted only when it carries a comma (the grammar's ``cond_species_val``
+    convention). A **parameter** target renders as ``<var> <op> <num(val)>`` (``val`` is a
+    float)."""
+    if is_species_target(var):
+        value = f'"{val}"' if ',' in str(val) else str(val)
+        return f'"{var}" {op} {value}'
+    return f'{var} {op} {num(val)}'
+
+
 def _emit_all_job_types():
     """The fit-type codes a ``job_type='all'`` import emits, from the registry (every
     ``optimizer`` + ``sampler``; the ``check`` checker excluded). Lazily imports
@@ -1022,7 +1089,7 @@ def read_problem_yaml(path):
     """Hand-parse the minimal ``problem.yaml`` shape :func:`write_problem_yaml` emits.
 
     Returns a dict with the table-file lists (``parameter_files`` / ``observable_files`` /
-    ``measurement_files`` / ``condition_files`` / ``experiment_files``) and a ``models`` list
+    ``measurement_files`` / ``condition_files`` / ``experiment_files`` / ``mapping_files``) and a ``models`` list
     -- one ``{model_id, location, language}`` entry per ``model_files`` entry, in declaration
     order (one or many, ADR-0041). For single-model convenience the first model is also
     surfaced as ``model_file`` / ``model_id`` / ``model_language``. Dependency-free (no YAML
@@ -1036,7 +1103,7 @@ def read_problem_yaml(path):
     importer (:func:`_require_supported_model`), not here.
     """
     file_keys = ('parameter_files', 'observable_files', 'measurement_files',
-                 'condition_files', 'experiment_files')
+                 'condition_files', 'experiment_files', 'mapping_files')
     files = {k: [] for k in file_keys}
     models = []         # [{model_id, location, language}, ...] in declaration order
     current = None      # the model entry being filled (set by a `<modelId>:` line)

@@ -442,6 +442,141 @@ def reconstruct_dose_responses(measurement_rows, condition_rows, experiment_rows
     return dose_responses, remaining_rows, consumed_condition_ids, consumed_experiment_ids
 
 
+def reconstruct_preequilibrated_dose_responses(measurement_rows, condition_rows, experiment_rows,
+                                               observable_id_to_column, sd_suffix='_SD'):
+    """Detect + reconstruct **pre-equilibrated dose-response** groups -- the inverse of the
+    exporter's ``build_preequilibrated_dose_response_conditions`` (#477; ADR-0062), the combination
+    of ADR-0052 pre-equilibration and ADR-0046 dose-response.
+
+    A pre-equilibrated dose-response is represented in PEtab v2 as N **two-period** experiments
+    ``<stem>_<i>``: a leading ``time = -inf`` steady-state period under a shared pre-equilibration
+    condition, then a ``time = 0`` measurement period applying an optional shared **wash** condition
+    plus a per-dose condition ``cond_<stem>_<i>`` that sets one swept parameter to dose ``i``. This
+    recovers each such group back to a single swept-axis :class:`~pybnf.data.Data` (column 0 = the
+    swept parameter, its values the doses) plus the pre-equilibration + wash condition names and the
+    scan endpoint -- the form a new-era ``experiment: <stem>, preequilibrate: <pre>[, condition:
+    <wash>], type: parameter_scan[, t_end: <t>]`` re-exports.
+
+    **Detection.** An experiment is a pre-equilibrated dose-response *point* when (a) it has exactly
+    one ``time = -inf`` period (a single pre-equilibration condition), (b) its measurements all share
+    one time (the scan time), and (c) the condition ``cond_<eid>`` (the exporter's per-dose naming)
+    is applied at the measurement period and sets exactly one numeric target (the dose). The other
+    measurement-period conditions are the shared wash. Points group by their experimentId stem
+    (``<stem>_<i>`` -> ``stem``) and modelId; within a group the swept parameter, scan time,
+    pre-equilibration condition, and wash condition must agree (else the group is ambiguous ->
+    raises). A steady-state (``time = inf``) point is always a scan; a finite-time point needs the
+    ``<stem>_<i>`` name (mirroring :func:`reconstruct_dose_responses`).
+
+    Returns ``(scans, remaining_rows, consumed_condition_ids, consumed_experiment_ids)``:
+
+    * ``scans`` -- a list of ``{name, model_id, preequilibrate, wash, swept_param, scan_time, data}``
+      (``preequilibrate`` / ``wash`` are condition names, ``wash`` ``None`` when the measurement
+      period applies no shared condition; ``scan_time`` is ``inf`` for steady state);
+    * ``remaining_rows`` -- the measurement rows NOT in any pre-equilibrated scan;
+    * ``consumed_condition_ids`` -- only the per-dose ``cond_<stem>_<i>`` ids (the shared
+      pre-equilibration + wash conditions are NOT consumed: they become ``preequilibrate:`` /
+      ``condition:`` lines via ``conditions_from_rows``);
+    * ``consumed_experiment_ids`` -- every ``<stem>_<i>`` experiment id (dropped from the
+      time-course / plain-pre-equilibration reconstruction).
+    """
+    from .conditions import condition_name_from_id
+
+    periods_of = {}
+    for row in experiment_rows:
+        periods_of.setdefault(row.experiment_id, []).append((row.time, row.condition_id))
+
+    by_cond = {}
+    for row in condition_rows:
+        by_cond.setdefault(row.condition_id, []).append((row.target_id, row.target_value))
+
+    def numeric_dose(cid):
+        """The single numeric ``(target, value)`` the per-dose condition sets, or ``None``."""
+        targets = by_cond.get(cid, [])
+        if len(targets) != 1:
+            return None
+        target_id, target_value = targets[0]
+        try:
+            return target_id, float(target_value)
+        except (TypeError, ValueError):
+            return None
+
+    by_group = {}
+    for row in measurement_rows:
+        by_group.setdefault((row.experiment_id, row.model_id), []).append(row)
+
+    buckets = {}
+    consumed = set()
+    for (eid, mid), rows in by_group.items():
+        periods = periods_of.get(eid, [])
+        pre_periods = [(t, c) for t, c in periods if math.isinf(t) and t < 0]
+        meas_periods = [(t, c) for t, c in periods if not (math.isinf(t) and t < 0)]
+        if len(pre_periods) != 1 or not meas_periods:
+            continue                       # not a (single) pre-equilibration -> not this shape
+        meas_times = {t for t, _c in meas_periods}
+        if len(meas_times) != 1:
+            continue                       # more than one measurement period time
+        (meas_time,) = meas_times
+        obs_times = {r.time for r in rows}
+        if len(obs_times) != 1:
+            continue                       # a time course (multiple measured times)
+        (scan_time,) = obs_times
+        dose_cid = f'cond_{eid}'           # the exporter's per-dose condition id
+        meas_cids = [c for _t, c in meas_periods]
+        dose = numeric_dose(dose_cid) if dose_cid in meas_cids else None
+        if dose is None:
+            continue                       # no per-dose single-numeric condition -> not a scan
+        m = _DOSE_EID.match(eid)
+        if not math.isinf(scan_time) and m is None:
+            continue                       # a finite single-time, non-<stem>_<i> group
+        swept_param, dose_value = dose
+        stem = m.group(1) if m else eid
+        index = int(m.group(2)) if m else 0
+        pre_cid = pre_periods[0][1]
+        wash_names = [condition_name_from_id(c) for c in meas_cids if c != dose_cid]
+        wash_names = [w for w in wash_names if w is not None]
+        buckets.setdefault((stem, mid), []).append(
+            {'index': index, 'eid': eid, 'swept_param': swept_param, 'dose': dose_value,
+             'scan_time': scan_time, 'preequilibrate': condition_name_from_id(pre_cid),
+             'wash_names': wash_names, 'dose_cid': dose_cid, 'rows': rows})
+        consumed.add((eid, mid))
+
+    scans = []
+    consumed_condition_ids = set()
+    consumed_experiment_ids = set()
+    for (stem, mid), points in buckets.items():
+        swept = {p['swept_param'] for p in points}
+        scan_times = {p['scan_time'] for p in points}
+        pres = {p['preequilibrate'] for p in points}
+        washes = {tuple(p['wash_names']) for p in points}
+        if len(swept) != 1 or len(scan_times) != 1 or len(pres) != 1 or len(washes) != 1:
+            raise PybnfError(
+                f"Pre-equilibrated dose-response group '{stem}' is ambiguous: its experiments set "
+                f"swept parameter(s) {sorted(swept)} at scan time(s) {sorted(scan_times)} under "
+                f"pre-equilibration condition(s) {sorted(pres)} and wash condition(s) "
+                f"{sorted(washes)}. A pre-equilibrated dose-response sweeps ONE parameter at ONE "
+                f"time under ONE pre-equilibration + wash (ADR-0062).")
+        wash_names = next(iter(washes))
+        if len(wash_names) > 1:
+            raise PybnfError(
+                f"Pre-equilibrated dose-response '{stem}' applies {len(wash_names)} shared "
+                f"measurement conditions {sorted(wash_names)} at its scan period; a new-era "
+                f"'experiment:' carries a single measurement 'condition:', so more than one shared "
+                f"(wash) condition has no PyBNF representation (ADR-0062).")
+        swept_param = next(iter(swept))
+        points.sort(key=lambda p: (p['index'], p['dose']))
+        data = _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix)
+        scans.append({'name': stem, 'model_id': mid, 'preequilibrate': next(iter(pres)),
+                      'wash': wash_names[0] if wash_names else None, 'swept_param': swept_param,
+                      'scan_time': next(iter(scan_times)), 'data': data})
+        for p in points:
+            consumed_experiment_ids.add(p['eid'])
+            consumed_condition_ids.add(p['dose_cid'])
+
+    remaining_rows = [row for row in measurement_rows
+                      if (row.experiment_id, row.model_id) not in consumed]
+    return scans, remaining_rows, consumed_condition_ids, consumed_experiment_ids
+
+
 def _dose_response_data(stem, swept_param, points, observable_id_to_column, sd_suffix):
     """Pivot a dose-response group's per-dose rows to a wide swept-axis :class:`~pybnf.data.Data`.
 

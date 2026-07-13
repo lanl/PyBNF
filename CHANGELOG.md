@@ -21,8 +21,19 @@ All notable changes to PyBNF are documented below. This project adheres to
   The bngsim backend routes such a carried-state scan to its native
   reset-conc-to-snapshot `parameter_scan`/`bifurcate` (**requires bngsim ≥ 0.11.34**,
   lanl/bngsim#11), reproducing BNG2.pl exactly; the fresh-from-seed dose-response paths
-  (ADR-0046) are unchanged. PEtab **export** of these two shapes is deferred (#477). See
-  ADR-0062.
+  (ADR-0046) are unchanged. See ADR-0062.
+- **PEtab v2 export/import of the preincubate → wash → dose-scan protocol (#477).** The two
+  shapes ADR-0062 added to the edition-2 fitter now export to PEtab v2, import back, and
+  round-trip byte-for-byte (validated by petab's full `default_validation_tasks`): (1) a
+  **species `setConcentration`** condition target — a BNGL species pattern is not a valid
+  PEtab id, so it is aliased through the **mapping table** (`petabEntityId` → the pattern) and
+  the condition targets the synthesized `species_<…>` id with a number or a parameter-expression
+  value; (2) a **pre-equilibrated dose-response** — each dose becomes a two-period Experiment
+  (a `time = -inf` pre-equilibration period + a measurement period applying both the shared wash
+  condition and a per-dose swept-parameter condition), the combination of ADR-0052 and ADR-0046.
+  The exporter's previous "deferred" refusals are lifted. The surrogate split × a pre-equilibrated
+  scan (an empty surrogate set M is required) and a whole-fit `normalization` transform (the real
+  Erickson-2019 IGF1R job) stay out of scope, raised in code. See ADR-0063.
 - **`examples/real-world/` — the 2019 PyBNF-paper case studies on the edition-2 surface.**
   The biological models from Mitra et al. (iScience 2019) — Kozer's EGFR (ODE and
   network-free), the ligand/receptor model (ODE and NFsim), IGF1R competition binding,

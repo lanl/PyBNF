@@ -1060,17 +1060,193 @@ class TestExportPreequilibration:
             ('relax', '0', 'cond_wildtype')]
         assert _petab_validation_errors(out / 'problem.yaml') == []
 
-    def test_preequilibration_parameter_scan_is_refused(self, tmp_path_factory):
-        # A pre-equilibration combined with a dose-response scan has no export route (mirrors
-        # the fitter's refusal -- ADR-0052/0046).
-        src = self._src(tmp_path_factory, 'preequil_scan')
-        (src / 'dose.exp').write_text('# dose A_tot\n1\t1\n2\t2\n4\t4\n')
+    def test_preequilibrated_scan_perturbing_a_fit_parameter_is_refused(self, tmp_path_factory):
+        # A pre-equilibrated dose-response (ADR-0062) requires an empty surrogate set M: the
+        # surrogate split is not yet combined with the multi-condition dose period, so a
+        # pre-equilibration/wash condition that perturbs a FIT parameter (k) is refused with a
+        # clear boundary (the swept L is a model param, not fit; k is the fit knob it perturbs).
+        src = self._src(tmp_path_factory, 'preequil_scan_fit')
+        (src / 'dose.exp').write_text('# L A_tot\n1\t1\n2\t2\n4\t4\n')
         (src / 'job.conf').write_text(
             self._HEAD
-            + 'condition: pre, perturbations: flag = 0\n'
+            + 'condition: pre, perturbations: k = 0.5\n'
             + 'experiment: relax, preequilibrate: pre, type: parameter_scan, data: dose.exp\n'
             + self._PARAMS)
-        with pytest.raises(NotImplementedError, match='parameter_scan'):
+        with pytest.raises(NotImplementedError, match='empty surrogate set|fit and perturbed'):
+            export_job(src / 'job.conf', src / 'out')
+
+    def test_preequilibration_with_a_species_wash_exports(self, tmp_path_factory):
+        # A plain (time-course) pre-equilibration whose measurement condition is a species
+        # setConcentration wash (ADR-0062): the wash target is a species amount emitted via the
+        # mapping table, not a bogus parameter target. The model gains a seed species Lig() the
+        # wash zeroes; petablint-clean.
+        src = tmp_path_factory.mktemp('preequil_species')
+        (src / 'm.bngl').write_text(_PREEQUIL_MODEL.replace(
+            'begin molecule types\n  A()\nend molecule types',
+            'begin molecule types\n  A()\n  Lig()\nend molecule types').replace(
+            'begin seed species\n  A() 10\nend seed species',
+            'begin seed species\n  A() 10\n  Lig() 5\nend seed species'))
+        (src / 'relax.exp').write_text('# time A_tot\n0\t10\n1\t6\n2\t4\n')
+        (src / 'job.conf').write_text(
+            self._HEAD
+            + 'condition: pre,  perturbations: flag = 0\n'
+            + 'condition: wash, perturbations: "Lig()" = 0\n'
+            + 'experiment: relax, preequilibrate: pre, condition: wash, data: relax.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        maps = _tsv_rows(out / 'mapping.tsv')
+        assert [(m['petabEntityId'], m['modelEntityId']) for m in maps] == [('species_Lig', 'Lig()')]
+        conds = {(r['conditionId'], r['targetId'], r['targetValue'])
+                 for r in _tsv_rows(out / 'conditions.tsv')}
+        assert ('cond_wash', 'species_Lig', '0') in conds
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+
+# ---------------------------------------------------------------------------
+# ADR-0062 (#477): a new-era PRE-EQUILIBRATED dose-response (preincubate -> wash -> dose-scan) ->
+# N two-period PEtab v2 Experiments (a -inf pre-equilibration period + a multi-condition
+# measurement period applying the shared wash condition AND a per-dose swept-parameter condition),
+# with species setConcentration wash targets aliased through the mapping table. The combination of
+# ADR-0052 (pre-equilibration) and ADR-0046 (dose-response).
+# ---------------------------------------------------------------------------
+
+# A birth-death model whose swept parameter L (a dose) and fitted parameter kd are model
+# parameters; A()/B() are seed species the incubate/wash setConcentration targets. resp = A().
+_PDR_MODEL = """begin model
+begin parameters
+  L   1.0
+  kd  5.0
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 0
+  B() 0
+end seed species
+begin observables
+  Molecules  resp  A()
+end observables
+begin reaction rules
+  birth: 0 -> A()    L
+  death: A() -> 0    kd
+end reaction rules
+end model
+"""
+
+
+class TestExportPreequilibratedDoseResponse:
+
+    def _src(self, tmp_path_factory, name='pdr'):
+        src = tmp_path_factory.mktemp(name)
+        (src / 'm.bngl').write_text(_PDR_MODEL)
+        (src / 'dose.exp').write_text('# L resp\n1\t0.5\n2\t1\n5\t2.5\n')
+        return src
+
+    _HEAD = 'edition = 2\njob_type = de\nobjective = sos\nmodel: m.bngl\n'
+    _PARAMS = 'uniform_var = kd 0.1 10\n'
+    # incubate: a species set to a NUMBER (the -inf period is subject to CheckInitialChangeSymbols,
+    # so its target values must be numeric / parameter-table only). wash: a species zeroed AND a
+    # species set to a param-EXPRESSION in the swept parameter (the dose-tracking competitor idiom)
+    # -- the measurement period is unconstrained.
+    _CONDS = ('condition: incubate, perturbations: "A()" = 100\n'
+              'condition: wash, perturbations: "A()" = 0, "B()" = L*kd\n')
+
+    @pytest.fixture(scope='class')
+    def exported(self, tmp_path_factory):
+        src = self._src(tmp_path_factory)
+        (src / 'job.conf').write_text(
+            self._HEAD + self._CONDS
+            + 'experiment: scan, preequilibrate: incubate, condition: wash, '
+              'type: parameter_scan, t_end: 500, data: dose.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        return out
+
+    def test_each_dose_is_a_two_period_multi_condition_experiment(self, exported):
+        # Per dose: a -inf pre-equilibration period (cond_incubate) + a measurement period applying
+        # BOTH the shared wash and the per-dose swept-parameter condition (two rows at time 0).
+        rows = _tsv_rows(exported / 'experiments.tsv')
+        assert [(r['experimentId'], r['time'], r['conditionId']) for r in rows] == [
+            ('scan_0', '-inf', 'cond_incubate'), ('scan_0', '0', 'cond_wash'),
+            ('scan_0', '0', 'cond_scan_0'),
+            ('scan_1', '-inf', 'cond_incubate'), ('scan_1', '0', 'cond_wash'),
+            ('scan_1', '0', 'cond_scan_1'),
+            ('scan_2', '-inf', 'cond_incubate'), ('scan_2', '0', 'cond_wash'),
+            ('scan_2', '0', 'cond_scan_2')]
+
+    def test_species_targets_go_through_the_mapping_table(self, exported):
+        # Each BNGL species pattern is aliased to a species_<...> id in the mapping table, and the
+        # conditions target that id (a numeric wash and a param-expression, verbatim).
+        maps = {(m['petabEntityId'], m['modelEntityId']) for m in _tsv_rows(exported / 'mapping.tsv')}
+        assert maps == {('species_A', 'A()'), ('species_B', 'B()')}
+        conds = {(r['conditionId'], r['targetId'], r['targetValue'])
+                 for r in _tsv_rows(exported / 'conditions.tsv')}
+        assert ('cond_incubate', 'species_A', '100') in conds
+        assert ('cond_wash', 'species_A', '0') in conds
+        assert ('cond_wash', 'species_B', 'L*kd') in conds
+        # Each dose is its own single-target condition on the swept parameter L.
+        assert ('cond_scan_0', 'L', '1') in conds
+        assert ('cond_scan_2', 'L', '5') in conds
+
+    def test_measurements_are_at_the_scan_time_per_dose(self, exported):
+        meas = _tsv_rows(exported / 'measurements.tsv')
+        assert all(m['time'] == '500' for m in meas)             # finite t_end scan
+        assert [(m['experimentId'], m['measurement']) for m in meas] == [
+            ('scan_0', '0.5'), ('scan_1', '1'), ('scan_2', '2.5')]
+        assert 'obs_L' not in {m['observableId'] for m in meas}  # the swept axis is not measured
+
+    def test_problem_yaml_lists_the_mapping_file(self, exported):
+        assert 'mapping_files:\n  - mapping.tsv\n' in (exported / 'problem.yaml').read_text()
+
+    def test_full_petab_validation_is_clean(self, exported):
+        assert _petab_validation_errors(exported / 'problem.yaml') == []
+
+    def test_steady_state_scan_uses_inf_measurement_time(self, tmp_path_factory):
+        # No t_end: => steady state, so the measurement time is inf (PEtab's steady-state
+        # convention), the -inf pre-equilibration period still preceding it.
+        src = self._src(tmp_path_factory, 'pdr_ss')
+        (src / 'job.conf').write_text(
+            self._HEAD + self._CONDS
+            + 'experiment: scan, preequilibrate: incubate, condition: wash, '
+              'type: parameter_scan, data: dose.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        meas = _tsv_rows(out / 'measurements.tsv')
+        assert all(m['time'] == 'inf' for m in meas)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_wash_free_scan_has_a_single_condition_measurement_period(self, tmp_path_factory):
+        # No measurement condition: (equilibrate, then scan with no intervention) -> the
+        # measurement period carries only the per-dose condition (a single-condition period).
+        src = self._src(tmp_path_factory, 'pdr_nowash')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'condition: incubate, perturbations: "A()" = 100\n'
+            + 'experiment: scan, preequilibrate: incubate, type: parameter_scan, data: dose.exp\n'
+            + self._PARAMS)
+        out = src / 'petab'
+        export_job(src / 'job.conf', out)
+        rows = [(r['experimentId'], r['time'], r['conditionId'])
+                for r in _tsv_rows(out / 'experiments.tsv')]
+        assert ('scan_0', '-inf', 'cond_incubate') in rows
+        assert ('scan_0', '0', 'cond_scan_0') in rows
+        assert not any(r[0] == 'scan_0' and r[2] == 'cond_wash' for r in rows)
+        assert _petab_validation_errors(out / 'problem.yaml') == []
+
+    def test_species_condition_on_a_plain_time_course_is_refused(self, tmp_path_factory):
+        # A species setConcentration is inline-only within a pre-equilibration protocol (ADR-0062);
+        # applied to a plain time-course experiment it has no export route (the fitter rejects it too).
+        src = self._src(tmp_path_factory, 'pdr_tc_species')
+        (src / 'tc.exp').write_text('# time resp\n0\t0\n1\t0.5\n2\t1\n')
+        (src / 'job.conf').write_text(
+            self._HEAD + 'condition: wash, perturbations: "A()" = 0\n'
+            + 'experiment: tc, condition: wash, data: tc.exp\n'
+            + self._PARAMS)
+        with pytest.raises(NotImplementedError, match='inline-only|pre-equilibration protocol'):
             export_job(src / 'job.conf', src / 'out')
 
 

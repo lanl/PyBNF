@@ -445,6 +445,131 @@ class TestImportPreequilibrationRoundTrip:
         assert 'setParameter("flag",1)' in acts            # measure under meas (flag=1)
 
 
+# ---------------------------------------------------------------------------
+# Pre-equilibrated dose-response (ADR-0062, #477): N two-period Experiments (a -inf
+# pre-equilibration period + a multi-condition measurement period applying a shared wash
+# condition AND a per-dose swept-parameter condition), with species setConcentration wash
+# targets aliased through the mapping table, imports as a new-era preequilibrate: +
+# condition: parameter_scan experiment and round-trips byte-for-byte.
+# ---------------------------------------------------------------------------
+
+_PDR_MODEL = """begin model
+begin parameters
+  L   1.0
+  kd  5.0
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 0
+  B() 0
+end seed species
+begin observables
+  Molecules  resp  A()
+end observables
+begin reaction rules
+  birth: 0 -> A()    L
+  death: A() -> 0    kd
+end reaction rules
+end model
+"""
+
+_PDR_DOSE_EXP = '# L resp\n1\t0.5\n2\t1\n5\t2.5\n'
+
+_PDR_CONF = (
+    'edition = 2\njob_type = de\nobjective = sos\n'
+    'model: m.bngl\n'
+    'condition: incubate, perturbations: "A()" = 100\n'
+    'condition: wash, perturbations: "A()" = 0, "B()" = L*kd\n'
+    'experiment: scan, preequilibrate: incubate, condition: wash, '
+    'type: parameter_scan, t_end: 500, data: dose.exp\n'
+    'uniform_var = kd 0.1 10\n')
+
+
+class TestImportPreequilibratedDoseResponseRoundTrip:
+
+    @pytest.fixture(scope='class')
+    def imported(self, tmp_path_factory):
+        return _roundtrip(
+            tmp_path_factory.mktemp('pdr'), _PDR_CONF,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP},
+            model_name='m.bngl')
+
+    def test_problem_round_trips_byte_for_byte(self, imported):
+        # The strong oracle: export the pre-equilibrated scan (N two-period Experiments + the
+        # species mapping table), import (recovering preequilibrate:/condition: + the swept axis),
+        # re-export byte-for-byte -- conditions/experiments/measurements/mapping all reproduce.
+        petab1, _, petab2, _ = imported
+        _assert_problem_round_trips(petab1, petab2)
+
+    def test_first_export_carries_the_mapping_table(self, imported):
+        petab1, _, _, _ = imported
+        assert [(m['petabEntityId'], m['modelEntityId'])
+                for m in _tsv_rows(petab1 / 'mapping.tsv')] == [
+            ('species_A', 'A()'), ('species_B', 'B()')]
+
+    def test_imported_conf_recovers_the_preequilibrated_scan(self, imported):
+        # The two-period-per-dose structure reads back as ONE preequilibrate: + condition:
+        # parameter_scan experiment; the species targets recover their quoted BNGL patterns
+        # (numeric wash + the param-expression competitor) via the mapping table.
+        _, _, _, conf = imported
+        text = conf.read_text()
+        assert 'condition: incubate, perturbations: "A()" = 100' in text
+        assert 'condition: wash, perturbations: "A()" = 0, "B()" = L*kd' in text
+        assert ('experiment: scan, preequilibrate: incubate, condition: wash, '
+                'method: ode, t_end: 500') in text
+
+    def test_reconstructed_exp_is_a_swept_axis_grid(self, imported):
+        # The N doses become a single swept-axis .exp (column 0 the swept parameter L, its values
+        # the doses; the observable column carries the per-dose measurements).
+        _, imported_dir, _, _ = imported
+        data = Data(file_name=str(imported_dir / 'scan.exp'))
+        assert data.indvar == 'L'
+        assert [data.data[i, data.cols['L']] for i in range(data.data.shape[0])] == [1, 2, 5]
+
+    def test_imported_conf_synthesizes_the_preincubate_wash_scan(self, imported, monkeypatch):
+        # The fitter accepts the imported conf and synthesizes the equilibrate -> wash -> scan
+        # protocol: an unmeasured steady-state simulate, the species washes (a number + the
+        # dose-tracking expression), a saveConcentrations, then a reset_conc parameter_scan.
+        from pybnf.config import Configuration
+        _, imported_dir, _, conf = imported
+        monkeypatch.chdir(imported_dir)
+        c = Configuration(ploop(conf.read_text().splitlines(keepends=True)))
+        acts = c.models['m'].actions
+        assert any('steady_state=>1' in a and '_preequil' in a for a in acts)  # equilibration
+        assert 'setConcentration("A()",100)' in acts       # incubate (a species amount)
+        assert 'setConcentration("A()",0)' in acts          # wash to zero
+        assert 'setConcentration("B()","L*kd")' in acts      # dose-tracking competitor expression
+        scan = next(a for a in acts if 'parameter_scan' in a)
+        assert 'par_scan_vals=>[1.0,2.0,5.0]' in scan and 'reset_conc=>1' in scan
+
+    def test_imported_problem_passes_full_petab_validation(self, imported):
+        pytest.importorskip('petab.v2')
+        from petab.v2 import Problem
+        from petab.v2.lint import ValidationIssueSeverity, default_validation_tasks
+
+        from pybnf.petab.bngl_model import register_bngl
+        register_bngl()
+        _, _, petab2, _ = imported
+        problem = Problem.from_yaml(str(petab2 / 'problem.yaml'))
+        errors = [type(t).__name__ for t in default_validation_tasks
+                  if (i := t.run(problem)) is not None
+                  and getattr(i, 'level', None) == ValidationIssueSeverity.ERROR]
+        assert errors == []
+
+    def test_steady_state_pdr_round_trips_without_t_end(self, tmp_path_factory):
+        # A steady-state pre-equilibrated scan (no t_end:) round-trips: measurements at time=inf,
+        # the imported conf omits t_end: (the swept-axis .exp infers the parameter_scan type).
+        conf = _PDR_CONF.replace(', type: parameter_scan, t_end: 500', ', type: parameter_scan')
+        petab1, _, petab2, imported_conf = _roundtrip(
+            tmp_path_factory.mktemp('pdr_ss'), conf,
+            extra_files={'m.bngl': _PDR_MODEL, 'dose.exp': _PDR_DOSE_EXP}, model_name='m.bngl')
+        _assert_problem_round_trips(petab1, petab2)
+        assert 't_end:' not in imported_conf.read_text()
+
+
 class TestPreequilibrationPeriodGrouping:
     """White-box on the multi-period resolver (`_condition_and_preequilibrate`, ADR-0052/#442):
     a single period is a plain time course; a leading time=-inf steady-state period + a finite

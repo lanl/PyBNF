@@ -76,12 +76,17 @@ from ..pset import FreeParameter
 from ._bngl import parse_model as parse_bngl_model
 from ._sbml import parse_model as parse_sbml_model
 from .conditions import (
+    PetabMappingRow,
     build_dose_response_conditions,
     build_experiment_conditions,
+    build_preequilibrated_dose_response_conditions,
     build_preequilibration_conditions,
+    is_species_target,
+    species_target_id,
     surrogate_name,
     write_condition_table,
     write_experiment_table,
+    write_mapping_table,
 )
 from ._measurement_params import read_measurement_params
 from .formula import bngl_body_to_petab_math
@@ -194,7 +199,7 @@ def export_job(conf_path, out_dir, inline_functions=False):
     fit_model_params = set(free_to_model.values()) & model_ids
 
     (observable_rows, measurement_rows, condition_rows, experiment_rows,
-     surrogate_params) = _export_new_era(
+     surrogate_params, mapping_rows) = _export_new_era(
         conf, conf_path, models, registry, noise, per_obs_noise, fit_model_params,
         inline_functions)
 
@@ -208,6 +213,8 @@ def export_job(conf_path, out_dir, inline_functions=False):
         write_condition_table(condition_rows, out_dir / 'conditions.tsv')
     if experiment_rows:
         write_experiment_table(experiment_rows, out_dir / 'experiments.tsv')
+    if mapping_rows:
+        write_mapping_table(mapping_rows, out_dir / 'mapping.tsv')
     # Each model is emitted in its own native language (ADR-0040): a BNGL model is
     # PEtab-cleaned (drop 'begin actions'); an SBML model is carried byte-verbatim (the
     # measurement model lives in the observables table, never a model-file edit -- ADR-0036).
@@ -220,7 +227,8 @@ def export_job(conf_path, out_dir, inline_functions=False):
     model_yaml = [(Path(mf).stem, Path(mf).name, languages[mf]) for mf in models]
     write_problem_yaml(out_dir / 'problem.yaml', model_yaml,
                        has_conditions=bool(condition_rows),
-                       has_experiments=bool(experiment_rows))
+                       has_experiments=bool(experiment_rows),
+                       has_mapping=bool(mapping_rows))
     return out_dir
 
 
@@ -306,6 +314,19 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     :func:`~pybnf.petab.conditions.build_preequilibration_conditions`. Its measurements are
     tagged exactly like a time course's (the data grid at times >= 0; the equilibration period
     carries no measurements).
+
+    A **pre-equilibrated dose-response** (``preequilibrate:`` + ``parameter_scan``, ADR-0062 --
+    the preincubate -> wash -> dose-scan protocol) takes a fourth shape: N two-period Experiments,
+    one per dose, whose ``time = 0`` measurement period applies BOTH a shared wash condition and a
+    per-dose swept-parameter condition, built by
+    :func:`~pybnf.petab.conditions.build_preequilibrated_dose_response_conditions`. Its
+    measurements pivot exactly like a plain dose-response's (tagged ``<stem>_<i>`` at the scan
+    time). A species ``setConcentration`` target in any condition (a wash/bolus, ADR-0062) is
+    aliased through the **mapping table**: a BNGL species pattern is not a valid PEtab id, so
+    :func:`_species_id_map` synthesizes a ``species_<...>`` id (``petabEntityId``) for it, the
+    condition targets that id, and ``mapping_rows`` (``petab_id -> pattern``) is emitted as
+    ``mapping.tsv``. Returns ``mapping_rows`` as its sixth element (empty for a job with no
+    species condition, so ``mapping.tsv`` stays absent).
     """
     experiments = _read_experiments(conf, conf_path, models)
     overrides = _read_observable_overrides(conf)
@@ -316,29 +337,32 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
     observable_rows, column_to_observable_id = _observable_rows(
         experiments, registry, noise, per_obs_noise, inline_functions, measurement_models)
 
-    # Three PEtab experiment shapes (ADR-0046/0052): a time course is one Experiment over a
+    # Four PEtab experiment shapes (ADR-0046/0052/0062): a time course is one Experiment over a
     # referenced Condition; a dose-response (parameter_scan) is N Conditions (each sets the swept
     # parameter to one dose) + N Experiments measured at the scan time (inf for steady state); a
     # pre-equilibration experiment is a two-period Experiment (a -inf steady-state period + a
-    # time=0 measurement period -- ADR-0052). They build independently and concatenate. A
-    # pre-equilibration experiment is a time course measured after equilibrating, so it is split
-    # off the time-course bucket by its ``preequilibrate`` field.
-    pe_experiments = [exp for exp in experiments if exp['preequilibrate'] is not None]
+    # time=0 measurement period -- ADR-0052); a PRE-EQUILIBRATED dose-response (a preincubate ->
+    # wash -> dose-scan protocol, ADR-0062) is N two-period Experiments, one per dose, whose
+    # measurement period applies both a shared wash condition and a per-dose condition. They build
+    # independently and concatenate; a `preequilibrate:` field splits an experiment off the plain
+    # time-course/dose-response buckets, and its `type` splits pre-equilibration (time course) from
+    # a pre-equilibrated scan.
+    pe_experiments = [exp for exp in experiments
+                      if exp['preequilibrate'] is not None and exp['type'] == 'time_course']
+    pdr_experiments = [exp for exp in experiments
+                       if exp['preequilibrate'] is not None and exp['type'] == 'parameter_scan']
     tc_experiments = [exp for exp in experiments
                       if exp['type'] == 'time_course' and exp['preequilibrate'] is None]
     dr_experiments = [exp for exp in experiments
                       if exp['type'] == 'parameter_scan' and exp['preequilibrate'] is None]
-    # (A parameter_scan measured phase of a pre-equilibration experiment -- #474 -- is already
-    # refused upstream in _read_experiments; its PEtab v2 export is deferred, a follow-up to
-    # ADR-0052. So pe_experiments here are all time-course measured, and dr_experiments exclude
-    # the pre-equilibrated scans, keeping each experiment in exactly one shape bucket.)
 
     conditions = _read_conditions(conf, models, registry)
     referenced = {exp['condition'] for exp in tc_experiments if exp['condition'] is not None}
-    # A pre-equilibration experiment references its pre-equilibration condition AND (optionally)
-    # its measurement condition NOT via the time-course ``condition:`` path, so add both to
-    # ``referenced`` explicitly -- else _read_conditions drops them as "unused" (ADR-0052, #441).
-    for exp in pe_experiments:
+    # A pre-equilibration / pre-equilibrated-scan experiment references its pre-equilibration
+    # condition AND (optionally) its measurement (wash) condition NOT via the time-course
+    # ``condition:`` path, so add both to ``referenced`` -- else _read_conditions drops them as
+    # "unused" (ADR-0052/0062).
+    for exp in pe_experiments + pdr_experiments:
         referenced.add(exp['preequilibrate'])
         if exp['condition'] is not None:
             referenced.add(exp['condition'])
@@ -347,19 +371,27 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         raise PybnfError(
             f"Experiment(s) reference undefined condition(s) {sorted(undefined)}; define "
             f"each with a 'condition:' line.")
-    # A species-target condition (setConcentration -- a wash/bolus, #474) exports to a PEtab v2
-    # condition whose target is a species amount (not a parameter); that mapping is deferred with
-    # the pre-equilibration scan above, so refuse a referenced species-target condition rather than
-    # emit it as a bogus parameter target (a species pattern contains '(', which no parameter id does).
-    species_conditions = sorted(
-        name for name in referenced
-        for var, _op, _val in conditions.get(name, []) if '(' in var)
-    if species_conditions:
-        raise PybnfError(
-            f"Condition(s) {species_conditions} set a species amount (setConcentration -- a "
-            "wash/bolus, #474). The edition-2 fitter supports this, but its PEtab v2 export (a "
-            "species-amount condition target) is not yet implemented (deferred, a follow-up to "
-            "ADR-0052). Run the job natively, or use parameter-only conditions for export.")
+    # A species-target condition (setConcentration -- a wash/bolus, ADR-0062) exports to a PEtab v2
+    # condition whose target is a species *amount*: a BNGL pattern is not a valid PEtab id, so each
+    # referenced species pattern is aliased to a synthesized ``species_<...>`` id via the mapping
+    # table (petabEntityId -> the pattern), and the condition targets that id. Built once, globally.
+    species_id_of = _species_id_map(
+        var for name in referenced for var, _op, _val in conditions.get(name, [])
+        if is_species_target(var))
+    # A species setConcentration is inline-only within a pre-equilibration protocol (ADR-0062, the
+    # fitter's rule): it perturbs a species amount mid-protocol, not a mutant parameter block. A
+    # plain time-course experiment applying a species condition has no such inline phase, so refuse
+    # it with a clear message (the fitter rejects it too) rather than mis-emit.
+    tc_species_conds = sorted(
+        exp['condition'] for exp in tc_experiments
+        if exp['condition'] is not None
+        and any(is_species_target(var) for var, _o, _v in conditions.get(exp['condition'], [])))
+    if tc_species_conds:
+        raise NotImplementedError(
+            f"Condition(s) {tc_species_conds} set a species amount (setConcentration) but are "
+            f"applied to a plain time-course experiment. A species setConcentration is inline-only "
+            f"within a pre-equilibration protocol (ADR-0062); apply it through a 'preequilibrate:' "
+            f"experiment (as an incubate or a wash), not a bare 'condition:' time course.")
     unused = set(conditions) - referenced
     if unused:
         # An unused condition emits no PEtab rows (the fitter would not apply it either);
@@ -397,10 +429,43 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                  for exp in pe_experiments],
                 conditions, lambda v: _nominal_of(registry, v),
                 surrogate=surrogate_params,
-                existing_condition_ids={r.condition_id for r in condition_rows})
+                existing_condition_ids={r.condition_id for r in condition_rows},
+                species_id_of=species_id_of)
         condition_rows += pe_condition_rows
         experiment_rows += pe_experiment_rows
         experiment_to_id.update(pe_experiment_to_id)
+
+    # Pre-equilibrated dose-response experiments (ADR-0062): N two-period Experiments per scan, a
+    # -inf pre-equilibration period + a measurement period applying the shared wash condition and a
+    # per-dose swept-parameter condition. The surrogate split (a fit-and-perturbed parameter) is not
+    # yet combined with this multi-condition dose-period shape, so the shape requires an EMPTY M --
+    # neither the pre-equilibrated scans' own conditions nor any other experiment may fit-and-perturb
+    # a parameter. Refuse the combination with a clear boundary rather than emit an under-pinned
+    # problem.
+    if pdr_experiments:
+        pdr_fit_perturbed = sorted(
+            var for exp in pdr_experiments
+            for c in ([exp['preequilibrate']]
+                      + ([exp['condition']] if exp['condition'] is not None else []))
+            for var, _op, _val in conditions[c] if var in fit_model_params)
+        if surrogate_params or pdr_fit_perturbed:
+            raise NotImplementedError(
+                "A pre-equilibrated dose-response export (ADR-0062) requires that no parameter is "
+                "both fit and perturbed by a condition (an empty surrogate set M): the surrogate "
+                f"split is not yet combined with the multi-condition dose period. Offending fit "
+                f"parameters: {sorted(set(surrogate_params) | set(pdr_fit_perturbed))}. Run the "
+                "job natively, or keep the pre-equilibration/wash conditions to fixed parameters "
+                "and species amounts.")
+        pdr_condition_rows, pdr_experiment_rows, pdr_ids_by_name = \
+            build_preequilibrated_dose_response_conditions(
+                [(exp['name'], exp['preequilibrate'], exp['condition'],
+                  _swept_param(exp), _dose_values(exp), exp['scan_time'])
+                 for exp in pdr_experiments],
+                conditions, lambda v: _nominal_of(registry, v),
+                species_id_of=species_id_of,
+                existing_condition_ids={r.condition_id for r in condition_rows})
+        condition_rows += pdr_condition_rows
+        experiment_rows += pdr_experiment_rows
 
     # Per-point numeric noiseParameters are emitted only when a column's sigma comes from a
     # data column (the read_exp_file placeholder source); a fixed / column-mean / formula sigma
@@ -441,11 +506,9 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
         stem = exp['name']
         model_id = Path(exp['model']).stem if multi_model else ''
         scan_time = exp['scan_time']
-        data0 = exp['datas'][0]
-        swept_param = data0.indvar if data0.indvar is not None else _independent_variable(data0)
-        dose_values = [float(v) for v in data0[swept_param]]
+        swept_param = _swept_param(exp)
         dr_conditions, dr_experiment_rows, experiment_ids = build_dose_response_conditions(
-            stem, swept_param, dose_values, scan_time)
+            stem, swept_param, _dose_values(exp), scan_time)
         condition_rows += dr_conditions
         experiment_rows += dr_experiment_rows
         for data in exp['datas']:
@@ -453,8 +516,27 @@ def _export_new_era(conf, conf_path, models, registry, noise, per_obs_noise,
                     if c in data.cols and c != swept_param}
             measurement_rows += dose_response_measurement_rows(
                 data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id)
+
+    # Pre-equilibrated dose-response measurements (ADR-0062): tagged <stem>_<i> at the scan time,
+    # exactly like a plain dose-response, so the same pivot applies. The per-experiment experiment
+    # ids come from the builder above; the swept-parameter column is the scan axis, not a measurement.
+    for exp in pdr_experiments:
+        model_id = Path(exp['model']).stem if multi_model else ''
+        scan_time = exp['scan_time']
+        swept_param = _swept_param(exp)
+        experiment_ids = pdr_ids_by_name[exp['name']]
+        for data in exp['datas']:
+            cmap = {c: o for c, o in column_to_observable_id.items()
+                    if c in data.cols and c != swept_param}
+            measurement_rows += dose_response_measurement_rows(
+                data, cmap, experiment_ids, scan_time, sd_suffix=sd_suffix, model_id=model_id)
+
+    # The species-amount mapping table (ADR-0062): one row per referenced species pattern, in
+    # first-appearance order (petabEntityId -> the BNGL pattern). Empty for a job with no species
+    # setConcentration condition, so mapping.tsv / problem.yaml mapping_files stay absent then.
+    mapping_rows = [PetabMappingRow(pid, pattern) for pattern, pid in species_id_of.items()]
     return observable_rows, measurement_rows, condition_rows, experiment_rows, \
-        surrogate_params
+        surrogate_params, mapping_rows
 
 
 def _read_experiments(conf, conf_path, models):
@@ -506,19 +588,11 @@ def _read_experiments(conf, conf_path, models):
         datas = [Data(file_name=str(conf_path.parent / f)) for f in data_files]
         exp_type = _experiment_type(name, datas[0], fields.get('type'))
         preequilibrate = fields.get('preequilibrate')
-        # A pre-equilibration experiment (ADR-0052) is a time course measured AFTER an
-        # unmeasured equilibration phase -> a PEtab two-period Experiment (#441). A
-        # parameter_scan measured phase (a preincubate->wash->dose-scan protocol, #474) is
-        # supported by the edition-2 FITTER, but its PEtab v2 export (a shared pre-equilibration
-        # condition across the scanned experiments + a species-amount intervention) is DEFERRED
-        # (a follow-up to ADR-0052's phased export), so refuse it here rather than mis-export.
-        if preequilibrate is not None and exp_type == 'parameter_scan':
-            raise NotImplementedError(
-                f"Experiment '{name}' combines pre-equilibration (preequilibrate:) with a "
-                f"parameter_scan measured phase (a preincubate->wash->dose-scan protocol, #474). "
-                f"The edition-2 fitter supports this, but its PEtab v2 export is not yet "
-                f"implemented (deferred, a follow-up to ADR-0052/0046). Run the job natively "
-                f"(it needs no PEtab), or export only time-course / plain dose-response experiments.")
+        # A pre-equilibration experiment (ADR-0052) is measured AFTER an unmeasured equilibration
+        # phase -> a PEtab two-period Experiment. A time-course measured phase gives a single
+        # measurement period; a parameter_scan measured phase (a preincubate->wash->dose-scan
+        # protocol, ADR-0062/#477) gives N two-period experiments, one per dose, with a
+        # multi-condition measurement period -- both export routes below.
         # A parameter_scan (dose-response) experiment's measurement time is its scan endpoint
         # (ADR-0046): inf for the steady-state default (PEtab time=inf), or a finite ``t_end:``.
         # A time course derives its grid from the data, so ``t_end:`` is inert there.
@@ -526,7 +600,11 @@ def _read_experiments(conf, conf_path, models):
         if exp_type == 'parameter_scan':
             t_end = fields.get('t_end')
             scan_time = float(t_end) if t_end is not None else float('inf')
-            if fields.get('condition') is not None:
+            # A PLAIN dose-response makes each dose its own condition (ADR-0046), so a named
+            # condition on it has no export route. A PRE-EQUILIBRATED dose-response (ADR-0062),
+            # by contrast, names its measurement (wash) condition, applied alongside the per-dose
+            # condition in the measurement period -- that route exists, so allow it there.
+            if fields.get('condition') is not None and preequilibrate is None:
                 raise NotImplementedError(
                     f"Experiment '{name}' is a parameter_scan that also names a condition "
                     f"('{fields['condition']}'). A dose-response already makes each dose its "
@@ -883,6 +961,39 @@ def _reduce_noise_spec(family_token, fields, location, where):
 def _independent_variable(data):
     """The header of a wide :class:`~pybnf.data.Data`'s column 0 (``time`` or the swept axis)."""
     return min(data.cols, key=data.cols.get)
+
+
+def _swept_param(exp):
+    """The swept-parameter (dose axis) header of a parameter_scan experiment's data (column 0)."""
+    data0 = exp['datas'][0]
+    return data0.indvar if data0.indvar is not None else _independent_variable(data0)
+
+
+def _dose_values(exp):
+    """The dose values of a parameter_scan experiment -- its swept-axis column, as floats."""
+    data0 = exp['datas'][0]
+    return [float(v) for v in data0[_swept_param(exp)]]
+
+
+def _species_id_map(patterns):
+    """A ``{pattern: petab_id}`` map for the species ``setConcentration`` targets the job's
+    conditions reference (ADR-0062), in first-appearance order. Each BNGL pattern is aliased to a
+    synthesized PEtab id (:func:`~pybnf.petab.conditions.species_target_id`) for the mapping table;
+    two distinct patterns that sanitize to the same id collide -> ``PybnfError``."""
+    mapping = {}
+    by_id = {}
+    for pattern in patterns:
+        if pattern in mapping:
+            continue
+        pid = species_target_id(pattern)
+        if pid in by_id:
+            raise PybnfError(
+                f"Species setConcentration targets {by_id[pid]!r} and {pattern!r} both sanitize "
+                f"to the PEtab mapping id {pid!r}. Rename one species pattern so their PEtab "
+                f"target ids stay distinct (ADR-0062).")
+        by_id[pid] = pattern
+        mapping[pattern] = pid
+    return mapping
 
 
 # ---------------------------------------------------------------------------
@@ -1356,14 +1467,16 @@ def clean_model_for_petab(text):
                   '', text, flags=re.S | re.I | re.M)
 
 
-def write_problem_yaml(path, models, has_conditions=False, has_experiments=False):
+def write_problem_yaml(path, models, has_conditions=False, has_experiments=False,
+                       has_mapping=False):
     """Write a PEtab v2 ``problem.yaml`` referencing the tables and the model(s).
 
     ``models`` is a list of ``(model_id, location, language)`` tuples (ADR-0041): one entry
     for a single-model job (byte-identical to the pre-multi-model output), or N entries in
     declaration order for a multi-model job. ``language`` is each model's PEtab language
     (``bngl`` or ``sbml``, ADR-0040) -- emitted verbatim so every model declares its own
-    native language (a BNGL + SBML mix is just two entries)."""
+    native language (a BNGL + SBML mix is just two entries). ``has_mapping`` adds the
+    ``mapping_files`` entry for the species-amount mapping table (ADR-0062)."""
     parts = [
         'format_version: 2.0.0\n',
         'parameter_files:\n  - parameters.tsv\n',
@@ -1374,6 +1487,8 @@ def write_problem_yaml(path, models, has_conditions=False, has_experiments=False
         parts.append('condition_files:\n  - conditions.tsv\n')
     if has_experiments:
         parts.append('experiment_files:\n  - experiments.tsv\n')
+    if has_mapping:
+        parts.append('mapping_files:\n  - mapping.tsv\n')
     parts.append('model_files:\n')
     for model_id, location, language in models:
         parts += [
