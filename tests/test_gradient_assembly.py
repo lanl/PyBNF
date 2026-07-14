@@ -2702,6 +2702,95 @@ def test_fd_acceptance_gate_preequilibration(k_type):
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
 
 
+# ===================== FD acceptance: Newton/KINSOL dose-response scan (bngsim, #478) ===
+#
+# ss_method=>"newton" replaces the per-point integrate-to-steady-state with a KINSOL algebraic
+# solve. bngsim>=0.11.35 (lanl/bngsim#12) returns the observable-level dY_ss/dp exactly, so a
+# scored Newton scan is differentiable. This gate uses the TWO-species cascade net so the
+# observable is a stoichiometric group Ptot = 2A + 3B (net defaults k_f = k_bdeg = 1): a bug in
+# the species→observable Jacobian ∂g/∂x = [2, 3] would break FD agreement here even though the
+# identity-observable birth-death net (the #476 gate) could not catch it.
+
+NEWTON_DR_DOSES = [1.0, 2.0, 4.0, 7.0]
+
+
+def _newton_dose_response_run(k_deg_eff, with_sensitivities):
+    """KINSOL/Newton steady-state dose-response over k_prod on the two-species cascade net (#478).
+
+    ``dA/dt = k_prod - k_deg*A``, ``dB/dt = k_f*A - k_bdeg*B``; multi-species group observable
+    ``Ptot = 2A + 3B``. The ``parameter_scan`` sweeps ``k_prod`` (the dose) and solves each point
+    with ``ss_method=>"newton"``. With ``with_sensitivities`` the scan :class:`Data` carries
+    ``∂Ptot*/∂k_deg`` -- mapped from the KINSOL ``dY_ss/dp`` through the group Jacobian -- stacked
+    down the dose axis. ``k_prod`` is the swept dose, not a free parameter, so only ``k_deg`` is
+    fit and routed to the parameter axis."""
+    import pybnf.bngsim_model as bngsim_model
+    net = FIXTURES / 'e2e_two_species_cascade.net'
+    vals = ','.join(str(d) for d in NEWTON_DR_DOSES)
+    action = ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[%s],'
+              'steady_state=>1,ss_method=>"newton",t_end=>500,suffix=>"dr"})' % vals)
+    model = bngsim_model.BngsimModel(
+        net.stem, [action], [('parameter_scan', 'dr')], [], nf=str(net))
+    model.param_set = PSet(
+        [FreeParameter('k_deg', 'uniform_var', 0.0, 100.0, value=k_deg_eff)])
+    if with_sensitivities:
+        model.enable_output_sensitivities(params=['k_deg'])
+        model.set_scored_suffixes({'dr'})
+    return model.execute('/tmp', 'fd_dr_newton', 60)['dr']
+
+
+def _exp_newton_dose_response(sim, sigma):
+    """Dose-response experimental Data from a run's exact (k_prod, Ptot) grid + constant SD."""
+    dose = sim.data[:, sim.cols['k_prod']]
+    obs = sim.data[:, sim.cols['Ptot']]
+    return Data.from_columns(np.column_stack([dose, obs, np.full(len(obs), sigma)]),
+                             ['k_prod', 'Ptot', 'Ptot_SD'])
+
+
+@pytest.mark.bngsim
+@pytest.mark.parametrize('k_type', ['uniform_var', 'loguniform_var'])
+def test_fd_acceptance_gate_newton_dose_response(k_type):
+    """Central differences of PyBNF's own loss(u) vs the assembled gradient(u) on a scored
+    ``ss_method=>"newton"`` dose-response over a MULTI-SPECIES observable -- the #478 acceptance
+    gate. Unlike the #476 birth-death gate, the observable ``Ptot = 2A + 3B`` forces the KINSOL
+    steady-state sensitivity through the species→observable Jacobian ∂g/∂x, so FD agreement here
+    also proves that mapping. Two experiments (wildtype + a ``k_deg*2`` condition) exercise the
+    per-condition routing factor and the cross-experiment sum; the ``loguniform_var`` variant
+    adds the native->sampling transform on the fitted column."""
+    if k_type == 'loguniform_var':
+        pytest.importorskip('jax')
+
+    obj = ChiSquareObjective()
+    free = [FreeParameter('k_deg', k_type, 0.01, 100.0, value=1.6)]
+    names = [p.name for p in free]
+    k_factor = 2.0   # the 'hi' condition: k_deg * 2
+
+    k_deg_true, sigma = 2.0, 0.1
+    exp_wt = _exp_newton_dose_response(_newton_dose_response_run(k_deg_true, False), sigma)
+    exp_hi = _exp_newton_dose_response(
+        _newton_dose_response_run(k_factor * k_deg_true, False), sigma)
+
+    cond_hi = MutationSet([Mutation('k_deg', '*', k_factor)], 'hi')
+    params, species = ['k_prod', 'k_deg'], []
+    route_wt = route_experiment(names, params, species, None)
+    route_hi = route_experiment(names, params, species, cond_hi)
+
+    def loss_at(u_vec):
+        theta = {n: p.from_sampling_space(u) for n, p, u in zip(names, free, u_vec)}
+        return (obj.evaluate(_newton_dose_response_run(theta['k_deg'], False), exp_wt)
+                + obj.evaluate(
+                    _newton_dose_response_run(k_factor * theta['k_deg'], False), exp_hi))
+
+    grad_fd = _fd_gradient(loss_at, free)
+    sim_wt = _newton_dose_response_run(free[0].value, True)
+    sim_hi = _newton_dose_response_run(k_factor * free[0].value, True)
+    res = assemble_gaussian_gradient(
+        obj, [(sim_wt, exp_wt, route_wt), (sim_hi, exp_hi, route_hi)], free)
+
+    # Fixed sigma, all-Gaussian: the residual/Jacobian is the whole objective.
+    assert res.least_squares_exact is True
+    np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
 # ============================== FD acceptance: dose-response scan (bngsim, #476) ===
 
 DOSE_RESPONSE_DOSES = [1.0, 2.0, 4.0, 7.0]

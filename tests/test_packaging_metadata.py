@@ -13,9 +13,11 @@ def test_project_metadata_declares_python_floor_and_bngsim_dependency():
     project = metadata['project']
 
     assert project['requires-python'] == '>=3.11'
-    # bngsim >= 0.11.34: the native carried-state parameter_scan/bifurcate + named saved states
-    # (lanl/bngsim#11) the edition-2 preincubate->wash->dose-scan protocol needs (#474).
-    assert 'bngsim>=0.11.34,<1' in project['dependencies']
+    # bngsim >= 0.11.35: observable/expression-level steady-state forward sensitivities on
+    # SteadyStateResult.output_sensitivities (lanl/bngsim#12), which make a scored KINSOL/Newton
+    # dose-response scan differentiable (#478). (0.11.34 added the native carried-state
+    # parameter_scan/bifurcate + named saved states of lanl/bngsim#11 for #474.)
+    assert 'bngsim>=0.11.35,<1' in project['dependencies']
 
 
 def test_every_pybnf_subpackage_is_shipped():

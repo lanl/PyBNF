@@ -1,6 +1,7 @@
 # Gradient-based fitting extends to `parameter_scan` (dose-response) objectives by stacking the per-point forward sensitivities the scan already computes down the dose axis (issue #476)
 
-**Status: Accepted (2026-07-12).** Extends the #385 gradient epic (layers A–J:
+**Status: Accepted (2026-07-12); partly superseded by ADR-0065 (#478), which makes
+the Newton/KINSOL scan below differentiable rather than refused.** Extends the #385 gradient epic (layers A–J:
 `pybnf/gradient/`), whose forward-sensitivity plumbing (#447 tensor →
 `Data.output_sensitivities`, #448 routing, #449 assembly) covered **time-course**
 objectives only. A dose-response objective — a `parameter_scan` that sweeps one
@@ -66,6 +67,8 @@ so an *incidental* (unscored) scan of the same shape still runs sensitivity-free
 * **Newton / KINSOL** (`ss_method=>"newton"`): the algebraic steady-state solve
   performs no forward-sensitivity integration. Refuses before building any
   sensitivity-configured simulator, pointing at the differentiable parity default.
+  *(Superseded by ADR-0065 / #478: bngsim ≥ 0.11.35 exposes the observable-level
+  steady-state sensitivity, so a scored Newton scan is now differentiable.)*
 * **continuation / bifurcate** (`reset_conc=>0`): each point's initial state is
   the previous point's θ-dependent end state, so a correct sensitivity seed would
   have to be chained point-to-point (`dx0/dθ ≠ 0`) — not yet supported.

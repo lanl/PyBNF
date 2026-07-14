@@ -130,6 +130,17 @@ BNGSIM_HAS_CODEGEN = bool(BNGSIM_FEATURES.get('codegen', False))
 # the version floor stays 0.5.0, so a build without this feature still runs every
 # scalar (metaheuristic) fit unchanged -- only gradient-based fitting refuses.
 BNGSIM_HAS_OUTPUT_SENS = bool(BNGSIM_FEATURES.get('output_sensitivities', False))
+# Steady-state (KINSOL/Newton) forward sensitivities exposed at the
+# observable/expression level on ``SteadyStateResult.output_sensitivities``
+# (bngsim>=0.11.35, lanl/bngsim#12). ``capabilities()`` has no dedicated feature
+# key for it, so probe the type directly here -- the one place PyBNF centralizes
+# the getattr/hasattr shim the module docstring reserves for this module -- and
+# export a clean flag. Gates only the *gradient* Newton dose-response scan path
+# (#478): a scalar Newton scan, and every non-scan gradient fit, are unaffected.
+BNGSIM_HAS_SS_OUTPUT_SENS = bool(
+    BNGSIM_AVAILABLE
+    and hasattr(getattr(bngsim, 'SteadyStateResult', None), 'output_sensitivities')
+)
 
 
 def feature_missing_reason(name):

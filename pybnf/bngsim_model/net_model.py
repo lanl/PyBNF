@@ -1361,19 +1361,34 @@ class BngsimModel(NetModel):
         independently, falling back to a long time-course when the solver fails
         or does not converge.
 
-        Gradient path (#476): the KINSOL algebraic steady-state solve performs no
-        forward-sensitivity integration, so a *scored* Newton scan cannot supply
-        d(dose-response)/dtheta -- it refuses cleanly here (before building any
-        sensitivity-configured simulator) pointing the user at the parity default,
-        which IS differentiable. An incidental/unscored Newton scan runs unchanged.
+        Gradient path (#478): the KINSOL algebraic solve returns ``dY_ss/dp``
+        exactly (the implicit-function-theorem derivative on the analytical
+        Jacobian, not FD), and bngsim>=0.11.35 (lanl/bngsim#12) maps it to
+        observable/expression sensitivities on the ``SteadyStateResult`` -- so a
+        *scored* Newton scan now collects ``d(dose-response)/dtheta`` per point
+        exactly as the parity path does, making ``ss_method=>"newton"`` a genuine
+        speed win under a gradient fit rather than the #476 fall-back-to-parity
+        refusal. The gradient path runs the points **sequentially** (the KINSOL
+        sensitivity solve is not confirmed thread-safe, mirroring how #476
+        bypasses ``run_batch``) and reads each point's slice from the
+        ``SteadyStateResult`` accessor when KINSOL converges, or -- on the
+        non-convergence fallback -- from the CVODE long-time-course ``Result``,
+        which is itself sensitivity-bearing; the two are byte-shape-identical so
+        they stack down the dose axis together. A build without the accessor
+        (bngsim<0.11.35) refuses cleanly with an upgrade hint; an
+        incidental/unscored Newton scan runs sensitivity-free unchanged.
         """
-        if self._action_bears_sensitivities():
+        collect_sens = self._action_bears_sensitivities()
+        if collect_sens and not _runtime.BNGSIM_HAS_SS_OUTPUT_SENS:
             raise PybnfError(
                 "Model %s: a scored parameter_scan with ss_method=>\"newton\"/\"kinsol\" "
-                "cannot be run on the gradient path -- the KINSOL algebraic steady-state "
-                "solve performs no forward-sensitivity integration. Omit ss_method (the "
-                "BNG2.pl-parity integrate-to-steady-state default IS differentiable) or "
-                "run a gradient-free fit." % self.name)
+                "needs observable-level steady-state forward sensitivities, which this "
+                "bngsim build does not provide (%s). Upgrade to bngsim>=0.11.35, omit "
+                "ss_method (the BNG2.pl-parity integrate-to-steady-state default IS "
+                "differentiable), or run a gradient-free fit."
+                % (self.name,
+                   _runtime.feature_missing_reason('output_sensitivities')
+                   or 'SteadyStateResult.output_sensitivities unavailable'))
         param_name = s.param_name
         points = s.points
         method = s.method
@@ -1385,17 +1400,23 @@ class BngsimModel(NetModel):
         timeout = s.timeout
         scan_timeout = s.scan_timeout
         scan_eval_timeout = s.scan_eval_timeout
+        # Gradient path: ask KINSOL for dY_ss/dp against the fitted params.
+        sens_params = list(self._sensitivity_request.params) if collect_sens else None
         obs_names = []
         expr_names = []
         rows = []
         # ss_method=>"newton" (opt-in accelerator): KINSOL Newton per
         # independent dose-response point. Use threaded path when safe:
         # ODE method, no expression-based species initializers, and enough
-        # points to justify threading.
+        # points to justify threading. The gradient path (#478) takes the
+        # sequential loop instead -- it collects a per-point sensitivity tensor
+        # (which the threaded path does not) and keeps the KINSOL sensitivity
+        # solve off the thread pool.
         use_threaded_ss = (
             method == 'ode'
             and not self._net_species_initializers
             and len(points) >= 4
+            and not collect_sens
         )
         if use_threaded_ss:
             rows, obs_names, expr_names = self._run_ss_scan_threaded(
@@ -1405,6 +1426,9 @@ class BngsimModel(NetModel):
                 timeout=timeout,
             )
         else:
+            # Per-dose-point forward-sensitivity slices (#478); None on the scalar
+            # path, so the accumulator below is left untouched there.
+            sens_slices = []
             for value in points:
                 point_model = self._prepare_scan_point_model(
                     model,
@@ -1418,8 +1442,13 @@ class BngsimModel(NetModel):
                     poplevel,
                 )
                 ss_ok = False
+                point_sens = None
                 try:
-                    ss_result = point_sim.steady_state()
+                    # sens_params is None on the scalar path and a (possibly empty,
+                    # IC-only fit) list on the gradient path; ask KINSOL for
+                    # dY_ss/dp only when there is at least one parameter to solve.
+                    ss_kwargs = {'sensitivity_params': sens_params} if sens_params else {}
+                    ss_result = point_sim.steady_state(**ss_kwargs)
                     if ss_result.converged:
                         for i, name in enumerate(ss_result.species_names):
                             point_model.set_concentration(
@@ -1433,6 +1462,12 @@ class BngsimModel(NetModel):
                             t_span=(0, 1e-10), n_points=2,
                             **_with_sim_timeout({}, scan_eval_timeout),
                         )
+                        if collect_sens:
+                            # ∂g/∂θ at equilibrium comes from the KINSOL solve's
+                            # implicit-function-theorem sensitivity -- NOT the tiny
+                            # eval run above, whose fresh-IC sensitivities are ~0.
+                            point_sens = self._extract_ss_output_sensitivities(
+                                ss_result, print_funcs)
                         ss_ok = True
                     else:
                         logger.warning(
@@ -1447,7 +1482,11 @@ class BngsimModel(NetModel):
                         param_name, value, exc,
                     )
                 if not ss_ok:
-                    # Fallback: simulate for a long time and take the final state
+                    # Fallback: simulate for a long time and take the final state.
+                    # On the gradient path this CVODE run is itself sensitivity-
+                    # configured, so its final-row ∂g/∂θ (integrated to t_end, at
+                    # equilibrium) is read via the same extractor as the parity
+                    # path -- byte-shape-identical to a converged Newton slice.
                     point_model = self._prepare_scan_point_model(
                         model, param_name, value,
                         concentration_overrides=concentration_overrides,
@@ -1459,6 +1498,8 @@ class BngsimModel(NetModel):
                         t_span=(t_start, t_end), n_points=2,
                         **_with_sim_timeout({}, scan_timeout),
                     )
+                    if collect_sens:
+                        point_sens = self._scan_point_sensitivities(result, print_funcs)
                 row, row_obs, row_expr = self._scan_result_to_row(
                     result, value, print_functions=print_funcs,
                 )
@@ -1466,6 +1507,9 @@ class BngsimModel(NetModel):
                     obs_names = row_obs
                     expr_names = row_expr
                 rows.append(row)
+                sens_slices.append(point_sens)
+            if collect_sens:
+                self._pending_scan_sens = sens_slices
         return rows, obs_names, expr_names
 
     def _scan_parity_steady_state(self, model, s):
@@ -1859,6 +1903,54 @@ class BngsimModel(NetModel):
         if ic_species:
             d_ic = np.asarray(
                 result.output_sensitivities(selectors, axis='ic'), dtype=float)
+        return OutputSensitivities(
+            selectors=selectors, param_names=param_names, ic_species=ic_species,
+            d_param=d_param, d_ic=d_ic,
+        )
+
+    def _extract_ss_output_sensitivities(self, ss_result, print_functions):
+        """Read the observable/expression ∂g/∂θ tensor off a KINSOL ``SteadyStateResult`` (#478).
+
+        The Newton/KINSOL algebraic solve returns ``dY_ss/dp`` **exactly** (the
+        implicit-function-theorem derivative on the analytical Jacobian, not FD);
+        bngsim>=0.11.35 (lanl/bngsim#12) maps it through the observable/function
+        Jacobian and exposes it via ``SteadyStateResult.output_sensitivities``
+        with the same ``observable:``/``expression:`` selectors the CVODE
+        ``Result`` uses -- so this mirrors :meth:`_extract_output_sensitivities`
+        exactly, differing only in two structural ways:
+
+        * A ``SteadyStateResult`` is a single equilibrium point, so its tensor has
+          no leading time axis (shape ``(n_selectors, n_params)``). We add a
+          singleton row so the layout is ``(1, n_selectors, n_params)`` -- the
+          same rank a time-course tensor has, letting
+          :func:`~pybnf.data.stack_scan_sensitivities` pick the final row
+          (``[-1]``) identically for a converged Newton point and a CVODE
+          fallback point.
+        * The IC axis is identically zero: a stable steady state forgets its
+          initial conditions (``∂x*/∂x(0)=0``, #457), so an IC-seed fit parameter
+          contributes no gradient at equilibrium. bngsim declines the ``ic`` axis
+          on a ``SteadyStateResult`` for exactly this reason, so we report it as an
+          explicit zero tensor (parity with the integrate-to-steady-state path,
+          whose IC sensitivities have decayed to ~0) when IC sensitivities were
+          requested, and ``None`` otherwise.
+        """
+        selectors = ['observable:%s' % name for name in ss_result.observable_names]
+        if print_functions and getattr(ss_result, 'expression_names', None):
+            selectors += ['expression:%s' % name for name in ss_result.expression_names]
+        param_names = list(ss_result.sensitivity_params)
+        d_param = None
+        if param_names:
+            # (n_selectors, n_params) -> (1, n_selectors, n_params): a singleton
+            # equilibrium "row" so the stacker's final-row selection is uniform.
+            d_param = np.asarray(
+                ss_result.output_sensitivities(selectors, axis='parameter'),
+                dtype=float,
+            )[np.newaxis, ...]
+        req = self._sensitivity_request
+        ic_species = list(req.ic) if req is not None else []
+        d_ic = None
+        if ic_species:
+            d_ic = np.zeros((1, len(selectors), len(ic_species)), dtype=float)
         return OutputSensitivities(
             selectors=selectors, param_names=param_names, ic_species=ic_species,
             d_param=d_param, d_ic=d_ic,

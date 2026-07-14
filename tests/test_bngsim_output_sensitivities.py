@@ -351,15 +351,102 @@ def test_scan_scalar_path_carries_no_sensitivities():
                                np.array(SCAN_DOSES) / SCAN_K_DEG, rtol=1e-4, atol=1e-4)
 
 
-def test_scored_newton_dose_response_refuses_on_gradient_path():
-    """A scored ss_method=>"newton" scan cannot supply forward sensitivities -- refuse
-    cleanly, pointing at the differentiable parity default."""
-    action = ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[2,5,8],'
-              'steady_state=>1,ss_method=>"newton",t_end=>500,suffix=>"dr"})')
-    model = _dose_response_model(action)
+# ---------------------------- Newton/KINSOL steady-state dose-response (#478) --------
+#
+# ss_method=>"newton" runs a KINSOL algebraic steady-state solve per dose. bngsim>=0.11.35
+# (lanl/bngsim#12) returns the observable-level dY_ss/dp exactly (implicit-function theorem on
+# the analytical Jacobian, not FD), so a *scored* Newton scan is now differentiable: it carries
+# the same stacked dose-axis ∂(dose-response)/∂θ the parity default does, at KINSOL speed --
+# previously (#476) it refused cleanly and pointed at the parity default.
+
+
+def _newton_scan_action(doses, suffix='dr'):
+    """A KINSOL/Newton steady-state ``parameter_scan`` over k_prod (the dose)."""
+    vals = ','.join(str(d) for d in doses)
+    return ('parameter_scan({parameter=>"k_prod",par_scan_vals=>[%s],'
+            'steady_state=>1,ss_method=>"newton",t_start=>0,t_end=>500,n_steps=>1,'
+            'suffix=>"%s"})' % (vals, suffix))
+
+
+def test_scored_newton_dose_response_carries_dose_axis_sensitivity_tensor():
+    """A scored ss_method=>"newton" scan is now differentiable (#478): the KINSOL steady-state
+    dY_ss/dp lands as the same stacked dose-axis ``∂S*/∂k_deg = -dose/k_deg**2`` tensor the
+    parity default carries. Mirrors ``test_scan_carries_dose_axis_sensitivity_tensor`` on the
+    Newton path (which #476 previously refused)."""
+    model = _dose_response_model(_newton_scan_action(SCAN_DOSES))
+    data = model.execute('/tmp', 'dr_newton', 120)['dr']
+
+    sens = data.output_sensitivities
+    assert sens is not None
+    assert sens.selectors == ['observable:Stot']
+    assert sens.param_names == ['k_deg']
+    assert sens.d_ic is None                      # a stable SS forgets its ICs (#457)
+    assert sens.d_param.shape == (len(SCAN_DOSES), 1, 1)
+
+    # The KINSOL equilibrium value column is dose/k_deg (scoring path intact).
+    np.testing.assert_allclose(data.data[:, data.cols['Stot']],
+                               np.array(SCAN_DOSES) / SCAN_K_DEG, rtol=1e-4, atol=1e-4)
+    got = sens.slice_for('observable:Stot')[:, 0]
+    expected = -np.array(SCAN_DOSES) / SCAN_K_DEG ** 2
+    np.testing.assert_allclose(got, expected, rtol=1e-3, atol=1e-3)
+
+
+def test_newton_scan_scalar_path_carries_no_sensitivities():
+    """With the gradient path inactive, the KINSOL scan Data has no sensitivity payload and
+    the equilibrium value column is unchanged (scalar Newton scan byte-identical)."""
+    model = _dose_response_model(_newton_scan_action(SCAN_DOSES), request=False)
+    data = model.execute('/tmp', 'dr_newton_scalar', 120)['dr']
+    assert data.output_sensitivities is None
+    np.testing.assert_allclose(data.data[:, data.cols['Stot']],
+                               np.array(SCAN_DOSES) / SCAN_K_DEG, rtol=1e-4, atol=1e-4)
+
+
+# Two-species cascade fixture (e2e_two_species_cascade.net): dA/dt = k_prod - k_deg*A,
+# dB/dt = k_f*A - k_bdeg*B, with the multi-species group observable Ptot = 2*A + 3*B and net
+# defaults k_f = k_bdeg = 1. At steady state Ptot*(dose) = 5*dose/k_deg (2*A* + 3*B*), so
+# ∂Ptot*/∂k_deg = -5*dose/k_deg**2 -- an oracle whose "5" is exactly the [2, 3] species→
+# observable Jacobian ∂g/∂x, so a mapping bug (e.g. treating Ptot as a bare species) shifts
+# BOTH the value and the sensitivity off this oracle. Birth-death's identity observable can't
+# catch that.
+TWO_SPECIES_DOSES = [1.0, 2.0, 4.0, 7.0]
+TWO_SPECIES_K_DEG = 2.0
+
+
+def test_scored_newton_multispecies_observable_maps_dg_dx():
+    """KINSOL steady-state observable sensitivity threads the species→observable Jacobian: the
+    multi-species group Ptot = 2A + 3B gives value 5*dose/k_deg and ∂Ptot*/∂k_deg =
+    -5*dose/k_deg**2, pinning the ∂g/∂x = [2, 3] map (#478)."""
+    net = FIXTURES / 'e2e_two_species_cascade.net'
+    model = bngsim_model.BngsimModel(
+        net.stem, [_newton_scan_action(TWO_SPECIES_DOSES)],
+        [('parameter_scan', 'dr')], [], nf=str(net))
+    model.param_set = pset.PSet(
+        [pset.FreeParameter('k_deg', 'uniform_var', 0.0, 100.0, value=TWO_SPECIES_K_DEG)])
+    model.enable_output_sensitivities(params=['k_deg'])
+    model.set_scored_suffixes({'dr'})
+    data = model.execute('/tmp', 'dr_newton_ms', 120)['dr']
+
+    sens = data.output_sensitivities
+    assert sens.selectors == ['observable:Ptot']
+    dd = np.array(TWO_SPECIES_DOSES)
+    np.testing.assert_allclose(data.data[:, data.cols['Ptot']],
+                               5.0 * dd / TWO_SPECIES_K_DEG, rtol=1e-4, atol=1e-4)
+    got = sens.slice_for('observable:Ptot')[:, 0]
+    np.testing.assert_allclose(got, -5.0 * dd / TWO_SPECIES_K_DEG ** 2,
+                               rtol=1e-3, atol=1e-3)
+
+
+def test_scored_newton_dose_response_refuses_without_ss_output_sens_capability(monkeypatch):
+    """On a bngsim build lacking ``SteadyStateResult.output_sensitivities`` (<0.11.35) a scored
+    Newton scan refuses cleanly with an upgrade hint, rather than an AttributeError deep in the
+    backend. The capability *gates the gradient path, not the install*: a scalar Newton scan is
+    unaffected."""
+    monkeypatch.setattr(_runtime, 'BNGSIM_HAS_SS_OUTPUT_SENS', False)
+    model = _dose_response_model(_newton_scan_action([2, 5, 8]))
     with pytest.raises(PybnfError) as exc:
-        model.execute('/tmp', 'dr_newton', 120)
-    assert 'newton' in str(exc.value).lower()
+        model.execute('/tmp', 'dr_newton_nocap', 120)
+    msg = str(exc.value).lower()
+    assert '0.11.35' in msg and 'newton' in msg
 
 
 def test_scored_continuation_dose_response_refuses_on_gradient_path():

@@ -16,11 +16,28 @@ All notable changes to PyBNF are documented below. This project adheres to
   variable (not a fitted parameter), so the per-dose sensitivity is well-posed and consumed
   exactly as a time-course row is. Supported for the **reset-to-seed** strategies — the
   parity / integrate-to-steady-state default and the independent fixed-time scan — on both
-  the native BNGL and SBML/Antimony backends. Newton/KINSOL (`ss_method=>"newton"`),
-  continuation/bifurcate (`reset_conc=>0`), `method=>"protocol"`, and carried-state
-  (pre-equilibration, ADR-0062) scans refuse cleanly on the gradient path with an actionable
-  message (an *incidental*, unscored scan of the same shape still runs sensitivity-free,
-  #475). The scalar (metaheuristic) path is byte-identical. See ADR-0064.
+  the native BNGL and SBML/Antimony backends. Newton/KINSOL (`ss_method=>"newton"`, now
+  supported — see #478 below), continuation/bifurcate (`reset_conc=>0`),
+  `method=>"protocol"`, and carried-state (pre-equilibration, ADR-0062) scans refuse cleanly
+  on the gradient path with an actionable message (an *incidental*, unscored scan of the same
+  shape still runs sensitivity-free, #475). The scalar (metaheuristic) path is byte-identical.
+  See ADR-0064.
+- **Scored Newton/KINSOL (`ss_method=>"newton"`) steady-state dose-response scans are now
+  differentiable (#478).** The KINSOL accelerator solves each dose point's steady state as an
+  algebraic `f(x)=0` (no forward-sensitivity *integration*), so #476 (ADR-0064) kept a
+  *scored* Newton scan gradient-free and pointed at the parity default. It is now a real
+  speed win under a gradient fit: the KINSOL solve returns `dY_ss/dp` **exactly** (the
+  implicit-function-theorem derivative on the analytical Jacobian, not a finite difference),
+  and bngsim ≥ 0.11.35 (lanl/bngsim#12) maps it through the observable/function Jacobian
+  `∂g/∂x` and exposes it as `SteadyStateResult.output_sensitivities`, mirroring the CVODE
+  `Result`. PyBNF stacks those per-dose slices down the dose axis exactly as the parity path
+  does — no gradient-assembly change. On the gradient path the scan runs sequentially (the
+  KINSOL sensitivity solve is kept off the thread pool) and the KINSOL→CVODE non-convergence
+  fallback is itself differentiable and consistent with the converged path. **Requires
+  bngsim ≥ 0.11.35**; a build lacking the accessor refuses a scored Newton scan cleanly with
+  an upgrade hint (a scalar Newton scan is unaffected). Continuation/bifurcate,
+  `method=>"protocol"`, and carried-state scans still refuse on the gradient path. See
+  ADR-0065.
 - **Edition-2 preincubate → wash → dose-response scan protocol (#474).** The new-era
   `experiment:`/`condition:` surface now expresses the full **equilibrate → intervene →
   measure a dose-response** protocol, so a published fit that needs it (the Erickson-2019

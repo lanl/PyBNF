@@ -21,5 +21,6 @@ BNGSIM_ERROR = _bngsim_caps.BNGSIM_ERROR
 BNGSIM_HAS_NFSIM = _bngsim_caps.BNGSIM_HAS_NFSIM
 BNGSIM_HAS_RULEMONKEY = _bngsim_caps.BNGSIM_HAS_RULEMONKEY
 BNGSIM_HAS_OUTPUT_SENS = _bngsim_caps.BNGSIM_HAS_OUTPUT_SENS
+BNGSIM_HAS_SS_OUTPUT_SENS = _bngsim_caps.BNGSIM_HAS_SS_OUTPUT_SENS
 BNGSIM_VERSION = _bngsim_caps.BNGSIM_VERSION
 feature_missing_reason = _bngsim_caps.feature_missing_reason
