@@ -188,7 +188,7 @@ class Adaptive_MCMC(BayesianAlgorithm):
         if self.accept == True:
             self.current_pset[index] = pset
             self.acceptances += 1
-            self.evaluate_constraints(res.simdata, index)
+            self.evaluate_constraints(self._result_simdata(res), index)
             self.record_pointwise_loglik(res, index)
             self.list_trajactory = []
             self.cp = []

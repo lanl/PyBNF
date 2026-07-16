@@ -23,7 +23,7 @@ does not distort the Gaussian.
 import numpy as np
 import pytest
 
-from .context import algorithms, config, pset
+from .context import algorithms, config, pset, constraint, data
 
 
 class _FixedMvnRng:
@@ -572,3 +572,76 @@ class TestAdaptiveProposalDraw:
         # The draw sampled from the adapted (post-update) covariance, once.
         np.testing.assert_allclose(rec['cov'], am.diffMatrix[0], rtol=1e-12)
         assert rec['calls'] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Constraint satisfaction on the default worker-scoring path (lanl/PyBNF#480)
+# --------------------------------------------------------------------------- #
+def _data(col, rows):
+    """A one-column Data object: header '# time <col>' plus (time, value) rows."""
+    d = data.Data()
+    lines = [f'# time {col}\n'] + [f'{t} {v}\n' for t, v in rows]
+    d.data = d._read_file_lines(lines, r'\s+')
+    return d
+
+
+class TestConstraintSatisfactionWorkerScoring:
+    """The default objective-scoring path (``local_objective_eval=0`` with
+    ``parallelize_models=1``) scores on the worker and then nulls ``res.simdata``
+    to save memory, leaving the full multi-model simulation dict on ``res.out``.
+    The per-sample constraint-satisfaction bookkeeping must read that dict, not the
+    ``None`` on ``res.simdata`` -- otherwise a job with cross-model ``.prop``
+    constraints crashes on the first accepted move (lanl/PyBNF#480)."""
+
+    def test_result_simdata_prefers_out_when_simdata_none(self, tmp_path):
+        """_result_simdata returns res.out when the worker has nulled res.simdata."""
+        cfg = _make_config(tmp_path, 2, UNIFORM_VARS)
+        am = algorithms.Adaptive_MCMC(cfg)
+        res = algorithms.Result(_uniform_pset('iter0run0'), None, 'iter0run0')
+        payload = {'modelA': {'suf1': _data('A', [(1, 2), (2, 3)])}}
+        res.out = payload
+        assert am._result_simdata(res) is payload
+
+    def test_result_simdata_uses_simdata_when_present(self, tmp_path):
+        """When scoring stayed on the master, the data is on res.simdata and no
+        res.out exists; _result_simdata returns simdata untouched."""
+        cfg = _make_config(tmp_path, 2, UNIFORM_VARS)
+        am = algorithms.Adaptive_MCMC(cfg)
+        payload = {'modelA': {'suf1': _data('A', [(1, 2), (2, 3)])}}
+        res = algorithms.Result(_uniform_pset('iter0run0'), payload, 'iter0run0')
+        assert not hasattr(res, 'out')
+        assert am._result_simdata(res) is payload
+
+    def _run_worker_path(self, tmp_path, b_values):
+        """Drive one accepted got_result on the worker-scoring path with a
+        cross-model constraint ``A < suf2.B always`` (A from modelA/suf1, B from a
+        *different* model modelB/suf2 -- the dotted reference whose resolution
+        iterates the whole sim_data_dict). Returns the am after the move."""
+        cfg = _make_config(tmp_path, 2, UNIFORM_VARS)
+        am = algorithms.Adaptive_MCMC(cfg)
+        c = constraint.AlwaysConstraint('A', '<', 'suf2.B', 'modelA', 'suf1', 1.0)
+        c.source_line = 'A < suf2.B always'
+        am.all_constraints = [c]  # attach directly, bypassing .prop file wiring
+        start = am.start_run()
+
+        # Worker-scoring Result: simdata nulled, full multi-model dict on res.out.
+        res = algorithms.Result(start[0], None, start[0].name)
+        res.out = {'modelA': {'suf1': _data('A', [(1, 1), (2, 2)])},
+                   'modelB': {'suf2': _data('B', list(enumerate(b_values, 1)))}}
+        res.score = 5.0
+        am.got_result(res)  # first move: ln_current_P is NaN, so always accepted
+        assert am.accept is True
+        return am
+
+    def test_got_result_records_satisfied_cross_model_constraint(self, tmp_path):
+        """A(max 2) < B(9) holds everywhere: the move is accepted and the
+        constraint is recorded satisfied -- proving the data flowed from res.out
+        into the (dotted, cross-model) constraint evaluation, not None."""
+        am = self._run_worker_path(tmp_path, b_values=[9, 9])
+        assert am.current_constraint_satisfied[0] == [1]
+
+    def test_got_result_records_violated_cross_model_constraint(self, tmp_path):
+        """A reaches 2 while B dips to 0: the constraint is violated and recorded
+        as 0 (the evaluation ran against real data rather than crashing)."""
+        am = self._run_worker_path(tmp_path, b_values=[0, 0])
+        assert am.current_constraint_satisfied[0] == [0]

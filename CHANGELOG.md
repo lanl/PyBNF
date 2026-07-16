@@ -108,6 +108,20 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Fixed
+- **Bayesian samplers no longer crash on the first accepted move when `.prop` constraints
+  are attached (#480).** An adaptive-MCMC / MCMC / DREAM job (`fit_type = am`/`mh`/`dream`)
+  that carries constraints aborted on the first accepted sample with
+  `TypeError: 'NoneType' object is not iterable`, most visibly with cross-model dotted
+  references (`WT.obs at time=t < KO.obs at time=t`). The per-sample constraint-satisfaction
+  bookkeeping read the accepted `Result.simdata`, but the default worker-scoring path
+  (`local_objective_eval=0` with `parallelize_models=1`) nulls `res.simdata` after scoring
+  and moves the full multi-model dict to `res.out` — so `Constraint.penalty()` received
+  `None` and cross-model suffix resolution iterated it. The samplers now resolve the
+  simulation data through a `_result_simdata` helper that reads `res.out` on the
+  worker-scoring path and `res.simdata` on the master-scoring path (`parallelize_models>1`),
+  and `evaluate_constraints` guards a `None` dict into a graceful skip rather than a hard
+  crash. The same fix restores the pointwise-log-likelihood (LOO/WAIC) sidecar, which was
+  silently empty on the worker-scoring path for the same reason. Regression vs v1.1.9.
 - **Gradient fits no longer abort on an incidental non-differentiable action (#475).** A
   gradient-based fit (`fit_type = trf`/`lbfgs`) enables a forward-sensitivity request on the
   whole model, and any action that cannot carry sensitivities forward — a stochastic (`ssa`/

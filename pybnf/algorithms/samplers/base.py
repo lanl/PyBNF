@@ -309,6 +309,26 @@ class BayesianAlgorithm(Algorithm):
             total += contribution
         return total
 
+    @staticmethod
+    def _result_simdata(res):
+        """The full multi-model simulation-data dict for a completed Result, wherever
+        the objective was scored.
+
+        The default worker-scoring path (``local_objective_eval=0`` with
+        ``parallelize_models=1``) scores on the worker and then nulls
+        ``res.simdata`` to save memory, moving the data to ``res.out``
+        (:meth:`core.Job.run_simulation`). Master-side scoring
+        (``parallelize_models>1``) leaves the data on ``res.simdata`` and never
+        sets ``res.out``. The per-sample constraint-satisfaction and
+        pointwise-loglik bookkeeping needs the whole dict either way, because
+        cross-model ``.prop`` references resolve suffixes across models -- so
+        reading only ``res.simdata`` handed constraint evaluation ``None`` on the
+        default path and crashed (lanl/PyBNF#480)."""
+        simdata = getattr(res, 'simdata', None)
+        if simdata is not None:
+            return simdata
+        return getattr(res, 'out', None)
+
     def evaluate_constraints(self, simdata, chain_index):
         """
         Evaluate all constraints against simulation data and cache the pass/fail results for this chain.
@@ -318,6 +338,16 @@ class BayesianAlgorithm(Algorithm):
         """
         if not self.all_constraints:
             return
+        if simdata is None:
+            # Defensive: a genuinely missing simdata would make cross-model
+            # (dotted-suffix) constraint resolution iterate ``None`` and crash
+            # (lanl/PyBNF#480). Callers pass the resolved simdata via
+            # _result_simdata, so this should not happen; if it ever does, skip
+            # this sample's satisfaction bookkeeping rather than abort the run --
+            # the prior cached vector (if any) stays in place.
+            logger.debug('No simulation data available to evaluate constraints for chain %d; '
+                         'skipping constraint-satisfaction bookkeeping for this sample.', chain_index)
+            return
         satisfied = []
         for c in self.all_constraints:
             satisfied.append(1 if c.penalty(simdata) == 0 else 0)
@@ -325,15 +355,19 @@ class BayesianAlgorithm(Algorithm):
 
     def record_pointwise_loglik(self, res, chain_index):
         """Cache the just-accepted pset's per-observation log-likelihoods for this chain
-        (ADR-0056), mirroring :meth:`evaluate_constraints`: computed here, where
-        ``res.simdata`` for the accepted pset is in hand, and written later by
+        (ADR-0056), mirroring :meth:`evaluate_constraints`: computed here, where the
+        accepted pset's simulation data is in hand, and written later by
         :meth:`sample_pset` for whichever pset is current at a sample iteration. A no-op
         unless ``output_inference_data`` is set and the objective is a likelihood; any
-        failure is logged, never fatal (the run must not die for a diagnostics sidecar)."""
+        failure is logged, never fatal (the run must not die for a diagnostics sidecar).
+
+        Reads the simdata through :meth:`_result_simdata` so it works whether the
+        objective was scored worker-side (data on ``res.out``) or master-side (data on
+        ``res.simdata``); see lanl/PyBNF#480."""
         if not self._record_loglik:
             return
         try:
-            result = self.objective.evaluate_pointwise(res.simdata, self.exp_data, res.pset)
+            result = self.objective.evaluate_pointwise(self._result_simdata(res), self.exp_data, res.pset)
         except Exception:
             logger.debug('Could not compute pointwise log-likelihood for chain %d',
                          chain_index, exc_info=True)
