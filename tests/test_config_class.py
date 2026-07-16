@@ -720,6 +720,72 @@ class TestNewEraNormalization:
         with pytest.raises(printing.PybnfError, match='legacy form'):
             self._resolve({'normalization': {'bngl_files/par1.exp': 'peak'}})
 
+    # --- ADR-0066 (#479): floor + analytic scale chains ---
+
+    @staticmethod
+    def _build_grid(norm, experiments=('egf_high', 'egf_low')):
+        """Like ``_resolve`` but returns the whole Configuration harness, so a test can read
+        the compiled ``normalization`` dict, the ``analytic_scale`` key, and the (floored)
+        experimental data together."""
+        c = object.__new__(config.Configuration)
+        c.exp_data = {'parabola': {e: data.Data(file_name='bngl_files/par1.exp')
+                                   for e in experiments}}
+        c._experiment_data_keys = {e: ('parabola', e) for e in experiments}
+        c.config = {'models': {'bngl_files/parabola.bngl'}, 'bngl_files/parabola.bngl': [],
+                    'exp_data': set(), 'edition': 2, 'normalization': None, **norm}
+        c._postprocess_normalization()
+        return c
+
+    def test_floor_scale_chain_splits_into_the_two_seams(self):
+        # x: floor+scale, y: floor. floor lands in the sim normalization dict (both cols); scale
+        # is routed to analytic_scale (x only); the data column is floored in place.
+        c = self._build_grid({('normalization', 'x'): [('floor', 0.03), 'scale'],
+                              ('normalization', 'y'): [('floor', 0.03)]})
+        assert c.config['normalization'] == {
+            'egf_high': [(('floor', 0.03), ['x']), (('floor', 0.03), ['y'])],
+            'egf_low': [(('floor', 0.03), ['x']), (('floor', 0.03), ['y'])]}
+        assert c.config['analytic_scale'] == {'egf_high': frozenset({'x'}),
+                                              'egf_low': frozenset({'x'})}
+
+    def test_floor_is_applied_symmetrically_to_the_experimental_data(self):
+        d = data.Data(file_name='bngl_files/par1.exp')
+        raw_x = d.data[:, d.cols['x']].copy()
+        c = self._build_grid({('normalization', 'x'): [('floor', 0.03)]})
+        floored = c.exp_data['parabola']['egf_high']
+        # x' = x + 0.03*max(x); the data column is floored from its OWN max, once.
+        np.testing.assert_allclose(floored.data[:, floored.cols['x']],
+                            raw_x + 0.03 * np.nanmax(raw_x))
+        # y (no rule) is untouched.
+        np.testing.assert_allclose(floored.data[:, floored.cols['y']], d.data[:, d.cols['y']])
+
+    def test_scale_only_leaves_normalization_none(self):
+        # A bare ``scale`` is not a Data transform: no sim normalization, only analytic_scale.
+        c = self._build_grid({('normalization', 'x'): 'scale'})
+        assert c.config['normalization'] is None
+        assert c.config['analytic_scale'] == {'egf_high': frozenset({'x'}),
+                                              'egf_low': frozenset({'x'})}
+
+    def test_whole_fit_chain_applies_to_every_observable(self):
+        c = self._build_grid({'normalization': [('floor', 0.03), 'scale']})
+        assert c.config['normalization'] == {
+            'egf_high': [(('floor', 0.03), ['x', 'y'])],
+            'egf_low': [(('floor', 0.03), ['x', 'y'])]}
+        assert c.config['analytic_scale'] == {'egf_high': frozenset({'x', 'y'}),
+                                              'egf_low': frozenset({'x', 'y'})}
+
+    def test_invalid_type_in_chain_lists_floor_and_scale(self):
+        with pytest.raises(printing.PybnfError, match='floor, scale'):
+            self._resolve({('normalization', 'x'): [('bogus', 1.0)]})
+
+    def test_scale_refused_for_a_column_joint_objective(self):
+        # `scale` rides the per-point prediction seam, which a column-joint kl / wasserstein
+        # lacks -- refused at attach time (mirroring `cumulative`).
+        c = object.__new__(config.Configuration)
+        c.obj = objective.KLLikelihood()
+        c.config = {'analytic_scale': {'e': frozenset({'x'})}}
+        with pytest.raises(printing.PybnfError, match='column-joint'):
+            c._attach_analytic_scale()
+
 
 class TestNewEraPreprocessingKeysRideThrough:
     """#444 item 1: the other three preprocessing keys -- ``smoothing`` /
@@ -758,3 +824,16 @@ class TestNewEraPreprocessingKeysRideThrough:
         # experiment's columns during a full Configuration build.
         c = self._build('\nnormalization x = peak\nnormalization par1.y = init\n')
         assert c.config['normalization'] == {'par1': [('peak', ['x']), ('init', ['y'])]}
+
+    def test_floor_scale_chain_wires_the_objective_and_floors_the_data(self):
+        # End-to-end (ADR-0066, #479): a floor+scale chain on a real edition-2 build routes the
+        # floor to the sim normalization dict + the experimental data (symmetric) and the scale to
+        # the objective, keyed by data_key.
+        c = self._build('\nnormalization x = floor 0.03, scale\n')
+        assert c.config['normalization'] == {'par1': [(('floor', 0.03), ['x'])]}
+        assert c.obj._analytic_scale == {'par1': frozenset({'x'})}
+        # x is scored with normal (linear) noise, so its scale profiles in linear space.
+        assert c.obj._scale_mode('x') == 'linear'
+        # The experimental x column was floored in place (a 'floor' record proves it).
+        floored = next(iter(c.exp_data.values()))['par1']
+        assert floored.normalization['x'].method == 'floor'

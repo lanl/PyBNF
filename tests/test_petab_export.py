@@ -1621,6 +1621,21 @@ class TestBoundaries:
                 tmp_path, "objective = chi_sq\nuniform_var = v1 0 10\nnormalization = init\n"),
                 tmp_path / 'out')
 
+    def test_floor_normalization_is_refused(self, tmp_path):
+        # ADR-0066 (#479): floor (x + rho*max(x)) is a whole-series offset, equally non-pointwise.
+        with pytest.raises(NotImplementedError, match='normaliz'):
+            export_job(_boundary_conf(
+                tmp_path, "objective = chi_sq\nuniform_var = v1 0 10\nnormalization x = floor 0.03\n"),
+                tmp_path / 'out')
+
+    def test_analytic_scale_is_refused(self, tmp_path):
+        # A whole-fit `scale` compiles `normalization` to None (scale is not a Data transform),
+        # so the export check must key off the `analytic_scale` config, not `normalization` alone.
+        with pytest.raises(NotImplementedError, match='normaliz'):
+            export_job(_boundary_conf(
+                tmp_path, "objective = chi_sq\nuniform_var = v1 0 10\nnormalization = scale\n"),
+                tmp_path / 'out')
+
     @pytest.mark.parametrize('objfunc', ['neg_bin', 'neg_bin_dynamic', 'score'])
     def test_petab_inexpressible_objective_not_implemented(self, tmp_path, objfunc):
         # neg_bin was removed from PEtab v2; score (the direct_pass successor) is not a

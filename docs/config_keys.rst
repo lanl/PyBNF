@@ -1046,21 +1046,24 @@ Algorithm Options
 **normalization**
   Normalize a simulation's predicted observable before it is compared to the data -- useful
   when the experimental values are themselves reported on a normalized scale (fold-change,
-  percent-of-maximum, ...). Specify one of the following types:
+  percent-of-maximum, arbitrary fluorescence units, ...). Specify one of the following types:
 
    - ``init`` - normalize to the initial value
    - ``peak`` - normalize to the maximum value
    - ``zero`` - normalize such that each column has a mean of 0 and a standard deviation of 1
    - ``unit`` - Scales data so that the range of values is between (min-init)/(max-init) and 1 (if the maximum value is 0 (i.e. max == init), then the data is scaled by the minimum value after subtracting the initial value so that the range of values is between 0 and -1).
+   - ``floor <rho>`` - add a measurement-noise **floor** ``x' = x + rho*max(x)`` (``rho`` a small fraction, default ``0.03``), so a log / relative objective stays finite where a series legitimately touches zero. Applied **identically to the simulated and the experimental** column.
+   - ``scale`` - profile out each series' **optimal multiplicative scale** at scoring time (analytic / hierarchical scaling), so an overall model-vs-data scale difference on arbitrary-unit data is not penalized -- with no extra fitted parameter. Family-appropriate: the geometric-mean ratio for a log objective (:ref:`lognormal <objective_key>`), the least-squares optimum ``c* = sum(s d)/sum(s^2)`` otherwise.
 
   Normalization is a per-observable *prediction* transform -- a sibling of the per-observable
   :ref:`noise_model <noise_model_key>` / ``cumulative`` surface -- so under a modern
   :ref:`edition <edition>` (``>= 2``) it is keyed by **observable**, never by filename. Three
-  forms layer into a single most-specific-wins rule::
+  forms layer into a single most-specific-wins rule, and the value may be an ordered **chain**
+  of transforms separated by commas (applied left to right)::
 
-    normalization = <type>                          # whole-fit default (every observable)
-    normalization <observable> = <type>             # per-observable (every experiment)
-    normalization <experiment>.<observable> = <type>  # per-(experiment, observable) override
+    normalization = <chain>                          # whole-fit default (every observable)
+    normalization <observable> = <chain>             # per-observable (every experiment)
+    normalization <experiment>.<observable> = <chain>  # per-(experiment, observable) override
 
   For any observable column of any experiment the most specific rule wins:
   ``<experiment>.<observable>`` beats ``<observable>`` beats the whole-fit default; an
@@ -1070,10 +1073,20 @@ Algorithm Options
   :ref:`experiment <experiment>`). A standard-deviation (``_SD``) column is never normalized
   on its own.
 
-  Normalization has no PEtab v2 representation (peak / initial-value / z-score scaling is a
-  whole-trajectory reduction, not a pointwise observable formula), so a job that uses it
-  **cannot be exported to PEtab** -- the exporter refuses it rather than silently scoring the
-  raw, un-normalized columns.
+  ``peak`` / ``init`` / ``zero`` / ``unit`` rescale the **simulated** column only (the data is
+  assumed pre-normalized by the user); ``floor`` and ``scale`` are applied symmetrically to
+  the model and the data (a floor or an analytic scale is only meaningful applied to both).
+  Together with ``objective = lognormal`` the chain ``floor 0.03, scale`` spells the
+  "sum of squared log-differences of geometric-mean-normalized trajectories" objective common
+  to arbitrary-unit fluorescence / blot fits.
+
+  Normalization has no PEtab v2 representation (peak / initial-value / z-score / floor scaling
+  is a whole-trajectory reduction, and ``scale`` is an analytic per-series optimum, neither a
+  pointwise observable formula), so a job that uses it **cannot be exported to PEtab** -- the
+  exporter refuses it rather than silently scoring the raw, un-normalized columns. ``floor``
+  and ``scale`` currently have a **deferred gradient** as well: a gradient-based fit
+  (:ref:`gradient fitting <gradient_fitting>`) that hits one falls back to a gradient-free
+  step, so pair them with an evolutionary algorithm (``de``, ``am``, ...).
 
   Default: No normalization
 
@@ -1082,6 +1095,8 @@ Algorithm Options
      * ``normalization = init`` (whole-fit default)
      * ``normalization pErk = peak`` (pErk in every experiment)
      * ``normalization egf_high.pAkt = init`` (pAkt in experiment egf_high only)
+     * ``normalization = floor 0.03, scale`` (floor then analytic scale, every observable)
+     * ``normalization pStat = scale`` (analytic per-series scaling for pStat)
 
   **Legacy form** (no ``edition``): normalization is keyed by ``.exp`` *filename* instead. If
   only the type is specified it applies to all exp files; a type followed by a ``':'`` and a

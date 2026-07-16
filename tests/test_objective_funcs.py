@@ -1318,3 +1318,95 @@ class TestCheckColumns:
         exp = _mkdata(['# x  obs1\n', ' 0  3\n', ' 1  2\n', ' 2  4\n'])
         with pytest.raises(printing.PybnfError):
             objective.KLLikelihood().evaluate(sim_no_x, exp, show_warnings=False)
+
+
+class TestAnalyticPerSeriesScale:
+    """Analytic per-series scaling (ADR-0066, #479): the objective profiles out each declared
+    column's optimal multiplicative scale at scoring time, family-appropriately -- a linear
+    family by least squares ``c* = sum(w s d)/sum(w s^2)``, a log family (lognormal) by the
+    geometric-mean ratio ``geomean(d)/geomean(s)``. Anchored to those closed forms and to the
+    scale-invariance the primitive exists to provide.
+    """
+
+    # sim/exp chosen so the linear and log optima differ (a shared-value case would hide a
+    # log-vs-linear mix-up): geomean(d)=4, geomean(s)=6**(1/3).
+    exp = _mkdata(['# x  y\n', ' 0  2\n', ' 1  4\n', ' 2  8\n'])
+    sim = _mkdata(['# x  y\n', ' 0  1\n', ' 1  2\n', ' 2  3\n'])
+
+    def test_linear_factor_is_least_squares_optimum(self):
+        obj = objective.SumOfSquaresObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        obj.evaluate(self.sim, self.exp, show_warnings=False, data_key='m1')
+        # c* = sum(s d)/sum(s^2) = (1*2 + 2*4 + 3*8)/(1 + 4 + 9) = 34/14
+        npt.assert_almost_equal(obj._scale_factors['y'], 34.0 / 14.0)
+
+    def test_log_factor_is_geometric_mean_ratio(self):
+        obj = objective.LogNormalObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        factors = obj._analytic_scale_factors(
+            self.sim, self.exp, 'x', {'y'}, 'm1')
+        gm_d = np.exp(np.mean(np.log([2.0, 4.0, 8.0])))
+        gm_s = np.exp(np.mean(np.log([1.0, 2.0, 3.0])))
+        npt.assert_almost_equal(factors['y'], gm_d / gm_s)
+
+    def test_scale_mode_follows_the_noise_family(self):
+        # log-additive family (lognormal) -> log space; a linear family -> linear space.
+        assert objective.LogNormalObjective()._scale_mode('y') == 'log'
+        assert objective.SumOfSquaresObjective()._scale_mode('y') == 'linear'
+
+    def test_scaling_makes_a_pure_scale_difference_cost_zero(self):
+        # sim = data / 2 (a pure per-series scale): after profiling, the residual is exactly 0.
+        sim = _mkdata(['# x  y\n', ' 0  1\n', ' 1  2\n', ' 2  4\n'])
+        exp = _mkdata(['# x  y\n', ' 0  2\n', ' 1  4\n', ' 2  8\n'])
+        obj = objective.SumOfSquaresObjective()
+        assert obj.evaluate(sim, exp, show_warnings=False) == pytest.approx(21.0)  # unscaled
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        assert obj.evaluate(sim, exp, show_warnings=False, data_key='m1') == pytest.approx(0.0)
+
+    def test_unmatched_data_key_leaves_the_fit_unscaled(self):
+        # A column scaled only for data_key 'm1' is byte-identical when scored under 'other'.
+        obj = objective.SumOfSquaresObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        base = objective.SumOfSquaresObjective().evaluate(self.sim, self.exp, show_warnings=False)
+        assert obj.evaluate(self.sim, self.exp, show_warnings=False, data_key='other') == base
+        assert obj._scale_factors == {}
+
+    def test_scale_threads_through_evaluate_multiple_by_data_key(self):
+        # evaluate_multiple passes the suffix as the data_key, so a per-suffix scale resolves.
+        obj = objective.SumOfSquaresObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        sim = _mkdata(['# x  y\n', ' 0  1\n', ' 1  2\n', ' 2  4\n'])
+        exp = _mkdata(['# x  y\n', ' 0  2\n', ' 1  4\n', ' 2  8\n'])
+        total = obj.evaluate_multiple({'model': {'m1': sim}}, {'model': {'m1': exp}}, [])
+        assert total == pytest.approx(0.0)
+
+    def test_log_scale_skips_nonpositive_points(self):
+        # A non-positive prediction/observation is undefined in log space and is dropped from the
+        # geomean profile (the remaining two points still recover the scale).
+        exp = _mkdata(['# x  y\n', ' 0  2\n', ' 1  4\n', ' 2  8\n'])
+        sim = _mkdata(['# x  y\n', ' 0  0\n', ' 1  2\n', ' 2  4\n'])   # sim[0]=0 dropped
+        obj = objective.LogNormalObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        factors = obj._analytic_scale_factors(sim, exp, 'x', {'y'}, 'm1')
+        gm_d = np.exp(np.mean(np.log([4.0, 8.0])))
+        gm_s = np.exp(np.mean(np.log([2.0, 4.0])))
+        npt.assert_almost_equal(factors['y'], gm_d / gm_s)
+
+    def test_weighted_linear_optimum(self):
+        # Point weights enter the least-squares optimum: c* = sum(w s d)/sum(w s^2).
+        exp = _mkdata(['# x  y\n', ' 0  2\n', ' 1  4\n', ' 2  8\n'])
+        sim = _mkdata(['# x  y\n', ' 0  1\n', ' 1  2\n', ' 2  3\n'])
+        w = np.array([[0.0, 3.0], [0.0, 1.0], [0.0, 1.0]])  # down-weight nothing on x; vary on y
+        exp.weights = w
+        obj = objective.SumOfSquaresObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'})}
+        factors = obj._analytic_scale_factors(sim, exp, 'x', {'y'}, 'm1')
+        num = 3*1*2 + 1*2*4 + 1*3*8
+        den = 3*1*1 + 1*2*2 + 1*3*3
+        npt.assert_almost_equal(factors['y'], num / den)
+
+    def test_scaled_columns_flat_set_for_the_gradient_guard(self):
+        obj = objective.SumOfSquaresObjective()
+        obj._analytic_scale = {'m1': frozenset({'y'}), 'm2': frozenset({'z'})}
+        assert obj._scaled_columns == frozenset({'y', 'z'})
+        assert objective.SumOfSquaresObjective()._scaled_columns == frozenset()

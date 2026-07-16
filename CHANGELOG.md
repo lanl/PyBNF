@@ -6,6 +6,26 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Composable floor normalization + analytic per-series scaling for relative / arbitrary-unit
+  data (#479).** Two composable, per-series normalization primitives so a log/relative objective
+  on arbitrary-unit data (fluorescence, blots) can be spelled with standard tokens instead of a
+  bespoke objective class. (1) **`floor <rho>`** — an additive measurement-noise floor
+  `x' = x + rho*max(x)` (default `rho = 0.03`) applied **identically to the simulated and the
+  experimental** column, so a log objective stays finite where a series legitimately touches zero.
+  (2) **`scale`** — analytic per-series **optimal** multiplicative scaling profiled out at scoring
+  time (hierarchical / profiled scaling; Weber et al. 2011, Loos et al. 2018), family-appropriate:
+  the geometric-mean ratio for a log family (`lognormal`) and the least-squares optimum
+  `c* = Σ w s d / Σ w s²` for a linear one — so an overall model-vs-data scale difference is not
+  penalized (no per-series `scale` parameter needed). They compose as an ordered chain
+  (`normalization <obs> = floor 0.03, scale`, per-observable / `<exp>.<obs>` / whole-fit), and
+  together with `objective = lognormal` spell the exact sum-of-squared-log-differences-of-
+  geometric-mean-normalized-trajectories objective of Jaruszewicz-Błońska et al.
+  (*PLoS ONE* 2023; 18(6):e0286416). Legacy `normalization = peak` / `normalization x = peak`
+  round-trip byte-identically; `peak`/`init`/`zero`/`unit` stay sim-only. Both new primitives have
+  a **deferred gradient** (they raise `GradientNotSupported`, so a gradient fit falls back to a
+  gradient-free step; the motivating fits are evolutionary), and both are **refused on PEtab
+  export** (a whole-trajectory reduction has no pointwise PEtab v2 operator; `scale`'s
+  `observableParameters` mapping is a future direction). See ADR-0066.
 - **Gradient-based fitting extends to `parameter_scan` (dose-response) objectives (#476).**
   A gradient fit (`fit_type = trf`/`lbfgs`) can now target a dose-response objective, not
   just a time course. The default dose-response path already computed the per-dose forward

@@ -122,13 +122,20 @@ class NormalizationRecord:
     * ``zero`` (z-score): ``n_i = (raw_i - μ)/σ`` couples **all** rows through ``σ`` --
       ``scale`` = ``σ`` (0 when std is 0, where ``Data`` leaves the column un-divided) and
       ``ddof`` carries the ``K - ddof`` denominator of ``∂σ/∂θ``.
+    * ``floor`` (ADR-0066, #479): ``n_i = raw_i + ρ·max`` -- an additive measurement-noise
+      floor (``ρ`` = ``rho``, ``max`` = ``scale`` at ``ref_row`` = argmax), applied *identically
+      to the simulated and the experimental column* so a log/relative objective stays finite where
+      a series legitimately touches zero. Its ``∂n_i/∂θ = s_i + ρ·s_ref`` is a simple additive
+      rule, but the gradient path is **deferred** for it (raises ``GradientNotSupported``); the
+      record is still written so the fact holder stays complete.
     """
 
-    method: str                          # 'peak' | 'init' | 'zero' | 'unit'
-    scale: float                         # the divisor N (peak: max; init: raw_0; zero: std; unit: max/|min|)
-    ref_row: Optional[int] = None        # the row N is read from (peak/init/unit); None for zero
-    baseline_row: Optional[int] = None   # unit subtracts this row first (0); None for peak/init/zero
+    method: str                          # 'peak' | 'init' | 'zero' | 'unit' | 'floor'
+    scale: float                         # the divisor N (peak: max; init: raw_0; zero: std; unit: max/|min|; floor: max)
+    ref_row: Optional[int] = None        # the row N is read from (peak/init/unit/floor); None for zero
+    baseline_row: Optional[int] = None   # unit subtracts this row first (0); None for peak/init/zero/floor
     sign: float = 1.0                    # unit-min branch flips the reference term's sign
+    rho: float = 0.0                     # floor: the max-fraction added (x' = x + rho*max); 0 for every other method
     ddof: int = 0                        # zero: the K - ddof denominator of the std derivative
 
 
@@ -515,6 +522,36 @@ class Data:
                     baseline_row=0, sign=1.0))
                 self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
 
+    def normalize_to_floor(self, rho, idx=0, cols='all'):
+        """Add a measurement-noise **floor** ``x' = x + rho*max(x)`` to each column (ADR-0066,
+        #479): a per-series additive offset (``rho`` a small fraction, default 0.03) that keeps a
+        log / relative objective finite where a series legitimately touches zero and down-weights
+        near-zero measurement noise. Unlike every other method this is a *symmetric* transform --
+        the caller applies it identically to the simulated and the experimental column (the
+        floor is only meaningful applied to both), and it neither divides nor recenters, so the
+        recorded ``NormalizationRecord`` carries the added amount (``rho`` and the ``max`` its
+        argmax row) rather than a divisor.
+
+        Updates the data array in this object, returns none.
+
+        :param rho: the max-fraction added to every point of each column
+        :type rho: float
+        :param idx: Index of independent variable
+        :type idx: int
+        :param cols: List of column indices to normalize, or 'all' for all columns but independent variable
+        """
+        if cols == 'all':
+            cols = list(range(self.data.shape[1]))
+            cols.remove(idx)
+        for c in cols:
+            column = self.data[:, c]
+            cmax = float(np.max(column))
+            # Record the added amount (rho) and the max its argmax row before the offset -- the
+            # gradient's ∂(x + rho*max)/∂θ = s_i + rho*s_argmax reads them (deferred, #479).
+            self._record_normalization(c, NormalizationRecord(
+                'floor', cmax, ref_row=int(np.argmax(column)), rho=float(rho)))
+            self.data[:, c] = column + rho * cmax
+
     @staticmethod
     def average(datas):
         """
@@ -551,14 +588,21 @@ class Data:
 
     def normalize(self, method):
         """
-        Normalize the data according to the specified method: 'init', 'peak', 'unit', or 'zero'
+        Normalize the data according to the specified method: 'init', 'peak', 'unit', 'zero',
+        or ('floor', rho) (ADR-0066).
         The method could also be a list of ordered pairs [('init', [columns]), ('peak', [columns])], where columns
-        is a list of integers or column labels
+        is a list of integers or column labels. Each method is either a bare string (argument-less)
+        or a ``(name, arg)`` tuple (``('floor', 0.03)``); a chain of transforms on the same column
+        is expressed as consecutive ordered pairs.
 
         Updates the data array in this object, returns none.
         """
 
         def normalize_once(m, cols):
+            # A transform is a bare string (argument-less) or a (name, arg) tuple (floor's rho).
+            arg = None
+            if isinstance(m, tuple):
+                m, arg = m
             if m == 'init':
                 self.normalize_to_init(cols=cols)
             elif m == 'peak':
@@ -567,11 +611,15 @@ class Data:
                 self.normalize_to_zero(cols=cols)
             elif m == 'unit':
                 self.normalize_to_unit_scale(cols=cols)
+            elif m == 'floor':
+                self.normalize_to_floor(arg, cols=cols)
             else:
                 # Should have caught a user-defined invalid setting in config before getting here.
                 raise ValueError(f'Invalid method {m} for Data.normalize()')
 
-        if type(method) == str:
+        if isinstance(method, (str, tuple)):
+            # A bare string ('peak') or a single (name, arg) transform (('floor', 0.03)) over
+            # every dependent column.
             normalize_once(method, 'all')
         else:
             for mi, cols_i in method:

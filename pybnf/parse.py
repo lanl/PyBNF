@@ -184,22 +184,27 @@ def parse(s):
     normgram = normkey - equals - anything  # The set of legal grammars for normalization is too complicated,
     # Will handle with separate code.
 
-    # new-era per-observable normalization grammar (ADR-0053, #444):
-    #   normalization <obs> = <type>           -- per-observable (every experiment)
-    #   normalization <exp>.<obs> = <type>      -- per-(experiment, observable) override
+    # new-era per-observable normalization grammar (ADR-0053, #444; chains ADR-0066, #479):
+    #   normalization <obs> = <chain>           -- per-observable (every experiment)
+    #   normalization <exp>.<obs> = <chain>      -- per-(experiment, observable) override
+    # where <chain> is a comma-separated, ordered list of transforms, each a bare token
+    # (``peak``) or a token with a numeric argument (``floor 0.03``); e.g.
+    # ``floor 0.03, scale``.
     # Normalization is a per-observable *prediction* transform -- a sibling of the
     # per-observable noise_model / cumulative surface (ADR-0021/0051) -- so the new era
     # keys it by observable (and optionally an experiment), never a filename. The bare
     # token before the ``=`` is what distinguishes this from the legacy / whole-fit
-    # ``normalization = <type>[: <files>]`` form, so it is tried first and the recoverable
+    # ``normalization = <chain>[: <files>]`` form, so it is tried first and the recoverable
     # ``normkey + norm_target`` backtracks cleanly to ``normgram`` when no token precedes
     # the ``=`` (the whole-fit / legacy forms). The ``.`` in norm_target carries the
-    # optional ``<experiment>.`` qualifier. The type is kept permissive (validated in
-    # config.py) so a typo'd type gives a clear "Invalid normalization type" rather than a
-    # parse failure. Tagged ``normalization_obs`` so ploop routes it; edition-gated (>= 2)
-    # in config.py.
+    # optional ``<experiment>.`` qualifier. The chain string is kept permissive here (the
+    # transform names/args are parsed + validated in ``parse_normalization_chain`` /
+    # config.py) so a typo gives a clear "Invalid normalization type" rather than a parse
+    # failure. Tagged ``normalization_obs`` so ploop routes it; edition-gated (>= 2) in
+    # config.py.
     norm_target = pp.Word(pp.alphas, pp.alphanums + '_.')
-    norm_modern_gram = normkey + norm_target - equals - pp.Word(pp.alphas) - comment
+    norm_chain_rhs = pp.Regex(r'[^#\n]+')
+    norm_modern_gram = normkey + norm_target - equals - norm_chain_rhs - comment
     norm_modern_gram.set_parse_action(lambda t: ['normalization_obs'] + list(t)[1:])
 
     # Grammar for dictionary-like specification of simulation actions
@@ -810,7 +815,9 @@ def ploop(ls):  # parse loop
                 # 'normalization' : {'expfile':'type', 'expfile2':[('type1', [numbers]), ('type2', [colnames]), ...]}
 
                 parsed = parse_normalization_def(values)
-                if type(parsed) == str:
+                if isinstance(parsed, (str, list)):
+                    # Whole-fit form: a bare token (str) or a chain (list, ADR-0066); either
+                    # applies to every observable, so at most one may be declared.
                     if 'normalization' in d:
                         raise PybnfError('contradictory normalization keys',
                                          "Config file contains multiple 'normalization' keys, one of which specifies"
@@ -847,11 +854,14 @@ def ploop(ls):  # parse loop
                 # (experiment x column) grid in config.py::_postprocess_normalization, where
                 # the type is also validated. The whole-fit default stays under the plain
                 # 'normalization' string key (above); the two coexist as specificity layers.
-                target, ntype = l[1], l[2]
+                # The value is a chain (ADR-0066): a bare string (single argument-less legacy
+                # token, backward-compatible) or a list of transforms, each a string or a
+                # (name, arg) tuple (e.g. ('floor', 0.03)).
+                target, chain = l[1], parse_normalization_chain(l[2])
                 norm_key = ('normalization', target)
                 if norm_key in d:
                     raise PybnfError(f"normalization for '{target}' is specified multiple times")
-                d[norm_key] = ntype.lower()
+                d[norm_key] = chain
             else:
                 if key in d:
                     if d[key] == values:
@@ -933,6 +943,52 @@ def ploop(ls):  # parse loop
     return d
 
 
+# The normalization transforms that take a single numeric argument, and the default the
+# argument takes when omitted (ADR-0066, #479). ``floor 0.03`` is the paper's default.
+_NORM_TRANSFORM_DEFAULT_ARG = {'floor': 0.03}
+
+
+def parse_normalization_chain(s):
+    """Parse a normalization value string into a canonical chain of transforms (ADR-0066, #479).
+
+    A *chain* is a comma-separated, ordered list of transforms; each transform is a bare token
+    (``peak``) or a token with a single numeric argument (``floor 0.03``). Returns either a bare
+    ``str`` -- when the chain is a single argument-less token, so a legacy ``normalization = peak``
+    / ``normalization x = peak`` round-trips byte-identically -- or a list whose elements are each
+    a ``str`` (argument-less) or a ``(name, float)`` tuple (``('floor', 0.03)``). Transform-name
+    validity is checked in config.py (which owns the "Invalid normalization type" message); this
+    only enforces the ``<name> [<number>]`` shape and supplies a defaulted argument for a
+    transform (``floor``) declared without one.
+    """
+    chain = []
+    for part in s.split(','):
+        toks = part.split()
+        if not toks:
+            raise PybnfError(f"Empty normalization transform in '{s.strip()}'",
+                             "A normalization value is a comma-separated list of transforms, each "
+                             "'<type>' or '<type> <number>' (e.g. 'floor 0.03, scale').")
+        name = toks[0].lower()
+        if len(toks) == 1:
+            # A bare token; supply the default argument for a transform that takes one (floor).
+            chain.append((name, _NORM_TRANSFORM_DEFAULT_ARG[name])
+                         if name in _NORM_TRANSFORM_DEFAULT_ARG else name)
+        elif len(toks) == 2:
+            try:
+                chain.append((name, float(toks[1])))
+            except ValueError:
+                raise PybnfError(
+                    f"normalization transform '{part.strip()}' has a non-numeric argument",
+                    f"The argument to normalization transform '{name}' must be a number, not "
+                    f"'{toks[1]}'.")
+        else:
+            raise PybnfError(f"Could not parse normalization transform '{part.strip()}'",
+                             "Each normalization transform is '<type>' or '<type> <number>' "
+                             "(e.g. 'floor 0.03').")
+    if len(chain) == 1 and isinstance(chain[0], str):
+        return chain[0]      # single argument-less token -> bare string (backward-compatible)
+    return chain
+
+
 def parse_normalization_def(s):
     """
     Parse the complicated normalization grammar
@@ -940,8 +996,9 @@ def parse_normalization_def(s):
     exp file, and this error will be caught later.
 
     :param s: The string following the equals sign in the normalization key
-    :return: What to write in the config dictionary: A string, or a dictionary {expfile: string} or
-        {expfile: (string, index_list)} or {expfile: (string, name_list)}
+    :return: What to write in the config dictionary: A string or a chain (list of transforms,
+        ADR-0066) for the whole-fit form, or a dictionary {expfile: string} or
+        {expfile: (string, index_list)} or {expfile: (string, name_list)} for the legacy per-file form
     """
 
     def parse_range(x):
@@ -956,6 +1013,14 @@ def parse_normalization_def(s):
                 a = int(part)
                 result.append(a)
         return result
+
+    # The legacy per-file form is detected by a ':' (the type<->file separator); a chain never
+    # contains one. Detect on a space-stripped copy but parse the chain from the original so a
+    # transform's numeric argument ('floor 0.03') keeps its word boundary (ADR-0066).
+    if ':' not in re.sub(r'\s', '', s):
+        # Whole-fit chain: a bare token, a token+argument, or a comma-separated chain, applied
+        # to every observable of every experiment.
+        return parse_normalization_chain(s.strip())
 
     # Remove all spaces
     s = re.sub(r'\s', '', s)

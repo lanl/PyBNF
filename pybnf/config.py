@@ -313,6 +313,9 @@ class Configuration:
             self._check_variable_correspondence()
         logger.debug('Loaded variables')
         self._postprocess_normalization()
+        # Analytic per-series scaling (ADR-0066) is resolved in _postprocess_normalization, so it
+        # attaches to the (already-built) objective here, after the normalization grid is compiled.
+        self._attach_analytic_scale()
         self._load_postprocessing()
         self.config['time_length'] = self._load_t_length()
         logger.debug('Completed configuration')
@@ -2290,6 +2293,30 @@ class Configuration:
             obj._cumulative_cols = cumulative_cols
         return obj
 
+    def _attach_analytic_scale(self):
+        """Attach the resolved analytic per-series scaling to the objective (ADR-0066, #479).
+
+        Runs *after* ``_postprocess_normalization`` (unlike ``cumulative``, whose set is read
+        straight from the raw parse keys, ``scale`` needs the resolved experiment x observable
+        grid), so it keys off the compiled ``config['analytic_scale']`` (``{data_key:
+        frozenset(cols)}``). The objective profiles out each declared series' optimal
+        multiplicative scale at scoring time (family-appropriate -- geomean for a log family,
+        least-squares otherwise), so an overall scale difference between model and arbitrary-unit
+        data is not penalized. Like ``cumulative`` it rides the per-point prediction seam, so it
+        needs a per-point (``SummationObjective``) objective; a column-joint kl / wasserstein has
+        no such seam and is refused."""
+        analytic_scale = self.config.get('analytic_scale')
+        if not analytic_scale:
+            return
+        if not isinstance(self.obj, objective.SummationObjective):
+            raise UnknownObjectiveFunctionError(
+                'analytic scale is not available for a column-joint objective',
+                f"Analytic per-series scaling ('normalization <obs> = scale', #479) is profiled "
+                f"per data point at scoring time, which the column-joint objective "
+                f"'{type(self.obj).__name__}' (kl / wasserstein) does not have. Declare 'scale' "
+                f"only with a per-point objective (lognormal, chi_sq, sos, ...).")
+        self.obj._analytic_scale = analytic_scale
+
     def _qualitative_scale_param(self):
         """The free-parameter name that ``qualitative_scale = fit <param>`` ties every qualitative
         constraint's scale (logit ``s`` / probit ``sigma``) to, or ``None`` when
@@ -2781,32 +2808,35 @@ class Configuration:
         :return:
         """
         seedoc = "\nSee the documentation for the syntax options for the 'normalization' key"
-        valid = ('init', 'peak', 'zero', 'unit')
+        # peak/init/zero/unit rescale the SIMULATED column before scoring; floor (an additive
+        # measurement-noise floor x' = x + rho*max(x)) and scale (analytic per-series optimal
+        # scaling) are the ADR-0066 primitives, applied to the data too. floor/scale are
+        # edition-2-only new-era features that can chain, so the legacy per-file form keeps only
+        # the original four.
+        valid = ('init', 'peak', 'zero', 'unit', 'floor', 'scale')
+        legacy_valid = ('init', 'peak', 'zero', 'unit')
 
-        # New-era per-observable rules (ADR-0053, #444): structural ('normalization',
-        # target) tuple keys, where target is an observable name or
-        # '<experiment>.<observable>'. Normalization is a per-observable *prediction*
-        # transform (a sibling of the per-observable noise_model / cumulative surface,
-        # ADR-0021/0051), so the new era keys it by observable (and optionally an
-        # experiment), never a filename. Collected + validated here, then resolved against
-        # the (experiment x column) grid below; the layers form a total specificity order
-        # (whole-fit default < per-observable < per-(experiment, observable)).
+        # New-era per-observable rules (ADR-0053, #444; chains ADR-0066, #479): structural
+        # ('normalization', target) tuple keys, where target is an observable name or
+        # '<experiment>.<observable>' and the value is a *chain* (a bare string, or a list of
+        # transforms each a string or a (name, arg) tuple). Normalization is a per-observable
+        # *prediction* transform (a sibling of the per-observable noise_model / cumulative
+        # surface, ADR-0021/0051), so the new era keys it by observable (and optionally an
+        # experiment), never a filename. Collected + validated here, then resolved against the
+        # (experiment x column) grid below; the layers form a total specificity order (whole-fit
+        # default < per-observable < per-(experiment, observable)).
         ed = edition.resolve_edition(self.config.get('edition'))
         per_obs, per_exp_obs = {}, {}
         norm_tuple_keys = [k for k in self.config
                            if isinstance(k, tuple) and k[0] == 'normalization']
         for k in norm_tuple_keys:
-            target, ntype = k[1], self.config[k]
-            if ntype not in valid:
-                raise PybnfError(
-                    f"Invalid normalization type '{ntype}' for '{target}'",
-                    f"Invalid normalization type '{ntype}'. Options are: init, peak, zero, "
-                    "unit." + seedoc)
+            target = k[1]
+            chain = self._canonical_norm_chain(self.config[k], valid, f" for '{target}'", seedoc)
             if '.' in target:
                 exp_name, obs = target.split('.', 1)
-                per_exp_obs[(exp_name, obs)] = ntype
+                per_exp_obs[(exp_name, obs)] = chain
             else:
-                per_obs[target] = ntype
+                per_obs[target] = chain
         if norm_tuple_keys:
             edition.require_edition(
                 ed, 2, "per-observable normalization ('normalization <observable> = <type>')")
@@ -2829,29 +2859,67 @@ class Configuration:
                     "form 'normalization <observable> = <type>' (every experiment) or "
                     "'normalization <experiment>.<observable> = <type>' (one experiment)."
                     + seedoc)
-            self._postprocess_legacy_normalization_dict(valid, seedoc)
+            self._postprocess_legacy_normalization_dict(legacy_valid, seedoc)
             return
 
-        whole_fit = base if type(base) == str else None
-        if whole_fit is not None and whole_fit not in valid:
-            raise PybnfError(
-                f"Invalid normalization type '{whole_fit}'",
-                f"Invalid normalization type '{whole_fit}'. Options are: init, peak, zero, "
-                "unit." + seedoc)
+        whole_fit = (self._canonical_norm_chain(base, valid, "", seedoc)
+                     if isinstance(base, (str, list)) else None)
         if whole_fit is None and not norm_tuple_keys:
             return  # nothing declared (base is None and no per-observable rules)
 
-        self.config['normalization'] = self._resolve_normalization_grid(
+        result, analytic_scale, exp_ops = self._resolve_normalization_grid(
             whole_fit, per_obs, per_exp_obs, seedoc)
+        # {data_key: [(transform, [cols])]} of the SIM-side (peak/init/zero/unit/floor) transforms.
+        self.config['normalization'] = result or None
+        # {data_key: frozenset(cols)} the objective analytically scales at scoring time, or None.
+        if analytic_scale:
+            self.config['analytic_scale'] = analytic_scale
+        # Apply the SYMMETRIC transforms (floor) to the experimental data in place, once: a floor
+        # is only meaningful applied identically to sim and data (ADR-0066). The sim side is
+        # floored per-evaluation from result[data_key]; here the data is floored from its own max.
+        for m, dk, ops in exp_ops:
+            self.exp_data[m][dk].normalize(ops)
+
+    #: Normalization transforms applied *symmetrically* to sim and data (ADR-0066): a floor
+    #: (``x' = x + rho*max(x)``) is only meaningful applied identically to both. peak/init/
+    #: zero/unit remain sim-only (the data is pre-normalized by the user). ``scale`` is applied
+    #: to neither column directly -- it is profiled jointly from both at scoring time.
+    _SYMMETRIC_NORMALIZATIONS = frozenset({'floor'})
+
+    @staticmethod
+    def _canonical_norm_chain(value, valid, where, seedoc):
+        """Canonicalize a normalization value (a bare string or a chain list; parse.py, ADR-0066)
+        into a list of transforms, validating each transform name against ``valid``. Each
+        transform stays a bare string (argument-less) or a ``(name, arg)`` tuple (``floor``'s
+        rho). ``where`` is a context suffix for the error (`` for 'x'``)."""
+        chain = list(value) if isinstance(value, list) else [value]
+        for t in chain:
+            name = t[0] if isinstance(t, tuple) else t
+            if name not in valid:
+                raise PybnfError(
+                    f"Invalid normalization type '{name}'{where}",
+                    f"Invalid normalization type '{name}'. Options are: init, peak, zero, unit, "
+                    f"floor, scale." + seedoc)
+        return chain
 
     def _resolve_normalization_grid(self, whole_fit, per_obs, per_exp_obs, seedoc):
         """Resolve the per-(experiment, observable) normalization grid from the layered
-        new-era rules (ADR-0053): for each measured observable column of each experiment,
-        the most specific rule wins -- a per-(experiment, observable) override
-        (``<exp>.<obs>``), else a per-observable rule (``<obs>``), else the whole-fit
-        default (``normalization = <type>``). Compiles to the
-        ``{data_key: [(type, [columns])]}`` form that ``Result.normalize`` /
-        ``Data.normalize`` already consume, so nothing below the config layer changes.
+        new-era rules (ADR-0053; chains + scale ADR-0066): for each measured observable column
+        of each experiment, the most specific rule wins -- a per-(experiment, observable)
+        override (``<exp>.<obs>``), else a per-observable rule (``<obs>``), else the whole-fit
+        default (``normalization = <chain>``). Each rule is a *chain* of transforms.
+
+        Returns ``(result, analytic_scale, exp_ops)``:
+
+        * ``result`` -- ``{data_key: [(transform, [columns])]}`` of the SIM-side transforms
+          (peak/init/zero/unit/floor), applied in order, the form ``Result.normalize`` /
+          ``Data.normalize`` already consume (a ``transform`` is a bare string or a ``(name,
+          arg)`` tuple).
+        * ``analytic_scale`` -- ``{data_key: frozenset(columns)}`` the objective profiles a
+          per-series optimal ``scale`` for at scoring time (routed to the objective, not a
+          ``Data`` transform).
+        * ``exp_ops`` -- ``[(model, data_key, [(transform, [columns])])]`` of the SYMMETRIC
+          transforms (floor) the caller applies to the *experimental* data in place.
 
         Validates that every declared target matched a real measured observable (a typo
         otherwise), mirroring the new-era ``observable:`` override's unknown-header check.
@@ -2863,31 +2931,55 @@ class Configuration:
         known_exp_names = set(self._experiment_data_keys)
 
         matched_obs, matched_exp_obs, all_observables = set(), set(), set()
-        result = {}
+        result, analytic_scale, exp_ops = {}, {}, []
         for m in self.exp_data:
             for dk in self.exp_data[m]:
                 d = self.exp_data[m][dk]
                 cols = [c for c in d.cols if d.cols[c] != 0 and not c.endswith('_SD')]
                 all_observables.update(cols)
                 exp_name = dk_to_name.get((m, dk), dk)
-                groups, by_type = [], {}
+                # Resolve each column's chain (most specific rule wins), preserving column order.
+                chain_of_col = {}
                 for c in cols:
                     if (exp_name, c) in per_exp_obs:
-                        t = per_exp_obs[(exp_name, c)]
+                        chain_of_col[c] = per_exp_obs[(exp_name, c)]
                         matched_exp_obs.add((exp_name, c))
                     elif c in per_obs:
-                        t = per_obs[c]
+                        chain_of_col[c] = per_obs[c]
                         matched_obs.add(c)
                     elif whole_fit is not None:
-                        t = whole_fit
-                    else:
-                        continue  # column not covered by any rule -> not normalized
-                    if t not in by_type:
-                        by_type[t] = []
-                        groups.append((t, by_type[t]))
-                    by_type[t].append(c)
-                if groups:
-                    result[dk] = groups
+                        chain_of_col[c] = whole_fit
+                    # else: covered by no rule -> left un-normalized
+                # Group columns sharing an identical chain (in first-appearance order), then emit
+                # each group's transforms in chain order, splitting them by seam: peak/init/zero/
+                # unit/floor are Data-level SIM transforms (floor also lands on the data via
+                # exp_ops); scale is an analytic scoring-time transform routed to the objective.
+                by_chain, order = {}, []
+                for c in cols:
+                    if c not in chain_of_col:
+                        continue
+                    key = tuple(chain_of_col[c])
+                    if key not in by_chain:
+                        by_chain[key] = (chain_of_col[c], [])
+                        order.append(key)
+                    by_chain[key][1].append(c)
+                sim_groups, scale_cols, sym_ops = [], [], []
+                for key in order:
+                    chain, gcols = by_chain[key]
+                    for t in chain:
+                        name = t[0] if isinstance(t, tuple) else t
+                        if name == 'scale':
+                            scale_cols.extend(gcols)
+                        else:
+                            sim_groups.append((t, list(gcols)))
+                            if name in self._SYMMETRIC_NORMALIZATIONS:
+                                sym_ops.append((t, list(gcols)))
+                if sim_groups:
+                    result[dk] = sim_groups
+                if scale_cols:
+                    analytic_scale[dk] = frozenset(scale_cols)
+                if sym_ops:
+                    exp_ops.append((m, dk, sym_ops))
 
         # Typo guards: a declared observable / experiment.observable that matched nothing.
         unmatched_obs = sorted(set(per_obs) - matched_obs)
@@ -2909,7 +3001,7 @@ class Configuration:
                     f"'{exp_name}'",
                     f"normalization '{exp_name}.{obs}' names observable '{obs}', which experiment "
                     f"'{exp_name}' does not measure." + seedoc)
-        return result
+        return result, analytic_scale, exp_ops
 
     def _postprocess_legacy_normalization_dict(self, valid, seedoc):
         """Legacy per-FILE normalization (``normalization = <type>: <file.exp>``), keyed by

@@ -415,6 +415,14 @@ def _normalized_sensitivity(record, col_name, row, sim_data, tensor_sens):
     :class:`~pybnf.data.NormalizationRecord` for each method's closed form."""
     normed = sim_data.data[:, sim_data.cols[col_name]]
     s_i = tensor_sens(col_name, row)
+    if record.method == 'floor':
+        # x' = x + rho*max(x): additive, so ∂x'_i/∂θ = s_i + rho*s_argmax -- a simple rule, but
+        # the floor's gradient is deliberately DEFERRED (ADR-0066, #479); refuse rather than
+        # silently return the wrong (peak/init) quotient below. The fit falls back to a
+        # gradient-free step (ADR-0475).
+        raise GradientNotSupported(
+            "Floor normalization ('floor', #479) on column '%s' has a deferred gradient; use a "
+            "gradient-free step." % col_name)
     if record.method == 'zero':
         return _zscore_sensitivity(record, col_name, row, tensor_sens, normed, s_i)
     # peak / init / unit: a two-row (+ optional baseline) quotient rule.

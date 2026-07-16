@@ -52,6 +52,36 @@ class TestParse:
         assert parse.parse_normalization_def('init : (data1.exp: VAR_1, XXX)') == {'data1.exp': ('init', ['VAR_1', 'XXX'])}
         assert parse.parse_normalization_def('init : ( data1.exp: VAR_1, XXX ) , data2.exp') == {'data1.exp': ('init', ['VAR_1', 'XXX']), 'data2.exp': 'init'}
 
+    def test_normalization_chain_parse(self):
+        # ADR-0066 (#479): a single argument-less token stays a bare string (backward-compatible);
+        # a floor arg defaults to 0.03; a comma-separated chain is a list of transforms.
+        assert parse.parse_normalization_chain('peak') == 'peak'
+        assert parse.parse_normalization_chain('scale') == 'scale'
+        assert parse.parse_normalization_chain('floor') == [('floor', 0.03)]
+        assert parse.parse_normalization_chain('floor 0.05') == [('floor', 0.05)]
+        assert parse.parse_normalization_chain('floor 0.03, scale') == [('floor', 0.03), 'scale']
+        assert parse.parse_normalization_chain('floor 0.03, peak') == [('floor', 0.03), 'peak']
+        # A non-numeric floor argument is a clear error, not a silent mis-parse.
+        with pytest.raises(PybnfError):
+            parse.parse_normalization_chain('floor abc')
+
+    def test_normalization_whole_fit_chain(self):
+        # The whole-fit (no ':') form routes through the chain parser too.
+        assert parse.parse_normalization_def('floor 0.03, scale') == [('floor', 0.03), 'scale']
+        assert parse.parse_normalization_def('peak') == 'peak'
+
+    def test_normalization_obs_chain_ploop(self):
+        # Per-observable + whole-fit chains land under the right config keys.
+        d = parse.ploop(['normalization x = floor 0.03, scale\n'])
+        assert d[('normalization', 'x')] == [('floor', 0.03), 'scale']
+        d2 = parse.ploop(['normalization egf.y = floor\n'])
+        assert d2[('normalization', 'egf.y')] == [('floor', 0.03)]
+        d3 = parse.ploop(['normalization = floor 0.03, scale\n'])
+        assert d3['normalization'] == [('floor', 0.03), 'scale']
+        # The legacy single-token forms are byte-identical.
+        assert parse.ploop(['normalization x = peak\n'])[('normalization', 'x')] == 'peak'
+        assert parse.ploop(['normalization = peak\n'])['normalization'] == 'peak'
+
     def test_capital(self):
         assert parse.parse('Model = string.bngl: string.exp') == ['model', 'string.bngl', 'string.exp']
         assert parse.parse('Output_dir = string') == ['output_dir', 'string']

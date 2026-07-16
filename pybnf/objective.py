@@ -156,6 +156,19 @@ class ObjectiveFunction:
     #: unchanged.
     _cumulative_cols = frozenset()
 
+    #: Analytic per-series scaling (ADR-0066, #479): ``{data_key: frozenset(columns)}`` whose
+    #: optimal multiplicative scale the objective profiles out at scoring time (so an overall
+    #: model-vs-data scale difference on arbitrary-unit data is not penalized). Family-aware --
+    #: a log family uses the geometric-mean ratio, a linear one the least-squares optimum. The
+    #: empty default is an exact no-op. Populated from ``config['analytic_scale']`` at build.
+    _analytic_scale = {}
+
+    #: Per-``evaluate`` cache of the profiled scale factor per scored column, applied in
+    #: ``_prediction``. Reset at the top of every ``evaluate`` (and left empty while the factors
+    #: themselves are being profiled, so the profiling reads unscaled predictions); the empty
+    #: default means no column is scaled, so a job without ``scale`` is byte-identical.
+    _scale_factors = {}
+
     def evaluate_multiple(self, sim_data_dict, exp_data_dict, pset, constraints=(), show_warnings=True):
         """
         Compute the value of the objective function on several data sets, and return the total.
@@ -205,7 +218,7 @@ class ObjectiveFunction:
                         # Need to check for that here.
                         if suffix in exp_data_dict[model]:
                             val = self.evaluate(sim_data_dict[model][suffix], exp_data_dict[model][suffix],
-                                                show_warnings=show_warnings)
+                                                show_warnings=show_warnings, data_key=suffix)
                             if val is None:
                                 return None
                             total += val
@@ -214,7 +227,7 @@ class ObjectiveFunction:
 
                 return total
 
-    def evaluate(self, sim_data, exp_data, show_warnings=True):
+    def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         """
         :param sim_data: A Data object containing simulated data
         :type sim_data: Data
@@ -223,6 +236,8 @@ class ObjectiveFunction:
         :return: float, value of the objective function, with a lower value indicating a better fit.
         :param show_warnings: If True, print warnings about unused data
         :type show_warnings: bool
+        :param data_key: the (model, suffix) data key of this experiment, used to resolve
+            per-series analytic scaling (ADR-0066); None disables scaling (the default).
         """
         raise NotImplementedError("Subclasses must override evaluate()")
 
@@ -335,7 +350,7 @@ class SummationObjective(ObjectiveFunction):
     def from_config(cls, config):
         return cls(config['ind_var_rounding'])
 
-    def evaluate(self, sim_data, exp_data, show_warnings=True):
+    def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         """
         :param sim_data: A Data object containing simulated data
         :type sim_data: Data
@@ -343,6 +358,8 @@ class SummationObjective(ObjectiveFunction):
         :type exp_data: Data
         :param show_warnings: If True, print warnings about unused data
         :type show_warnings: bool
+        :param data_key: the (model, suffix) data key, used to resolve per-series analytic
+            scaling (ADR-0066); None disables scaling.
         :return: float, value of the objective function, with a lower value indicating a better fit.
         """
 
@@ -363,6 +380,12 @@ class SummationObjective(ObjectiveFunction):
             compare_cols.remove(indvar)
         except KeyError:
             raise PybnfError(f'The independent variable "{indvar}" in your exp file was not found in the simulation data.')
+
+        # Analytic per-series scaling (ADR-0066): profile out each declared column's optimal
+        # multiplicative scale from the matched (sim, data) points, then apply it in _prediction.
+        # Computed before the scoring loop (and with _scale_factors empty, so the profiling reads
+        # unscaled predictions); an empty result -> byte-identical to an unscaled fit.
+        self._scale_factors = self._analytic_scale_factors(sim_data, exp_data, indvar, compare_cols, data_key)
 
         func_value = 0.0
         # Iterate through rows of experimental data
@@ -439,16 +462,73 @@ class SummationObjective(ObjectiveFunction):
         job is byte-identical. Hoisted to ``SummationObjective`` (from ``LikelihoodObjective``)
         so every per-point objfunc -- the least-squares family too -- routes its prediction
         through one seam (#428 Phase 2b), which is what makes the cumulative transform
-        family-independent (#418)."""
+        family-independent (#418).
+
+        A per-series analytic scale (ADR-0066, #479) multiplies whatever this seam produces: the
+        factor is ``1.0`` for every unscaled column (so a plain job is byte-identical) and the
+        profiled ``c*`` for a column declared ``scale`` (computed in :meth:`_analytic_scale_factors`
+        before the scoring loop)."""
+        scale = self._scale_factors.get(col_name, 1.0)
         model = self._per_measurement_models.get(col_name)
         if model is not None:
-            return model.value(sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values)
+            return scale * model.value(sim_data, sim_row, exp_data, exp_row, col_name, self._pset_values)
         if sim_row != 0 and self._is_cumulative(col_name):
             # A cumulative count's effective prediction is the per-interval increment;
             # row 0 has no predecessor and keeps its raw value (ADR-0051).
             col = sim_data.cols[col_name]
-            return sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col]
-        return sim_data.data[sim_row, sim_data.cols[col_name]]
+            return scale * (sim_data.data[sim_row, col] - sim_data.data[sim_row - 1, col])
+        return scale * sim_data.data[sim_row, sim_data.cols[col_name]]
+
+    def _scale_mode(self, col_name):
+        """Whether analytic per-series scaling for one column is profiled in ``'linear'`` or
+        ``'log'`` space (ADR-0066, #479). The base least-squares / distance family scales
+        linearly (``c* = sum(w s d)/sum(w s^2)``); :class:`LikelihoodObjective` overrides this to
+        use the geometric-mean ratio for a log-additive noise family (lognormal)."""
+        return 'linear'
+
+    def _analytic_scale_factors(self, sim_data, exp_data, indvar, compare_cols, data_key):
+        """Profile out each ``scale``-declared column's optimal multiplicative scale from the
+        matched (sim, data) points (ADR-0066, #479), so an overall model-vs-data scale difference
+        on arbitrary-unit data is not penalized. Family-appropriate: a *log* family uses the
+        geometric-mean ratio ``exp(mean_w(ln d - ln s))`` (= dividing each series by its geomean,
+        the paper's case), a *linear* one the least-squares optimum ``sum(w s d)/sum(w s^2)``
+        (Weber 2011 / hierarchical optimization). ``w`` is the point's fit weight.
+
+        Returns ``{col: c*}`` -- empty when no column of this experiment is scaled, so scoring is
+        byte-identical to an unscaled fit. Reads *unscaled* predictions (it empties
+        ``_scale_factors`` first), skipping any point with a NaN/inf prediction, a NaN observation,
+        or -- in log space -- a non-positive prediction/observation."""
+        scaled = self._analytic_scale.get(data_key) if data_key is not None else None
+        if not scaled:
+            return {}
+        self._scale_factors = {}   # profile against unscaled predictions
+        factors = {}
+        for col_name in compare_cols:
+            if col_name not in scaled:
+                continue
+            col = exp_data.cols[col_name]
+            log_mode = self._scale_mode(col_name) == 'log'
+            num = den = 0.0
+            for rownum in range(exp_data.data.shape[0]):
+                d = exp_data.data[rownum, col]
+                if np.isnan(d):
+                    continue
+                sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
+                s = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
+                if np.isnan(s) or np.isinf(s):
+                    continue
+                w = exp_data.weights[rownum, col]
+                if log_mode:
+                    if s <= 0.0 or d <= 0.0:
+                        continue
+                    num += w * (np.log(d) - np.log(s))
+                    den += w
+                else:
+                    num += w * s * d
+                    den += w * s * s
+            if den > 0.0:
+                factors[col_name] = float(np.exp(num / den)) if log_mode else float(num / den)
+        return factors
 
     def _is_cumulative(self, col_name):
         """Whether this column's prediction is a cumulative count to be differenced to its
@@ -483,7 +563,19 @@ class SummationObjective(ObjectiveFunction):
 
         A per-measurement model takes priority and the two are mutually exclusive, exactly as in
         :meth:`_prediction`; both default off, so a plain job returns the raw observable's
-        sensitivity unchanged."""
+        sensitivity unchanged.
+
+        Analytic per-series scaling (ADR-0066, #479) has a *deliberately deferred* gradient: its
+        profiled ``c*`` depends on θ through the whole series (an implicit-function derivative not
+        yet implemented), so a scaled column raises :class:`GradientNotSupported` here and the fit
+        falls back to a gradient-free step (ADR-0475). The much simpler floor gradient is deferred
+        the same way in :mod:`pybnf.gradient.assembly`."""
+        if col_name in self._scaled_columns:
+            from .gradient.errors import GradientNotSupported
+            raise GradientNotSupported(
+                "Analytic per-series scaling ('scale', #479) on column '%s' is not differentiable "
+                "on the gradient path (its optimal scale depends on theta through the whole "
+                "series); use a gradient-free step." % col_name)
         model = self._per_measurement_models.get(col_name)
         if model is not None:
             return model.prediction_sensitivity(
@@ -491,6 +583,12 @@ class SummationObjective(ObjectiveFunction):
         if sim_row != 0 and self._is_cumulative(col_name):
             return raw_sens(col_name, sim_row) - raw_sens(col_name, sim_row - 1)
         return raw_sens(col_name, sim_row)
+
+    @property
+    def _scaled_columns(self):
+        """The flat set of all columns any experiment analytically scales (ADR-0066), for the
+        gradient guard (which sees no data_key). Empty -> byte-identical, no guard fires."""
+        return frozenset().union(*self._analytic_scale.values()) if self._analytic_scale else frozenset()
 
     def _check_columns(self, exp_cols, compare_cols):
         """
@@ -520,7 +618,7 @@ class ColumnSummationObjective(ObjectiveFunction):
     def from_config(cls, config):
         return cls(config['ind_var_rounding'])
 
-    def evaluate(self, sim_data, exp_data, show_warnings=True):
+    def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         """
         :param sim_data: A Data object containing simulated data
         :type sim_data: Data
@@ -528,6 +626,7 @@ class ColumnSummationObjective(ObjectiveFunction):
         :type exp_data: Data
         :param show_warnings: If True, print warnings about unused data
         :type show_warnings: bool
+        :param data_key: unused (analytic scaling is refused for a column-joint objective).
         :return: float, value of the objective function, with a lower value indicating a better fit.
         """
 
@@ -819,6 +918,15 @@ class LikelihoodObjective(SummationObjective):
         if any, else the class default (ADR-0058)."""
         return self.overrides.get(col_name, (self.noise, self._default_sources()))
 
+    def _scale_mode(self, col_name):
+        """The analytic-scaling space for one column follows its noise family's additive scale
+        (ADR-0066, #479): a *log*-additive family (lognormal -- residual on log10/ln) profiles the
+        scale by the geometric-mean ratio, a *linear* one by least squares. Detected from the
+        scale's ``ln_base`` (0 for LINEAR, nonzero for LOG10/LN), so a per-observable ``lognormal``
+        noise override scales in log space even when the whole-fit family is linear."""
+        family, _sources = self._spec_for(col_name)
+        return 'log' if family.additive_on.ln_base != 0.0 else 'linear'
+
     @staticmethod
     def _noise_values(family, sources, owner, exp_data, exp_row, col_name):
         """Source every noise parameter for one point and split it into the family's
@@ -863,10 +971,11 @@ class LikelihoodObjective(SummationObjective):
                     if suffix in exp_data_dict[model]:
                         self._pointwise_suffix(sim_data_dict[model][suffix],
                                                exp_data_dict[model][suffix],
-                                               '%s/%s' % (model, suffix), ids, values)
+                                               '%s/%s' % (model, suffix), ids, values,
+                                               data_key=suffix)
         return ids, np.array(values, dtype=float)
 
-    def _pointwise_suffix(self, sim_data, exp_data, prefix, ids, values):
+    def _pointwise_suffix(self, sim_data, exp_data, prefix, ids, values, data_key=None):
         """Append ``(id, log_density)`` for every scored point of one model/suffix to
         ``ids``/``values`` -- the pointwise twin of ``SummationObjective.evaluate``'s
         loop. Same row-matching (``_sim_row_for``), same prediction seam
@@ -878,6 +987,9 @@ class LikelihoodObjective(SummationObjective):
         comparable = set(sim_data.cols) | set(self._per_measurement_models)
         compare_cols = set(exp_data.cols).intersection(comparable)
         compare_cols.discard(indvar)
+        # The pointwise density scores the *scaled* prediction, exactly as evaluate does
+        # (ADR-0066), so LOO/WAIC see the same fit; an unscaled fit leaves this empty.
+        self._scale_factors = self._analytic_scale_factors(sim_data, exp_data, indvar, compare_cols, data_key)
         for rownum in range(exp_data.data.shape[0]):
             sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
             indvar_val = exp_data.data[rownum, exp_data.cols[indvar]]
@@ -1251,10 +1363,10 @@ class AveNormSumOfSquaresObjective(SummationObjective):
     ((y-y')/ybar)^2
     """
 
-    def evaluate(self, sim_data, exp_data, show_warnings=True):
+    def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         # Precalculate the average of each exp column to use for all points in this call.
         self.aves = {name: np.average(exp_data[name]) for name in exp_data.cols}
-        return super().evaluate(sim_data, exp_data, show_warnings)
+        return super().evaluate(sim_data, exp_data, show_warnings, data_key=data_key)
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         sim_val = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
@@ -1380,7 +1492,7 @@ class ConstraintCounter(ObjectiveFunction):
             total += cset.number_failed(sim_data_dict)
         return total
 
-    def evaluate(self, sim_data, exp_data, show_warnings=True):
+    def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         raise NotImplementedError("ConstraintCounter does not implement evaluate()")
 
 
@@ -1394,7 +1506,7 @@ class DirectPassObjective(ObjectiveFunction):
     there is nothing to compare against (ADR-0031/0059).
     """
 
-    def evaluate(self, sim_data, exp_data, show_warnings=True):
+    def evaluate(self, sim_data, exp_data, show_warnings=True, data_key=None):
         if 'score' not in sim_data.cols:
             raise PybnfError("DirectPassObjective requires simulated data to have a 'score' column")
         return float(sim_data.data[0, sim_data.cols['score']])

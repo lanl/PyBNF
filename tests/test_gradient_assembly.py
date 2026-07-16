@@ -725,6 +725,37 @@ def test_normalization_chain_rule_matches_finite_difference(method):
     np.testing.assert_allclose(res.jacobian[:, 0], fd / sigma, rtol=1e-5, atol=1e-7)
 
 
+def test_floor_normalization_gradient_is_deferred():
+    """Floor normalization (ADR-0066, #479) has a DEFERRED gradient: a ``method='floor'`` record
+    must raise ``GradientNotSupported`` rather than be silently threaded through the peak/init
+    quotient rule (a wrong sensitivity). The fit then falls back to a gradient-free step."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    sim = _sim_with_sensitivities(raw.copy(), d_param=np.array([0.5, -2.0, 1.3, -0.7]))
+    sim.normalize(('floor', 0.03))             # records method='floor'
+    assert sim.normalization['Stot'].method == 'floor'
+    exp = _exp(np.zeros(4), 1.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    with pytest.raises(GradientNotSupported, match='[Ff]loor'):
+        assemble_gaussian_gradient(ChiSquareObjective(), [(sim, exp, routing)], free)
+
+
+def test_analytic_scale_gradient_is_deferred():
+    """Analytic per-series scaling (ADR-0066, #479) has a deferred gradient too: a scaled column
+    raises ``GradientNotSupported`` in ``prediction_sensitivity`` (its optimal scale depends on θ
+    through the whole series -- an implicit-function derivative not yet implemented)."""
+    raw = np.array([2.0, 9.0, 5.0, 3.0])
+    sim = _sim_with_sensitivities(raw.copy(), d_param=np.array([0.5, -2.0, 1.3, -0.7]))
+    exp = _exp(np.zeros(4), 1.0)
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    obj = ChiSquareObjective()
+    obj._analytic_scale = {'expt': frozenset({'Stot'})}
+    assert obj._scaled_columns == frozenset({'Stot'})
+    with pytest.raises(GradientNotSupported, match='scal'):
+        assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+
+
 def test_capability_gate_now_accepts_trajectory_transforms():
     """Layer F (#453): a cumulative observable and a per-measurement observable -- the two
     ``_prediction`` transforms once refused by the gate -- now assemble a residual/Jacobian like

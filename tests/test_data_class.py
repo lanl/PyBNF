@@ -197,6 +197,38 @@ class TestData:
         npt.assert_allclose(d1b.data, np.array(
             [[0., 3. / 4., 4., 5. / 10.], [1., 2. / 4., 3., 6. / 10.], [2., 4. / 4., 2., 10. / 10.]]))
 
+    def test_floor_normalization(self):
+        # x' = x + rho*max(x) per column (rho = 0.1); the independent variable is untouched.
+        # d1 columns: obs1 max 4 (+0.4), obs2 max 4 (+0.4), obs3 max 10 (+1.0).
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_floor(0.1)
+        npt.assert_allclose(d1.data, np.array(
+            [[0., 3.4, 4.4, 6.], [1., 2.4, 3.4, 7.], [2., 4.4, 2.4, 11.]]))
+        # A subset of columns; the others keep their raw values.
+        d1b = copy.deepcopy(self.d1)
+        d1b.normalize_to_floor(0.1, cols=[1])
+        npt.assert_allclose(d1b.data, np.array(
+            [[0., 3.4, 4., 5.], [1., 2.4, 3., 6.], [2., 4.4, 2., 10.]]))
+
+    def test_floor_records_rho_and_argmax(self):
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize_to_floor(0.03, cols=[1])
+        rec = d1.normalization['obs1']
+        assert rec.method == 'floor'
+        assert rec.rho == 0.03
+        assert rec.scale == 4.0            # the column max
+        assert rec.ref_row == 2            # argmax (obs1 peaks at row 2)
+
+    def test_normalize_dispatches_floor_tuple_and_chains(self):
+        # Data.normalize accepts a (name, arg) transform, bare or in an ordered chain.
+        d1 = copy.deepcopy(self.d1)
+        d1.normalize(('floor', 0.1))
+        npt.assert_allclose(d1.data[:, 1], np.array([3.4, 2.4, 4.4]))
+        # Chain floor(0.1) then peak on obs1: floor -> [3.4,2.4,4.4] (max 4.4), then /4.4.
+        d1c = copy.deepcopy(self.d1)
+        d1c.normalize([(('floor', 0.1), [1]), ('peak', [1])])
+        npt.assert_allclose(d1c.data[:, 1], np.array([3.4, 2.4, 4.4]) / 4.4)
+
     def test_zero_normalization(self):
         d0 = copy.deepcopy(self.d0)
         d0.normalize_to_zero()
