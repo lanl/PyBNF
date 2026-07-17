@@ -425,9 +425,12 @@ class Data:
                 column = self.data[:, c]
                 # Record N = peak and its row before the in-place divide overwrites them
                 # (#453): the gradient threads d(raw/N)/d theta. Additive, value-preserving.
+                # nan-aware (#479 follow-up): a sparse multi-observable column carries NaN in the
+                # rows where this observable is unmeasured; np.max would poison the whole column,
+                # so peak/argmax skip the NaNs and normalize only the real points.
                 self._record_normalization(c, NormalizationRecord(
-                    'peak', float(np.max(column)), ref_row=int(np.argmax(column))))
-                self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
+                    'peak', float(np.nanmax(column)), ref_row=int(np.nanargmax(column))))
+                self.data[:, c] = self.data[:, c] / np.nanmax(self.data[:, c])
 
     def normalize_to_init(self, idx=0, cols='all'):
         """
@@ -506,21 +509,23 @@ class Data:
             cols.remove(idx)
         self._subtract_baseline(idx, cols)
         for c in cols:
-            cmax = np.max(self.data[:, c])
+            # nan-aware (#479 follow-up): skip NaN rows (a sparse column's unmeasured points) so a
+            # multi-observable target is not poisoned by np.max/np.min seeing a NaN.
+            cmax = np.nanmax(self.data[:, c])
             if cmax == 0.0:
                 # Degenerate branch: the baseline-subtracted column tops out at 0, so it is
                 # scaled by |min| instead. The divisor N = |min| depends on raw, so its row's
                 # sensitivity enters with a flipped sign (#453); the baseline is still row 0.
                 self._record_normalization(c, NormalizationRecord(
-                    'unit', float(np.abs(np.min(self.data[:, c]))),
-                    ref_row=int(np.argmin(self.data[:, c])), baseline_row=0, sign=-1.0))
-                self.data[:, c] = self.data[:, c] / np.abs(np.min(self.data[:, c]))
+                    'unit', float(np.abs(np.nanmin(self.data[:, c]))),
+                    ref_row=int(np.nanargmin(self.data[:, c])), baseline_row=0, sign=-1.0))
+                self.data[:, c] = self.data[:, c] / np.abs(np.nanmin(self.data[:, c]))
             else:
                 # N = the max-after-baseline; ref_row is its argmax, baseline is row 0 (#453).
                 self._record_normalization(c, NormalizationRecord(
-                    'unit', float(cmax), ref_row=int(np.argmax(self.data[:, c])),
+                    'unit', float(cmax), ref_row=int(np.nanargmax(self.data[:, c])),
                     baseline_row=0, sign=1.0))
-                self.data[:, c] = self.data[:, c] / np.max(self.data[:, c])
+                self.data[:, c] = self.data[:, c] / np.nanmax(self.data[:, c])
 
     def normalize_to_floor(self, rho, idx=0, cols='all'):
         """Add a measurement-noise **floor** ``x' = x + rho*max(x)`` to each column (ADR-0066,
@@ -545,11 +550,17 @@ class Data:
             cols.remove(idx)
         for c in cols:
             column = self.data[:, c]
-            cmax = float(np.max(column))
+            # nan-aware (#479 follow-up): the floor is the ADR-0066 primitive applied *to the
+            # experimental data* too, and a sparse multi-observable target carries NaN in the rows
+            # where this observable is unmeasured. A plain np.max would return NaN and poison the
+            # whole column (every point -> NaN -> silently skipped in scoring -> objective 0.0),
+            # so take the max/argmax over the measured (non-NaN) points only. On a dense column
+            # (no NaN) nanmax == max, so this is byte-identical for the common case.
+            cmax = float(np.nanmax(column))
             # Record the added amount (rho) and the max its argmax row before the offset -- the
             # gradient's ∂(x + rho*max)/∂θ = s_i + rho*s_argmax reads them (deferred, #479).
             self._record_normalization(c, NormalizationRecord(
-                'floor', cmax, ref_row=int(np.argmax(column)), rho=float(rho)))
+                'floor', cmax, ref_row=int(np.nanargmax(column)), rho=float(rho)))
             self.data[:, c] = column + rho * cmax
 
     @staticmethod

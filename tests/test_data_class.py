@@ -229,6 +229,40 @@ class TestData:
         d1c.normalize([(('floor', 0.1), [1]), ('peak', [1])])
         npt.assert_allclose(d1c.data[:, 1], np.array([3.4, 2.4, 4.4]) / 4.4)
 
+    def test_floor_peak_unit_are_nan_aware_on_sparse_columns(self):
+        # #479 follow-up: a sparse multi-observable target carries NaN in the rows where an
+        # observable is unmeasured (each observable has its own measurement times). The floor
+        # (ADR-0066) is applied to the experimental data too, so a plain np.max there returns NaN
+        # and poisons the whole column -> every point NaN -> silently dropped in scoring ->
+        # objective 0.0 for every pset. floor/peak/unit must skip the NaNs and use the measured
+        # points' max only. Column obs1 = [3, NaN, 4]: nanmax = 4 at row 2.
+        sparse = np.array([[0., 3., 4., 5.],
+                           [1., np.nan, 3., 6.],
+                           [2., 4., np.nan, 10.]])
+
+        def mk():
+            d = data.Data()
+            d.data = sparse.copy()
+            d.headers = {0: 'x', 1: 'obs1', 2: 'obs2', 3: 'obs3'}
+            return d
+
+        # floor 0.1 on the sparse obs1: measured points floored by 0.1*nanmax(=4); NaN row stays NaN.
+        df = mk(); df.normalize_to_floor(0.1, cols=[1])
+        npt.assert_allclose(df.data[[0, 2], 1], np.array([3.4, 4.4]))
+        assert np.isnan(df.data[1, 1])
+        assert df.normalization['obs1'].scale == 4.0 and df.normalization['obs1'].ref_row == 2
+
+        # peak on the sparse obs1: /nanmax(=4); NaN row stays NaN.
+        dp = mk(); dp.normalize_to_peak(cols=[1])
+        npt.assert_allclose(dp.data[[0, 2], 1], np.array([3. / 4., 1.0]))
+        assert np.isnan(dp.data[1, 1])
+
+        # unit-scale on the sparse obs1: baseline row 0 (=3), then /nanmax-after-baseline(=1); NaN
+        # row stays NaN. obs1-3 = [0, NaN, 1] -> /1 -> [0, NaN, 1].
+        du = mk(); du.normalize_to_unit_scale(cols=[1])
+        npt.assert_allclose(du.data[[0, 2], 1], np.array([0.0, 1.0]))
+        assert np.isnan(du.data[1, 1])
+
     def test_zero_normalization(self):
         d0 = copy.deepcopy(self.d0)
         d0.normalize_to_zero()
