@@ -274,6 +274,20 @@ class ObjectiveFunction:
         overrides it (and flips ``supports_pointwise_log_likelihood``)."""
         return None
 
+    def aligned_prediction_data(self, sim_data_dict, exp_data_dict, pset):
+        """The aligned ``(prediction, observation, variance)`` vectors for one parameter
+        set -- the raw per-point model output ``f(theta)``, the matching observed data
+        ``d``, and the Gaussian measurement variance ``sigma**2`` -- or ``None`` when the
+        objective is not a per-point Gaussian likelihood (ADR-0067 Stage 3, DREAM(KZS)).
+
+        This is the seam the Kalman-inspired proposal reads: it needs the model *output
+        vector* (not the scalar score) to build the parameter/output cross-covariance, plus
+        the observed data and the measurement covariance ``R = diag(variance)`` for the
+        Kalman gain. The base is a no-op (a least-squares / distance / pass-through
+        objective has no residual/output vector, and a non-Gaussian likelihood has no
+        variance ``R``); ``LikelihoodObjective`` overrides it for the Gaussian family."""
+        return None
+
     def residual_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         """The standardized residual ``rho`` and its derivative ``d rho/d prediction``
         for one scored point -- the per-point seam the gradient path differentiates
@@ -1022,6 +1036,65 @@ class LikelihoodObjective(SummationObjective):
                 primary, extra = self._noise_values(family, sources, self, exp_data, rownum, col_name)
                 values.append(family.log_density(prediction, observation, primary, extra))
                 ids.append('%s/%s@%s=%g' % (prefix, col_name, indvar, indvar_val))
+
+    def aligned_prediction_data(self, sim_data_dict, exp_data_dict, pset):
+        """Aligned ``(prediction, observation, variance)`` for the Kalman proposal
+        (ADR-0067 Stage 3; overrides :meth:`ObjectiveFunction.aligned_prediction_data`).
+
+        Walks the same scored points as :meth:`evaluate_pointwise` in the same
+        deterministic order (``_pointwise_suffix``'s model -> suffix -> row ->
+        ``sorted(compare_cols)`` walk, skipping only NaN observations), so ``prediction``
+        (the model output ``f(theta)``), ``observation`` (the data ``d``), and
+        ``variance`` (the Gaussian ``sigma**2``, the ``R`` diagonal) are index-aligned and
+        stable across draws. Returns three ``np.ndarray`` s, or ``None`` unless **every**
+        scored point is an ordinary additive-error **Gaussian** observable (linear scale):
+        the Kalman gain's ``R = diag(variance)`` is the Gaussian measurement covariance, so
+        a log-scale (lognormal) or non-Gaussian (Laplace / Student-t / count) family has no
+        ``R`` to form and the proposal is unsupported for that objective."""
+        self._pset_values = {p.name: p.value for p in pset}
+        preds, obs, var = [], [], []
+        with np.errstate(all='ignore'):
+            if self.measurement:
+                self.measurement.apply(sim_data_dict, self._pset_values)
+            for model in sim_data_dict:
+                for suffix in sim_data_dict[model]:
+                    if suffix in exp_data_dict[model]:
+                        if not self._aligned_prediction_suffix(
+                                sim_data_dict[model][suffix], exp_data_dict[model][suffix],
+                                preds, obs, var, data_key=suffix):
+                            return None
+        if not preds:
+            return None
+        return np.array(preds, dtype=float), np.array(obs, dtype=float), np.array(var, dtype=float)
+
+    def _aligned_prediction_suffix(self, sim_data, exp_data, preds, obs, var, data_key=None):
+        """Append aligned ``(prediction, observation, sigma**2)`` for every scored point of
+        one model/suffix -- the Kalman twin of :meth:`_pointwise_suffix`, same row-matching
+        and scaling seams. Returns ``False`` (and stops) if any scored observable is not a
+        linear-scale Gaussian, for which ``sigma**2`` is the measurement variance ``R``."""
+        indvar = min(exp_data.cols, key=exp_data.cols.get)
+        comparable = set(sim_data.cols) | set(self._per_measurement_models)
+        compare_cols = set(exp_data.cols).intersection(comparable)
+        compare_cols.discard(indvar)
+        self._scale_factors = self._analytic_scale_factors(sim_data, exp_data, indvar, compare_cols, data_key)
+        for rownum in range(exp_data.data.shape[0]):
+            sim_row = self._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
+            for col_name in sorted(compare_cols):
+                observation = exp_data.data[rownum, exp_data.cols[col_name]]
+                if np.isnan(observation):
+                    continue
+                family, sources = self._spec_for(col_name)
+                # Kalman's R = diag(sigma**2) is the Gaussian measurement covariance, so
+                # only an ordinary additive-error Gaussian (linear scale) has a well-defined
+                # variance here; a log-scale or non-Gaussian family has no such R.
+                if not (isinstance(family, Gaussian) and family.additive_on.ln_base == 0.0):
+                    return False
+                prediction = self._prediction(sim_data, sim_row, col_name, exp_data, rownum)
+                primary, _extra = self._noise_values(family, sources, self, exp_data, rownum, col_name)
+                preds.append(prediction)
+                obs.append(observation)
+                var.append(primary ** 2)
+        return True
 
     def eval_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
         family, sources = self._spec_for(col_name)

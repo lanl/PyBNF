@@ -113,6 +113,20 @@ class DreamAlgorithm(BayesianAlgorithm):
         self.archive_thin_rate = config.config['archive_thin_rate']
         self.archive = []  # list of PSet objects
 
+        # Output-augmented archive (ADR-0067 Stage 3, axis 2b -- "implied"). When a
+        # proposal declares it needs model outputs (the 'kalman' proposal; see
+        # _archive_stores_outputs, set after the proposal is resolved below), each
+        # archive entry also carries the model's output vector f(Z), stored in
+        # archive_outputs in lockstep with archive. The accepted state's output is
+        # cached per chain at accept time (current_output_vec, mirroring
+        # current_pointwise_loglik) and appended at archive growth. Both stay dormant
+        # for the 'de'/'whitened' proposals (the gate is False), so a plain run stores
+        # only PSets exactly as before -- carrying output vectors for a proposal that
+        # never reads them would spend memory/bandwidth for nothing.
+        self.archive_outputs = []                        # f(Z) per archive entry (or None)
+        self.current_output_vec = [None] * self.num_parallel  # accepted f(x) per chain
+        self._archive_stores_outputs = False             # set True for 'kalman' below
+
         # Snooker update
         self.snooker_prob = config.config['snooker_prob']
         self.gen_log_snooker_correction = [0.0] * self.num_parallel
@@ -171,6 +185,11 @@ class DreamAlgorithm(BayesianAlgorithm):
         first_psets = super().start_run(setup_samples)
         # Initialize the ZS archive with m0 random draws from the prior
         self.archive = [self.random_pset() for _ in range(self.archive_m0)]
+        # The initial archive is random prior draws with no evaluated model output, so
+        # their output slots are None (ADR-0067 Stage 3). Kept index-aligned with archive;
+        # the output-augmented proposals (kalman) draw their ensemble only from entries
+        # whose output is not None (the grown, accepted states).
+        self.archive_outputs = [None] * self.archive_m0
         logger.info('Initialized ZS archive with %d entries (d=%d)' % (self.archive_m0, self.n_dim))
         return first_psets
 
@@ -191,6 +210,33 @@ class DreamAlgorithm(BayesianAlgorithm):
             return self._pset_from_u(xp_vec, reflect=False)
         except OutOfBoundsException:
             return None
+
+    def record_accepted_output(self, res, index):
+        """Cache the just-accepted state's model output vector f(x) for chain ``index``
+        (ADR-0067 Stage 3), mirroring :meth:`record_pointwise_loglik`: computed here,
+        where the accepted pset's simulation data is in hand, and consumed later at
+        archive growth (:meth:`_advance_generation`) and by the Kalman proposal.
+
+        A no-op unless the proposal declared it needs archived outputs
+        (``_archive_stores_outputs``; the 'kalman' proposal). Reads the simdata through
+        :meth:`_result_simdata` so it works whether the objective was scored worker-side
+        or master-side (lanl/PyBNF#480), and extracts the aligned output vector via the
+        objective's :meth:`~pybnf.objective.ObjectiveFunction.aligned_prediction_data`
+        seam. Any failure is logged, never fatal -- the proposal falls back to ``de``
+        when a chain lacks a cached output."""
+        if not self._archive_stores_outputs:
+            return
+        try:
+            aligned = self.objective.aligned_prediction_data(
+                self._result_simdata(res), self.exp_data, res.pset)
+        except Exception:
+            logger.debug('Could not extract model output vector for chain %d',
+                         index, exc_info=True)
+            return
+        if aligned is None:
+            return
+        prediction, _observation, _variance = aligned
+        self.current_output_vec[index] = prediction
 
     def _snooker_propose(self, idx, x0_vec):
         """Core snooker geometry (ter Braak & Vrugt, 2008), proposing a jump
@@ -371,6 +417,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.acceptances[index] += 1
             self.evaluate_constraints(self._result_simdata(res), index)
             self.record_pointwise_loglik(res, index)
+            self.record_accepted_output(res, index)
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))
@@ -488,6 +535,12 @@ class DreamAlgorithm(BayesianAlgorithm):
         if self.iteration[index] % self.archive_thin_rate == 0:
             for i in range(self.num_parallel):
                 self.archive.append(copy.deepcopy(self.current_pset[i]))
+                # Output-augmented archive (ADR-0067 Stage 3): append the accepted
+                # state's cached output vector in lockstep, so archive_outputs stays
+                # index-aligned with archive. Dormant (no-op storage of None slots) for
+                # the 'de'/'whitened' proposals that never read outputs.
+                if self._archive_stores_outputs:
+                    self.archive_outputs.append(self.current_output_vec[i])
             logger.debug('Archive grown to %d entries at iteration %d'
                         % (len(self.archive), self.iteration[index]))
 
@@ -589,6 +642,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.acceptances[index] += 1
             self.evaluate_constraints(self._result_simdata(res), index)
             self.record_pointwise_loglik(res, index)
+            self.record_accepted_output(res, index)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))
         self.ln_posterior_history[index].append(self.ln_current_P[index])
         self.wait_for_sync[index] = True
@@ -693,6 +747,7 @@ class DreamAlgorithm(BayesianAlgorithm):
             self.acceptances[index] += 1
             self.evaluate_constraints(self._result_simdata(sel['res']), index)
             self.record_pointwise_loglik(sel['res'], index)
+            self.record_accepted_output(sel['res'], index)
 
         # Store chain history (after accept/reject, so it reflects the kept state)
         self.chain_history[index].append(self._param_vec(self.current_pset[index]))
