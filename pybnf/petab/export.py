@@ -1445,17 +1445,55 @@ def _read_model(model_file, path, language):
 # Emitting the PEtab-clean model and problem.yaml
 # ---------------------------------------------------------------------------
 
+# The ``begin actions`` ... ``end actions`` block, capturing its inner body. PEtab drives
+# simulation from the measurement times / experiments, so the *simulation* actions are
+# dropped -- but ``generate_network`` is a network-definition / compilation directive, not a
+# simulation action, and it carries the finiteness cap (``max_stoich`` / ``max_agg`` /
+# ``max_iter``) that keeps a rule-based network finite (#485). See _strip_simulation_actions.
+_ACTIONS_BLOCK = re.compile(
+    r'^[ \t]*begin\s+actions\b[^\n]*\n(?P<body>.*?)^[ \t]*end\s+actions\b[^\n]*\n?',
+    flags=re.S | re.I | re.M)
+# A ``generate_network`` action line (the directive we keep). Anchored past leading indent so
+# a commented-out ``# generate_network(...)`` line does not match (it is documentation, not a
+# live directive), consistent with pset.py's ``BNGLModel`` scanner (#473).
+_GENERATE_NETWORK_LINE = re.compile(r'^[ \t]*generate_network\b', flags=re.I)
+
+
+def _strip_simulation_actions(match):
+    """Rewrite one matched ``begin actions`` block, keeping only its network-definition
+    directives (``generate_network``, which carries the model's finiteness cap -- #485) and
+    dropping the simulation actions (``simulate*`` / ``parameter_scan`` / ``bifurcate`` / ...).
+
+    Returns the empty string when nothing survives, so a simulation-only block disappears
+    exactly as the whole-block strip did before. A kept line is emitted verbatim (its cap
+    args intact) inside a minimal, column-0 ``begin actions`` / ``end actions`` wrapper.
+    """
+    kept = [line for line in match.group('body').splitlines()
+            if _GENERATE_NETWORK_LINE.match(line)]
+    if not kept:
+        return ''
+    return 'begin actions\n' + '\n'.join(kept) + '\nend actions\n'
+
+
 def clean_model_for_petab(text):
-    """Return a PEtab-clean copy of a BNGL model: the ``begin actions`` block stripped.
+    """Return a PEtab-clean copy of a BNGL model: the ``begin actions`` block reduced to its
+    network-definition directives (``generate_network``), its simulation actions dropped.
 
     New-era BNGL binds free parameters **by id** (ADR-0034), so the source model already
     carries bare parameter ids with real nominal values -- exactly what PEtab estimates.
-    "PEtab-clean" therefore collapses to dropping the ``begin actions`` block (PEtab
-    drives simulation via the measurement times / experiments, not the model's own
-    actions); the reaction network and the ``begin functions`` block -- which carry the
-    measurement model -- are carried verbatim. A fit-and-mutated parameter keeps its model
-    name (``v1``) here as a plain nominal-valued parameter (always overridden by its
-    Condition); only the parameter *table* carries the surrogate ``v1__REF`` (ADR-0027).
+    "PEtab-clean" therefore drops the *simulation* actions (PEtab drives simulation via the
+    measurement times / experiments, not the model's own ``simulate`` calls) while keeping
+    ``generate_network`` -- a network-definition / compilation directive, not a simulation
+    action. That directive carries the model's finiteness cap (``max_stoich`` / ``max_agg`` /
+    ``max_iter``); dropping it would silently turn a model that is finite only under the cap
+    into one that network-generates unbounded, with no error or warning (#485). The exported
+    model then carries its own cap, so ``import_.py`` (which copies the model byte-verbatim)
+    round-trips it for free and any BNG2.pl / PyBNF consumer stays finite; a simulation-only
+    block (no ``generate_network`` line) still disappears entirely. The reaction network and
+    the ``begin functions`` block -- which carry the measurement model -- are carried verbatim.
+    A fit-and-mutated parameter keeps its model name (``v1``) here as a plain nominal-valued
+    parameter (always overridden by its Condition); only the parameter *table* carries the
+    surrogate ``v1__REF`` (ADR-0027).
 
     A legacy ``<name>__FREE`` marker in the model **code** is **rejected**: new-era binds by
     id, so a model still carrying one was not modernized, and shipping it would dangle an
@@ -1471,8 +1509,7 @@ def clean_model_for_petab(text):
             "new-era feature where free parameters bind by id (ADR-0034). Declare the "
             "model's fit parameters as bare ids with nominal values (e.g. 'v1 0.5', not "
             "'v1 v1__FREE') and list them as free parameters in the .conf.")
-    return re.sub(r'^[ \t]*begin\s+actions\b.*?^[ \t]*end\s+actions\b[^\n]*\n?',
-                  '', text, flags=re.S | re.I | re.M)
+    return _ACTIONS_BLOCK.sub(_strip_simulation_actions, text)
 
 
 def write_problem_yaml(path, models, has_conditions=False, has_experiments=False,
