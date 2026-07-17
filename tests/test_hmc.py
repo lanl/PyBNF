@@ -440,19 +440,30 @@ def _assert_clean_reference(alg, samples, *, min_ess=350):
     assert sum(alg.divergences) == 0, 'the bijection must make the constrained prior divergence-free'
 
 
-@pytest.mark.parametrize('var_type,bounds,true_mean,true_var', [
+@pytest.mark.parametrize('var_type,bounds,true_mean,true_var,hmc_kwargs', [
     # half_normal(scale s): mean = s*sqrt(2/pi), var = s^2 (1 - 2/pi). Support (0, inf) ->
-    # log bijection u = exp(z). (p2 is ignored by the one-parameter family.)
-    ('half_normal_var', (2.0, 2.0), 2.0 * np.sqrt(2.0 / np.pi), 4.0 * (1.0 - 2.0 / np.pi)),
+    # log bijection u = exp(z). (p2 is ignored by the one-parameter family.) Under that
+    # bijection the log-space potential is exp(2z)/(2s^2) - z, whose curvature ~2u^2/s^2 grows
+    # QUADRATICALLY into the right tail (vs gamma's linear u/theta below) -- a genuinely stiff
+    # tail. So it needs a Stan-tight target_accept (=> smaller step) + a longer warmup to
+    # traverse divergence-free, the same tightening the banana tip uses; 0.99 is Stan's own
+    # remedy for divergent transitions and clears them here with margin (the default 0.8/0.9
+    # step is too large for the tail's curvature and diverges on a fraction of a percent of draws).
+    ('half_normal_var', (2.0, 2.0), 2.0 * np.sqrt(2.0 / np.pi), 4.0 * (1.0 - 2.0 / np.pi),
+     dict(target_accept=0.99, num_warmup=1500)),
     # gamma(shape k, scale theta): mean = k*theta, var = k*theta^2. Support (0, inf) -> log
-    # bijection. A genuine right-skew the wall used to make NUTS diverge on.
-    ('gamma_var', (2.5, 1.3), 2.5 * 1.3, 2.5 * 1.3 ** 2),
+    # bijection. A genuine right-skew the wall used to make NUTS diverge on; its log-space
+    # curvature u/theta is only linear, so the default step samples it divergence-free.
+    ('gamma_var', (2.5, 1.3), 2.5 * 1.3, 2.5 * 1.3 ** 2, {}),
 ])
-def test_hmc_recovers_positive_support_prior(tmp_path, var_type, bounds, true_mean, true_var):
+def test_hmc_recovers_positive_support_prior(tmp_path, var_type, bounds, true_mean, true_var,
+                                             hmc_kwargs):
     """A positive-support prior (gamma / half_normal) now samples divergence-free: the log
     bijection u = exp(z) puts the u=0 wall out of reach, so NUTS recovers the closed-form
-    moments instead of diverging at the support edge (ADR-0059 item 5)."""
-    samples, alg = _recover_prior(tmp_path, var_type, bounds)
+    moments instead of diverging at the support edge (ADR-0059 item 5). The half-normal's
+    log-space tail is stiff enough (curvature ~u^2) to need a Stan-tight target_accept; gamma's
+    is not (see the per-case ``hmc_kwargs``)."""
+    samples, alg = _recover_prior(tmp_path, var_type, bounds, **hmc_kwargs)
     np.testing.assert_allclose(samples.mean(axis=0)[0], true_mean, rtol=0.06)
     np.testing.assert_allclose(samples.var(axis=0, ddof=1)[0], true_var, rtol=0.12)
     _assert_clean_reference(alg, samples)
