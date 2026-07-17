@@ -135,6 +135,22 @@ class BngsimSbmlModelNoTimeout(Model):
     # object.__new__ (the _make_simulator test fakes, pickling).
     _sensitivity_request = None
 
+    # Per-action sensitivity gate (#475/#482): the SBML twin of the net backend's
+    # gate. On the gradient path only an action whose output is a SCORED gradient
+    # target needs forward sensitivities; an incidental/unscored action -- a
+    # stochastic (ssa) diagnostic that no data scores -- carries none, so it runs on
+    # the ordinary path and neither computes a wasted sensitivity tensor nor aborts
+    # the whole fit at a differentiability guard it can never satisfy.
+    # ``_scored_suffixes`` is the model's scored full-suffix set (set_scored_suffixes,
+    # from exp_data); ``_current_action_suffix`` names the action being prepared. The
+    # SBML backend folds the mutant/condition suffix straight into the current suffix
+    # (``act.suffix + mut.suffix``, set in execute()) because its mutant loop is inline
+    # -- so, unlike net_model.BngsimModel, it needs no per-instance ``_sensitivity_offset``.
+    # Both are class attributes so an unset (``None``) scored set falls back to the
+    # historical all-actions-bearing behavior, and an object.__new__ instance is safe.
+    _scored_suffixes = None
+    _current_action_suffix = None
+
     def __init__(self, file, abs_file, pset=None, actions=(), save_files=False, integrator='cvode',
                  strict_ssa=True):
         if integrator not in _SUPPORTED_INTEGRATORS:
@@ -730,6 +746,45 @@ class BngsimSbmlModelNoTimeout(Model):
             params=list(params or []), ic=list(ic or []),
         )
 
+    def set_scored_suffixes(self, suffixes):
+        """Record which output suffixes are scored gradient targets (#475/#482).
+
+        The SBML twin of :meth:`BngsimModel.set_scored_suffixes`. On the gradient path
+        only a SCORED action's output needs forward sensitivities; an incidental/unscored
+        action -- a stochastic (ssa) diagnostic that no data scores -- runs sensitivity-free
+        so it neither computes a wasted tensor nor aborts the fit at a differentiability
+        guard it can never satisfy. ``suffixes`` is the model's ``exp_data`` mapping (or any
+        iterable of scored *full* suffixes -- the mutant/condition suffix is already folded
+        into each action's key here, since the mutant loop is inline in :meth:`execute`, so
+        pass the full set once and every condition's output is keyed by ``act.suffix +
+        mut.suffix``). Set by the gradient optimizer's ``_setup_gradient_path`` before the
+        model scatter, so it rides the pickle to the workers alongside the sensitivity request.
+        """
+        self._scored_suffixes = set(suffixes)
+
+    def _action_bears_sensitivities(self):
+        """Whether the action currently being prepared is a scored gradient target.
+
+        The per-action half of the #475 gate (SBML twin of
+        :meth:`BngsimModel._action_bears_sensitivities`): an action carries forward
+        sensitivities only on the gradient path (``_sensitivity_request`` active) AND when
+        its full output suffix -- ``act.suffix + mut.suffix``, set into
+        :attr:`_current_action_suffix` by :meth:`execute` -- is in the scored set. The
+        scalar path returns ``False`` -- no action bears sensitivities there. On the
+        gradient path a scored set that is unknown, or a current suffix not yet resolved,
+        returns ``True`` (bearing), so any path that activates the request without declaring
+        scored suffixes keeps the historical all-actions-bearing behavior.
+        """
+        if self._sensitivity_request is None:
+            return False
+        scored = self._scored_suffixes
+        if scored is None:
+            return True
+        suffix = self._current_action_suffix
+        if suffix is None:
+            return True
+        return suffix in scored
+
     @property
     def has_discrete_events(self):
         """True iff the engine model contains state-jumping discrete events (#461).
@@ -780,20 +835,31 @@ class BngsimSbmlModelNoTimeout(Model):
 
         Returns ``{}`` on the scalar path (request inactive), so the Simulator construction is
         byte-identical to before this feature existed. On the gradient path it returns
-        ``sensitivity_params=``/``sensitivity_ic=`` for an ODE Simulator, and refuses cleanly for
-        a stochastic method -- forward sensitivities are deterministic-ODE only (#447), so an ssa
-        action under a gradient fit is a PyBNF-level error, not a backend traceback.
+        ``sensitivity_params=``/``sensitivity_ic=`` for an ODE Simulator.
+
+        A non-ODE method (ssa) is non-differentiable -- forward sensitivities are
+        deterministic-ODE only (#447). Whether that is an error now depends on whether the
+        action's output is a *scored* gradient target (#475/#482): a scored non-ODE action
+        still refuses cleanly (a PyBNF-level error, not a backend traceback -- its gradient
+        genuinely cannot be supplied), while an incidental/unscored non-ODE action (a
+        stochastic diagnostic that no data scores) runs sensitivity-free rather than aborting
+        the whole fit. ODE actions are always built sensitivity-bearing (an unscored ODE
+        action's unused tensor is harmless), matching the net backend.
         """
         req = self._sensitivity_request
         if req is None:
             return {}
         if method != 'ode':
-            raise PybnfError(
-                "Model %s: gradient-based fitting requires deterministic ODE integration, but a "
-                "simulate() action requests method=%r. Forward output sensitivities are available "
-                "only for the ODE backend; run a gradient-free fit for stochastic simulation."
-                % (self.name, method)
-            )
+            if self._action_bears_sensitivities():
+                raise PybnfError(
+                    "Model %s: gradient-based fitting requires deterministic ODE integration, but a "
+                    "scored simulate() action requests method=%r. Forward output sensitivities are "
+                    "available only for the ODE backend; run a gradient-free fit for stochastic "
+                    "simulation." % (self.name, method)
+                )
+            # Incidental/unscored non-ODE action (#475): no sensitivities needed, so build a
+            # plain Simulator and let it run on the ordinary path.
+            return {}
         kwargs = {}
         if req.params:
             kwargs['sensitivity_params'] = list(req.params)
@@ -896,6 +962,11 @@ class BngsimSbmlModelNoTimeout(Model):
                 method = None
                 seed_value = None
                 suffix_with_mut = act.suffix + mut.suffix
+                # Gate this action's sensitivity request on whether its output is
+                # scored (#475/#482): set before any Simulator is built below (each
+                # _run_simulation constructs a fresh Simulator through
+                # _sensitivity_request_kwargs, which consults _action_bears_sensitivities).
+                self._current_action_suffix = suffix_with_mut
                 try:
                     method = self._resolve_method(act)
                     seed_value = self._resolve_action_seed(
