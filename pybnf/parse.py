@@ -47,7 +47,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # gradient optimizers (fit_type = trf / lbfgs, #386): the int-valued
                # tunables -- L-BFGS-B's curvature-history depth and the two cycle
                # budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
-               'lbfgs_history', 'trf_max_iterations', 'lbfgs_max_iterations']
+               'lbfgs_history', 'trf_max_iterations', 'lbfgs_max_iterations',
+               # DREAM multi-try count (ADR-0067 Stage 2, #357): candidate proposals
+               # per chain per generation (n_try = 1 is the classic single-try engine).
+               'n_try']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
