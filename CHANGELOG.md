@@ -21,7 +21,11 @@ All notable changes to PyBNF are documented below. This project adheres to
   together with `objective = lognormal` spell the exact sum-of-squared-log-differences-of-
   geometric-mean-normalized-trajectories objective of Jaruszewicz-Błońska et al.
   (*PLoS ONE* 2023; 18(6):e0286416). Legacy `normalization = peak` / `normalization x = peak`
-  round-trip byte-identically; `peak`/`init`/`zero`/`unit` stay sim-only. Both new primitives have
+  round-trip byte-identically; `peak`/`init`/`zero`/`unit` stay sim-only. The `peak`, `unit`, and
+  `floor` column reductions are **NaN-aware** (`np.nanmax`/`nanargmax`, etc.), so a sparse
+  multi-observable target — NaN in the rows where a given observable is unmeasured — is reduced
+  over its measured points only rather than collapsing the whole column to NaN (which had
+  silently zeroed the objective); a dense column is byte-identical. Both new primitives have
   a **deferred gradient** (they raise `GradientNotSupported`, so a gradient fit falls back to a
   gradient-free step; the motivating fits are evolutionary), and both are **refused on PEtab
   export** (a whole-trajectory reduction has no pointwise PEtab v2 operator; `scale`'s
