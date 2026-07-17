@@ -1732,6 +1732,42 @@ class TestCleanModelUnit:
         with pytest.raises(PybnfError, match='__FREE'):
             clean_model_for_petab(src)
 
+    def test_generate_network_cap_survives_actions_strip(self):
+        # #485: generate_network is a network-definition directive, not a simulation action.
+        # Its finiteness cap (max_stoich / max_agg / max_iter) is what keeps a rule-based
+        # network finite, so the cleaner keeps the directive verbatim while dropping the
+        # simulate action (PEtab drives simulation from the measurement times instead).
+        src = (
+            "begin model\n begin parameters\n  k1 3\n end parameters\nend model\n\n"
+            "begin actions\n"
+            "  generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})\n"
+            '  simulate({method=>"ode",t_end=>2})\n'
+            "end actions\n")
+        out = clean_model_for_petab(src)
+        assert 'generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})' in out
+        assert 'max_stoich' in out                        # the cap itself, verbatim
+        assert 'simulate' not in out                      # the simulation action is dropped
+        assert 'k1 3' in out                              # the model body is untouched
+        # Idempotent: re-cleaning an already-clean model keeps the cap unchanged.
+        assert clean_model_for_petab(out) == out
+
+    def test_simulation_only_actions_block_fully_dropped(self):
+        # A block with no generate_network line (simulation-only) disappears entirely, exactly
+        # as the whole-block strip did before -- no network-definition directive to keep.
+        src = ("begin model\nend model\n\nbegin actions\n"
+               " simulate({})\n parameter_scan({})\nend actions\n")
+        out = clean_model_for_petab(src)
+        assert 'begin actions' not in out
+        assert 'simulate' not in out and 'parameter_scan' not in out
+
+    def test_commented_generate_network_is_not_kept(self):
+        # A commented-out '# generate_network(...)' is documentation, not a live directive: it
+        # must not resurrect the block (consistent with pset.py's BNGLModel scanner, #473).
+        src = ("begin model\nend model\n\nbegin actions\n"
+               "# generate_network({overwrite=>1})\n simulate({})\nend actions\n")
+        out = clean_model_for_petab(src)
+        assert 'begin actions' not in out and 'generate_network' not in out
+
     def test_parse_model_captures_function_bodies(self):
         # Phase A (ADR-0035): parse_model records each global function's body verbatim;
         # function_names is exactly the body keys; a function WITH arguments (not the
@@ -2084,6 +2120,58 @@ def _assert_petab_clean(exported):
                 ValidationIssueSeverity.ERROR:
             errors.append((type(task).__name__, issue.message))
     assert errors == []
+
+
+class TestExportPreservesNetworkCap:
+    """#485: a ``generate_network`` finiteness cap (``max_stoich`` / ``max_agg`` /
+    ``max_iter``) must survive PEtab export. A model that is finite *only* under the cap
+    becomes one that network-generates unbounded (a silent hang) if the cap is dropped, so the
+    exported model has to carry it. The cap rides in the model's own actions block, so
+    ``import_`` -- which copies the model byte-verbatim -- round-trips it for free."""
+
+    CAP = 'generate_network({overwrite=>1,max_stoich=>{counter=>4}})'
+
+    def _capped_fixture(self, d):
+        # Reuse the shared parabola2 model, swapping its bare generate_network for a capped one.
+        model = _PARABOLA2_BNGL.replace(
+            'generate_network({overwrite=>1})', self.CAP)
+        assert self.CAP in model                          # guard the fixture edit
+        (d / 'parabola2.bngl').write_text(model)
+        (d / 'par1.exp').write_text(
+            '# time x y x_SD y_SD\n0\t-10\t3\t1\t1\n1\t-9\t2\t1\t1\n2\t-8\t1\t1\t1\n')
+        conf = d / 'job.conf'
+        conf.write_text(
+            'edition = 2\njob_type = de\nobjective = chi_sq\n'
+            'model: parabola2.bngl\n'
+            'experiment: par1, data: par1.exp\n'
+            'uniform_var = v1 0 10\nuniform_var = v2 0 10\nuniform_var = v3 0 10\n')
+        return conf
+
+    def test_exported_model_carries_the_cap(self, tmp_path):
+        conf = self._capped_fixture(tmp_path)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        model = (out / 'parabola2.bngl').read_text()
+        assert self.CAP in model                          # cap survives clean_model_for_petab
+        assert 'simulate' not in model                    # the simulation action is still dropped
+
+    def test_exported_capped_model_is_petab_valid(self, tmp_path):
+        # petab.v2 lint accepts a BNGL model that retains a generate_network line.
+        conf = self._capped_fixture(tmp_path)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        _assert_petab_clean(out)
+
+    def test_cap_round_trips_through_import(self, tmp_path):
+        # The exporter records the cap in the model itself, so the importer (byte-verbatim
+        # model copy) recovers it with no new PEtab metadata field.
+        pytest.importorskip('petab.v2')
+        from pybnf.petab.import_ import import_job
+        conf = self._capped_fixture(tmp_path)
+        out = tmp_path / 'petab'
+        export_job(conf, out)
+        imp = import_job(out / 'problem.yaml', tmp_path / 'imp')
+        assert self.CAP in (imp / 'parabola2.bngl').read_text()
 
 
 class TestConditionMappingUnit:
