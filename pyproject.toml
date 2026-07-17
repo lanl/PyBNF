@@ -90,6 +90,9 @@ jax = [
 arviz = [
     "arviz>=0.17",
     "h5netcdf>=1",
+    # h5netcdf declares h5py only as an optional extra, but its NETCDF4 write path
+    # (to_netcdf -> Results/inference_data.nc) needs it, so require it explicitly.
+    "h5py",
 ]
 # Profile-likelihood plots (job_type = profile_likelihood, #467): the driver renders
 # Results/profile_likelihood.png (one Delta chi2 panel per parameter) at the end of a run.
@@ -127,6 +130,9 @@ tests = [
     # the 0.x InferenceData and 1.x DataTree lines); CI exercises whichever resolves.
     "arviz>=0.17",
     "h5netcdf>=1",
+    # h5netcdf's NETCDF4 write path needs h5py (declared only as an optional extra
+    # of h5netcdf); without it the netCDF round-trip tests fail rather than skip.
+    "h5py",
     # HMC reference sampler oracle (ADR-0059): tests/test_hmc.py runs blackjax NUTS on
     # the analytical gaussian/rotated_gaussian targets and checks closed-form posterior
     # moment recovery, so the gradient path is exercised in CI rather than skipped. The
