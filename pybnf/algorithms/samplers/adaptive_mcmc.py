@@ -373,19 +373,25 @@ class Adaptive_MCMC(BayesianAlgorithm):
             np.savetxt(f, self.write_out_score)
 
     def write_out_params(self, idx):
-        # WRite out the param. Need more practical method
+        # Write out the accepted-parameter history that seeds the adaptive covariance.
         runs_dir = Path(self.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
         params_file = runs_dir / f'params_{idx}.txt'
-        if self.iteration[idx] == self.burn_in - 1:
-            self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
-            varibles = []
-            for v in self.variables:
-                varibles.append(v.name)
-            varNames = '\t'.join(varibles)
+        self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+        # Emit the column-name header exactly once, when the seed file is first created.
+        # Keying this on file creation rather than `iteration == burn_in - 1` keeps the
+        # header present even when burn_in == 1 makes that iteration unreachable: iteration
+        # is already incremented before this write block runs in got_result, so it is always
+        # >= 1 here and `burn_in - 1 == 0` never matched -- leaving params_*.txt headerless
+        # and breaking the `np.genfromtxt(..., names=True)` covariance seed at iteration
+        # burn_in+adaptive ("no field of name <first parameter>"). Surfaced while verifying
+        # the #480 fix on the MEK aMCMC example.
+        if not params_file.exists() or params_file.stat().st_size == 0:
+            varNames = '\t'.join(v.name for v in self.variables)
             with open(params_file, 'a') as f:
                 f.write(varNames+'\n')
-        else:
-            self.write_out_p = self.parameter_index[idx][~(self.parameter_index[idx]==0).all(1)]
+        # The burn_in-1 call only initializes the header; accepted-sample rows begin at
+        # burn_in, preserving the row count the covariance normalization assumes.
+        if self.iteration[idx] != self.burn_in - 1:
             with open(params_file, 'a') as f:
                 np.savetxt(f, self.write_out_p)
 

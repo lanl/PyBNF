@@ -20,6 +20,8 @@ acceptance ratio reduces to a function of the scores alone; unbounded
 ``normal_var`` parameters are used for the proposal so reflection at the bounds
 does not distort the Gaussian.
 """
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -645,3 +647,66 @@ class TestConstraintSatisfactionWorkerScoring:
         as 0 (the evaluation ran against real data rather than crashing)."""
         am = self._run_worker_path(tmp_path, b_values=[0, 0])
         assert am.current_constraint_satisfied[0] == [0]
+
+
+# --------------------------------------------------------------------------- #
+# Adaptive-covariance seed file always carries a column-name header
+# --------------------------------------------------------------------------- #
+class TestAdaptiveSeedFileHeader:
+    """``write_out_params`` must give ``params_<idx>.txt`` a parameter-name header
+    row so the adaptive-covariance seed (``np.genfromtxt(..., names=True)`` at
+    ``iteration == burn_in + adaptive``) can index it by name. The header used to be
+    keyed to ``iteration == burn_in - 1``, which is unreachable when ``burn_in == 1``
+    (iteration is already >= 1 by the time the write block runs in ``got_result``),
+    leaving the file headerless and crashing ``pick_new_pset`` with
+    ``ValueError: no field of name <first parameter>``. Surfaced while verifying the
+    #480 fix on the MEK aMCMC example."""
+
+    @staticmethod
+    def _seed_file(am, idx=0):
+        return (Path(am.config.config['output_dir']) / 'Results' / 'A_MCMC' / 'Runs'
+                / f'params_{idx}.txt')
+
+    def test_burn_in_1_writes_named_header(self, tmp_path):
+        """burn_in == 1: the first write lands at iteration 1 (== burn_in), the branch
+        that previously skipped the header. The file must still start with the names,
+        and the exact field access pick_new_pset performs must not raise."""
+        am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, burn_in=1))
+        am.start_run()
+        names = [v.name for v in am.variables]
+        am.parameter_index[0] = np.arange(1.0, len(names) + 1.0).reshape(1, len(names))
+
+        am.iteration[0] = 1
+        am.write_out_params(0)
+        am.iteration[0] = 2
+        am.write_out_params(0)
+
+        seed = self._seed_file(am)
+        lines = seed.read_text().splitlines()
+        assert lines[0].split('\t') == names
+        # The exact operation pick_new_pset performs on the seed file (#480 follow-up):
+        arr = np.genfromtxt(seed, names=True)
+        assert arr.dtype.names == tuple(names)
+        for n in names:
+            _ = arr[n]  # must not raise "no field of name ..."
+
+    def test_normal_burn_in_header_then_data_preserved(self, tmp_path):
+        """burn_in >= 2 behavior is unchanged: the burn_in-1 call writes the header
+        only (no data row), and accepted-sample rows append under it afterward."""
+        am = algorithms.Adaptive_MCMC(_make_config(tmp_path, 1, UNIFORM_VARS, burn_in=3))
+        am.start_run()
+        names = [v.name for v in am.variables]
+        am.parameter_index[0] = np.arange(1.0, len(names) + 1.0).reshape(1, len(names))
+        seed = self._seed_file(am)
+
+        am.iteration[0] = 2  # burn_in - 1: header initialized, no data row
+        am.write_out_params(0)
+        assert seed.read_text().splitlines() == ['\t'.join(names)]
+
+        am.iteration[0] = 3  # burn_in onward: one accepted-sample row appended
+        am.write_out_params(0)
+        lines = seed.read_text().splitlines()
+        assert lines[0].split('\t') == names
+        assert len(lines) == 2
+        arr = np.genfromtxt(seed, names=True)
+        assert arr.dtype.names == tuple(names)

@@ -108,6 +108,15 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Fixed
+- **Adaptive MCMC (`am`) no longer crashes with `burn_in = 1` (`ValueError: no field of name
+  <parameter>`).** The adaptive-covariance seed file `params_<chain>.txt` was given its
+  column-name header only on the `iteration == burn_in - 1` write, which is unreachable when
+  `burn_in = 1` — the iteration counter is already incremented to ≥ 1 by the time the seed rows
+  are written, so `burn_in - 1 == 0` never matched and the file was left headerless. The
+  `np.genfromtxt(..., names=True)` seed read at `iteration == burn_in + adaptive` then consumed
+  the first data row as the header and failed on the first parameter name. The header is now
+  emitted when the seed file is first created, independent of `burn_in`; output for
+  `burn_in ≥ 2` is unchanged. Surfaced while verifying the #480 fix on the MEK aMCMC example.
 - **Bayesian samplers no longer crash on the first accepted move when `.prop` constraints
   are attached (#480).** An adaptive-MCMC / MCMC / DREAM job (`fit_type = am`/`mh`/`dream`)
   that carries constraints aborted on the first accepted sample with
