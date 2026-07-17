@@ -142,6 +142,21 @@ All notable changes to PyBNF are documented below. This project adheres to
   steady-state); any method may opt into a fixed-time equilibration with the field.
 
 ### Fixed
+- **Adaptive MCMC (`am`) with `output_trajectory` no longer crashes on edition-2 one-model +
+  `condition:` jobs (`KeyError` on `<action><mutant>` suffixes) (#483).** An `am` job that saves
+  posterior-predictive trajectories (`output_trajectory`) over an edition-2 model with `condition:`
+  perturbations bound to two or more experiments aborted on the first accepted sample with e.g.
+  `KeyError: 'WTn78gMEK_pRDS'`, leaving `samples.txt` with only its header and
+  `constraint_samples.txt` empty. The sampler allocates one trajectory buffer per *scored* data-key
+  (`time_length`: the diagonal `WT`, `KOko`, …), but `got_result` wrote every raw simulation suffix
+  it saw. Under edition-2 Mechanism A (one model + `condition:` mutants) the single model runs every
+  action suffix under every condition-mutant, so `res.out[model]` yields the full `{action} ×
+  {mutant}` cross-product — the first off-diagonal suffix (`WTn78g`) hit an unallocated buffer. Both
+  the `output_trajectory` and `output_noise_trajectory` write blocks now skip any suffix that was not
+  allocated (i.e. is not a scored data-key), writing only the scored diagonal. The `de` path on the
+  same model/condition/experiment setup was unaffected. Surfaced on the Miller et al. 2026 MEK-isoform
+  qualitative-constraint + Bayesian-UQ job ported to edition-2 as one model + four `condition:` cell
+  lines; sibling to the edition-2/aMCMC cross-model fix in #480.
 - **Adaptive MCMC (`am`) no longer crashes with `burn_in = 1` (`ValueError: no field of name
   <parameter>`).** The adaptive-covariance seed file `params_<chain>.txt` was given its
   column-name header only on the `iteration == burn_in - 1` write, which is unreachable when

@@ -213,9 +213,17 @@ class Adaptive_MCMC(BayesianAlgorithm):
                 pass
             else:
                 if self.config.config['output_trajectory']:
-                    for l in self.output_columns:     
+                    for l in self.output_columns:
                         for i in res.out:
                             for j in res.out[i]:
+                                if (j + l) not in self.output_run_current:
+                                    # Off-diagonal <action><condition> cross-product suffix.
+                                    # Under edition-2 one-model + condition: perturbations, the
+                                    # single model runs every action suffix under every mutant,
+                                    # but only the scored diagonal (WT, KOko, ...) was allocated
+                                    # in output_run_current. Skip the rest rather than KeyError
+                                    # on the first off-diagonal suffix (lanl/PyBNF#483).
+                                    continue
                                 if l in res.out[i][j].cols:
                                     if self.norm:
                                         res.out[i][j].normalize(self.norm)
@@ -230,9 +238,14 @@ class Adaptive_MCMC(BayesianAlgorithm):
                                         self.output_run_current[j+l][index]= self.list_trajactory
                                     self.list_trajactory = []
                 if self.config.config['output_noise_trajectory']:
-                    for la in self.output_noise_columns:     
+                    for la in self.output_noise_columns:
                         for ib in res.out:
                             for js in res.out[ib]:
+                                if (js + la) not in self.output_run_noise_current:
+                                    # Off-diagonal <action><condition> cross-product suffix;
+                                    # only the scored diagonal keys were allocated. Skip the
+                                    # rest rather than KeyError (lanl/PyBNF#483).
+                                    continue
                                 if la in res.out[ib][js].cols:
                                     if self.norm:
                                         res.out[ib][js].normalize(self.norm)

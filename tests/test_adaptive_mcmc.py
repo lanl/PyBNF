@@ -650,6 +650,93 @@ class TestConstraintSatisfactionWorkerScoring:
 
 
 # --------------------------------------------------------------------------- #
+# output_trajectory over edition-2 one-model + condition: cross-product suffixes
+# (lanl/PyBNF#483)
+# --------------------------------------------------------------------------- #
+class TestOutputTrajectoryCrossProductSuffixes:
+    """``output_run_current`` is allocated only for the *scored* diagonal keys
+    (``time_length``: WT, KOko, ...), but under edition-2 Mechanism A (one model +
+    ``condition:`` perturbations) the single model runs every action suffix under
+    every mutant, so ``res.out[model]`` carries the full ``{action} x {mutant}``
+    cross-product. ``got_result`` used to write every suffix it saw, hitting an
+    uninitialized key on the first off-diagonal suffix (``KeyError: 'WTn78gMEK_pRDS'``);
+    it must instead write only the scored diagonal it allocated (lanl/PyBNF#483)."""
+
+    OBS = 'MEK_pRDS'
+
+    @staticmethod
+    def _diagonal_am(tmp_path, *, noise=False):
+        """An ``am`` primed into the edition-2 diagonal-only trajectory state:
+        two scored keys (WT, KOko), each 3 time points, buffers keyed by
+        ``<scored key> + <obs>`` only. Mirrors what ``__init__`` builds from a real
+        edition-2 ``time_length`` without needing the full one-model + condition wiring."""
+        overrides = {'output_trajectory': [TestOutputTrajectoryCrossProductSuffixes.OBS]}
+        if noise:
+            overrides['output_noise_trajectory'] = [TestOutputTrajectoryCrossProductSuffixes.OBS]
+        cfg = _make_config(tmp_path, 1, UNIFORM_VARS, **overrides)
+        am = algorithms.Adaptive_MCMC(cfg)
+        am.start_run()
+        am.output_columns = [TestOutputTrajectoryCrossProductSuffixes.OBS]
+        am.time = {'WT': 2, 'KOko': 2}  # scored diagonal: 3 time points each
+        diag = ['WT' + am.output_columns[0], 'KOko' + am.output_columns[0]]
+        am.output_run_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
+        am.output_run_all = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
+        if noise:
+            am.output_noise_columns = list(am.output_columns)
+            am.output_run_noise_current = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
+            am.output_run_noise_all = {k: np.zeros((am.num_parallel, 1, 3)) for k in diag}
+        return am
+
+    def _cross_product_result(self, am):
+        """One accepted worker-path Result whose single model emitted both scored
+        diagonal suffixes (WT, KOko) and off-diagonal cross-product ones (WTn78g,
+        KOn78g) -- the shape PyBNF produces for one model + condition: mutants."""
+        start_name = am.current_pset[0].name if am.current_pset[0] else 'iter0run0'
+        ps = _uniform_pset(start_name)
+        res = algorithms.Result(ps, None, ps.name)
+        res.out = {'m': {
+            'WT':     _data(self.OBS, [(0, 1), (1, 2), (2, 3)]),   # scored diagonal
+            'WTn78g': _data(self.OBS, [(0, 9), (1, 9), (2, 9)]),   # off-diagonal
+            'KOko':   _data(self.OBS, [(0, 4), (1, 5), (2, 6)]),   # scored diagonal
+            'KOn78g': _data(self.OBS, [(0, 7), (1, 8), (2, 9)]),   # off-diagonal
+        }}
+        res.score = 5.0
+        return res
+
+    def test_off_diagonal_suffix_does_not_crash(self, tmp_path):
+        """The first off-diagonal suffix (``WTn78g``) used to raise
+        ``KeyError: 'WTn78gMEK_pRDS'`` on the first accepted sample. It must now be
+        skipped silently."""
+        am = self._diagonal_am(tmp_path)
+        am.got_result(self._cross_product_result(am))  # first move -> always accepted
+        assert am.accept is True
+
+    def test_scored_diagonal_trajectories_are_recorded(self, tmp_path):
+        """The scored diagonal keys still receive their observable trajectory."""
+        am = self._diagonal_am(tmp_path)
+        am.got_result(self._cross_product_result(am))
+        np.testing.assert_array_equal(am.output_run_current['WT' + self.OBS][0], [[1, 2, 3]])
+        np.testing.assert_array_equal(am.output_run_current['KOko' + self.OBS][0], [[4, 5, 6]])
+
+    def test_off_diagonal_keys_are_not_created(self, tmp_path):
+        """The write must not fabricate buffers for unscored cross-product suffixes."""
+        am = self._diagonal_am(tmp_path)
+        am.got_result(self._cross_product_result(am))
+        assert 'WTn78g' + self.OBS not in am.output_run_current
+        assert 'KOn78g' + self.OBS not in am.output_run_current
+
+    def test_noise_trajectory_block_has_the_same_guard(self, tmp_path):
+        """The ``output_noise_trajectory`` write block has the identical structure and
+        must also skip off-diagonal suffixes rather than KeyError."""
+        am = self._diagonal_am(tmp_path, noise=True)
+        am.got_result(self._cross_product_result(am))
+        assert am.accept is True
+        np.testing.assert_array_equal(am.output_run_noise_current['WT' + self.OBS][0], [[1, 2, 3]])
+        np.testing.assert_array_equal(am.output_run_noise_current['KOko' + self.OBS][0], [[4, 5, 6]])
+        assert 'WTn78g' + self.OBS not in am.output_run_noise_current
+
+
+# --------------------------------------------------------------------------- #
 # Adaptive-covariance seed file always carries a column-name header
 # --------------------------------------------------------------------------- #
 class TestAdaptiveSeedFileHeader:
