@@ -334,6 +334,26 @@ class ObjectiveFunction:
             "Objective %s has no differentiable data-fit gradient on the gradient path (#385)."
             % type(self).__name__)
 
+    def location_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The expected per-point **Fisher information of the location** ``kappa`` for one scored
+        point -- the Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``, #481)
+        weights ``d(prediction)/d(theta)`` by (``H = sum_i w_i * kappa_i * outer(s_i, s_i)``). The
+        twin of :meth:`residual_point` on the curvature side; the base raises
+        :class:`GradientNotSupported`, since only a per-point likelihood defines a location Fisher
+        (a non-likelihood / unsupported objective already refuses at ``residual_point``). Only
+        :class:`LikelihoodObjective` overrides it."""
+        from .gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "Objective %s has no Fisher-information location curvature on the EFIM trust-region "
+            "path (fit_type = gntr, #481)." % type(self).__name__)
+
+    def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The per-point expected **Fisher information of each estimated free noise parameter** --
+        ``{free_param: I_scale}`` (the diagonal noise block of the EFIM Hessian, #481). The twin
+        of :meth:`noise_grad_point` on the curvature side. Empty on the base (a non-likelihood
+        objective estimates no noise parameter); only :class:`LikelihoodObjective` overrides it."""
+        return {}
+
 
 class SummationObjective(ObjectiveFunction):
     """
@@ -1146,6 +1166,49 @@ class LikelihoodObjective(SummationObjective):
         observation = exp_data.data[exp_row, exp_data.cols[col_name]]
         primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
         return family.d_data_fit_d_prediction(prediction, observation, primary, extra)
+
+    def location_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The expected per-point **Fisher information of the location** ``kappa`` -- the
+        Gauss-Newton curvature the EFIM trust-region Hessian weights ``d(prediction)/d(theta)``
+        by (``fit_type = gntr``, #481). Read through the same ``_prediction`` / ``_noise_values``
+        seams as ``residual_point`` / ``data_fit_grad_point``, so it is the curvature of exactly
+        the loss PyBNF scores.
+
+        A **residual-bearing** family (Gaussian, Student-t) has ``kappa == (d rho/d pred)**2``
+        identically -- the assembly's residual-Jacobian already carries it -- so this returns that
+        square directly (no new family math). A **non-residual** family (Laplace, count) delegates
+        to the family's :meth:`~pybnf.noise.base.NoiseModel.location_fisher`. Any configuration the
+        family refuses (a MEDIAN-centered count, ...) raises :class:`GradientNotSupported`, so the
+        fit falls back to the scalar-gradient (L-BFGS-B) path."""
+        family, sources = self._spec_for(col_name)
+        self._require_gradient_supported(col_name, family, sources)
+        prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        if self.has_least_squares_residual(col_name):
+            drho = family.d_residual_d_prediction(prediction, observation, primary, extra)
+            return drho * drho
+        return family.location_fisher(prediction, observation, primary, extra)
+
+    def noise_fisher_point(self, sim_data, exp_data, sim_row, exp_row, col_name):
+        """The per-point expected **Fisher information of each estimated free noise parameter** --
+        ``{free_param_name: I_scale}`` (the diagonal noise block of the EFIM Hessian, #481). The
+        curvature twin of :meth:`noise_grad_point`: empty for a fixed-noise point, else each
+        estimated noise parameter's :meth:`~pybnf.noise.base.NoiseModel.noise_param_fisher` entry,
+        keyed by the source's free-parameter name (the free parameter *is* the noise parameter, so
+        the curvature lands on that parameter's own coordinate). A coupled corner the family refuses
+        (a MEAN-on-log estimated scale, the count family's free dispersion) raises
+        :class:`GradientNotSupported` -> the L-BFGS-B fallback."""
+        family, sources = self._spec_for(col_name)
+        estimated = {name: src for name, src in sources.items() if src.estimated}
+        if not estimated:
+            return {}
+        self._require_gradient_supported(col_name, family, sources)
+        prediction = self._prediction(sim_data, sim_row, col_name, exp_data, exp_row)
+        observation = exp_data.data[exp_row, exp_data.cols[col_name]]
+        primary, extra = self._noise_values(family, sources, self, exp_data, exp_row, col_name)
+        per_param = family.noise_param_fisher(prediction, observation, primary, extra)
+        return {src.required_free_param(): per_param[name] for name, src in estimated.items()}
 
     def has_least_squares_residual(self, col_name):
         """Whether this observable contributes an **exact** least-squares residual/Jacobian

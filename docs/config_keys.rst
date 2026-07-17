@@ -194,7 +194,7 @@ Required Keys
   taking the same values as :ref:`fit_type <fit_type>` above. It replaces ``fit_type``
   because that name was a misnomer -- the key selects across point-estimate
   *optimizers* (``de`` / ``ade`` / ``pso`` / ``ss`` / ``sim`` / ``powell`` / ``cmaes``
-  / ``sa``, and the gradient-based :ref:`trf / lbfgs <gradient_fitting>`), Bayesian
+  / ``sa``, and the gradient-based :ref:`trf / lbfgs / gntr <gradient_fitting>`), Bayesian
   *samplers* (``am`` / ``dream`` / ``p_dream`` / ``pt`` / ``mh``, and the
   gradient-based :ref:`hmc <alg-hmc>` for analytical objectives), the
   :ref:`profile-likelihood <gradient_fitting>` identifiability analysis

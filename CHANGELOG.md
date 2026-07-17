@@ -6,6 +6,28 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **General-objective trust-region optimizer: `fit_type = gntr` (ADR-0068, #481).** Fills the last
+  empty cell of the gradient-fitting (objective × curvature-model) matrix. `trf` gives a
+  trust-region step with a `JᵀJ` (Gauss-Newton / empirical-Fisher) Hessian but only for an exact
+  least-squares objective; the moment the objective stops being a pure sum of squares — an estimated
+  noise scale, a Laplace / count likelihood, or an active constraint — the gradient path dropped to
+  `lbfgs` (limited-memory quasi-Newton). `gntr` extends `trf`'s well-conditioned trust-region step
+  to those general-NLL objectives: its Hessian is the **expected-Fisher / Gauss-Newton information**
+  `H = Σ κᵢ sᵢsᵢᵀ` (+ estimated-noise and constraint blocks), built from the same #385 forward
+  sensitivities `sᵢ = ∂predᵢ/∂θ` plus small analytic per-family curvature factors (new
+  `NoiseModel.location_fisher` / `noise_param_fisher` and `Constraint.penalty_curvature` seams) — no
+  second-order sensitivities. It consumes the *same scalar gradient* as `lbfgs`; only the curvature
+  differs. Internally it reuses `trf`'s Coleman–Li reflective machinery unchanged by feeding
+  `(g, H)` through a ridge-regularised pseudo-Jacobian, so on a Gaussian least-squares fit it reduces
+  to `trf`'s step exactly. It runs natively in the distributed propose/score loop (picklable, no
+  `run()` override, concurrent `N`-start multi-start, registered as a box-start refiner) like every
+  other `fit_type`. New config keys `gntr_grad_tol` (1e-8), `gntr_step_tol` (1e-8), `gntr_ridge`
+  (1e-10), and the runtime-guarded `gntr_max_iterations`. This cut supports an estimated-σ Gaussian
+  (`chi_sq_dynamic`), a fixed-scale Laplace, a fixed-dispersion mean-centered negative-binomial, and
+  a Gaussian fit with static-hinge constraints; the coupled corners it cannot yet build the Fisher
+  Hessian for (a mean-on-log estimated scale, a free-dispersion / median count family, an estimated
+  Student-t df, or an estimated constraint scale) refuse with a pointer to `lbfgs`, which fits them.
+  `trf` / `lbfgs` are byte-identical (they never form the Hessian).
 - **Multi-Try DREAM: the `n_try` count (ADR-0067, Stage 2; MT-DREAM(ZS), #357).** A new integer
   `n_try` config key turns each chain-generation into a multiple-try step (Liu, Liang & Wong 2000;
   Laloy & Vrugt 2012): with `n_try = k > 1` a chain draws `k` candidate proposals, selects one in

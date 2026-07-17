@@ -11,7 +11,7 @@ trust-region least-squares) stands on: it lets the fit follow the true downhill 
 instead of probing it parameter-by-parameter.
 
 This page describes the gradient *plumbing* — what it computes, the objective
-configurations it supports, how to enable it, and what it costs — and the two
+configurations it supports, how to enable it, and what it costs — and the three
 gradient-based optimizers that consume it (see *Running a gradient fit* below).
 
 .. note::
@@ -32,7 +32,7 @@ gradient-based optimizers that consume it (see *Running a gradient fit* below).
 Running a gradient fit
 ----------------------
 
-Two optimizers consume the gradient, both opt-in via ``fit_type``:
+Three optimizers consume the gradient, all opt-in via ``fit_type``:
 
 * ``fit_type = trf`` — a **Trust-Region-Reflective least-squares** optimizer
   (Branch–Coleman–Li, matching ``scipy.optimize.least_squares(method="trf")``). It
@@ -53,10 +53,26 @@ Two optimizers consume the gradient, both opt-in via ``fit_type``:
   ``trf`` refuses: an estimated noise scale, the Laplace / count families, and active constraint
   penalties.
 
-Both run natively inside PyBNF's distributed propose/score loop (one objective evaluation is one
+* ``fit_type = gntr`` — a **general-objective Fisher/Gauss-Newton trust-region** optimizer. It gives
+  ``trf``'s trust-region step quality — the well-conditioned :math:`J^{\mathsf T}J`-style curvature —
+  for the very objectives ``trf`` refuses and only ``lbfgs`` could handle. Its Hessian is the
+  **expected-Fisher / Gauss-Newton information**
+  :math:`H = \sum_i \kappa_i\, s_i s_i^{\mathsf T}` (plus estimated-noise and constraint blocks),
+  built from the same forward sensitivities :math:`s_i = \partial \mathrm{pred}_i/\partial\theta`
+  plus small analytic per-family curvature factors — no second-order sensitivities. It consumes the
+  *same scalar gradient* as ``lbfgs``; only the curvature model differs. Internally it feeds
+  :math:`(g, H)` through the same Coleman–Li reflective machinery ``trf`` uses (so on a Gaussian
+  least-squares fit it reduces to ``trf``'s step exactly), but with the general Fisher Hessian.
+  This cut supports an estimated-σ Gaussian (``chi_sq_dynamic``), a fixed-scale Laplace, a
+  fixed-dispersion negative-binomial (mean-centered), and a Gaussian fit with static-hinge
+  constraints; a coupled corner it cannot yet build the Fisher Hessian for (a mean-on-log-scale
+  estimated scale, a free-dispersion / median count family, an estimated Student-t df, or an
+  estimated constraint scale) is refused with a pointer to ``lbfgs``, which fits it.
+
+All three run natively inside PyBNF's distributed propose/score loop (one objective evaluation is one
 scheduler job) rather than through a blocking ``scipy`` driver, so backup/resume work exactly as for
-every other ``fit_type``. They are also registered as **refiners** (``refine_method = trf`` / ``lbfgs``),
-so a gradient step can polish a metaheuristic's best fit.
+every other ``fit_type``. They are also registered as **refiners** (``refine_method = trf`` / ``lbfgs``
+/ ``gntr``), so a gradient step can polish a metaheuristic's best fit.
 
 **Local multi-start.** A gradient method is purely *local*: it descends into whatever basin its
 start point lands in. To guard against a bad basin on a multimodal or bound-active landscape, a
@@ -84,8 +100,13 @@ step tolerance is met, or the per-start iteration budget is exhausted:
   tolerance, default ``1e-8``), ``lbfgs_history`` (number of stored correction pairs, default
   ``10``), and the line-search constants ``lbfgs_c1`` (Armijo sufficient-decrease, default ``1e-4``)
   and ``lbfgs_backtrack`` (step-length reduction factor, :math:`0 < \beta < 1`, default ``0.5``).
+* ``gntr`` — ``gntr_grad_tol`` (first-order optimality on the scaled gradient, default ``1e-8``) and
+  ``gntr_step_tol`` (accepted step negligible, default ``1e-8``), identical in meaning to ``trf``'s
+  (it *is* a trust-region step), plus ``gntr_ridge`` — a small relative Levenberg ridge added to the
+  Fisher Hessian before the step solve (default ``1e-10``), large enough to keep the Hessian strictly
+  positive definite, small enough not to perturb the Newton step.
 
-For both, ``<method>_max_iterations`` caps the iterations per start and defaults to the global
+For all three, ``<method>_max_iterations`` caps the iterations per start and defaults to the global
 ``max_iterations``.
 
 

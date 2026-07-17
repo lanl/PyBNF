@@ -208,3 +208,28 @@ class NegBinomial(NoiseModel):
             dG_d_r = _d_betainc_d_a(r, target + 1.0, prob) + beta_pdf * mean / (r + mean) ** 2.
             d_fit_d_r += d_fit_d_mean * (-dG_d_r / dG_d_mean)
         return {'dispersion': d_fit_d_r}
+
+    def location_fisher(self, prediction, observation, noise, extra=None):
+        """``kappa = I_mean = r / (mean (r + mean))`` -- the negative-binomial **mean's** Fisher
+        information, the Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``,
+        #481) weights ``d(prediction)/d(theta)`` by. It is the variance of the mean score
+        ``d(-logpmf)/d mean = r (mean - obs) / (mean (r + mean))`` (``Var(obs) = mean (r + mean)/r``,
+        so ``I_mean = [r/(mean(r+mean))]**2 * Var(obs) = r/(mean(r+mean))``).
+
+        * **MEAN**: the prediction *is* the mean (``d mean/d pred = 1``), so ``kappa`` is this
+          directly -- the case this cut supports (``neg_bin`` / ``neg_bin_dynamic`` pinned to MEAN).
+        * **MEDIAN**: the mean sits behind the betainc CDF inversion (``_mean_for_median``), whose
+          ``d mean/d pred`` is the non-elementary implicit derivative; its location Fisher is out of
+          scope for this cut -- refused, pointing at ``fit_type = lbfgs`` (which fits it via the
+          scalar data-fit gradient). A negative observation contributes no curvature (the
+          count-domain guard, mirroring :meth:`data_fit`)."""
+        if self.location is MEDIAN:
+            from ..gradient.errors import GradientNotSupported
+            raise GradientNotSupported(
+                "A MEDIAN-centered negative-binomial has its mean behind a betainc CDF inversion, "
+                "whose location Fisher the EFIM trust-region path (fit_type = gntr, #481) does not "
+                "assemble this cut; use fit_type = lbfgs.")
+        mean = self._mean(prediction, noise)
+        if observation < 0 or mean <= 0.0:
+            return 0.0
+        return noise / (mean * (noise + mean))

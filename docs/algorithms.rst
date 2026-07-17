@@ -43,7 +43,7 @@ Summary of Available Algorithms
 
 
 In addition to the population-based and Metropolis samplers in the table above,
-PyBNF provides gradient-based optimizers (``trf``, ``lbfgs``) and
+PyBNF provides gradient-based optimizers (``trf``, ``lbfgs``, ``gntr``) and
 profile-likelihood analysis — see :ref:`Gradient-based optimization
 <alg-gradient>` — the :ref:`Hamiltonian Monte Carlo (NUTS) <alg-hmc>` and
 :ref:`Preconditioned DREAM <alg-p_dream>` samplers, and :ref:`model checking
@@ -642,15 +642,19 @@ distribution's spread. As a refiner the start is always the injected best fit.
 Gradient-based optimization
 ---------------------------
 
-For edition-2 fits of ODE-network models, PyBNF offers two gradient-based
+For edition-2 fits of ODE-network models, PyBNF offers three gradient-based
 optimizers driven by exact forward parameter sensitivities:
 
 * ``fit_type = trf`` — a trust-region least-squares method (Trust-Region
-  Reflective), for objectives that are a sum of squared residuals; and
+  Reflective), for objectives that are a sum of squared residuals;
 * ``fit_type = lbfgs`` — a quasi-Newton method (L-BFGS-B) that minimizes a scalar
-  objective from its analytic gradient.
+  objective from its analytic gradient; and
+* ``fit_type = gntr`` — a general-objective Fisher/Gauss-Newton trust-region method
+  that gives ``trf``'s trust-region step quality for the general-NLL objectives ``trf``
+  refuses (an estimated noise scale, the Laplace / count families, constrained fits),
+  using an expected-Fisher Hessian built from the same sensitivities.
 
-Both converge far faster than the metaheuristics near a good fit, and the same
+All three converge far faster than the metaheuristics near a good fit, and the same
 sensitivity machinery drives profile-likelihood identifiability analysis
 (``fit_type = profile_likelihood``). These methods, the noise families and
 constraints they support, and the capability gate that decides when a gradient fit

@@ -53,10 +53,13 @@ from .optimizers.cmaes import CMAESAlgorithm as CMAESAlgorithm
 # Levenberg–Marquardt, primary) consumes #385's residual Jacobian; lbfgs (bounded
 # limited-memory BFGS, the scalar-gradient fallback) consumes the scalar gradient and
 # so handles the objectives trf refuses (estimated noise scale, Laplace/count,
-# constraints). Each is a GradientOptimizer (optimizers/gradient_base.py); importing
-# the leaf runs its @register_fit_type.
+# constraints). gntr (#481) is the missing cell: a trust-region step with trf's
+# Gauss-Newton/EFIM Hessian extended to those same general-NLL objectives (a Fisher
+# Hessian atop the scalar gradient). Each is a GradientOptimizer
+# (optimizers/gradient_base.py); importing the leaf runs its @register_fit_type.
 from .optimizers.trf import TRFAlgorithm as TRFAlgorithm
 from .optimizers.lbfgs import LBFGSAlgorithm as LBFGSAlgorithm
+from .optimizers.gntr import GNTRAlgorithm as GNTRAlgorithm
 # Profile likelihood (#446/#466): a standalone new-era job_type that reuses the same
 # gradient path -- a multi-start TRF polish to the optimum, then one adaptive re-optimized
 # profile per parameter for confidence intervals + identifiability. Importing the leaf runs

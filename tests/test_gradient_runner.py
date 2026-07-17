@@ -28,6 +28,7 @@ import numpy as np
 from scipy.optimize import least_squares, minimize
 
 from pybnf.algorithms.optimizers.gradient_base import DONE
+from pybnf.algorithms.optimizers.gntr import _GNTRRunner
 from pybnf.algorithms.optimizers.lbfgs import _LBFGSRunner
 from pybnf.algorithms.optimizers.trf import _TRFRunner
 
@@ -35,13 +36,15 @@ from pybnf.algorithms.optimizers.trf import _TRFRunner
 class _Grad:
     """Stand-in for an assembled GradientResult: carries exactly what each runner reads
     off it (``gradient`` for L-BFGS-B; ``residual`` / ``jacobian`` /
-    ``least_squares_exact`` for TRF)."""
+    ``least_squares_exact`` for TRF; ``gradient`` / ``hessian`` for GNTR)."""
 
-    def __init__(self, gradient, residual=None, jacobian=None, least_squares_exact=True):
+    def __init__(self, gradient, residual=None, jacobian=None, least_squares_exact=True,
+                 hessian=None):
         self.gradient = gradient
         self.residual = residual
         self.jacobian = jacobian
         self.least_squares_exact = least_squares_exact
+        self.hessian = hessian
 
 
 def _drive_scalar(runner, f_and_grad, max_evals=4000):
@@ -67,6 +70,20 @@ def _drive_least_squares(runner, r_and_jac, max_evals=4000):
         score = 0.5 * float(r @ r)
         nxt = runner.got(u, score, _Grad(jac.T @ r, residual=r, jacobian=jac,
                                          least_squares_exact=True))
+        if nxt is DONE:
+            return runner
+        u = nxt
+    raise AssertionError('runner did not terminate within %d evaluations' % max_evals)
+
+
+def _drive_efim(runner, f_g_h, max_evals=4000):
+    """Drive the GNTR (Fisher/Gauss-Newton trust-region) runner from an analytic
+    ``f_g_h(u) -> (score, gradient, hessian)`` -- the general-objective EFIM it consumes: a
+    scalar gradient + a PSD curvature Hessian, not a least-squares residual model."""
+    u = runner.start()
+    for _ in range(max_evals):
+        score, grad, hess = f_g_h(u)
+        nxt = runner.got(u, score, _Grad(grad, hessian=hess, least_squares_exact=False))
         if nxt is DONE:
             return runner
         u = nxt
@@ -129,6 +146,127 @@ def test_trf_runner_matches_scipy_with_several_bounds_active():
     assert np.allclose(runner.point, [3.0, -3.0, 3.0], atol=1e-6)   # the box corner
     assert np.allclose(runner.point, oracle.x, atol=1e-5)
     assert 'gradient is flat' in runner.stop_reason
+
+
+# --------------------------------------------------------------------------- #
+# GNTR (general-objective Fisher/Gauss-Newton trust region, #481). On a Gaussian
+# least-squares problem its EFIM Hessian is H = J^T J and gradient g = J^T r, so the
+# pseudo-Jacobian reduction reproduces trf's / scipy's step exactly. On a genuinely
+# non-least-squares NLL (a curvature H that is not any J^T J) it takes a real trust-region
+# Newton step, converging to the same minimum scipy.minimize finds.
+# --------------------------------------------------------------------------- #
+def _ls_efim(ustar):
+    """The Gaussian least-squares EFIM: H = A = D^T D (= J^T J), g = A(u-ustar), the score
+    the same 0.5||D(u-ustar)||^2 the residual form reports."""
+    A = _D.T @ _D
+
+    def f_g_h(u):
+        d = u - ustar
+        return 0.5 * float(d @ (A @ d)), A @ d, A
+
+    return f_g_h
+
+
+def test_gntr_runner_matches_trf_and_scipy_on_an_interior_least_squares_minimum():
+    """On a Gaussian least-squares fit the EFIM Hessian is exactly ``J^T J``, so the GNTR runner
+    -- built by feeding ``(g, H)`` through the pseudo-Jacobian into trf's Coleman-Li machinery --
+    takes the SAME step as ``_TRFRunner`` and ``scipy.least_squares`` and reaches the same interior
+    minimum. This is the reduction that anchors ``gntr`` to ``trf``'s step quality."""
+    ustar = np.array([1.0, -0.5, 2.0])
+    runner = _drive_efim(
+        _GNTRRunner(_U0, _LOWER, _UPPER, 200, grad_tol=1e-10, step_tol=1e-12, ridge=1e-10),
+        _ls_efim(ustar))
+    oracle = least_squares(lambda u: _D @ (u - ustar), _U0, jac=lambda u: _D,
+                           bounds=(_LOWER, _UPPER))
+    assert np.allclose(runner.point, ustar, atol=1e-5)
+    assert np.allclose(runner.point, oracle.x, atol=1e-5)
+    assert 'gradient is flat' in runner.stop_reason
+
+
+def test_gntr_runner_matches_scipy_with_several_bounds_active():
+    """The bound-active corner (every coordinate's unconstrained optimum is outside the box): the
+    inherited Coleman-Li reflective transformation slides the iterate cleanly onto the box corner,
+    matching ``scipy.optimize.least_squares(method='trf')`` -- the same offline oracle ``trf`` uses,
+    now reached through the EFIM ``(g, H)`` seam."""
+    ustar = np.array([10.0, -8.0, 9.0])
+    runner = _drive_efim(
+        _GNTRRunner(_U0, _LOWER, _UPPER, 500, grad_tol=1e-10, step_tol=1e-12, ridge=1e-10),
+        _ls_efim(ustar))
+    oracle = least_squares(lambda u: _D @ (u - ustar), _U0, jac=lambda u: _D,
+                           bounds=(_LOWER, _UPPER))
+    assert np.allclose(runner.point, [3.0, -3.0, 3.0], atol=1e-6)   # the box corner
+    assert np.allclose(runner.point, oracle.x, atol=1e-5)
+    assert 'gradient is flat' in runner.stop_reason
+
+
+def test_gntr_runner_converges_on_a_general_non_least_squares_nll():
+    """The case ``gntr`` exists for: a genuinely non-least-squares objective whose Hessian is not
+    any ``J^T J`` (a quadratic bowl plus an exponential ridge). The EFIM trust-region step drives
+    it to the same interior minimum ``scipy.optimize.minimize`` finds -- the general-NLL trust
+    region ``trf`` cannot do and ``lbfgs`` does only with a history Hessian."""
+    A = np.diag([2.0, 1.0])
+    a = np.array([0.5, -0.3])
+    c = np.array([0.4, 0.2])
+    lower, upper, u0 = np.array([-5.0, -5.0]), np.array([5.0, 5.0]), np.array([2.0, 2.0])
+
+    def f_g_h(u):
+        e = np.exp(c @ u)
+        return (float(0.5 * (u - a) @ (A @ (u - a)) + e),
+                A @ (u - a) + e * c,
+                A + e * np.outer(c, c))     # a true PSD Hessian, != any J^T J
+
+    runner = _drive_efim(
+        _GNTRRunner(u0, lower, upper, 500, grad_tol=1e-11, step_tol=1e-13, ridge=1e-10), f_g_h)
+    oracle = minimize(lambda u: f_g_h(u)[0], u0, jac=lambda u: f_g_h(u)[1],
+                      method='L-BFGS-B', bounds=list(zip(lower, upper)),
+                      options={'ftol': 1e-15, 'gtol': 1e-12})
+    assert np.allclose(runner.point, oracle.x, atol=1e-5)
+
+
+def test_gntr_runner_pickles_midway_through_a_search():
+    """The GNTR runner is pure float/ndarray (inherited from ``_TRFRunner`` -- the point, the
+    pseudo residual model, the trust radius + cached SVD), so it round-trips through pickle
+    mid-search and resumes identically (the backup/resume contract, ADR-0007)."""
+    ustar = np.array([1.0, -0.5, 2.0])
+    f_g_h = _ls_efim(ustar)
+    runner = _GNTRRunner(_U0, _LOWER, _UPPER, 200, grad_tol=1e-10, step_tol=1e-12, ridge=1e-10)
+    u = runner.start()
+    for _ in range(4):
+        score, grad, hess = f_g_h(u)
+        u = runner.got(u, score, _Grad(grad, hessian=hess, least_squares_exact=False))
+        assert u is not DONE, 'expected the search to still be running here'
+    revived = pickle.loads(pickle.dumps(runner))
+    assert revived.iteration == runner.iteration
+    assert revived.phase == runner.phase
+    assert np.allclose(revived.point, runner.point)
+    while u is not DONE:
+        score, grad, hess = f_g_h(u)
+        u = revived.got(u, score, _Grad(grad, hessian=hess, least_squares_exact=False))
+    assert np.allclose(revived.point, ustar, atol=1e-4)
+
+
+def test_gntr_refusal_points_at_lbfgs_not_a_metaheuristic():
+    """A corner whose EFIM Hessian ``gntr`` cannot assemble (a MEDIAN count, a MEAN-on-log
+    estimated scale, an estimated constraint scale) must refuse toward ``lbfgs`` -- which
+    consumes the scalar gradient and fits it -- not toward a metaheuristic (the base's default
+    hint). The leaf overrides ``_unsupported_gradient_error`` to redirect the pointer."""
+    from pybnf.algorithms.optimizers.gntr import GNTRAlgorithm
+    from pybnf.gradient import GradientNotSupported
+    from pybnf.printing import PybnfError
+    err = GNTRAlgorithm._unsupported_gradient_error(
+        object(), GradientNotSupported('a MEDIAN-centered negative-binomial ...'))
+    assert isinstance(err, PybnfError)
+    assert 'lbfgs' in str(err).lower()
+
+
+def test_gntr_runner_accepts_any_objective_the_hessian_covers():
+    """The GNTR runner overrides ``trf``'s exact-least-squares gate to a no-op: the curvature is
+    the EFIM Hessian, not a residual, so a non-least-squares gradient (``least_squares_exact ==
+    False``) is accepted (the real gate -- whether the Fisher Hessian could be assembled -- fired
+    upstream). ``_require_exact`` returns the grad unchanged."""
+    runner = _GNTRRunner(_U0, _LOWER, _UPPER, 10, grad_tol=1e-8, step_tol=1e-8, ridge=1e-10)
+    grad = _Grad(np.zeros(3), hessian=np.eye(3), least_squares_exact=False)
+    assert runner._require_exact(grad) is grad
 
 
 def test_lbfgs_runner_matches_scipy_on_an_interior_minimum():

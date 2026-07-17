@@ -27,7 +27,8 @@ import pytest
 
 from pybnf.data import Data, OutputSensitivities
 from pybnf.gradient import (
-    assemble_constraint_gradient, assemble_gaussian_gradient, GradientNotSupported,
+    assemble_constraint_gradient, assemble_constraint_hessian, assemble_fisher_hessian,
+    assemble_gaussian_gradient, GradientNotSupported,
     PARAM, IC, NONE, ExperimentRouting, ParamRoute, route_experiment,
 )
 from pybnf.gradient.assembly import _sampling_scale_factors
@@ -2905,3 +2906,198 @@ def test_fd_acceptance_gate_dose_response(k_type):
     # Fixed sigma, all-Gaussian: the residual/Jacobian is the whole objective.
     assert res.least_squares_exact is True
     np.testing.assert_allclose(res.gradient, grad_fd, rtol=1e-4, atol=1e-4)
+
+
+# ================================================== EFIM / Fisher Hessian (#481) ===
+# assemble_fisher_hessian assembles the expected-Fisher / Gauss-Newton Hessian the EFIM
+# trust-region optimizer (fit_type = gntr) consumes. Because it is the *expected* Fisher
+# (not the observed second derivative), a finite difference of the assembled gradient does
+# NOT equal it in general (they agree only in expectation for the noise/Laplace/count
+# blocks); these checks are closed-form, plus the headline J^T J consistency that proves
+# the Gaussian case reduces to trf's curvature.
+
+def test_fisher_hessian_gaussian_equals_jtj():
+    """The Fisher/Gauss-Newton Hessian of a fixed-sigma Gaussian fit is exactly the residual
+    Jacobian's ``J^T J`` -- the same Gauss-Newton curvature ``trf`` uses (``kappa ==
+    (d rho/d pred)^2`` for a residual-bearing family). Two parameters + a per-condition factor
+    exercise the outer products; the result is symmetric PSD."""
+    pred = np.array([120.0, 80.0, 53.0, 36.0])
+    obs = np.array([118.0, 82.0, 50.0, 38.0])
+    sigma = 4.0
+    dk = np.array([0.0, -80.0, -106.0, -108.0])
+    ds0 = np.array([1.0, 0.66, 0.44, 0.30])
+    obj = ChiSquareObjective()
+    sim = _sim_with_sensitivities(pred, d_param=dk, d_ic=ds0)
+    exp = _exp(obs, sigma)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 4.0), 'S0': ParamRoute('S0', IC, 'S()', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3), ('S0', 'uniform_var', 0.0, 500.0, 120.0))
+
+    res = assemble_gaussian_gradient(obj, [(sim, exp, routing)], free)
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+    np.testing.assert_allclose(H, res.jacobian.T @ res.jacobian)
+    np.testing.assert_allclose(H, H.T)                       # symmetric
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-9)            # PSD
+
+
+def test_fisher_hessian_sums_across_experiments():
+    """The Hessian is summed across experiments -- assembling two together equals adding the
+    two single-experiment Hessians (the outer-product sum is linear over points)."""
+    obj = ChiSquareObjective()
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+    sim1 = _sim_with_sensitivities([100, 74, 55, 41], d_param=[0, -74, -110, -123])
+    exp1 = _exp([100, 70, 60, 40], 5.0)
+    r1 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    sim2 = _sim_with_sensitivities([100, 55, 30, 17], d_param=[0, -110, -120, -100])
+    exp2 = _exp([100, 58, 28, 20], 3.0)
+    r2 = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 4.0)})
+
+    both = assemble_fisher_hessian(obj, [(sim1, exp1, r1), (sim2, exp2, r2)], free)
+    h1 = assemble_fisher_hessian(obj, [(sim1, exp1, r1)], free)
+    h2 = assemble_fisher_hessian(obj, [(sim2, exp2, r2)], free)
+    np.testing.assert_allclose(both, h1 + h2)
+
+
+def test_fisher_hessian_estimated_sigma_adds_diagonal_noise_block():
+    """An estimated free sigma (``chi_sq_dynamic``) adds the expected-Fisher noise block
+    ``sum_i 2/sigma^2`` on the sigma coordinate, block-diagonal (no location-scale cross term),
+    while the model-parameter block stays the data-fit ``J^T J``. The sigma column of the
+    residual-Jacobian is zero, so the noise curvature exists only on the Hessian's own block."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    sigma = 5.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+    obj = _free_sigma_objective('noise_sd')
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('noise_sd', 'uniform_var', 0.01, 100.0, sigma))
+
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+    np.testing.assert_allclose(H[0, 0], np.sum((dk / sigma) ** 2))      # data-fit block
+    np.testing.assert_allclose(H[1, 1], len(obs) * 2.0 / sigma ** 2)    # sigma Fisher 2/sigma^2
+    np.testing.assert_allclose(H[0, 1], 0.0)                           # block-diagonal
+    np.testing.assert_allclose(H[1, 0], 0.0)
+
+
+def test_fisher_hessian_laplace_location_block():
+    """A fixed-scale Laplace fit's Fisher Hessian is the location block ``sum_i (1/b^2)
+    outer(s_i, s_i)`` -- Laplace's expected location Fisher ``1/b^2`` (its observed second
+    derivative is 0, so the expected Fisher is what makes an L1 Newton step well-posed)."""
+    pred = np.array([100.0, 74.0, 55.0, 41.0])
+    obs = np.array([100.0, 70.0, 60.0, 40.0])
+    b = 3.0
+    dk = np.array([0.0, -74.0, -110.0, -123.0])
+    obj = _laplace_objective()                 # fixed _SD column scale
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp(obs, b)                          # Stot_SD column == b
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3))
+
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+    np.testing.assert_allclose(H[0, 0], np.sum((1.0 / b ** 2) * dk ** 2))
+
+
+def test_fisher_hessian_neg_bin_mean_location_block():
+    """A fixed-dispersion negative-binomial (MEAN) fit's Fisher Hessian is the location block
+    ``sum_i kappa_i outer(s_i, s_i)`` with ``kappa_i = r/(mean(r+mean))`` the mean's Fisher
+    (``mean == prediction`` for MEAN)."""
+    pred = np.array([50.0, 40.0, 30.0, 22.0])
+    obs = np.array([48.0, 42.0, 28.0, 24.0])
+    r = 6.0
+    dk = np.array([0.0, -8.0, -12.0, -11.0])
+    obj = _neg_bin_objective(location=MEAN, dispersion=r)
+    sim = _sim_with_sensitivities(pred, d_param=dk)
+    exp = _exp_dyn(obs)                          # self-normalizing PMF, no _SD column
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3))
+
+    H = assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+    kappa = r / (pred * (r + pred))
+    np.testing.assert_allclose(H[0, 0], np.sum(kappa * dk ** 2))
+
+
+def test_fisher_hessian_refuses_median_negative_binomial():
+    """A MEDIAN-centered count family has its mean behind the betainc CDF inversion, whose
+    location Fisher this cut does not assemble -- refused with GradientNotSupported (-> lbfgs)."""
+    obj = _neg_bin_objective(location=MEDIAN, dispersion=6.0)
+    sim = _sim_with_sensitivities([50.0, 40.0, 30.0, 22.0], d_param=[0.0, -8.0, -12.0, -11.0])
+    exp = _exp_dyn([48.0, 42.0, 28.0, 24.0])
+    routing = ExperimentRouting(routes={'k': ParamRoute('k', PARAM, 'k', 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 100.0, 0.3))
+    with pytest.raises(GradientNotSupported):
+        assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+
+def test_fisher_hessian_refuses_mean_on_log_estimated_scale():
+    """An estimated sigma centering a MEAN on a log scale couples location and scale (a nonzero
+    cross-Fisher this cut does not assemble) -- refused with GradientNotSupported (-> lbfgs)."""
+    obj = LikelihoodObjective(noise=Gaussian(additive_on=LOG10, location=MEAN),
+                              sigma_sources={'sigma': FreeParameterSigma('noise_sd')})
+    sim = _sim_with_sensitivities([100.0, 74.0, 55.0, 41.0], d_param=[0.0, -74.0, -110.0, -123.0])
+    exp = _exp_dyn([100.0, 70.0, 60.0, 40.0])
+    routing = ExperimentRouting(routes={
+        'k': ParamRoute('k', PARAM, 'k', 1.0),
+        'noise_sd': ParamRoute('noise_sd', NONE, None, 1.0)})
+    free = _free(('k', 'uniform_var', 0.0, 10.0, 0.3),
+                 ('noise_sd', 'uniform_var', 0.01, 100.0, 0.2))
+    with pytest.raises(GradientNotSupported):
+        assemble_fisher_hessian(obj, [(sim, exp, routing)], free)
+
+
+def test_constraint_hessian_static_is_zero():
+    """A static (piecewise-linear hinge) constraint penalty has zero curvature -- a linear
+    penalty contributes no Gauss-Newton Hessian (its pull rides the gradient, and the data-fit
+    Fisher + ridge supply the step's curvature)."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    H = assemble_constraint_hessian([cset], sdd, routings, free)
+    np.testing.assert_allclose(H, 0.0)
+
+
+def test_constraint_hessian_logit_matches_closed_form():
+    """The logit softplus penalty's Gauss-Newton curvature is ``sigma(x)(1-sigma(x))/s^2 *
+    outer(grad q, grad q)`` (``P'' `` of ``ln(1+e^{d/s})``, ``x = difference/s``), at the
+    achieving row -- symmetric PSD."""
+    from pybnf.constraint import _sigmoid
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    s = 12.0
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=None, atvar=None, atval=2.0, scale=s)
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    H = assemble_constraint_hessian([cset], sdd, routings, free)
+    x = (90.0 - _C_STOT[2]) / s
+    pp = _sigmoid(x) * (1.0 - _sigmoid(x)) / s ** 2
+    grad_q = np.array([-_C_DK[2], -_C_DS0[2]])       # d(90 - Stot)/d theta at row 2
+    np.testing.assert_allclose(H, pp * np.outer(grad_q, grad_q), rtol=1e-5)
+    np.testing.assert_allclose(H, H.T)
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-12)
+
+
+def test_constraint_hessian_satisfied_is_zero():
+    """A satisfied smooth-penalty constraint far from its boundary contributes negligible
+    curvature (the softplus is nearly flat there), and a satisfied static one exactly zero."""
+    sdd, routings, free = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AtConstraint('Stot', '<', 90.0, 'm', 'tc', weight=2.0, atvar=None, atval=2.0)  # 55 < 90 ok
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    H = assemble_constraint_hessian([cset], sdd, routings, free)
+    np.testing.assert_allclose(H, 0.0)
+
+
+def test_constraint_hessian_refuses_estimated_scale():
+    """A constraint with an estimated (free-parameter-tied) scale couples the readout and scale
+    (an off-diagonal Fisher block this cut does not assemble) -- refused (-> lbfgs). Its gradient
+    column still fits under ``fit_type = lbfgs``."""
+    sdd, routings, _ = _constraint_sim(_C_STOT, _C_DK, _C_DS0)
+    c = AtConstraint('Stot', '>', 90.0, 'm', 'tc', weight=None, atvar=None, atval=2.0, scale=12.0)
+    c.bind_scale_param('s_q')
+    cset = ConstraintSet('m', 'tc'); cset.constraints = [c]
+    free = _free(('k', 'uniform_var', 0.0, 100.0, 0.4), ('S0', 'uniform_var', 0.0, 1000.0, 120.0),
+                 ('s_q', 'uniform_var', 0.1, 1000.0, 12.0))
+    with pytest.raises(GradientNotSupported):
+        assemble_constraint_hessian([cset], sdd, routings, free)

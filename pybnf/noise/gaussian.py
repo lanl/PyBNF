@@ -98,6 +98,26 @@ class Gaussian(NoiseModel):
         return {'sigma': (1. - rho ** 2) / noise
                 - rho * self.location.d_offset_d_noise(self, noise) / noise}
 
+    def noise_param_fisher(self, prediction, observation, noise, extra=None):
+        """``{'sigma': 2/sigma**2}`` -- the expected Fisher information of an estimated
+        Gaussian scale, the noise block of the EFIM Hessian (``fit_type = gntr``, #481).
+        With the per-point loss ``R**2/(2 sigma**2) + log sigma`` (``R`` the additive-space
+        residual), ``d^2/d sigma^2 = 3 R**2/sigma^4 - 1/sigma^2`` and ``E[R**2] = sigma**2``,
+        so ``E[d^2] = 3/sigma^2 - 1/sigma^2 = 2/sigma^2``. Using the *expected* value (not the
+        data-dependent observed second derivative, which can go negative) is what keeps the
+        block positive-definite. The location-scale cross Fisher is 0 by symmetry
+        (``E[d^2/d mu d sigma] = -2 E[R]/sigma^3 = 0``), so the block is diagonal -- **except**
+        a MEAN centered on a log scale, where the moment offset ``mu = forward(pred) -
+        offset(sigma)`` couples location and scale; that corner is refused (its scalar gradient
+        still fits under ``fit_type = lbfgs``)."""
+        if self.location.d_offset_d_noise(self, noise) != 0.0:
+            from ..gradient.errors import GradientNotSupported
+            raise GradientNotSupported(
+                "An estimated Gaussian sigma centering a MEAN on a log scale couples the "
+                "location and scale (a nonzero cross-Fisher), which the EFIM trust-region "
+                "path (fit_type = gntr, #481) does not assemble this cut; use fit_type = lbfgs.")
+        return {'sigma': 2.0 / noise ** 2.}
+
     def log_normalizer(self, noise):
         return np.log(noise)
 
