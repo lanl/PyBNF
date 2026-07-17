@@ -950,10 +950,30 @@ class BNGLModel(Model):
         """
         Creates a copy of the model, with the parameter set changed as specified by MutationSet mut
         :param mut: The MutationSet to apply
+
+        A ``condition:`` may perturb a **fixed** model parameter, not only a fit-vector
+        (free) one (ADR-0027) -- e.g. a knockout ``MEK1_0 = 0`` or an isoform-ablation
+        ``b2 = 0`` on a parameter held at its nominal. ``param_set`` carries only the free
+        parameters, so a fixed target is seeded here and written into the emitted mutant
+        BNGL by :meth:`copy_with_param_set` -> ``model_text`` (``_override_param_block_values``
+        rewrites its line by id). An absolute ``=`` needs no base; a relative op on a fixed
+        param is refused here (this text-emitting path does not resolve the nominal -- use an
+        absolute value or declare the parameter free; the bngsim execute path resolves it).
         """
         params = {p.name: p.value for p in self.param_set}
         for mi in mut:
-            params[mi.name] = mi.mutate(params[mi.name])
+            if mi.name in params:
+                base = params[mi.name]
+            elif getattr(mi, 'is_species', False):
+                base = None  # mutate() raises the species-inline-only error (ADR-0052)
+            elif mi.operation == '=':
+                base = None  # absolute set ignores the base -- no nominal needed
+            else:
+                raise PybnfError(
+                    f"Condition perturbs fixed parameter '{mi.name}' with relative operator "
+                    f"'{mi.operation}'; the BNGL-emit path cannot resolve its nominal. Use an "
+                    f"absolute '=' value, or declare '{mi.name}' as a free parameter.")
+            params[mi.name] = mi.mutate(base)
         mut_param_list = [FreeParameter(pname, 'uniform_var', -np.inf, np.inf, value=params[pname], bounded=True)
                           for pname in params]
         mut_pset = PSet(mut_param_list)

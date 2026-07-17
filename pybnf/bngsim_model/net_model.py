@@ -1974,7 +1974,7 @@ class BngsimModel(NetModel):
         """Create a mutant copy using a cloned engine model."""
         mut_model = copy.copy(self)
         mut_model._engine_model = self._engine_model.clone()
-        mut_model.param_set = _build_mutant_param_set(self.param_set, mut)
+        mut_model.param_set = _build_mutant_param_set(self.param_set, mut, self._engine_model)
         # A mutant's action output is scored under ``<action suffix><mut.suffix>``
         # in the parent's dataset, so fold its suffix onto each action's own suffix
         # when keying the scored set for the #475 gate (the shallow copy already

@@ -540,7 +540,8 @@ class BngsimNfModel(Model):
     def _get_mutant_model_nf(self, mut):
         """Create a mutant copy with a mutated parameter set."""
         mut_model = copy.copy(self)
-        mut_model.param_set = _build_mutant_param_set(self.param_set, mut)
+        mut_model.param_set = _build_mutant_param_set(
+            self.param_set, mut, getattr(self, '_engine_model', None))
         return mut_model
 
     def _saved_bngl_text(self):

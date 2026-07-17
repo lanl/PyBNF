@@ -12,6 +12,7 @@ import re
 
 import numpy as np
 
+from ..printing import PybnfError
 from ..pset import FreeParameter, PSet
 
 
@@ -46,16 +47,49 @@ def _eval_model_expression(expr, model):
     return float(eval(expr, ns))  # noqa: S307
 
 
-def _build_mutant_param_set(param_set, mut):
+def _nominal_param_value(engine_model, name):
+    """Current value of a model parameter that is *not* in the fit vector -- a fixed
+    ``condition:`` target (ADR-0027) -- read from the engine model's parameter table."""
+    if engine_model is not None:
+        try:
+            return engine_model.get_param(name)
+        except Exception:
+            pass
+    raise PybnfError(
+        f"Condition perturbs '{name}', which is neither a free parameter nor a "
+        f"parameter of this model. Check the perturbation-target spelling; a species "
+        f"initial-amount target must be a pattern (contain '(') used in a "
+        f"preequilibration protocol (ADR-0052), not a bare parameter."
+    )
+
+
+def _build_mutant_param_set(param_set, mut, engine_model=None):
     """Apply a MutationSet to a copy of param_set's values and return a new PSet.
 
     Shared by the net (:class:`BngsimModel`) and network-free
     (:class:`BngsimNfModel`) mutant builders, which differ only in whether they
     also clone an engine model.
+
+    ``param_set`` is the fit vector (free parameters). A ``condition:`` may also
+    perturb a **fixed** model parameter -- a first-class condition target (ADR-0027):
+    an isoform-ablation ``b2 = 0`` on a parameter held at its nominal, or a knockout /
+    seed swap ``MEK1_0 = 0`` on a parameter that only seeds a species' initial
+    concentration. Seed any such non-free target from the engine model's current value
+    (``engine_model``) so a relative op has a base and an absolute op is well-formed;
+    the override then rides ``param_set`` into ``execute``'s ``set_param`` and
+    ``_sync_species_initial_concentrations`` (so an IC-seeding param propagates to the
+    initial concentration). Without this a non-free condition target raised
+    ``KeyError`` -- an edition-2 regression versus the legacy per-variant model files.
     """
     params = {p.name: p.value for p in param_set}
     for mi in mut:
-        params[mi.name] = mi.mutate(params[mi.name])
+        if mi.name in params:
+            base = params[mi.name]
+        elif getattr(mi, 'is_species', False):
+            base = None  # mutate() raises the species-inline-only error (ADR-0052)
+        else:
+            base = _nominal_param_value(engine_model, mi.name)
+        params[mi.name] = mi.mutate(base)
     mut_param_list = [
         FreeParameter(
             pname,
