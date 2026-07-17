@@ -25,6 +25,7 @@ recovery tier in ``test_gradient_optimizer.py``.
 import pickle
 
 import numpy as np
+import pytest
 from scipy.optimize import least_squares, minimize
 
 from pybnf.algorithms.optimizers.gradient_base import DONE
@@ -257,6 +258,18 @@ def test_gntr_refusal_points_at_lbfgs_not_a_metaheuristic():
         object(), GradientNotSupported('a MEDIAN-centered negative-binomial ...'))
     assert isinstance(err, PybnfError)
     assert 'lbfgs' in str(err).lower()
+
+
+def test_gntr_runner_fails_fast_without_an_attached_hessian():
+    """The GNTR runner needs an assembled EFIM Hessian (GNTRAlgorithm attaches it in
+    _attach_curvature before the runner sees the gradient). If it is ever driven off the
+    residual-form path with no hessian, it raises a clear PybnfError naming the wiring error
+    rather than an opaque numpy failure deep in the eigen-factorisation."""
+    from pybnf.printing import PybnfError
+    runner = _GNTRRunner(_U0, _LOWER, _UPPER, 10, grad_tol=1e-8, step_tol=1e-8, ridge=1e-10)
+    u = runner.start()
+    with pytest.raises(PybnfError, match='(?i)hessian'):
+        runner.got(u, 1.0, _Grad(np.zeros(3)))   # _Grad defaults hessian=None
 
 
 def test_gntr_runner_accepts_any_objective_the_hessian_covers():

@@ -201,6 +201,16 @@ class _GNTRRunner(_TRFRunner):
         ``J = diag(sqrt(w)) Q^T`` (so ``J^T J == H``) and ``r = diag(1/sqrt(w)) Q^T g`` (so
         ``J^T r == g``). ``self.g`` recomputed as ``J^T r`` is exactly ``g`` -- the value the
         Coleman-Li scaling and the convergence test read."""
+        if getattr(grad, 'hessian', None) is None:
+            # The EFIM leaf attaches the Fisher Hessian in GNTRAlgorithm._attach_curvature
+            # before the runner ever sees the gradient; a None here means this runner was
+            # driven off the residual-form (trf/lbfgs) path by mistake. Fail fast with the
+            # cause rather than an opaque numpy error deep in the eigen-factorisation.
+            raise PybnfError(
+                "The GNTR (Fisher/Gauss-Newton trust-region) runner requires an assembled "
+                "EFIM Hessian, but the gradient carried none. This is an internal wiring "
+                "error -- a gntr runner must be driven by GNTRAlgorithm, which attaches the "
+                "Hessian in _attach_curvature.")
         g = np.asarray(grad.gradient, dtype=float)
         hessian = np.asarray(grad.hessian, dtype=float)
         n = self.n
