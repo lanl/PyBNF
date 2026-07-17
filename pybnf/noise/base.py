@@ -183,6 +183,49 @@ class NoiseModel(ABC):
             f'{type(self).__name__} has no noise-parameter gradient on the gradient path '
             f'(#454/#458)')
 
+    def location_fisher(self, prediction, observation, noise, extra=None):
+        """The expected per-point **Fisher information of the location** ``kappa`` -- the
+        Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``, #481)
+        weights ``d(prediction)/d(theta)`` by to build its Hessian ``H = sum_i kappa_i
+        s_i s_i^T``. ``kappa`` is the expected ``E[-d^2 log p / d mu^2]`` carried through
+        the prediction: for a location-scale family additive on a scale it is
+        ``(forward'(pred))**2 * I_additive`` (the unit location Fisher in the additive
+        space times the scale's chain factor squared).
+
+        Only a **non-residual** family in scope overrides it -- Laplace
+        (``(forward'(pred))**2 / b**2``) and the count family (its mean's Fisher, through
+        the location realization). A **residual-bearing** family (Gaussian, Student-t) is
+        never asked: the assembly reads its location curvature straight off the residual
+        Jacobian (``d_residual_d_prediction**2``, which *is* the Fisher there), so it takes
+        that path. The base raises, so an unsupported family/config refuses the EFIM step
+        with a pointer back to the scalar-gradient (L-BFGS-B) path."""
+        from ..gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "%s has no expected location Fisher on the EFIM trust-region path "
+            "(fit_type = gntr, #481)." % type(self).__name__)
+
+    def noise_param_fisher(self, prediction, observation, noise, extra=None):
+        """``{param_name: I_scale}`` -- the expected **Fisher information of each estimated
+        noise parameter**, the diagonal noise block of the EFIM Hessian (``fit_type =
+        gntr``, #481). The assembly reads it only for a parameter whose source is
+        *estimated* (a free parameter), exactly as :meth:`noise_grad_point` emits a column
+        only for an estimated parameter, and accumulates ``w_i * I_scale *
+        outer(e_param, e_param)`` (the free parameter *is* the noise parameter, so the
+        curvature direction is that parameter's own coordinate). The location-scale cross
+        Fisher is 0 for the symmetric families on linear/MEDIAN, so the block is diagonal
+        there -- a family whose estimated scale couples to the location (a MEAN on a log
+        scale) refuses instead.
+
+        Overridden by the families whose estimated-scale block this cut assembles --
+        Gaussian (``{'sigma': 2/sigma**2}``) and Laplace (``{'scale': 1/b**2}``). The base
+        raises, which is exactly the refusal for an out-of-scope estimated scale (the count
+        family's free dispersion, the Student-t 2-parameter block): the fit falls back to
+        the scalar-gradient (L-BFGS-B) path."""
+        from ..gradient.errors import GradientNotSupported
+        raise GradientNotSupported(
+            "%s has no estimated-noise Fisher block on the EFIM trust-region path "
+            "(fit_type = gntr, #481)." % type(self).__name__)
+
     def nll(self, prediction, observation, noise, extra=None):
         """The full per-point negative log-likelihood (data fit + every parameter's
         normalizer)."""

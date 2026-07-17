@@ -177,6 +177,10 @@ class GradientResult:
     gradient: np.ndarray      # (n_param,) = J^T rho + estimated-noise columns
     param_names: list         # free-parameter order of the columns / gradient
     least_squares_exact: bool = True   # False once an estimated sigma is present
+    #: The expected-Fisher / Gauss-Newton Hessian (n_param, n_param), sampling space --
+    #: attached only on the EFIM trust-region path (``fit_type = gntr``, #481) by
+    #: :func:`assemble_fisher_hessian`; ``None`` for ``trf`` / ``lbfgs``, which never form it.
+    hessian: np.ndarray = None
 
 
 def assemble_gaussian_gradient(objective, experiments, free_params):
@@ -332,6 +336,102 @@ def _accumulate_experiment(objective, sim_data, exp_data, routing, index, n_para
                 data_fit_gradient += weight * dfit_dpred * dpred_dtheta
                 inexact = True
     return inexact
+
+
+def assemble_fisher_hessian(objective, experiments, free_params):
+    """Assemble the expected-Fisher / Gauss-Newton **Hessian** ``H`` (n_param x n_param),
+    summed across experiments -- the curvature the EFIM trust-region path
+    (``fit_type = gntr``, #481) consumes alongside the scalar gradient
+    :func:`assemble_gaussian_gradient` already produces.
+
+    ``H = sum_i w_i [ kappa_i * outer(s_i, s_i) ]  +  sum_estimated-noise w_i * I_scale *
+    outer(e_p, e_p)`` where ``s_i = d(prediction_i)/d(theta)`` is the same forward
+    sensitivity the gradient uses (through the objective's ``prediction_sensitivity``
+    seam), ``kappa_i`` the per-point location Fisher (``objective.location_fisher_point``:
+    ``(d rho/d pred)**2`` for a residual-bearing Gaussian/Student-t column, the family's
+    ``location_fisher`` for Laplace/count), and ``I_scale`` each estimated noise parameter's
+    Fisher (``objective.noise_fisher_point``). Every rank-1 term is PSD (``kappa >= 0``,
+    ``I_scale >= 0``), so ``H`` is PSD by construction. The location and noise blocks are
+    disjoint (a noise parameter never enters ``s_i``, which is 0 in its column), so the
+    Gaussian estimated-sigma Hessian is block-diagonal, exactly the Fisher predicts.
+
+    ``experiments`` is the same ``(sim_data, exp_data, routing)`` iterable
+    :func:`assemble_gaussian_gradient` consumes, ``free_params`` the same ordered free-
+    parameter list. Mirrors that assembler's point loop exactly (same points, same
+    ``raw_sens`` accessor, same ``prediction_sensitivity``), so the Hessian is formed over
+    precisely the points the gradient and objective score. The native -> sampling transform
+    (ADR-0029) is the gradient's ``d theta/d u`` factor applied on **both** axes:
+    ``H <- diag(f) H diag(f)``. Raises :class:`GradientNotSupported` for a configuration whose
+    Fisher this cut does not assemble (a MEDIAN-centered count, a MEAN-on-log estimated scale,
+    ...), so the fit refuses the EFIM step with a pointer to the L-BFGS-B path."""
+    names = [p.name for p in free_params]
+    index = {name: j for j, name in enumerate(names)}
+    n_param = len(free_params)
+
+    # An estimated free noise scale reads its value from the objective's per-evaluation pset
+    # map (ADR-0021); seed it from the current point exactly as assemble_gaussian_gradient
+    # does, so the Fisher is formed at u (idempotent -- the gradient assembly already seeded it).
+    existing = getattr(objective, '_pset_values', None) or {}
+    objective._pset_values = {**existing, **{p.name: p.value for p in free_params}}
+
+    hessian = np.zeros((n_param, n_param))
+    for sim_data, exp_data, routing in experiments:
+        _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index, n_param,
+                                      hessian)
+
+    # Native -> sampling space, applied once on both axes (ADR-0029): the same per-parameter
+    # d theta/d u factor the gradient scales its columns by, here as an outer product.
+    factors = _sampling_scale_factors(free_params)
+    return hessian * np.outer(factors, factors)
+
+
+def _accumulate_experiment_fisher(objective, sim_data, exp_data, routing, index, n_param,
+                                  hessian):
+    """Accumulate one experiment's per-point Fisher rank-1 terms into ``hessian`` (the
+    curvature twin of :func:`_accumulate_experiment`). Same independent variable, same
+    comparable-column intersection, same NaN skip, same ``_sim_row_for`` row match, same
+    sorted-column walk -- so the Hessian is assembled over precisely the points the gradient
+    is. The location block reads ``kappa_i`` (``location_fisher_point``) and the noise block
+    each estimated parameter's ``I_scale`` (``noise_fisher_point``)."""
+    sens = sim_data.output_sensitivities
+    if sens is None:
+        raise GradientNotSupported(
+            "An experiment carries no forward-sensitivity tensor; enable the gradient "
+            "path (apply_routing) on every scored model before assembling the Hessian.")
+
+    indvar = min(exp_data.cols, key=exp_data.cols.get)
+    comparable = set(sim_data.cols) | set(objective._per_measurement_models)
+    compare_cols = set(exp_data.cols).intersection(comparable)
+    compare_cols.discard(indvar)
+
+    raw_sens = _raw_sensitivity_accessor(objective, sim_data, sens, routing, index, n_param, indvar)
+
+    for rownum in range(exp_data.data.shape[0]):
+        sim_row = objective._sim_row_for(sim_data, exp_data, indvar, rownum, show_warnings=False)
+        for col_name in sorted(compare_cols):
+            observation = exp_data.data[rownum, exp_data.cols[col_name]]
+            if np.isnan(observation):
+                continue
+            weight = exp_data.weights[rownum, exp_data.cols[col_name]]
+            # d(prediction)/d(theta) through the objective's transform seam -- the SAME
+            # s_i the gradient's residual-Jacobian / data-fit column is built from.
+            dpred_dtheta = objective.prediction_sensitivity(
+                sim_data, sim_row, col_name, exp_data, rownum, raw_sens, index)
+            # Location block: w_i * kappa_i * outer(s_i, s_i). A column whose location
+            # curvature is 0 (a pinned/constant prediction) adds nothing.
+            kappa = objective.location_fisher_point(sim_data, exp_data, sim_row, rownum, col_name)
+            if kappa:
+                hessian += (weight * kappa) * np.outer(dpred_dtheta, dpred_dtheta)
+            # Noise block: each estimated noise parameter's Fisher on its own coordinate.
+            for pname, i_scale in objective.noise_fisher_point(
+                    sim_data, exp_data, sim_row, rownum, col_name).items():
+                if pname not in index:
+                    raise GradientNotSupported(
+                        "Observable '%s' estimates its noise scale as free parameter '%s', "
+                        "but '%s' is not among the gradient's free parameters (%s)."
+                        % (col_name, pname, pname, ', '.join(index) or '(none)'))
+                j = index[pname]
+                hessian[j, j] += weight * i_scale
 
 
 def _sensitivity(sens, selector, route, sim_row):
@@ -548,6 +648,37 @@ def assemble_constraint_gradient(constraint_sets, sim_data_dict, routings, free_
             grad += constraint.penalty_gradient(sim_data_dict, raw_sens, index, n_param,
                                                 pset_values=pset_values)
     return grad * _sampling_scale_factors(free_params)
+
+
+def assemble_constraint_hessian(constraint_sets, sim_data_dict, routings, free_params):
+    """The Gauss-Newton **Hessian** of the total constraint penalty w.r.t. the free parameters
+    (layer I curvature, #481/#456), in **sampling space** -- the constraint block the EFIM
+    trust-region path (``fit_type = gntr``) adds to :func:`assemble_fisher_hessian`'s data-fit
+    Hessian, the curvature sibling of :func:`assemble_constraint_gradient`.
+
+    Each constraint's penalty is ``P(q(theta))`` for an at-/between-time readout ``q``, so its
+    exact Hessian is ``P''(q) * outer(grad q, grad q) + P'(q) * hess q``; the Gauss-Newton term
+    drops the second-order sensitivity ``hess q`` (as the EFIM drops it for the data fit) and
+    clamps ``P''`` to its positive part, giving the PSD ``max(P''(q), 0) * outer(grad q, grad q)``
+    (:meth:`~pybnf.constraint.Constraint.penalty_curvature`). Reuses
+    :func:`_constraint_sensitivity_accessor` for ``grad q`` exactly as the gradient does, and
+    applies the same native -> sampling ``d theta/d u`` factor on both axes. A **piecewise-linear**
+    (static hinge ``.con``) penalty has ``P'' == 0``, so it contributes no curvature -- correct, a
+    linear penalty has none; its pull rides the gradient. Returns zeros for an empty constraint set;
+    raises :class:`GradientNotSupported` for a penalty whose curvature this cut does not assemble
+    (a clipped smooth penalty, an estimated constraint scale) -> the L-BFGS-B fallback."""
+    names = [p.name for p in free_params]
+    index = {name: j for j, name in enumerate(names)}
+    n_param = len(free_params)
+    pset_values = {p.name: p.value for p in free_params}
+    raw_sens = _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param)
+    hessian = np.zeros((n_param, n_param))
+    for cset in constraint_sets:
+        for constraint in cset.constraints:
+            hessian += constraint.penalty_curvature(sim_data_dict, raw_sens, index, n_param,
+                                                    pset_values=pset_values)
+    factors = _sampling_scale_factors(free_params)
+    return hessian * np.outer(factors, factors)
 
 
 def _constraint_sensitivity_accessor(sim_data_dict, routings, index, n_param):

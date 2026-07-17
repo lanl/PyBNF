@@ -133,5 +133,34 @@ class Laplace(NoiseModel):
         return {'scale': -np.sign(residual) * self.location.d_offset_d_noise(self, noise) / noise
                 - abs(residual) / noise ** 2. + 1. / noise}
 
+    def location_fisher(self, prediction, observation, noise, extra=None):
+        """``kappa = (forward'(pred))**2 / b**2`` -- the Laplace location Fisher, the
+        Gauss-Newton curvature the EFIM trust-region path (``fit_type = gntr``, #481) weights
+        ``d(prediction)/d(theta)`` by. The unit Fisher of a Laplace location is ``1/b**2``
+        (``E[(sign(R)/b)**2] = 1/b**2``); the scale's chain factor ``forward'(pred)`` carries
+        it to the prediction (``1`` on the linear scale). Laplace is **not** residual-bearing
+        (its L1 data fit is the cusp ``sqrt|z|``, #459), so the assembly reads its location
+        curvature here rather than off a residual Jacobian. Holds for MEDIAN and MEAN alike --
+        the offset is prediction-independent, so ``d mu/d pred = forward'(pred)`` either way.
+        Note the *observed* second derivative of ``|R|/b`` is 0 almost everywhere; the
+        *expected* Fisher ``1/b**2`` is the well-posed curvature (why an EFIM step, not a plain
+        Newton step, is what makes L1 tractable)."""
+        return (self.additive_on.dforward(prediction) / noise) ** 2.
+
+    def noise_param_fisher(self, prediction, observation, noise, extra=None):
+        """``{'scale': 1/b**2}`` -- the expected Fisher of an estimated Laplace scale, the noise
+        block of the EFIM Hessian (``fit_type = gntr``, #481). With the per-point loss
+        ``|R|/b + log(2 b)``, ``d^2/d b^2 = 2|R|/b^3 - 1/b^2`` and ``E[|R|] = b``, so
+        ``E[d^2] = 2/b^2 - 1/b^2 = 1/b^2``. Diagonal (cross-Fisher 0 by symmetry), except a MEAN
+        on a log scale, refused as for Gaussian (its scalar gradient still fits under
+        ``fit_type = lbfgs``)."""
+        if self.location.d_offset_d_noise(self, noise) != 0.0:
+            from ..gradient.errors import GradientNotSupported
+            raise GradientNotSupported(
+                "An estimated Laplace scale centering a MEAN on a log scale couples the "
+                "location and scale on the EFIM trust-region path (fit_type = gntr, #481); "
+                "use fit_type = lbfgs.")
+        return {'scale': 1.0 / noise ** 2.}
+
     def log_normalizer(self, noise):
         return np.log(2. * noise)

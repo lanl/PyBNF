@@ -44,10 +44,11 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                # cross-parameter parallel-track cap (#467).
                'profile_likelihood_max_iterations', 'profile_likelihood_max_points',
                'profile_likelihood_reopt_max_iterations', 'profile_likelihood_max_parallel',
-               # gradient optimizers (fit_type = trf / lbfgs, #386): the int-valued
-               # tunables -- L-BFGS-B's curvature-history depth and the two cycle
-               # budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
+               # gradient optimizers (fit_type = trf / lbfgs / gntr, #386/#481): the
+               # int-valued tunables -- L-BFGS-B's curvature-history depth and the three
+               # cycle budgets (runtime-guarded RUNTIME_KEYS, defaulting to max_iterations).
                'lbfgs_history', 'trf_max_iterations', 'lbfgs_max_iterations',
+               'gntr_max_iterations',
                # DREAM multi-try count (ADR-0067 Stage 2, #357): candidate proposals
                # per chain per generation (n_try = 1 is the classic single-try engine).
                'n_try']
@@ -60,11 +61,13 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'rhat_threshold', 'snooker_prob',
                  'powell_step', 'powell_line_tol', 'powell_stop_tol',
                  'cmaes_sigma0', 'cmaes_stop_tol',
-                 # gradient optimizers (fit_type = trf / lbfgs, #386): the float-valued
-                 # tunables -- the trust-region-reflective / L-BFGS-B optimality +
-                 # step tolerances and L-BFGS-B's Armijo constant / backtrack factor.
+                 # gradient optimizers (fit_type = trf / lbfgs / gntr, #386/#481): the
+                 # float-valued tunables -- the trust-region-reflective / L-BFGS-B / EFIM
+                 # optimality + step tolerances, L-BFGS-B's Armijo constant / backtrack
+                 # factor, and GNTR's relative Levenberg ridge on the Fisher Hessian.
                  'trf_grad_tol', 'trf_step_tol', 'lbfgs_grad_tol', 'lbfgs_step_tol',
                  'lbfgs_c1', 'lbfgs_backtrack',
+                 'gntr_grad_tol', 'gntr_step_tol', 'gntr_ridge',
                  # HMC (job_type = hmc, ADR-0059): NUTS dual-averaging target acceptance.
                  'target_accept',
                  # profile likelihood (job_type = profile_likelihood, #446/#466): confidence

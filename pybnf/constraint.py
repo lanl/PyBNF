@@ -920,14 +920,9 @@ class Constraint:
         scale -- the estimated free parameter's live value if tied, else the
         authored tolerance."""
         difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
-        k = self._effective_scale(pset_values)
-        if k == 0:
+        if self._effective_scale(pset_values) == 0:
             return np.zeros(n_param)
-        x = -difference / k
-        phi = np.exp(-0.5 * x * x) / np.sqrt(2. * np.pi)
-        prob = (1. + erf(x / np.sqrt(2.))) / 2.
-        adjusted = (self.pmax - self.pmin) * prob + self.pmin
-        slope = (self.pmax - self.pmin) * phi / (k * adjusted)
+        slope = self._smooth_slope(difference, pset_values)
         imin2_eff = imin if imin2 is None else imin2
         return slope * self._readout_gradient(
             raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
@@ -946,17 +941,37 @@ class Constraint:
         unclipped (``pmin=0, pmax=1``). ``s`` is the effective scale -- the estimated free
         parameter's live value if tied, else the authored scale."""
         difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
-        s = self._effective_scale(pset_values)
-        x = difference / s
-        if self.pmin is None:
-            slope = _sigmoid(x) / s
-        else:
-            adjusted = self.pmin + (self.pmax - self.pmin) * _sigmoid(-x)
-            slope = (self.pmax - self.pmin) * _sigmoid(-x) * _sigmoid(x) / (s * adjusted)
+        slope = self._smooth_slope(difference, pset_values)
         imin2_eff = imin if imin2 is None else imin2
         return slope * self._readout_gradient(
             raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
             self.qkeys2, self.quant2, imin2_eff + a)
+
+    def _smooth_slope(self, difference, pset_values):
+        """The smooth penalty's local slope ``P'(difference)`` -- the probit / logit factor the
+        gradient multiplies ``d(readout)/d theta`` by (#456), extracted so it is a **pure scalar
+        function of the readout ``difference``** that the EFIM curvature (#481) central-differences
+        for ``P''`` (consistent-by-construction with the gradient). Reads the effective scale (an
+        estimated free parameter's live value if tied, else the authored tolerance / logit scale)
+        through :meth:`_effective_scale`. Returns 0 for a zero probit tolerance (the step-function
+        edge the gradient special-cases). Only called for the smooth models (static has a constant
+        slope handled inline)."""
+        if self.penalty_model == 'likelihood':
+            k = self._effective_scale(pset_values)
+            if k == 0:
+                return 0.0
+            x = -difference / k
+            phi = np.exp(-0.5 * x * x) / np.sqrt(2. * np.pi)
+            prob = (1. + erf(x / np.sqrt(2.))) / 2.
+            adjusted = (self.pmax - self.pmin) * prob + self.pmin
+            return (self.pmax - self.pmin) * phi / (k * adjusted)
+        # logit
+        s = self._effective_scale(pset_values)
+        x = difference / s
+        if self.pmin is None:
+            return _sigmoid(x) / s
+        adjusted = self.pmin + (self.pmax - self.pmin) * _sigmoid(-x)
+        return (self.pmax - self.pmin) * _sigmoid(-x) * _sigmoid(x) / (s * adjusted)
 
     def penalty_gradient(self, sim_data_dict, raw_sens, index, n_param, pset_values=None):
         """The gradient of this constraint's total penalty w.r.t. the free parameters (layer I,
@@ -978,6 +993,64 @@ class Constraint:
             grad += self.get_penalty_gradient(sim_data_dict, raw_sens, index, n_param,
                                               pset_values=pset_values, **interval)
         return grad
+
+    def get_penalty_curvature(self, sim_data_dict, raw_sens, index, n_param, imin, imax,
+                              once=False, require_length=None, imin2=None, imax2=None,
+                              pset_values=None):
+        """The **Gauss-Newton curvature** of this interval's penalty w.r.t. the free parameters --
+        the constraint block of the EFIM trust-region Hessian (``fit_type = gntr``, #481), the
+        curvature twin of :meth:`get_penalty_gradient`. The penalty is ``P(q)`` for the at-/
+        between-time readout ``q = q1 - q2``, so its Gauss-Newton curvature is
+        ``max(P''(q), 0) * outer(grad q, grad q)`` -- the second-order readout sensitivity
+        ``hess q`` dropped (as the EFIM drops it for the data fit) and ``P''`` clamped to its
+        positive part (keeping the block PSD). Taken at the same achieving point (argmax) and with
+        the same ``_readout_gradient`` the gradient uses (Danskin).
+
+        * **static** (piecewise-linear hinge, ``.con``): ``P'' == 0`` -- a linear penalty carries no
+          curvature, so the constraint contributes none here (its pull rides the gradient, and the
+          data-fit Fisher + ridge supply the step's curvature). Returns zeros.
+        * **smooth** (probit / logit ``.prop``): ``P''`` by a central finite difference of the
+          analytic slope :meth:`_smooth_slope` (accurate to ~1e-9 on the smooth slope, and
+          consistent-by-construction with the gradient's slope), clamped to ``>= 0``."""
+        if self.penalty_model == 'static':
+            return np.zeros((n_param, n_param))
+        difference, a = self._difference_argmax(sim_data_dict, imin, imax, once, require_length,
+                                                imin2, imax2)
+        scale = self._effective_scale(pset_values)
+        if scale == 0:
+            return np.zeros((n_param, n_param))
+        h = 1e-6 * max(abs(difference), scale)
+        curv = (self._smooth_slope(difference + h, pset_values)
+                - self._smooth_slope(difference - h, pset_values)) / (2. * h)
+        curv = max(curv, 0.0)
+        if curv == 0.0:
+            return np.zeros((n_param, n_param))
+        imin2_eff = imin if imin2 is None else imin2
+        grad_q = self._readout_gradient(raw_sens, n_param, self.qkeys1, self.quant1, imin + a,
+                                        self.qkeys2, self.quant2, imin2_eff + a)
+        return curv * np.outer(grad_q, grad_q)
+
+    def penalty_curvature(self, sim_data_dict, raw_sens, index, n_param, pset_values=None):
+        """The Gauss-Newton curvature of this constraint's **total** penalty (summed over the same
+        enforcement intervals :meth:`penalty_gradient` sums the gradient over) -- the constraint
+        block the EFIM trust-region path (``fit_type = gntr``) adds to the data-fit Hessian (#481),
+        the curvature sibling of :meth:`penalty_gradient`.
+
+        An **estimated constraint scale** (``scale_param``, ADR-0061) couples the readout to the
+        scale (an off-diagonal Fisher block this cut does not assemble), so it is refused with a
+        pointer to the scalar-gradient (L-BFGS-B) path -- on which the estimated-scale column still
+        fits (it rides :meth:`get_penalty_gradient`). Returns zeros for an empty constraint set (a
+        satisfied constraint, or an all-static one, adds no curvature)."""
+        if self.scale_param is not None:
+            from .gradient.errors import GradientNotSupported
+            raise GradientNotSupported(
+                "A constraint with an estimated scale ('%s') couples the readout and scale on the "
+                "EFIM trust-region path (fit_type = gntr, #481); use fit_type = lbfgs." % self.scale_param)
+        curv = np.zeros((n_param, n_param))
+        for interval in self._penalty_intervals(sim_data_dict):
+            curv += self.get_penalty_curvature(sim_data_dict, raw_sens, index, n_param,
+                                               pset_values=pset_values, **interval)
+        return curv
 
 
 class AtConstraint(Constraint):

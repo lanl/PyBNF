@@ -493,6 +493,118 @@ def test_lbfgs_refuses_legacy_edition_before_building_models(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# GNTR -- the general-objective Fisher/Gauss-Newton trust region (#481)
+# --------------------------------------------------------------------------- #
+# The missing cell: a trust-region step with TRF's Gauss-Newton/EFIM Hessian, extended
+# to the general-NLL objectives TRF refuses (estimated noise scale, Laplace/count,
+# constraints) and LBFGS handles only with a history Hessian. These prove (a) it recovers
+# a fixed-scale fit like TRF/LBFGS, (b) the distinguishing case -- an *estimated* noise
+# scale (chi_sq_dynamic), which TRF rejects but GNTR now fits with a trust-region EFIM
+# step, and (c) picklability + the edition gate (offline).
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_gntr_recovers_decay_rate_and_initial_condition(tmp_path, monkeypatch):
+    """``fit_type = gntr`` recovers both the rate ``k`` and the initial amount ``S0`` of an
+    exponential decay from the box center, through the real bngsim forward-sensitivity path --
+    on a fixed-scale (exact least-squares) fit its EFIM Hessian is ``J^T J``, so it drives the
+    async trust-region loop to the optimum exactly as TRF does (the sibling of the TRF/LBFGS
+    recovery tests on the same model)."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp')
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0)},
+        'decay', 'gntr', objective='chi_sq', random_seed=1234,
+        population_size=1, max_iterations=100)
+
+    alg = H.build(conf, 'gntr')
+    H.drive(alg)
+
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.02, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.02, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+    assert alg.trajectory.best_score() < 1e-3, \
+        'best objective %g not ~0' % alg.trajectory.best_score()
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_gntr_fits_estimated_noise_scale_that_trf_refuses(tmp_path, monkeypatch):
+    """The distinguishing case, and the reason ``gntr`` exists. With an **estimated** noise
+    scale (``chi_sq_dynamic``'s free ``sigma__FREE``), the objective keeps a ``+log σ``
+    normalizer that is not a square, so ``least_squares_exact`` is ``False`` and TRF refuses the
+    fit (``test_trf_refuses_non_least_squares_objective_pointing_at_lbfgs``). ``gntr`` builds the
+    EFIM Hessian instead -- the data-fit ``J^T J`` plus the estimated-σ Fisher block ``2/σ²`` --
+    and fits the same objective LBFGS does, but with a *trust-region* step rather than a
+    limited-memory quasi-Newton one, still recovering the rate / initial condition."""
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    # No _SD column: chi_sq_dynamic reads its sigma from the free parameter, not the data.
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sigma__FREE': ('uniform_var', 0.1, 50.0)},
+        'decay', 'gntr', objective='chi_sq_dynamic', random_seed=1234,
+        population_size=1, max_iterations=250)
+
+    alg = H.build(conf, 'gntr')
+    H.drive(alg)   # must NOT raise -- this is the path TRF refuses and GNTR now fits
+
+    rec = H.best_params(alg, ('k', 'S0'))
+    assert abs(rec['k'] - TRUE_K) / TRUE_K < 0.03, \
+        'k recovered %g, expected ~%g' % (rec['k'], TRUE_K)
+    assert abs(rec['S0'] - TRUE_S0) / TRUE_S0 < 0.03, \
+        'S0 recovered %g, expected ~%g' % (rec['S0'], TRUE_S0)
+
+
+@pytest.mark.recovery
+@pytest.mark.skipif(not BNGSIM_HAS_OUTPUT_SENS,
+                    reason='needs a bngsim build with the output_sensitivities feature')
+def test_gntr_is_picklable_across_a_run(tmp_path, monkeypatch):
+    """``Algorithm.backup`` pickles the optimizer mid-run, so the GNTR state machine must
+    round-trip both before and after a run -- all state is plain numpy/float (inherited from
+    the TRF runner: the point, the pseudo residual model, the trust radius + cached SVD),
+    exactly like Powell / CMA-ES / TRF / L-BFGS (ADR-0007)."""
+    import pickle
+    H.require_bng2pl()
+    H.install(monkeypatch)
+    model = _decay_model(tmp_path)
+    exp = _write_decay_exp(tmp_path / 'decay.exp', with_sd=False)
+    conf = H.make_newera_config(
+        tmp_path, model, exp,
+        {'k': ('uniform_var', 1e-2, 3.0), 'S0': ('uniform_var', 20.0, 400.0),
+         'sigma__FREE': ('uniform_var', 0.1, 50.0)},
+        'decay', 'gntr', objective='chi_sq_dynamic', random_seed=1234,
+        population_size=1, max_iterations=10)
+    alg = H.build(conf, 'gntr')
+    pickle.loads(pickle.dumps(alg))     # constructed state round-trips
+    H.drive(alg)
+    pickle.loads(pickle.dumps(alg))     # state after a completed run round-trips
+
+
+def test_gntr_refuses_legacy_edition_before_building_models(tmp_path):
+    """A GNTR fit on a legacy (edition-1) config is refused at construction with a clear,
+    actionable message -- the edition gate is inherited from GradientOptimizer and fires before
+    any model is built, so no BNG2.pl / bngsim is needed here (mirrors the TRF / LBFGS gate
+    tests)."""
+    from pybnf.algorithms.optimizers.gntr import GNTRAlgorithm
+    import types
+    conf = types.SimpleNamespace(config={'edition': None})
+    with pytest.raises(PybnfError, match='(?i)edition'):
+        GNTRAlgorithm(conf)
+
+
+# --------------------------------------------------------------------------- #
 # Local multi-start (#386 follow-up)
 # --------------------------------------------------------------------------- #
 # A gradient method is purely local -- it descends into whatever basin its single start

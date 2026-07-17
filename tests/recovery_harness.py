@@ -49,6 +49,7 @@ _ALGORITHMS = {
     'am': algorithms.Adaptive_MCMC,
     'trf': algorithms.TRFAlgorithm,   # gradient-based least-squares optimizer (#386)
     'lbfgs': algorithms.LBFGSAlgorithm,   # gradient-based scalar quasi-Newton fallback (#386)
+    'gntr': algorithms.GNTRAlgorithm,   # general-objective Fisher/Gauss-Newton trust region (#481)
     'profile_likelihood': algorithms.ProfileLikelihoodAlgorithm,   # PL identifiability (#446/#466)
 }
 

@@ -468,12 +468,32 @@ class GradientOptimizer(StartPointOptimizer):
                     self.config.constraints, res.simdata, self._routings, free_params)
                 grad.gradient = grad.gradient + cgrad
                 grad.least_squares_exact = False
+            self._attach_curvature(grad, res, experiments, free_params)
         except GradientNotSupported as e:
-            raise PybnfError(
-                "Gradient-based fitting (fit_type = %s) cannot differentiate this "
-                "fit's objective: %s" % (self._fit_type_label(), e),
-                _FALLBACK_HINT) from e
+            raise self._unsupported_gradient_error(e) from e
         return grad
+
+    def _attach_curvature(self, grad, res, experiments, free_params):
+        """Hook for a curvature-consuming leaf to attach its Hessian to the assembled
+        gradient. A **no-op on the base**, so the residual-form (``trf``) and scalar-gradient
+        (``lbfgs``) leaves -- which never form a Hessian -- are byte-identical; the EFIM
+        trust-region leaf (``fit_type = gntr``, #481) overrides it to set ``grad.hessian``
+        (:func:`~pybnf.gradient.assembly.assemble_fisher_hessian` plus, for a constrained fit,
+        :func:`~pybnf.gradient.assembly.assemble_constraint_hessian`). Called **inside**
+        :meth:`gradient_at`'s :class:`GradientNotSupported` guard, so an unsupported-curvature
+        corner (a MEDIAN-count Fisher, a MEAN-on-log estimated scale, an estimated constraint
+        scale, ...) converts to the same fail-fast :class:`PybnfError`."""
+
+    def _unsupported_gradient_error(self, exc):
+        """Wrap a :class:`GradientNotSupported` as the leaf's fail-fast :class:`PybnfError`
+        with an actionable fallback hint. The base points at a metaheuristic ``fit_type``;
+        the EFIM leaf (``gntr``) overrides the hint to point at ``lbfgs`` -- which consumes the
+        scalar gradient and needs no Fisher Hessian, so it fits the very corners ``gntr``
+        refuses."""
+        return PybnfError(
+            "Gradient-based fitting (fit_type = %s) cannot differentiate this "
+            "fit's objective: %s" % (self._fit_type_label(), exc),
+            _FALLBACK_HINT)
 
     # --- u-space box ------------------------------------------------------- #
     def _u_bounds(self):

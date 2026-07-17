@@ -14,7 +14,9 @@ bngsim's forward output-sensitivity tensor. This package hosts the PyBNF-side ma
   normalization (#453), the asymmetric Laplace / Student-t families and mean centering (#454),
   and -- via the sibling ``assemble_constraint_gradient`` -- qualitative / inequality constraint
   penalties (#456). A configuration outside the supported set raises :class:`GradientNotSupported`,
-  so a caller can fall back to a gradient-free step.
+  so a caller can fall back to a gradient-free step. For the EFIM trust-region optimizer
+  (``fit_type = gntr``, #481) it additionally assembles the expected-Fisher / Gauss-Newton
+  **Hessian** (``assemble_fisher_hessian`` + the constraint sibling ``assemble_constraint_hessian``).
 
 The capability gate and the per-layer math are documented in ``docs/gradient_fitting.rst``.
 """
@@ -32,7 +34,13 @@ from .routing import (
     route_for_model,
     apply_routing,
 )
-from .assembly import GradientResult, assemble_constraint_gradient, assemble_gaussian_gradient
+from .assembly import (
+    GradientResult,
+    assemble_constraint_gradient,
+    assemble_constraint_hessian,
+    assemble_fisher_hessian,
+    assemble_gaussian_gradient,
+)
 
 __all__ = [
     'GradientNotSupported',
@@ -49,4 +57,6 @@ __all__ = [
     'GradientResult',
     'assemble_gaussian_gradient',
     'assemble_constraint_gradient',
+    'assemble_fisher_hessian',
+    'assemble_constraint_hessian',
 ]
