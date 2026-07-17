@@ -6,6 +6,25 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Multi-Try DREAM: the `n_try` count (ADR-0067, Stage 2; MT-DREAM(ZS), #357).** A new integer
+  `n_try` config key turns each chain-generation into a multiple-try step (Liu, Liang & Wong 2000;
+  Laloy & Vrugt 2012): with `n_try = k > 1` a chain draws `k` candidate proposals, selects one in
+  proportion to its posterior importance weight, and accepts it over the current state with a
+  multiple-try Metropolis ratio evaluated against a `k - 1`-point reference set drawn from the
+  winner plus the current state (`2k - 1` evaluations per chain per generation). Multiple tries per
+  generation raise the per-generation acceptance rate and help parameter-rich / strongly correlated
+  posteriors mix. It is the second orthogonal axis of ADR-0067 and **composes with every `proposal`
+  value** (`de`, `whitened`) and with the snooker update — MT-DREAM(ZS) is literally multi-try
+  parallel-DE. `n_try = 1` (the default) is the classic single-try engine and is **byte-identical**
+  to before (verified against the DREAM/P-DREAM oracle suites and the effective-config goldens; the
+  only change is the additive `n_try` key). The snooker proposal is non-symmetric, so under
+  multi-try its candidate and reference weights carry the ter Braak & Vrugt (2008) Jacobian
+  `||p - z||^(d-1)`; the current-state reference slot uses the current state's distance to the
+  **selected candidate's** anchor — the unique choice that reduces to the published single-try
+  snooker ratio at `k = 1` (derived from first principles and confirmed by a stationary-distribution
+  test; both the DREAM-Suite and PyDREAM reference implementations differ on this term). The
+  multiple-try acceptance is validated to preserve a known Gaussian target with the snooker update
+  active.
 - **DREAM `proposal` operator key; P-DREAM folded into one DREAM engine (ADR-0067, Stage 1).**
   DREAM(ZS) and Preconditioned DREAM are now one `DreamAlgorithm` engine selected by a new
   `proposal` config key: `proposal = de` (default) is the classic parallel-direction proposal, and

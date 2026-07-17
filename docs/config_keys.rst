@@ -1857,7 +1857,15 @@ For DREAM
   covariance-whitened space; until then the online covariance is still being estimated and plain
   DREAM proposals are used. Default: half of ``burn_in``.
 
-``rhat_threshold = float``
+``n_try = int``
+  Number of candidate proposals drawn per chain per generation — the Multi-Try DREAM
+  (MT-DREAM(ZS)) count (Laloy & Vrugt 2012). ``n_try = 1`` (the default) is the classic single-try
+  engine. With ``n_try = k > 1`` each chain proposes ``k`` candidates, selects one in proportion to
+  its posterior importance weight, and accepts it over the current state with a multiple-try
+  Metropolis ratio evaluated against a reference set (``2k - 1`` evaluations per chain per
+  generation). Multiple tries per generation raise the per-generation acceptance rate and help
+  parameter-rich or strongly correlated posteriors mix. Composes with every ``proposal`` value
+  (``de``, ``whitened``) and with the snooker update. Default: ``1``
   If set to a positive value, the algorithm stops automatically once all parameters have
   :math:`\hat{R}` below this threshold (checked after burn-in). Set to 0 to disable. A common
   threshold is 1.05. Default: 0 (disabled)

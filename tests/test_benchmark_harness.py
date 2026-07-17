@@ -63,11 +63,14 @@ import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness 
 # These always carry no-op defaults here, so excluding them keeps the oracle an
 # independent *pre-migration* witness without regenerating it for keys the original confs
 # could not have carried.
+# classic whitened), and n_try (ADR-0067 Stage 2; the Multi-Try DREAM count -- defaults to
+# 1 == the classic single-try engine, byte-identical to pre-migration, so these confs never
+# carried it and it is a no-op here).
 _EXCLUDE = frozenset({
     'bng_command', 'output_dir', 'refine_method', 'noise_location',
     'initialization_distribution', 'edition', 'objective', 'profile_objective',
     'job_type', 'embed_best_fit_data', 'smooth_plot_points', 'output_inference_data',
-    'qualitative_loss', 'qualitative_scale', 'generate_network', 'proposal',
+    'qualitative_loss', 'qualitative_scale', 'generate_network', 'proposal', 'n_try',
 })
 
 

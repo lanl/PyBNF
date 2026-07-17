@@ -1,8 +1,9 @@
 # DREAM is one engine with two orthogonal extension axes — a proposal operator and an evaluation protocol — so its variants are config points, not subclasses (issues #357, #358)
 
-**Status: Accepted (2026-07-16).** Design accepted; not yet implemented (the three
-staged steps below are the build plan). The scheduler-contract risk that gated
-acceptance was pressure-tested and resolved — see *Principal risk*. Reframes the DREAM
+**Status: Accepted (2026-07-16); Stages 1–2 implemented (2026-07-17).** Design accepted;
+Stage 1 (proposal Strategy / P-DREAM fold-in) and Stage 2 (`n_try`, Multi-Try DREAM) are
+shipped, Stage 3 (`kalman`) remains the build plan below. The scheduler-contract risk that
+gated acceptance was pressure-tested and resolved — see *Principal risk*. Reframes the DREAM
 family so that DREAM(ZS),
 Preconditioned DREAM, the requested Multi-Try DREAM (#357), and the requested
 Kalman-inspired DREAM (#358) stop being (or becoming) four sibling `Algorithm`
@@ -141,9 +142,24 @@ the two axes touch the engine at architecturally different depths.
      method (ADR-0006) and needs no constructor parameter. `PDreamAlgorithm` survives as a
      thin subclass (no logic of its own) so the public class name and `job_type = p_dream`
      resolve unchanged; `precondition_adapt` stays a `PDreamConfig`-owned key.
-  2. **`n_try` (#357).** Generalize the barrier; carries the *Principal risk* below and
-     its own correctness validation (multi-try acceptance vs single-try on the
-     analytical targets, matching Laloy & Vrugt 2012's stationary distribution).
+  2. **`n_try` (#357). — DONE (2026-07-17).** Generalized the barrier into a two-phase
+     per-chain state machine (TRIALS → select ∝ importance weight → REFERENCE → multiple-try
+     accept), `2k − 1` evaluations per chain per generation, confined to `DreamAlgorithm`'s
+     `got_result` (split into a shared `_run_barrier` / `_advance_generation` plus a
+     `_got_result_multitry` path), the proposal methods' optional base override, the try/ref
+     job-name suffix, and the additive `n_try` key — as the *Principal risk* predicted. `n_try = 1`
+     is byte-identical (the DREAM/P-DREAM oracle suites + config goldens pass unchanged). Multi-Try
+     composes with the snooker mix-in: because the snooker proposal is non-symmetric its multi-try
+     candidate/reference weights carry the ter Braak & Vrugt (2008) Jacobian `‖p − z‖^(d−1)`, and
+     the current-state reference slot uses `‖x − z_Y‖^(d−1)` at the **selected candidate's** anchor
+     `z_Y`. That current-slot term is the one subtlety of the method: it is the unique choice that
+     reduces to the published single-try snooker ratio at `k = 1`, and it was pinned by
+     first-principles derivation (the Liu-Liang-Wong importance weight `w = π/q` with the snooker
+     transition density `q(x→x_p) ∝ ‖x_p − z‖^{−(d−1)}`) and confirmed by a stationary-distribution
+     test — notably, both the DREAM-Suite (which zeroes it) and PyDREAM (which adds the winner's own
+     term) reference implementations depart from it, in ways whose bias shrinks with `k` and so
+     hides at the usual `k = 5`. Correctness validated by moment recovery on a Gaussian target with
+     the snooker update active (`tests/test_multitry_dream.py`).
   3. **`kalman` (#358).** Add the Kalman proposal + the output-augmented archive
      (implied) + the burn-in switch, on the clean base.
 

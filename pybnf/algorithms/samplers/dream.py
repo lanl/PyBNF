@@ -15,10 +15,12 @@ from ...registry import register_fit_type
 from typing import Any, Optional
 
 import logging
+import re
 import numpy as np
 import copy
 from pydantic import Field
 from scipy import stats
+from scipy.special import logsumexp
 
 
 # Preserve the original module logger name so log records keep the
@@ -50,6 +52,13 @@ class DreamConfig(MCMCFamilyConfig):
     # proposal (the p_dream default, pinned by ``PDreamConfig``). Additional
     # operators (e.g. 'kalman') arrive in later ADR-0067 stages.
     proposal: str = 'de'
+    # Multi-try evaluation protocol (ADR-0067 axis 2, MT-DREAM(ZS); Laloy &
+    # Vrugt 2012). n_try = 1 is the classic single-try engine (byte-identical to
+    # before this key). n_try = k > 1 draws k candidate proposals per chain per
+    # generation, selects one in proportion to its posterior importance weight,
+    # and accepts via a reference-set (multiple-try) Metropolis ratio. Composes
+    # with every ``proposal`` value.
+    n_try: int = 1
 
     @classmethod
     def postprocess(cls, conf_dict, fit_type):
@@ -123,6 +132,30 @@ class DreamAlgorithm(BayesianAlgorithm):
         if self.proposal not in ('de', 'whitened'):
             raise PybnfError("Invalid proposal '%s'" % self.proposal,
                              "Config key 'proposal' must be 'de' or 'whitened'.")
+
+        # Multi-try count (ADR-0067 axis 2). n_try == 1 is the classic engine;
+        # n_try > 1 activates the multiple-try (MT-DREAM(ZS)) barrier in
+        # got_result. Everything guarded on ``self.n_try > 1`` is dormant at the
+        # default, so a plain run is byte-identical to before this key.
+        self.n_try = config.config['n_try']
+        if not isinstance(self.n_try, int) or self.n_try < 1:
+            raise PybnfError("Invalid n_try '%s'" % self.n_try,
+                             "Config key 'n_try' must be an integer >= 1.")
+        # Per-chain two-phase multi-try state (dormant unless n_try > 1). A
+        # generation for chain i runs TRIALS (k candidates from x) -> select the
+        # winner Y in proportion to its importance weight -> REFERENCE (k-1 draws
+        # from Y; the k-th reference is x itself) -> multiple-try accept. See
+        # _got_result_multitry.
+        n = self.num_parallel
+        self.mt_is_snooker = [False] * n      # this generation's proposal kind (per chain)
+        self.mt_trials_expected = [0] * n     # # of emitted (in-bounds) trials awaited
+        self.mt_trial_meta = [[] for _ in range(n)]   # per emitted trial: {cand_term, anchor, cr_idx}
+        self.mt_trials = [[] for _ in range(n)]       # buffered arrived trials (dicts)
+        self.mt_selected = [None] * n         # the chosen candidate Y (dict)
+        self.mt_ref_terms = [[] for _ in range(n)]    # per emitted reference: snooker log-term
+        self.mt_refs_expected = [0] * n       # # of emitted (in-bounds) references awaited
+        self.mt_ref_logw = [[] for _ in range(n)]     # buffered arrived reference log-weights
+        self.mt_cur_logw = [0.0] * n          # current-state (k-th) reference log-weight
         self._cov_L = None       # Cholesky factor of the covariance estimate
         self._cov_L_inv = None   # Inverse of the Cholesky factor (whitening matrix)
         self._preconditioned = False
@@ -159,18 +192,24 @@ class DreamAlgorithm(BayesianAlgorithm):
         except OutOfBoundsException:
             return None
 
-    def calculate_snooker_pset(self, idx):
-        """
-        Snooker update proposal (ter Braak & Vrugt, 2008).
-        Projects archive points onto the line through the current state and a reference archive point,
-        then jumps along that axis.
+    def _snooker_propose(self, idx, x0_vec):
+        """Core snooker geometry (ter Braak & Vrugt, 2008), proposing a jump
+        from an arbitrary base point ``x0_vec`` (a parameter vector). Draws the
+        anchor + two projection donors from the archive and jumps along the line
+        through ``x0_vec`` and the anchor.
 
-        Returns (PSet or None, log_correction) where log_correction is the log of the Hastings
-        correction factor (d-1)*log(||Xp - Zc|| / ||X - Zc||).
-        """
-        x0 = self.current_pset[idx]
-        x0_vec = self._param_vec(x0)
+        Returns ``(PSet or None, cand_term, zc_vec)`` where
 
+        - ``cand_term = (d-1)*log||Xp - Zc||`` is the destination-to-anchor
+          snooker log-Jacobian, i.e. the term the multi-try importance weight
+          adds to ``log pi`` (ADR-0067 Stage 2, "Variant A"; see got_result).
+        - ``zc_vec`` is the anchor Zc, kept so the accept step can form the
+          current-state reference weight ``(d-1)*log||x - Zc_selected||``.
+
+        Draws RNG in exactly the order the classic single-try snooker used, so
+        ``calculate_snooker_pset`` (which wraps this with ``x0`` = current state)
+        stays byte-identical.
+        """
         # Draw three distinct archive indices: c (reference), a, b (for projection difference)
         sel = self.chain_rngs[idx].choice(len(self.archive), 3, replace=False)
         zc_vec = self._param_vec(self.archive[sel[0]])
@@ -181,7 +220,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         axis = x0_vec - zc_vec
         axis_norm_sq = np.dot(axis, axis)
         if axis_norm_sq < 1e-20:
-            return None, 0.0
+            return None, 0.0, zc_vec
 
         # Project za and zb onto the snooker axis
         za_proj = zc_vec + axis * (np.dot(za_vec - zc_vec, axis) / axis_norm_sq)
@@ -202,14 +241,33 @@ class DreamAlgorithm(BayesianAlgorithm):
         # Build the proposed PSet (reject rather than reflect out-of-bounds)
         proposal = self._proposal_pset(xp_vec)
         if proposal is None:
+            return None, 0.0, zc_vec
+
+        # Destination-to-anchor snooker term (d-1)*log||Xp - Zc||.
+        dist_xp_zc = np.linalg.norm(xp_vec - zc_vec)
+        cand_term = (self.n_dim - 1) * np.log(dist_xp_zc)
+
+        return proposal, cand_term, zc_vec
+
+    def calculate_snooker_pset(self, idx):
+        """
+        Snooker update proposal (ter Braak & Vrugt, 2008).
+        Projects archive points onto the line through the current state and a reference archive point,
+        then jumps along that axis.
+
+        Returns (PSet or None, log_correction) where log_correction is the log of the Hastings
+        correction factor (d-1)*log(||Xp - Zc|| / ||X - Zc||).
+        """
+        x0_vec = self._param_vec(self.current_pset[idx])
+        proposal, cand_term, zc_vec = self._snooker_propose(idx, x0_vec)
+        if proposal is None:
             return None, 0.0
 
         # Hastings correction: (||Xp - Zc|| / ||X - Zc||)^(d-1).
-        # dist_x0_zc = sqrt(axis_norm_sq) is already guaranteed nonzero by the
-        # axis_norm_sq < 1e-20 check above, so no divide-by-zero guard is needed here.
-        dist_xp_zc = np.linalg.norm(xp_vec - zc_vec)
+        # dist_x0_zc = ||x0 - Zc|| is guaranteed nonzero by the axis_norm_sq
+        # check inside _snooker_propose, so no divide-by-zero guard is needed.
         dist_x0_zc = np.linalg.norm(x0_vec - zc_vec)
-        log_correction = (self.n_dim - 1) * np.log(dist_xp_zc / dist_x0_zc)
+        log_correction = cand_term - (self.n_dim - 1) * np.log(dist_x0_zc)
 
         return proposal, log_correction
 
@@ -286,6 +344,12 @@ class DreamAlgorithm(BayesianAlgorithm):
         :return: List of PSet(s) to be run next.
         """
 
+        # Multi-try (ADR-0067 Stage 2) relocates the accept to a per-chain,
+        # all-tries-in path. Guarded so a default (n_try == 1) run never enters
+        # it and stays byte-identical to the classic single-try engine below.
+        if self.n_try > 1:
+            return self._got_result_multitry(res)
+
         pset = res.pset
         score = res.score
         self.total_evaluations += 1
@@ -333,90 +397,29 @@ class DreamAlgorithm(BayesianAlgorithm):
             and self.iteration[index] > self.burn_in):
             self.update_histograms('_%i' % self.iteration[index])
 
-        # Wait for entire generation to finish
-        # Loop handles the case where all proposals are out of bounds: advance
-        # the generation counter and try again instead of returning an empty
-        # list (which would exhaust the job pool and silently end the run).
+        # Wait for the entire generation to finish, then build + return the next
+        # generation of proposals (one per chain). Shared with the multi-try
+        # barrier via _run_barrier / _advance_generation.
+        return self._run_barrier(index, self._build_generation_single)
+
+    def _run_barrier(self, index, build_fn):
+        """Generation barrier shared by the single-try and multi-try engines.
+
+        Once every chain has synced (``np.all(wait_for_sync)``), advance the
+        generation (diagnostics / outlier reset / CR adaptation / archive growth
+        via :meth:`_advance_generation`), then build the next generation of
+        proposals with ``build_fn`` (``_build_generation_single`` for the classic
+        engine, ``_build_generation_multitry`` for MT-DREAM(ZS)). Returns the
+        list of PSets to run next, ``'STOP'``, or ``[]`` while chains are still
+        outstanding. The ``while`` handles an all-out-of-bounds generation by
+        advancing and retrying rather than returning an empty list (which would
+        exhaust the job pool and silently end the run).
+        """
         while np.all(self.wait_for_sync):
-
-            self.wait_for_sync = [False] * self.num_parallel
-
-            if min(self.iteration) >= self.max_iterations:
-                self.update_histograms('_final')
-                self.report_constraint_satisfaction('_final')
+            if self._advance_generation(index) == 'STOP':
                 return 'STOP'
 
-            if self.iteration[index] % 10 == 0:
-                print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-                print2(f'Acceptance rates: {str(self.acceptance_rates)}\n')
-            else:
-                print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
-            # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
-            if self.iteration[index] % self.diagnostics_every == 0:
-                max_rhat = self.report_convergence_diagnostics(self.iteration[index])
-                if self.check_convergence(self.iteration[index], max_rhat):
-                    return 'STOP'
-            logger.debug('Completed %i iterations' % self.iteration[index])
-            print2(f'Current -Ln Posteriors: {str(self.ln_current_P)}')
-
-            # Outlier detection (every 10 iterations, only during burn-in)
-            if self.iteration[index] % 10 == 0 and self.iteration[index] <= self.burn_in:
-                self.detect_and_reset_outliers()
-
-            # CR adaptation: update probabilities
-            if (self.iteration[index] % 10 == 0
-                    and self.iteration[index] <= self.cr_adapt_end
-                    and not self.cr_frozen):
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    mean_dist = self.cr_total_distance / np.maximum(self.cr_usage_count, 1)
-                if np.sum(mean_dist) > 0:
-                    self.cr_probs = mean_dist / np.sum(mean_dist)
-                    logger.debug(f'Updated CR probabilities: {str(self.cr_probs)}')
-            elif self.iteration[index] > self.cr_adapt_end and not self.cr_frozen:
-                self.cr_frozen = True
-                logger.debug('CR probabilities frozen at iteration %d: %s'
-                            % (self.iteration[index], str(self.cr_probs)))
-
-            # Grow the ZS archive: every K generations, append current chain states
-            if self.iteration[index] % self.archive_thin_rate == 0:
-                for i in range(self.num_parallel):
-                    self.archive.append(copy.deepcopy(self.current_pset[i]))
-                logger.debug('Archive grown to %d entries at iteration %d'
-                            % (len(self.archive), self.iteration[index]))
-
-            # Save old states and compute population std for CR adaptation
-            for i in range(self.num_parallel):
-                self.gen_x_old[i] = self._param_vec(self.current_pset[i])
-            all_vecs = np.array(self.gen_x_old)
-            self.gen_x_std = np.std(all_vecs, axis=0)
-
-            next_gen = []
-            for i, p in enumerate(self.current_pset):
-                if self.chain_rngs[i].uniform() < self.snooker_prob:
-                    # Snooker update
-                    new_pset, log_corr = self.calculate_snooker_pset(i)
-                    self.gen_log_snooker_correction[i] = log_corr
-                    self.gen_cr_indices[i] = None  # no CR for snooker
-                else:
-                    # Parallel direction update
-                    new_pset, cr_idx = self.calculate_new_pset(i)
-                    self.gen_log_snooker_correction[i] = 0.0
-                    self.gen_cr_indices[i] = cr_idx
-                if new_pset:
-                    new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
-                    next_gen.append(new_pset)
-                else:
-                    # Out-of-bounds proposal: treat as a Metropolis rejection.
-                    # Record the current state in chain history (chain stays in place)
-                    # so that diagnostics (R-hat, ESS) correctly reflect the non-movement.
-                    logger.debug('Proposed PSet for chain %d is out of bounds. Treating as rejection.' % i)
-                    self.chain_history[i].append(self._param_vec(self.current_pset[i]))
-                    self.ln_posterior_history[i].append(self.ln_current_P[i])
-                    self.wait_for_sync[i] = True
-                    self.iteration[i] += 1
-                    self.acceptance_rates[i] = self.acceptances[i] / self.iteration[i]
-                    if self.iteration[i] % self.sample_every == 0 and self.iteration[i] > self.burn_in:
-                        self.sample_pset(self.current_pset[i], self.ln_current_P[i], i)
+            next_gen = build_fn(index)
 
             if not next_gen:
                 logger.warning('All %d proposals were out of bounds at iteration %d. '
@@ -436,7 +439,320 @@ class DreamAlgorithm(BayesianAlgorithm):
 
         return []
 
-    def calculate_new_pset(self, idx):
+    def _advance_generation(self, index):
+        """Per-generation barrier housekeeping run once all chains are synced:
+        reset ``wait_for_sync``, check the stopping conditions (max iterations,
+        convergence), print progress, reset outlier chains, adapt CR, grow the
+        ZS archive, and snapshot the population mean/std for CR distance. Returns
+        ``'STOP'`` to end the run, else ``None``. Shared verbatim by both
+        engines, so this is byte-identical to the classic barrier."""
+        self.wait_for_sync = [False] * self.num_parallel
+
+        if min(self.iteration) >= self.max_iterations:
+            self.update_histograms('_final')
+            self.report_constraint_satisfaction('_final')
+            return 'STOP'
+
+        if self.iteration[index] % 10 == 0:
+            print1('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+            print2(f'Acceptance rates: {str(self.acceptance_rates)}\n')
+        else:
+            print2('Completed iteration %i of %i' % (self.iteration[index], self.max_iterations))
+        # Convergence diagnostics (R-hat, ESS) on their own stride (PERF-1)
+        if self.iteration[index] % self.diagnostics_every == 0:
+            max_rhat = self.report_convergence_diagnostics(self.iteration[index])
+            if self.check_convergence(self.iteration[index], max_rhat):
+                return 'STOP'
+        logger.debug('Completed %i iterations' % self.iteration[index])
+        print2(f'Current -Ln Posteriors: {str(self.ln_current_P)}')
+
+        # Outlier detection (every 10 iterations, only during burn-in)
+        if self.iteration[index] % 10 == 0 and self.iteration[index] <= self.burn_in:
+            self.detect_and_reset_outliers()
+
+        # CR adaptation: update probabilities
+        if (self.iteration[index] % 10 == 0
+                and self.iteration[index] <= self.cr_adapt_end
+                and not self.cr_frozen):
+            with np.errstate(divide='ignore', invalid='ignore'):
+                mean_dist = self.cr_total_distance / np.maximum(self.cr_usage_count, 1)
+            if np.sum(mean_dist) > 0:
+                self.cr_probs = mean_dist / np.sum(mean_dist)
+                logger.debug(f'Updated CR probabilities: {str(self.cr_probs)}')
+        elif self.iteration[index] > self.cr_adapt_end and not self.cr_frozen:
+            self.cr_frozen = True
+            logger.debug('CR probabilities frozen at iteration %d: %s'
+                        % (self.iteration[index], str(self.cr_probs)))
+
+        # Grow the ZS archive: every K generations, append current chain states
+        if self.iteration[index] % self.archive_thin_rate == 0:
+            for i in range(self.num_parallel):
+                self.archive.append(copy.deepcopy(self.current_pset[i]))
+            logger.debug('Archive grown to %d entries at iteration %d'
+                        % (len(self.archive), self.iteration[index]))
+
+        # Save old states and compute population std for CR adaptation
+        for i in range(self.num_parallel):
+            self.gen_x_old[i] = self._param_vec(self.current_pset[i])
+        all_vecs = np.array(self.gen_x_old)
+        self.gen_x_std = np.std(all_vecs, axis=0)
+        return None
+
+    def _build_generation_single(self, index):
+        """Build the classic single-try next generation: one proposal per chain
+        (snooker with probability ``snooker_prob``, else parallel-direction DE),
+        named ``iter%irun%i``. Out-of-bounds proposals are treated as Metropolis
+        rejections (chain stays in place, history records the non-movement).
+        Returns the list of in-bounds proposal PSets. Byte-identical to the
+        classic inline barrier body."""
+        next_gen = []
+        for i, p in enumerate(self.current_pset):
+            if self.chain_rngs[i].uniform() < self.snooker_prob:
+                # Snooker update
+                new_pset, log_corr = self.calculate_snooker_pset(i)
+                self.gen_log_snooker_correction[i] = log_corr
+                self.gen_cr_indices[i] = None  # no CR for snooker
+            else:
+                # Parallel direction update
+                new_pset, cr_idx = self.calculate_new_pset(i)
+                self.gen_log_snooker_correction[i] = 0.0
+                self.gen_cr_indices[i] = cr_idx
+            if new_pset:
+                new_pset.name = 'iter%irun%i' % (self.iteration[i], i)
+                next_gen.append(new_pset)
+            else:
+                logger.debug('Proposed PSet for chain %d is out of bounds. Treating as rejection.' % i)
+                self._record_generation_rejection(i)
+        return next_gen
+
+    def _record_generation_rejection(self, i):
+        """Record a whole-generation Metropolis rejection for chain ``i`` (its
+        proposal, or in multi-try all of its trials, fell out of bounds): the
+        chain stays put, history records the non-movement so R-hat/ESS reflect
+        it, and the chain is marked complete. Shared by both engines."""
+        self.chain_history[i].append(self._param_vec(self.current_pset[i]))
+        self.ln_posterior_history[i].append(self.ln_current_P[i])
+        self.wait_for_sync[i] = True
+        self.iteration[i] += 1
+        self.acceptance_rates[i] = self.acceptances[i] / self.iteration[i]
+        if self.iteration[i] % self.sample_every == 0 and self.iteration[i] > self.burn_in:
+            self.sample_pset(self.current_pset[i], self.ln_current_P[i], i)
+
+    # ------------------------------------------------------------------ #
+    # Multi-Try DREAM (MT-DREAM(ZS); Laloy & Vrugt 2012) — ADR-0067       #
+    # Stage 2. Active only when n_try > 1. A generation for each chain    #
+    # runs as a two-phase per-chain state machine:                       #
+    #   TRIALS:    k candidates y_1..y_k drawn from the current state x   #
+    #              (all snooker OR all parallel-direction). Each is       #
+    #              evaluated; the winner Y is selected in proportion to   #
+    #              its importance weight w(y) = pi(y) * g(y), where the   #
+    #              snooker Jacobian g(y) = ||y - z_y||^(d-1) is 1 for the #
+    #              symmetric proposals.                                   #
+    #   REFERENCE: k-1 reference points drawn from T(Y, .); the k-th      #
+    #              reference is the current state x itself. Y is accepted #
+    #              over x with the multiple-try Metropolis ratio          #
+    #              min(1, sum_j w(y_j) / sum_j w(x*_j)).                   #
+    # The current-state reference weight carries the snooker Jacobian     #
+    # ||x - z_Y||^(d-1) at the SELECTED candidate's anchor z_Y ("Variant  #
+    # A"): the unique choice that reduces to the ter Braak & Vrugt (2008) #
+    # single-try snooker ratio at k=1 (derived + verified for ADR-0067;   #
+    # both the DREAM-Suite and PyDREAM reference codes depart from it).   #
+    # 2k-1 evaluations per chain per generation.                         #
+    # ------------------------------------------------------------------ #
+    def _got_result_multitry(self, res):
+        """MT-DREAM(ZS) result handler (n_try > 1). Routes each completed job by
+        its name: the initial ``iter0run%i`` population (bootstrap, single forced
+        accept), a ``try%i`` candidate, or a ``ref%i`` reference point."""
+        self.total_evaluations += 1
+        name = res.pset.name
+        index = self._chain_index_from_name(name)
+        m = re.search(r'(try|ref)(\d+)$', name)
+        if m is None:
+            # Initial generation: no MTM yet (ln_current_P is nan -> forced accept).
+            return self._mt_bootstrap(res, index)
+        phase, sub = m.group(1), int(m.group(2))
+        if phase == 'try':
+            return self._mt_handle_trial(res, index, sub)
+        return self._mt_handle_reference(res, index, sub)
+
+    def _mt_bootstrap(self, res, index):
+        """Accept an initial-population evaluation (iter0). ``ln_current_P``
+        starts NaN, forcing accept exactly as the single-try engine does; then
+        hand off to the multi-try barrier to build the first k-candidate
+        generation."""
+        pset = res.pset
+        lnposterior = self.ln_prior(pset) - res.score
+        ln_p_accept = min(0., lnposterior - self.ln_current_P[index])
+        if np.log(self.chain_rngs[index].uniform()) < ln_p_accept:
+            self.current_pset[index] = pset
+            self.ln_current_P[index] = lnposterior
+            self.acceptances[index] += 1
+            self.evaluate_constraints(self._result_simdata(res), index)
+            self.record_pointwise_loglik(res, index)
+        self.chain_history[index].append(self._param_vec(self.current_pset[index]))
+        self.ln_posterior_history[index].append(self.ln_current_P[index])
+        self.wait_for_sync[index] = True
+        self.iteration[index] += 1
+        self.acceptance_rates[index] = self.acceptances[index] / self.iteration[index]
+        if self.iteration[index] % self.sample_every == 0 and self.iteration[index] > self.burn_in:
+            self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
+        return self._run_barrier(index, self._build_generation_multitry)
+
+    def _mt_handle_trial(self, res, index, sub):
+        """Buffer a completed candidate (trial) for chain ``index``. When all of
+        the chain's in-bounds trials are in, select the preferred candidate and
+        emit the reference set."""
+        meta = self.mt_trial_meta[index][sub]
+        lnposterior = self.ln_prior(res.pset) - res.score
+        self.mt_trials[index].append({
+            'pset': res.pset,
+            'lnpost': lnposterior,
+            'snooker_term': meta['cand_term'],
+            'anchor': meta['anchor'],
+            'cr_idx': meta['cr_idx'],
+            'res': res,
+        })
+        if len(self.mt_trials[index]) < self.mt_trials_expected[index]:
+            return []
+        return self._mt_select_and_emit_references(index)
+
+    def _mt_select_and_emit_references(self, index):
+        """All trials for chain ``index`` are in: select the winner Y with
+        probability proportional to its importance weight, then draw the k-1
+        reference points from ``T(Y, .)`` and emit them. The current-state slot
+        weight (Variant A) is computed and stored for the accept step."""
+        trials = self.mt_trials[index]
+        logws = np.array([t['lnpost'] + t['snooker_term'] for t in trials])
+        if not np.any(np.isfinite(logws)):
+            # Every in-bounds candidate has zero posterior mass -> reject generation.
+            self._record_generation_rejection(index)
+            return self._run_barrier(index, self._build_generation_multitry)
+        probs = np.exp(logws - logsumexp(logws))
+        probs = probs / probs.sum()
+        j_sel = int(self.chain_rngs[index].choice(len(trials), p=probs))
+        sel = trials[j_sel]
+        self.mt_selected[index] = sel
+        y_vec = self._param_vec(sel['pset'])
+
+        ref_psets = []
+        ref_terms = []
+        for _ in range(self.n_try - 1):
+            if self.mt_is_snooker[index]:
+                rpset, cand_term, _anchor = self._snooker_propose(index, y_vec)
+            else:
+                rpset, _cr = self.calculate_new_pset(index, base=sel['pset'])
+                cand_term = 0.0
+            if rpset is None:
+                continue
+            rpset.name = 'iter%irun%iref%i' % (self.iteration[index], index, len(ref_psets))
+            ref_terms.append(cand_term)
+            ref_psets.append(rpset)
+        self.mt_ref_terms[index] = ref_terms
+        self.mt_refs_expected[index] = len(ref_psets)
+        self.mt_ref_logw[index] = []
+
+        # k-th reference = the current state x. The Variant-A snooker term uses
+        # x's distance to the SELECTED candidate's anchor z_Y (the anchor that
+        # generated Y from x); zero for the symmetric proposals.
+        if self.mt_is_snooker[index]:
+            x_vec = self._param_vec(self.current_pset[index])
+            cur_term = (self.n_dim - 1) * np.log(np.linalg.norm(x_vec - sel['anchor']) + 1e-300)
+        else:
+            cur_term = 0.0
+        self.mt_cur_logw[index] = self.ln_current_P[index] + cur_term
+
+        if not ref_psets:
+            # All k-1 reference draws out of bounds: accept using only the
+            # current-state slot as the reference weight.
+            return self._mt_accept(index)
+        return ref_psets
+
+    def _mt_handle_reference(self, res, index, sub):
+        """Buffer a completed reference point. When all in-bounds references are
+        in, run the multiple-try accept."""
+        lnposterior = self.ln_prior(res.pset) - res.score
+        self.mt_ref_logw[index].append(lnposterior + self.mt_ref_terms[index][sub])
+        if len(self.mt_ref_logw[index]) < self.mt_refs_expected[index]:
+            return []
+        return self._mt_accept(index)
+
+    def _mt_accept(self, index):
+        """Multiple-try Metropolis accept (Liu, Liang & Wong 2000; Laloy & Vrugt
+        2012): accept the selected candidate Y over the current state x with
+        probability min(1, sum_j w(y_j) / sum_j w(x*_j)) -- the k trial weights
+        over the k reference weights (k-1 fresh draws from Y plus the current-
+        state slot). Record the single accepted move, adapt CR from the winner's
+        crossover value, then hand off to the barrier."""
+        sel = self.mt_selected[index]
+        trial_logws = np.array([t['lnpost'] + t['snooker_term'] for t in self.mt_trials[index]])
+        ref_logws = np.array(self.mt_ref_logw[index] + [self.mt_cur_logw[index]])
+        log_alpha = min(0.0, logsumexp(trial_logws) - logsumexp(ref_logws))
+        if np.log(self.chain_rngs[index].uniform()) < log_alpha:
+            self.current_pset[index] = sel['pset']
+            self.ln_current_P[index] = sel['lnpost']
+            self.acceptances[index] += 1
+            self.evaluate_constraints(self._result_simdata(sel['res']), index)
+            self.record_pointwise_loglik(sel['res'], index)
+
+        # Store chain history (after accept/reject, so it reflects the kept state)
+        self.chain_history[index].append(self._param_vec(self.current_pset[index]))
+        self.ln_posterior_history[index].append(self.ln_current_P[index])
+
+        # CR adaptation from the selected candidate's crossover value + realized move
+        if not self.cr_frozen and sel['cr_idx'] is not None and self.gen_x_old[index] is not None:
+            diff_vec = self._param_vec(self.current_pset[index]) - self.gen_x_old[index]
+            sd_dist = np.sum((diff_vec / np.maximum(self.gen_x_std, 1e-10)) ** 2)
+            self.cr_total_distance[sel['cr_idx']] += sd_dist
+            self.cr_usage_count[sel['cr_idx']] += 1
+
+        self.wait_for_sync[index] = True
+        self.iteration[index] += 1
+        self.acceptance_rates[index] = self.acceptances[index] / self.iteration[index]
+        if self.iteration[index] % self.sample_every == 0 and self.iteration[index] > self.burn_in:
+            self.sample_pset(self.current_pset[index], self.ln_current_P[index], index)
+        if (self.iteration[index] % (self.sample_every * self.output_hist_every) == 0
+            and self.iteration[index] > self.burn_in):
+            self.update_histograms('_%i' % self.iteration[index])
+
+        return self._run_barrier(index, self._build_generation_multitry)
+
+    def _build_generation_multitry(self, index):
+        """Build the MT-DREAM(ZS) next generation: k candidate proposals per
+        chain drawn from the current state (snooker for the whole chain-
+        generation with probability ``snooker_prob``, else parallel-direction),
+        named ``iter%irun%itry%i``. Resets the per-chain multi-try buffers. A
+        chain whose k trials are all out of bounds is a generation rejection.
+        Returns the flat list of all chains' trial PSets."""
+        next_gen = []
+        for i in range(self.num_parallel):
+            is_snooker = self.chain_rngs[i].uniform() < self.snooker_prob
+            self.mt_is_snooker[i] = is_snooker
+            self.mt_trials[i] = []
+            self.mt_trial_meta[i] = []
+            self.mt_ref_logw[i] = []
+            self.mt_selected[i] = None
+            x_vec = self._param_vec(self.current_pset[i])
+            trial_psets = []
+            for _ in range(self.n_try):
+                if is_snooker:
+                    cpset, cand_term, anchor = self._snooker_propose(i, x_vec)
+                    cr_idx = None
+                else:
+                    cpset, cr_idx = self.calculate_new_pset(i)
+                    cand_term, anchor = 0.0, None
+                if cpset is None:
+                    continue
+                cpset.name = 'iter%irun%itry%i' % (self.iteration[i], i, len(trial_psets))
+                self.mt_trial_meta[i].append({'cand_term': cand_term, 'anchor': anchor, 'cr_idx': cr_idx})
+                trial_psets.append(cpset)
+            self.mt_trials_expected[i] = len(trial_psets)
+            if not trial_psets:
+                self._record_generation_rejection(i)
+            else:
+                next_gen.extend(trial_psets)
+        return next_gen
+
+    def calculate_new_pset(self, idx, base=None):
         """
         Uses differential evolution-like update to calculate new PSet.
         Returns (PSet, cr_idx) or (None, cr_idx) if the proposal is out of bounds.
@@ -445,13 +761,18 @@ class DreamAlgorithm(BayesianAlgorithm):
         'whitened' proposal runs once its preconditioner has warmed up, otherwise
         (and always for 'de') the classic parallel-direction DE proposal below.
 
+        ``base`` overrides the point the jump is applied to (default: the current
+        chain state). Multi-try (ADR-0067 Stage 2) passes the selected candidate
+        Y as ``base`` to draw the reference set from ``T(Y, .)``; with the default
+        ``base=None`` this is byte-identical to the classic single-try proposal.
+
         :param idx: Index of PSet to update
         :return: tuple of (PSet or None, int)
         """
         if self.proposal == 'whitened' and self._preconditioned:
-            return self._calculate_whitened_pset(idx)
+            return self._calculate_whitened_pset(idx, base)
 
-        x0 = self.current_pset[idx]
+        x0 = self.current_pset[idx] if base is None else base
 
         # Draw 2*delta donor states from the ZS archive (without replacement)
         sel = self.chain_rngs[idx].choice(len(self.archive), 2 * self.delta, replace=False)
@@ -554,7 +875,7 @@ class DreamAlgorithm(BayesianAlgorithm):
         """Transform a difference vector from whitened space back: dx = L @ dz."""
         return self._cov_L @ dz_vec
 
-    def _calculate_whitened_pset(self, idx):
+    def _calculate_whitened_pset(self, idx, base=None):
         """
         DE proposal in whitened space (the 'whitened' proposal operator).
 
@@ -566,9 +887,11 @@ class DreamAlgorithm(BayesianAlgorithm):
         6. Propose x_new = x_current + dx
 
         Only reached from :meth:`calculate_new_pset` once ``self._preconditioned``
-        is True; before that the classic DE proposal is used.
+        is True; before that the classic DE proposal is used. ``base`` overrides
+        the jump origin (multi-try reference draws pass the selected candidate);
+        ``base=None`` is byte-identical to the single-try whitened proposal.
         """
-        x0 = self.current_pset[idx]
+        x0 = self.current_pset[idx] if base is None else base
         x0_vec = self._param_vec(x0)
 
         # Draw 2*delta donor states from the ZS archive (without replacement)
