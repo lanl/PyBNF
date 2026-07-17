@@ -121,7 +121,12 @@ All notable changes to PyBNF are documented below. This project adheres to
   worker-scoring path and `res.simdata` on the master-scoring path (`parallelize_models>1`),
   and `evaluate_constraints` guards a `None` dict into a graceful skip rather than a hard
   crash. The same fix restores the pointwise-log-likelihood (LOO/WAIC) sidecar, which was
-  silently empty on the worker-scoring path for the same reason. Regression vs v1.1.9.
+  silently empty on the worker-scoring path for the same reason. Regression vs v1.1.9;
+  verified end-to-end on the 5-model, 90-cross-model-constraint
+  `examples/Miller2025_MEK_Isoforms/MEK_isoform_aMCMC` job — the sampler now draws posterior
+  samples and writes per-sample constraint-satisfaction rows (`samples.txt`,
+  `constraint_samples.txt`, `constraint_satisfaction_*.txt`), where it previously aborted
+  before drawing a single sample.
 - **Gradient fits no longer abort on an incidental non-differentiable action (#475).** A
   gradient-based fit (`fit_type = trf`/`lbfgs`) enables a forward-sensitivity request on the
   whole model, and any action that cannot carry sensitivities forward — a stochastic (`ssa`/
