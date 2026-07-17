@@ -664,6 +664,10 @@
     null
    ],
    [
+    "proposal",
+    "de"
+   ],
+   [
     "qualitative_loss",
     "auto"
    ],
@@ -1088,6 +1092,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "proposal",
+    "whitened"
    ],
    [
     "qualitative_loss",
@@ -2014,6 +2022,10 @@
     null
    ],
    [
+    "proposal",
+    "de"
+   ],
+   [
     "qualitative_loss",
     "auto"
    ],
@@ -2550,6 +2562,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "proposal",
+    "whitened"
    ],
    [
     "qualitative_loss",
@@ -3476,6 +3492,10 @@
     null
    ],
    [
+    "proposal",
+    "de"
+   ],
+   [
     "qualitative_loss",
     "auto"
    ],
@@ -3900,6 +3920,10 @@
    [
     "profile_objective",
     null
+   ],
+   [
+    "proposal",
+    "whitened"
    ],
    [
     "qualitative_loss",

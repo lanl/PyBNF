@@ -131,11 +131,16 @@ the two axes touch the engine at architecturally different depths.
 
 - **Sequencing is three staged, independently-shippable steps** — this ADR does not
   authorize implementing all of them at once:
-  1. **Refactor only.** Extract the proposal Strategy seam; fold `PDreamAlgorithm` into
-     `DreamAlgorithm` as `proposal = whitened`; register `p_dream` via `kwargs`. No new
-     behaviour. Acceptance = the byte-identical invariant, checked against the existing
-     DREAM/P-DREAM tests and the analytical + banana benchmarks
-     (`SAMPLER_COMPARISON_ROADMAP.md`).
+  1. **Refactor only. — DONE (2026-07-16).** Extract the proposal Strategy seam; fold
+     `PDreamAlgorithm` into `DreamAlgorithm` as `proposal = whitened`. No new behaviour.
+     Acceptance = the byte-identical invariant, checked against the existing DREAM/P-DREAM
+     oracle suites and the effective-config goldens (all green). Implementation note:
+     `p_dream` pins `proposal = 'whitened'` via a `PDreamConfig` schema default rather than
+     the registry `kwargs` sketched above — `kwargs` is constructor injection
+     (`entry.cls(config, **kwargs)`), whereas a schema default co-locates the pin with the
+     method (ADR-0006) and needs no constructor parameter. `PDreamAlgorithm` survives as a
+     thin subclass (no logic of its own) so the public class name and `job_type = p_dream`
+     resolve unchanged; `precondition_adapt` stays a `PDreamConfig`-owned key.
   2. **`n_try` (#357).** Generalize the barrier; carries the *Principal risk* below and
      its own correctness validation (multi-try acceptance vs single-try on the
      analytical targets, matching Laloy & Vrugt 2012's stationary distribution).

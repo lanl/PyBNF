@@ -1844,8 +1844,16 @@ For DREAM
   Method for detecting outlier chains during burn-in. Options: ``iqr`` (interquartile range) or
   ``grubbs`` (Grubbs test at alpha=0.01). Default: ``iqr``
 
+``proposal = str``
+  The DREAM proposal operator. ``de`` (the default) is the classic DREAM(ZS) parallel-direction
+  differential-evolution proposal. ``whitened`` computes the proposal in an online
+  covariance-whitened space for better sampling of correlated posteriors — this is what the
+  ``p_dream`` job type selects (``p_dream`` is simply ``dream`` with ``proposal = whitened``
+  pinned), and it can also be requested explicitly on a ``dream`` run. Default: ``de``
+
 ``precondition_adapt = int``
-  **P-DREAM only.** The iteration at which P-DREAM switches to proposing in its learned
+  Used only by the ``whitened`` proposal (the ``p_dream`` job type, or ``dream`` with
+  ``proposal = whitened``). The iteration at which the sampler switches to proposing in its learned
   covariance-whitened space; until then the online covariance is still being estimated and plain
   DREAM proposals are used. Default: half of ``burn_in``.
 

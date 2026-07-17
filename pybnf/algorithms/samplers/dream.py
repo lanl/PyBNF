@@ -9,7 +9,7 @@ execution seam from Algorithm; it makes no core.* call of its own.
 
 from .base import BayesianAlgorithm, MCMCFamilyConfig
 from ...pset import PSet, OutOfBoundsException
-from ...printing import print1, print2
+from ...printing import print1, print2, PybnfError
 from ...registry import register_fit_type
 
 from typing import Any, Optional
@@ -45,6 +45,11 @@ class DreamConfig(MCMCFamilyConfig):
     snooker_prob: float = 0.1
     delta: int = 1
     outlier_method: str = 'iqr'
+    # Proposal operator (ADR-0067 axis 1). 'de' is the classic DREAM(ZS)
+    # parallel-direction proposal; 'whitened' is the covariance-preconditioned
+    # proposal (the p_dream default, pinned by ``PDreamConfig``). Additional
+    # operators (e.g. 'kalman') arrive in later ADR-0067 stages.
+    proposal: str = 'de'
 
     @classmethod
     def postprocess(cls, conf_dict, fit_type):
@@ -108,6 +113,26 @@ class DreamAlgorithm(BayesianAlgorithm):
 
         # Outlier detection method
         self.outlier_method = config.config['outlier_method']
+
+        # Proposal operator (ADR-0067 axis 1). 'whitened' folds in what used to be
+        # the separate PDreamAlgorithm: DE proposals computed in a covariance-
+        # whitened space. The preconditioning state below is dormant for 'de'
+        # (guarded everywhere by ``self.proposal == 'whitened'``), so a plain
+        # ``dream`` run is byte-identical to before this fold-in.
+        self.proposal = config.config['proposal']
+        if self.proposal not in ('de', 'whitened'):
+            raise PybnfError("Invalid proposal '%s'" % self.proposal,
+                             "Config key 'proposal' must be 'de' or 'whitened'.")
+        self._cov_L = None       # Cholesky factor of the covariance estimate
+        self._cov_L_inv = None   # Inverse of the Cholesky factor (whitening matrix)
+        self._preconditioned = False
+        self.precondition_adapt = None
+        if self.proposal == 'whitened':
+            # precondition_adapt lives on PDreamConfig (p_dream's companion key);
+            # read defensively so a base ``dream`` that opts into 'whitened' still
+            # gets the documented burn_in//2 fallback.
+            pa = config.config.get('precondition_adapt')
+            self.precondition_adapt = pa if pa is not None else self.burn_in // 2
 
     def start_run(self, setup_samples=True):
         first_psets = super().start_run(setup_samples)
@@ -399,6 +424,14 @@ class DreamAlgorithm(BayesianAlgorithm):
                                % (self.num_parallel, min(self.iteration)))
                 continue
 
+            # Whitened proposal (ADR-0067): refresh the preconditioning covariance
+            # once per synced generation, AFTER this generation's proposals were
+            # built from the previous estimate. Byte-identical in timing to the old
+            # PDreamAlgorithm.got_result hook, which ran this after super() returned
+            # the (non-empty) next_gen list. Dormant for the 'de' proposal.
+            if self.proposal == 'whitened' and min(self.iteration) >= self.precondition_adapt:
+                self._update_covariance()
+
             return next_gen
 
         return []
@@ -408,9 +441,15 @@ class DreamAlgorithm(BayesianAlgorithm):
         Uses differential evolution-like update to calculate new PSet.
         Returns (PSet, cr_idx) or (None, cr_idx) if the proposal is out of bounds.
 
+        Dispatches on the configured proposal operator (ADR-0067 axis 1): the
+        'whitened' proposal runs once its preconditioner has warmed up, otherwise
+        (and always for 'de') the classic parallel-direction DE proposal below.
+
         :param idx: Index of PSet to update
         :return: tuple of (PSet or None, int)
         """
+        if self.proposal == 'whitened' and self._preconditioned:
+            return self._calculate_whitened_pset(idx)
 
         x0 = self.current_pset[idx]
 
@@ -460,3 +499,126 @@ class DreamAlgorithm(BayesianAlgorithm):
                 return None, cr_idx
 
         return PSet(new_vars), cr_idx
+
+    # ------------------------------------------------------------------ #
+    # Whitened ('whitened') proposal — folded in from PDreamAlgorithm    #
+    # (ADR-0067). Active only when self.proposal == 'whitened'; the      #
+    # state and hooks are dormant for the default 'de' proposal.         #
+    # ------------------------------------------------------------------ #
+    def _update_covariance(self):
+        """
+        Estimate the covariance from pooled chain history and compute Cholesky factors.
+        Discards the first 50% of each chain as warmup (matching the convention used by
+        diagnostics.split_chains for R-hat/ESS) so the early burn-in transient does not
+        inflate the preconditioner. Pooling across chains is intentional: the whitened
+        proposal's global preconditioner wants a proposal scale large enough for
+        archive-based mode hopping.
+        """
+        # Pool the post-warmup half of each chain history into one matrix
+        all_samples = []
+        for chain in self.chain_history:
+            if len(chain) > 1:
+                all_samples.extend(chain[len(chain) // 2:])
+        if len(all_samples) < 2 * self.n_dim:
+            return  # Not enough samples yet
+
+        X = np.array(all_samples)
+        n = X.shape[0]
+        d = X.shape[1]
+
+        # Sample covariance with Haario-style regularization: C = Cov(X) + eps*I
+        cov = np.cov(X, rowvar=False)
+        eps = 1e-6 * np.trace(cov) / d if np.trace(cov) > 0 else 1e-6
+        cov += eps * np.eye(d)
+
+        try:
+            L = np.linalg.cholesky(cov)
+            self._cov_L = L
+            self._cov_L_inv = np.linalg.solve(L, np.eye(d))
+            if not self._preconditioned:
+                self._preconditioned = True
+                logger.info('P-DREAM: preconditioning activated at iteration %d '
+                            'with %d pooled samples (d=%d)'
+                            % (min(self.iteration), n, d))
+            else:
+                logger.debug('P-DREAM: covariance updated with %d samples' % n)
+        except np.linalg.LinAlgError:
+            logger.warning('P-DREAM: Cholesky decomposition failed, '
+                           'skipping covariance update')
+
+    def _whiten(self, x_vec):
+        """Transform a parameter vector to whitened space: z = L_inv @ x."""
+        return self._cov_L_inv @ x_vec
+
+    def _unwhiten_diff(self, dz_vec):
+        """Transform a difference vector from whitened space back: dx = L @ dz."""
+        return self._cov_L @ dz_vec
+
+    def _calculate_whitened_pset(self, idx):
+        """
+        DE proposal in whitened space (the 'whitened' proposal operator).
+
+        1. Transform current state and archive donors to z = L_inv @ x
+        2. Compute DE difference in z-space
+        3. Apply crossover in z-space (dimensions are decorrelated)
+        4. Scale and add perturbation in z-space
+        5. Convert the total jump back: dx = L @ dz_total
+        6. Propose x_new = x_current + dx
+
+        Only reached from :meth:`calculate_new_pset` once ``self._preconditioned``
+        is True; before that the classic DE proposal is used.
+        """
+        x0 = self.current_pset[idx]
+        x0_vec = self._param_vec(x0)
+
+        # Draw 2*delta donor states from the ZS archive (without replacement)
+        sel = self.chain_rngs[idx].choice(len(self.archive), 2 * self.delta, replace=False)
+
+        # Whiten the donor states
+        z_donors = []
+        for s in sel:
+            z_donors.append(self._whiten(self._param_vec(self.archive[s])))
+
+        # Sample crossover value and mask (in whitened space where dims are independent)
+        cr_idx = self.chain_rngs[idx].choice(self.ncr_count, p=self.cr_probs)
+        cr = self.ncr[cr_idx]
+        while True:
+            ds = self.chain_rngs[idx].uniform(size=self.n_dim) <= cr
+            if np.any(ds):
+                break
+
+        # Gamma selection
+        if self.chain_rngs[idx].uniform() < self.g_prob:
+            gamma = 1
+            ds[:] = True  # mode jump: update all dimensions
+        else:
+            d_prime = int(np.sum(ds))
+            if self.adaptive_step_size:
+                gamma = 2.38 / np.sqrt(2.0 * self.delta * d_prime)
+            else:
+                gamma = self.step_size
+
+        # Compute DE difference in whitened space
+        dz_total = np.zeros(self.n_dim)
+        for j in range(self.delta):
+            dz_total += z_donors[j] - z_donors[self.delta + j]
+
+        # Apply crossover mask in whitened space
+        dz_masked = np.where(ds, dz_total, 0.0)
+
+        # Small perturbations in whitened space
+        zeta_z = self.chain_rngs[idx].normal(0, self.config.config['zeta'], size=self.n_dim)
+        lamb = self.chain_rngs[idx].uniform(-self.config.config['lambda'], self.config.config['lambda'])
+
+        # Total jump in whitened space, then transform back to original space
+        dz_jump = zeta_z + (1.0 + lamb) * gamma * dz_masked
+        dx_jump = self._unwhiten_diff(dz_jump)
+
+        # Build proposed PSet in original space (reject rather than reflect)
+        xp_vec = x0_vec + dx_jump
+        proposal = self._proposal_pset(xp_vec)
+        if proposal is None:
+            logger.debug("Proposed parameter outside of bounds")
+            return None, cr_idx
+
+        return proposal, cr_idx

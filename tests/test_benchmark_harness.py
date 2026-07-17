@@ -55,7 +55,11 @@ import run_benchmark as rb  # noqa: E402  (path-dependent import of the harness 
 # family override and the estimated-scale tie both no-ops on these sampler confs, which carry no
 # constraints anyway), and generate_network (#473; defaults to None == the bare
 # generate_network({overwrite=>1}) -- the edition-2 network-generation cap surface, a no-op on
-# these pre-migration sampler confs, which carry no crosslinking BNGL model).
+# these pre-migration sampler confs, which carry no crosslinking BNGL model), and
+# proposal (ADR-0067; the DREAM proposal-operator key -- 'de' for dream, pinned to
+# 'whitened' for p_dream -- added when PDreamAlgorithm was folded into DreamAlgorithm.
+# It merely names each sampler's already-existing proposal behavior (classic DE vs
+# covariance-whitened), byte-identical to pre-fold-in, so these confs never carried it).
 # These always carry no-op defaults here, so excluding them keeps the oracle an
 # independent *pre-migration* witness without regenerating it for keys the original confs
 # could not have carried.
@@ -63,7 +67,7 @@ _EXCLUDE = frozenset({
     'bng_command', 'output_dir', 'refine_method', 'noise_location',
     'initialization_distribution', 'edition', 'objective', 'profile_objective',
     'job_type', 'embed_best_fit_data', 'smooth_plot_points', 'output_inference_data',
-    'qualitative_loss', 'qualitative_scale', 'generate_network',
+    'qualitative_loss', 'qualitative_scale', 'generate_network', 'proposal',
 })
 
 

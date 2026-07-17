@@ -6,6 +6,17 @@ All notable changes to PyBNF are documented below. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **DREAM `proposal` operator key; P-DREAM folded into one DREAM engine (ADR-0067, Stage 1).**
+  DREAM(ZS) and Preconditioned DREAM are now one `DreamAlgorithm` engine selected by a new
+  `proposal` config key: `proposal = de` (default) is the classic parallel-direction proposal, and
+  `proposal = whitened` is the covariance-preconditioned proposal that used to be a separate
+  algorithm. The `p_dream` job type is unchanged for users — it is simply `dream` with
+  `proposal = whitened` pinned — and `whitened` can now also be requested explicitly on a `dream`
+  run. This is a pure refactor: `dream` at defaults and `p_dream` are **byte-identical** to before
+  (verified against the existing DREAM/P-DREAM oracle suites and the effective-config goldens). It
+  is the first step of ADR-0067's unification of the DREAM family into two orthogonal axes
+  (`proposal` × `n_try`), which will absorb the requested MT-DREAM (#357) and DREAM-KZS (#358)
+  without new sampler subclasses.
 - **Composable floor normalization + analytic per-series scaling for relative / arbitrary-unit
   data (#479).** Two composable, per-series normalization primitives so a log/relative objective
   on arbitrary-unit data (fluorescence, blots) can be spelled with standard tokens instead of a
