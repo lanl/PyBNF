@@ -5358,6 +5358,18 @@
     null
    ],
    [
+    "cmaes_ipop_factor",
+    2.0
+   ],
+   [
+    "cmaes_restart_strategy",
+    "ipop"
+   ],
+   [
+    "cmaes_restarts",
+    0
+   ],
+   [
     "cmaes_sigma0",
     0.5
    ],
@@ -5654,6 +5666,18 @@
    [
     "cluster_type",
     null
+   ],
+   [
+    "cmaes_ipop_factor",
+    2.0
+   ],
+   [
+    "cmaes_restart_strategy",
+    "ipop"
+   ],
+   [
+    "cmaes_restarts",
+    0
    ],
    [
     "cmaes_sigma0",
@@ -6621,6 +6645,18 @@
    [
     "cluster_type",
     null
+   ],
+   [
+    "cmaes_ipop_factor",
+    2.0
+   ],
+   [
+    "cmaes_restart_strategy",
+    "ipop"
+   ],
+   [
+    "cmaes_restarts",
+    0
    ],
    [
     "cmaes_sigma0",

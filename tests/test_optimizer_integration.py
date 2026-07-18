@@ -267,6 +267,105 @@ def test_cmaes_box_mode_recovers_log_scaled_mode(tmp_path):
     assert np.allclose(recovered, mean, rtol=0.05), recovered
 
 
+# --------------------------------------------------------------------------- #
+# CMA-ES restart — IPOP / BIPOP for multimodal search (#498, ADR-0070)
+# --------------------------------------------------------------------------- #
+# A single CMA-ES run descends into whichever basin its start lands in, so on a
+# multimodal objective it reaches only a local minimum. cmaes_restarts > 0 turns
+# on IPOP / BIPOP restart: on a *convergence* stop (not the global generation
+# budget), reinitialize from a fresh random box point with a rescaled population and
+# keep the global best. These tests use a well-separated two-mode mixture whose
+# deep global mode sits away from the box center, so a single run started at the
+# center is provably trapped in the shallow central mode and only restart escapes.
+
+# A shallow LOCAL mode at the box center [0,0] (weight 0.35 -> NLL peak ~1.05) and a
+# deeper, wider GLOBAL mode at [6,6] (weight 0.65 -> NLL peak ~0.43). At the center
+# the local term dominates the global by ~9 nats, so a small-sigma0 run started there
+# converges into the local mode with no pull toward the global one -- the trap.
+_TRAP_MODES = [(0.35, [0.0, 0.0], [1.0, 1.0]), (0.65, [6.0, 6.0], [4.0, 4.0])]
+_TRAP_LOCAL_NLL = 1.05      # -log(0.35): the shallow central mode a single run finds
+_TRAP_GLOBAL_NLL = 0.43     # -log(0.65): the deep off-center mode only restart reaches
+
+
+def _trap_config(tmp_path, **overrides):
+    """A CMA-ES box-mode fit over the two-mode trap mixture, started at the box
+    center (bounded uniform priors on [-10, 10]^2). ``cmaes_sigma0`` is small so the
+    initial run stays local; callers add ``cmaes_restarts`` / strategy."""
+    tgt, exp = H.write_target(tmp_path, H.multimodal_spec(_TRAP_MODES))
+    base = dict(n_params=2, var_type='uniform_var', bounds=(-10.0, 10.0),
+                population_size=8, max_iterations=400, cmaes_sigma0=0.06,
+                cmaes_stop_tol=1e-9, random_seed=1234)
+    base.update(overrides)
+    return H.make_config(tmp_path, 'cmaes', tgt, exp, **base)
+
+
+def test_cmaes_restarts_default_zero_is_a_single_run(tmp_path):
+    """cmaes_restarts == 0 (the default) is exactly the pre-restart behavior: one run,
+    trapped in the central mode. No restart fires and the population never changes, so
+    the best fit is the shallow local mode -- the baseline the escape test improves on."""
+    conf = _trap_config(tmp_path, cmaes_restarts=0)
+    alg = algorithms.CMAESAlgorithm(conf)
+    assert alg.max_restarts == 0
+    H.drive(alg)
+
+    assert alg.restart_count == 0                 # never restarted
+    assert alg._lam_history == [8]                # population untouched
+    assert np.allclose(H.best_params(alg, 2), [0.0, 0.0], atol=0.3)   # stuck at the local mode
+    assert alg.trajectory.best_score() > 0.8      # ~1.05, not the 0.43 global min
+
+
+def test_cmaes_invalid_restart_strategy_raises(tmp_path):
+    """An unknown cmaes_restart_strategy is rejected at construction with a clear error
+    (mirrors de_strategy validation), not left to fail obscurely mid-run."""
+    from pybnf.printing import PybnfError
+    conf = _trap_config(tmp_path, cmaes_restarts=2, cmaes_restart_strategy='bogus')
+    with pytest.raises(PybnfError, match='cmaes_restart_strategy'):
+        algorithms.CMAESAlgorithm(conf)
+
+
+@pytest.mark.slow
+def test_cmaes_ipop_restart_escapes_a_basin_a_single_run_is_trapped_in(tmp_path):
+    """The case CMA-ES restart exists for (#498). A single run from the box center is
+    trapped in the shallow central mode; IPOP restart -- reinitializing from fresh
+    random box points with a geometrically doubled population, keeping the global best
+    -- escapes to the deep off-center mode. The restart run's best fit is the global
+    mode, strictly better than the single run's local-mode best."""
+    dir_a, dir_b = tmp_path / 'a', tmp_path / 'b'
+    dir_a.mkdir(); dir_b.mkdir()
+    single = algorithms.CMAESAlgorithm(_trap_config(dir_a, cmaes_restarts=0))
+    H.drive(single)
+    assert single.trajectory.best_score() == pytest.approx(_TRAP_LOCAL_NLL, abs=0.1)
+    assert np.allclose(H.best_params(single, 2), [0.0, 0.0], atol=0.3)   # trapped
+
+    multi = algorithms.CMAESAlgorithm(
+        _trap_config(dir_b, cmaes_restarts=8, cmaes_restart_strategy='ipop'))
+    H.drive(multi)
+    assert multi.restart_count >= 1                                      # at least one restart fired
+    # IPOP doubles the population each restart: [8, 16, 32, ...].
+    assert multi._lam_history == [8 * 2 ** k for k in range(multi.restart_count + 1)]
+    assert multi.lam == 8 * 2 ** multi.restart_count
+    assert np.allclose(H.best_params(multi, 2), [6.0, 6.0], atol=0.3)    # escaped to the global mode
+    assert multi.trajectory.best_score() == pytest.approx(_TRAP_GLOBAL_NLL, abs=0.1)
+    assert multi.trajectory.best_score() < single.trajectory.best_score() - 0.5
+
+
+@pytest.mark.slow
+def test_cmaes_bipop_restart_exercises_both_regimes_and_escapes(tmp_path):
+    """BIPOP interleaves an increasing-population regime with a small-population one,
+    launching whichever has spent fewer evaluations (Hansen 2009). On the same trap it
+    escapes to the global mode, and its population history shows both regimes: at least
+    one run smaller than the base population and at least one larger."""
+    alg = algorithms.CMAESAlgorithm(
+        _trap_config(tmp_path, cmaes_restarts=10, cmaes_restart_strategy='bipop'))
+    H.drive(alg)
+
+    assert alg.restart_count >= 2
+    assert any(lam < 8 for lam in alg._lam_history), alg._lam_history   # small regime used
+    assert any(lam > 8 for lam in alg._lam_history), alg._lam_history   # large regime used
+    assert np.allclose(H.best_params(alg, 2), [6.0, 6.0], atol=0.3)     # escaped
+    assert alg.trajectory.best_score() == pytest.approx(_TRAP_GLOBAL_NLL, abs=0.1)
+
+
 def test_sa_finds_gaussian_mode(tmp_path):
     """Simulated annealing recovers the Gaussian mode on an all-uniform-prior fit.
 

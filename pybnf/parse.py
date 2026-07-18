@@ -51,7 +51,10 @@ numkeys_int = ['verbosity', 'parallel_count', 'delete_old_files', 'population_si
                'gntr_max_iterations',
                # DREAM multi-try count (ADR-0067 Stage 2, #357): candidate proposals
                # per chain per generation (n_try = 1 is the classic single-try engine).
-               'n_try']
+               'n_try',
+               # CMA-ES restart (fit_type = cmaes, #498/ADR-0070): the maximum number
+               # of IPOP / BIPOP restarts (0 = a single run).
+               'cmaes_restarts']
 numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'particle_weight_final', 'adaptive_n_max', 'adaptive_n_stop', 'adaptive_abs_tol', 'adaptive_rel_tol',
                  'mutation_rate', 'mutation_factor', 'stop_tolerance', 'step_size', 'simplex_step', 'simplex_log_step',
@@ -61,6 +64,9 @@ numkeys_float = ['min_objective', 'cognitive', 'social', 'particle_weight',
                  'rhat_threshold', 'snooker_prob', 'kalman_burnin_frac',
                  'powell_step', 'powell_line_tol', 'powell_stop_tol',
                  'cmaes_sigma0', 'cmaes_stop_tol',
+                 # CMA-ES restart (fit_type = cmaes, #498/ADR-0070): the IPOP / BIPOP
+                 # geometric population-growth factor per restart (2.0 = doubling).
+                 'cmaes_ipop_factor',
                  # gradient optimizers (fit_type = trf / lbfgs / gntr, #386/#481): the
                  # float-valued tunables -- the trust-region-reflective / L-BFGS-B / EFIM
                  # optimality + step tolerances, L-BFGS-B's Armijo constant / backtrack
@@ -94,6 +100,8 @@ strkeylist = ['bng_command', 'output_dir', 'fit_type', 'job_type', 'objfunc', 'o
               'cluster_type', 'scheduler_node', 'scheduler_file', 'de_strategy', 'sbml_integrator',
               'sbml_backend', 'bngl_backend', 'stochastic_seed', 'simulation_dir',
               'outlier_method', 'refine_method', 'noise_location',
+              # CMA-ES restart schedule (fit_type = cmaes, #498/ADR-0070): ipop | bipop.
+              'cmaes_restart_strategy',
               # Global qualitative (BPSL) penalty-family override:
               # auto | hinge | probit | logit.
               'qualitative_loss']

@@ -1375,6 +1375,33 @@ These settings for the :ref:`CMA-ES <alg-cmaes>` optimizer apply both to ``fit_t
 
     * ``cmaes_stop_tol = 1e-8``
 
+**cmaes_restarts**
+  Maximum number of IPOP / BIPOP restarts for multimodal search. A single CMA-ES run descends into the one basin its start lands in, so on a multimodal objective it reaches only a local minimum. With ``cmaes_restarts > 0``, whenever a run *converges* (its search distribution shrinks below ``cmaes_stop_tol``, or its step size degenerates) — as distinct from exhausting the generation budget ``max_iterations`` — CMA-ES reinitializes from a fresh random point in the prior box with a rescaled population and keeps searching, up to this many restarts, keeping the global best across all runs. Requires the box / global-start mode (bounded ``uniform_var`` / ``loguniform_var`` priors), which provides the box restarts resample from. ``0`` (the default) is a single run.
+
+  Default: 0
+
+  Example:
+
+    * ``cmaes_restarts = 9``
+
+**cmaes_restart_strategy**
+  The restart schedule (used only when ``cmaes_restarts > 0``). ``ipop`` grows the population geometrically each restart (``population_size`` × ``cmaes_ipop_factor``\ :sup:`k`), a progressively broader global search (Auger & Hansen 2005). ``bipop`` interleaves that increasing-population regime with a small-population regime, launching whichever has spent fewer evaluations so far, which balances broad sweeps against many quick fine-grained searches (Hansen 2009).
+
+  Default: ipop
+
+  Example:
+
+    * ``cmaes_restart_strategy = bipop``
+
+**cmaes_ipop_factor**
+  Geometric population-growth factor per restart, used by IPOP and by BIPOP's large regime. ``2.0`` is the standard population doubling.
+
+  Default: 2.0
+
+  Example:
+
+    * ``cmaes_ipop_factor = 2.0``
+
 
 :ref:`Differential Evolution <alg-de>`
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

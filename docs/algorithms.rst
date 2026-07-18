@@ -726,6 +726,20 @@ mode an absolute step in the sampling space, in box mode a fraction of each box
 width — and ``cmaes_stop_tol`` the convergence threshold on the search
 distribution's spread. As a refiner the start is always the injected best fit.
 
+Restart for multimodal search
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A single CMA-ES run descends into the one basin its start lands in, so on a
+multimodal objective it reaches only a local minimum. Setting ``cmaes_restarts >
+0`` (global-start / box mode only) turns on the standard multimodal-CMA-ES
+**restart**: each time a run *converges* — as distinct from spending the whole
+``max_iterations`` budget — CMA-ES reinitializes from a fresh random point in the
+box with a rescaled population and keeps searching, keeping the best fit across all
+runs. ``cmaes_restart_strategy = ipop`` grows the population geometrically each
+restart (a progressively broader global search, [AugerHansen2005]_);
+``cmaes_restart_strategy = bipop`` interleaves that with a small-population regime,
+balancing broad and fine-grained search across the budget ([Hansen2009]_). This is
+the recommended setting for a primary global search over a multimodal landscape.
+
 
 .. _alg-gradient:
 
@@ -805,10 +819,12 @@ group, so leave-one-out cross-validation (``az.loo``) and the widely-applicable
 information criterion (``az.waic``) can be computed directly.
 
 
+.. [AugerHansen2005] Auger, A.; Hansen, N. A Restart CMA Evolution Strategy with Increasing Population Size. 2005 IEEE Congress on Evolutionary Computation (CEC) 2005, 2, 1769–1776.
 .. [Egea2009] Egea, J. A.; Balsa-Canto, E.; García, M.-S. G.; Banga, J. R. Dynamic Optimization of Nonlinear Processes with an Enhanced Scatter Search Method. Ind. Eng. Chem. Res. 2009, 48 (9), 4388–4401.
 .. [Glover2000] Glover, F.; Laguna, M.; Martí, R. Fundamentals of Scatter Search and Path Relinking. Control Cybern. 2000, 29 (3), 652–684.
 .. [Hoffman2014] Hoffman, M. D.; Gelman, A. The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo. J. Mach. Learn. Res. 2014, 15 (1), 1593–1623.
 .. [Hansen2001] Hansen, N.; Ostermeier, A. Completely Derandomized Self-Adaptation in Evolution Strategies. Evol. Comput. 2001, 9 (2), 159–195.
+.. [Hansen2009] Hansen, N. Benchmarking a BI-Population CMA-ES on the BBOB-2009 Function Testbed. Proceedings of the 11th Annual Conference Companion on Genetic and Evolutionary Computation (GECCO) 2009, 2389–2396.
 .. [Haario2001] Haario, H.; Saksman, E.; Tamminen, J. An Adaptive Metropolis Algorithm. Bernoulli 2001, 7 (2), 223–242.
 .. [Gupta2018a] Gupta, S.; Hainsworth, L.; Hogg, J. S.; Lee, R. E. C.; Faeder, J. R. Evaluation of Parallel Tempering to Accelerate Bayesian Parameter Estimation in Systems Biology. 2018 26th Euromicro International Conference on Parallel, Distributed and Network-based Processing (PDP) 2018, 690–697.
 .. [Kozer2013] Kozer, N.; Barua, D.; Orchard, S.; Nice, E. C.; Burgess, A. W.; Hlavacek, W. S.; Clayton, A. H. A. Exploring Higher-Order EGFR Oligomerisation and Phosphorylation—a Combined Experimental and Theoretical Approach. Mol. BioSyst. Mol. BioSyst 2013, 9 (9), 1849–1863.
